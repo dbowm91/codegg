@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use codegg_config::schema::RemoteResourceLimits;
 use codegg_git::AuditSafeArgv;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -331,6 +332,78 @@ pub struct SandboxRecord {
     pub write_roots: Vec<PathBuf>,
 }
 
+/// What actually happened to one remote resource dimension.
+///
+/// The vocabulary mirrors the node's own outcome reporting, so a
+/// best-effort limit the node could not apply is recorded as *not
+/// applied* — never silently downgraded to *not requested*, and never
+/// claimed as *applied*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RemoteResourceOutcome {
+    /// The dimension carried no limit.
+    #[default]
+    NotRequested,
+    /// The node could not apply the limit.
+    NotApplied {
+        /// Why the node could not apply it.
+        reason: String,
+    },
+    /// The node applied the limit.
+    Applied {
+        /// The enforcement backend the node used.
+        backend: String,
+    },
+    /// The limit was exceeded while the execution ran.
+    LimitExceeded {
+        /// The enforcement backend the node used.
+        backend: String,
+    },
+}
+
+/// The per-dimension outcome the node reported for one remote execution.
+///
+/// `None` inside [`RemoteResourceRecord::outcomes`] means the node
+/// reported *no* resource outcome at all. That is deliberately distinct
+/// from a dimension reported as `NotRequested`: the first means "the
+/// node said nothing", the second means "the node said there was no
+/// limit".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteResourceOutcomes {
+    /// Resident-memory dimension.
+    pub memory_bytes: RemoteResourceOutcome,
+    /// CPU quota dimension. The unit is milli-percent of one CPU.
+    pub cpu_quota_milli_percent: RemoteResourceOutcome,
+    /// Process/thread dimension.
+    pub pids: RemoteResourceOutcome,
+}
+
+/// The resource-limit outcome of one remote execution.
+///
+/// Bounded metadata: the limits that were asked for plus the node's own
+/// per-dimension report. It never contains an endpoint, a certificate
+/// path, a key path, or any host measurement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteResourceRecord {
+    /// The limits the daemon asked the node to enforce, in the node's
+    /// own units. `None` when no limits were requested.
+    pub requested: Option<RemoteResourceLimits>,
+    /// What the node reported. `None` when the node reported nothing.
+    pub outcomes: Option<RemoteResourceOutcomes>,
+}
+
+impl RemoteResourceRecord {
+    /// `true` when no limit was requested and nothing was reported.
+    pub fn is_empty(&self) -> bool {
+        self.requested
+            .as_ref()
+            .is_none_or(|requested| requested.is_empty())
+            && self.outcomes.is_none()
+    }
+}
+
 // ── Artifact Record ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,6 +569,11 @@ pub struct RunManifest {
     /// failed and fell back to raw shell).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<FallbackRecord>,
+    /// Resource-limit outcome of a remote execution (M003).
+    ///
+    /// `None` for every local run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_resources: Option<RemoteResourceRecord>,
     /// Who owns this run record. Defaults to Caller (BashTool).
     #[serde(default)]
     pub ownership: RunOwnership,
@@ -602,6 +680,12 @@ pub struct RunCompletion {
     /// Set if execution diverged from the planned backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<FallbackRecord>,
+    /// Resource-limit outcome of a remote execution (M003).
+    ///
+    /// `None` for every local run: a local execution has no node-enforced
+    /// limits, and a missing record must not be read as "limits applied".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_resources: Option<RemoteResourceRecord>,
 }
 
 // ── Query ───────────────────────────────────────────────────────────────
@@ -1465,6 +1549,7 @@ impl RunStore for FsRunStore {
             fallback: None,
             ownership: draft.ownership,
             asset_provenance: draft.asset_provenance.map(RunAssetProvenance::bounded),
+            remote_resources: None,
             source_subject: None,
         };
 
@@ -1590,6 +1675,12 @@ impl RunStore for FsRunStore {
         manifest.projection = completion.projection;
         manifest.changes = completion.changes;
         manifest.rerun = completion.rerun;
+        // M003: promote the remote resource-limit outcome into the
+        // manifest so the durable record shows what the node actually
+        // did with each requested limit.
+        if completion.remote_resources.is_some() {
+            manifest.remote_resources = completion.remote_resources;
+        }
         // Workstream A: promote actual_backend / fallback from completion into
         // the manifest. If completion sets actual_backend, it overrides any
         // value populated during begin_run. If completion sets fallback, it is
@@ -1905,6 +1996,7 @@ impl RunStore for MemRunStore {
             fallback: None,
             ownership: draft.ownership,
             asset_provenance: draft.asset_provenance.map(RunAssetProvenance::bounded),
+            remote_resources: None,
             source_subject: None,
         };
 
@@ -1983,6 +2075,12 @@ impl RunStore for MemRunStore {
         manifest.projection = completion.projection;
         manifest.changes = completion.changes;
         manifest.rerun = completion.rerun;
+        // M003: promote the remote resource-limit outcome into the
+        // manifest so the durable record shows what the node actually
+        // did with each requested limit.
+        if completion.remote_resources.is_some() {
+            manifest.remote_resources = completion.remote_resources;
+        }
         // Workstream A: same fallback propagation as FsRunStore.
         if completion.actual_backend.is_some() {
             manifest.actual_backend = completion.actual_backend;
@@ -2168,6 +2266,8 @@ mod tests {
             rerun: None,
             actual_backend: None,
             fallback: None,
+
+            remote_resources: None,
         }
     }
 
@@ -2241,6 +2341,8 @@ mod tests {
             ownership: RunOwnership::Caller,
             asset_provenance: None,
             source_subject: None,
+
+            remote_resources: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();

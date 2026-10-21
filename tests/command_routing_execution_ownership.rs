@@ -320,6 +320,8 @@ async fn active_routing_fallback_preserves_planned_and_records_actual() {
                 rerun: None,
                 actual_backend: Some(outcome.actual.into_backend()),
                 fallback: Some(fallback.clone()),
+
+                remote_resources: None,
             },
         )
         .await
@@ -704,6 +706,8 @@ async fn manifest_serde_roundtrip_with_provenance() {
         ownership: RunOwnership::DelegatedBackend,
         asset_provenance: None,
         source_subject: None,
+
+        remote_resources: None,
     };
 
     let json = serde_json::to_string(&m).unwrap();
@@ -1028,6 +1032,8 @@ async fn dispatch_failure_fallback_persists_caller_owned_raw_shell() {
                 rerun: None,
                 actual_backend: Some(outcome.actual.into_backend()),
                 fallback: Some(fallback.clone()),
+
+                remote_resources: None,
             },
         )
         .await

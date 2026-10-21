@@ -776,6 +776,12 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "lsp_completion_get",
     "managed_worktree_get",
     "managed_worktree_list",
+    // Eggwork M002: a read-only operator view of a remote node's host. It
+    // is capability-gated, discloses inert host metadata, and mutates
+    // nothing — no job, no queue, no node state — so it shares the reads'
+    // classification rather than emitting per-poll audit events. Denial
+    // *is* audited upstream by `authorize_request`.
+    "node_telemetry_read",
     "memory_forget",
     "memory_list",
     "memory_remember",

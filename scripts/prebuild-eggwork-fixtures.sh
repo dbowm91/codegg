@@ -56,6 +56,16 @@ if [ ! -x "$NODE_BIN" ]; then
     exit 1
 fi
 
+# The fixture is a standalone workspace, so its own unit tests are outside
+# the root workspace's `cargo nextest run --workspace`. Run them here, in
+# the same Linux job that already builds the fixture, so the helper's
+# argument contract is checked by CI rather than only by the live test
+# that happens to use it. The live test caught a valueless switch being
+# parsed as a valued one; this is where that class of defect now fails
+# fast, in a unit test, instead of at the end of a live fixture run.
+echo "prebuild-eggwork-fixtures: running the fixture's own unit tests ..."
+cargo test --locked --manifest-path "$HELPER_MANIFEST"
+
 # Resolve the pinned Eggwork runner manifest exactly like the live test
 # does (cargo metadata over the helper workspace), then build the
 # sandbox helper from the pinned Eggwork root into the helper target

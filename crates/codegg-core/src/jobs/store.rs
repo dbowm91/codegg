@@ -27,6 +27,29 @@ use crate::workspace::WorkspaceId;
 
 use super::{JobState, JobStore, JobStoreError};
 
+/// The durable id for a job that is about to be created.
+///
+/// A **scheduled** job's id is derived from its occurrence, so the
+/// `job.id` primary key is the durable uniqueness constraint for that
+/// occurrence: materializing the same occurrence twice collides with the
+/// row an earlier attempt already wrote instead of creating a second job.
+/// Every other job keeps a random UUID v4, which cannot collide.
+///
+/// Because the id is a pure function of the spec, `create_job` can be
+/// **idempotent**: creating a job whose id already exists returns the
+/// existing job rather than failing or overwriting it. That is what
+/// makes a schedule occurrence survive a crash between "the job row was
+/// written" and "the occurrence row was written".
+fn new_job_id(source: &JobSource) -> JobId {
+    match source {
+        JobSource::Scheduled {
+            schedule_id,
+            occurrence,
+        } => super::schedule::occurrence_job_id(schedule_id, *occurrence),
+        _ => JobId::new_unchecked(uuid::Uuid::new_v4().to_string()),
+    }
+}
+
 /// Query parameters for [`JobStore::list_jobs`].
 #[derive(Debug, Clone, Default)]
 pub struct JobStoreQuery {
@@ -349,7 +372,13 @@ impl JobStore for InMemoryJobStore {
     async fn create_job(&self, spec: NewJob) -> Result<JobRecord, JobStoreError> {
         let mut guard = self.inner.lock().await;
         let now = Utc::now();
-        let job_id = JobId::new_unchecked(uuid::Uuid::new_v4().to_string());
+        let job_id = new_job_id(&spec.source);
+        // Idempotent create: a scheduled job's id is a pure function of
+        // its occurrence, so a replayed materialization must return the
+        // job that already exists rather than overwrite it.
+        if let Some(existing) = guard.jobs.get(&job_id) {
+            return Ok(existing.clone());
+        }
         let record = JobRecord {
             job_id: job_id.clone(),
             workspace_id: spec.workspace_id,
@@ -1192,7 +1221,7 @@ impl JobStore for SqliteJobStore {
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let now = Utc::now();
-        let job_id = JobId::new_unchecked(uuid::Uuid::new_v4().to_string());
+        let job_id = new_job_id(&spec.source);
         let payload_json = serialize_payload(&spec.payload)?;
         let source_json = serialize_source(&spec.source)?;
         let retry_json = serialize_retry(&spec.retry_policy)?;
@@ -1214,7 +1243,7 @@ impl JobStore for SqliteJobStore {
             IdempotencyClass::NonIdempotent => "non_idempotent",
             IdempotencyClass::Destructive => "destructive",
         };
-        sqlx::query(
+        let execute = sqlx::query(
             r#"
             INSERT INTO job (
                 id, workspace_id, session_id, turn_id, kind, source_json,
@@ -1256,8 +1285,34 @@ impl JobStore for SqliteJobStore {
         .bind(target_kind(&spec.target))
         .bind(target_node_id(&spec.target))
         .execute(&mut *tx)
-        .await
-        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        .await;
+        match execute {
+            Ok(_) => {}
+            Err(e) => {
+                // Idempotent create: a scheduled job's id is a pure
+                // function of its occurrence, so a replayed
+                // materialization collides with the row an earlier
+                // attempt wrote. The `job.id` primary key is the
+                // durable uniqueness constraint — return that job
+                // instead of creating a second one.
+                let duplicate_id = e
+                    .as_database_error()
+                    .map(|db| db.is_unique_violation())
+                    .unwrap_or(false);
+                if !duplicate_id {
+                    return Err(JobStoreError::Storage(StorageError::Database(
+                        e.to_string(),
+                    )));
+                }
+                tx.rollback()
+                    .await
+                    .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+                return self
+                    .get_job(&job_id)
+                    .await?
+                    .ok_or_else(|| JobStoreError::JobNotFound(job_id.to_string()));
+            }
+        }
         for dep in &spec.depends_on {
             let dep_id = uuid::Uuid::new_v4().to_string();
             sqlx::query(

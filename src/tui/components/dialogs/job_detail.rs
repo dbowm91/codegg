@@ -209,6 +209,8 @@ mod tests {
             cancel_requested_at: None,
             cancel_reason: None,
             labels: Default::default(),
+            // Remote-target identity (Eggwork M001). `None` for a local job.
+            target_node_id: None,
         }
     }
 

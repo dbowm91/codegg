@@ -97,7 +97,7 @@ Class: capability. Plan: `plans/implementation/harness-lab/004-opencode-proposer
 
 ### M005 — Multi-iteration controller and agent pilot
 
-Class: capability. Plan: `plans/implementation/harness-lab/005-optimization-controller-and-agent-pilot.md`. **Conditionally closed** (`plans/closure/harness-lab/005-status.md`). Implements a bounded outer assess/propose/build/retest scheduler, restartable immutable run checkpoints, candidate partial-trial validation, and ACP usage/tool-selection telemetry. The live pilot is blocked because the pinned shared OpenCode Go profile lacks an exact LongCat 2.5 route and this environment exposes no secret-safe handoff for the supplied temporary key. M004's accepted-fix and live proposal/correction evidence conditions remain open. No automatic merge/push.
+Class: capability. Plan: `plans/implementation/harness-lab/005-optimization-controller-and-agent-pilot.md`. **Conditionally closed** (`plans/closure/harness-lab/005-status.md`). Implements a bounded outer assess/propose/build/retest scheduler, restartable immutable run checkpoints, candidate partial-trial validation, and ACP usage/tool-selection telemetry. The current installation catalogued both approved Go routes; LongCat passed one frozen coding task, while Muse Spark's paired turn failed without terminal usage. The pilot stopped before its second task under the usage stop rule; see the redacted receipts in `plans/closure/harness-lab/evidence/live-pilot-20261021.json`. M004's accepted-fix and live proposal/correction evidence conditions remain open. No automatic merge/push.
 
 ## 8. Cross-cutting requirements
 
@@ -145,4 +145,4 @@ Two independent CodeGG versions can run headlessly and concurrently via ACP on t
 | M002 | closed | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | `closure/harness-lab/002-status.md` | — |
 | M003 | closed | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | `closure/harness-lab/003-status.md` | — |
 | M004 | conditionally closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | accepted correctness-fix trace and live proposal/correction evidence; full interrupted qualification receipt |
-| M005 | conditionally closed | `implementation/harness-lab/005-optimization-controller-and-agent-pilot.md` | `closure/harness-lab/005-status.md` | live LongCat route in the shared profile and secret-safe credential handoff; two-model frozen-baseline pilot |
+| M005 | conditionally closed | `implementation/harness-lab/005-optimization-controller-and-agent-pilot.md` | `closure/harness-lab/005-status.md` | Muse Spark terminal usage missing on Task 1; complete Task 2 pair after enforceable usage accounting |

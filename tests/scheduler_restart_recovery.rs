@@ -363,9 +363,8 @@ async fn schedule_occurrence_uniqueness_across_restarts() {
     impl codegg_core::jobs::schedule::OccurrenceMaterializer for TestMaterializer {
         async fn materialize(
             &self,
-            _sid: &codegg_core::jobs::ScheduleId,
-            template: &codegg_core::jobs::schedule::JobTemplate,
-            _at: chrono::DateTime<chrono::Utc>,
+            schedule: &codegg_core::jobs::schedule::ScheduleRecord,
+            at: chrono::DateTime<chrono::Utc>,
         ) -> Result<codegg_core::jobs::JobId, codegg_core::jobs::schedule::MaterializerError>
         {
             use codegg_core::jobs::schedule::MaterializerError;
@@ -375,17 +374,17 @@ async fn schedule_occurrence_uniqueness_across_restarts() {
                     workspace_id: self.workspace_id.clone(),
                     session_id: None,
                     turn_id: None,
-                    kind: template.kind,
+                    kind: schedule.job_template.kind,
                     source: codegg_core::jobs::schedule::JobTemplate::job_source(
                         &codegg_core::jobs::ScheduleId::new_unchecked("sched"),
-                        _at,
+                        at,
                     ),
-                    priority: template.priority,
-                    payload: template.payload.clone(),
-                    resource_request: template.resource_request.clone(),
-                    timeout: template.timeout,
-                    retry_policy: template.retry_policy.clone(),
-                    idempotency: template.idempotency,
+                    priority: schedule.job_template.priority,
+                    payload: schedule.job_template.payload.clone(),
+                    resource_request: schedule.job_template.resource_request.clone(),
+                    timeout: schedule.job_template.timeout,
+                    retry_policy: schedule.job_template.retry_policy.clone(),
+                    idempotency: schedule.job_template.idempotency,
                     not_before: None,
                     deadline: None,
                     schedule_id: None,
@@ -623,6 +622,8 @@ async fn recovery_preserves_permit_accounting() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
+
+        remote_node: None,
     };
     let _permit = match controller.try_admit_arc(&dims) {
         codegg::scheduler::AdmissionDecision::Admitted(p) => p,

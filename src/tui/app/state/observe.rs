@@ -523,6 +523,9 @@ pub fn is_observer_allowed_command(command: &str) -> bool {
         "plugins" | "plugin-list" | "plugin-ls" | "plugin-info" | "plugin-doctor" |
         "security-review-show" |
         "tui-stats" |
+        // Eggwork M002: a read-only operator read of remote node host
+        // telemetry. It observes hosts; it creates no work.
+        "nodes" |
         "models-refresh" | "refresh-models"
     )
 }

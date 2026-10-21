@@ -2209,6 +2209,9 @@ fn build_permit_dimensions(job: &JobRecord) -> PermitDimensions {
         io_weight: job.resource_request.io_weight,
         network_slots: job.resource_request.network_slots,
         exclusivity_keys: job.resource_request.exclusivity_keys.clone(),
+        // A remotely targeted job is reserved against its node, not
+        // against the controller's local CPU/memory/process budget.
+        remote_node: job.target.eggwork_node_id().map(str::to_owned),
     }
 }
 

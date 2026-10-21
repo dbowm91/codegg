@@ -29,6 +29,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Remote resource limits in the remote node's own physical units.
+///
+/// Re-exported from the config crate so the durable job contract and the
+/// operator-facing configuration speak exactly one vocabulary.
+pub use codegg_config::schema::{
+    RemoteLimitEnforcement, RemoteResourceLimit, RemoteResourceLimits,
+};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -49,9 +57,10 @@ pub mod schedule_store;
 pub mod store;
 
 pub use schedule::{
-    compute_next_run, missed_run_targets, ClaimedOccurrence, MissedRunPolicy,
-    OccurrenceMaterializer, OccurrenceStatus, OverlapPolicy, ScheduleError, ScheduleKind,
-    ScheduleQuery, ScheduleRecord, ScheduleState, ScheduleStore, ScheduleSummary, ScheduleTemplate,
+    compute_next_run, missed_run_targets, occurrence_job_id, ClaimedOccurrence, JobTemplate,
+    MaterializerError, MissedRunPolicy, OccurrenceMaterializer, OccurrenceStatus, OverlapPolicy,
+    ScheduleError, ScheduleKind, ScheduleQuery, ScheduleRecord, ScheduleState, ScheduleStore,
+    ScheduleSummary, ScheduleTemplate,
 };
 pub use schedule_store::{InMemoryScheduleStore, SqliteScheduleStore};
 
@@ -340,7 +349,9 @@ impl ToolProgramExecutionContext {
 /// Created at submit time by the daemon and never re-derived. Equality
 /// is structural (string compare) and the type is `Hash` so it can be
 /// used as a map key. The string content is a UUID v4 produced by the
-/// store at creation time.
+/// store at creation time, except for a scheduled job, whose id is
+/// derived from its occurrence so the same occurrence can never own two
+/// jobs (see [`schedule::occurrence_job_id`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(String);
@@ -513,7 +524,12 @@ pub enum JobKind {
 /// failures are reported back to CodeGG policy. The executor does not
 /// select another node.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "node_id")]
+// Internally tagged, so the JSON form is `{"kind":"local"}` /
+// `{"kind":"eggwork_node","node_id":"builder"}` — the same shape the
+// protocol DTO uses. An adjacently tagged representation would nest the
+// variant's own `node_id` field under a second `node_id` key and
+// disagree with the wire contract.
+#[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ExecutionTarget {
     /// Default. Job runs through the existing local executor kinds.
     #[default]
@@ -690,6 +706,19 @@ pub struct ResourceRequest {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// Optional remote resource limits for a job that runs on a named
+    /// Eggwork node.
+    ///
+    /// The fields above are *abstract scheduler tokens*: a CPU weight, a
+    /// memory hint, a slot count. They are not physical quantities and are
+    /// never translated into the node's cgroup limits — the units do not
+    /// correspond. This field is the only place a physical remote limit
+    /// may be expressed, and it uses the node's own units.
+    ///
+    /// Absent means "no remote limits requested", which is exactly the
+    /// pre-M003 behavior.
+    #[serde(default)]
+    pub remote: Option<RemoteResourceLimits>,
 }
 
 impl Default for ResourceRequest {
@@ -705,6 +734,7 @@ impl Default for ResourceRequest {
             io_weight: 1,
             network_slots: 0,
             exclusivity_keys: Vec::new(),
+            remote: None,
         }
     }
 }
@@ -719,6 +749,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 1,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Build => Self {
                 cpu_weight: 3,
@@ -727,6 +758,7 @@ impl ResourceRequest {
                 io_weight: 3,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                remote: None,
             },
             JobKind::Lint => Self {
                 cpu_weight: 1,
@@ -735,6 +767,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Format => Self {
                 cpu_weight: 1,
@@ -743,6 +776,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                remote: None,
             },
             JobKind::Test => Self {
                 cpu_weight: 2,
@@ -751,6 +785,7 @@ impl ResourceRequest {
                 io_weight: 2,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Shell | JobKind::ManagedProcess => Self {
                 cpu_weight: 1,
@@ -759,6 +794,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Python => Self {
                 cpu_weight: 1,
@@ -767,6 +803,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::GitRead => Self {
                 cpu_weight: 1,
@@ -775,6 +812,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::GitMutation => Self {
                 cpu_weight: 1,
@@ -783,6 +821,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:worktree-mutation".to_string()],
+                remote: None,
             },
             JobKind::Maintenance => Self {
                 cpu_weight: 1,
@@ -791,6 +830,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::ToolProgram => Self {
                 cpu_weight: 1,
@@ -799,6 +839,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Unsupported => Self::default(),
         }

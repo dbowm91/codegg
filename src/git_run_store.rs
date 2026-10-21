@@ -216,6 +216,8 @@ pub async fn persist_mutation(
         }),
         actual_backend: Some(ActualBackend::Git),
         fallback: None,
+
+        remote_resources: None,
     };
 
     let _ = started_at; // not used at the moment; RunStore captures timing itself

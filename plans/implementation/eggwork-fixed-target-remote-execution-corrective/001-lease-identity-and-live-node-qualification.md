@@ -1,6 +1,6 @@
 # Eggwork Remote Execution Corrective C001 — Lease Identity Coherence and Live-Node Qualification
 
-Status: ready for handoff
+Status: implemented — closed (`plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`; implementation `f4e6e69d` plus follow-ups through `3ca3b7b6`; hosted CI run `36051370501` success).
 
 Source corrective:
 

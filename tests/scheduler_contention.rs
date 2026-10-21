@@ -525,6 +525,8 @@ fn impossible_request_fails_explicitly() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
+
+        remote_node: None,
     };
     match controller.try_admit(&dims) {
         AdmissionDecision::Impossible(reason) => match reason {
@@ -811,6 +813,8 @@ fn cancel_releases_exclusivity_key() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:cargo-target:shared".into()],
+
+        remote_node: None,
     };
 
     // Step 1: Admit the first job — key acquired.
@@ -859,6 +863,8 @@ fn restart_does_not_preserve_stale_exclusivity() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:cargo-target:foo".into()],
+
+        remote_node: None,
     };
     // First admission succeeds — no stale key from a prior process.
     let g1 = match controller.try_admit_arc(&dims) {

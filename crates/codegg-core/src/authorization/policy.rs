@@ -721,6 +721,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::SessionRead),
         ),
+        // Eggwork M002: a read-only operator view of a remote node's host.
+        // It is scoped to no project, so it reuses the existing remote-node
+        // grant (`node.target`, owner-only) rather than inventing a second
+        // authority: the same principal that may target a node may observe
+        // it, and every other principal fails closed on the missing scope.
+        R::NodeTelemetry { .. } => OperationDescriptor::new(
+            "node_telemetry_read",
+            ScopeKind::Opaque,
+            Some(Capability::NodeTarget),
+        ),
         R::JobWait { .. } => {
             OperationDescriptor::new("job_wait", ScopeKind::ViaJob, Some(Capability::SessionRead))
         }
@@ -1833,6 +1843,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             spec: dummy_job_submit(),
         },
         R::SchedulerSnapshot,
+        R::NodeTelemetry { node_id: None },
         R::JobWait {
             job_id: String::new(),
             timeout_ms: None,
