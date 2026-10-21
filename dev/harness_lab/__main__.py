@@ -12,6 +12,34 @@ from .supervisor import HarnessError, run_smoke, run_tool_trial
 from . import budget
 from . import ledger
 from . import improve
+from . import pilot as pilot_module
+from . import sustained as sustained_module
+
+
+def _sustained_plans(trials: int) -> list:
+    """Build the trial plan for a sustained scenario.
+
+    The sequence alternates the two frozen tasks and injects the two
+    interruption kinds at fixed positions, so the scenario always covers a
+    normal trial, a cancelled trial, and an abruptly dropped ACP connection.
+    """
+    tasks = list(pilot_module.FROZEN_TASKS)
+    plans = []
+    for index in range(trials):
+        task = tasks[index % len(tasks)]
+        fault = None
+        if index == 3:
+            fault = "cancel"
+        elif index == 7:
+            fault = "abrupt_acp_drop"
+        elif index == 11:
+            fault = "cancel"
+        elif index == 15:
+            fault = "abrupt_acp_drop"
+        plans.append(sustained_module.TrialPlan(
+            trial_id=f"trial-{index:02d}-{task}-{fault or 'clean'}",
+            task=task, fault=fault))
+    return plans
 
 
 def _add_budget_arguments(parser: argparse.ArgumentParser) -> None:
@@ -78,6 +106,9 @@ def _parser() -> argparse.ArgumentParser:
     improve_cmd.add_argument("--prompt")
     improve_cmd.add_argument("--allow-prefix", action="append", default=[])
     improve_cmd.add_argument("--timeout", type=float, default=300.0)
+    improve_cmd.add_argument("--model", default=None,
+                             help="pin the OpenCode proposer to one approved provider/model route")
+    _add_budget_arguments(improve_cmd)
     optimize = commands.add_parser("optimize", help="run a bounded multi-iteration assess/correct/retest controller")
     optimize.add_argument("--repository", type=Path, default=Path.cwd())
     optimize.add_argument("--suite", type=Path, required=True)
@@ -93,6 +124,8 @@ def _parser() -> argparse.ArgumentParser:
     optimize.add_argument("--max-wallclock", type=float, default=3600.0)
     optimize.add_argument("--timeout", type=float, default=900.0)
     optimize.add_argument("--resume", action="store_true")
+    optimize.add_argument("--model", default=None,
+                          help="pin the OpenCode proposer to one approved provider/model route")
     _add_budget_arguments(optimize)
     qualify = commands.add_parser("qualify", help="build, test, and paired-ACP-evaluate a scoped candidate")
     qualify.add_argument("--worktree", type=Path, required=True)
@@ -110,6 +143,8 @@ def _parser() -> argparse.ArgumentParser:
     qualify.add_argument("--resume", action="store_true")
     qualify.add_argument("--max-candidate-retries", type=int, default=0,
                          help="bounded OpenCode compile-correction retries; zero disables retries")
+    qualify.add_argument("--model", default=None,
+                         help="pin the OpenCode proposer to one approved provider/model route")
     _add_budget_arguments(qualify)
     budget_check = commands.add_parser(
         "budget-check",
@@ -121,6 +156,39 @@ def _parser() -> argparse.ArgumentParser:
     candidate_tree.add_argument("--branch", required=True)
     candidate_tree.add_argument("--destination", type=Path, required=True)
     candidate_tree.add_argument("--base-revision", required=True)
+    pilot = commands.add_parser(
+        "pilot",
+        help="run one frozen task fixture against a live approved route and record a receipt")
+    pilot.add_argument("--task", required=True, choices=list(pilot_module.FROZEN_TASKS),
+                       help="frozen pilot task id")
+    pilot.add_argument("--model", required=True,
+                       help="provider/model composite, for example opencode_go/muse-spark-1.3-contributor")
+    pilot.add_argument("--binary", type=Path, default=None,
+                       help="CodeGG binary under test; defaults to the debug build")
+    pilot.add_argument("--profile", default="workspace-write",
+                       choices=["workspace-write", "full-host"])
+    pilot.add_argument("--timeout", type=float, default=pilot_module.DEFAULT_TIMEOUT_SECONDS)
+    pilot.add_argument("--output", type=Path, default=None,
+                       help="where to write the receipt JSON; stdout when absent")
+    pilot.add_argument("--lane-root", type=Path, default=None,
+                       help="private lane directory; a temporary lane when absent")
+    _add_budget_arguments(pilot)
+    sustained = commands.add_parser(
+        "sustained",
+        help="run an unattended sequence of live trials with bounded resource limits")
+    sustained.add_argument("--model", required=True,
+                           help="provider/model composite for every trial in the scenario")
+    sustained.add_argument("--binary", type=Path, default=None)
+    sustained.add_argument("--profile", default="workspace-write",
+                           choices=["workspace-write", "full-host"])
+    sustained.add_argument("--trials", type=int, default=24,
+                           help="number of live trials in the scenario")
+    sustained.add_argument("--per-trial-wallclock", type=float, default=600.0)
+    sustained.add_argument("--max-provider-requests", type=int, default=None,
+                           help="scenario-level provider-request ceiling, independent of the policy")
+    sustained.add_argument("--output", type=Path, default=None)
+    sustained.add_argument("--lane-root", type=Path, default=None)
+    _add_budget_arguments(sustained)
     return parser
 
 
@@ -149,15 +217,64 @@ def main(argv: list[str] | None = None) -> int:
             if args.proposer == "manual" and args.dry_run:
                 result = improve.manual_dry_run(args.checkpoint, args.max_iterations, args.max_candidate_retries)
             elif args.proposer == "opencode" and args.worktree and args.prompt and args.allow_prefix:
-                result = improve.opencode_propose(args.worktree, args.prompt, tuple(args.allow_prefix), args.timeout)
+                result = improve.opencode_propose(args.worktree, args.prompt, tuple(args.allow_prefix),
+                                                 args.timeout, model=args.model)
             else:
                 raise HarnessError("manual mode requires --dry-run; OpenCode mode requires --worktree, --prompt, and at least one --allow-prefix")
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") != "BLOCKED" else 2
+        if args.command == "sustained":
+            if not getattr(args, "live_provider", False):
+                raise HarnessError(
+                    "the sustained command always reaches a live provider; pass --live-provider "
+                    "together with an admitted --budget policy")
+            policy = _budget_policy(getattr(args, "budget", None))
+            plans = _sustained_plans(args.trials)
+            receipt = sustained_module.run_sustained_scenario(
+                _binary(args.binary), args.model, budget_policy=policy, plans=plans,
+                profile=args.profile, root=args.lane_root,
+                per_trial_wallclock=args.per_trial_wallclock,
+                max_provider_requests=args.max_provider_requests)
+            rendered = json.dumps(receipt, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"attempted": receipt["attempted_trials"],
+                                  "unattempted": receipt["unattempted_trials"],
+                                  "solved": receipt["solved_trials"],
+                                  "stopped": receipt["stopped_trials"],
+                                  "elapsed_ms": receipt["elapsed_ms"],
+                                  "stopped_reason": receipt["stopped_reason"],
+                                  "output": str(args.output)}, sort_keys=True))
+            else:
+                print(rendered)
+            return 0 if receipt["unattempted_trials"] == 0 else 2
         if args.command == "budget-check":
             admission = _budget_admission(args.budget)
             print(json.dumps(admission.as_dict(), sort_keys=True))
             return 0 if admission.status == budget.STATUS_ADMITTED else 2
+        if args.command == "pilot":
+            # The pilot always reaches a live provider, so the declaration is
+            # not optional: a run that did not name a live provider and an
+            # admitted budget never starts.
+            if not getattr(args, "live_provider", False):
+                raise HarnessError(
+                    "the pilot command always reaches a live provider; pass --live-provider "
+                    "together with an admitted --budget policy")
+            policy = _budget_policy(getattr(args, "budget", None))
+            receipt = pilot_module.run_live_task(
+                _binary(args.binary), args.task, args.model, budget_policy=policy,
+                profile=args.profile, root=args.lane_root, timeout=args.timeout)
+            rendered = json.dumps(receipt, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"ok": receipt["ok"], "output": str(args.output),
+                                  "task_id": receipt["task_id"], "model": receipt["model"],
+                                  "terminal": receipt["terminal"]}, sort_keys=True))
+            else:
+                print(rendered)
+            return 0 if receipt["ok"] else 2
         if args.command == "optimize":
             result = improve.run_optimizer(
                 args.repository, args.suite, args.ledger,
@@ -167,7 +284,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations=args.max_iterations,
                 max_candidate_retries=args.max_candidate_retries,
                 max_wallclock=args.max_wallclock, timeout=args.timeout,
-                resume=args.resume)
+                resume=args.resume, model=args.model,
+                budget_policy=_budget_policy(getattr(args, "budget", None)))
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") == "ACCEPTED" else 2
         if args.command == "qualify":
@@ -196,7 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.proposer == "opencode":
                     if not args.prompt or len(args.prompt.encode()) > 8192:
                         raise HarnessError("OpenCode qualification requires a non-empty prompt of at most 8 KiB")
-                    proposal = improve.opencode_propose(worktree, args.prompt, tuple(args.allow_prefix), args.timeout)
+                    proposal = improve.opencode_propose(worktree, args.prompt, tuple(args.allow_prefix),
+                                                       args.timeout, model=args.model)
                     paths = proposal["changed_paths"]
                     patch_digest = proposal["patch_sha256"]
                 else:
@@ -211,7 +330,8 @@ def main(argv: list[str] | None = None) -> int:
                     allowed_prefixes=tuple(args.allow_prefix), timeout=args.timeout,
                     max_wallclock=args.max_wallclock, checkpoint=checkpoint, resume=args.resume,
                     proposer=args.proposer, correction_prompt=args.prompt or "",
-                    max_candidate_retries=args.max_candidate_retries)
+                    max_candidate_retries=args.max_candidate_retries, model=args.model,
+                    budget_policy=_budget_policy(getattr(args, "budget", None)))
             except (ValueError, RuntimeError, TimeoutError, OSError) as error:
                 if checkpoint.state not in improve.TERMINAL and "REJECTED" in improve.ALLOWED[checkpoint.state]:
                     checkpoint.transition("REJECTED", {"failure_class": type(error).__name__})

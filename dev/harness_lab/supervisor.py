@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import selectors
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -129,6 +130,29 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+#: The platform limit on a bound Unix socket path.
+#:
+#: ``sun_path`` is 104 bytes on macOS and 108 on Linux. The daemon binds its
+#: control socket at ``<lane>/daemon/core.sock``, so a lane root whose full
+#: socket path exceeds the limit cannot start a daemon at all. macOS's
+#: per-user temporary directory is long enough on its own to break that, so
+#: every lane is placed under a short root instead.
+SUN_PATH_LIMIT = 96
+
+
+def lane_root(name: str) -> Path:
+    """Return a private lane root whose control socket path fits the platform.
+
+    The lane lives under the user's home so the path stays short and contains
+    no symlinked component: the daemon refuses a managed scratch path whose
+    components are symlinks, and ``/var`` is a symlink on macOS.
+    """
+    root = Path.home() / ".codegg-harness-lanes" / name
+    if len(str(root / "daemon" / "core.sock").encode()) >= SUN_PATH_LIMIT:
+        root = Path("/tmp") / name
+    return root
 
 
 @dataclass(frozen=True)
@@ -600,9 +624,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         raise HarnessError("profile must be full-host or workspace-write")
     trial_started = time.monotonic()
     binary = binary.resolve()
-    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-") as temp:
-        root = Path(temp).resolve() / "lane"
-        root.mkdir()
+    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
+        root = lane_root("tool-" + uuid.uuid4().hex[:8])
+        root.mkdir(parents=True, exist_ok=True)
         workspace = root / "workspace"
         workspace.mkdir()
         target = (workspace / expected_file).resolve(strict=False)
@@ -851,6 +875,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             provider.close()
             if _owned_daemon_pids(spec):
                 raise HarnessError("verified subject daemon remains after cleanup")
+            shutil.rmtree(root, ignore_errors=True)
 
 
 def _default_daemon_fingerprint(binary: Path, timeout: float) -> tuple[str, str] | None:

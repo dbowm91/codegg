@@ -1,4 +1,23 @@
-"""Bounded candidate-proposal primitives; no production or automatic Git mutation."""
+"""Bounded candidate-proposal primitives; no production or automatic Git mutation.
+
+Trust boundary
+--------------
+The proposer runs in a disposable candidate worktree and its output is
+evidence, never an accepted change. Two things narrow it further:
+
+* the proposer may be pinned to one approved ``provider/model`` route, and
+  the resolved route is recorded in the receipt, so a proposal is always
+  attributed to the route that produced it;
+* an optional budget policy is admitted *before* any provider work and then
+  enforced with a spend guard, so a live proposal cannot exceed the caps the
+  admission gate admitted.
+
+Fail-closed contract
+--------------------
+* A malformed model id is refused, never normalized or "fixed up".
+* A budget policy that cannot be enforced is a refusal, never a downgrade.
+* A usage figure the CLI did not report is unknown, never zero.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,6 +25,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import statistics
@@ -13,6 +33,8 @@ import subprocess
 import threading
 import time
 from typing import Any
+
+from . import budget
 
 
 STATES = {"BASELINED", "DIAGNOSED", "PROPOSING", "PATCHED", "BUILDING", "QUALIFYING", "EVALUATING", "COMPARING", "ACCEPTED", "REJECTED", "BLOCKED", "INTERRUPTED_UNKNOWN"}
@@ -44,6 +66,31 @@ ALLOWED = {state: (set(targets) | {"INTERRUPTED_UNKNOWN"}) if state not in TERMI
 ALLOWED["INTERRUPTED_UNKNOWN"] = set()
 INTERRUPTED_UNKNOWN_OUTCOME = "interrupted_unknown"
 OPENCODE_EVENT_TYPES = {"session_start", "session_end", "step_start", "step_finish", "text", "reasoning", "tool_use", "tool_result", "tool", "error", "permission"}
+#: A proposer model id is a ``<provider>/<model>`` pair. The OpenCode CLI
+#: accepts ``--model provider/model``; any other shape is refused rather than
+#: repaired, because a receipt must name the exact route that was requested.
+PROPOSER_MODEL_PATTERN = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
+#: The reason recorded when the CLI reported no usage at all. An absent
+#: measurement is unknown, never zero.
+USAGE_NOT_REPORTED = "not_reported_by_the_cli"
+
+
+def validate_proposer_model(model: str | None) -> str | None:
+    """Validate a proposer model id, or return None for an unpinned route.
+
+    The id must be a ``<provider>/<model>`` pair whose halves are non-empty
+    and match ``[A-Za-z0-9._-]+``. A malformed id raises :class:`ValueError`
+    and is never normalized, trimmed or otherwise "fixed up": the id is the
+    route, and a receipt must attribute a proposal to the exact route that
+    produced it.
+    """
+    if model is None:
+        return None
+    if not isinstance(model, str) or not PROPOSER_MODEL_PATTERN.match(model):
+        raise ValueError(
+            "proposer model must be a <provider>/<model> id whose non-empty halves match "
+            f"[A-Za-z0-9._-]+; got {model!r}")
+    return model
 
 
 class CheckpointInterrupted(ValueError):
@@ -243,6 +290,62 @@ class Checkpoint:
         os.replace(temporary, self.path)
 
 
+def _step_usage(part: dict[str, Any]) -> dict[str, Any]:
+    """Return the usage figures one ``step_finish`` event reported.
+
+    The OpenCode CLI reports each step's own usage on that step's
+    ``step_finish`` event. A figure the CLI did not report stays ``None``:
+    it is unknown, never zero.
+    """
+    tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+    cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+
+    def figure(value: Any) -> int | float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return value
+
+    cost = part.get("cost")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        cost = None
+    return {"total": figure(tokens.get("total")), "input": figure(tokens.get("input")),
+            "output": figure(tokens.get("output")), "reasoning": figure(tokens.get("reasoning")),
+            "cache_read": figure(cache.get("read")), "cache_write": figure(cache.get("write")),
+            "cost_usd": cost}
+
+
+def _aggregate_usage(steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Sum the per-step usage the CLI reported into one invocation total.
+
+    The CLI reports each step's own usage, so the invocation total is the
+    sum over the steps. A figure that no step reported stays ``None``: it is
+    unknown, not zero.
+
+    The cost is the CLI's own reported figure. It is not a
+    provider-authoritative cost, and it is never derived from the token
+    counts.
+    """
+    if not steps:
+        return None
+    keys = ("total", "input", "output", "reasoning", "cache_read", "cache_write")
+    totals = dict.fromkeys(keys, 0)
+    observed = dict.fromkeys(keys, False)
+    cost_usd = 0.0
+    cost_observed = False
+    for step in steps:
+        for key in keys:
+            value = step.get(key)
+            if value is not None:
+                totals[key] += value
+                observed[key] = True
+        if step.get("cost_usd") is not None:
+            cost_usd += float(step["cost_usd"])
+            cost_observed = True
+    return {"tokens": {key: (totals[key] if observed[key] else None) for key in keys},
+            "cost_usd": cost_usd if cost_observed else None,
+            "steps": len(steps)}
+
+
 def parse_opencode_events(stdout: str) -> dict[str, Any]:
     if len(stdout.encode()) > 4 * 1024 * 1024:
         raise ValueError("OpenCode event output exceeds 4 MiB")
@@ -261,11 +364,19 @@ def parse_opencode_events(stdout: str) -> dict[str, Any]:
         events.append(event)
     if not events:
         raise ValueError("OpenCode returned no structured events")
+    usage = _aggregate_usage([_step_usage(event.get("part", {})) for event in events
+                               if event["type"] == "step_finish"])
     return {"event_count": len(events), "types": [event["type"] for event in events],
-            "text": "".join(str(event.get("part", {}).get("text", "")) for event in events if event["type"] == "text")}
+            "text": "".join(str(event.get("part", {}).get("text", "")) for event in events if event["type"] == "text"),
+            "usage": usage,
+            "usage_reason": None if usage is not None else USAGE_NOT_REPORTED}
 
 
-def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable: str | None = None) -> dict[str, Any]:
+def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable: str | None = None,
+                 model: str | None = None) -> dict[str, Any]:
+    # The route is validated before anything else, so a malformed id is
+    # refused whether or not a CLI is installed.
+    model = validate_proposer_model(model)
     binary = executable or shutil.which("opencode")
     if not binary:
         raise FileNotFoundError("opencode executable is unavailable; manual proposer remains available")
@@ -279,7 +390,14 @@ def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable
             f"observed {observed or 'unknown'} from {binary}")
     env = os.environ.copy()
     env.pop("CODEGG_DAEMON_HOME", None)
-    process = subprocess.Popen([binary, "run", "--auto", "--format", "json", "--dir", str(worktree), prompt],
+    # An unpinned run keeps the CLI's own default route and emits no
+    # ``--model`` flag at all; a pinned run names the approved route
+    # explicitly, between ``--dir`` and the prompt.
+    argv = [binary, "run", "--auto", "--format", "json", "--dir", str(worktree)]
+    if model is not None:
+        argv.extend(["--model", model])
+    argv.append(prompt)
+    process = subprocess.Popen(argv,
                                cwd=worktree, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=(os.name == "posix"))
     outputs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
@@ -331,7 +449,12 @@ def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable
         raise RuntimeError(f"OpenCode proposal failed with exit {process.returncode}; stderr bytes={len(outputs['stderr'])} (content redacted)")
     parsed = parse_opencode_events(outputs["stdout"].decode(errors="replace"))
     return {"version": version.stdout.strip(), "event_count": parsed["event_count"], "event_types": parsed["types"],
-            "text_sha256": __import__("hashlib").sha256(parsed["text"].encode()).hexdigest(), "returncode": process.returncode}
+            "text_sha256": __import__("hashlib").sha256(parsed["text"].encode()).hexdigest(), "returncode": process.returncode,
+            # The route the proposal is attributed to. ``None`` means the CLI's
+            # own unpinned default was used.
+            "model": model,
+            "proposer_usage": parsed["usage"],
+            "proposer_usage_reason": parsed["usage_reason"]}
 
 
 def changed_paths(worktree: Path) -> list[str]:
@@ -499,9 +622,75 @@ def manual_dry_run(path: Path, max_iterations: int = 1, max_candidate_retries: i
             "source_mutated": False, "checkpoint": str(path), "provider_calls": 0}
 
 
+def admit_budget_policy(policy: "budget.BudgetPolicy") -> "budget.BudgetAdmission":
+    """Run the provider-free admission preflight and refuse when it fails.
+
+    The preflight is a pure function of the declared policy: it opens no
+    socket, spawns no subprocess and contacts no provider, so it runs before
+    the first provider request. A policy that cannot be enforced is a
+    refusal, never a downgrade, and the refusal names the refused caps.
+    """
+    admission = budget.admit_budget(policy)
+    if admission.status != budget.STATUS_ADMITTED:
+        raise RuntimeError(
+            "budget admission refused before the proposer ran: "
+            + json.dumps(admission.as_dict(), sort_keys=True))
+    return admission
+
+
+def observe_proposer_usage(guard: "budget.SpendGuard", receipt: dict[str, Any]) -> None:
+    """Record the usage a proposer receipt reported into the spend guard.
+
+    An absent measurement is simply not passed to the guard: a figure the CLI
+    never reported is unknown, and the guard never sees it as zero.
+    """
+    usage = receipt.get("proposer_usage") or {}
+    tokens = usage.get("tokens") or {}
+    observed: dict[str, Any] = {"provider_requests": 1}
+
+    def figure(value: Any) -> int | float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return value
+
+    for key in ("input", "output"):
+        value = figure(tokens.get(key))
+        if value is not None:
+            observed[f"{key}_tokens"] = int(value)
+    total = figure(tokens.get("total"))
+    if total is not None:
+        observed["total_tokens"] = int(total)
+    cost = figure(usage.get("cost_usd"))
+    if cost is not None:
+        observed["cost_usd"] = float(cost)
+    guard.observe(**observed)
+
+
+def guarded_propose(guard: "budget.SpendGuard | None", *, worktree: Path, prompt: str, timeout: float,
+                    model: str | None, executable: str | None = None) -> dict[str, Any]:
+    """Run one OpenCode proposer invocation under an optional spend guard.
+
+    The guard reserves one provider request *before* the invocation, so a
+    run that would cross ``max_provider_requests`` never starts the call.
+    The reservation is then replaced by the usage the CLI reported.
+
+    Only the OpenCode proposer call is charged to this guard. The ACP trial
+    suite that :func:`qualify_candidate` runs uses a local deterministic
+    fixture provider rather than a real provider, so its trials are never
+    counted as provider requests here.
+    """
+    if guard is not None:
+        guard.admit(projected_provider_requests=1)
+    receipt = run_opencode(worktree, prompt, timeout, executable, model)
+    if guard is not None:
+        observe_proposer_usage(guard, receipt)
+    return receipt
+
+
 def opencode_propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, ...], timeout: float = 300.0,
-                     executable: str | None = None) -> dict[str, Any]:
+                     executable: str | None = None, model: str | None = None) -> dict[str, Any]:
     worktree = worktree.expanduser().resolve(strict=True)
+    model = validate_proposer_model(model)
     top = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
     if top.returncode or Path(top.stdout.strip()).resolve() != worktree:
         raise ValueError("OpenCode must run at the root of a dedicated candidate worktree")
@@ -513,7 +702,7 @@ def opencode_propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, .
     baseline = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
     if baseline.returncode:
         raise ValueError("candidate baseline revision unavailable")
-    proposer = run_opencode(worktree, prompt, timeout, executable)
+    proposer = run_opencode(worktree, prompt, timeout, executable, model)
     paths = changed_paths(worktree)
     check_scope(paths, allowed_prefixes)
     if not paths:
@@ -522,6 +711,8 @@ def opencode_propose(worktree: Path, prompt: str, allowed_prefixes: tuple[str, .
         raise ValueError("candidate patch is missing required CHANGELOG.harness.md")
     return {"state": "PATCHED", "baseline_revision": baseline.stdout.strip(), "changed_paths": paths,
             "patch_sha256": candidate_patch_sha256(worktree, paths), "proposer": proposer,
+            # The route the proposal is attributed to.
+            "proposer_model": model,
             "candidate_worktree": str(worktree), "accepted": False,
             "next_gate": "run bounded candidate qualification; proposal alone cannot be accepted"}
 
@@ -788,12 +979,29 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
                       changelog: str = "CHANGELOG.harness.md",
                       checkpoint: Checkpoint | None = None, resume: bool = False,
                       proposer: str = "manual", correction_prompt: str = "",
-                      max_candidate_retries: int = 0) -> dict[str, Any]:
-    """Build and score a candidate without changing the frozen baseline or default worktree."""
+                      max_candidate_retries: int = 0, model: str | None = None,
+                      budget_policy: "budget.BudgetPolicy | None" = None,
+                      spend_guard: "budget.SpendGuard | None" = None) -> dict[str, Any]:
+    """Build and score a candidate without changing the frozen baseline or default worktree.
+
+    ``model`` pins the OpenCode proposer to one approved ``provider/model``
+    route. ``budget_policy`` is the declared budget: it is admitted *before*
+    any provider work and then enforced by a spend guard, so a live proposal
+    cannot exceed the caps the admission gate admitted. ``spend_guard`` lets
+    a caller that already owns a guard (the optimizer) share one cap across
+    the whole run rather than resetting it per phase.
+    """
     import hashlib
     import sys
     from . import ledger
     from . import scoring
+
+    model = validate_proposer_model(model)
+    if budget_policy is not None:
+        admit_budget_policy(budget_policy)
+    guard = spend_guard
+    if guard is None and budget_policy is not None:
+        guard = budget.SpendGuard(budget_policy)
 
     started = time.monotonic()
     worktree = worktree.expanduser().resolve(strict=True)
@@ -887,9 +1095,9 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     patch_digest, retry_count = _build_with_compile_correction(
         build=lambda: _run_gate(build_argv, worktree, env,
                                 min(timeout, max_wallclock - (time.monotonic() - started))),
-        propose=lambda correction: run_opencode(
-            worktree, correction,
-            min(timeout, max_wallclock - (time.monotonic() - started))),
+        propose=lambda correction: guarded_propose(
+            guard, worktree=worktree, prompt=correction,
+            timeout=min(timeout, max_wallclock - (time.monotonic() - started)), model=model),
         gates=gates, started=started, max_wallclock=max_wallclock, timeout=timeout,
         proposer=proposer, max_candidate_retries=max_candidate_retries,
         checkpoint=checkpoint, correction_prompt=correction_prompt,
@@ -978,21 +1186,42 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
                                        "unmatched_trials": unmatched_trials,
                                        "interrupted_trials": interrupted_trials,
                                        "reason": primary_reason, "reasons": reasons})
-    return {"status": status, "candidate": candidate, "branch": branch.stdout.strip(),
-            "binary_sha256": binary_digest, "suite_sha256": suite_digest, "patch_sha256": patch_digest,
-            "baseline_candidate": baseline_candidate, "baseline_manifests_unchanged": True,
-            "gates": gates, "evaluation_exit": evaluated.returncode,
-            "paired_comparison": comparison, "correctness_improvements": correctness_improvements,
-            "unmatched_trials": unmatched_trials,
-            "compile_correction_retries": retry_count,
-            "score": outcome.score, "objective": outcome.objective,
-            "reason": primary_reason, "reasons": reasons,
-            "protected_violations": list(outcome.protected_violations),
-            "interrupted_trials": interrupted_trials,
-            "score_contract": scored["contract"].as_dict(), "score_outcome": outcome.as_dict(),
-            "evidence_pairs": scored["evidence_pairs"],
-            "wall_time_seconds": time.monotonic() - started,
-            "accepted": accepted, "next_gate": None if accepted else "propose a candidate with a verified correctness improvement"}
+    receipt = {"status": status, "candidate": candidate, "branch": branch.stdout.strip(),
+               "binary_sha256": binary_digest, "suite_sha256": suite_digest, "patch_sha256": patch_digest,
+               "baseline_candidate": baseline_candidate, "baseline_manifests_unchanged": True,
+               "gates": gates, "evaluation_exit": evaluated.returncode,
+               "paired_comparison": comparison, "correctness_improvements": correctness_improvements,
+               "unmatched_trials": unmatched_trials,
+               "compile_correction_retries": retry_count,
+               "score": outcome.score, "objective": outcome.objective,
+               "reason": primary_reason, "reasons": reasons,
+               "protected_violations": list(outcome.protected_violations),
+               "interrupted_trials": interrupted_trials,
+               "score_contract": scored["contract"].as_dict(), "score_outcome": outcome.as_dict(),
+               "evidence_pairs": scored["evidence_pairs"],
+               "wall_time_seconds": time.monotonic() - started,
+               "accepted": accepted, "next_gate": None if accepted else "propose a candidate with a verified correctness improvement"}
+    if guard is not None:
+        # The observed spend is auditable: it names the requests the proposer
+        # made and the usage the CLI reported for them.
+        receipt["budget_guard"] = guard.as_dict()
+    return receipt
+
+
+def refuse_changed_proposer_model(stored_inputs: dict[str, Any], inputs: dict[str, Any]) -> None:
+    """Fail closed when a resume would switch the proposer model.
+
+    The proposer model is part of the immutable input set a checkpoint binds.
+    A resumed run must not silently switch routes: the recorded receipts would
+    then attribute the work to a route that never produced it. The refusal
+    names both the recorded and the requested model.
+    """
+    stored = stored_inputs.get("proposer_model")
+    requested = inputs.get("proposer_model")
+    if stored != requested:
+        raise ValueError(
+            "optimization proposer model changed; refusing resume "
+            f"(the checkpoint recorded {stored!r}, the run requested {requested!r})")
 
 
 class OptimizationCheckpoint:
@@ -1032,6 +1261,7 @@ class OptimizationCheckpoint:
             raise ValueError("optimization pointer does not match its append-only event tail")
         stored_inputs = decoded[0].get("data", {}).get("inputs")
         digest = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        refuse_changed_proposer_model(stored_inputs or {}, inputs)
         if stored_inputs != inputs or decoded[0].get("inputs_sha256") != digest:
             raise ValueError("optimization inputs changed; refusing resume")
         instance = cls.__new__(cls)
@@ -1102,8 +1332,17 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
                   allowed_prefixes: tuple[str, ...], prompt: str, max_iterations: int = 3,
                   max_candidate_retries: int = 0, max_wallclock: float = 3600.0,
                   timeout: float = 900.0, resume: bool = False,
-                  proposer_executable: str | None = None) -> dict[str, Any]:
-    """Schedule assess/propose/build/retest iterations from one frozen baseline."""
+                  proposer_executable: str | None = None,
+                  model: str | None = None,
+                  budget_policy: "budget.BudgetPolicy | None" = None) -> dict[str, Any]:
+    """Schedule assess/propose/build/retest iterations from one frozen baseline.
+
+    ``model`` pins the OpenCode proposer to one approved ``provider/model``
+    route and is bound into the checkpoint's immutable inputs, so a resumed
+    run cannot silently switch routes. ``budget_policy`` is admitted before
+    any provider work and enforced by one spend guard that is shared with the
+    candidate qualification, so the declared caps bound the whole run.
+    """
     from . import ledger
 
     if not prompt.strip() or len(prompt.encode()) > 8192:
@@ -1112,6 +1351,13 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
         raise ValueError("optimization needs an allowlist, 1-20 iterations, and non-negative retries")
     if max_wallclock <= 0 or timeout <= 0:
         raise ValueError("optimization time budgets must be positive")
+    model = validate_proposer_model(model)
+    guard = None
+    if budget_policy is not None:
+        # The admission preflight runs before any provider request, before a
+        # worktree is created and before any subprocess is spawned.
+        admit_budget_policy(budget_policy)
+        guard = budget.SpendGuard(budget_policy)
     repository = repository.expanduser().resolve(strict=True)
     suite = suite.expanduser().resolve(strict=True)
     ledger_root = ledger_root.expanduser().resolve(strict=True)
@@ -1131,12 +1377,16 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
     inputs = {"base_revision": base_revision, "suite_sha256": suite_digest,
               "baseline_candidate": baseline_candidate, "max_iterations": max_iterations,
               "max_candidate_retries": max_candidate_retries,
-              "allowed_prefixes": list(allowed_prefixes), "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
+              "allowed_prefixes": list(allowed_prefixes), "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+              # The proposer route is part of the immutable input set: a resume
+              # must not silently switch models.
+              "proposer_model": model}
     if resume:
         try:
             stored_inputs = json.loads(checkpoint_path.read_text(encoding="utf-8"))["data"]["inputs"]
         except (OSError, KeyError, json.JSONDecodeError) as error:
             raise ValueError("optimization checkpoint does not contain resumable immutable inputs") from error
+        refuse_changed_proposer_model(stored_inputs, inputs)
         if any(stored_inputs.get(key) != value for key, value in inputs.items()):
             raise ValueError("optimization settings changed; refusing resume")
         if not isinstance(stored_inputs.get("deadline_unix"), (int, float)):
@@ -1150,16 +1400,25 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
     active = next((event["data"] for event in reversed(state.events)
                    if event["kind"] == "iteration_started" and event["data"]["iteration"] not in done), None)
     results = [done[index] for index in sorted(done)]
+
+    def receipt(status: str) -> dict[str, Any]:
+        result = {"status": status, "iterations": results, "checkpoint": str(checkpoint_path)}
+        if guard is not None:
+            # The observed spend is auditable: it names the provider requests
+            # the proposer made and the usage the CLI reported for them.
+            result["budget_guard"] = guard.as_dict()
+        return result
+
     accepted = next((item for item in results if item.get("result", {}).get("accepted")), None)
     if accepted:
-        return {"status": "ACCEPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
+        return receipt("ACCEPTED")
     first_iteration = active["iteration"] if active else (max(done, default=0) + 1)
     candidate_root.mkdir(parents=True, exist_ok=True)
     for iteration in range(first_iteration, max_iterations + 1):
         remaining = float(inputs["deadline_unix"]) - time.time()
         if remaining <= 0:
             state.record("run_interrupted", {"reason": "wallclock_budget_exhausted", "iterations_finished": len(done)})
-            return {"status": "INTERRUPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
+            return receipt("INTERRUPTED")
         candidate = active["candidate"] if active and iteration == first_iteration else f"{state.run_id}-i{iteration:02d}"
         worktree = Path(active["worktree"]) if active and iteration == first_iteration else candidate_root / candidate
         child_path = Path(active["candidate_checkpoint"]) if active and iteration == first_iteration else checkpoint_path.with_name(f"{checkpoint_path.stem}-{candidate}.json")
@@ -1182,8 +1441,15 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
                         {"status": prior.get("status"), "accepted": prior.get("accepted"),
                          "correctness_improvements": prior.get("correctness_improvements"),
                          "paired_comparison": prior.get("paired_comparison")}, sort_keys=True)[:4096]
+                if guard is not None:
+                    # The request is reserved before the proposer is started, so
+                    # a run that would cross the declared request cap never
+                    # begins the call.
+                    guard.admit(projected_provider_requests=1)
                 proposal = opencode_propose(worktree, iteration_prompt, allowed_prefixes,
-                                            min(timeout, remaining), proposer_executable)
+                                            min(timeout, remaining), proposer_executable, model)
+                if guard is not None:
+                    observe_proposer_usage(guard, proposal["proposer"])
                 child.transition("PATCHED", {"changed_paths": proposal["changed_paths"],
                                               "patch_sha256": proposal["patch_sha256"],
                                               "proposer_receipt": proposal["proposer"]})
@@ -1197,7 +1463,8 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
                                        timeout=min(timeout, remaining), max_wallclock=remaining,
                                        checkpoint=child, resume=child.state != "PATCHED",
                                        proposer="opencode", correction_prompt=prompt,
-                                       max_candidate_retries=max_candidate_retries)
+                                       max_candidate_retries=max_candidate_retries,
+                                       model=model, budget_policy=budget_policy, spend_guard=guard)
             row = {"iteration": iteration, "candidate": candidate, "result": result}
             state.record("iteration_finished", row)
             results.append(row)
@@ -1206,7 +1473,7 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
             if result.get("accepted"):
                 state.record("run_finished", {"status": "ACCEPTED", "iteration": iteration,
                                                "candidate": candidate, "patch_sha256": result["patch_sha256"]})
-                return {"status": "ACCEPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
+                return receipt("ACCEPTED")
         except (ValueError, RuntimeError, TimeoutError, OSError) as error:
             interruption = {"iteration": iteration, "candidate": candidate,
                             "failure_class": type(error).__name__}
@@ -1220,4 +1487,4 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
             state.record("iteration_interrupted", interruption)
             raise
     state.record("run_finished", {"status": "NO_IMPROVEMENT", "iterations": len(results)})
-    return {"status": "NO_IMPROVEMENT", "iterations": results, "checkpoint": str(checkpoint_path)}
+    return receipt("NO_IMPROVEMENT")

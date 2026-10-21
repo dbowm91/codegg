@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import signal
@@ -6,21 +7,36 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
+from dev.harness_lab import budget
+from dev.harness_lab import improve
 from dev.harness_lab import scoring
 from dev.harness_lab.improve import (_build_with_compile_correction,
                                      authorize_binary_fingerprint, authorize_build_transition, Budget,
                                      candidate_patch_sha256, check_scope, changed_paths,
                                      Checkpoint, CheckpointInterrupted, create_candidate_worktree,
                                      decision_reasons, evaluation_is_complete, expected_trial_keys,
-                                     index_trials, manual_dry_run, OptimizationCheckpoint,
+                                     guarded_propose, index_trials, manual_dry_run, OptimizationCheckpoint,
                                      parse_opencode_events, protected_control_keys, run_opencode,
-                                     score_candidate_trials, SUPPORTED_OPENCODE_VERSION)
+                                     score_candidate_trials, SUPPORTED_OPENCODE_VERSION,
+                                     USAGE_NOT_REPORTED, validate_proposer_model)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GROUP_ID = "native-tool-smoke"
 SUITE_DIGEST = "suite-digest"
+
+
+def _warm_executable(path: Path) -> None:
+    """Pay the one-time first-exec cost of a freshly written executable.
+
+    A hardened host scans a newly written executable the first time it runs,
+    and that scan can outlast the five-second version preflight in
+    ``run_opencode``. Paying the cost once, before the call under test,
+    keeps the preflight's timeout about the preflight.
+    """
+    subprocess.run([str(path), "--version"], capture_output=True, timeout=120, check=False)
 
 # A child that reaches a failpoint between the append-only event write and the
 # current-state pointer replacement, then parks so the parent can signal it.
@@ -194,12 +210,14 @@ class ImproveTests(unittest.TestCase):
             fake = root / "opencode"
             fake.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.3; else echo '{\"type\":\"text\",\"part\":{\"text\":\"fixture\"}}'; fi\n", encoding="utf-8")
             fake.chmod(0o755)
+            _warm_executable(fake)
             result = run_opencode(root, "inspect", executable=str(fake))
             self.assertEqual(result["version"], "1.19.3")
             self.assertEqual(result["event_count"], 1)
             slow = root / "opencode-slow"
             slow.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.3; else sleep 5; fi\n", encoding="utf-8")
             slow.chmod(0o755)
+            _warm_executable(slow)
             with self.assertRaises(TimeoutError):
                 run_opencode(root, "inspect", timeout=0.1, executable=str(slow))
 
@@ -210,6 +228,7 @@ class ImproveTests(unittest.TestCase):
             stale = root / "opencode-stale"
             stale.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.18.9; else echo '{}'; fi\n", encoding="utf-8")
             stale.chmod(0o755)
+            _warm_executable(stale)
             with self.assertRaises(RuntimeError) as caught:
                 run_opencode(root, "inspect", executable=str(stale))
             message = str(caught.exception)
@@ -615,6 +634,311 @@ class ResumeGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: A fake OpenCode CLI. It answers the version preflight with the pinned
+#: version and records the argv of every invocation it receives, one argument
+#: per line, so a test can assert the exact argv the proposer was given and
+#: whether the CLI ran at all.
+_FAKE_OPENCODE_TEMPLATE = r"""#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg" >> "__LOG__"; done
+printf -- '---\n' >> "__LOG__"
+if [ "$1" = "--version" ]; then echo 1.19.3; exit 0; fi
+printf '%s\n' '{"type":"text","part":{"text":"proposal"}}'
+__USAGE__
+"""
+
+#: The usage a real ``step_finish`` event carries: the CLI's own token counts
+#: and its own reported cost.
+_FAKE_OPENCODE_USAGE = r"""printf '%s\n' '{"type":"step_finish","part":{"reason":"stop","tokens":{"total":7792,"input":7769,"output":14,"reasoning":9,"cache":{"write":0,"read":0}},"cost":0.0007815}}'
+"""
+
+
+class ProposerRouteAndBudgetTests(unittest.TestCase):
+    """The proposer route is pinnable and the proposer spend is bounded."""
+
+    ROUTE = "opencode-go/beam-free"
+    OTHER_ROUTE = "opencode-go/minimax-m3.1-flash-free"
+
+    def _fake_opencode(self, root: Path, *, usage: bool = True) -> tuple[str, Path]:
+        """Write a fake OpenCode CLI that records every invocation it receives."""
+        log = root / "opencode.log"
+        fake = root / "opencode"
+        body = _FAKE_OPENCODE_TEMPLATE.replace("__USAGE__", _FAKE_OPENCODE_USAGE if usage else "")
+        fake.write_text(body.replace("__LOG__", str(log)), encoding="utf-8")
+        fake.chmod(0o755)
+        _warm_executable(fake)
+        log.write_text("", encoding="utf-8")
+        return str(fake), log
+
+    @staticmethod
+    def _invocations(log: Path) -> list[list[str]]:
+        """Return the argv of every recorded invocation, in order."""
+        if not log.exists():
+            return []
+        invocations: list[list[str]] = []
+        current: list[str] = []
+        for line in log.read_text(encoding="utf-8").splitlines():
+            if line == "---":
+                invocations.append(current)
+                current = []
+            else:
+                current.append(line)
+        return invocations
+
+    @classmethod
+    def _proposals(cls, log: Path) -> list[list[str]]:
+        """Return the argv of every recorded proposer run.
+
+        The fake also records the version preflight; that is not a proposal.
+        """
+        return [argv for argv in cls._invocations(log) if argv[:1] == ["run"]]
+
+    def test_an_unpinned_proposer_emits_no_model_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            receipt = run_opencode(root, "inspect", executable=executable)
+            proposals = self._proposals(log)
+            self.assertEqual(len(proposals), 1)
+            # An unpinned run keeps the pre-pinning argv byte for byte.
+            self.assertEqual(proposals[0], ["run", "--auto", "--format", "json",
+                                            "--dir", str(root), "inspect"])
+            self.assertNotIn("--model", proposals[0])
+            # The receipt records that no route was pinned.
+            self.assertIsNone(receipt["model"])
+
+    def test_a_pinned_proposer_names_the_route_between_dir_and_the_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            receipt = run_opencode(root, "inspect", executable=executable, model=self.ROUTE)
+            proposals = self._proposals(log)
+            self.assertEqual(len(proposals), 1)
+            self.assertEqual(proposals[0], ["run", "--auto", "--format", "json", "--dir", str(root),
+                                            "--model", self.ROUTE, "inspect"])
+            # The receipt attributes the proposal to the route.
+            self.assertEqual(receipt["model"], self.ROUTE)
+
+    def test_a_malformed_model_id_is_refused_before_the_cli_runs(self) -> None:
+        malformed = ("beam-free", "opencode-go/beam/free", "/beam-free", "opencode-go/",
+                     "opencode go/beam-free", "opencode-go/beam free", "opencode-go/beam-free!",
+                     "", "opencode-go/beam-free\n")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            for candidate in malformed:
+                with self.subTest(model=candidate):
+                    with self.assertRaises(ValueError):
+                        validate_proposer_model(candidate)
+                    with self.assertRaises(ValueError):
+                        run_opencode(root, "inspect", executable=executable, model=candidate)
+            # A malformed id is refused, never normalized into a usable one.
+            self.assertIsNone(validate_proposer_model(None))
+            self.assertEqual(validate_proposer_model(self.ROUTE), self.ROUTE)
+            # The CLI never ran for any of the refused ids.
+            self.assertEqual(self._invocations(log), [])
+
+    def test_a_step_finish_event_yields_the_reported_usage(self) -> None:
+        parsed = parse_opencode_events(
+            '{"type":"step_finish","part":{"reason":"stop","tokens":{"total":7792,"input":7769,'
+            '"output":14,"reasoning":9,"cache":{"write":0,"read":0}},"cost":0.0007815}}\n')
+        self.assertIsNone(parsed["usage_reason"])
+        self.assertEqual(parsed["usage"]["tokens"],
+                         {"total": 7792, "input": 7769, "output": 14, "reasoning": 9,
+                          "cache_read": 0, "cache_write": 0})
+        # The cost is the CLI's own reported figure.
+        self.assertEqual(parsed["usage"]["cost_usd"], 0.0007815)
+        self.assertEqual(parsed["usage"]["steps"], 1)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, _log = self._fake_opencode(root)
+            receipt = run_opencode(root, "inspect", executable=executable)
+            self.assertIsNone(receipt["proposer_usage_reason"])
+            self.assertEqual(receipt["proposer_usage"]["tokens"]["total"], 7792)
+            self.assertEqual(receipt["proposer_usage"]["tokens"]["cache_read"], 0)
+            self.assertEqual(receipt["proposer_usage"]["cost_usd"], 0.0007815)
+
+    def test_a_stream_without_step_finish_reports_unknown_usage(self) -> None:
+        parsed = parse_opencode_events('{"type":"text","part":{"text":"proposal"}}\n')
+        # An absent measurement is unknown, never zero.
+        self.assertIsNone(parsed["usage"])
+        self.assertEqual(parsed["usage_reason"], USAGE_NOT_REPORTED)
+        self.assertEqual(parsed["usage_reason"], "not_reported_by_the_cli")
+        # The text is still parsed.
+        self.assertEqual(parsed["text"], "proposal")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, _log = self._fake_opencode(root, usage=False)
+            receipt = run_opencode(root, "inspect", executable=executable)
+            self.assertIsNone(receipt["proposer_usage"])
+            self.assertEqual(receipt["proposer_usage_reason"], "not_reported_by_the_cli")
+
+    def _qualification_inputs(self, root: Path) -> dict:
+        """Build the paths a qualification reads before it reaches a provider."""
+        worktree = root / "worktree"
+        worktree.mkdir()
+        suite = root / "suite.jsonl"
+        suite.write_text('{"schema_version": 1, "task_id": "task-one", "group_id": "native-tool-smoke"}\n',
+                         encoding="utf-8")
+        ledger_root = root / "ledger"
+        ledger_root.mkdir()
+        return {"worktree": worktree, "suite": suite, "ledger_root": ledger_root,
+                "target_dir": root / "target"}
+
+    def test_a_refused_budget_policy_prevents_any_opencode_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            # The fake shadows the real CLI on PATH, so an invocation would be
+            # recorded even if the proposer looked the CLI up itself.
+            shadow = root / "bin"
+            shadow.mkdir()
+            (shadow / "opencode").write_text(Path(executable).read_text(encoding="utf-8"),
+                                             encoding="utf-8")
+            (shadow / "opencode").chmod(0o755)
+            paths = self._qualification_inputs(root)
+            policy = budget.BudgetPolicy()
+            self.assertNotEqual(budget.admit_budget(policy).status, budget.STATUS_ADMITTED)
+            with unittest.mock.patch.dict(os.environ,
+                                          {"PATH": f"{shadow}{os.pathsep}{os.environ['PATH']}"}):
+                with self.assertRaises(RuntimeError) as raised:
+                    improve.qualify_candidate(paths["worktree"], paths["suite"], paths["ledger_root"],
+                                              baseline_candidate="baseline", candidate="candidate",
+                                              target_dir=paths["target_dir"], allowed_prefixes=("src/",),
+                                              budget_policy=policy)
+            message = str(raised.exception)
+            # The refusal names the admission detail and the refused caps.
+            self.assertIn("budget admission refused", message)
+            self.assertIn("token_limit", message)
+            self.assertIn(budget.STATUS_UNVERIFIABLE, message)
+            # The proposer never ran.
+            self.assertEqual(self._invocations(log), [])
+
+    def test_spend_guard_exhaustion_refuses_a_second_proposal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            policy = budget.BudgetPolicy(max_provider_requests=1)
+            self.assertEqual(budget.admit_budget(policy).status, budget.STATUS_ADMITTED)
+            guard = budget.SpendGuard(policy)
+            receipt = guarded_propose(guard, worktree=root, prompt="inspect", timeout=30.0,
+                                      model=None, executable=executable)
+            self.assertEqual(receipt["proposer_usage"]["tokens"]["total"], 7792)
+            self.assertEqual(len(self._proposals(log)), 1)
+            # The second proposal is refused before the CLI is invoked.
+            with self.assertRaises(budget.BudgetExhausted):
+                guarded_propose(guard, worktree=root, prompt="inspect", timeout=30.0,
+                                model=None, executable=executable)
+            self.assertEqual(len(self._proposals(log)), 1)
+            # The observed spend is auditable.
+            self.assertEqual(guard.as_dict()["provider_requests"], 1)
+            self.assertEqual(guard.as_dict()["total_tokens"], 7792)
+            self.assertEqual(guard.as_dict()["cost_usd"], 0.0007815)
+
+    def test_no_budget_policy_preserves_todays_behaviour(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            receipt = guarded_propose(None, worktree=root, prompt="inspect", timeout=30.0,
+                                      model=None, executable=executable)
+            # No guard and no admission: the receipt carries no budget fields.
+            self.assertNotIn("budget_guard", receipt)
+            self.assertEqual(self._proposals(log)[0],
+                             ["run", "--auto", "--format", "json", "--dir", str(root), "inspect"])
+            # A qualification without a policy is refused on its own terms,
+            # never by a budget admission it never asked for.
+            paths = self._qualification_inputs(root)
+            with self.assertRaises(ValueError) as raised:
+                improve.qualify_candidate(paths["worktree"], paths["suite"], paths["ledger_root"],
+                                          baseline_candidate="baseline", candidate="candidate",
+                                          target_dir=paths["target_dir"], allowed_prefixes=("src/",))
+            self.assertNotIn("budget admission refused", str(raised.exception))
+
+    def _optimizer_fixture(self, root: Path, model: str | None) -> tuple[Path, Path, Path, Path, str]:
+        """Build the ledger, suite and checkpoint an optimizer resume reads.
+
+        The checkpoint's cumulative deadline is already expired, so a resumed
+        run stops at its wallclock gate before it reaches any provider work.
+        """
+        from dev.harness_lab import ledger
+        repository = root / "repo"
+        repository.mkdir()
+        suite = root / "suite.jsonl"
+        suite.write_text('{"schema_version": 1, "task_id": "task-one", "group_id": "native-tool-smoke"}\n',
+                         encoding="utf-8")
+        ledger_root = root / "ledger"
+        workspace = root / "workspace"
+        workspace.mkdir()
+        (workspace / "tool-receipt.txt").write_text("ok", encoding="utf-8")
+        ledger.record(ledger_root, {"daemon": {"revision": "abc"}, "wall_time_ms": 120},
+                      task_id="task-one", group_id=GROUP_ID, candidate="baseline",
+                      workspace=workspace, expected_file="tool-receipt.txt", expected_text="ok",
+                      suite_sha256=SUITE_DIGEST, case_sha256="case-digest")
+        prompt = "assess the candidate"
+        inputs = {"base_revision": "abc",
+                  "suite_sha256": hashlib.sha256(suite.read_bytes()).hexdigest(),
+                  "baseline_candidate": "baseline", "max_iterations": 3,
+                  "max_candidate_retries": 0, "allowed_prefixes": ["src/"],
+                  "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                  "proposer_model": model,
+                  "deadline_unix": time.time() - 60.0}
+        checkpoint_path = root / "optimize.json"
+        improve.OptimizationCheckpoint(checkpoint_path, inputs)
+        return repository, suite, ledger_root, checkpoint_path, prompt
+
+    def test_a_checkpoint_binds_the_proposer_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "optimize.json"
+            inputs = {"base_revision": "abc", "suite_sha256": "suite", "proposer_model": self.ROUTE}
+            improve.OptimizationCheckpoint(path, inputs)
+            # A resume that requests a different route is refused, and the
+            # refusal names both the recorded and the requested model.
+            with self.assertRaises(ValueError) as raised:
+                improve.OptimizationCheckpoint.resume(path, {**inputs, "proposer_model": self.OTHER_ROUTE})
+            message = str(raised.exception)
+            self.assertIn("proposer model changed", message)
+            self.assertIn(self.ROUTE, message)
+            self.assertIn(self.OTHER_ROUTE, message)
+            # The same route is accepted.
+            resumed = improve.OptimizationCheckpoint.resume(path, inputs)
+            self.assertEqual(resumed.inputs["proposer_model"], self.ROUTE)
+            # An unpinned run binds no route, and a resume that names one is
+            # still a change of route.
+            unpinned = Path(temp) / "unpinned.json"
+            improve.OptimizationCheckpoint(unpinned, {**inputs, "proposer_model": None})
+            self.assertEqual(improve.OptimizationCheckpoint.resume(
+                unpinned, {**inputs, "proposer_model": None}).inputs["proposer_model"], None)
+            with self.assertRaises(ValueError):
+                improve.OptimizationCheckpoint.resume(unpinned, {**inputs, "proposer_model": self.ROUTE})
+
+    def test_the_optimizer_refuses_a_resume_that_switches_the_proposer_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable, log = self._fake_opencode(root)
+            repository, suite, ledger_root, checkpoint_path, prompt = self._optimizer_fixture(root, self.ROUTE)
+            arguments = {"baseline_candidate": "baseline", "candidate_root": root / "candidates",
+                         "target_root": root / "target", "checkpoint_path": checkpoint_path,
+                         "allowed_prefixes": ("src/",), "prompt": prompt, "resume": True,
+                         "proposer_executable": executable}
+            # A resume that requests a different route is refused before any
+            # provider work.
+            with self.assertRaises(ValueError) as raised:
+                improve.run_optimizer(repository, suite, ledger_root, model=self.OTHER_ROUTE, **arguments)
+            message = str(raised.exception)
+            self.assertIn("proposer model changed", message)
+            self.assertIn(self.ROUTE, message)
+            self.assertIn(self.OTHER_ROUTE, message)
+            self.assertEqual(self._invocations(log), [])
+            # A resume that keeps the same route is accepted. The checkpoint's
+            # deadline has already expired, so the run stops at its wallclock
+            # gate without reaching the proposer.
+            result = improve.run_optimizer(repository, suite, ledger_root, model=self.ROUTE, **arguments)
+            self.assertEqual(result["status"], "INTERRUPTED")
+            self.assertEqual(self._invocations(log), [])
+            # Without a budget policy there is no guard and no admission, so
+            # the receipt carries no budget fields.
+            self.assertNotIn("budget_guard", result)
 
 
 class CompileCorrectionMechanicsTests(unittest.TestCase):
