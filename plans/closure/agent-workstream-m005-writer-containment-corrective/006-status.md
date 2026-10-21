@@ -387,6 +387,13 @@ executor marker — and proves each is reported. The guard is wired into
   native probe matrix 1/1 and the restricted-child
   timeout/cancellation/descendant coverage 6/6 on a Windows runner — so the
   merge did not disturb the Windows compile fix either.
+* **Hosted CI (green, reconciled head)** — `CI / verify` run **`39651001778`**
+  on head `1a7f4084e`: **success**. The workspace step ran **15,909 tests:
+  15,909 passed, 7 skipped, 0 failed** — the *whole* suite, not a prefix, so
+  no failure is hidden behind another. This is the run that had both the
+  contention failure and the stale WorkOrder assertion fixed; the runs before
+  it each stopped at their first failure and left roughly 3,800 tests unrun,
+  which is how the second of those two defects stayed invisible (§8.4).
 * **The complete local sweep** — `cargo nextest run --workspace --locked --profile
   ci --no-fail-fast`, run under `umask 022`: **15,909 tests run, 15,900
   passed, 6 failed, 3 timed out, 7 skipped**. The nine that did not pass are
