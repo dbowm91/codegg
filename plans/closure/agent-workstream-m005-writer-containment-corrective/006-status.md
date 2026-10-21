@@ -387,6 +387,17 @@ executor marker — and proves each is reported. The guard is wired into
   native probe matrix 1/1 and the restricted-child
   timeout/cancellation/descendant coverage 6/6 on a Windows runner — so the
   merge did not disturb the Windows compile fix either.
+* **The local full sweep needs `umask 022` on this host.** The first complete
+  local sweep (15,909 tests, `--no-fail-fast`) reported **36 failures and 6
+  timeouts**, and every one of them was an artefact of the desktop session's
+  **umask `0002`**, not a defect. The scratch subsystem refuses a
+  group- or other-writable parent (`ensure_private_parent` in `src/scratch.rs`),
+  and `create_dir_all` under umask `0002` creates `0775` — so the sweep's
+  own test roots are rejected as `WrongOwner`. Under `umask 022` the same 20
+  `core::scratch_sweep` tests pass **20/20**, and `main`'s own green CI run
+  (`39627518536`) passes exactly the tests that failed here. A local sweep on
+  this host is only evidence when it runs under `umask 022`; without it the
+  result is noise that reads like a regression.
 * **Local, on the merged tree** — `scripts/verify.sh quick` — pass (exit 0);
   `cargo check --workspace --all-targets --locked` — pass (exit 0);
   `cargo fmt --all -- --check` — pass; `codegg validate --config
