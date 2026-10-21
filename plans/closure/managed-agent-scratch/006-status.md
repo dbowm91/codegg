@@ -305,19 +305,46 @@ stays owned by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
 The pull request is [#145](https://github.com/dbowm91/codegg/pull/145).
 
-The final head is **`844a5967`**, and every job on it is green except the
-one that is already red on `main`:
+The branch's code was validated on the head **`d5b519f4`**, and every job on
+it is green except the one that is already red on `main`:
 
 | Run | Head | Job | Result |
 |---|---|---|---|
-| **`39533112385`** | `844a5967` | `CI` | **success** — all 27 guards, workspace Clippy, and the workspace tests: **15643 run, 15643 passed, 7 skipped** (433 s) |
-| **`39533112371`** | `844a5967` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
-| `39533112394` | `844a5967` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
+| **`39543436859`** | `d5b519f4` | `CI` | **success** — all 40 guard steps, workspace Clippy, and the workspace tests: **15665 run, 15665 passed, 7 skipped** (525 s) |
+| **`39543436858`** | `d5b519f4` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
+| `39543436868` | `d5b519f4` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
 
-The same two jobs were also green on the code head **`67d88db9`**
-(`CI` run `39529050947`, **15643 run, 15643 passed, 7 skipped**; Windows run
-`39529050572`, **26 passed, 0 failed**). The three commits after `67d88db9`
-change only the plans and closure record, so the code is the same in both.
+`main` was merged into the branch as **`6d2d40b4`** after these runs.
+`main` had advanced to `17b0b106`, and the merge resolves exactly one
+conflict, in `plans/registry.md` — a plans file. It touches **no Rust code**,
+so the code these runs validated is the code the branch carries. The commits
+after `d5b519f4` change only the plans and this closure record.
+
+The same two jobs were green on the earlier heads as well, with identical
+Rust code: **`67d88db9`** (`CI` run `39529050947`, 15643/15643/7; Windows run
+`39529050572`, 26/0), **`844a5967`** (`CI` run `39533112385`, 15643/15643/7;
+Windows run `39533112371`, 26/0), and **`a604a663`** (`CI` run `39536529955`,
+attempt 2, 15643/15643/7).
+
+**Why the whole-suite count moved from 15643 to 15665.** The two numbers
+are both real, and the difference is not this milestone's. `main` gained
+PR #146 (the TUI Helix editor and `/files` peek work) between the two runs.
+A test-name diff between the two `CI` logs accounts for the delta exactly:
+**22** tests appear, all of them TUI file-tree, editor, and text-geometry
+tests that PR #146 added or renamed —
+
+| Test | In `15643` | In `15665` |
+|---|---|---|
+| `tui::app::state::file_tree::tests::*` | 2 | 11 |
+| `tui::commands::file_tree::tests::*` | 3 | 8 |
+| `tui::components::editor::tests::*` | 2 | 5 |
+| `tui::text_geometry::tests::*` | 1 | 4 |
+| `tui::commands::editor::tests::*`, `tui::components::dialogs::files::tests::*`, `tui::file_tree::tests::*` | 2 | 4 |
+
+— and **no** test disappears or changes in the scratch census's own suites.
+The count is therefore explainable rather than mysterious, and the CI run
+checks out the pull request's *merge* commit, so a run always contains the
+base branch's tests as of that moment.
 
 ### One hosted-CI flake, and its green re-run of the same SHA
 
@@ -387,8 +414,8 @@ The **re-run of the same SHA** (`39540628447`, attempt 2) came back
 GitHub cancelled the in-flight re-run. So this flake was **not** closed by a
 re-run of its own SHA, and that is recorded rather than blurred.
 
-It was closed instead by the **final head's** own `CI` run, which ran
-byte-identical code: `24a74874` and `d5b519f4` differ **only** in
+It was closed instead by the **`CI` run `39543436859`** on `d5b519f4`, which
+ran byte-identical code: `24a74874` and `d5b519f4` differ **only** in
 `plans/closure/managed-agent-scratch/006-status.md`, a markdown file that
 cannot influence a Rust test. That run is green — see the table above.
 
@@ -493,8 +520,13 @@ The comparison is direct: the **same** sweep was run against `origin/main`
 This branch's non-green set is a **strict subset** of `main`'s, and every
 member of it is present on `main` too. The milestone adds no failure.
 
-The hosted `CI` run is the authoritative whole-suite result: **15643 run,
-15643 passed, 7 skipped**, with none of these three present.
+Both sweeps were taken before `main` was merged into the branch, so both
+pre-date PR #146's 22 TUI tests; the hosted run covers the merged tree.
+
+The hosted `CI` run is the authoritative whole-suite result: **15665 run,
+15665 passed, 7 skipped**, with none of these three present. (The earlier
+runs reported 15643 because `main` did not yet carry PR #146's 22 TUI
+tests; see §13.)
 
 ## 14. Notes on what this milestone does not claim
 
