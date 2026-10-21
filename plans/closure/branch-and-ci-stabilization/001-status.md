@@ -109,7 +109,8 @@ contract** rather than an accident of the host.
 | The forty-four tests that failed in the authoritative sweep pass | the sweep's result is recorded in §4.1; the previously-failing families (`scratch`, `core::daemon`, `core::daemon_sessions`, `tool_program_m015/016/017`, `session_family control_m004`, `async_background_c006`, `agent_loop_harness`, `identity_live_execution_audit`, `identity_m002_live_audit_hooks`, `workspace_root_execution_authority`, `linux_native_scratch_containment`, `python_script::executor`, `managed_process`, `tool::bash`) pass | pass |
 | The sweep's result does not depend on the operator's home directory | `scripts/verify.sh full` and `.github/workflows/ci.yml` both give the sweep a private cache root; the authoritative sweep in §4.1 was run with the host's own `~/.cache` still world-writable (0777) and still passed | pass |
 | The branch passes the CI clippy step | `cargo clippy --workspace --all-targets --locked -- -D warnings` → **clean**; four lints in branch-owned code would have failed it (§3.8) | pass |
-| The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → 11803 run, **5 failed** — all five are the live Eggwork qualification, whose cause is not established here (§4.2). Recorded as a failure, not as a pass. | **fail** |
+| The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → 11804 run, **11804 passed, 0 failed** on the fixed tree (§4.2) | pass |
+| The live Eggwork qualification's trust chain does not follow the operator's umask | `tests/eggwork_remote_execution_live.rs` regression test `a_staged_sandbox_helper_is_trusted_whatever_the_umask`; **non-vacuity proved** — with the helper group-writable the *same* five qualifications fail (8 passed / 5 failed) and the staged pair passes (14/14) (§3.11) | pass |
 | No work is lost by the force push | the remote branch's two commits past the rebase base (`32611c8d`, `5019fb26`) are replayed onto the rebased branch; their files are **byte-identical** to the remote's originals (§3.10) | pass |
 | Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; six rows corrected | pass |
 | The canonical gate after the sweep | `scripts/verify.sh quick` → "Quick verification passed." (§4) | pass |
@@ -369,6 +370,65 @@ guidance, both left for the owner to decide:
 
 
 
+### 3.11 The live Eggwork fixture's trust chain
+
+The five live-Eggwork failures of §4.2 were **not** a product defect. The
+pinned Eggwork node (`e6a5d82`) resolves its sandbox helper as a sibling of
+its own executable and **refuses a helper it cannot trust**: the helper must
+be a regular file, owned by root or the invoking user, executable, and
+neither it nor any directory above it may be group- or world-writable (a
+root-owned sticky directory is exempt). An untrusted helper makes the node
+stop advertising `isolation.landlock.workspace-rw.v1`, and the executor then
+refuses every run that requires isolation —
+`src/scheduler/eggwork.rs:1512`.
+
+Two facts about how the artifacts were produced made that refusal depend on
+the host rather than on the product:
+
+- **Cargo installs build artifacts with the process umask and does not narrow
+  them.** On this host (`umask 0002`) the helper was installed group-writable
+  (`0775`), and the target directory above it was group-writable too.
+- **`tempfile` creates its directories with the process umask as well** — it
+  does not narrow them to owner-only. A "private" temporary directory was
+  `0775` here, which the ancestor check refuses just as it refuses the
+  helper.
+
+So whether the qualification passed depended on the operator's umask. The
+evidence for that, in the order it was obtained:
+
+- An **A/B** on the same tree and the same host: the default-feature build of
+  the same binary passed **13/13**, while the feature-enabled build failed
+  five. The build was not the cause; the artifact state was.
+- A **direct reproduction**: with the helper's mode changed to `0775` and the
+  target directory left group-writable, the same binary produced **8 passed /
+  5 failed** — the *same five* tests, with the *same* refusal. With the
+  helper at `0755` it produced 13/13.
+- The **fix** (commit `81697139`): the qualification now **stages** the node
+  and the helper in a private directory before starting the node. The staging
+  directory is set to `0700`, the helper is placed there as an independent
+  **copy** with mode `0755` (a copy, not a link, so the guarantee is the
+  staging's and not a side effect on the build tree), and the node is started
+  from that directory. The node's own TLS directory is narrowed to `0700` as
+  well, since the client key lives in it.
+- **Non-vacuity, in the qualification itself**: with the build tree restored
+  to the failing state — helper `0775`, target directory `0775` — the
+  qualification is **14/14 passed**, and the build tree is unchanged
+  afterwards.
+- **A pinned regression test**, `a_staged_sandbox_helper_is_trusted_whatever_the_umask`,
+  carries a mirror of the node's trust check: it asserts that a
+  group-writable helper in a group-writable directory is **not** trusted (so
+  the mirror discriminates and a staging that did nothing could not pass) and
+  that the staged pair **is** trusted, that the staged helper is not
+  group- or world-writable and stays executable, that the staging directory is
+  not group- or world-writable, and that staging does not rewrite the build
+  artifact's mode.
+
+The upstream refusal is **not** weakened: the node still refuses an untrusted
+helper, and the product's own executor still refuses a node that cannot
+isolate the workspace. What changed is that the fixture now hands the node an
+artifact it can trust on any host, instead of one whose trust the operator's
+umask decided.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
@@ -386,7 +446,9 @@ Local, on the final tree, in this order.
 | `cargo test -p codegg --locked --lib -- --list` | the three live-language-server tests are **absent**; the four rejection tests remain |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(scratch_cache_root_contract) or binary(linux_native_scratch_containment) or test(/scratch::tests::/)'` | **28 passed, 0 failed** (the scratch allocator's own qualifications, its resolution contract, and the native containment fixture) |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | **clean** (0 errors) — after the four lints in §3.8 and the two in `crates/egggit` were fixed |
-| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | 11803 tests run: **11798 passed, 5 failed, 7 skipped** — all five failures are the live Eggwork qualification (§4.2) |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | 11804 tests run: **11804 passed, 0 failed, 7 skipped** — the live Eggwork qualification included (§4.2) |
+| `cargo nextest run -p codegg --locked --profile ci -E 'binary(eggwork_remote_execution_live)'` | **14 passed, 0 failed** with the build tree in the failing state (helper 0775, target directory 0775) — the qualification's own non-vacuity proof (§3.11) |
+| `cargo nextest run -p codegg --locked --profile ci -E 'test(/scratch/)'` with **no** `XDG_CACHE_HOME` | **33 passed, 0 failed** — the ambient cache path against this host's repaired `~/.cache` (0755) |
 
 The two `crates/egggit` regression tests were proved **non-vacuous**: with the
 pre-fix behaviour restored temporarily, both fail — the transient test with
@@ -401,16 +463,48 @@ way: with `ensure_private_cache_root`'s body restored to the pre-fix
 fails with `WrongOwner` on the root the allocator had just created. The fix was
 then restored and the test passes.
 
+The live-Eggwork fixture's non-vacuity was proved **in the qualification
+itself**, not only in a unit test: with the build tree restored to the state
+that produced the five failures — the helper group-writable and the target
+directory group-writable — the *same* binary produced **8 passed / 5 failed**
+before the fix and **14/14 passed** after it, with the build tree unchanged by
+the run. The five failures and the five passes are the same five tests with
+the same refusal message, so the mode of the helper — and nothing else — was
+the cause (§3.11).
+
 The authoritative workspace sweep is recorded in §4.1.
 
 ### 4.1 The authoritative sweep
 
 `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast`,
-run on the committed tree (`9b346776`) with no concurrent edits and no Git
-commands in the worktree:
+run on the committed tree with no concurrent edits and no Git commands in the
+worktree:
 
-- **15003 tests run: 15003 passed, 8 skipped, 0 failed, 0 timed out**
-  (`Summary [ 490.406s]`, exit 0).
+- **15004 tests run: 15004 passed, 8 skipped, 0 failed, 0 timed out**
+  (`Summary [ 505.752s]`, exit 0) on the final tree `81697139`. The count is
+  one higher than the earlier run on `9b346776` because the live-Eggwork
+  fixture added one regression test (§3.11).
+- Two earlier runs of the same command on this tree were **not** green, and
+  both are recorded here rather than dropped:
+  - The first recorded **14 timeouts** in `security::workflow::report::tests`
+    and **1 failure** in `agent_loop_harness`
+    (`test_task_tool_denied_tools_passthrough`, "Timeout waiting for request
+    after 100 attempts"). This host's load average was **38–81** during that
+    run — other sessions were saturating the machine — and the same tests had
+    **passed in 9.9 s and 10.1 s** in the earlier green sweep of §4.1 on
+    `9b346776`. Re-run in isolation on the same tree they pass again: the
+    whole `security::workflow::report` module, **56 tests, 0 failed, 8.979 s**,
+    and the harness test, **1 passed, 0.706 s**.
+  - The second recorded **1 timeout**
+    (`single_daemon_lifecycle plain_entrypoint_reaches_tui_startup_boundary_without_prestarted_daemon`)
+    while the load average was **86–110**; re-run in isolation it passes in
+    **8.246 s**. The same run recorded 12 "slow" tests, one of them at
+    **86.6 s**.
+  - These are the timing-sensitive tests §10 already names as a standing
+    property of the `ci` profile's 120 s kill threshold, and they are **not**
+    introduced by this milestone: the code they exercise is untouched by the
+    changes recorded here. The `ci` profile's threshold was **not** widened to
+    make a run green.
 - The eight skipped tests are the repository's own `#[ignore]` declarations:
   four tool-advisor qualifications, the manual object-view performance
   qualification, and three opt-in real-process runs (a local Eggsearch
@@ -418,14 +512,14 @@ commands in the worktree:
   in every earlier sweep as well. Nothing was disabled, filtered, or excluded
   to reach this result — the sweep ran the whole workspace under the `ci`
   profile with `--no-fail-fast`.
-- An earlier run of the same command on this tree ran with **this
+- An earlier run of the same command on tree `9b346776` ran with **this
   workstation's `~/.cache` still at mode 0777** — world-writable, and correctly
   refused by the product — and with the sweep's own private cache root, and
   was green: 15003 passed, 0 failed. The green result is therefore a property
   of the product and of the sweep's own environment, not of a repaired host.
   The host's cache root was repaired to 0755 *after* that run; the final run
   above was made with the repaired host and the private cache root.
-- The earlier sweep of this tree recorded **44 failures across 15 binaries**,
+- The earlier sweep of `9b346776` recorded **44 failures across 15 binaries**,
   every one of them the typed refusal `WrongOwner`. The families that failed
   then — `scratch`, `core::daemon`, `core::daemon_sessions`,
   `tool_program_m015/016/017`, `session_family control_m004`,
@@ -440,31 +534,35 @@ commands in the worktree:
 ### 4.2 The feature-enabled tier, and the live Eggwork qualification
 
 `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
-— the third tier of `scripts/verify.sh full` — was also run on the final tree:
+— the third tier of `scripts/verify.sh full` — was run on the final tree:
 
-- **11803 tests run: 11798 passed, 5 failed, 7 skipped** (`Summary [ 491.023s]`).
-- **All five failures are in one binary, `eggwork_remote_execution_live`**, and
-  all five have the same cause: the live node does not advertise the isolation
-  capability the daemon requires, so the run is refused before the workspace is
-  uploaded —
+- **11804 tests run: 11804 passed, 0 failed, 7 skipped** (`Summary [ 603.669s]`,
+  exit 0). The count is one higher than the run below because the live-Eggwork
+  fixture added one regression test (§3.11).
+- The earlier run of the same command on the same tree was **not** green:
+  **11803 run, 11798 passed, 5 failed**, all five in one binary,
+  `eggwork_remote_execution_live`, and all five with the same cause — the live
+  node did not advertise the isolation capability the daemon requires, so the
+  run was refused before the workspace was uploaded:
   `eggwork: node 'live-node-1' does not satisfy required isolation capability 'isolation.landlock.workspace-rw.v1'; refusing before workspace upload`
   (`src/scheduler/eggwork.rs:1512`).
+- **The cause is now established and fixed** (§3.11): the pinned node refuses a
+  sandbox helper it cannot trust, and the helper's mode — and the mode of the
+  directory above it — followed the *process umask*, because neither cargo nor
+  `tempfile` narrows the modes they create. On this host (`umask 0002`) that
+  produced a group-writable helper, the node dropped
+  `isolation.landlock.workspace-rw.v1`, and five live qualifications failed on
+  a tree, a fixture, and a code base that were all identical to a green run.
+- The fix is in the **fixture**, not in the product and not in the pinned
+  upstream check: the qualification now stages the node and the helper in a
+  private directory whose modes it sets itself. The node's own refusal is
+  untouched and remains a fail-closed refusal.
 - This is the **live** qualification, not a unit test. `ci.yml` excludes it
   from an unrelated-PR run — `cargo nextest run --workspace --locked --profile ci -E 'not binary(eggwork_remote_execution_live)'`
   — and provisions it separately (`scripts/prebuild-eggwork-fixtures.sh`,
   `CODEGG_EGGWORK_TEST_NODE`, `CODEGG_EGGWORK_FIXTURES_PREBUILT=1`), because it
-  needs a provisioned node rather than a mocked one.
-- The **same five tests passed** in the authoritative workspace sweep of §4.1
-  on the same tree, in the same session, and they **fail in isolation** under
-  the feature-enabled build. Their outcome therefore follows the build and
-  provisioning environment, not the tree. This host's Landlock is already
-  recorded as insufficient for the native M004/M005 tier (§13).
-- They are recorded as **failures**, not as an explanation: this milestone does
-  not claim the feature-enabled tier is green, and does not claim the cause is
-  settled. What is settled is that the refusal is the product's own
-  fail-closed behaviour — the daemon refuses to upload a workspace to a node
-  that cannot isolate it — and that the qualification is a live one whose
-  provisioning this workstation does not reproduce.
+  needs a provisioned node rather than a mocked one. The prebuild script only
+  has to *produce* the artifacts; the qualification stages and trusts them.
 
 ## 5. Invariant review
 
@@ -476,14 +574,16 @@ commands in the worktree:
 - **A persistent object-store failure stays a typed refusal.** Holds: the
   fail-closed regression test passes and is non-vacuous.
 - **The default sweep is host-independent.** Holds for the live-language-server
-  case and for the per-user cache root: the sweep's cache root is supplied by
-  the canonical runners, the allocator creates the root it depends on privately
-  rather than at the umask's discretion, and the refusal of an unsafe cache
-  root is a tested contract. It does **not** hold in general: the sweep still
-  contains tests whose runtime depends on machine speed, and the nextest
-  profile's 120 s kill threshold remains a boundary for them. That is a
-  standing property of the profile, not a defect this milestone introduced; see
-  §10.
+  case, for the per-user cache root, and for the live Eggwork fixture's trust
+  chain: the sweep's cache root is supplied by the canonical runners, the
+  allocator creates the root it depends on privately rather than at the umask's
+  discretion, the refusal of an unsafe cache root is a tested contract, and the
+  live qualification stages its node and helper with modes it sets itself
+  instead of inheriting the operator's umask. It does **not** hold in general:
+  the sweep still contains tests whose runtime depends on machine speed, and
+  the nextest profile's 120 s kill threshold remains a boundary for them. That
+  is a standing property of the profile, not a defect this milestone
+  introduced; see §10.
 - **No accepted decision's substance changed.** Holds: the command-authority
   ADR's status, date, text, authority, non-goals, and security limits are
   unchanged; only the identifier and the unambiguous cross-references moved.
@@ -549,6 +649,14 @@ commands in the worktree:
   The two refusal tests pin that behaviour.
 - The audit record's network boundary contract (C023) is untouched by this
   milestone.
+- The live-Eggwork fixture's staging does **not** relax the upstream trust
+  check. The pinned node still refuses a helper that is not executable, is
+  owned by neither root nor the invoking user, is group- or world-writable,
+  or has a group- or world-writable directory above it; the product's executor
+  still refuses a node that cannot isolate the workspace. The staging only
+  ensures the fixture hands the node an artifact that satisfies the check on
+  any host, and the node's own TLS directory — which holds the client key — is
+  now narrowed to `0700` as well.
 
 ## 9. Documentation and operations
 
@@ -567,10 +675,14 @@ commands in the worktree:
   root the product creates is private, and an existing unsafe root is refused
   rather than tightened.
 - `architecture/testing.md` — the sweep's private cache root, and why the
-  canonical runners supply one.
+  canonical runners supply one; and the live Eggwork fixture's trust contract
+  (§3.11).
 - `AGENTS.md` — the broad runner's command now carries its private cache root.
 - `scripts/verify.sh`, `.github/workflows/ci.yml` — the canonical runners
   supply the sweep's private cache root.
+- `scripts/prebuild-eggwork-fixtures.sh`, `crates/eggwork-test-node/src/main.rs`
+  — the prebuild produces the artifacts; the qualification stages and trusts
+  them (§3.11).
 
 ### Host state on this workstation
 
@@ -580,6 +692,14 @@ allocate scratch at all. The directory was repaired to `0755` after the
 authoritative sweep had been run and recorded **with the unsafe mode still in
 place**, so the sweep's result is evidence about the product and not about the
 repair. The repair is a host action; nothing in the repository depends on it.
+With the repaired host, the ambient (no `XDG_CACHE_HOME`) path was qualified
+separately: the 33 scratch-related tests and the two cache-root contract tests
+pass with the host's own `~/.cache` as the resolved root.
+
+This host's **umask is `0002`**, which is what made the live-Eggwork fixture's
+trust chain host-dependent (§3.11). It is a host property, not a repository
+one, and the fix removes the dependency rather than the exposure: the fixture
+sets the modes it needs on any host.
 
 ## 10. Unresolved findings
 
@@ -597,18 +717,15 @@ repair. The repair is a host action; nothing in the repository depends on it.
   hidden.
 - **low — the sweep still contains timing-sensitive tests** whose runtime
   depends on machine speed, against the `ci` profile's 120 s kill threshold.
-  The three live-language-server timeouts that were observed are closed. The
-  remaining exposure is a property of the profile, recorded in
-  `.config/nextest.toml`, and is not introduced by this milestone.
-- **medium — the feature-enabled tier is not green on this host.** The five
-  failures are the live Eggwork qualification refusing a workspace upload to a
-  node that does not advertise `isolation.landlock.workspace-rw.v1` (§4.2).
-  The same five tests passed in the authoritative workspace sweep on the same
-  tree and fail in isolation under the feature-enabled build, so their outcome
-  follows the build and the node's provisioning rather than the tree. The
-  qualification is a live one that `ci.yml` excludes from unrelated-PR runs
-  and provisions separately. The cause is **not** established here, and this
-  record does not claim the tier is green.
+  The three live-language-server timeouts that were observed are closed. On
+  this tree, two workspace-sweep runs were disturbed by **other sessions
+  saturating this host** (load average 38–81 and 86–110) and produced 14
+  timeouts plus one failure, and one timeout respectively; every one of them
+  passes again in isolation on the same tree (§4.1), and the same tests had
+  passed in 9.9 s and 10.1 s in the earlier green sweep. The threshold was
+  **not** widened to make a run green, and no test was changed. The remaining
+  exposure is a property of the profile, recorded in `.config/nextest.toml`,
+  and is not introduced by this milestone.
 - **medium — the hosted CI runs recorded in the C007 and C023 closures qualify
   the *code* those closures describe, not the rebased head.** The rebase
   rewrote every SHA, and the recorded runs predate it. The rebased head has
@@ -663,9 +780,6 @@ names them:
   exercise it, but that is an expectation and not evidence. Pushing the branch
   does not start it either: `ci.yml` runs on pull requests and on pushes to
   `main`.
-- **The feature-enabled tier is not green on this host** (§4.2): five live
-  Eggwork qualification tests fail there and their cause is not established.
-  The canonical gate and the authoritative workspace sweep are green.
 - **No native Windows or macOS run.** The rebased tree was verified on Linux
   only.
 - **The M004/M005 tier was not re-qualified on the rebased head.** This

@@ -273,6 +273,23 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   rebased branch rather than force-pushing over them. They are the owner's
   parallel planning packet, and a force push that dropped them would have
   destroyed work this milestone never saw.
+- **Decision point: whether a live qualification's trust chain may follow the
+  operator's umask.** The feature-enabled tier failed five live Eggwork
+  qualifications on a tree, a fixture, and a code base identical to a green
+  run. The cause was the *fixture*, not the product: the pinned node refuses a
+  sandbox helper it cannot trust, and neither cargo nor `tempfile` narrows the
+  modes they create, so on a host whose umask is `0002` the helper was
+  installed group-writable and the node dropped
+  `isolation.landlock.workspace-rw.v1`. Resolved in favour of **staging** the
+  node and the helper in a private directory whose modes the qualification
+  sets itself, and of changing **nothing** in the upstream refusal: the node
+  still refuses an untrusted helper, and the product's executor still refuses a
+  node that cannot isolate the workspace. The alternative — narrowing the
+  upstream check, or trusting the build artifact as it stands — would have
+  weakened a security boundary to make a test pass, and is refused. The
+  non-vacuity is proved in the qualification itself: with the build tree
+  restored to the failing state the same binary goes from 8 passed / 5 failed
+  to 14/14.
 
 ## 11. Completion definition
 

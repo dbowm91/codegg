@@ -223,6 +223,24 @@ whose subject describes recording a sweep result, the content carries no
 information, nothing in the repository reads it, and it is absent from `main`.
 It is removed, with the evidence recorded in the closure's §3.9.
 
+**WP-K — Make the live Eggwork qualification independent of the operator's
+umask.** The feature-enabled tier of `verify.sh full` failed five live
+qualifications on a tree, a fixture, and a code base that were identical to a
+green run. The pinned node refuses a sandbox helper it cannot trust, and
+neither cargo nor `tempfile` narrows the modes they create: the helper, the
+target directory above it, and the "private" temporary directory all inherited
+the process umask, so on a host with a permissive umask the node dropped
+`isolation.landlock.workspace-rw.v1` and the executor refused every
+required-isolation run. The qualification now **stages** the node and the
+helper in a private directory whose modes it sets itself — the directory at
+`0700`, the helper an independent copy at `0755` — and the node is started
+from that directory. The upstream refusal is untouched; the prebuild script
+only has to produce the artifacts, not trust them. Non-vacuity is proved in
+the qualification itself: with the build tree restored to the failing state
+the same binary goes from 8 passed / 5 failed to 14/14, and a pinned
+regression test carries a mirror of the node's trust check. See §3.11 of the
+closure.
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by
@@ -270,6 +288,13 @@ It is removed, with the evidence recorded in the closure's §3.9.
   that root.
 - The forty-four tests that failed in the authoritative sweep — they must
   pass.
+- The live Eggwork qualification's trust chain — a staged sandbox helper must
+  satisfy the pinned node's trust check whatever the umask, a group-writable
+  helper in a group-writable directory must not, and staging must not rewrite
+  the build artifact's mode. The test must be **provably non-vacuous**, and the
+  non-vacuity is proved in the qualification itself: with the build tree
+  restored to the failing state the same binary goes from 8 passed / 5 failed
+  to 14/14.
 
 ## 11. Required verification commands
 
@@ -284,18 +309,25 @@ python3 scripts/check_adr_integrity.py --self-test
 python3 scripts/check_project_catalog_invariants.py
 scripts/verify.sh quick
 XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci
+XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run -p codegg --locked \
+  --features server,plugins,lsp-test-support --profile ci
 ```
 
 The sweep's private cache root is part of the command, not an environment the
 runner happens to have: `scripts/verify.sh full` and `.github/workflows/ci.yml`
-both supply it, and §7 WP-G says why.
+both supply it, and §7 WP-G says why. The second sweep command is the
+feature-enabled tier of `verify.sh full`; it carries the live Eggwork
+qualification, whose outcome must not depend on the operator's umask (§7
+WP-K).
 
 ## 12. Documentation updates
 
 - `architecture/overview.md` — the "Verified counts" table and its
   re-measurement note.
 - `architecture/testing.md` — the CI/test determinism contract, if the
-  live-server gating needs to be stated there.
+  live-server gating needs to be stated there; and the live Eggwork fixture's
+  trust contract.
+- `architecture/security.md` — the scratch allocator's cache-root contract.
 - `plans/adrs/linux-command-adr-id-migration.md` — the identity history.
 - The affected roadmaps and closure records — corrected identifiers, with the
   historical narrative left intact.
