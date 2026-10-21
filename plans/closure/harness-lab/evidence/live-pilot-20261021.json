@@ -1,0 +1,170 @@
+{
+  "catalog_routes": [
+    "opencode_go/longcat-2.5-preview-free",
+    "opencode_go/muse-spark-1.3-contributor"
+  ],
+  "codegg_binary_sha256": "2f0229dd6ee65ac480568fd4beb182354cbfa17b4b207b6891ed599cb6dab8ca",
+  "codegg_source_commit": "c64161b4df4fd631307a283e5d8017ce751297dd",
+  "pilot_method": "Native CodeGG ACP, build agent, yolo approval with workspace-write sandbox; separate private daemon/data lane and identical task fixture copies for each run.",
+  "provider": "OpenCode Go",
+  "recorded_date_utc": "2026-10-21",
+  "route_preflight": {
+    "cost_unavailable_reason": "Exec output reported aggregate tokens only; no provider cost field.",
+    "cost_usd": null,
+    "duration_ms": 6308,
+    "model": "opencode_go/longcat-2.5-preview-free",
+    "result": "success",
+    "tokens_used": 8705,
+    "tools_used": [],
+    "transport": "codegg exec"
+  },
+  "runs": [
+    {
+      "agent": "build",
+      "changed_task_files": [
+        "worklog.py"
+      ],
+      "codegg_binary_sha256": "2f0229dd6ee65ac480568fd4beb182354cbfa17b4b207b6891ed599cb6dab8ca",
+      "cost_unavailable_reason": "OpenCode Go ACP returned no provider cost field; no cost estimate is reported.",
+      "cost_usd": null,
+      "duration_ms": 310566,
+      "failed_tool_count": 0,
+      "model": "opencode_go/longcat-2.5-preview-free",
+      "policy": {
+        "effective": {
+          "approvalMode": "yolo",
+          "revision": "4",
+          "sandbox": "workspace_write"
+        },
+        "requested": {
+          "approvalMode": "yolo",
+          "sandbox": "workspace_write"
+        }
+      },
+      "provider_usage": {
+        "cachedTokens": 26752,
+        "contextLimit": 128000,
+        "inputTokens": 27613,
+        "outputTokens": 155,
+        "reasoningTokens": 70,
+        "turnId": "turn-20a5568b-459a-4b51-99a9-3f710fac689c"
+      },
+      "repeated_identical_read_calls": 1,
+      "run_id": "worklog__longcat-v2",
+      "source_code_commit": "c64161b4df4fd631307a283e5d8017ce751297dd",
+      "stop_reason": "end_turn",
+      "task_baseline_sha256": "5adfbae3d68ea0857a5ebbb212e62333d76aaecd6ef178f3bc3f14d612b12135",
+      "task_fixture_commit": "80b1d868161b1f02505de5bd8d187b70c3c4ab24",
+      "task_id": "worklog",
+      "terminal_failure": null,
+      "tool_call_count": 14,
+      "tool_calls_after_failed_tool": 0,
+      "tool_event_statuses": [
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "tool_sequence": [
+        "bash",
+        "bash",
+        "read",
+        "read",
+        "read",
+        "read",
+        "bash",
+        "write",
+        "write",
+        "bash",
+        "edit",
+        "bash",
+        "read",
+        "bash"
+      ],
+      "usage_unavailable_reason": null,
+      "verification": {
+        "command": "python3 -m unittest -v",
+        "exit_code": 0,
+        "failure_summary": null,
+        "tests_run": 10
+      }
+    },
+    {
+      "agent": "build",
+      "changed_task_files": [],
+      "codegg_binary_sha256": "2f0229dd6ee65ac480568fd4beb182354cbfa17b4b207b6891ed599cb6dab8ca",
+      "cost_unavailable_reason": "OpenCode Go ACP returned no provider cost field; no cost estimate is reported.",
+      "cost_usd": null,
+      "duration_ms": 140358,
+      "failed_tool_count": 0,
+      "model": "opencode_go/muse-spark-1.3-contributor",
+      "policy": {
+        "effective": {
+          "approvalMode": "yolo",
+          "revision": "4",
+          "sandbox": "workspace_write"
+        },
+        "requested": {
+          "approvalMode": "yolo",
+          "sandbox": "workspace_write"
+        }
+      },
+      "provider_usage": null,
+      "repeated_identical_read_calls": 0,
+      "run_id": "worklog__muse",
+      "source_code_commit": "c64161b4df4fd631307a283e5d8017ce751297dd",
+      "stop_reason": null,
+      "task_baseline_sha256": "5adfbae3d68ea0857a5ebbb212e62333d76aaecd6ef178f3bc3f14d612b12135",
+      "task_fixture_commit": "80b1d868161b1f02505de5bd8d187b70c3c4ab24",
+      "task_id": "worklog",
+      "terminal_failure": "HarnessTurnFailure",
+      "tool_call_count": 7,
+      "tool_calls_after_failed_tool": 0,
+      "tool_event_statuses": [
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "tool_sequence": [
+        "list",
+        "read",
+        "read",
+        "read",
+        "read",
+        "test",
+        "bash"
+      ],
+      "usage_unavailable_reason": "Native turn ended in failure before ACP emitted terminal provider usage.",
+      "verification": {
+        "command": "python3 -m unittest -v",
+        "exit_code": 1,
+        "failure_summary": "errors=10",
+        "tests_run": 10
+      }
+    }
+  ],
+  "schema_version": 1,
+  "spend_ceiling": "existing OpenCode Go subscription only; no additional spend authorized",
+  "status": "partial; stopped after provider usage was unavailable",
+  "stop_reason": "Muse Spark returned a native terminal failure without provider usage. The pilot stopped before Task 2 to obey the usage stop rule. No automatic candidate corrections were used.",
+  "task_fixture_commit": "80b1d868161b1f02505de5bd8d187b70c3c4ab24",
+  "task_fixture_root": "dev/harness_lab/pilot/baseline",
+  "task_fixtures": {
+    "ranges": "89075ca1e92c7e1b829d5f6db99320d5c7bb437830cd2c6d1840b4b7a1ad0d53",
+    "worklog": "5adfbae3d68ea0857a5ebbb212e62333d76aaecd6ef178f3bc3f14d612b12135"
+  }
+}

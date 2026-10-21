@@ -17,10 +17,14 @@ Repository baseline reviewed: `5155555674bb87cc3b18a4672e5ae332facc3596`
 The bounded multi-iteration assess/propose/build/retest controller, frozen input
 binding, append-only hash-linked run log, cumulative wallclock deadline, candidate
 resume validation, and additive ACP usage/argument-fingerprint telemetry are
-implemented. M005 is conditionally closed because the first real-model pilot was
-not safely executable in this environment. The exact OpenCode Go profile pinned by
-CodeGG has no reviewed LongCat 2.5 route, and no secret-safe credential handoff
-was available for the temporary key supplied in chat. No live model call was made.
+implemented. After OpenCode Go was configured in the current CodeGG installation,
+the live catalog exposed both approved model routes and the stored credential was
+usable without copying its value. A frozen Task 1 pair was started. LongCat
+completed the task and its verifier passed; Muse Spark's turn failed without
+terminal usage and left the baseline implementation unchanged. The pilot stopped
+before Task 2 under the configured usage stop rule. M005 remains conditionally
+closed; the redacted receipts are in
+`plans/closure/harness-lab/evidence/live-pilot-20261021.json`.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -35,7 +39,7 @@ was available for the temporary key supplied in chat. No live model call was mad
 | ACP Rust library coverage | `cargo test -p codegg --lib acp` | pass | 11 passed, 7,165 filtered. |
 | ACP Rust integration coverage | `cargo test -p codegg --test acp_stdio` | pass | 1 passed. |
 | Rebased quick qualification | `scripts/verify.sh quick` | pass | Formatting, repository/schema/boundary/provider guards and `cargo check --workspace --all-targets --locked` passed. |
-| Frozen-baseline live coding pilot on LongCat 2.5 and Muse Spark 1.3 | OpenCode Go profile audit and execution environment | blocked | The shared profile lacks LongCat's exact route. No safe credential handoff is exposed by the runtime. A provider route was not guessed and the chat credential was not copied to command arguments, files or logs. |
+| Frozen-baseline live coding pilot on LongCat 2.5 and Muse Spark 1.3 | `evidence/live-pilot-20261021.json`; committed task fixtures at `dev/harness_lab/pilot/baseline` | partial | Both routes were catalogued and Task 1 ran from the same frozen fixture. LongCat passed all 10 tests with provider token counts. Muse Spark ended in a native turn failure, reported no terminal usage, made no task-file changes, and left all 10 baseline tests failing. Cost was unavailable for both; no estimate was substituted. The usage stop rule prevented Task 2 calls. |
 | Hosted CI evidence | `CI / verify` run `39470157041` | pass | Green on implementation commit `63bc46b2386fe47aa39f4345b1c3e93a6fadba90`; hosted run completed in 28m17s. The preceding run found the lock-file Clippy issue, which `63bc46b` fixes. |
 
 ## 3. Implementation and safety evidence
@@ -72,21 +76,21 @@ implementation commit failed Clippy because the persistent lock file did not sta
 its truncation behavior; `.truncate(false)` was added, local workspace Clippy passed,
 and the follow-up hosted run passed.
 
-Only completed runs will be marked as evidence here. The live provider pilot is
-separate from credential-free CI and remains unrun.
+The live provider pilot is separate from credential-free CI. Its partial result,
+including the failed turn and unavailable usage fields, is recorded without
+capturing provider response bodies or credential material.
 
 ## 5. Remaining conditions
 
-1. Add the exact LongCat 2.5 OpenCode Go route to the shared provider-profile
-   contract through its reviewed ownership path, then update CodeGG's pinned
-   dependency revision. CodeGG must continue to fail closed for unknown models.
-2. Provide a runtime secret-safe handoff for the approved temporary Go key; do
-   not put it in a repository, command line, checkpoint, stdout/stderr, or ledger.
-3. Run both approved models against identical frozen synthetic coding tasks and
-   record successful/failed task outcomes, actual tool selection, repeated reads,
-   recovery signals, provider-reported token counts and provider-reported cost if
-   available. Keep unavailable fields explicit and run both baseline subjects
-   before any automatic candidate correction.
+1. Before making another live call, resolve why Muse Spark's failed terminal
+   event omitted provider usage or establish a provider-side hard usage ceiling
+   that remains enforceable when the agent turn fails. The current pilot stopped
+   on that missing usage as required by M005's spend rule.
+2. Once usage accounting is safe, run the frozen Task 2 pair from the identical
+   committed fixture and record both outcomes. Preserve the existing Task 1
+   receipts; do not apply automatic corrections between subjects.
+3. Provider-reported cost remains unavailable for both Go routes. Keep it null
+   with an explicit reason; do not substitute a price estimate.
 4. Capture a valid accepted correctness-fix trace and live compile-correction
    trace before M004 can be strictly closed. No baseline defect is fabricated to
    force an acceptance result.
@@ -96,13 +100,14 @@ separate from credential-free CI and remains unrun.
 M001–M003 remain closed. M004 remains conditionally closed: the deterministic
 candidate gate and bounded retry infrastructure remain in place, while its live
 proposal/correction and accepted-candidate evidence conditions are still open.
-M005 is conditionally closed on the named provider-route and credential-handoff
-conditions above. The Harness Lab registry contains no later milestone or blocked
-successor; therefore this closure unblocks no further Harness Lab plan. No
-eligible plan in this line was left unstarted.
+M005 is conditionally closed on the usage-accounting and remaining paired-task
+conditions above. The live model routes and secret-safe credential access were
+verified in the current installation. The Harness Lab registry contains no later
+milestone or blocked successor; therefore this closure unblocks no further
+Harness Lab plan. No eligible plan in this line was left unstarted.
 
 ## 7. Registry updates
 
 The subsystem roadmap and registry record M005 as conditionally closed and name
-the remaining operational blockers. This is a formal closure disposition, not a
-claim that the live pilot or autonomous acceptance trace has been completed.
+the remaining operational blockers. The pilot is partial and the autonomous
+acceptance trace remains open; neither is represented as complete.
