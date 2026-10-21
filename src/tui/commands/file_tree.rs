@@ -15,9 +15,30 @@
 //! deliberately has no path-to-document code of its own: the tree is a
 //! navigator, and `open_editor` is the only thing that turns a path into a
 //! document attachment (and reauthorizes it via `DocumentOpen`).
+//!
+//! ## The keymap
+//!
+//! [`handle_panel_key`] owns every key the tree pane claims, and it is the
+//! whole of the tree's keymap: navigation, the **peek** motion (`l`/`h`),
+//! the panel-local **live filter**, paging and the refresh. The editor
+//! command module calls it while the tree holds the focus; it is not
+//! called from anywhere else, so the tree's verbs and the editor's verbs
+//! cannot both claim the same key.
+//!
+//! ## Peek, not re-root
+//!
+//! `l` expands the selected directory *in place* and moves the cursor into
+//! it; `h` moves the cursor back out to the parent row and collapses it.
+//! The daemon's listing window is three levels deep, so a directory at the
+//! window's edge cannot show its children — the **scope** slides instead:
+//! the scope becomes that directory's parent and the directory is expanded
+//! there. A scope slide is a daemon round-trip (the scope travels with the
+//! request); everything else is local navigation over the listing the
+//! daemon already answered.
 
 use std::path::PathBuf;
 
+use crate::tui::app::state::file_tree::{PeekStep, PeekUp, TreePanelMode};
 use crate::tui::app::App;
 use crate::tui::file_tree::TreeNodeKind;
 use crate::tui::task_lifecycle::TuiTaskKind;
@@ -464,53 +485,93 @@ pub fn page_selection(app: &mut App, direction: isize) {
 /// [`crate::tui::app::state::file_tree`]. A path that is not a directory in
 /// the current listing, or is already the root, does nothing at all rather
 /// than issuing a request the daemon would answer with nothing.
+///
+/// Under the peek motion this no longer re-roots the pane: a directory
+/// whose children are still inside the listing window is expanded *in
+/// place* and the cursor moves into it, and only a directory at the
+/// window's edge slides the scope to its parent. The parent and the
+/// siblings stay visible — that is the difference between peeking into a
+/// directory and re-rooting the pane on it.
 pub fn descend_to(app: &mut App, path: &str) {
-    if !app.file_tree_state.set_root_prefix(path) {
-        return;
+    match app.file_tree_state.peek_into(path) {
+        PeekStep::Enter { directory } => {
+            app.file_tree_state.expand_and_enter(&directory);
+            // The listing is re-requested for the scope the pane is showing,
+            // so what the pane draws is the daemon's current answer rather
+            // than a listing that may predate the last edit.
+            rebuild(app);
+        }
+        PeekStep::Slide { scope, directory } => {
+            if !app.file_tree_state.set_root_prefix(&scope) {
+                return;
+            }
+            // The scope moved, so the directory is a top-level row of the
+            // new scope; it is expanded there and the cursor enters it once
+            // the relist lands.
+            app.file_tree_state.expand_and_select(&directory);
+            app.file_tree_state.set_pending_cursor(&directory);
+            rebuild(app);
+        }
+        PeekStep::None => {}
     }
-    rebuild(app);
 }
 
 /// Go back one level: the `h`/left-arrow verb.
 ///
-/// Leaves the current root and lists its parent. At the workspace root there
-/// is no level to leave, so this falls back to the in-scope verb
-/// ([`leave_selected`]) rather than making the key inert at the one depth
-/// every listing starts at — collapse an open directory in place, otherwise
-/// step the cursor to the parent row.
+/// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
+/// enters a directory, `h` leaves the one the cursor is in. The cursor
+/// inside a directory moves to its parent row and that directory collapses;
+/// the cursor on a top-level row slides the scope up, with the old scope
+/// root expanded in the new scope. At the workspace root there is no scope
+/// to slide to, so the selected directory collapses in place — the key is
+/// never dead.
 pub fn ascend_one_level(app: &mut App) {
-    if !app.file_tree_state.ascend_root() {
-        leave_selected(app);
-        return;
+    match app.file_tree_state.peek_up() {
+        PeekUp::Leave { parent } => {
+            app.file_tree_state.leave_into(&parent);
+        }
+        PeekUp::Slide { scope, root } => {
+            if !app.file_tree_state.set_root_prefix(&scope) {
+                return;
+            }
+            // The old scope root becomes a top-level row of the new scope,
+            // expanded, with the cursor on it.
+            app.file_tree_state.expand_and_select(&root);
+            rebuild(app);
+        }
+        PeekUp::Collapse { directory } => {
+            app.file_tree_state.collapse(&directory);
+        }
+        PeekUp::None => {}
     }
-    rebuild(app);
 }
 
-/// Go back one level *within* the current listing: collapse an open
-/// directory in place, or step the cursor to the parent row.
-///
-/// The `h` fallback at the workspace root, where [`ascend_one_level`] has
-/// nowhere to go.
-pub fn leave_selected(app: &mut App) {
-    app.file_tree_state.leave_selected();
-}
-
-/// Open the selected file, or toggle the selected directory.
+/// Open the selected file, or enter the selected directory.
 ///
 /// The open path is `open_editor` verbatim, so the tree inherits its lexical
 /// validation, its already-open short-circuit, its daemon-authorized
 /// attachment, and its request/generation discipline without duplicating any
 /// of them.
+///
+/// A **directory** is entered, not toggled: the standalone toggle verb is
+/// retired, and `Enter` is the same motion as `l` (see [`descend_to`]).
 pub fn activate_selected(app: &mut App) {
     let Some(row) = app.file_tree_state.selected_row() else {
         return;
     };
     if row.kind == TreeNodeKind::Directory {
-        app.file_tree_state.toggle_selected();
+        descend_to(app, &row.path);
         return;
     }
     // A directory is expandable, a file is openable. Anything else is not a
     // navigable entry and must not reach the open path.
+    //
+    // The keyboard moves to the editor only once the document is attached:
+    // the open is asynchronous, and handing the user an empty editor
+    // because the key was pressed a moment too early is worse than waiting
+    // for the daemon's answer. `complete_editor_open_handoff` performs the
+    // handoff on the completion path.
+    app.file_tree_state.set_pending_editor_handoff(&row.path);
     open_editor(app, &row.path);
 }
 
@@ -540,6 +601,195 @@ pub fn set_focus(app: &mut App, focused: bool) {
             session.presentation_mut().mode = crate::tui::editor::EditorMode::Normal;
         }
     }
+}
+
+/// Handle one key while the file-tree pane holds focus.
+///
+/// Returns `true` only for keys the tree owns. Everything else returns
+/// `false` so it falls through to the editor and composer unchanged — the
+/// non-modal contract depends on this being a strict subset.
+///
+/// This is the whole of the tree's keymap:
+///
+/// | key | verb |
+/// |---|---|
+/// | `j` / `Down` | one row down |
+/// | `k` / `Up` | one row up |
+/// | `l` / `Right` | peek down: expand the directory and enter it, or slide the scope |
+/// | `h` / `Left` / `Backspace` | peek up: leave the directory, or slide the scope up |
+/// | `Enter` | the same as `l` on a directory, open the file on a file |
+/// | `r` | re-list the scope |
+/// | `Ctrl+d` / `Ctrl+u` | page down / up |
+/// | `i` | the panel's filter (insert mode) |
+/// | `Esc` | leave the tree; in insert mode, leave insert mode and keep the filter |
+///
+/// The panel's mode is **panel-local**: the composer badge reports the
+/// app-level mode, so a filter being typed is never reported as the
+/// composer being in Insert.
+// The editor-side keymap is the caller; until that call lands the crate has
+// no live user of this function, and the lint is about the wiring rather
+// than about the code.
+pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    // Paging is checked before the character arms below: `Ctrl+d`/`Ctrl+u`
+    // carry `Char('d')`/`Char('u')` codes, and a listing that does not fit
+    // the pane needs a verb that moves more than one row. The tree only
+    // claims them while focused, so the editor's own half-page motions are
+    // untouched.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('d') => {
+                page_selection(app, 1);
+                return true;
+            }
+            KeyCode::Char('u') => {
+                page_selection(app, -1);
+                return true;
+            }
+            _ => {}
+        }
+    }
+    // The panel's own insert mode owns the printable keys: the filter is
+    // typed into the pane, and the navigation verbs are not reachable until
+    // the filter is done. Paging stays available in both modes, because a
+    // `Ctrl+d` that leaked to the editor would scroll a document the user
+    // is not looking at.
+    if app.file_tree_state.panel_mode == TreePanelMode::Insert {
+        return handle_panel_insert_key(app, key);
+    }
+    match key.code {
+        // Leaving the tree returns focus to the editor buffer without
+        // changing the route, so the composer stays reachable.
+        KeyCode::Esc => {
+            set_focus(app, false);
+            true
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            move_selection(app, 1);
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            move_selection(app, -1);
+            true
+        }
+        // `l` peeks down: the directory is expanded and the cursor moves
+        // into it, or the scope slides when the listing window runs out.
+        KeyCode::Char('l') | KeyCode::Right => {
+            peek_into_selected(app);
+            true
+        }
+        // `h` peeks up. `Backspace` is the same verb: it is what a user
+        // reaches for when the cursor is "inside" something.
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+            ascend_one_level(app);
+            true
+        }
+        // Enter opens a file, or enters a directory, through the existing
+        // controller-backed open path.
+        KeyCode::Enter => {
+            activate_selected(app);
+            true
+        }
+        // `r` re-walks the workspace.
+        KeyCode::Char('r') => {
+            rebuild(app);
+            true
+        }
+        // `i` opens the panel's live filter. The mode is panel-local, so
+        // the app-level mode (and the composer badge) does not move.
+        KeyCode::Char('i') => {
+            app.file_tree_state.panel_mode = TreePanelMode::Insert;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Handle one key while the panel's filter is being typed.
+///
+/// The filter is panel state, so it survives the mode change: `Esc` leaves
+/// insert mode and **keeps** the filter, and the rows stay filtered so the
+/// user can navigate them.
+fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match key.code {
+        // `Esc` leaves insert mode and keeps the filter: the user is
+        // navigating the filtered rows now, not discarding the search.
+        KeyCode::Esc => {
+            app.file_tree_state.panel_mode = TreePanelMode::Normal;
+            true
+        }
+        KeyCode::Backspace => {
+            app.file_tree_state.filter.pop();
+            app.file_tree_state.reanchor_selection();
+            true
+        }
+        // Enter applies the filter: the same rows stay, and the mode goes
+        // back to navigation.
+        KeyCode::Enter => {
+            app.file_tree_state.panel_mode = TreePanelMode::Normal;
+            true
+        }
+        // Only plain (or shifted) characters are typed. A control or alt
+        // combination is a chord, not a character.
+        KeyCode::Char(character)
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.file_tree_state.filter.push(character);
+            app.file_tree_state.reanchor_selection();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The `l`/right motion on the current selection.
+///
+/// A file has nothing to peek into, so the verb is a no-op there — `Enter`
+/// opens it instead.
+pub fn peek_into_selected(app: &mut App) {
+    let Some(path) = app.file_tree_state.selected_row().map(|row| row.path) else {
+        return;
+    };
+    descend_to(app, &path);
+}
+
+/// Move the keyboard from the tree to the editor after a document open.
+///
+/// The open is asynchronous, so the handoff cannot happen when the key is
+/// pressed: the document has to be attached first, or the user would be
+/// handed an empty editor to type into. The tree therefore records the
+/// intent when it opens a file, and the completion path calls this with the
+/// daemon's answer.
+///
+/// `succeeded` is that answer. A failed open keeps the keyboard in the tree:
+/// there is no document to look at.
+pub fn complete_editor_open_handoff(app: &mut App, succeeded: bool) {
+    let Some(path) = app.file_tree_state.take_pending_editor_handoff() else {
+        return;
+    };
+    if !succeeded {
+        return;
+    }
+    // The completion must be the open the tree asked for. A second open
+    // elsewhere supersedes it, and then the tree must not steal the
+    // keyboard back.
+    if app.editor_state.path.as_deref() != Some(path.as_str()) {
+        return;
+    }
+    hand_off_to_editor(app);
+}
+
+/// Give the keyboard to the editor: the tree loses the focus, and the
+/// editor is put in **Normal**.
+///
+/// Normal, and not merely "not Insert": an editor left in Select would keep
+/// extending a selection that no longer means anything once the tree moved
+/// on, and the stale highlight would survive a document the user has not
+/// read yet.
+pub fn hand_off_to_editor(app: &mut App) {
+    set_focus(app, false);
+    super::editor::enter_editor_normal(app);
 }
 
 #[cfg(test)]
@@ -770,8 +1020,119 @@ mod tests {
         }
     }
 
+    /// The daemon's answer for the workspace root in the worked example.
+    ///
+    /// The window is three levels deep: `src/tui/app` is the last row, and
+    /// its own child is not in the listing — which is exactly what makes the
+    /// scope slide necessary.
+    fn worked_example_root() -> WorkspaceDirectoryListResultDto {
+        WorkspaceDirectoryListResultDto {
+            nodes: vec![
+                WorkspaceDirectoryNodeDto {
+                    name: "src".to_string(),
+                    path: "src".to_string(),
+                    depth: 1,
+                    kind: WorkspaceDirectoryNodeKindDto::Directory,
+                    children: Some(vec![WorkspaceDirectoryNodeDto {
+                        name: "tui".to_string(),
+                        path: "src/tui".to_string(),
+                        depth: 2,
+                        kind: WorkspaceDirectoryNodeKindDto::Directory,
+                        children: Some(vec![
+                            WorkspaceDirectoryNodeDto {
+                                name: "editor.rs".to_string(),
+                                path: "src/tui/editor.rs".to_string(),
+                                depth: 3,
+                                kind: WorkspaceDirectoryNodeKindDto::File,
+                                children: None,
+                            },
+                            WorkspaceDirectoryNodeDto {
+                                name: "app".to_string(),
+                                path: "src/tui/app".to_string(),
+                                depth: 3,
+                                kind: WorkspaceDirectoryNodeKindDto::Directory,
+                                children: None,
+                            },
+                        ]),
+                    }]),
+                },
+                WorkspaceDirectoryNodeDto {
+                    name: "Cargo.toml".to_string(),
+                    path: "Cargo.toml".to_string(),
+                    depth: 1,
+                    kind: WorkspaceDirectoryNodeKindDto::File,
+                    children: None,
+                },
+            ],
+            examined: 5,
+            ..FakeListingClient::ready_listing("workspace-test", &[])
+        }
+    }
+
+    /// The daemon's answer for the `src/tui` scope: `app` and its child.
+    fn worked_example_tui_scope() -> WorkspaceDirectoryListResultDto {
+        WorkspaceDirectoryListResultDto {
+            prefix: "src/tui".to_string(),
+            nodes: vec![WorkspaceDirectoryNodeDto {
+                name: "app".to_string(),
+                path: "src/tui/app".to_string(),
+                depth: 1,
+                kind: WorkspaceDirectoryNodeKindDto::Directory,
+                children: Some(vec![WorkspaceDirectoryNodeDto {
+                    name: "mod.rs".to_string(),
+                    path: "src/tui/app/mod.rs".to_string(),
+                    depth: 2,
+                    kind: WorkspaceDirectoryNodeKindDto::File,
+                    children: None,
+                }]),
+            }],
+            examined: 2,
+            ..FakeListingClient::ready_listing("workspace-test", &[])
+        }
+    }
+
+    /// The daemon's answer for the `src` scope: `tui` and its children.
+    fn worked_example_src_scope() -> WorkspaceDirectoryListResultDto {
+        WorkspaceDirectoryListResultDto {
+            prefix: "src".to_string(),
+            nodes: vec![WorkspaceDirectoryNodeDto {
+                name: "tui".to_string(),
+                path: "src/tui".to_string(),
+                depth: 1,
+                kind: WorkspaceDirectoryNodeKindDto::Directory,
+                children: Some(vec![
+                    WorkspaceDirectoryNodeDto {
+                        name: "editor.rs".to_string(),
+                        path: "src/tui/editor.rs".to_string(),
+                        depth: 2,
+                        kind: WorkspaceDirectoryNodeKindDto::File,
+                        children: None,
+                    },
+                    WorkspaceDirectoryNodeDto {
+                        name: "app".to_string(),
+                        path: "src/tui/app".to_string(),
+                        depth: 2,
+                        kind: WorkspaceDirectoryNodeKindDto::Directory,
+                        children: None,
+                    },
+                ]),
+            }],
+            examined: 3,
+            ..FakeListingClient::ready_listing("workspace-test", &[])
+        }
+    }
+
+    /// The row paths the pane is showing.
+    fn shown(app: &App) -> Vec<String> {
+        app.file_tree_state
+            .rows()
+            .iter()
+            .map(|row| row.path.clone())
+            .collect()
+    }
+
     #[tokio::test]
-    async fn descending_sends_the_pane_scope_to_the_daemon_and_relists_it() {
+    async fn peeking_into_a_directory_expands_it_in_place_and_keeps_the_scope() {
         let root = tempfile::tempdir().expect("tempdir");
         let (mut app, client) =
             app_with_listing_client(root.path(), root_listing_with_a_directory());
@@ -788,28 +1149,36 @@ mod tests {
         );
 
         descend_to(&mut app, "src");
-        assert_eq!(app.file_tree_state.root_prefix(), "src");
+        assert_eq!(
+            app.file_tree_state.root_prefix(),
+            "",
+            "peeking does not re-root the pane: the parent and the siblings stay"
+        );
         drain_completion(&mut app, &mut rx).await;
 
         assert_eq!(
             client.requested_prefixes(),
-            vec!["".to_string(), "src".to_string()],
-            "the scope travels with the request; the pane never filters a local walk"
+            vec!["".to_string(), "".to_string()],
+            "the listing is re-requested for the scope the pane is showing"
         );
         assert_eq!(
-            app.file_tree_state
-                .rows()
-                .iter()
-                .map(|row| row.path.as_str())
-                .collect::<Vec<_>>(),
-            vec!["src/lib.rs", "src/app.rs"],
-            "the pane shows the daemon's answer for that subtree, in the daemon's order"
+            shown(&app),
+            vec![
+                "src".to_string(),
+                "src/lib.rs".to_string(),
+                "top.rs".to_string()
+            ],
+            "the directory is expanded in place"
         );
-        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/lib.rs"));
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src/lib.rs"),
+            "the cursor moves into the directory"
+        );
     }
 
     #[tokio::test]
-    async fn descending_where_the_user_already_is_issues_no_request() {
+    async fn peeking_at_something_that_is_not_a_directory_issues_no_request() {
         let root = tempfile::tempdir().expect("tempdir");
         let (mut app, client) =
             app_with_listing_client(root.path(), root_listing_with_a_directory());
@@ -818,17 +1187,20 @@ mod tests {
         rebuild_once(&mut app, &mut rx).await;
 
         let before = client.requests.load(std::sync::atomic::Ordering::SeqCst);
-        descend_to(&mut app, "");
+        // A file has nothing to peek into, and a path the daemon never
+        // reported is not a directory at all.
+        descend_to(&mut app, "top.rs");
+        descend_to(&mut app, "not-in-the-listing");
         assert_eq!(
             client.requests.load(std::sync::atomic::Ordering::SeqCst),
             before,
-            "re-rooting at the directory already being listed must not round-trip"
+            "a peek that cannot happen must not round-trip"
         );
         assert!(rx.try_recv().is_err(), "and must leave nothing pending");
     }
 
     #[tokio::test]
-    async fn ascending_lists_the_parent_and_lands_the_cursor_where_it_came_from() {
+    async fn ascending_from_a_top_level_row_slides_the_scope_up() {
         let root = tempfile::tempdir().expect("tempdir");
         let (mut app, client) =
             app_with_listing_client(root.path(), root_listing_with_a_directory());
@@ -837,25 +1209,36 @@ mod tests {
         app.tui_cmd_tx = Some(tx);
         rebuild_once(&mut app, &mut rx).await;
 
-        descend_to(&mut app, "src");
-        drain_completion(&mut app, &mut rx).await;
+        // Put the pane in the `src` scope.
+        assert!(app.file_tree_state.set_root_prefix("src"));
+        rebuild_once(&mut app, &mut rx).await;
+        assert_eq!(app.file_tree_state.root_prefix(), "src");
 
         ascend_one_level(&mut app);
-        assert_eq!(app.file_tree_state.root_prefix(), "");
+        assert_eq!(
+            app.file_tree_state.root_prefix(),
+            "",
+            "the scope slides up to the parent of the scope root"
+        );
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
             Some("src"),
-            "stepping back out puts the cursor on the directory just left behind"
+            "the cursor lands on the old scope root"
+        );
+        assert!(
+            app.file_tree_state.expanded.contains("src"),
+            "the old scope root is expanded in the new scope"
         );
         assert_eq!(
             client.requested_prefixes(),
-            vec!["".to_string(), "src".to_string(), "".to_string()]
+            vec!["".to_string(), "src".to_string(), "".to_string()],
+            "the scope travels with the request"
         );
     }
 
     #[test]
-    fn ascending_at_the_workspace_root_falls_back_to_the_in_listing_verb() {
+    fn ascending_at_the_workspace_root_collapses_the_selected_directory_in_place() {
         let root = tempfile::tempdir().expect("tempdir");
         // No command channel: if the fallback issued a walk it would fail
         // loudly, which is how this asserts that it did not.
@@ -878,6 +1261,7 @@ mod tests {
             root.path().to_path_buf(),
             listing
         ));
+        app.file_tree_state.expanded.insert("src".to_string());
 
         ascend_one_level(&mut app);
         assert!(
@@ -885,10 +1269,143 @@ mod tests {
             "there is no level above the workspace root"
         );
         assert_eq!(app.file_tree_state.status, FileTreeStatus::Ready);
+        assert!(
+            !app.file_tree_state.expanded.contains("src"),
+            "the selected directory collapses where it stands"
+        );
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
             Some("src"),
             "`h` must not become a key that does nothing at the top"
+        );
+    }
+
+    /// The worked example from the peek design, end to end.
+    ///
+    /// `l` expands and enters; at the window's edge the scope slides;
+    /// `h` leaves and collapses; on a top-level row the scope slides back
+    /// up. The scope is the only thing that moves, and it only ever moves
+    /// when the listing window runs out.
+    #[tokio::test]
+    async fn the_peek_motion_walks_the_worked_example() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, client) = app_with_listing_client(root.path(), worked_example_root());
+        client.with_scoped("src/tui", worked_example_tui_scope());
+        client.with_scoped("src", worked_example_src_scope());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+
+        rebuild_once(&mut app, &mut rx).await;
+        assert_eq!(app.file_tree_state.root_prefix(), "");
+        assert_eq!(
+            shown(&app),
+            vec!["src".to_string(), "Cargo.toml".to_string()],
+            "start: the scope's own children"
+        );
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src"));
+
+        // `l` on `src`: expanded in place, the cursor moves into it.
+        descend_to(&mut app, "src");
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(app.file_tree_state.root_prefix(), "");
+        assert_eq!(
+            shown(&app),
+            vec![
+                "src".to_string(),
+                "src/tui".to_string(),
+                "Cargo.toml".to_string()
+            ]
+        );
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui"));
+
+        // `l` on `src/tui`: still inside the window, so still in place.
+        descend_to(&mut app, "src/tui");
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(app.file_tree_state.root_prefix(), "");
+        assert_eq!(
+            shown(&app),
+            vec![
+                "src".to_string(),
+                "src/tui".to_string(),
+                "src/tui/editor.rs".to_string(),
+                "src/tui/app".to_string(),
+                "Cargo.toml".to_string()
+            ]
+        );
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src/tui/editor.rs")
+        );
+
+        // `l` on `src/tui/app`: its children are outside the window, so the
+        // scope slides to its parent and the directory is expanded there.
+        descend_to(&mut app, "src/tui/app");
+        assert_eq!(
+            app.file_tree_state.root_prefix(),
+            "src/tui",
+            "the scope slides to the directory's parent"
+        );
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(
+            shown(&app),
+            vec!["src/tui/app".to_string(), "src/tui/app/mod.rs".to_string()]
+        );
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src/tui/app/mod.rs"),
+            "the cursor moves into the directory"
+        );
+
+        // `h` from inside `app`: up to its parent row, and it collapses.
+        ascend_one_level(&mut app);
+        assert_eq!(app.file_tree_state.root_prefix(), "src/tui");
+        assert_eq!(shown(&app), vec!["src/tui/app".to_string()]);
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui/app"));
+        assert!(
+            !app.file_tree_state.expanded.contains("src/tui/app"),
+            "the directory being left is collapsed"
+        );
+
+        // `h` on a top-level row: the scope slides up, with the old scope
+        // root expanded in the new scope.
+        ascend_one_level(&mut app);
+        assert_eq!(app.file_tree_state.root_prefix(), "src");
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(
+            shown(&app),
+            vec![
+                "src/tui".to_string(),
+                "src/tui/editor.rs".to_string(),
+                "src/tui/app".to_string()
+            ]
+        );
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui"));
+
+        // `h` again: back to the workspace root.
+        ascend_one_level(&mut app);
+        assert_eq!(app.file_tree_state.root_prefix(), "");
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(
+            shown(&app),
+            vec![
+                "src".to_string(),
+                "src/tui".to_string(),
+                "Cargo.toml".to_string()
+            ]
+        );
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src"));
+
+        assert_eq!(
+            client.requested_prefixes(),
+            vec![
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "src/tui".to_string(),
+                "src".to_string(),
+                "".to_string()
+            ],
+            "the scope travels with the request, and only the slides change it"
         );
     }
 
@@ -1619,5 +2136,236 @@ mod tests {
             "genuinely empty must not claim truncation"
         );
         assert!(rendered_empty.truncated_reason.is_none());
+    }
+
+    /// A key event with no modifiers.
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    /// One node of a hand-built listing.
+    fn node(
+        path: &str,
+        depth: usize,
+        kind: TreeNodeKind,
+        children: Option<Vec<crate::tui::file_tree::TreeNode>>,
+    ) -> crate::tui::file_tree::TreeNode {
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        crate::tui::file_tree::TreeNode {
+            name,
+            path: path.to_string(),
+            depth,
+            kind,
+            children,
+        }
+    }
+
+    /// An app whose tree shows `nodes` and holds the focus.
+    fn app_with_tree(root: &std::path::Path, nodes: Vec<crate::tui::file_tree::TreeNode>) -> App {
+        let mut app = app_with_root(root);
+        apply_listing_to_tree(&mut app, root, nodes);
+        app.file_tree_state.visible = true;
+        set_focus(&mut app, true);
+        app
+    }
+
+    /// Put `nodes` in the pane, as a completed daemon listing would.
+    fn apply_listing_to_tree(
+        app: &mut App,
+        root: &std::path::Path,
+        nodes: Vec<crate::tui::file_tree::TreeNode>,
+    ) {
+        let listing = crate::tui::file_tree::TreeListing {
+            nodes,
+            examined: 0,
+            ..Default::default()
+        };
+        let (generation, request_id) = app.file_tree_state.begin_rebuild(root.to_path_buf());
+        assert!(app.file_tree_state.apply_listing(
+            generation,
+            request_id,
+            root.to_path_buf(),
+            listing
+        ));
+    }
+
+    /// The panel's own insert mode: printable keys type into the filter, the
+    /// navigation verbs stop being navigation, and the filter survives
+    /// leaving insert mode.
+    #[test]
+    fn the_panel_filter_is_typed_in_insert_mode_and_survives_esc() {
+        use crossterm::event::KeyCode;
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut app = app_with_tree(
+            root.path(),
+            vec![
+                node("Main.rs", 1, TreeNodeKind::File, None),
+                node("other.txt", 1, TreeNodeKind::File, None),
+            ],
+        );
+        assert_eq!(app.file_tree_state.rows().len(), 2);
+
+        assert!(handle_panel_key(&mut app, key(KeyCode::Char('i'))));
+        assert_eq!(app.file_tree_state.panel_mode, TreePanelMode::Insert);
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Normal,
+            "the composer badge must not report a panel-local insert"
+        );
+
+        assert!(handle_panel_key(&mut app, key(KeyCode::Char('m'))));
+        assert!(handle_panel_key(&mut app, key(KeyCode::Char('a'))));
+        assert_eq!(app.file_tree_state.filter, "ma");
+        assert_eq!(
+            app.file_tree_state.rows().len(),
+            1,
+            "the filter narrows the rows the pane shows"
+        );
+
+        // In insert mode the navigation verbs are text.
+        assert!(handle_panel_key(&mut app, key(KeyCode::Char('j'))));
+        assert_eq!(app.file_tree_state.filter, "maj");
+
+        // Backspace edits the filter.
+        assert!(handle_panel_key(&mut app, key(KeyCode::Backspace)));
+        assert_eq!(app.file_tree_state.filter, "ma");
+
+        // `Esc` leaves insert mode and **keeps** the filter: the user is
+        // navigating the filtered rows now, not discarding the search.
+        assert!(handle_panel_key(&mut app, key(KeyCode::Esc)));
+        assert_eq!(app.file_tree_state.panel_mode, TreePanelMode::Normal);
+        assert_eq!(app.file_tree_state.filter, "ma", "the filter survives");
+        assert_eq!(
+            app.file_tree_state.rows().len(),
+            1,
+            "and so does the filter"
+        );
+    }
+
+    /// `Enter` on a directory is the peek motion, not a bare toggle: the
+    /// directory is expanded *and* the cursor moves into it.
+    #[tokio::test]
+    async fn enter_on_a_directory_peeks_instead_of_toggling() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, _client) =
+            app_with_listing_client(root.path(), root_listing_with_a_directory());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        rebuild_once(&mut app, &mut rx).await;
+        app.file_tree_state.selected = Some("src".to_string());
+
+        activate_selected(&mut app);
+        assert!(
+            app.file_tree_state.expanded.contains("src"),
+            "the directory is expanded"
+        );
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src/lib.rs"),
+            "and the cursor moves into it, which a bare toggle never did"
+        );
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src/lib.rs"),
+            "the relist keeps the cursor inside the directory"
+        );
+    }
+
+    /// Opening a file from the tree hands the keyboard to the editor — and
+    /// only once the document is attached.
+    ///
+    /// The open is asynchronous, so the handoff cannot happen when the key is
+    /// pressed: the user would be handed an empty editor. The tree records
+    /// the intent, and the completion path completes it.
+    #[tokio::test]
+    async fn opening_a_file_hands_the_keyboard_to_the_editor_after_the_open_succeeds() {
+        use crate::tui::editor::EditorMode;
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, _client) = app_with_listing_client(
+            root.path(),
+            FakeListingClient::ready_listing("workspace-test", &["lib.rs"]),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        apply_listing_to_tree(
+            &mut app,
+            root.path(),
+            vec![node("lib.rs", 1, TreeNodeKind::File, None)],
+        );
+        app.file_tree_state.visible = true;
+        set_focus(&mut app, true);
+        app.file_tree_state.selected = Some("lib.rs".to_string());
+
+        activate_selected(&mut app);
+        assert!(
+            app.ui_state.tree_focused,
+            "the keyboard waits for the document to arrive"
+        );
+        assert_eq!(
+            app.file_tree_state.pending_editor_handoff.as_deref(),
+            Some("lib.rs"),
+            "the handoff is pending"
+        );
+
+        // The document arrived, and the editor is in Insert — the mode the
+        // handoff has to override, because "not Insert" is not "Normal".
+        let session = app
+            .editor_state
+            .session
+            .as_mut()
+            .expect("the open installed a session");
+        session.presentation_mut().mode = EditorMode::Insert;
+
+        complete_editor_open_handoff(&mut app, true);
+        assert!(
+            !app.ui_state.tree_focused,
+            "the keyboard belongs to the editor now"
+        );
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("the session is still there")
+                .presentation()
+                .mode,
+            EditorMode::Normal,
+            "the editor is in Normal, not merely out of Insert"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Normal
+        );
+        assert!(app.file_tree_state.pending_editor_handoff.is_none());
+    }
+
+    /// A failed open keeps the keyboard in the tree: there is no document to
+    /// look at.
+    #[tokio::test]
+    async fn a_failed_open_keeps_the_keyboard_in_the_tree() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, _client) = app_with_listing_client(
+            root.path(),
+            FakeListingClient::ready_listing("workspace-test", &["lib.rs"]),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        apply_listing_to_tree(
+            &mut app,
+            root.path(),
+            vec![node("lib.rs", 1, TreeNodeKind::File, None)],
+        );
+        app.file_tree_state.visible = true;
+        set_focus(&mut app, true);
+        app.file_tree_state.selected = Some("lib.rs".to_string());
+
+        activate_selected(&mut app);
+        complete_editor_open_handoff(&mut app, false);
+
+        assert!(
+            app.ui_state.tree_focused,
+            "a failed open does not move the keyboard"
+        );
+        assert!(app.file_tree_state.pending_editor_handoff.is_none());
     }
 }

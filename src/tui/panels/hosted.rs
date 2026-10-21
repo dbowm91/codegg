@@ -159,7 +159,7 @@ impl SidePanel for HostPanel {
         if !self.has_content() {
             return None;
         }
-        // The widget's own keymap, not a paraphrase of it. `/files` re-roots
+        // The widget's own keymap, not a paraphrase of it. `/files` peeks
         // with `l`, expands with `enter` and pages with `^d`/`^u`, and none of
         // those are `i act`; a docked panel that advertised the generic line was
         // teaching the wrong keys for the one box whose keys cannot be guessed.

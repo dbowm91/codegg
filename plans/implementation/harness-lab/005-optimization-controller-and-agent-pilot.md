@@ -101,12 +101,14 @@ No production database, wire protocol, or installed dependency changes. Existing
 
 The multi-iteration controller, append-only run checkpoint, candidate partial-row
 validation, and ACP usage/tool-argument telemetry are implemented and locally
-verified. This milestone is conditionally closed because the requested live pilot
-could not be executed safely: the pinned shared provider profile has no exact
-LongCat 2.5 route, and this execution environment has no secret-safe channel for
-the chat-supplied temporary credential. The credential was not copied into a
-command, file, checkpoint, output, or repository. See
-`plans/closure/harness-lab/005-status.md` for the remaining conditions and audit.
+verified. The live catalog and stored credential in the current CodeGG
+installation enabled a frozen Task 1 pair: LongCat passed the 10-test verifier;
+Muse Spark ended in a native turn failure without provider usage and made no task
+file changes. The pilot stopped before Task 2 under the usage stop rule. No
+credential value was copied into a command, file, checkpoint, output, or
+repository. M005 remains conditionally closed; see
+`plans/closure/harness-lab/005-status.md` and its redacted evidence artifact for
+the recorded receipts and remaining conditions.
 
 ## 11. Required verification commands
 

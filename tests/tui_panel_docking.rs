@@ -1705,7 +1705,7 @@ async fn the_terminal_hint_row_only_exists_while_the_panel_holds_the_keyboard() 
          is never vacated, so the strip does not move when the panel lets go"
     );
     assert!(
-        unfocused[focused_prompt - 1].contains("COMP"),
+        unfocused[focused_prompt - 1].contains("space help"),
         "the row the panel vacated now names the composer's own verbs, got {}",
         unfocused[focused_prompt - 1]
     );
