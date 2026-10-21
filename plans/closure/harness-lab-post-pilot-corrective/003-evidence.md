@@ -88,7 +88,7 @@ OK
 
 ```
 $ python3 -m unittest discover -s dev/harness_lab/tests
-Ran 117 tests in 4.544s
+Ran 232 tests in 28.659s
 
 OK
 

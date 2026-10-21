@@ -167,46 +167,73 @@ See `plans/closure/harness-lab-post-pilot-corrective/003-evidence.md`.
 
 ## 5. Remaining conditions
 
-These are the precise conditions that block a strict C003 closure. Each is
-stated so the next run can discharge it directly.
+C003 is closed, so these are not closure blockers. They are the conditions
+that remain **outside** this closure, stated so the next run can discharge
+them directly.
 
-1. **An approved model route with C001-verified spend authority.** The plan
-   requires it for every actual provider request. The C001 preflight is
-   implemented and refuses a policy without an enforceable cap, so a budget
-   policy must be supplied — with a stated `cost_enforcement`, or a
-   retry-safe provider quota — before any live proposal. This needs an
-   operator decision that has not been made.
-2. **A genuine, currently reproducible harness defect.** §5-A forbids
-   fabricating one and §9 requires reporting blocked if none exists. No such
-   defect is in evidence, and none was planted.
-3. **One authenticated bounded OpenCode proposal** in a dedicated linked
-   worktree with a private config, which will also confirm the JSON event
-   payload shape against the pinned version.
-4. **A real candidate qualification run** with fmt/clippy/focused tests, an
-   isolated build, the original failing verifier, protected regressions, a
-   hidden holdout, and a complete paired score.
-5. **The interruption proof during that actual run**, not only against the
-   synthetic subprocesses C002 used.
+1. **A second serving route for the proposer.** The proposal ran on
+   `opencode-go/muse-spark-1.3-contributor`. `opencode-go/beam-free`'s
+   upstream answered a retryable `429` — "Upstream request failed: Endpoint
+   is unavailable." / "[upstream_unavailable_error] The inference service is
+   temporarily unavailable" — repeatedly over ~16 minutes — and
+   `longcat-2.5-preview-free`'s upstream answers HTTP 400 on every attempt.
+   One approved route served the proposal; the others are recorded as
+   measured failures, not as successes.
+2. **The accepted candidate is not merged.** The patch stays in its candidate
+   worktree by design: §9 forbids merging or pushing it. Merging it is a
+   separate, explicitly authorized action.
+3. **The qualification path has no cumulative deadline.** The plan asks the
+   resume to retain the original deadline. The optimization checkpoint stores
+   `deadline_unix` and reuses the stored value; the **qualification** path
+   restarts `--max-wallclock` on each invocation and instead binds the resume
+   to the immutable inputs — the base revision, the suite digest, the patch
+   digest and the candidate binary fingerprint. That binding is real and
+   tested, but it is not the same property as a retained deadline.
+4. **The bounded compile-correction retry was never exercised live.** The
+   candidate compiled on the first build, so the correction loop was only
+   exercised by its labelled fault-injection tests. A candidate that fails to
+   compile would exercise it for real.
+5. **The harness still has a load-dependent flake.** Under heavy load the
+   live tool trial can lose its ACP tool notifications and end as
+   `infrastructure_error`. That is now an *unmeasured* trial that is re-run
+   rather than scored, which is the right treatment, but the flake itself is
+   a harness defect that is not yet fixed.
 
 ## 6. Planning audit
 
 - No plan file was edited to make this implementation look complete.
-- No candidate worktree was created, no candidate code was merged, and
-  nothing was pushed from a candidate.
+- No candidate worktree was created for this closure's own sake, no candidate
+  code was merged, and nothing was pushed from a candidate. The accepted patch
+  remains in `/private/tmp/c003-candidate`.
 - The fault-injected compile-correction qualification is labelled as a
   mechanics qualification, not as a real fix.
-- No live provider call was made and no model route was exercised.
-- The baseline expected outcomes were not changed to force a win.
+- **Live provider calls were made** inside an admitted, controller-enforced
+  budget policy, and every one of them is attributed to its route. Where a
+  route reported no cost, the cost is recorded as **null**, never zero.
+- The baseline expected outcomes were not changed to force a win. One suite
+  case *was* re-targeted — `repeated-identical-read-error` now bounds the
+  trial with the hard step budget instead of asserting a terminal stall that
+  ADR-0040 Option B deliberately removed — and the declared
+  `expected_terminal` was left untouched.
+- The four harness defects the live run exposed are fixed and covered by
+  tests; they are recorded in `003-evidence.md` §5.6 rather than quietly
+  absorbed.
 - The harness-lab Python suite remains wired into `scripts/verify.sh quick`
-  and the CI workflow.
+  and the CI workflow, and `scripts/verify.sh quick` passes on this branch.
 
 ## 7. Status of M004 and the C004 unblock
 
-- **M004** stays **conditionally closed**. C003's mechanical scoring half is
-  now evidenced, but M004's original live-acceptance condition — an actual
-  authenticated OpenCode correction with an independently accepted fix — is
-  not discharged.
-- **C004** stays **blocked on C003** for its final autonomy claim. Its C001
-  precondition is discharged, so what C004 still needs from C003 is the
-  accepted-defect receipt and the approved usage budget for the Task 2
-  provider pair.
+- **M004** stays **conditionally closed.** Its original condition was an
+  actual authenticated OpenCode correction with an independently accepted
+  fix, and C003 now has both: the authenticated proposal and the accepted
+  paired score. What M004 additionally asks for — a live candidate
+  qualification whose **interrupted** attempt is resumed to completion
+  without duplicate receipts — C003 also produced, on the same candidate arm.
+  M004 is therefore ready to close on a registry pass that names C003's
+  receipt; it is not closed here because this closure does not edit M004's
+  own record.
+- **C004** is **unblocked** by C003's accepted-defect receipt. Its live half
+  has now run: Task 2 was solved on one route and a 24-trial, 34.9-minute
+  sustained scenario completed inside its admitted caps. C004 stays
+  conditional on the two-route provider pair and on five unmaterialized
+  verifier bodies, not on C003.
