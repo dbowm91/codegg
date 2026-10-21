@@ -348,7 +348,7 @@ Repository baseline reconciled: `origin/main` at `9c9ffb763`. The branch head
 at merge was `2cddbff3c` (the commit that qualifies macOS for the shared
 checkout profile). The merge-base was `a9f70375` — the same baseline the
 first reconciliation used, so this reconciliation is `main`'s next 71 commits
-and the branch's next 77.
+and the branch's next 77. The merge commit on the branch is `42707515b`.
 
 **20 files conflicted in 81 hunks.** Every resolution keeps both sides'
 authority semantics; none silently dropped one.
