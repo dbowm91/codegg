@@ -864,6 +864,7 @@ fn live_context(job: JobRecord, attempt: AttemptId, root: PathBuf) -> JobExecuti
         resources,
         subject_store: None,
         source_subject_started: None,
+        process_admission: None,
     }
 }
 

@@ -79,6 +79,35 @@ impl TestJobExecutor {
     }
 }
 
+/// M005 corrective C005: refuse a process-class job at the final executor.
+///
+/// The submission boundary already refuses a process-class job for a
+/// reserved checkout, but a job can be admitted while the checkout is free
+/// and dispatched after it became reserved. The final executor is the
+/// last point before a process exists, so it re-checks.
+///
+/// The check is on the **execution's** workspace root — the one the
+/// scheduler captured from the workspace lease — and not on the job
+/// payload's working directory.
+async fn admit_process_class(
+    ctx: &JobExecutionContext,
+    kind: codegg_core::process_admission::ProcessKind,
+) -> Result<(), String> {
+    let Some(service) = ctx.process_admission.as_ref() else {
+        return Ok(());
+    };
+    let admission = service
+        .admit_scope(&ctx.workspace_root, kind)
+        .await
+        .map_err(|error| {
+            format!("the process admission authority could not be consulted: {error}")
+        })?;
+    match admission.denial() {
+        Some(denial) => Err(denial.to_string()),
+        None => Ok(()),
+    }
+}
+
 #[async_trait]
 impl JobExecutor for TestJobExecutor {
     fn kind(&self) -> ExecutorKind {
@@ -110,6 +139,14 @@ impl JobExecutor for TestJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
+        // M005 corrective C005: the final executor refuses a process-class
+        // job for a checkout reserved by a live agent-run group.
+        // c005-denial: test-job-executor
+        if let Err(error) =
+            admit_process_class(&ctx, codegg_core::process_admission::ProcessKind::Command).await
+        {
+            return failure_completion(started, ExecutorStatus::Failed, error);
+        }
         let (argv, parent_run_id, sandbox_profile, network_intent) = match &ctx.job.payload {
             JobPayload::Test {
                 argv,
@@ -290,6 +327,14 @@ impl JobExecutor for ManagedArgvExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
+        // M005 corrective C005: the final executor refuses a process-class
+        // job for a checkout reserved by a live agent-run group.
+        // c005-denial: managed-argv-executor
+        if let Err(error) =
+            admit_process_class(&ctx, codegg_core::process_admission::ProcessKind::Command).await
+        {
+            return failure_completion(started, ExecutorStatus::Failed, error);
+        }
         let argv = match &ctx.job.payload {
             JobPayload::ManagedArgv { argv, .. } => argv.clone(),
             JobPayload::Shell { command, argv, .. } => match argv.clone() {
@@ -534,6 +579,27 @@ impl JobExecutor for ManagedArgvExecutor {
     }
 }
 
+/// The daemon-side authority a delegated run needs beyond its payload.
+///
+/// M005 C005/C006. The scheduler owns the *shape* of a delegated run; the
+/// daemon owns the *authority* over that run's checkout. Bundling the
+/// authority keeps the executor's constructor chain from growing another
+/// positional parameter for every milestone.
+#[derive(Clone, Default)]
+pub struct SubagentAuthority {
+    /// M005 C005: the process admission policy the child inherits.
+    ///
+    /// A child that runs on a shared checkout must refuse every unqualified
+    /// process surface, exactly as its parent does. When this is absent the
+    /// child runs with no process profile, which is the pre-C005 behaviour:
+    /// the shared profile is never enabled by the absence of a policy.
+    pub process_admission: Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>,
+    /// M005 C006: the shared-checkout coordinator.
+    pub shared_checkout: Option<Arc<codegg_core::shared_checkout::SharedCheckoutCoordinator>>,
+    /// M005 C006: the writer-fence factory.
+    pub writer_fences: Option<Arc<dyn crate::tool::writer_fence::WriterFenceFactory>>,
+}
+
 /// Canonical executor for `JobKind::Subagent`. Hands the work off to
 /// `SubAgentPool`, which is the existing durable entry point for
 /// subagent execution.
@@ -542,6 +608,8 @@ pub struct SubagentJobExecutor {
     agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
     run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
     worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
+    /// M005 C005/C006: the daemon-side authority the delegated run inherits.
+    authority: SubagentAuthority,
 }
 
 impl SubagentJobExecutor {
@@ -551,6 +619,7 @@ impl SubagentJobExecutor {
             agent_runs: None,
             run_control: None,
             worktree_service: None,
+            authority: SubagentAuthority::default(),
         }
     }
 
@@ -563,6 +632,7 @@ impl SubagentJobExecutor {
             agent_runs: Some(agent_runs),
             run_control: None,
             worktree_service: None,
+            authority: SubagentAuthority::default(),
         }
     }
 
@@ -576,6 +646,7 @@ impl SubagentJobExecutor {
             agent_runs: Some(agent_runs),
             run_control,
             worktree_service: None,
+            authority: SubagentAuthority::default(),
         }
     }
 
@@ -590,7 +661,14 @@ impl SubagentJobExecutor {
             agent_runs: Some(agent_runs),
             run_control,
             worktree_service: Some(worktree_service),
+            authority: SubagentAuthority::default(),
         }
+    }
+
+    /// Attach the daemon-side authority the delegated run inherits.
+    pub fn with_authority(mut self, authority: SubagentAuthority) -> Self {
+        self.authority = authority;
+        self
     }
 
     /// Publish a bounded, store-derived projection after an authoritative
@@ -782,6 +860,7 @@ impl JobExecutor for SubagentJobExecutor {
             max_tool_calls,
             run_id,
             base_commit,
+            placement,
         ) = match &ctx.job.payload {
             JobPayload::Subagent {
                 prompt,
@@ -801,6 +880,7 @@ impl JobExecutor for SubagentJobExecutor {
                 *max_tool_calls,
                 None,
                 None,
+                codegg_core::run_placement::RunPlacement::Auto,
             ),
             JobPayload::SubagentRun {
                 prompt,
@@ -812,6 +892,7 @@ impl JobExecutor for SubagentJobExecutor {
                 max_tool_calls,
                 run_id,
                 base_commit,
+                placement,
                 ..
             } => (
                 prompt.clone(),
@@ -823,6 +904,7 @@ impl JobExecutor for SubagentJobExecutor {
                 *max_tool_calls,
                 Some(run_id.clone()),
                 base_commit.clone(),
+                placement.clone(),
             ),
             _ => {
                 return failure_completion(
@@ -989,47 +1071,126 @@ impl JobExecutor for SubagentJobExecutor {
                         node_id: None,
                         repository_root: repository_root.clone(),
                         base_commit,
+                        base_ref: None,
+                        target_branch: None,
                         base_path: Some(repository_root.clone()),
                         owner_run_id: run_id.clone(),
                     };
-                    let (record, lease) = match worktree_service.create(&request).await {
-                        Ok(value) => value,
-                        Err(error) => {
-                            if let Err(finish_error) = store
-                                .finish(
-                                    run_id,
-                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
-                                    None,
-                                    Some("worktree_create_failed".into()),
-                                    Some(error.to_string()),
-                                )
-                                .await
-                            {
-                                tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (worktree create failed)");
-                            }
+                    // M005 C006: a shared placement joins the group's checkout
+                    // instead of allocating a second one.
+                    //
+                    // The group's checkout is resolved *and* created under the
+                    // group's own lock, so two members that reach this point
+                    // together end up on one checkout: the first allocates it,
+                    // the second joins it. The placement is opt-in, so the
+                    // default path below is untouched.
+                    //
+                    // c006-shared-placement: the group's shared checkout
+                    if let Some(group_id) = placement.shared_group_id().cloned() {
+                        let Some(coordinator) = self.authority.shared_checkout.as_ref() else {
                             return failure_completion(
                                 started,
                                 ExecutorStatus::Failed,
-                                format!("worktree allocation failed: {error}"),
+                                "the shared checkout profile is not available in this daemon"
+                                    .into(),
+                            );
+                        };
+                        let outcome = match coordinator
+                            .acquire(codegg_core::shared_checkout::SharedCheckoutRequest {
+                                group_id: group_id.clone(),
+                                member_run_id: run_id.clone(),
+                                allocation: request,
+                            })
+                            .await
+                        {
+                            Ok(outcome) => outcome,
+                            Err(error) => {
+                                if let Err(finish_error) = store
+                                    .finish(
+                                        run_id,
+                                        codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                        None,
+                                        Some("shared_checkout_unavailable".into()),
+                                        Some(error.to_string()),
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (shared checkout unavailable)");
+                                }
+                                return failure_completion(
+                                    started,
+                                    ExecutorStatus::Failed,
+                                    format!("shared checkout placement failed: {error}"),
+                                );
+                            }
+                        };
+                        let checkout = outcome.checkout().clone();
+                        if let Err(error) = store
+                            .attach_worktree(run_id, checkout.worktree_id.clone())
+                            .await
+                        {
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                format!("shared checkout linkage failed: {error}"),
                             );
                         }
-                    };
-                    if let Err(error) = store
-                        .attach_worktree(run_id, record.worktree_id.clone())
-                        .await
-                    {
-                        let _ = worktree_service
-                            .release_lease(&record.worktree_id, run_id, lease.generation)
-                            .await;
-                        return failure_completion(
-                            started,
-                            ExecutorStatus::Failed,
-                            format!("worktree linkage failed: {error}"),
+                        allowed_paths = vec![checkout.path.to_string_lossy().into_owned()];
+                        workspace_root = checkout.path.clone();
+                        if let codegg_core::shared_checkout::SharedCheckoutOutcome::Created {
+                            record,
+                            lease,
+                            ..
+                        } = outcome
+                        {
+                            owned_worktree = Some((*record, *lease));
+                        }
+                        tracing::info!(
+                            run_id = ?run_id,
+                            group_id = ?group_id,
+                            worktree_id = %checkout.worktree_id,
+                            "delegated run placed on the group's shared checkout",
                         );
+                    } else {
+                        let (record, lease) = match worktree_service.create(&request).await {
+                            Ok(value) => value,
+                            Err(error) => {
+                                if let Err(finish_error) = store
+                                    .finish(
+                                        run_id,
+                                        codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                        None,
+                                        Some("worktree_create_failed".into()),
+                                        Some(error.to_string()),
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (worktree create failed)");
+                                }
+                                return failure_completion(
+                                    started,
+                                    ExecutorStatus::Failed,
+                                    format!("worktree allocation failed: {error}"),
+                                );
+                            }
+                        };
+                        if let Err(error) = store
+                            .attach_worktree(run_id, record.worktree_id.clone())
+                            .await
+                        {
+                            let _ = worktree_service
+                                .release_lease(&record.worktree_id, run_id, lease.generation)
+                                .await;
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                format!("worktree linkage failed: {error}"),
+                            );
+                        }
+                        allowed_paths = vec![record.path.to_string_lossy().into_owned()];
+                        workspace_root = record.path.clone();
+                        owned_worktree = Some((record, lease));
                     }
-                    allowed_paths = vec![record.path.to_string_lossy().into_owned()];
-                    workspace_root = record.path.clone();
-                    owned_worktree = Some((record, lease));
                 }
             }
             if let Some(control) = &self.run_control {
@@ -1105,6 +1266,56 @@ impl JobExecutor for SubagentJobExecutor {
         } else {
             None
         };
+        // M005 corrective C006: the child's writer fence is resolved from the
+        // run's own durable record, so a child on a shared checkout takes
+        // that checkout's writer permit and a child on an isolated checkout
+        // keeps the containment-only profile it always had.
+        let attached_worktree_id = match (self.agent_runs.as_ref(), run_id.as_ref()) {
+            (Some(store), Some(run)) => store
+                .get_run(run)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|record| record.worktree_id),
+            _ => None,
+        };
+        let writer_fence = match self.authority.writer_fences.as_ref() {
+            Some(factory) => {
+                match factory
+                    .fence_for(crate::tool::writer_fence::WriterScopeRequest {
+                        agent_run_id: run_id.as_ref().map(|run| run.as_str().to_owned()),
+                        workspace_root: workspace_root.clone(),
+                        attempt_id: Some(ctx.attempt_id.to_string()),
+                        cancellation: Some(ctx.cancellation.clone()),
+                    })
+                    .await
+                {
+                    Ok(fence) => fence,
+                    Err(error) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("writer fence resolution failed: {error}"),
+                        );
+                    }
+                }
+            }
+            None => None,
+        };
+        // M005 corrective C005: the child inherits the process admission
+        // policy, so a child on a shared checkout refuses every unqualified
+        // process surface exactly as its parent does.
+        //
+        // The child's scope is its **own** checkout: the policy is rebuilt
+        // over the checkout the run actually holds, never over the parent's
+        // workspace.
+        let child_process_admission = crate::tool::process_admission::build_process_admission(
+            self.authority.process_admission.clone(),
+            &workspace_root,
+            attached_worktree_id
+                .as_ref()
+                .map(|worktree| worktree.as_str().to_owned()),
+        );
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             child_instance_id: String::new(),
@@ -1138,6 +1349,16 @@ impl JobExecutor for SubagentJobExecutor {
             // via the registry wiring in the worker.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            // M005 corrective C005: the child inherits the process admission
+            // policy, so a child on a shared checkout refuses every
+            // unqualified process surface exactly as its parent does.
+            //
+            // The child's scope is its **own** checkout: the policy is
+            // rebuilt over the checkout the run actually holds, never over
+            // the parent's workspace.
+            process_admission: child_process_admission,
+            // M005 corrective C006: the resolved writer fence.
+            writer_fence,
         };
         let effective_workspace_root = request.workspace_root.clone();
 
@@ -1622,6 +1843,14 @@ impl JobExecutor for PythonJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
+        // M005 corrective C005: the final executor refuses a process-class
+        // job for a checkout reserved by a live agent-run group.
+        // c005-denial: python-job-executor
+        if let Err(error) =
+            admit_process_class(&ctx, codegg_core::process_admission::ProcessKind::Command).await
+        {
+            return failure_completion(started, ExecutorStatus::Failed, error);
+        }
 
         let (source, mode_str, cwd, timeout_secs, sandbox_profile, network_intent, workspace_root) =
             match &ctx.job.payload {

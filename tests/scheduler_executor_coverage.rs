@@ -50,7 +50,7 @@ async fn production_registration_covers_every_required_executor_kind() {
     // drops out.
     scheduler
         .register_default_executors_sync_with_agent_runs_and_control_and_worktree(
-            None, None, None, None,
+            None, None, None, None, None,
         )
         .expect("register default executors");
 

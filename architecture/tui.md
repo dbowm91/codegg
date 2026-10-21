@@ -2747,7 +2747,49 @@ loading transcripts or logs. Reconnect and resync replace the same projection
 state, so the TUI does not maintain a second run tree. Detailed worktree
 inspection and cleanup continue through the existing authorized commands.
 
-### Workspace file manager (`/files`, `src/tui/components/dialogs/files.rs`)
+### The session checkout surface (M006, agent-workstream-blackboard)
+
+The session dialog answers *where a session runs*. Each row carries the
+checkout the session is bound to: a CodeGG-managed checkout's **branch**, or
+`root` for the project's own working tree, and a `⚠` when the checkout
+needs an operator — an *orphaned* record with a `git_error` health is the
+shape a failed `git worktree add` leaves. A fork's row names the session it
+came from, by title: the parent's id is a fact the user cannot use.
+
+The checkout facts arrive with the session list. `start_reload_sessions`
+issues `CoreRequest::ManagedWorktreeList` alongside the session list, and the
+completion carries a map keyed by the **checkout's path** — a session's
+`directory` is the join key, because a launch binds the session's directory
+to the checkout's path. A failure to list the checkouts is not a failure of
+the session list: the sessions are still shown, they just carry no
+annotation.
+
+Three actions place a session in a checkout. They are keys on the session
+dialog, and the hint line advertises all three:
+
+| Key | Action |
+|---|---|
+| `n` | A new session in a **new** managed checkout. |
+| `w` | A new session in the selected session's **existing** checkout. |
+| `F` | A fork of the selected session into a **new** managed checkout. |
+
+Starting a session in an existing linked worktree must not create another
+one, so the reuse path names the checkout. When the selected session runs in
+the project's root there is no checkout to reuse, and the action says so
+rather than quietly allocating one.
+
+The lowercase `f` is untouched: it is the pre-existing plain fork, which
+copies history into the parent's workspace. `F` is a different act — a fork
+into an isolated checkout — and neither meaning may take the other's key.
+
+A **new** session stays cheap and default. Nothing in the ordinary
+new-session path allocates a checkout, and no prompt forces one; a checkout
+is allocated only when the user asks for it by name.
+
+The launch runs as a registered background task and reports itself in a
+toast when it lands. The dialog stays open while it runs: closing the
+dialog cancels the task that reports it, so the result would be lost.
+
 
 `/files` opens a **navigator** box over the workspace root, and `Files` is a
 hosted panel so the same box docks into the side column with `Shift+L`. It is

@@ -12,7 +12,8 @@ scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/des
                           # scheduler-bypass,
                           # config-merge-coverage, no-hardcoded-models, provider
                           # wire/catalog/resilience +
-                          # OpenAI endpoint, Eggwork target routing, cargo check workspace
+                          # OpenAI endpoint, Eggwork target routing,
+                          # writer-disposition, cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
@@ -135,6 +136,12 @@ change-triggered (`ls scripts/check_*` for the full list):
   changing any model list → `check_no_hardcoded_models.py` (CodeGG ships **no**
   compiled-in model catalog; discovery is canonical, config models are
   additive — see `architecture/provider.md` "Model discovery authority");
+  adding a **writer surface** (a tool that can mutate a checkout, a daemon
+  module that performs a filesystem effect, or a CodeGG-managed process
+  launcher) → `check_writer_disposition.py`, which requires an explicit
+  disposition in `docs/writer-disposition.toml`. The launcher list lives in
+  the guard's `PROCESS_SURFACE_FILES`: a new launcher is a deliberate
+  addition there *and* in the manifest, never a silent omission;
   projection
   transport → `check_projection_*.py` +
   `check_websocket_bounds.py`; provider lifecycle → `check_provider_connections_*.sh`
@@ -216,6 +223,78 @@ change-triggered (`ls scripts/check_*` for the full list):
   ladder goes blind to a loop. The outer run bound is `ExecutionLimits::max_turns`, not the
   recovery ladder. A `ProgressSignal` variant with no producer is a claim, not a hook: `ChildAdvanced`
   sat hardcoded `false` at the only construction site until it was deleted.
+- The **checkout writer permit** is a third authority, and it is neither of the
+  two it resembles. The *worktree lease* says who owns a checkout; the
+  *scheduler* says whether a job may run; the permit says **who may write to
+  this checkout right now** (`codegg_core::writer_permit` +
+  `src/core/writer_permit.rs`, `architecture/writer_permit.md`). The scheduler's
+  exclusivity keys cannot carry it — the writer-bearing job kinds
+  (`Shell`/`ManagedProcess`/`Test`/`Lint`/`Python`/`ToolProgram`) have **empty**
+  key sets and only `exclusive:`-prefixed keys conflict at all — so the permit
+  has its own durable store, its own compare-and-swap, and its own bounded
+  per-checkout waiter. Two rules that are easy to get wrong: a permit is never
+  freed without **positive** quiescence evidence (unproven evidence quarantines
+  it, and a lease deadline never frees a live writer), and **dropping** a
+  `WriterPermitGuard` quarantines the permit rather than releasing it. The
+  permit is now **routed**: C003 routes the model's native file and typed Git
+  writers through it, C004 mediates the non-broker writers, C005 refuses the
+  process surfaces pre-effect, and C006 makes the shared checkout an
+  **opt-in, platform-gated** path (`codegg_core::run_placement`). The shared
+  profile is off by default (`RunPlacement::Auto` isolates) and off on any
+  platform without native containment evidence, so the permit's presence
+  still enables no shared mutation by itself.
+- The **shared checkout profile** is opt-in and **never inferred**
+  (`codegg_core::run_placement::RunPlacement`, `architecture/writer_permit.md`
+  §"The shared checkout profile (C006)"). The default is `Auto` — an isolated
+  managed checkout — and the durable payload field is `#[serde(default)]`, so
+  an older payload and an older client keep the behaviour they had. Two rules
+  are load-bearing: the group is the reservation (a run outside the live
+  group is refused whatever scope it is handed, because the fence resolves
+  the run's scope from the run's **own durable record**, never from a
+  caller-supplied path), and the profile is **platform-gated** — Linux is
+  qualified, Windows is disabled with a named reason, and the gate is a
+  compile-time table rather than a runtime flag. The two are not symmetric:
+  macOS is qualified on a hosted lane's evidence (Seatbelt obtained, and a
+  confined process unable to write outside its own roots), while Windows
+  lacks a *backend* — no filesystem-enforcement backend is registered for it
+  at all, so no CI run could produce the evidence.
+- The **build quota** is admission, and it is not the writer permit. M007
+  replaced the legacy *global* `exclusive:workspace-mutation` key on the
+  `Build`/`Format` profiles with a **counted, workspace-scoped** quota
+  (`codegg_core::jobs::quota`, `architecture/build_admission.md`). Three
+  properties are load-bearing: the scope is the canonical `WorkspaceId`, so
+  unrelated workspaces never share a bucket; the limit is
+  **configuration-owned** (`scheduler.quota.max_concurrent_builds_per_workspace`,
+  default 1), so a job can ask for slots but never widen the bound it is
+  measured against; and the scope is bound at the *submission boundary*
+  **unconditionally**, so a caller that supplies its own resource request
+  cannot opt out. An unknown quota namespace is **refused**, not ignored — an
+  unenforced bound that was silently dropped would be a lie. A waiting job
+  holds **no** permit: the quota is checked before any dimension is reserved,
+  and the slots come back when the permit guard drops, after the process
+  lifetime ends. The queue caps are not execution quotas.
+- A **checkout is a second working directory of a project, not a new
+  project.** The catalog's auto-provisioning rule gives every previously
+  unseen workspace root **its own logical project**
+  (`ProjectStorage::reconcile_workspace_path` → `resolve_project_and_repository`),
+  which is right for a directory the user opens and wrong for a launch
+  (M006, `architecture/session_launch.md`). A launch that auto-provisions
+  the checkout's workspace binds the session to a project nobody asked
+  for — and then fails at the *last* step, because
+  `SessionStore::create_with_binding` requires the workspace's binding to
+  name the same project as the session, with the checkout already on disk.
+  `ProjectStorage::bind_checkout_workspace` is the explicit path: the
+  checkout's workspace joins the launch's project, shares its repository,
+  and names the managed checkout. It is refused when the workspace is
+  already bound to a *different* project.
+- A **launch does not take the worktree lease.** The lease is what fences
+  writers, and the writer that works in the checkout is the session's own
+  agent run. A lease held by a synthetic owner would fence that run out
+  (`acquire_lease` refuses a checkout that already has an owner) and
+  nothing would ever release it, because a synthetic owner has no
+  lifetime. The checkout stays `ready` and unleased until a run takes it —
+  and a checkout another run *holds* is refused as a placement, because
+  sharing it is shared-checkout execution, which M006 does not enable.
 - The **working strip row 0 is reserved unconditionally** and is the main buffer's only
   status surface. Its height is subtracted from the transcript (`session_layout` splits
   `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript

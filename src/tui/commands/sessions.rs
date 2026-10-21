@@ -185,6 +185,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                     request_id,
                     sessions: Vec::new(),
                     message_counts: std::collections::HashMap::new(),
+                    checkouts: std::collections::HashMap::new(),
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
@@ -204,6 +205,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                         request_id,
                         sessions: Vec::new(),
                         message_counts: std::collections::HashMap::new(),
+                        checkouts: std::collections::HashMap::new(),
                         error: Some(format!("Session list failed ({}): {}", code, message)),
                     });
                 }
@@ -212,6 +214,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                         request_id,
                         sessions: Vec::new(),
                         message_counts: std::collections::HashMap::new(),
+                        checkouts: std::collections::HashMap::new(),
                         error: Some("Unexpected core response".to_string()),
                     });
                 }
@@ -220,9 +223,43 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                         request_id,
                         sessions: Vec::new(),
                         message_counts: std::collections::HashMap::new(),
+                        checkouts: std::collections::HashMap::new(),
                         error: Some(format!("Session list error: {}", e)),
                     });
                 }
+            };
+
+            // M006: the managed checkouts, so the dialog can say where
+            // each session runs. A failure here is not a failure of the
+            // session list: the sessions are still worth showing, they
+            // just do not carry a checkout annotation.
+            let checkouts = match core_client
+                .request(crate::core::new_request(
+                    format!("managed-worktree-list-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::ManagedWorktreeList {
+                        workspace_id: None,
+                        repository_id: None,
+                        run_id: None,
+                        include_removed: false,
+                    },
+                ))
+                .await
+            {
+                Ok(CoreResponse::ManagedWorktrees { worktrees }) => worktrees
+                    .into_iter()
+                    .map(|worktree| {
+                        (
+                            worktree.path.clone(),
+                            crate::tui::components::dialogs::session::CheckoutInfo {
+                                worktree_id: Some(worktree.worktree_id.clone()),
+                                branch: worktree.branch.clone(),
+                                state: Some(worktree.state.clone()),
+                                health: Some(worktree.health.clone()),
+                            },
+                        )
+                    })
+                    .collect(),
+                _ => std::collections::HashMap::new(),
             };
 
             let session_ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
@@ -245,6 +282,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                 request_id,
                 sessions,
                 message_counts,
+                checkouts,
                 error: None,
             })
         },
@@ -256,6 +294,10 @@ pub(crate) fn apply_sessions_reloaded(
     request_id: u64,
     sessions: Vec<crate::protocol::dto::Session>,
     message_counts: std::collections::HashMap<String, usize>,
+    checkouts: std::collections::HashMap<
+        String,
+        crate::tui::components::dialogs::session::CheckoutInfo,
+    >,
     error: Option<String>,
 ) {
     if let Some(err) = error {
@@ -301,6 +343,9 @@ pub(crate) fn apply_sessions_reloaded(
         for (id, count) in &counts {
             dialog.set_message_count(id, *count);
         }
+        // M006: the checkouts are set *after* the sessions, because
+        // `load_sessions` clears the dialog's side maps.
+        dialog.set_checkouts(checkouts.clone());
     };
     apply(&mut app.dialog_state.session_dialog);
     app.focus_manager
@@ -575,6 +620,108 @@ pub(crate) fn start_fork_session(app: &mut App, session_id: String) {
                     message: String::new(),
                     reload_after: false,
                     error: Some(format!("Session fork error: {}", e)),
+                }),
+            }
+        },
+    );
+}
+
+/// M006: launch a session into an isolated checkout.
+///
+/// The placement is the caller's decision: a **new** managed checkout, or
+/// a named one the session may reuse. Starting a session in an existing
+/// linked worktree must not create another one, so the reuse path names
+/// the checkout rather than asking for a new one.
+///
+/// The idempotency key is generated per request. It is what makes a
+/// *repeated* launch converge on the same checkout and session instead of
+/// allocating a second pair; a fresh key is a fresh launch, which is what
+/// pressing the key twice means.
+pub(crate) fn start_session_launch(
+    app: &mut App,
+    project_id: String,
+    intent: crate::protocol::core::SessionLaunchIntentDto,
+    parent_session_id: Option<String>,
+    placement: crate::protocol::core::SessionLaunchPlacementDto,
+    idempotency_key: String,
+) {
+    let request_id = next_session_mutation_id(app);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "session_launch",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::Launch,
+                    affected_ids: Vec::new(),
+                    message: String::new(),
+                    reload_after: false,
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
+                });
+            };
+            let request = crate::core::new_request(
+                format!("session-launch-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionLaunch {
+                    project_id: project_id.clone(),
+                    intent,
+                    parent_session_id: parent_session_id.clone(),
+                    placement: placement.clone(),
+                    idempotency_key: idempotency_key.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::SessionLaunch {
+                    session_id,
+                    branch,
+                    checkout_path,
+                    ..
+                }) => {
+                    let message = match branch {
+                        Some(branch) if !branch.is_empty() => {
+                            format!("Launched session {session_id} in {checkout_path} on {branch}")
+                        }
+                        _ => format!("Launched session {session_id} in {checkout_path}"),
+                    };
+                    Some(TuiCommand::SessionMutationFinished {
+                        request_id,
+                        op: SessionMutationOp::Launch,
+                        affected_ids: vec![session_id],
+                        message,
+                        reload_after: true,
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::SessionMutationFinished {
+                        request_id,
+                        op: SessionMutationOp::Launch,
+                        affected_ids: Vec::new(),
+                        message: String::new(),
+                        reload_after: false,
+                        error: Some(format!("Session launch failed ({}): {}", code, message)),
+                    })
+                }
+                Ok(_other) => Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::Launch,
+                    affected_ids: Vec::new(),
+                    message: String::new(),
+                    reload_after: false,
+                    error: Some("Unexpected core response".to_string()),
+                }),
+                Err(e) => Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::Launch,
+                    affected_ids: Vec::new(),
+                    message: String::new(),
+                    reload_after: false,
+                    error: Some(format!("Session launch error: {}", e)),
                 }),
             }
         },
@@ -2698,7 +2845,14 @@ mod tests {
         counts.insert(session.id.clone(), 7usize);
 
         let request_id = app.dialog_state.session_reload_request.begin();
-        apply_sessions_reloaded(&mut app, request_id, vec![session], counts, None);
+        apply_sessions_reloaded(
+            &mut app,
+            request_id,
+            vec![session],
+            counts,
+            Default::default(),
+            None,
+        );
 
         assert_eq!(
             app.dialog_state.session_dialog.session_count(),
@@ -2736,6 +2890,7 @@ mod tests {
                 &mut app,
                 request_id,
                 vec![session],
+                Default::default(),
                 Default::default(),
                 None,
             );

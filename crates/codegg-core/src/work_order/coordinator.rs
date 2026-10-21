@@ -301,7 +301,7 @@ pub fn resolve_workspace_action(
         (WorkspacePolicy::Shared | WorkspacePolicy::Serialized, _, true) => {
             WorkspaceAction::NeedsAttention {
                 code: AttentionCode::MaterializationFailed,
-                diagnostic: "shared_mutation_unavailable: this WorkOrder agent can mutate its checkout, but the daemon has no checkout-scoped writer reservation covering every AgentTurn; select auto_isolated or resolve the writer-guard capability first".to_owned(),
+                diagnostic: "shared_mutation_unavailable: the WorkOrder shared/serialized mutation policy is still refused. The checkout-scoped writer permit and the checkout reservation authority exist (corrective C002–C004) and native writers are routed through them, but no production path places a WorkOrder on a group's shared checkout, and the shared profile itself is opt-in and platform-gated (corrective C006). Select auto_isolated, or place the run explicitly with the shared placement on a qualified platform".to_owned(),
             }
         }
         // Non-Git mutation has no copy/overlay isolation backend in M002:

@@ -283,6 +283,13 @@ pub struct BrokerAdapter {
     execution_ceiling_intent: codegg_core::approval::NetworkIntent,
     /// M013-C-34: Track submitted child job results for artifact handles.
     child_results: std::sync::Mutex<Vec<ChildJobTracking>>,
+    /// M005 corrective C005: the process admission policy the Tool Program
+    /// inherits from the job's execution.
+    ///
+    /// A Tool Program is a **child execution**: it must never be handed a
+    /// wider profile than the execution that scheduled it. The policy is
+    /// the same authority the parent job's executor consulted.
+    process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// M013-C-34: Tracking record for child jobs submitted during Tool Program
@@ -333,6 +340,7 @@ impl BrokerAdapter {
             execution_ceiling_profile: None,
             execution_ceiling_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             child_results: std::sync::Mutex::new(Vec::new()),
+            process_admission: None,
         }
     }
 
@@ -444,6 +452,16 @@ impl BrokerAdapter {
     ) -> Self {
         self.execution_ceiling_profile = profile;
         self.execution_ceiling_intent = intent;
+        self
+    }
+
+    /// M005 corrective C005: install the inherited process admission
+    /// policy.
+    pub fn with_process_admission(
+        mut self,
+        policy: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    ) -> Self {
+        self.process_admission = policy;
         self
     }
 }
@@ -611,6 +629,12 @@ impl BrokerCallback for BrokerAdapter {
             return Err(InterpreterError::Cancelled);
         }
         let ctx = BrokerInvocationContext {
+            writer_fence: None,
+            // M005 corrective C005: the Tool Program inherits the narrow
+            // profile. A nested call cannot reach a process the parent
+            // could not.
+            // c005-denial: tool-program-executor
+            process_admission: self.process_admission.clone(),
             caller: crate::tool::contract::ToolCaller::Program {
                 program_id: self.program_id.clone(),
             },
@@ -1828,6 +1852,21 @@ impl JobExecutor for ToolProgramExecutor {
         }
         broker_adapter = broker_adapter.with_workspace_id(ctx.workspace_id.clone());
         broker_adapter = broker_adapter.with_cwd(ctx.workspace_root.clone());
+        // M005 corrective C005: the Tool Program inherits the narrow
+        // profile of the execution that scheduled it. The policy is built
+        // over the job's own daemon-resolved workspace root and answered
+        // by the same authority the final executor consulted. A nested
+        // call cannot reach a process the parent could not.
+        // c005-denial: tool-program-executor
+        broker_adapter = broker_adapter.with_process_admission(
+            ctx.process_admission.as_ref().and_then(|service| {
+                crate::tool::process_admission::build_process_admission(
+                    Some(service.clone()),
+                    &ctx.workspace_root,
+                    None,
+                )
+            }),
+        );
         broker_adapter = broker_adapter.with_artifact_store(canonical_artifact_store.clone());
         broker_adapter = broker_adapter.with_allowed_tools(allowed_tools.clone());
         broker_adapter = broker_adapter
@@ -2568,6 +2607,7 @@ mod tests {
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(NoopProgressSink),
             resources: ResourcePermitGuard::new_orphan(Default::default()),
+            process_admission: None,
         };
 
         let result = exec.execute(ctx).await;
@@ -2609,6 +2649,7 @@ mod tests {
             cancellation: token,
             progress: Arc::new(NoopProgressSink),
             resources: ResourcePermitGuard::new_orphan(Default::default()),
+            process_admission: None,
         };
 
         let result = exec.execute(ctx).await;

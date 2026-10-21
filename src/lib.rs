@@ -1,4 +1,11 @@
 #![deny(unsafe_code)]
+// The `task` tool's parameter schema is a single flat `json!` literal with
+// several dozen properties. `serde_json::json!` expands each property into a
+// nested `json_internal!` call, so the macro's expansion depth tracks the
+// property count and the default limit of 128 is reached by the schema
+// alone. The limit is raised rather than the schema split, because a split
+// would put the tool's parameter contract in two places.
+#![recursion_limit = "512"]
 
 #[cfg(all(feature = "windows-sandbox-test-support", not(debug_assertions)))]
 compile_error!("windows-sandbox-test-support is restricted to debug/test builds");

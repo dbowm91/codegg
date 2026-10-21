@@ -225,6 +225,7 @@ fn make_ctx(job: JobRecord, cancelled: bool) -> JobExecutionContext {
         cancellation: token,
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),
+        process_admission: None,
     }
 }
 

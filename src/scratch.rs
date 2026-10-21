@@ -168,6 +168,18 @@ impl TestScratchRoot {
     /// Point the scratch tree at `root` for the current thread.
     pub(crate) fn install(root: PathBuf) -> Self {
         std::fs::create_dir_all(&root).expect("create the test scratch root");
+        // The scratch subsystem refuses a group- or other-writable parent, so
+        // the test root must be private whatever the ambient umask is. A bare
+        // `create_dir_all` inherits it — under umask `0002` it creates `0775`,
+        // and the code under test then rejects its own test root with
+        // `WrongOwner`. The product path pins `0700` for the same reason
+        // (see `ensure_private_parent`); this is the test-side equivalent.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("make the test scratch root private");
+        }
         let previous = test_scratch_root_override::install(root);
         Self { previous }
     }

@@ -1,8 +1,13 @@
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
+use crate::tool::backend::ToolExecutionContext;
 use crate::tool::patch_util::apply_unified_diff;
 use crate::tool::util::{
     canonicalize_path, check_path_for_symlinks, validate_path, validate_target_path,
+};
+use crate::tool::writer_fence::{
+    acquire_writer_permit, settle_writer_fence, writer_fence_key, NativeEffectClass,
+    WriterFenceOutcome,
 };
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
@@ -93,6 +98,35 @@ impl Tool for ApplyPatchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_inner(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
+        let output = self.execute_inner(input, ctx.as_ref()).await?;
+        Ok(crate::tool::StructuredToolResult::legacy(
+            self.name(),
+            output,
+        ))
+    }
+}
+
+impl ApplyPatchTool {
+    /// Dispatch to the mode's effect, with the checkout writer fence held
+    /// across it.
+    ///
+    /// The fence is an *additional* refusal on top of the existing path
+    /// boundary: it never widens what this tool may write. A context without
+    /// a fence mints no permit, so the legacy path behaves exactly as
+    /// before.
+    async fn execute_inner(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let parsed: ApplyPatchInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid patch input: {e}")))?;
 
@@ -106,46 +140,103 @@ impl Tool for ApplyPatchTool {
         let mode = parsed.mode.as_deref().unwrap_or("update");
 
         match mode {
-            "delete" => self.apply_delete(&parsed.path).await,
-            "create" => self.apply_create(&parsed.path, &parsed.patch).await,
-            "move" => self.apply_move(&parsed.patch).await,
-            "update" => self.apply_update(&parsed.path, &parsed.patch).await,
+            "delete" => self.apply_delete(&parsed.path, ctx).await,
+            "create" => self.apply_create(&parsed.path, &parsed.patch, ctx).await,
+            "move" => self.apply_move(&parsed.patch, ctx).await,
+            "update" => self.apply_update(&parsed.path, &parsed.patch, ctx).await,
             _ => Err(ToolError::Execution(format!("unknown mode: {mode}"))),
         }
     }
-}
 
-impl ApplyPatchTool {
-    async fn apply_delete(&self, path: &str) -> Result<String, ToolError> {
+    async fn apply_delete(
+        &self,
+        path: &str,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
+        let path_for_resolution = path.to_string();
         let path_owned = path.to_string();
         let path_for_error = path.to_string();
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
 
-        tokio::task::spawn_blocking(move || {
-            let original_path = Path::new(&path_owned);
-            let validated_path = if unrestricted {
-                canonicalize_path(original_path)?
+        // Resolve the target before the permit is taken: the fence has to
+        // name the very path the delete lands on.
+        let validated_path = tokio::task::spawn_blocking(move || {
+            let original_path = Path::new(&path_for_resolution);
+            if unrestricted {
+                canonicalize_path(original_path)
             } else {
-                validate_path(original_path, &allowed_root)?
-            };
-
-            if !validated_path.exists() {
-                return Err(ToolError::Execution(format!(
-                    "file not found: {path_owned}"
-                )));
+                validate_path(original_path, &allowed_root)
             }
-
-            std::fs::remove_file(&validated_path)
-                .map_err(|e| ToolError::Execution(format!("failed to delete file: {e}")))
         })
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
+        // The permit is taken after the path boundary approved the target
+        // and immediately before the mutation, and it is held until the
+        // delete has settled.
+        let targets = vec![validated_path.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
+
+        let effect = match tokio::task::spawn_blocking(move || {
+            if !validated_path.exists() {
+                return Err((
+                    ToolError::Execution(format!("file not found: {path_owned}")),
+                    WriterFenceOutcome::NoEffect,
+                ));
+            }
+
+            // `remove_file` unlinks the entry: when it fails the file is
+            // still in place, so nothing was deleted.
+            std::fs::remove_file(&validated_path).map_err(|e| {
+                let message = format!("failed to delete file: {e}");
+                (
+                    ToolError::Execution(message.clone()),
+                    WriterFenceOutcome::NoEffect,
+                )
+            })
+        })
+        .await
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        match effect {
+            Ok(()) => {
+                // The delete landed and was observed, so the permit is
+                // released. A failure to release it is reported: the caller
+                // has to know the checkout was not handed on.
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+            }
+            Err((error, outcome)) => {
+                // Settle before the error propagates: a failed effect must
+                // still release (or park) the permit it held. The tool's own
+                // error is the one the caller sees.
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        }
+
         Ok(format!("Deleted: {path_for_error}"))
     }
 
-    async fn apply_create(&self, path: &str, content: &str) -> Result<String, ToolError> {
+    async fn apply_create(
+        &self,
+        path: &str,
+        content: &str,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         // Config format validation for create mode
         if let Some(ref svc) = self.preflight {
             if is_config_file(path) {
@@ -180,30 +271,87 @@ impl ApplyPatchTool {
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
 
-        tokio::task::spawn_blocking(move || {
+        // Resolve the target before the permit is taken: the fence has to
+        // name the very path the create lands on, and the target may not
+        // exist yet.
+        let validated_path = tokio::task::spawn_blocking(move || {
             let original_path = Path::new(&path_owned);
-            let validated_path = if unrestricted {
-                validate_target_path_unrestricted(original_path)?
+            if unrestricted {
+                validate_target_path_unrestricted(original_path)
             } else {
-                validate_target_path(original_path, &allowed_root)?
-            };
-
-            if let Some(parent) = validated_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    ToolError::Execution(format!("failed to create directory: {e}"))
-                })?;
+                validate_target_path(original_path, &allowed_root)
             }
-
-            std::fs::write(&validated_path, content_owned)
-                .map_err(|e| ToolError::Execution(format!("failed to create file: {e}")))
         })
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
+        // The permit is taken after the path boundary and the preflight
+        // checks approved the create, and immediately before the mutation;
+        // it is held until the create has settled.
+        let targets = vec![validated_path.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
+
+        let effect = match tokio::task::spawn_blocking(move || {
+            if let Some(parent) = validated_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    (
+                        ToolError::Execution(format!("failed to create directory: {e}")),
+                        WriterFenceOutcome::NoEffect,
+                    )
+                })?;
+            }
+
+            // `fs::write` truncates before it writes, so a failure here can
+            // leave a partially written file behind: the effect is unproven,
+            // not absent.
+            std::fs::write(&validated_path, content_owned).map_err(|e| {
+                let message = format!("failed to create file: {e}");
+                (
+                    ToolError::Execution(message.clone()),
+                    WriterFenceOutcome::Unproven(message),
+                )
+            })
+        })
+        .await
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        match effect {
+            Ok(()) => {
+                // The create landed and was observed, so the permit is
+                // released. A failure to release it is reported: the caller
+                // has to know the checkout was not handed on.
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+            }
+            Err((error, outcome)) => {
+                // Settle before the error propagates: a failed effect must
+                // still release (or park) the permit it held. The tool's own
+                // error is the one the caller sees.
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        }
+
         Ok(format!("Created: {path}"))
     }
 
-    async fn apply_move(&self, patch: &str) -> Result<String, ToolError> {
+    async fn apply_move(
+        &self,
+        patch: &str,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let (old_path, new_path) = parse_rename(patch).ok_or_else(|| {
             ToolError::Execution("move mode requires rename in patch header".to_string())
         })?;
@@ -214,7 +362,9 @@ impl ApplyPatchTool {
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
 
-        tokio::task::spawn_blocking(move || {
+        // Both ends of the rename are resolved before the permit is taken:
+        // the fence has to name the very paths the rename touches.
+        let (old_full, new_full) = tokio::task::spawn_blocking(move || {
             let old_original = Path::new(&old_path_owned);
             let new_original = Path::new(&new_path_owned);
 
@@ -230,36 +380,97 @@ impl ApplyPatchTool {
                 validate_target_path(new_original, &allowed_root)?
             };
 
+            Ok::<_, ToolError>((old_full, new_full))
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        // The permit is taken after the path boundary approved both paths
+        // and immediately before the mutation, and it is held until the
+        // rename has settled.
+        let targets = vec![old_full.clone(), new_full.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
+
+        let effect = match tokio::task::spawn_blocking(move || {
             if !old_full.exists() {
-                return Err(ToolError::Execution(format!(
-                    "source file not found: {old_path_for_error}"
-                )));
+                return Err((
+                    ToolError::Execution(format!("source file not found: {old_path_for_error}")),
+                    WriterFenceOutcome::NoEffect,
+                ));
             }
 
             if let Some(parent) = new_full.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    ToolError::Execution(format!("failed to create directory: {e}"))
+                    (
+                        ToolError::Execution(format!("failed to create directory: {e}")),
+                        WriterFenceOutcome::NoEffect,
+                    )
                 })?;
             }
 
-            std::fs::rename(&old_full, &new_full)
-                .map_err(|e| ToolError::Execution(format!("failed to rename file: {e}")))
+            // A failed rename can leave the destination partially updated
+            // (a cross-device rename copies before it unlinks), so the
+            // effect is unproven rather than absent.
+            std::fs::rename(&old_full, &new_full).map_err(|e| {
+                let message = format!("failed to rename file: {e}");
+                (
+                    ToolError::Execution(message.clone()),
+                    WriterFenceOutcome::Unproven(message),
+                )
+            })
         })
         .await
-        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        match effect {
+            Ok(()) => {
+                // The rename landed and was observed, so the permit is
+                // released. A failure to release it is reported: the caller
+                // has to know the checkout was not handed on.
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+            }
+            Err((error, outcome)) => {
+                // Settle before the error propagates: a failed effect must
+                // still release (or park) the permit it held. The tool's own
+                // error is the one the caller sees.
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        }
 
         let old_str = old_path.to_string();
         let new_str = new_path.to_string();
         Ok(format!("Renamed: {old_str} -> {new_str}"))
     }
 
-    async fn apply_update(&self, path: &str, patch: &str) -> Result<String, ToolError> {
+    async fn apply_update(
+        &self,
+        path: &str,
+        patch: &str,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let path_owned = path.to_string();
         let patch_owned = patch.to_string();
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
 
-        let (result, preview) = tokio::task::spawn_blocking(move || {
+        // Resolve the target, read it and compute the patched content first:
+        // none of that mutates the file, and the fence is taken only once
+        // the write is certain to happen.
+        let (result, preview, validated_path) = tokio::task::spawn_blocking(move || {
             let original_path = Path::new(&path_owned);
             let validated_path = if unrestricted {
                 canonicalize_path(original_path)?
@@ -275,13 +486,63 @@ impl ApplyPatchTool {
 
             let preview = generate_diff_preview(&original, &result, &path_owned);
 
-            std::fs::write(&validated_path, &result)
-                .map_err(|e| ToolError::Execution(format!("failed to write file: {e}")))?;
-
-            Ok::<_, ToolError>((result, preview))
+            Ok::<_, ToolError>((result, preview, validated_path))
         })
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        // The permit is taken after the path boundary approved the target
+        // and immediately before the mutation, and it is held until the
+        // write has settled.
+        let targets = vec![validated_path.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
+
+        let effect = match tokio::task::spawn_blocking(move || {
+            // `fs::write` truncates before it writes, so a failure here can
+            // leave a partially written file behind: the effect is unproven,
+            // not absent.
+            std::fs::write(&validated_path, &result).map_err(|e| {
+                let message = format!("failed to write file: {e}");
+                (
+                    ToolError::Execution(message.clone()),
+                    WriterFenceOutcome::Unproven(message),
+                )
+            })?;
+
+            Ok::<_, (ToolError, WriterFenceOutcome)>(result)
+        })
+        .await
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        let result = match effect {
+            Ok(written) => {
+                // The patch landed and was observed, so the permit is
+                // released. A failure to release it is reported: the caller
+                // has to know the checkout was not handed on.
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+                written
+            }
+            Err((error, outcome)) => {
+                // Settle before the error propagates: a failed effect must
+                // still release (or park) the permit it held. The tool's own
+                // error is the one the caller sees.
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        };
 
         // Post-patch validation on the result
         let mut warnings = Vec::new();

@@ -369,6 +369,54 @@ head has since moved to `9a40e983e`, which changes production code in the
 two durable routes, so a CI run on that head is required before the CI
 evidence qualifies the shipped tree exactly.
 
+### 4.8 The reconciliation with `main` (`53d9fc9fd`)
+
+`main` advanced while this milestone was in flight — PR #157, the M005
+writer-containment corrective, merged as `53d9fc9fd`. The branch was
+reconciled with it as a **merge**, not a rebase, so no commit was rewritten
+and the earlier heads' evidence stayed valid.
+
+The merge conflicted in **one file**, `src/scheduler/tool_program_executor.rs`,
+in a single hunk. Both sides added a field to the same `BrokerAdapter` struct
+and a builder method to the same `impl` block, and each side's addition was
+kept:
+
+| Side | Field | Axis |
+|---|---|---|
+| this branch | `execution_ceiling_profile` / `execution_ceiling_intent` | the delegated child's **sandbox profile and network intent** ceiling (C002) |
+| `main` (PR #157) | `process_admission` | which **processes** a Tool Program's nested call may reach (C005) |
+
+The two are complementary rather than competing: one bounds the *launch
+policy* of a delegated child job, the other bounds the *process reach* of a
+nested call. The resolution keeps both fields, both initializers, and both
+builder methods; `BrokerAdapter::new` initializes all three.
+
+The reconciliation was proved at both levels the earlier ones were:
+
+- **file level** — `git ls-files -u` is empty, `git diff --check` is clean,
+  and `git diff origin/main` shows this branch's changes to
+  `crates/codegg-core/src/jobs/mod.rs` (the durable carrier and its digest),
+  `src/scheduler/executors.rs`, `src/test_runner/runner.rs`,
+  `src/security/sandbox.rs` and `scripts/verify.sh` intact — the auto-merged
+  files kept both sides' content;
+- **compile level** — `cargo check --workspace --all-targets --locked` exits 0
+  on the merged tree.
+
+Two **no-collision** checks were made explicitly, because the merge brought a
+second ADR-numbered artifact onto the branch:
+
+- **ADR numbering.** `main` published `ADR-0047-restricted-agent-shared-checkout-writer-contract.md`
+  (renumbered from an earlier `ADR-0044`), while `ADR-0044-contained-git-live-objects-and-metadata-authority.md`
+  is still the contained-Git live-read authority this milestone's records
+  reference. `ADR-0044`'s status is unchanged — *proposed, not accepted, no
+  production authority granted* — so no record in this milestone needed
+  correcting and the ADR numbering stayed consistent across the merge.
+- **registry rows.** The registry union kept one row per milestone: this
+  milestone's C001 and C002 rows and `main`'s M005 writer-containment rows all
+  survive. One factual correction was made to this milestone's row, which
+  still described the guard's self-test as injecting seven defects when it now
+  injects eleven.
+
 ## 5. Invariant review
 
 - **Never trust model/child-supplied payload, env or serialized defaults to

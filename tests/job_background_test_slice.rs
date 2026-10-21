@@ -78,6 +78,7 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
         None,
     );
     ToolExecutionContext {
+        writer_fence: None,
         backend: codegg::tool::backend::ToolBackendKind::Native,
         session_id: Some(session.to_string()),
         cwd: std::path::PathBuf::from("/tmp"),
@@ -119,6 +120,9 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
             command_preflight: None,
             scratch_scope: None,
         }),
+        // M005 corrective C005: this fixture is not under the restricted
+        // shared-checkout profile, so the launch carries no admission policy.
+        process_admission: None,
     }
 }
 

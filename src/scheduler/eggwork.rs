@@ -3212,6 +3212,7 @@ mod tests {
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(crate::scheduler::executor::NoopProgressSink),
             resources,
+            process_admission: None,
         }
     }
 
@@ -3606,6 +3607,7 @@ mod tests {
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(crate::scheduler::executor::NoopProgressSink),
             resources,
+            process_admission: None,
         };
         let fake = Arc::new(FakeNodeClient::succeeding());
         let mut nodes = HashMap::new();
