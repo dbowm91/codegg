@@ -5844,6 +5844,14 @@ mod tests {
         task_properties.remove("scratch_alias");
         task_properties.remove("scratch_id");
         task_properties.remove("shared_scratch");
+        // M005 C006 added the shared-checkout placement parameter after the
+        // M003 receipt was frozen. It is a post-M003 change like the rest, so
+        // it is removed here: the receipt stays immutable and the live schema
+        // keeps the opt-in placement.
+        assert!(
+            task_properties.remove("placement").is_some(),
+            "expected post-M003 task input field placement"
+        );
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
