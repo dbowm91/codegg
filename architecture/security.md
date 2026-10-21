@@ -528,9 +528,13 @@ nothing, opens no file for reading, and never follows a link; only
 absolute path, no file name, no file content, and no session identity: the
 digest is one-way by design. The census reuses the reclaim validator's own
 entry rule, so a report cannot claim a tree is reclaimable when the validator
-would refuse it. The walk is bounded — it stops at a tree, entry, and depth
-budget and reports that it did — and it runs on a background timer, never on
-an agent hot path. It is served on the local daemon socket only.
+would refuse it. That verdict is **tri-state**: a tree the walk did not
+finish reading, or one that vanished while it was being read, carries no
+verdict at all rather than a false "reclaimable" — a partial walk can never
+claim a tree the validator has not been shown to accept. The walk is bounded
+— it stops at a tree, entry, and depth budget and reports that it did — and it
+runs on a background timer, never on an agent hot path. It is served on the
+local daemon socket only.
 **Scratch retention sweep (M007).** The daemon reclaims a session's scratch
 tree once that session has been idle past the configured retention window
 (`scratch.retention_days`, 14 days by default). The decision reads durable

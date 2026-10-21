@@ -876,9 +876,21 @@ fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageRe
     }
     println!("  Total size: {}", format_bytes(report.total_bytes));
     let quarantined = report.trees.iter().filter(|tree| tree.quarantined).count();
-    let refused = report.trees.iter().filter(|tree| !tree.reclaimable).count();
+    let refused = report
+        .trees
+        .iter()
+        .filter(|tree| tree.reclaimable == Some(false))
+        .count();
+    let unknown = report
+        .trees
+        .iter()
+        .filter(|tree| tree.reclaimable.is_none())
+        .count();
     println!("  Quarantined trees: {quarantined}");
     println!("  Trees the reclaim path would refuse: {refused}");
+    if unknown > 0 {
+        println!("  Trees with no verdict (the walk did not finish reading them): {unknown}");
+    }
     if report.truncated {
         println!("  Note: the measurement hit a bound; the totals are partial");
     }
@@ -897,7 +909,11 @@ fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageRe
             format_bytes(tree.total_bytes),
             tree.file_count,
             format_age(tree.newest_modified_ms),
-            if tree.reclaimable { "yes" } else { "no" },
+            match tree.reclaimable {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unknown",
+            },
         );
     }
     if report.trees.len() > SCRATCH_REPORT_TREE_ROWS {

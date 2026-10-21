@@ -973,7 +973,12 @@ pub struct ScratchTreeUsage {
     /// The newest modification time observed, in milliseconds since the epoch.
     pub newest_modified_ms: Option<i64>,
     /// The reclaim validator's own verdict for this tree.
-    pub reclaimable: bool,
+    ///
+    /// `None` when the verdict could not be established: the walk was
+    /// truncated before the tree was fully read, or the tree vanished while
+    /// it was being read. A partial walk never yields `Some(true)` — a tree
+    /// the census only half-read is not a tree the validator has accepted.
+    pub reclaimable: Option<bool>,
     /// Which rule refused the tree, when it did.
     pub refusal: Option<ReclaimRefusal>,
     /// True when the daemon's owner record is present and is a regular file.
@@ -1126,7 +1131,7 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
         multiply_linked_count: 0,
         oldest_modified_ms: None,
         newest_modified_ms: None,
-        reclaimable: true,
+        reclaimable: None,
         refusal: None,
         owner_record_present: false,
         truncated: false,
@@ -1142,7 +1147,7 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
     };
     if let Some(reason) = classify_reclaim_entry(&metadata) {
         usage.refusal = Some(reason);
-        usage.reclaimable = false;
+        usage.reclaimable = Some(false);
         return usage;
     }
     if !metadata.is_dir() {
@@ -1216,7 +1221,15 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
             usage.non_regular_count += 1;
         }
     }
-    usage.reclaimable = usage.refusal.is_none();
+    // The verdict is the validator's own verdict — but only over the part of
+    // the tree the walk actually read. A truncated walk leaves the verdict
+    // unknown: an unread entry could be one the validator would refuse, so
+    // claiming reclaimability here would be a claim the census cannot make.
+    usage.reclaimable = if usage.truncated {
+        None
+    } else {
+        Some(usage.refusal.is_none())
+    };
     usage
 }
 
@@ -1386,7 +1399,7 @@ pub fn preview_session_scratch(digest_hex: &str) -> Result<ScratchTreeUsage, Scr
             multiply_linked_count: 0,
             oldest_modified_ms: None,
             newest_modified_ms: None,
-            reclaimable: true,
+            reclaimable: None,
             refusal: None,
             owner_record_present: false,
             truncated: false,
@@ -1439,7 +1452,7 @@ mod tests {
         );
         assert_eq!(usage.file_count, 2);
         assert_eq!(usage.directory_count, 1);
-        assert!(usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(true));
         assert_eq!(usage.refusal, None);
         assert!(usage.oldest_modified_ms.is_some());
         assert!(usage.newest_modified_ms.is_some());
@@ -1465,7 +1478,7 @@ mod tests {
         let usage = &report.trees[0];
         assert_eq!(usage.symlink_count, 1);
         assert_eq!(usage.refusal, Some(ReclaimRefusal::Symlink));
-        assert!(!usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(false));
         // The link was reported, never traversed: the outside file is intact
         // and its content appears nowhere in the report.
         assert!(outside_file.exists());
@@ -1489,7 +1502,7 @@ mod tests {
         // recursive edge, so it does not stop the reclaim path.
         assert_eq!(usage.multiply_linked_count, 1);
         assert_eq!(usage.refusal, None);
-        assert!(usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(true));
     }
 
     #[cfg(any(unix, windows))]
@@ -1564,6 +1577,13 @@ mod tests {
         assert!(usage.truncated);
         assert!(report.truncated);
         assert!(usage.file_count <= 3);
+        // A partially-read tree has no verdict. The entries the walk did not
+        // reach could be ones the validator would refuse, so the census must
+        // not claim the tree is reclaimable — nor claim it is not.
+        assert_eq!(
+            usage.reclaimable, None,
+            "a truncated tree must not carry a reclaim verdict"
+        );
     }
 
     #[cfg(unix)]
@@ -1579,7 +1599,7 @@ mod tests {
         let usage = &report.trees[0];
         assert_eq!(usage.non_regular_count, 1);
         assert_eq!(usage.refusal, Some(ReclaimRefusal::NonRegular));
-        assert!(!usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(false));
         // The FIFO was counted from metadata, never opened: opening one blocks
         // until a writer appears, which would hang the walk.
         assert!(fifo_path.exists());
@@ -1607,6 +1627,11 @@ mod tests {
         assert!(usage.vanished);
         assert_eq!(usage.file_count, 0);
         assert_eq!(usage.total_bytes, 0);
+        // A tree that vanished was never read, so it carries no verdict.
+        assert_eq!(
+            usage.reclaimable, None,
+            "a vanished tree must not carry a reclaim verdict"
+        );
     }
 
     /// A name, size, and mtime manifest of a tree.
