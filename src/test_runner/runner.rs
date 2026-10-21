@@ -1,16 +1,12 @@
 use std::io;
-#[cfg(unix)]
-#[allow(unused_imports)]
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::test_runner::parse::{ingest_stderr_line, ingest_stdout_line, TestParseState};
@@ -25,7 +21,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_STALL_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_REPORT_BYTES: usize = 20_000;
 const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
-const GRACEFUL_KILL_TIMEOUT: Duration = Duration::from_secs(3);
+const TEST_PROCESS_OUTPUT_CAP: usize = 32 * 1024 * 1024;
 
 #[derive(Error, Debug)]
 pub enum TestRunError {
@@ -35,20 +31,11 @@ pub enum TestRunError {
     #[error("failed to create log directory: {0}")]
     LogDir(io::Error),
 
-    #[error("failed to spawn process: {0}")]
-    Spawn(io::Error),
-
-    #[error("stdout pipe unavailable: {0}")]
-    StdoutPipe(io::Error),
-
-    #[error("stderr pipe unavailable: {0}")]
-    StderrPipe(io::Error),
+    #[error("managed test process failed: {0}")]
+    Process(#[from] crate::managed_process::ManagedProcessError),
 
     #[error("failed to write to log file: {0}")]
     LogWrite(io::Error),
-
-    #[error("process wait failed: {0}")]
-    ProcessWait(String),
 
     #[error("empty command vector")]
     EmptyCommand,
@@ -183,6 +170,35 @@ pub async fn run_resolved_test(
     sink: Option<&dyn TestEventSink>,
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
 ) -> Result<DelegatedTestRun, TestRunError> {
+    run_resolved_test_with_profile(request, resolved, sink, run_store, None).await
+}
+
+pub async fn run_resolved_test_with_profile(
+    request: &TestRunRequest,
+    resolved: ResolvedTestCommand,
+    sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+) -> Result<DelegatedTestRun, TestRunError> {
+    run_resolved_test_with_profile_and_network(
+        request,
+        resolved,
+        sink,
+        run_store,
+        sandbox_profile,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
+}
+
+pub async fn run_resolved_test_with_profile_and_network(
+    request: &TestRunRequest,
+    resolved: ResolvedTestCommand,
+    sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
+) -> Result<DelegatedTestRun, TestRunError> {
     let timeout_secs = request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     if timeout_secs == 0 {
         return Err(TestRunError::InvalidRequest(
@@ -235,50 +251,27 @@ pub async fn run_resolved_test(
 
     let start = Instant::now();
     let shared = SharedState::new();
-
-    let mut child = spawn_child(&resolved)?;
-
-    let stdout_pipe = child
-        .stdout
-        .take()
-        .ok_or_else(|| TestRunError::StdoutPipe(io::Error::other("stdout not piped")))?;
-    let stderr_pipe = child
-        .stderr
-        .take()
-        .ok_or_else(|| TestRunError::StderrPipe(io::Error::other("stderr not piped")))?;
-
     let stdout_log = std::fs::File::create(&stdout_log_path).map_err(TestRunError::LogWrite)?;
     let stderr_log = std::fs::File::create(&stderr_log_path).map_err(TestRunError::LogWrite)?;
-
-    let stdout_task = spawn_reader_task(stdout_pipe, stdout_log, shared.clone(), true);
-    let stderr_task = spawn_reader_task(stderr_pipe, stderr_log, shared.clone(), false);
-
-    let wall_clock_deadline = start + Duration::from_secs(timeout_secs);
-    let stall_interval = if stall_timeout_secs == 0 {
-        Duration::from_secs(u64::MAX)
-    } else {
-        STALL_CHECK_INTERVAL
-    };
-    let stall_deadline_secs = stall_timeout_secs;
-
     let ctx = SupervisorContext {
         sink,
         job_id: &job_id,
         session_id: request.session_id.as_deref().unwrap_or(""),
     };
-    let result = supervisor_loop(
-        &mut child,
-        stdout_task,
-        stderr_task,
-        &shared,
-        wall_clock_deadline,
-        stall_interval,
-        stall_deadline_secs,
+    let result = run_managed_test_process(
+        request,
+        &resolved,
+        sandbox_profile,
+        network_intent,
+        timeout_secs,
+        stall_timeout_secs,
         start,
+        &shared,
+        stdout_log,
+        stderr_log,
         &ctx,
-        request.cancellation.as_ref(),
     )
-    .await;
+    .await?;
 
     let elapsed_ms = elapsed_ms_saturating(&start);
     let parse_state = shared.parse_state.lock().await.clone();
@@ -367,35 +360,6 @@ impl DelegatedTestRun {
     }
 }
 
-#[allow(unsafe_code)]
-fn spawn_child(resolved: &ResolvedTestCommand) -> Result<Child, TestRunError> {
-    let mut cmd = Command::new(&resolved.argv[0]);
-    if resolved.argv.len() > 1 {
-        cmd.args(&resolved.argv[1..]);
-    }
-    cmd.current_dir(&resolved.cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    // On Unix, put the child in its own process group so we can kill
-    // the entire tree (grandchildren included) on timeout or stall.
-    #[cfg(unix)]
-    {
-        unsafe {
-            cmd.pre_exec(|| {
-                // Create a new session and process group. The child becomes
-                // the session leader with PGID == its own PID.
-                nix::unistd::setsid()
-                    .map_err(|e| io::Error::other(format!("setsid failed: {e}")))?;
-                Ok(())
-            });
-        }
-    }
-
-    cmd.spawn().map_err(TestRunError::Spawn)
-}
-
 fn spawn_reader_task(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     mut log_file: std::fs::File,
@@ -457,121 +421,127 @@ enum SupervisorResult {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn supervisor_loop(
-    child: &mut Child,
-    mut stdout_task: tokio::task::JoinHandle<()>,
-    mut stderr_task: tokio::task::JoinHandle<()>,
-    shared: &SharedState,
-    wall_clock_deadline: Instant,
-    stall_interval: Duration,
-    stall_deadline_secs: u64,
+async fn run_managed_test_process(
+    request: &TestRunRequest,
+    resolved: &ResolvedTestCommand,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
+    timeout_secs: u64,
+    stall_timeout_secs: u64,
     start: Instant,
+    shared: &SharedState,
+    stdout_log: std::fs::File,
+    stderr_log: std::fs::File,
     ctx: &SupervisorContext<'_>,
-    cancellation: Option<&tokio_util::sync::CancellationToken>,
-) -> SupervisorResult {
-    let mut stdout_done = false;
-    let mut stderr_done = false;
+) -> Result<SupervisorResult, TestRunError> {
+    use std::ffi::OsString;
+
+    if sandbox_profile == Some(codegg_core::approval::SandboxProfile::ReadOnly) {
+        return Err(TestRunError::InvalidRequest(
+            "test execution requires WorkspaceWrite authority".into(),
+        ));
+    }
+    let argv: Vec<OsString> = resolved.argv.iter().map(OsString::from).collect();
+    let mut process = crate::managed_process::ManagedProcessRequest::new(
+        argv,
+        resolved.cwd.clone(),
+        crate::managed_process::ProcessProvenance::new(
+            "test-runner",
+            request.session_id.clone().unwrap_or_default(),
+        ),
+    );
+    process.environment_policy =
+        if sandbox_profile.is_some_and(|profile| profile.requires_filesystem_containment()) {
+            crate::managed_process::EnvironmentPolicy::sanitized()
+        } else {
+            crate::managed_process::EnvironmentPolicy::inherited()
+        };
+    process.timeout = Some(Duration::from_secs(timeout_secs));
+    process.output_policy = crate::managed_process::OutputPolicy {
+        stdout_limit: TEST_PROCESS_OUTPUT_CAP,
+        stderr_limit: TEST_PROCESS_OUTPUT_CAP,
+        overflow: crate::managed_process::OverflowPolicy::ContinueDrain,
+    };
+    process.required_sandbox_profile = sandbox_profile;
+    process.required_network_intent = network_intent;
+    if let Some(profile) =
+        sandbox_profile.filter(|profile| profile.requires_filesystem_containment())
+    {
+        let config =
+            crate::security::sandbox::sandbox_config_for_profile(profile, &request.workdir)
+                .ok_or_else(|| {
+                    TestRunError::InvalidRequest(format!(
+                    "filesystem containment is unavailable for accepted {profile:?} test profile"
+                ))
+                })?;
+        process.sandbox = crate::managed_process::SandboxRequest::Required(
+            config
+                .launch_spec(&resolved.argv[0], &resolved.argv[1..], Some(&resolved.cwd))
+                .map_err(|error| TestRunError::InvalidRequest(error.to_string()))?,
+        );
+    }
+
+    let (stdout_writer, stdout_reader) = tokio::io::duplex(64 * 1024);
+    let (stderr_writer, stderr_reader) = tokio::io::duplex(64 * 1024);
+    let stdout_task = spawn_reader_task(stdout_reader, stdout_log, shared.clone(), true);
+    let stderr_task = spawn_reader_task(stderr_reader, stderr_log, shared.clone(), false);
+    let (output_tx, mut output_rx) =
+        mpsc::channel::<crate::managed_process::ManagedProcessOutputChunk>(128);
+    let bridge_task = tokio::spawn(async move {
+        let mut stdout_writer = stdout_writer;
+        let mut stderr_writer = stderr_writer;
+        while let Some(chunk) = output_rx.recv().await {
+            let writer = match chunk.stream {
+                crate::managed_process::OutputStream::Stdout => &mut stdout_writer,
+                crate::managed_process::OutputStream::Stderr => &mut stderr_writer,
+            };
+            if writer.write_all(&chunk.bytes).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let process_cancellation = tokio_util::sync::CancellationToken::new();
+    process.cancellation = process_cancellation.clone();
+    let mut managed =
+        Box::pin(crate::managed_process::ManagedProcessService::run_streaming(process, output_tx));
+    let mut stop_reason = None;
     let mut last_progress = Instant::now();
-    let mut last_tests_seen: u64 = 0;
-    let mut last_tests_failed: u64 = 0;
+    let mut last_tests_seen = 0;
+    let mut last_tests_failed = 0;
     let mut had_failure = false;
-    let progress_throttle = Duration::from_millis(500);
-
-    loop {
+    let result = loop {
         tokio::select! {
-            status = child.wait() => {
-                if !stdout_done {
-                    let _ = stdout_task.await;
+            result = &mut managed => break result?,
+            _ = tokio::time::sleep(STALL_CHECK_INTERVAL) => {
+                if stall_timeout_secs > 0 {
+                    let last_at = *shared.last_output_at.lock().await;
+                    if last_at.elapsed() > Duration::from_secs(stall_timeout_secs) {
+                        stop_reason = Some(SupervisorStopReason::Stall);
+                        process_cancellation.cancel();
+                        break managed.await?;
+                    }
                 }
-                if !stderr_done {
-                    let _ = stderr_task.await;
-                }
-                return match status {
-                    Ok(exit_status) => SupervisorResult::Completed {
-                        exit_code: exit_status.code(),
-                    },
-                    Err(e) => SupervisorResult::ChildFailed(e.to_string()),
-                };
-            }
-            _ = &mut stdout_task, if !stdout_done => {
-                stdout_done = true;
-            }
-            _ = &mut stderr_task, if !stderr_done => {
-                stderr_done = true;
-            }
-            _ = tokio::time::sleep_until(wall_clock_deadline.into()) => {
-                let elapsed = elapsed_ms_saturating(&start);
-                let excerpt = shared.last_output_excerpt.lock().await.clone();
-                kill_child(child).await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                return SupervisorResult::WallClockTimeout {
-                    elapsed_ms: elapsed,
-                    last_output: excerpt,
-                };
-            }
-            _ = async {
-                match cancellation {
-                    Some(token) => token.cancelled().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                kill_child(child).await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                return SupervisorResult::Cancelled;
-            }
-            _ = tokio::time::sleep(stall_interval) => {
-                if stall_deadline_secs == 0 {
-                    continue;
-                }
-                let last_at = *shared.last_output_at.lock().await;
-                let since_last = last_at.elapsed();
-                if since_last > Duration::from_secs(stall_deadline_secs) {
-                    let elapsed = elapsed_ms_saturating(&start);
-                    let excerpt = shared.last_output_excerpt.lock().await.clone();
-                    kill_child(child).await;
-                    let _ = stdout_task.await;
-                    let _ = stderr_task.await;
-                    return SupervisorResult::StallTimeout {
-                        elapsed_ms: elapsed,
-                        last_output: excerpt,
-                    };
-                }
-
-                // Emit throttled progress event
                 if let Some(sink) = ctx.sink {
-                    if last_progress.elapsed() >= progress_throttle {
+                    if last_progress.elapsed() >= Duration::from_millis(500) {
                         let state = shared.parse_state.lock().await;
                         let tests_seen = usize_to_u64_saturating(state.tests_seen);
                         let tests_failed = usize_to_u64_saturating(state.tests_failed);
                         let tests_passed = usize_to_u64_saturating(state.tests_passed);
                         drop(state);
-
                         let changed = tests_seen != last_tests_seen
                             || tests_failed != last_tests_failed
                             || (tests_failed > 0 && !had_failure);
-
                         if changed {
                             let mut parts = Vec::new();
-                            if tests_seen > 0 {
-                                parts.push(format!("{tests_seen} tests seen"));
-                            }
-                            if tests_passed > 0 {
-                                parts.push(format!("{tests_passed} passed"));
-                            }
-                            if tests_failed > 0 {
-                                parts.push(format!("{tests_failed} failed"));
-                            }
-                            if parts.is_empty() {
-                                parts.push("running tests...".into());
-                            }
-                            let message = parts.join(", ");
-
+                            if tests_seen > 0 { parts.push(format!("{tests_seen} tests seen")); }
+                            if tests_passed > 0 { parts.push(format!("{tests_passed} passed")); }
+                            if tests_failed > 0 { parts.push(format!("{tests_failed} failed")); }
+                            if parts.is_empty() { parts.push("running tests...".into()); }
                             sink.progress(TestRunProgressSnapshot {
                                 session_id: ctx.session_id.to_string(),
                                 job_id: ctx.job_id.to_string(),
-                                message,
+                                message: parts.join(", "),
                             });
                             last_tests_seen = tests_seen;
                             last_tests_failed = tests_failed;
@@ -581,46 +551,49 @@ async fn supervisor_loop(
                     }
                 }
             }
-        }
-    }
-}
-
-#[allow(unsafe_code)]
-async fn kill_child(child: &mut Child) {
-    // On Unix, kill the entire process group (negative PID = group kill).
-    // The child was placed in its own group via setsid() in spawn_child().
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
-            let Ok(pgid) = libc::pid_t::try_from(pid) else {
-                tracing::error!(pid, "child PID cannot be represented as a process-group ID");
-                let _ = child.kill().await;
-                if tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait())
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("test child did not exit within graceful-kill timeout; continuing best-effort reaping");
+            _ = async {
+                match request.cancellation.as_ref() {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending().await,
                 }
-                return;
-            };
-            // Safety: -pgid targets the process group led by this child.
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
+            } => {
+                stop_reason = Some(SupervisorStopReason::Cancelled);
+                process_cancellation.cancel();
+                break managed.await?;
             }
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill().await;
-    }
-    if tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait())
-        .await
-        .is_err()
-    {
-        tracing::warn!(
-            "test child did not exit within graceful-kill timeout; continuing best-effort reaping"
-        );
-    }
+    };
+    let _ = bridge_task.await;
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+
+    let elapsed_ms = elapsed_ms_saturating(&start);
+    let last_output = shared.last_output_excerpt.lock().await.clone();
+    Ok(match result.termination {
+        crate::managed_process::TerminationReason::Exited => SupervisorResult::Completed {
+            exit_code: result.exit_status.code(),
+        },
+        crate::managed_process::TerminationReason::TimedOut => SupervisorResult::WallClockTimeout {
+            elapsed_ms,
+            last_output,
+        },
+        crate::managed_process::TerminationReason::Cancelled => match stop_reason {
+            Some(SupervisorStopReason::Stall) => SupervisorResult::StallTimeout {
+                elapsed_ms,
+                last_output,
+            },
+            Some(SupervisorStopReason::Cancelled) | None => SupervisorResult::Cancelled,
+        },
+        crate::managed_process::TerminationReason::OutputLimitExceeded { .. } => {
+            SupervisorResult::ChildFailed("managed output limit exceeded".into())
+        }
+    })
+}
+
+#[derive(Clone, Copy)]
+enum SupervisorStopReason {
+    Stall,
+    Cancelled,
 }
 
 fn build_report(
@@ -751,8 +724,49 @@ pub async fn resolve_and_run_test(
     sink: Option<&dyn TestEventSink>,
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
 ) -> Result<DelegatedTestRun, TestRunError> {
+    resolve_and_run_test_with_profile_and_network(
+        request,
+        sink,
+        run_store,
+        None,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
+}
+
+pub async fn resolve_and_run_test_with_profile(
+    request: TestRunRequest,
+    sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+) -> Result<DelegatedTestRun, TestRunError> {
+    resolve_and_run_test_with_profile_and_network(
+        request,
+        sink,
+        run_store,
+        sandbox_profile,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
+}
+
+pub async fn resolve_and_run_test_with_profile_and_network(
+    request: TestRunRequest,
+    sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
+) -> Result<DelegatedTestRun, TestRunError> {
     let resolved = resolve_test_command(&request)?;
-    run_resolved_test(&request, resolved, sink, run_store).await
+    run_resolved_test_with_profile_and_network(
+        &request,
+        resolved,
+        sink,
+        run_store,
+        sandbox_profile,
+        network_intent,
+    )
+    .await
 }
 
 /// Begin and complete a test run in the RunStore. The begin step is separate
@@ -981,6 +995,59 @@ mod tests {
         assert!(log_dir.join("report.json").exists());
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn constrained_test_profile_writes_only_inside_workspace() {
+        let dir = temp_dir_with_files("constrained-profile", &[]);
+        let outside = dir.path().with_extension("outside-marker");
+        let inside = dir.path().join("inside-marker");
+        let command = format!(
+            "touch '{}' && (touch '{}' >/dev/null 2>&1 || true)",
+            inside.display(),
+            outside.display()
+        );
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["/bin/sh".into(), "-c".into(), command],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "workspace".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            execution_cwd: None,
+            timeout_secs: Some(30),
+            stall_timeout_secs: Some(10),
+            max_report_bytes: None,
+            session_id: None,
+            parent_run_id: None,
+            cancellation: None,
+        };
+        let result = run_resolved_test_with_profile(
+            &request,
+            resolved,
+            None,
+            None,
+            Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+        )
+        .await;
+        if crate::security::sandbox::platform_sandbox_capability().is_available() {
+            let report = result
+                .expect("available workspace sandbox should run the test")
+                .into_report();
+            assert_eq!(report.status, TestStatus::Passed);
+            assert!(inside.exists());
+            assert!(!outside.exists(), "test process escaped its workspace root");
+        } else {
+            assert!(
+                result.is_err(),
+                "unavailable containment must refuse launch"
+            );
+            assert!(!inside.exists());
+            assert!(!outside.exists());
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn resolve_and_run_failing_command() {
         let dir = temp_dir_with_files("fail-cmd", &[]);
@@ -1063,6 +1130,44 @@ mod tests {
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
         assert_eq!(timeout.kind, TimeoutKind::NoOutput);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolve_and_run_cancellation_stops_child_before_followup_effect() {
+        let dir = temp_dir_with_files("cancel", &[]);
+        let marker = dir.path().join("after-cancel-marker");
+        let command = format!("sleep 10; touch '{}'", marker.display());
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["/bin/sh".into(), "-c".into(), command],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancel_after_start = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_after_start.cancel();
+        });
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(30),
+            stall_timeout_secs: None,
+            max_report_bytes: None,
+            session_id: None,
+            parent_run_id: None,
+            execution_cwd: None,
+            cancellation: Some(cancellation),
+        };
+
+        let report = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap()
+            .into_report();
+        assert_eq!(report.status, TestStatus::Cancelled);
+        assert!(!marker.exists(), "test child continued after cancellation");
     }
 
     #[test]
@@ -1310,35 +1415,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// Verifies that process-group setup is cfg-gated to Unix targets.
-    /// On Unix, `setsid()` must be called via `pre_exec`. On non-Unix,
-    /// the helper must compile and fall back to direct `child.kill()`.
-    #[cfg(unix)]
-    #[test]
-    fn unix_process_group_helpers_are_cfg_unix() {
-        // If we are on Unix, this test compiles only because the Unix
-        // path exists. The mere fact that we are inside `cfg(unix)`
-        // here confirms the gating structure.
-        #[allow(dead_code)]
-        fn _unix_only_marker() {
-            // nix::unistd::setsid is only callable from Unix paths.
-            let _ = std::mem::size_of::<nix::unistd::Pid>();
-        }
-    }
-
-    #[cfg(not(unix))]
-    #[test]
-    fn non_unix_fallback_compiles_if_ci_supports_it() {
-        // On non-Unix targets, the cfg(not(unix)) branch in
-        // `spawn_child`/`kill_child` must compile. This test simply
-        // exists so the non-Unix code path is exercised by the test
-        // harness on whichever platform runs the suite.
-    }
-
-    /// Confirms the timeout path still produces a `TestReport`
-    /// after the process-group kill is invoked. This exercises the
-    /// `#[cfg(unix)]`/`#[cfg(not(unix))]` split in `kill_child`
-    /// while also asserting the timeout report contract.
+    /// Confirms the timeout path still produces a `TestReport` after the
+    /// managed process owner terminates and reaps the process tree.
     #[tokio::test(flavor = "multi_thread")]
     async fn runner_timeout_path_still_returns_report_after_kill() {
         let dir = temp_dir_with_files("kill-fallback", &[]);

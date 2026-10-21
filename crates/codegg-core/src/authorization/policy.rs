@@ -1269,6 +1269,9 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::SandboxProfileSet { .. } => {
             OperationDescriptor::new("sandbox_profile_set", ScopeKind::Global, None)
         }
+        R::NetworkIntentSet { .. } => {
+            OperationDescriptor::new("network_intent_set", ScopeKind::Global, None)
+        }
         R::RuntimePolicySet { .. } => {
             OperationDescriptor::new("runtime_policy_set", ScopeKind::Global, None)
         }
@@ -2311,6 +2314,10 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::SandboxProfileSet {
             sandbox_profile: String::new(),
+            expected_revision: None,
+        },
+        R::NetworkIntentSet {
+            network_intent: String::new(),
             expected_revision: None,
         },
         R::RuntimePolicySet {

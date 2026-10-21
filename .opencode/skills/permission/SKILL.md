@@ -66,6 +66,19 @@ skill covers the ordering and isolation invariants that are easy to break.
   allowlist with `no_new_privs`; macOS Seatbelt confines writes but allows broad
   reads, network access, inherited descriptors, and Apple Events / Launch
   Services channels. Keep backend limits visible in `architecture/security.md`.
+- The opt-in Linux Bubblewrap protected-mount candidate refuses a deny path
+  beneath a writable grant. A mask attached to a file or directory in a
+  host-backed writable mount can be detached by renaming that entry after
+  setup; do not claim that nested deny is stable there.
+- Trusted `egggit` preflight refuses a repository that already has an object
+  alternate in its Git directory or linked-worktree common directory. Trusted
+  object-reading commands use a private command-scoped copy of regular loose
+  and packed objects with no `objects/info`; later alternates and source-object
+  writes cannot change that view. This applies only to the explicit trusted
+  read allowlist. Object-writing mutations such as commit/tag creation remain
+  on the separate C002 contained-Git path. Snapshot cost is proportional to
+  the object store; a local 105 MiB fragmented repository took 2.95 seconds
+  for setup plus `git status`, so no production Git route is enabled.
 - **`Automatic` is never silent Yolo.** With no reviewer model configured,
   `Automatic` defers to the human.
 - **Scratch recovery is advisory.** A structured write to a known host temp

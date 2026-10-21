@@ -168,6 +168,9 @@ pub enum ToolError {
     #[error("no workspace root was resolved for this call ({context}); refusing to substitute the process working directory")]
     MissingWorkspaceRoot { context: String },
 
+    #[error("execution backend unavailable: {0}")]
+    BackendUnavailable(String),
+
     #[error("I/O error: {0}")]
     Io(String),
 

@@ -246,7 +246,9 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign allowlist marker root");
     let marker = dir.path().join("benign-allowlist-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let tool = BashTool::new().with_allowlist(vec!["echo"]);
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_allowlist(vec!["echo"]);
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -260,7 +262,9 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     );
 
     // `deny_all` control denies even a trivial `echo`.
-    let tool = BashTool::new().with_deny_all();
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_deny_all();
     let result = tool
         .execute(serde_json::json!({ "command": "echo hello" }))
         .await;
@@ -419,7 +423,8 @@ async fn test_bash_escalation_signals_do_not_block_the_tool() {
     // tool. The tool now admits them and defers to the permission layer, so
     // assert the *policy disposition* — not a permission rejection — rather
     // than the command's own exit status.
-    let tool = BashTool::new();
+    let dir = setup_dir();
+    let tool = BashTool::new().with_workspace_root(dir.path().to_path_buf());
     for cmd in [
         "echo $(whoami)",
         "eval echo hello",
@@ -474,7 +479,10 @@ async fn test_bash_ordinary_commands_trip_no_escalation_signal() {
 
 #[tokio::test]
 async fn test_bash_tool_deny_all() {
-    let tool = BashTool::new().with_deny_all();
+    let dir = setup_dir();
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_deny_all();
     let input = serde_json::json!({ "command": "echo hello" });
     let result = tool.execute(input).await;
     assert!(result.is_err());

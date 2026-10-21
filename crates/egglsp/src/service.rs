@@ -19,7 +19,7 @@ use super::download;
 use super::error::{LspError, SharedInitError};
 use super::health::{transition as transition_health, LspOperationalState};
 use super::language::{detect_language, language_id_to_server_id};
-use super::launch::LspLaunchSpec;
+use super::launch::{DirectLspProcessLauncher, LspLaunchSpec, LspProcessLauncher};
 use super::restart::{
     acquire_restart_ownership, restart_client_coordinator, LspClientDescriptor,
     RestartLeaseAcquisition, RestartShared, RestartTaskMap, RestartTrigger, ServicePhase,
@@ -937,6 +937,10 @@ pub struct LspService {
     /// to lost wakeups at the `Shutdown → Stopped` transition.
     lifecycle_tx: watch::Sender<LifecycleState>,
     config: LspConfig,
+    /// Service-scoped child owner used for initial LSP launches and restarts.
+    /// A constrained service must receive its daemon-owned launcher here;
+    /// it cannot switch launch authority per request.
+    process_launcher: Arc<dyn LspProcessLauncher>,
     /// Test-only factory for injecting fake client initialization.
     #[cfg(test)]
     test_init_fn: Option<std::sync::Arc<TestInitFn>>,
@@ -998,6 +1002,7 @@ impl LspService {
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx,
             config,
+            process_launcher: Arc::new(DirectLspProcessLauncher),
             #[cfg(test)]
             test_init_fn: None,
             #[cfg(test)]
@@ -1015,6 +1020,16 @@ impl LspService {
     /// receiver from `&self` callers (e.g.
     /// `get_or_create_client`).
     pub fn new_arc(config: LspConfig) -> Arc<Self> {
+        Self::new_arc_with_launcher(config, Arc::new(DirectLspProcessLauncher))
+    }
+
+    /// Build a service with one immutable process owner for all server
+    /// generations. This is the injection point for daemon-owned constrained
+    /// launchers; callers must create a distinct service per execution scope.
+    pub fn new_arc_with_launcher(
+        config: LspConfig,
+        process_launcher: Arc<dyn LspProcessLauncher>,
+    ) -> Arc<Self> {
         let (lifecycle_tx, _rx) = watch::channel(INITIAL_LIFECYCLE_STATE);
         let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         let exit_rx = Arc::new(Mutex::new(Some(exit_rx)));
@@ -1035,6 +1050,7 @@ impl LspService {
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx,
             config,
+            process_launcher,
             #[cfg(test)]
             test_init_fn: None,
             #[cfg(test)]
@@ -1125,6 +1141,7 @@ impl LspService {
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
+            process_launcher: Arc::new(DirectLspProcessLauncher),
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: None,
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
@@ -1160,6 +1177,7 @@ impl LspService {
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
+            process_launcher: Arc::new(DirectLspProcessLauncher),
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: Some(test_hooks),
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
@@ -1327,6 +1345,7 @@ impl LspService {
                     self.descriptor_map.clone(),
                     self.document_registry.clone(),
                     self.runtime_map.clone(),
+                    self.process_launcher.clone(),
                     #[cfg(test)]
                     test_init,
                     #[cfg(test)]
@@ -3377,6 +3396,7 @@ impl LspService {
         let generation_map = self.generation_map.clone();
         let runtime_map = self.runtime_map.clone();
         let exit_tx = self.exit_tx.clone();
+        let process_launcher = self.process_launcher.clone();
 
         move |descriptor: &LspClientDescriptor, generation: u64| {
             let key = key.clone();
@@ -3386,15 +3406,17 @@ impl LspService {
             let generation_map = generation_map.clone();
             let runtime_map = runtime_map.clone();
             let exit_tx = exit_tx.clone();
+            let process_launcher = process_launcher.clone();
 
             Box::pin(async move {
                 // 1. Spawn the new client from the descriptor's
                 //    launch spec.
-                let client = LspClient::new_with_launch_spec(
+                let client = LspClient::new_with_launch_spec_and_launcher(
                     descriptor.launch_spec.clone(),
                     &descriptor.root,
                     descriptor.workspace_configuration.clone(),
                     LspClientOptions::default(),
+                    process_launcher,
                 )
                 .await?;
 
@@ -3693,6 +3715,8 @@ async fn spawn_process_monitor(
         }
     };
 
+    let status_task = client.status_task.lock().await.take();
+
     // Take the stderr handle from the client so the runtime can own
     // the bounded ring buffer. If a test stub populated `None` (the
     // legacy stderr drain path), the runtime still works — the
@@ -3707,6 +3731,7 @@ async fn spawn_process_monitor(
             generation,
             child,
             stderr_handle,
+            status_task,
         ),
         None => {
             // No stderr handle available; spawn the runtime with a
@@ -3732,6 +3757,7 @@ async fn spawn_process_monitor(
                 generation,
                 child,
                 dummy_stderr,
+                status_task,
             )
         }
     };
@@ -4178,6 +4204,7 @@ async fn run_init_task_wrapper(
     descriptor_map: Arc<Mutex<HashMap<String, LspClientDescriptor>>>,
     document_registry: Arc<OpenDocumentRegistry>,
     runtime_map: RuntimeMap,
+    process_launcher: Arc<dyn LspProcessLauncher>,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
     #[cfg(test)] force_stuck: std::sync::Arc<AtomicBool>,
 ) {
@@ -4209,6 +4236,7 @@ async fn run_init_task_wrapper(
         descriptor_map,
         document_registry,
         runtime_map,
+        process_launcher,
         #[cfg(test)]
         test_init_fn,
     );
@@ -4296,6 +4324,7 @@ async fn run_initialization_attempt(
     descriptor_map: Arc<Mutex<HashMap<String, LspClientDescriptor>>>,
     _document_registry: Arc<OpenDocumentRegistry>,
     runtime_map: RuntimeMap,
+    process_launcher: Arc<dyn LspProcessLauncher>,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
     let init_opts: Option<serde_json::Value> = match &config {
@@ -4467,7 +4496,13 @@ async fn run_initialization_attempt(
 
         #[allow(unused_mut)]
         let mut client = tokio::select! {
-            result = LspClient::new_with_launch_spec(launch, &root, configuration, LspClientOptions::default()) => result?,
+            result = LspClient::new_with_launch_spec_and_launcher(
+                launch,
+                &root,
+                configuration,
+                LspClientOptions::default(),
+                process_launcher,
+            ) => result?,
             _ = cancellation.cancelled() => {
                 return Err(LspError::InitializationCancelled("shutting down".to_string()));
             }
@@ -7774,6 +7809,7 @@ mod tests {
             0,
             child,
             stderr_handle,
+            None,
         );
         runtime
     }
@@ -7801,6 +7837,7 @@ mod tests {
             0,
             child,
             stderr_handle,
+            None,
         );
         runtime
     }

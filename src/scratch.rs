@@ -193,19 +193,9 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     // on macOS, which the Required sandbox correctly denies as a credential
     // root. Cache storage remains per-user and stable across normal daemon and
     // process restarts; the artifacts are explicitly disposable.
-    #[cfg(unix)]
-    let expected_uid = {
-        use std::os::unix::fs::MetadataExt;
-        let home = dirs::home_dir().ok_or(ScratchError::OwnerUnavailable)?;
-        std::fs::metadata(home)
-            .map_err(|_| ScratchError::OwnerUnavailable)?
-            .uid()
-    };
-    #[cfg(not(unix))]
-    let expected_uid = ();
+    let expected_uid = current_owner_uid()?;
     let cache_root = scratch_cache_root()?;
-    std::fs::create_dir_all(&cache_root)?;
-    ensure_private_parent(&cache_root, expected_uid)?;
+    ensure_private_cache_root(&cache_root, expected_uid)?;
     let vendor_root = cache_root.join(SCRATCH_VENDOR_NAME);
     let scratch_root = vendor_root.join(SCRATCH_ROOT_NAME);
     let sessions_root = scratch_root.join("sessions");
@@ -713,6 +703,55 @@ fn scoped_resource_dir(
     ensure_private_directory(&path, owner)?;
     ensure_owner_record(&path, &digest)?;
     Ok(std::fs::canonicalize(path)?)
+}
+
+/// The uid every directory the scratch allocator owns must carry.
+///
+/// The home directory's owner is the authority: a scratch tree that another
+/// user owns is never usable, so the allocator refuses it instead of guessing.
+#[cfg(unix)]
+fn current_owner_uid() -> Result<u32, ScratchError> {
+    use std::os::unix::fs::MetadataExt;
+    let home = dirs::home_dir().ok_or(ScratchError::OwnerUnavailable)?;
+    std::fs::metadata(home)
+        .map_err(|_| ScratchError::OwnerUnavailable)
+        .map(|metadata| metadata.uid())
+}
+
+#[cfg(not(unix))]
+fn current_owner_uid() -> Result<(), ScratchError> {
+    Ok(())
+}
+
+/// Resolve the per-user cache root the scratch allocator depends on.
+///
+/// A cache root the product creates is created *private*. The process umask
+/// must never be able to produce a group- or world-writable root that the
+/// ownership check would then refuse: the allocator would otherwise reject
+/// the very directory it had just created, and whether the product could run
+/// at all would depend on the operator's umask instead of on the product. A
+/// cache root that already exists is only validated — the product never
+/// re-permissions a directory it does not own, so a cache root another user
+/// can write to is refused rather than silently tightened.
+fn ensure_private_cache_root(
+    path: &Path,
+    expected_uid: impl OwnerCheck,
+) -> Result<(), ScratchError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Ok(()) => {}
+        // A pre-existing path — including a dangling symlink — is validated
+        // below, which produces the typed refusal instead of a raw I/O error.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(ScratchError::Io(error)),
+    }
+    ensure_private_parent(path, expected_uid)
 }
 
 fn ensure_private_parent(path: &Path, expected_uid: impl OwnerCheck) -> Result<(), ScratchError> {
@@ -1935,6 +1974,107 @@ mod tests {
             ensure_private_directory(&link, 0),
             Err(ScratchError::InvalidPath(_))
         ));
+    }
+
+    /// A cache-root path inside a temporary directory.
+    ///
+    /// The allocator refuses a path that has a symlinked component, and a
+    /// temporary directory's own ancestors can contain one (`/tmp` is a
+    /// symlink on macOS), so the fixture canonicalizes the way the product's
+    /// own scratch home does before it hands the path to the allocator.
+    #[cfg(unix)]
+    fn private_fixture_root(parent: &tempfile::TempDir) -> std::path::PathBuf {
+        std::fs::canonicalize(parent.path())
+            .expect("canonical fixture parent")
+            .join("cache-root")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_root_the_product_creates_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let cache_root = private_fixture_root(&parent);
+        let owner = current_owner_uid().unwrap();
+
+        ensure_private_cache_root(&cache_root, owner).unwrap();
+
+        let mode = std::fs::metadata(&cache_root).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            mode, 0o700,
+            "a cache root the product creates must be private rather than umask-dependent: {mode:04o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_writable_cache_root_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let cache_root = private_fixture_root(&parent);
+        std::fs::create_dir(&cache_root).unwrap();
+        std::fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let owner = current_owner_uid().unwrap();
+
+        let error = ensure_private_cache_root(&cache_root, owner).unwrap_err();
+        assert!(
+            matches!(&error, ScratchError::WrongOwner(path) if path == &cache_root),
+            "a group-writable cache root must be refused, not used: {error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_world_writable_cache_root_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let cache_root = private_fixture_root(&parent);
+        std::fs::create_dir(&cache_root).unwrap();
+        std::fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let owner = current_owner_uid().unwrap();
+
+        let error = ensure_private_cache_root(&cache_root, owner).unwrap_err();
+        assert!(
+            matches!(&error, ScratchError::WrongOwner(path) if path == &cache_root),
+            "a world-writable cache root must be refused, not used: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_session_root_lives_under_the_resolved_cache_root() {
+        let session_id = format!("scratch-cache-root-{}", uuid::Uuid::new_v4());
+        let root = session_scratch_dir(&session_id).unwrap();
+        let cache_root = dirs::cache_dir().expect("resolved cache root");
+        // `session_scratch_dir` returns a **canonicalized** path, and on
+        // Windows `canonicalize` yields the extended-length (`\\?\`) device
+        // form while `dirs::cache_dir()` yields the plain drive form. The two
+        // spell the same directory, so a raw comparison of one against the
+        // other fails on its own spelling rather than on its own claim — the
+        // containment check below has to compare like with like. Both sides
+        // are canonicalized, which is the form the product itself resolves
+        // and hands out.
+        let canonical_cache_root =
+            std::fs::canonicalize(&cache_root).expect("canonical resolved cache root");
+        assert!(
+            root.starts_with(&canonical_cache_root),
+            "the scratch root must live under the resolved cache root: {root:?} is not under {canonical_cache_root:?}"
+        );
+        // The check above must still be able to *fail*: a path that is
+        // genuinely outside the resolved cache root must not read as
+        // contained. Without this, a comparison that always holds would
+        // satisfy the assertion above.
+        let outside = canonical_cache_root
+            .parent()
+            .expect("the cache root has a parent")
+            .join("codegg-scratch-outside-the-cache-root");
+        assert!(
+            !outside.starts_with(&canonical_cache_root),
+            "a path outside the resolved cache root must not read as contained: {outside:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]

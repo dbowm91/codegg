@@ -140,7 +140,16 @@ async fn create_and_attach_with_request(
     client: &str,
     controller: &mut InteractiveTerminalController,
 ) -> (String, String) {
-    let handle = match protocol.create(client, ctx, request, None).await {
+    let handle = match protocol
+        .create(
+            client,
+            ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            request,
+            None,
+        )
+        .await
+    {
         CoreResponse::InteractiveProcessCreated { handle, metadata } => {
             assert_eq!(metadata.workspace_id, workspace_id);
             assert!(controller.apply_created(

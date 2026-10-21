@@ -621,6 +621,15 @@ impl PythonRunResult {
                 self.enforcement_warnings.join(", ")
             ));
         }
+        if matches!(self.status, PythonRunStatus::SpawnError) && !self.stderr.trim().is_empty() {
+            let reason = crate::git_network_policy::redact_url_credentials_in_text(
+                self.stderr.lines().next().unwrap_or_default().trim(),
+            );
+            let bounded: String = reason.chars().take(240).collect();
+            if !bounded.is_empty() {
+                parts.push(format!("error: {bounded}"));
+            }
+        }
         parts.join(", ")
     }
 }

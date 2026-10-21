@@ -1,0 +1,85 @@
+{
+  "migration": "linux-command-adr-id-aliases",
+  "source_ref": "planning/linux-sandbox-next-admission-and-adr-cleanup @ eb2ca664d8e8aebe51fddeed8ac06d63f15f555b",
+  "reason": "Preserve the original identity-only Linux/command migration and subsequent current-main collisions; current canonical IDs are unique and decision content and status are unchanged.",
+  "mapping": [
+    {
+      "old_path": "plans/adrs/ADR-0027-composable-linux-execution-isolation.md",
+      "new_path": "plans/adrs/ADR-0046-composable-linux-execution-isolation.md",
+      "canonical_id_history": [
+        "ADR-0027",
+        "ADR-0031",
+        "ADR-0033",
+        "ADR-0035",
+        "ADR-0043",
+        "ADR-0046"
+      ],
+      "current_canonical_id": "ADR-0046",
+      "current_canonical_path": "plans/adrs/ADR-0046-composable-linux-execution-isolation.md",
+      "archive_path": "plans/archive/linux-command-adr-id-aliases/ADR-0027-composable-linux-execution-isolation.md",
+      "source_git_blob": "cd5ca05567f75e8a29fb57f42feb2a66f35f5628",
+      "source_sha256": "380682d63c4c30950750e76f2555a39b363c3fb1ac878975b7224a4f93896ce7",
+      "canonical_sha256": "e0cf5f51cec29319cc536d6e81dd58adcf4d30c473bb8c485c5b3c278f7ba60f",
+      "status_preserved": true,
+      "decision_content_changed": false
+    },
+    {
+      "old_path": "plans/adrs/ADR-0028-command-syntax-and-execution-authority.md",
+      "new_path": "plans/adrs/ADR-0045-command-syntax-and-execution-authority.md",
+      "canonical_id_history": [
+        "ADR-0028",
+        "ADR-0032",
+        "ADR-0034",
+        "ADR-0042",
+        "ADR-0045"
+      ],
+      "current_canonical_id": "ADR-0045",
+      "current_canonical_path": "plans/adrs/ADR-0045-command-syntax-and-execution-authority.md",
+      "archive_path": "plans/archive/linux-command-adr-id-aliases/ADR-0028-command-syntax-and-execution-authority.md",
+      "source_git_blob": "a94e757682ba2ca51939fea61a8545520037ffa6",
+      "source_sha256": "7dfc6c2f5bce53d1561027737482e4a8c35a266d566fe94c027a9742e725050c",
+      "canonical_sha256": "27dcb77ad93b1e5e8906a59c07825fa8c652bd8cc5acd96b3a28a174ecbb07ed",
+      "status_preserved": true,
+      "decision_content_changed": false
+    },
+    {
+      "old_path": "plans/adrs/ADR-0043-composable-linux-execution-isolation.md",
+      "new_path": "plans/adrs/ADR-0046-composable-linux-execution-isolation.md",
+      "canonical_id_history": [
+        "ADR-0043"
+      ],
+      "current_canonical_id": "ADR-0046",
+      "current_canonical_path": "plans/adrs/ADR-0046-composable-linux-execution-isolation.md",
+      "archive_path": "plans/archive/linux-command-adr-id-aliases/ADR-0043-composable-linux-execution-isolation.md",
+      "source_git_blob": "7c695ff94148d35e0365253b508af0afab5d8bf7",
+      "source_sha256": "14e73626c218f0f1e08b89daa51a34bf7d28436465bb89535e336af5623c4f9d",
+      "canonical_sha256": "e0cf5f51cec29319cc536d6e81dd58adcf4d30c473bb8c485c5b3c278f7ba60f",
+      "status_preserved": true,
+      "decision_content_changed": false,
+      "note": "ADR-0043 was taken on current main by the accepted session-owned subagent lifecycle projection decision, so the Linux execution isolation record moved off it to ADR-0046. The decision's substance and its accepted status and date are unchanged; only the canonical identifier moved."
+    }
+  ],
+  "current_main_reconciliation": {
+    "date": "2026-10-21",
+    "active_ids": {
+      "authenticated_idle_continuation": "ADR-0031",
+      "agent_workstream_coordination": "ADR-0032",
+      "directory_tied_project_identity": "ADR-0033",
+      "editor_syntax_tree_dependency": "ADR-0034",
+      "durable_user_prompt_queue": "ADR-0035",
+      "mid_turn_prompt_steering": "ADR-0036",
+      "idle_session_queue_mutation": "ADR-0037",
+      "queue_delivery_execution": "ADR-0038",
+      "queue_advancement_wakeup": "ADR-0039",
+      "evidence_based_agent_recovery": "ADR-0040",
+      "subagent_run_addressing": "ADR-0041",
+      "composer_normal_mode_key_ownership": "ADR-0042",
+      "session_owned_subagent_lifecycle_projection": "ADR-0043",
+      "contained_git_live_objects_and_metadata_authority": "ADR-0044",
+      "command_syntax_and_execution_authority": "ADR-0045",
+      "linux_execution_isolation": "ADR-0046"
+    },
+    "content_or_status_changed": false,
+    "note": "Reconciled against main at cb0e79c0. Main allocated ADR-0043 to the session-owned subagent lifecycle projection decision and ADR-0042 to the composer normal-mode key ownership decision, so the Linux execution isolation record moved to ADR-0046 and the command authority record is ADR-0045. Every active ADR number is unique."
+  }
+}

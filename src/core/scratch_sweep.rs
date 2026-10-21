@@ -902,6 +902,8 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::for_kind(JobKind::Test),
             timeout: None,

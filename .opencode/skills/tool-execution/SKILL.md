@@ -34,6 +34,7 @@ tool arguments. Preserve local-required failure semantics so missing or
 unmatched local scope cannot silently route to remote providers.
 
 `ManagedProcessService` remains the sole finite-process owner on every host.
+
 For model-owned work, a host-stamped session identity may carry the process
 through a persistent private session scratch root. The service injects its
 path after environment sanitization and adds it to Required sandbox grants;
@@ -52,6 +53,50 @@ path refuses is disposed of only by the explicit, audited
 `codegg daemon scratch-reclaim` action, which relaxes the entry-content
 refusals only and never the ownership or containment checks. Scratch contents
 remain disposable cache data that host cache maintenance may purge.
+
+Test and Python carry their validated accepted filesystem profile through the
+durable scheduler job into `ManagedProcessService`; both also carry the
+authenticated network intent, defaulting legacy jobs to unrestricted. Test uses bounded managed
+streaming while preserving its parser and report pipeline; ReadOnly is refused
+before submission because test commands write build and result artifacts.
+Python's ReadOnly transform is refused before submission, and the process
+owner rejects constrained execution when sandbox enforcement is disabled. An
+`OfflineRequired` intent additionally requires Linux M004 process/IPC and
+offline-network containment; unsupported platforms, FullHost, or disabled
+sandbox requests refuse before target start. Do not automatically reroute a refusal. Active Bash command-intent routes share
+the accepted-receipt check and remain explicit-FullHost-only. Typed Git
+filters/hooks/remotes remain unavailable behind their independent gates.
+On Linux, the protected Bubblewrap mount view is an explicit internal opt-in
+through `SandboxConfig::with_linux_protected_mount_view`; it remains opt-in.
+The helper pins mount sources,
+owns Bubblewrap setup, and returns its private status through the same managed
+process result. Do not launch Bubblewrap from a tool executor or infer
+network, process, IPC, seccomp, or resource enforcement from a mount result.
+The separate `with_linux_process_isolation` opt-in additionally requires
+Landlock ABI 6 signal/abstract-socket scopes, PID/IPC namespaces, and private
+procfs; it preserves the existing network policy, closes ambient inherited
+descriptors at the helper boundary, and installs an architecture-checked
+seccomp denylist through Bubblewrap. It does not claim pathname-socket denial
+or resource enforcement. Keep it fail-closed. Offline intent is separately
+carried through the same owner and remains subject to M005 exact-host
+qualification and admission.
+
+Long-lived PTY sessions retain a distinct `InteractiveProcessService` owner.
+Its Linux M004 path uses `ManagedProcessService` helper launch and setup
+acknowledgment before releasing the target, then retains status monitoring
+alongside PTY/session lifetime ownership. For three terminal standard streams,
+the helper pins its own executable into the private mount view and runs it as
+an in-namespace bootstrap that creates a visible foreground process group,
+then execs the requested target in place. The daemon routes the
+principal-resolved constrained profile through this owner; unsupported setup
+fails before target start and cannot fall back to direct spawn.
+
+Constrained Linux turns may use LSP only through their distinct per-turn M004
+service, bound to the daemon-resolved profile and canonical workspace. The
+service launcher uses the same supervised helper while retaining duplex
+JSON-RPC pipes and status-receipt ownership through child exit. It never
+borrows the shared FullHost LSP service. If scoped construction or launch
+fails, constrained LSP tools and context remain unavailable.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows

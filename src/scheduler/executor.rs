@@ -529,6 +529,8 @@ mod tests {
                 JobPayload::ManagedArgv {
                     argv: vec!["cargo".into(), "check".into()],
                     cwd: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
             ),
             attempt_id: codegg_core::jobs::AttemptId::new_unchecked("attempt"),
@@ -562,6 +564,8 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
         );
         let r = ExecutorRegistry::new();

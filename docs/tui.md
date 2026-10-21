@@ -276,6 +276,7 @@ A few commonly used entries:
 | `/policy` | Current approval and sandbox policy detail |
 | `/approval` | Approval-mode fast-select (`/approval-mode` is an alias) |
 | `/sandbox` | Sandbox-profile fast-select (`/sandbox-profile` is an alias) |
+| `/network` | Set the child network policy |
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
@@ -1064,6 +1065,19 @@ the sandbox decides *how far the process can reach*. Neither implies the other.
 | `read-only` | Filesystem writes are denied by containment. Network has no OS isolation. |
 | `workspace-write` | Writes are confined to the workspace roots on supported hosts. Network has no OS isolation. |
 | `full-host` | CodeGG filesystem containment is disabled — the agent has your OS user's host authority outside the workspace, and network access is unrestricted. |
+
+### Child network policy
+
+`/network offline` opts the current daemon principal into `OfflineRequired` for
+child launches. `/network unrestricted confirm` restores host networking; the
+explicit confirmation avoids widening the stored policy by accident. Existing
+preferences remain unrestricted until changed. Offline-required execution
+currently requires a constrained profile and Linux M004/M005 support. The
+policy is carried through managed processes, Test/Python jobs, constrained
+PTYs, and contained LSP launches; unavailable host setup fails before the
+target starts. The Linux owner wiring is still undergoing exact-host
+qualification, so a stored preference does not itself prove that every host
+can enforce it. `/policy` shows the requested and effective intent.
 
 ### Fast-select keys
 

@@ -429,6 +429,8 @@ fn build_record(target: ExecutionTarget) -> JobRecord {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".to_string(), "hello world".to_string()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -523,6 +525,8 @@ fn routing_sends_remote_target_to_eggwork_and_keeps_local() {
         cwd: None,
         scope: None,
         parent_run_id: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     assert_eq!(
         executor_kind_for_job(&remote_test),
@@ -554,6 +558,8 @@ async fn sqlite_target_and_handle_round_trip() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -620,6 +626,8 @@ async fn in_memory_handle_round_trip_preserves_lease() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -689,6 +697,8 @@ async fn submitted_lease_matches_persisted_handle() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -957,6 +967,8 @@ async fn duplicate_execute_reuses_persisted_handle() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1014,6 +1026,8 @@ async fn restart_after_remote_acceptance_does_not_resubmit() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1074,6 +1088,8 @@ async fn restart_with_live_remote_execution_cancels_and_interrupts() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1198,6 +1214,8 @@ async fn cwd_outside_workspace_lease_root_fails() {
     job.payload = JobPayload::ManagedArgv {
         argv: vec!["echo".to_string()],
         cwd: Some("/etc".to_string()),
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     let completion = exec
         .execute(bound_context(job, dir.path().to_path_buf()))
@@ -1330,6 +1348,8 @@ async fn scheduler_end_to_end_remote_only() {
                 payload: JobPayload::ManagedArgv {
                     argv: vec!["sh".to_string(), "build.sh".to_string()],
                     cwd: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: ResourceRequest::default(),
                 timeout: None,
@@ -1408,6 +1428,8 @@ fn host_boundary_and_executor_share_one_remote_policy() {
         cwd: None,
         scope: None,
         parent_run_id: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     assert!(validate_remote_job(test.kind, &test.payload).is_err());
     assert!(exec.validate(&test).is_err());
@@ -1432,6 +1454,8 @@ fn host_boundary_and_executor_share_one_remote_policy() {
     empty.payload = JobPayload::ManagedArgv {
         argv: Vec::new(),
         cwd: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     assert!(validate_remote_job(empty.kind, &empty.payload).is_err());
     assert!(exec.validate(&empty).is_err());
@@ -1459,6 +1483,8 @@ async fn admitted_remote_target_reaches_the_eggwork_executor_once() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string(), "hello".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1529,6 +1555,8 @@ async fn named_target_survives_a_store_restart() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
