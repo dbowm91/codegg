@@ -161,6 +161,8 @@ fn persist_mutation_to_store(
             }),
             actual_backend: Some(codegg_core::run_store::ActualBackend::Git),
             fallback: None,
+
+            remote_resources: None,
         };
         let manifest = store
             .complete_run(handle, completion)

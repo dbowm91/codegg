@@ -26,6 +26,15 @@ use crate::scheduler::permit::{PermitDimensions, ResourcePermitGuard};
 
 use codegg_core::jobs::quota::{KeyedQuotaRequest, ResourceClass};
 
+/// Controller-side cost of one remote reservation.
+///
+/// A remote attempt always moves the workspace to the node and streams
+/// events back, so it occupies a small slice of the controller's own
+/// network/transfer budget. This is deliberately *not* the remote job's
+/// abstract `network_slots` token: that token describes network demand
+/// on the *node*, which the node enforces.
+pub const REMOTE_TRANSFER_SLOTS: u32 = 1;
+
 /// Decision returned by [`AdmissionController::try_admit`].
 #[derive(Debug)]
 pub enum AdmissionDecision {
@@ -78,6 +87,22 @@ pub enum BlockReason {
         available: u32,
     },
     QueueFull,
+    /// The named remote node is at its own concurrency ceiling.
+    RemoteNodeCapacity {
+        /// The node the reservation was for.
+        node_id: String,
+        /// Executions the reservation asked for.
+        requested: u32,
+        /// Executions the node still has room for.
+        available: u32,
+    },
+    /// The controller is at its remote-transfer ceiling.
+    RemoteTransferCapacity {
+        /// Transfers the reservation asked for.
+        requested: u32,
+        /// Transfers the controller still has room for.
+        available: u32,
+    },
 }
 
 /// Why a request is structurally impossible to admit.
@@ -122,6 +147,22 @@ pub enum UnschedulableReason {
     UnknownQuotaNamespace {
         namespace: String,
     },
+    /// The named remote node accepts no executions at all.
+    RemoteNodeCapacityExceedsBudget {
+        /// The node the reservation was for.
+        node_id: String,
+        /// Executions the reservation asked for.
+        requested: u32,
+        /// The node's ceiling.
+        budget: u32,
+    },
+    /// The controller accepts no remote transfer at all.
+    RemoteTransferCapacityExceedsBudget {
+        /// Transfers the reservation asked for.
+        requested: u32,
+        /// The controller's ceiling.
+        budget: u32,
+    },
 }
 
 /// Internal admission state. Held under a `Mutex`; the lock is held
@@ -145,6 +186,19 @@ struct InnerState {
     /// `<namespace>:<scope>`, so unrelated workspaces never share a
     /// bucket.
     held_quotas: HashMap<String, u32>,
+    /// Remote transfers the controller has in flight. This is the
+    /// controller's own cost of moving a workspace to a node, and it is
+    /// budgeted separately from the local network demand.
+    used_remote_transfers: u32,
+    /// Map of remote node id -> admitted execution count.
+    ///
+    /// A remote job does not consume the controller's local CPU, memory,
+    /// or process budget: those tokens describe the *remote node's*
+    /// capacity, which the node enforces with its own cgroup limits. The
+    /// controller's job is to bound how much remote work it has in flight
+    /// against each node, so that a saturated node is not flooded with
+    /// submissions it will only refuse.
+    used_remote: HashMap<String, u32>,
     /// Total rejected (TemporarilyBlocked) requests since boot.
     rejected: u64,
     /// Total impossible (Unschedulable) requests since boot.
@@ -164,6 +218,10 @@ pub struct AdmissionState {
     pub held_keys: HashMap<String, u32>,
     /// M007: weighted slots currently held per quota scope.
     pub held_quotas: HashMap<String, u32>,
+    /// Admitted remote executions per node.
+    pub used_remote: HashMap<String, u32>,
+    /// Remote transfers the controller has in flight.
+    pub used_remote_transfers: u32,
 }
 
 #[derive(Debug)]
@@ -232,6 +290,57 @@ impl AdmissionController {
 
         let mut g = self.inner.lock();
         let budget = &self.cfg.resources;
+
+        // A remote reservation is scoped to a node, not to the controller's
+        // local resources. It consumes the node's own capacity key plus a
+        // small controller transfer budget, and it keeps every exclusivity
+        // key (workspace exclusivity is not a node-local property).
+        if let Some(node_id) = dims.remote_node.as_deref() {
+            let node_limit = self.cfg.remote_node_limit(node_id);
+            let used = g.used_remote.get(node_id).copied().unwrap_or(0);
+            if used + 1 > node_limit {
+                g.rejected += 1;
+                return AdmissionDecision::TemporarilyBlocked(BlockReason::RemoteNodeCapacity {
+                    node_id: node_id.to_owned(),
+                    requested: 1,
+                    available: node_limit.saturating_sub(used),
+                });
+            }
+            if g.used_remote_transfers + REMOTE_TRANSFER_SLOTS > budget.max_remote_transfers {
+                g.rejected += 1;
+                return AdmissionDecision::TemporarilyBlocked(
+                    BlockReason::RemoteTransferCapacity {
+                        requested: REMOTE_TRANSFER_SLOTS,
+                        available: budget
+                            .max_remote_transfers
+                            .saturating_sub(g.used_remote_transfers),
+                    },
+                );
+            }
+            for key in &dims.exclusivity_keys {
+                if key.starts_with("exclusive:") {
+                    let bare = key.trim_start_matches("exclusive:").to_string();
+                    if g.held_keys.get(&bare).copied().unwrap_or(0) > 0 {
+                        g.rejected += 1;
+                        return AdmissionDecision::TemporarilyBlocked(BlockReason::KeyContended {
+                            key: bare,
+                        });
+                    }
+                }
+            }
+            *g.used_remote.entry(node_id.to_owned()).or_insert(0) += 1;
+            g.used_remote_transfers += REMOTE_TRANSFER_SLOTS;
+            for key in &dims.exclusivity_keys {
+                if key.starts_with("exclusive:") {
+                    let bare = key.trim_start_matches("exclusive:").to_string();
+                    *g.held_keys.entry(bare).or_insert(0) += 1;
+                }
+            }
+            drop(g);
+            self.admitted_total.fetch_add(1, Ordering::SeqCst);
+            return AdmissionDecision::Admitted(ResourcePermitGuard::new_orphan(dims.clone()));
+        }
+
         if g.used_process + dims.process_slots as u32 > budget.max_process_slots {
             g.rejected += 1;
             return AdmissionDecision::TemporarilyBlocked(BlockReason::InsufficientProcessSlots {
@@ -347,6 +456,31 @@ impl AdmissionController {
 
     fn check_impossible(&self, dims: &PermitDimensions) -> Option<UnschedulableReason> {
         let budget = &self.cfg.resources;
+        // A remote reservation is bounded by its node's own ceiling, not by
+        // the controller's local process/CPU/memory budget: those tokens
+        // describe the node's capacity, which the node enforces.
+        if let Some(node_id) = dims.remote_node.as_deref() {
+            // A node with a *configured* ceiling of zero can never take a
+            // remote execution. An absent ceiling is not zero: it falls
+            // back to the controller's process-slot budget, exactly as
+            // `try_admit` does.
+            if let Some(configured) = self.cfg.remote_node_capacity.get(node_id).copied() {
+                if configured == 0 {
+                    return Some(UnschedulableReason::RemoteNodeCapacityExceedsBudget {
+                        node_id: node_id.to_owned(),
+                        requested: 1,
+                        budget: 0,
+                    });
+                }
+            }
+            if REMOTE_TRANSFER_SLOTS > budget.max_remote_transfers {
+                return Some(UnschedulableReason::RemoteTransferCapacityExceedsBudget {
+                    requested: REMOTE_TRANSFER_SLOTS,
+                    budget: budget.max_remote_transfers,
+                });
+            }
+            return None;
+        }
         if dims.process_slots as u32 > budget.max_process_slots {
             return Some(UnschedulableReason::ProcessSlotsExceedBudget {
                 requested: dims.process_slots,
@@ -383,6 +517,31 @@ impl AdmissionController {
     /// Internal release. Called from `ResourcePermitGuard::Drop`.
     pub fn release(&self, dims: PermitDimensions) {
         let mut g = self.inner.lock();
+        if let Some(node_id) = dims.remote_node.as_deref() {
+            // The remote reservation charged the node's capacity key and
+            // the controller's transfer budget — nothing else.
+            if let Some(used) = g.used_remote.get_mut(node_id) {
+                *used = used.saturating_sub(1);
+                if *used == 0 {
+                    g.used_remote.remove(node_id);
+                }
+            }
+            g.used_remote_transfers = g
+                .used_remote_transfers
+                .saturating_sub(REMOTE_TRANSFER_SLOTS);
+            for key in &dims.exclusivity_keys {
+                if key.starts_with("exclusive:") {
+                    let bare = key.trim_start_matches("exclusive:").to_string();
+                    if let Some(c) = g.held_keys.get_mut(&bare) {
+                        *c = c.saturating_sub(1);
+                        if *c == 0 {
+                            g.held_keys.remove(&bare);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         g.used_process = g.used_process.saturating_sub(dims.process_slots as u32);
         g.used_cpu = g.used_cpu.saturating_sub(dims.cpu_weight);
         g.used_memory = g.used_memory.saturating_sub(dims.memory_mb_hint);
@@ -438,6 +597,8 @@ impl AdmissionController {
             used_network: g.used_network,
             held_keys: g.held_keys.clone(),
             held_quotas: g.held_quotas.clone(),
+            used_remote: g.used_remote.clone(),
+            used_remote_transfers: g.used_remote_transfers,
         }
     }
 }
@@ -449,6 +610,221 @@ mod tests {
 
     fn make() -> AdmissionController {
         AdmissionController::new(ResolvedSchedulerConfig::default())
+    }
+
+    /// A remote reservation for one node, with the abstract tokens a
+    /// remote job of that kind would carry.
+    fn remote_dims(node_id: &str) -> PermitDimensions {
+        let mut dims = permit_from_request(3, 2048, 1, 3, 0, vec![]);
+        dims.remote_node = Some(node_id.to_owned());
+        dims
+    }
+
+    #[test]
+    fn a_remote_reservation_does_not_consume_local_cpu_or_process_capacity() {
+        let c = Arc::new(make());
+        // Four remote build-shaped reservations, each with a CPU weight of
+        // 3 and a 2 GiB memory hint — more than the whole local budget.
+        let mut guards = Vec::new();
+        for _ in 0..4 {
+            let dims = remote_dims("node-1");
+            match c.try_admit_arc(&dims) {
+                AdmissionDecision::Admitted(g) => guards.push(g),
+                other => panic!("expected Admitted, got {:?}", other),
+            }
+        }
+        let state = c.snapshot();
+        assert_eq!(state.used_cpu, 0, "remote work is not local CPU");
+        assert_eq!(state.used_memory, 0, "remote work is not local memory");
+        assert_eq!(state.used_process, 0, "remote work is not a local slot");
+        assert_eq!(
+            state.used_remote_transfers, 4,
+            "each remote attempt costs one controller transfer slot"
+        );
+        assert_eq!(
+            state.used_network, 0,
+            "a remote transfer does not consume the local network budget"
+        );
+        assert_eq!(state.used_remote.get("node-1").copied(), Some(4));
+        drop(guards);
+    }
+
+    #[test]
+    fn remote_reservations_on_two_nodes_use_separate_budgets() {
+        let c = Arc::new(make());
+        let mut guards = Vec::new();
+        for node in ["node-1", "node-2"] {
+            for _ in 0..4 {
+                let dims = remote_dims(node);
+                match c.try_admit_arc(&dims) {
+                    AdmissionDecision::Admitted(g) => guards.push(g),
+                    other => panic!("expected Admitted, got {:?}", other),
+                }
+            }
+        }
+        let state = c.snapshot();
+        assert_eq!(state.used_remote.get("node-1").copied(), Some(4));
+        assert_eq!(state.used_remote.get("node-2").copied(), Some(4));
+        assert_eq!(state.used_process, 0);
+        assert_eq!(
+            state.used_remote_transfers, 8,
+            "each remote attempt costs one controller transfer slot"
+        );
+        assert_eq!(
+            state.used_network, 0,
+            "a remote transfer does not consume the local network budget"
+        );
+        drop(guards);
+    }
+
+    #[test]
+    fn a_node_without_a_configured_ceiling_is_still_admissible() {
+        // The absence of a per-node ceiling is not a ceiling of zero: it
+        // falls back to the controller's process-slot budget, so remote
+        // work is not silently unschedulable.
+        let c = Arc::new(make());
+        match c.try_admit_arc(&remote_dims("node-without-a-ceiling")) {
+            AdmissionDecision::Admitted(_) => {}
+            other => panic!("expected Admitted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn a_node_ceiling_blocks_the_next_remote_reservation() {
+        let cfg = ResolvedSchedulerConfig::default()
+            .with_remote_node_capacity([("node-1".to_owned(), 2u32)].into_iter().collect());
+        let c = Arc::new(AdmissionController::new(cfg));
+        let mut guards = Vec::new();
+        for _ in 0..2 {
+            match c.try_admit_arc(&remote_dims("node-1")) {
+                AdmissionDecision::Admitted(g) => guards.push(g),
+                other => panic!("expected Admitted, got {:?}", other),
+            }
+        }
+        match c.try_admit_arc(&remote_dims("node-1")) {
+            AdmissionDecision::TemporarilyBlocked(BlockReason::RemoteNodeCapacity {
+                node_id,
+                requested,
+                available,
+            }) => {
+                assert_eq!(node_id, "node-1");
+                assert_eq!(requested, 1);
+                assert_eq!(available, 0);
+            }
+            other => panic!("expected RemoteNodeCapacity block, got {:?}", other),
+        }
+        // A different node is unaffected.
+        match c.try_admit_arc(&remote_dims("node-2")) {
+            AdmissionDecision::Admitted(g) => guards.push(g),
+            other => panic!("expected Admitted, got {:?}", other),
+        }
+        drop(guards);
+    }
+
+    #[test]
+    fn the_controller_transfer_ceiling_is_its_own_budget() {
+        let cfg = ResolvedSchedulerConfig::default();
+        let c = Arc::new(AdmissionController::new(cfg));
+        // The default transfer budget is above the per-node ceiling, so
+        // the node key binds first.
+        let mut guards = Vec::new();
+        for _ in 0..4 {
+            match c.try_admit_arc(&remote_dims("node-1")) {
+                AdmissionDecision::Admitted(g) => guards.push(g),
+                other => panic!("expected Admitted, got {:?}", other),
+            }
+        }
+        assert!(matches!(
+            c.try_admit_arc(&remote_dims("node-1")),
+            AdmissionDecision::TemporarilyBlocked(BlockReason::RemoteNodeCapacity { .. })
+        ));
+        drop(guards);
+    }
+
+    #[test]
+    fn a_released_remote_reservation_frees_the_node_capacity_key() {
+        let cfg = ResolvedSchedulerConfig::default()
+            .with_remote_node_capacity([("node-1".to_owned(), 1u32)].into_iter().collect());
+        let c = Arc::new(AdmissionController::new(cfg));
+        let guard = match c.try_admit_arc(&remote_dims("node-1")) {
+            AdmissionDecision::Admitted(g) => g,
+            other => panic!("expected Admitted, got {:?}", other),
+        };
+        assert!(matches!(
+            c.try_admit_arc(&remote_dims("node-1")),
+            AdmissionDecision::TemporarilyBlocked(BlockReason::RemoteNodeCapacity { .. })
+        ));
+        drop(guard);
+        match c.try_admit_arc(&remote_dims("node-1")) {
+            AdmissionDecision::Admitted(_) => {}
+            other => panic!("expected Admitted after release, got {:?}", other),
+        }
+        let state = c.snapshot();
+        assert_eq!(
+            state.used_remote_transfers, 0,
+            "the transfer slot is released too"
+        );
+    }
+
+    #[test]
+    fn a_remote_reservation_keeps_workspace_exclusivity() {
+        let c = Arc::new(make());
+        let mut dims = remote_dims("node-1");
+        dims.exclusivity_keys = vec!["exclusive:workspace-mutation".to_owned()];
+        let guard = match c.try_admit_arc(&dims) {
+            AdmissionDecision::Admitted(g) => g,
+            other => panic!("expected Admitted, got {:?}", other),
+        };
+        let mut other = remote_dims("node-1");
+        other.exclusivity_keys = vec!["exclusive:workspace-mutation".to_owned()];
+        match c.try_admit_arc(&other) {
+            AdmissionDecision::TemporarilyBlocked(BlockReason::KeyContended { key }) => {
+                assert_eq!(key, "workspace-mutation");
+            }
+            decision => panic!("expected KeyContended, got {:?}", decision),
+        }
+        drop(guard);
+    }
+
+    #[test]
+    fn local_work_still_consumes_the_local_budget() {
+        let c = Arc::new(make());
+        let mut guards = Vec::new();
+        for _ in 0..4 {
+            match c.try_admit_arc(&permit_from_request(2, 1024, 1, 1, 0, vec![])) {
+                AdmissionDecision::Admitted(g) => guards.push(g),
+                other => panic!("expected Admitted, got {:?}", other),
+            }
+        }
+        let state = c.snapshot();
+        assert_eq!(state.used_process, 4);
+        assert_eq!(state.used_cpu, 8);
+        // The local process budget is full, so a fifth local job is
+        // blocked — remote work does not change that.
+        assert!(matches!(
+            c.try_admit_arc(&permit_from_request(1, 256, 1, 1, 0, vec![])),
+            AdmissionDecision::TemporarilyBlocked(BlockReason::InsufficientProcessSlots { .. })
+        ));
+        drop(guards);
+    }
+
+    #[test]
+    fn remote_work_is_admitted_while_the_local_budget_is_full() {
+        let c = Arc::new(make());
+        let mut guards = Vec::new();
+        for _ in 0..4 {
+            match c.try_admit_arc(&permit_from_request(2, 1024, 1, 1, 0, vec![])) {
+                AdmissionDecision::Admitted(g) => guards.push(g),
+                other => panic!("expected Admitted, got {:?}", other),
+            }
+        }
+        // The local CPU budget is exhausted, but a remote job does not
+        // draw on it.
+        match c.try_admit_arc(&remote_dims("node-1")) {
+            AdmissionDecision::Admitted(g) => guards.push(g),
+            other => panic!("expected Admitted, got {:?}", other),
+        }
+        drop(guards);
     }
 
     #[test]

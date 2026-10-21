@@ -286,6 +286,48 @@ newline-delimited JSON-RPC on stdio:
 codegg acp
 ```
 
+Without policy flags, ACP keeps the daemon's current policy. An unattended
+ACP trial can explicitly request one supported envelope:
+
+```bash
+CODEGG_DAEMON_HOME=/tmp/codegg-private-lane \
+  codegg acp --approval-mode yolo --sandbox workspace-write
+```
+
+Policy flags use the same parser as `exec`. Explicit ACP overrides require an
+explicit `CODEGG_DAEMON_HOME`, are serialized against other ACP policy trials
+for that root, and fail if the daemon reports a narrower effective policy.
+Use a private daemon root, as the developer harness does; the override is
+persisted in that daemon's principal preference store. Explicit deterministic
+denies, hard-denies, authorization, and sandbox enforcement remain active.
+Turn failures are returned as JSON-RPC errors, not ACP `cancelled` results.
+
+The developer-only multi-lane supervisor is not part of the shipped binary.
+From a CodeGG checkout, build a candidate and run:
+
+```bash
+cargo build --bin codegg
+python3 -m dev.harness_lab doctor --binary target/debug/codegg
+python3 -m dev.harness_lab smoke --binary target/debug/codegg --subjects 2
+python3 -m dev.harness_lab smoke --binary target/debug/codegg --subjects 2 --unattended-profile workspace-write
+python3 -m dev.harness_lab smoke --binary target/debug/codegg --subjects 2 --unattended-profile full-host
+python3 -m dev.harness_lab tool-trial --binary target/debug/codegg --profile workspace-write
+python3 -m dev.harness_lab tool-trial --binary target/debug/codegg --profile workspace-write --deny-bash
+python3 -m dev.harness_lab evaluate --binary target/debug/codegg --suite dev/harness_lab/fixtures/smoke.jsonl --ledger /tmp/codegg-ledger --candidate baseline
+python3 -m dev.harness_lab report --ledger /tmp/codegg-ledger
+python3 -m dev.harness_lab improve --proposer manual --max-iterations 1 --dry-run
+```
+
+It uses temporary roots outside the checkout by default. The ordinary smoke
+does not submit a model turn or call a provider; policy-profile runs verify
+the daemon's requested/effective snapshot but also do not submit a turn. The
+turn-level fixture uses a loopback OpenAI-compatible provider and the native
+broker, with explicit-deny coverage. Ledger report/replay/compare run offline.
+Candidate proposals use a separate linked worktree; OpenCode is version-pinned
+to the qualified CLI adapter and candidate acceptance still requires build,
+ACP qualification, and paired-ledger gates. See `dev/harness_lab/README.md` for
+the path inventory and platform limits.
+
 Plugins are configured through the `plugin` config key and managed from the
 TUI; there is no `codegg plugins` CLI subcommand. WASM plugin execution
 requires the `plugins` Cargo feature. See `docs/PLUGINS.md`.

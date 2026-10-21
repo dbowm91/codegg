@@ -183,6 +183,24 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         live_mapped: true,
     },
     AuditCoverageEntry {
+        action: "scratch_reclaim",
+        owner: "daemon:scratch",
+        actor: "transport-bound principal",
+        scope: "opaque",
+        decision: "scratch_reclaim",
+        metadata: &[
+            "scratch.digest",
+            "scratch.entry_count",
+            "scratch.byte_count",
+            "scratch.verdict",
+            "scratch.refusal",
+            "scratch.outcome",
+        ],
+        causation: "the daemon's own scratch tree; the opaque digest names the tree, and no path, file name, file content, or session identity ever enters audit metadata",
+        visibility: AuditVisibility::Project,
+        live_mapped: true,
+    },
+    AuditCoverageEntry {
         action: "human_shell_run",
         owner: "daemon:human_shell",
         actor: "transport-bound principal",
@@ -637,6 +655,9 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("human_shell_promotion_stage", "prompt_submit"),
     ("human_shell_run_create", "human_shell_run"),
     ("human_shell_run_cancel", "human_shell_run"),
+    // M007: the operator disposition of one of the daemon's own disposable
+    // scratch trees.
+    ("scratch_reclaim", "scratch_reclaim"),
     ("turn_steer", "prompt_submit"),
     // M002b (ADR-0037): every queue mutation, INCLUDING adoption and transfer,
     // reuses the `prompt_submit` action ADR-0035 selected.
@@ -855,6 +876,12 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "lsp_completion_get",
     "managed_worktree_get",
     "managed_worktree_list",
+    // Eggwork M002: a read-only operator view of a remote node's host. It
+    // is capability-gated, discloses inert host metadata, and mutates
+    // nothing — no job, no queue, no node state — so it shares the reads'
+    // classification rather than emitting per-poll audit events. Denial
+    // *is* audited upstream by `authorize_request`.
+    "node_telemetry_read",
     "memory_forget",
     "memory_list",
     "memory_remember",
@@ -1007,6 +1034,10 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "interactive_process_resume",
     "interactive_process_terminate",
     "interactive_process_remove",
+    // M006: the scratch census is a bounded read of the daemon's own
+    // disposable cache. It mutates nothing, so it does not earn a dedicated
+    // audit action; denial *is* audited upstream by `authorize_request`.
+    "scratch_usage",
 ];
 
 /// Map one daemon operation name to its structural audit action.

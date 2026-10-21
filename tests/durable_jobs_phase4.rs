@@ -22,7 +22,7 @@ use codegg_core::jobs::{
     AttemptCompletion, AttemptState, BackoffPolicy, CancelOutcome, CancelReason, DaemonGeneration,
     ExecutionTarget, FailureClass, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
     JobSource, JobState, JobStore, JobStoreError, NewJob, RecoveryPolicy, ResourceRequest,
-    RetryPolicy, ScheduleId,
+    RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -82,8 +82,7 @@ impl TestMaterializer {
 impl OccurrenceMaterializer for TestMaterializer {
     async fn materialize(
         &self,
-        _schedule_id: &ScheduleId,
-        _template: &JobTemplate,
+        _schedule: &codegg_core::jobs::schedule::ScheduleRecord,
         _scheduled_for: DateTime<Utc>,
     ) -> Result<JobId, codegg_core::jobs::schedule::MaterializerError> {
         let n = self

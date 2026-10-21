@@ -6,8 +6,9 @@
 #
 # A running subagent is assigned one name from this pool. Names are held only
 # while their subagent is active: on completion the name is released and may be
-# drawn again later. When a name is already held by an active subagent, the next
-# free numeric variant is taken (`Name`, `Name-2`, `Name-3`, ...).
+# drawn again later. A free name from this pool is always preferred; only when
+# every name here is held does the next free numeric variant get taken
+# (`Name`, `Name-2`, `Name-3`, ...).
 #
 # Fields:
 #   name        - the display name, assigned to the subagent identifier.

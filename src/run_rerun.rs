@@ -198,6 +198,7 @@ mod tests {
                 has_git_mutation: false,
                 has_destructive_mutation: false,
             },
+            remote_resources: None,
             permissions: Vec::new(),
             sandbox: None,
             artifacts: Vec::new(),

@@ -27,6 +27,7 @@
 //! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, snapshots, and changes |
 //! | `project_init` | `daemon_project_init.rs::handle_project_init_request` | bounded project instruction draft and guarded root publication |
 //! | `lsp` | `daemon_lsp.rs::handle_lsp_request` | M006-B: bounded LSP reads and the authoritative diagnostics pull over the daemon-owned `LspService` |
+//! | `scratch` | `daemon_scratch.rs::handle_scratch_request` | M006: the read-only scratch usage census over the daemon-owned disposable cache |
 
 use crate::protocol::core::CoreRequest;
 
@@ -52,6 +53,9 @@ pub enum DaemonRequestFamily {
     /// M006-B. Read authority only: `LspPreviewApply` stays in `Goals` so the
     /// ADR-0008 write path keeps its existing owner and is not disturbed.
     Lsp,
+    /// M006. Measurement only: the scratch census reads the daemon's own
+    /// disposable cache and mutates nothing.
+    Scratch,
 }
 
 impl DaemonRequestFamily {
@@ -80,6 +84,11 @@ impl DaemonRequestFamily {
             | CoreRequest::LspDiagnosticsGet { .. }
             | CoreRequest::LspDiagnosticsSubscribe { .. }
             | CoreRequest::LspCompletionGet { .. } => Self::Lsp,
+            // M006: the scratch census is measurement only. It never mutates
+            // the tree it measures, so it owns no write authority. M007: the
+            // operator disposition removes one tree, and it owns no project
+            // authority either.
+            CoreRequest::ScratchUsage { .. } | CoreRequest::ScratchReclaim { .. } => Self::Scratch,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -188,6 +197,7 @@ impl DaemonRequestFamily {
             CoreRequest::SchedulePause { .. } => Self::Jobs,
             CoreRequest::ScheduleResume { .. } => Self::Jobs,
             CoreRequest::SchedulerSnapshot => Self::Jobs,
+            CoreRequest::NodeTelemetry { .. } => Self::Jobs,
             CoreRequest::TaskDelete { .. } => Self::Jobs,
             CoreRequest::TaskList => Self::Jobs,
             CoreRequest::TaskSchedule { .. } => Self::Jobs,
@@ -357,6 +367,7 @@ impl DaemonRequestFamily {
                 "src/core/daemon_project_init.rs::handle_project_init_request"
             }
             Self::Lsp => "src/core/daemon_lsp.rs::handle_lsp_request",
+            Self::Scratch => "src/core/daemon_scratch.rs::handle_scratch_request",
         }
     }
 }
@@ -443,11 +454,68 @@ mod tests {
                 },
                 DaemonRequestFamily::HumanShell,
             ),
+            (
+                CoreRequest::ScratchUsage {
+                    request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+                },
+                DaemonRequestFamily::Scratch,
+            ),
+            (
+                CoreRequest::ScratchReclaim {
+                    request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                        tree: "0".repeat(64),
+                        apply: false,
+                    },
+                },
+                DaemonRequestFamily::Scratch,
+            ),
         ];
         for (request, expected) in &cases {
             assert_eq!(DaemonRequestFamily::of(request), *expected);
             assert!(!expected.owner_module().is_empty());
         }
+    }
+
+    /// M006: the scratch census is served from the daemon's own snapshot and
+    /// is never reachable on the remote transport.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scratch_census_answers_from_the_daemon_and_stays_local() {
+        use crate::core::daemon::CoreDaemon;
+        let daemon = CoreDaemon::new(None, None, None);
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "req-scratch".into(),
+                CoreRequest::ScratchUsage {
+                    request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+                },
+            ))
+            .await
+            .expect("dispatch succeeds");
+        match response {
+            CoreResponse::ScratchUsage { report } => {
+                assert_eq!(report.trees.len(), report.tree_count);
+                assert!(!report.truncated);
+            }
+            other => panic!("expected a scratch usage report, got {other:?}"),
+        }
+
+        // The census measures the local owner's cache. A remote client is
+        // authenticated to the server, not to this machine's owner.
+        let request = CoreRequest::ScratchUsage {
+            request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+        };
+        assert!(request.is_local_only());
+
+        // M007: the operator disposition removes one of those trees, so it
+        // is local-only for the same reason — and it is destructive, so a
+        // remote client must never reach it.
+        let request = CoreRequest::ScratchReclaim {
+            request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                tree: "0".repeat(64),
+                apply: true,
+            },
+        };
+        assert!(request.is_local_only());
     }
 
     /// The thin dispatcher must reach the owning family handler instead of

@@ -585,7 +585,10 @@ reported.
   recorded decision with evidence behind it, and macOS joined the table on
   the hosted lane run `39616896281` (2026-10-21), which observed Seatbelt
   obtained and a confined process unable to write outside its own roots on a
-  native macOS runner. Windows is disabled for a different kind of reason:
+  native macOS runner. The lane was then re-run **on the flip itself**
+  (`39627440691`, head `2cddbff3c`) and passed again, with the gate now
+  asserting *available* on macOS rather than the refusal — so the evidence
+  covers the changed behaviour, not only the measurement. Windows is disabled for a different kind of reason:
   it lacks a *capability*, because no filesystem-enforcement backend is
   registered for Windows at all, so no run could produce the evidence.
 - **Not a claim of descendant quiescence.** No platform is claimed to have

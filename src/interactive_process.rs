@@ -514,6 +514,7 @@ pub fn permit_dimensions_for_interactive() -> PermitDimensions {
         network_slots: request.network_slots,
         exclusivity_keys: Vec::new(),
         keyed_quotas: Vec::new(),
+        remote_node: None,
     }
 }
 

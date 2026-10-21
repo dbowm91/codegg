@@ -9,7 +9,8 @@
 # `kill_on_drop` + temp-dir cleanup) rather than in-process.
 #
 # Pinned to the exact immutable Eggwork revision used by CodeGG production
-# `eggwork-client`/`eggwork-core`. `LocalProcessRunner` remains the node's
+# `eggwork-client`/`eggwork-core` (upstream `main` head `81f34e08`, which
+# carries the closed optional Gregg host telemetry M001+M002). `LocalProcessRunner` remains the node's
 # canonical process owner; this helper only hosts `NodeServer` the way the
 # `eggworkd` binary would.
 
@@ -35,10 +36,14 @@ tokio = { version = "1", features = [
   "signal",
   "time",
 ] }
-eggwork-server = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
-eggwork-runner = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
-eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
+eggwork-server = { git = "https://github.com/eggstack/eggwork.git", rev = "81f34e083bc6d44dbcc31ce2daae21b7dffda717", default-features = false }
+eggwork-runner = { git = "https://github.com/eggstack/eggwork.git", rev = "81f34e083bc6d44dbcc31ce2daae21b7dffda717", default-features = false }
+eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "81f34e083bc6d44dbcc31ce2daae21b7dffda717", default-features = false }
 eggserve-core = { version = "0.2.0", default-features = false, features = ["tls"] }
+# The synthetic telemetry provider serves the real provider wire contract, so
+# the fixture exercises the same shape a production Gregg daemon serves.
+gregg-protocol = "1.0.15"
+serde_json = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 sha2 = "0.10"

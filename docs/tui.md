@@ -270,7 +270,7 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent transcript; job rows are read-only). The dialog labels live-work loading or unavailable state separately from an authoritative empty result. |
+| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). The dialog labels live-work loading or unavailable state separately from an authoritative empty result. |
 | `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
@@ -279,6 +279,7 @@ A few commonly used entries:
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
+| `/nodes` | Host telemetry of the configured remote Eggwork nodes — state, freshness, and the dimensions each node actually reported |
 | `/reload` | Refresh project runtime assets — `/reload skills`, `/reload agents` |
 | `/init` | Review a bounded root `AGENTS.md` proposal; press `a` in the preview to publish |
 | `/exit` | Quit (`quit` and `q` are aliases) |
@@ -378,7 +379,7 @@ The one-line row above the composer names whoever holds the keyboard and what
 their keys do. When the composer has it, the row is the composer's:
 
 ```
-COMP · NOR · a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
+a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
 ```
 
 - The letters are the composer's own keys, and they are the ones available
@@ -386,13 +387,20 @@ COMP · NOR · a · b · d · e · i · j · k · o · p · u · U · v · w · 
   because there they scroll the conversation.
 - `space help` opens the help box, where every key above is described in
   full.
-- In `[INS]` mode the row says `COMP · INS · type · Esc normal` instead: the
-  composer's keys are not available while you are typing — the letters are
-  text.
+- The row does **not** repeat the mode. The badge immediately above the input
+  box already says `[NOR]`, `[INS]`, or `[SEL]`, and a second copy of it one
+  line below is the same fact said twice.
+- In `[INS]` mode the row says `type · Esc normal` instead: the composer's
+  keys are not available while you are typing — the letters are text.
 - The row is **present** in both modes, so `Esc` does not move the composer
   up or down. Only its text changes.
 
 When a **panel** has the keyboard, the row names that panel's keys instead.
+
+When the **editor** has the keyboard the row is **absent**. The editor has a
+keymap of its own — `space ?` opens it in the editor's bottom-right corner —
+and a row of keys in two places at once is how a keymap becomes a lie. The
+space that row would have taken is given back to the document.
 
 ### Undoing, and the two insert transitions
 
@@ -667,7 +675,7 @@ Five surfaces show this, and all five read one projection:
 | Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
 | Sessions dialog | `/sessions` | The session list plus its live `Subagents` and `Jobs` sections |
 | Working strip | always on, above the input box | One row per in-flight subagent |
-| Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
+| Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's run view per tab, in the main buffer |
 
 `Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
 first needs an `Esc` is a chord most people never find.
@@ -683,7 +691,7 @@ letter is `[NOR]`-only, the chord is live in both modes.
 `Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
-`Enter` opens a child transcript or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
+`Enter` opens a child run view or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
 `Nothing pending` rather than opening to a blank strip, so a quiet session still
 confirms the key did something.
 
@@ -699,7 +707,7 @@ dialog refreshes from the daemon after the request and reports refusal or an
 uncertain outcome without claiming the job stopped. `/sessions` job rows and
 the sessions sidebar open the same detail surface. On a child with a linked
 run or job, `i` opens that linked detail while `Enter` keeps opening the child
-transcript. Read-only observers can inspect jobs but do not get the cancel
+run view. Read-only observers can inspect jobs but do not get the cancel
 key. `/sessions` opens on the
 active session and clears work rows when you select a different session whose
 projection is not loaded, showing that live work is unavailable.
@@ -728,17 +736,37 @@ visible there.
 
 `Shift+N` and `Shift+P` move between open subagent tabs and wrap around;
 `Shift+X` closes the active one. `Esc` also returns to the conversation. The
-cycle runs `Chat` first, then the subagent tabs in the order you opened them.
+cycle runs `Main` first, then the subagent tabs in the order you opened them.
 
 With no subagent tabs open the keys do nothing rather than appearing to break —
 you stay on the conversation. Up to 16 subagent tabs can be open at once; at
 that point opening another is **refused** and says so, rather than closing a tab
 you were reading.
 
-A subagent tab shows that subagent's transcript. Closing it cancels nothing —
-the run keeps going whether or not you are watching it. When a run drops out of
-the projection the tab stays open and stops claiming to be live, so the buffer
-cannot show "running" for something the daemon has stopped vouching for.
+The strip is one row, and it is the identity surface for the run on screen. It
+reads `Main` for the conversation, carries a status marker per tab (`●` live,
+`○` finished, `✕` gone from the projection), and shows the **active** tab's
+persona in italics next to that tab. The persona is the subagent's own
+description of itself, carried by the projection — a tab that has left the
+projection keeps the persona it last carried. The row also states the three
+keys that operate it, on the right: `⇧P/⇧N switch · ⇧X close`.
+
+All of that shares one row and therefore one width budget. The keys and the
+tab labels are paid for first; the persona takes what is left and is truncated
+to fit, and is dropped rather than squeezed to a stub when nothing is left. A
+row too narrow for the persona still shows every tab label it can.
+
+A subagent tab shows that subagent's **run view** — its task, the agent's own
+description of itself, its canonical ids, and whether the run is still live. It
+is not a transcript: the projection carries no conversation for a delegated
+run, so there is nothing to replay. The tab **replaces** the main conversation
+in the buffer rather than floating over it, so the two are never legible at
+the same time, and the tab's own row is filled rather than transparent.
+
+Closing it cancels nothing — the run keeps going whether or not you are
+watching it. When a run drops out of the projection the tab stays open and
+stops claiming to be live, so the buffer cannot show "running" for something
+the daemon has stopped vouching for.
 
 ### Talking to a subagent
 
@@ -781,12 +809,20 @@ The Session panel lists `Todos`, then `Subagents`, then `Jobs`, so the three
 move through them, `Space` collapses a section, and `Enter` (or a click) acts on
 the selected row:
 
-- a **subagent** row opens that subagent's transcript as a tab in the main
+- a **subagent** row opens that subagent's run view as a tab in the main
   buffer, the same tab `Ctrl+T` would have opened;
 - a **job** row does nothing. Jobs have no transcript to show yet, so the key
   is consumed rather than sending you somewhere arbitrary;
 - the **Agent Runs tree** further down the panel keeps its own behaviour:
   `Enter` there opens the run-detail dialog.
+
+**The walk skips rows with no action.** A todo row in the panel has nothing
+behind `Enter`, so the walk steps over the todo *rows* and stops on the
+**`Todos` heading** instead — which still folds and unfolds the section. The
+heading is the part of the section you can act on, so it stays reachable.
+Hovering and clicking a todo row still works: the mouse path is a different
+map from the keyboard one. The `Ctrl+T` overlay is the deliberate opposite —
+there a todo row *is* actionable, so it stays selectable there.
 
 Unlike the overlay, the panel keeps rows for finished subagents and marks their
 status. It is a persistent index, not a status light: a subagent that finishes
@@ -1447,6 +1483,91 @@ palette, the clipboard family, and the keys that say why they cannot run. See
 [The space menu](#the-space-menu). Every key in it is either bound or states
 its reason, so there is no Helix space gesture that does nothing at all.
 
+### The bottom row
+
+The editor has **one** row of chrome, at the bottom. The file's path is on its
+left; the status cluster is on its right. The cluster reads left to right:
+
+| Part | What it says |
+|---|---|
+| the persistent signals | whether the file has unsaved changes, which root the edit is confined to (`[project]` or `[global]`), whether the file is writable, and any caveat about the rendering itself |
+| the transient disclosure | what your last keystroke did — the find that landed, the search that matched, where the undo cursor is standing |
+| the notice | an error, if one is being surfaced |
+| the armed prefix | the key you are halfway through, at the far right of the row |
+
+The armed prefix is **last** on purpose. It is the one thing that comes and
+goes on its own, so it gets the one place on the row nothing else competes
+for, and "did my `g` register?" is a question that has to be answered at a
+glance.
+
+When the row is too narrow for all of it, something has to give — and what
+gives is decided by how much it would cost to lose. The busy marker goes
+first, then the unsaved-changes word, then the writability marker, then the
+scope badge, and only then the disclosure. A **caveat** — "line too long",
+"highlighting truncated" — outranks all of them, because dropping a caveat is
+not a smaller truth but a misleading one: a truncated line that reads as the
+whole line is worse than a missing footnote. A part that is still too wide on
+its own is cut from the **right**, so the part that answers the question
+survives.
+
+### The `:` line
+
+`:` opens a command line **on the bottom row of the editor**. The file's path
+is erased while the line is open, because you are looking at what you are
+typing rather than at where the file is, and the commands that match what you
+have typed are drawn on the row directly above.
+
+```
+:goto 50
+```
+
+- `:50` and `:goto 50` are the same command. The bare number is the spelling
+  you reach for; the named one is there when you want to be explicit.
+- The line number is one-based — `:1` is the first line. `:0` is refused
+  rather than quietly taken to line one.
+- As you type, the row above lists the commands that match. `Tab` or `Enter`
+  takes the highlighted one.
+- The match list is drawn **over** the text rather than in a row of its own,
+  so opening the line does not reflow the document and move your cursor out
+  from under you.
+
+### Scrolling and pages
+
+The editor keeps a **five-line margin**: the page stands still while the
+cursor walks the last few rows, and moves only when the cursor would leave
+the margin. A view that scrolls the instant the cursor touches the bottom row
+is a view you cannot read — the text you are on moves out from under you
+mid-sentence. At the very top and the very bottom of the file the margin
+gives way, so the cursor can sit on the first and last lines.
+
+| Key | What it does |
+|---|---|
+| `PageDown` / `PageUp` | a **full** page down / up |
+| `Ctrl+d` / `Ctrl+u` | **half** a page down / up |
+| `zc` / `zt` / `zb` | centre the view on the cursor / put its line on the top row / on the bottom row |
+| `zj` / `zk` | scroll the view a line down / up, leaving the cursor where it is |
+
+`z` is **view mode**: the page moves and the cursor stays where it is, so you
+can look at another part of the file without losing your place. `zc`, `zt` and
+`zb` align the view; `zj` and `zk` scroll it a line at a time. The next cursor
+movement re-attaches the view.
+
+The **scrollbar** on the right edge of the editor shows where you are in the
+file. Its thumb is sized by how much of the file is visible, so it maps the
+document rather than pointing at the cursor.
+
+### Select mode
+
+`v` enters **select mode**, and the badge above the input box reads `[SEL]`
+while you are in it. In select mode a movement **grows** the selection;
+outside it, a movement **drops** it. A selection that outlives the movement
+that made it reads as "something is still selected" long after you thought it
+was gone. `v` again, or `Esc`, leaves select mode and drops the selection.
+
+`e` and `b` **select the word** they land on, so holding `e` walks the file
+with each word picked out in turn — and `d` right after deletes that word. `w`
+does not select: it is a positioning motion.
+
 ### Goto mode
 
 `g` is a mode, not one chord. Its status row reads `g` while it is armed:
@@ -1459,9 +1580,14 @@ its reason, so there is no Helix space gesture that does nothing at all.
 | `gh` | start of the line |
 | `gl` | end of the line |
 | `gj` / `gk` | down / up one line |
+| `gt` / `gc` / `gb` | top / middle / bottom **of the screen** |
 
 `gs` is the one worth learning: `0` is the only key that reaches a line start, so
 in an indented file every placement went through column zero.
+
+`gt`, `gc` and `gb` move the **caret** to the top, the middle and the bottom
+of your screen. They know where your screen ends because the editor measures
+its own pane and publishes the height, rather than guessing at it.
 
 `gj`/`gk` are Helix's *textual* line motions, against `j`/`k`'s *visual* ones.
 CodeGG wraps no lines — one screen row is one buffer line — so the two are the
@@ -1474,10 +1600,6 @@ Not bound, on purpose rather than by omission:
 
 - `gf`, `ga`, `gm`, `gn`, `gp` — files and alternate buffers. One document is
   open at a time.
-- `gt`, `gc`, `gb` — top, middle and bottom **of the screen**. These need the
-  real viewport height, and motions currently resolve against a fixed guess at
-  it, so binding them today would land on a line that is not the top of your
-  screen.
 
 A list like this is **checked**. The build compares the keys declared here
 against the editor's own tables, so a key that gets implemented without leaving
@@ -1510,6 +1632,12 @@ can be applied. See [The preview keys](#the-preview-keys).
 
 `space` is a menu, and every key in it either does something or says why it
 cannot. Nothing in it is dead.
+
+`space ?` opens the editor's **keymap box** — the editor's own catalogue of
+its keys, in its bottom-right corner. It is a box rather than a row because
+the keys are a list, and a list on a row is a list that has to be truncated. It
+covers the corner of the text rather than taking rows away from it, so
+opening it does not move the document under you, and `Esc` closes it.
 
 | Key | What it does |
 |---|---|
@@ -1706,7 +1834,7 @@ composer.
 `/` searches the document while the editor has focus in `NOR`. The line opens
 pre-filled with the word under the cursor, and it searches as you type:
 `/host` → `/host_status` → `/host_status fn`. Matches are highlighted in the
-text and the count shows next to the line/column readout.
+text and the count shows on the editor's bottom status row.
 
 | Key | What it does |
 |---|---|
@@ -1865,15 +1993,27 @@ the same navigation, so the keys below mean the same thing in both.
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
 | `Enter` on a directory | expand or collapse it in place — the cursor stays |
-| `l` / `→` | make that directory the **root** and list what's inside it |
+| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it |
 | `h` / `←` | go back one level (at the workspace root: collapse in place, otherwise jump to the parent) |
 | `Enter` on a file | open it in the editor |
+| `i` | type a filter into the pane — the rows narrow as you type |
 | `r` | re-list the current directory |
 | `Esc` | leave the pane / close the box |
 
-`l` re-roots rather than expanding, so the listing always has a top level:
-walking into a deeply nested tree is the same operation at every depth, and
-`h` puts the cursor back on the directory you just came out of.
+`l` **peeks** rather than re-rooting. The directory opens in place and the
+cursor moves into it, so the parent and its siblings stay on screen and you
+can see where you are. Only when the listing has run out of room — three
+levels deep is as far as the daemon's listing reaches — does the scope slide
+to the directory's parent, the directory stays selected and open, and
+everything above the parent is dropped. `h` is the mirror: from inside a
+directory it moves the cursor to the parent row and collapses it; from a
+top-level row it slides the scope up one level. The pair reads as a horizontal
+motion: `l` goes right (deeper), `h` goes left (shallower).
+
+The filter is **panel-local**: `i` opens it, the rows narrow as you type, and
+`Esc` leaves the filter mode while **keeping** the filter, so you can go back
+to moving through the rows you narrowed down. The mode indicator in the
+composer does not change — the filter belongs to the pane, not to the app.
 
 **Where you are, three ways.** The title is a breadcrumb — `workspace › src ›
 tui` — and every row is drawn one level further in for each component of that
@@ -1881,6 +2021,11 @@ trail, with a `├─` / `└─` guide to the directory it belongs to. Enter a
 directory and the rows below it visibly step in, so a scoped listing no longer
 looks like the workspace root it stopped being. Guides are plain box-drawing
 characters, so this still reads correctly with `CODEGG_FILE_ICONS=plain`.
+
+The indent is drawn **relative to the scope**, not to the workspace: a scoped
+listing draws its own top level at the left edge, and the breadcrumb carries
+the absolute depth. A deep scope therefore does not flatten into a wall of
+guides.
 
 ### Where the keys are
 
@@ -1890,7 +2035,7 @@ keys of a panel you have docked but not yet entered.**
 When `/files` is running in the side panel, that line reads
 
 ```
-▌ Files · Shift+→/Shift+L in · j/k move · ^d/^u page · l/→ root at dir · …
+▌ Files · Shift+→/Shift+L in · j/k move · ^d/^u page · l/→ peek into dir · …
 ```
 
 and once the panel has the keyboard the front of it flips to `Shift+← back`. The
@@ -1900,7 +2045,7 @@ the file browser's own keys, not a generic panel description: the box, its
 panel, and this line are written from one source, so they cannot drift apart.
 
 That source is the box itself. Every box that can dock says its own keys now, not
-just the information panels: `/files` says `l/→ root at dir`, `/mcps` says
+just the information panels: `/files` says `l/→ peek into dir`, `/mcps` says
 `j/k move · enter actions`, `/review` says `j/k move · enter diff`, and `/diff`
 says `j/k scroll · ^d/^u page · s side-by-side`. A box whose meaning changes with
 what it is showing says the right thing in each case — `/theme` says

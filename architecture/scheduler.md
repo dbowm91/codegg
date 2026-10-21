@@ -175,11 +175,62 @@ keys are reserved together, or none:
 
 `BlockReason` variants: `InsufficientProcessSlots`,
 `InsufficientCpuWeight`, `InsufficientMemory`, `InsufficientIoWeight`,
-`InsufficientNetworkSlots`, `KeyContended`, `QueueFull`.
+`InsufficientNetworkSlots`, `KeyContended`, `QueueFull`,
+`RemoteNodeCapacity`.
 
 `UnschedulableReason` variants: `ProcessSlotsExceedBudget`,
 `CpuWeightExceedsBudget`, `MemoryExceedsBudget`,
-`IoWeightExceedsBudget`, `NetworkSlotsExceedsBudget`.
+`IoWeightExceedsBudget`, `NetworkSlotsExceedsBudget`,
+`RemoteNodeCapacityExceedsBudget`.
+
+#### Local and remote budgets (M003)
+
+A reservation carries a `remote_node: Option<String>`. The distinction
+matters because the abstract tokens on a remote job describe the
+**remote node's** capacity, not the controller's:
+
+| Reservation | Charged against the local budget |
+|---|---|
+| local job | CPU weight, memory hint, process slots, I/O weight, network slots, exclusivity keys |
+| remote job | the node's own capacity key + one controller transfer slot + exclusivity keys |
+
+A remote job therefore no longer consumes fictitious local CPU and memory:
+four remote `build` jobs, each with a CPU weight of 3 and a 2 GiB memory
+hint, do not exhaust the controller's local budget — the local budget
+describes *this* machine, and the work is not running on it.
+
+What a remote reservation *does* consume:
+
+- **A named-node capacity key.** `RemoteTargetPolicy`'s per-node ceiling
+  (`[eggwork.nodes.<id>].max_concurrent_executions`) bounds how many
+  remote executions the controller has in flight against that node. A
+  node with no configured ceiling falls back to the controller's
+  process-slot budget, which preserves the effective concurrency bound
+  remote work had before the split. `BlockReason::RemoteNodeCapacity`
+  reports the shortfall; the reservation is retried by the fair queue,
+  not clamped.
+- **A controller transfer budget.** A remote attempt moves the workspace
+  to the node and streams events back, which is real controller work. It
+  is charged against `[scheduler.resources].max_remote_transfers`
+  (default 16) — deliberately a *separate* budget from
+  `max_network_slots`, which measures the network demand of **local**
+  jobs. Charging a remote transfer against the local network budget would
+  throttle remote work by an unrelated dimension, and a local job's
+  network demand must not be throttled by remote traffic.
+  `BlockReason::RemoteTransferCapacity` reports the shortfall.
+- **Every exclusivity key.** Workspace exclusivity is not a node-local
+  property, so a remote job contends for the same keys a local one does.
+
+The node's own capacity remains the node's authority: it refuses work it
+cannot take, and the executor turns that refusal into a typed outcome
+(see below). The controller's node key exists to avoid *flooding* a
+saturated node with submissions it will only refuse. With the default
+ceilings, a single node still admits exactly as many remote executions as
+it did before the split (`max_process_slots`); two nodes now admit
+twice that, which is the point of separating the budgets.
+
+There is still exactly one scheduler, one fair queue, and one admission
+controller. No second queue and no remote-job registry were introduced.
 
 #### FairJobQueue (`fair_queue.rs`)
 
@@ -290,6 +341,9 @@ max_cpu_weight = 8
 max_memory_mb_hint = 8192
 max_io_weight = 8
 max_network_slots = 4
+# The controller's own remote-transfer budget (M003). Separate from
+# `max_network_slots`, which measures local jobs' network demand.
+max_remote_transfers = 16
 
 [scheduler.queue]
 max_total = 256
@@ -417,6 +471,30 @@ and `network_policy = "unrestricted" | "disabled"`). Omitted policies keep
 the legacy `none` + `unrestricted` behavior. Relative key paths are rejected;
 key material is resolved at use time and redacted from diagnostics.
 
+#### Host-boundary admission (M001)
+
+A client can now name a node explicitly (`JobSubmitDto.target`, or the
+`target` of a schedule's `JobTemplate`). The scheduler still routes
+target-first and never falls back to local execution, but the request is
+refused *before* it becomes durable.
+
+`validate_remote_job` (`src/scheduler/eggwork.rs`) is the single policy
+for "can this job run remotely". It admits `Build`, `Lint`, `Format`,
+`ManagedProcess`, and `Shell` with a coherent command argv; it defers
+`Test` with a typed error and refuses `AgentTurn`, `Subagent`, `Python`,
+`ToolProgram`, and every unhandled kind. `EggworkExecutor::validate`
+calls the same function, so a job admitted at the host boundary is
+always dispatchable and a job refused there could never have run.
+
+The host boundary (`CoreDaemon::admit_remote_target`,
+`src/core/daemon_jobs.rs`) then applies the administrator gate (the
+`RemoteTargetPolicy` allowlist and posture ceiling built from the
+daemon configuration) and the principal gate (`Capability::NodeTarget`,
+owners only). All three gates fail closed, and a refused submission
+creates no job and a refused schedule creates no schedule. See
+`architecture/jobs.md` ("Explicit target boundary") and
+`architecture/authorization.md` ("Remote node targeting").
+
 Per attempt the executor derives a deterministic Eggwork identity
 (`codegg-{sha256(job, attempt)}`, generation 1) and mints exactly one
 fresh lease id shared verbatim between the live handle and the persisted
@@ -449,6 +527,47 @@ completions, still-live executions are cancelled and reported
 interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
 Live mTLS qualification: `tests/eggwork_remote_execution_live.rs`
 (Linux).
+
+#### Typed remote outcomes and the bounded wait (M003, worker telemetry and targeting)
+
+The executor's preflight returns a typed outcome, not a string:
+
+| Outcome | Class | Waited on? |
+|---|---|---|
+| `NodeBusy { active, max }` | contention | yes |
+| `NodeUnreachable { detail }` | transient | yes |
+| `NodeDraining` | policy | no |
+| `CapabilityMismatch { capability }` | policy | no |
+| `IdentityMismatch { expected, observed }` | policy | no |
+| `LimitRefused { code, detail }` | policy | no |
+| `Cancelled` | cancellation | no |
+
+Only contention is worth waiting on. A draining node, a missing
+capability, an identity mismatch, and a refused limit are decisions:
+waiting changes nothing, so they fail immediately with a typed reason
+rather than burning the wait budget.
+
+The wait itself is bounded in every dimension — a wait count, a
+per-wait ceiling, and a total deadline
+(`[eggwork.remote_retry]`, defaulting to 2 waits, 250 ms → 5 s
+exponential backoff, 30 s total). It happens **before any remote side
+effect**, so a retry cannot duplicate a submission. It always stays on
+the *same* node: an explicitly targeted job is never re-targeted
+elsewhere and never falls back to local execution.
+
+The node's own idempotency covers the remaining case. The executor
+persists the derived remote handle before the first upload, so a
+submission under the same handle is idempotent on the node, and a
+restart observes the persisted handle instead of resubmitting. A lost
+execution is reported `Interrupted` — the durable handle makes the next
+attempt reconcile rather than duplicate.
+
+Cancellation is honored between waits, so a cancelled job does not sit
+out the whole budget.
+
+The resource-limit policy itself (operator ceiling, unit-safe
+conversion, the `cpu_millis` trap, and the truthful outcome record) is
+documented in `architecture/jobs.md` under "Remote resource limits".
 
 #### Content-aware derived workspace transfer (M003)
 
@@ -486,7 +605,9 @@ probed/uploaded, uploaded bytes — no paths or contents) are emitted on
 the progress sink. Blob bytes were already content-deduplicated by
 Eggwork before M003; this milestone adds manifest-level reuse.
 The Eggwork pin carries Workspace M004 plus the later Security M004
-Landlock hardening.
+Landlock hardening, the M004b sandbox-helper staging correction, and the
+closed optional Gregg host telemetry M001+M002 that M002 consumes
+(`81f34e08`, upstream `main` head).
 
 ### Ephemeral interactive admission (M001)
 
@@ -593,6 +714,41 @@ live `BackgroundJobCompleted` hint. No per-job task, no busy poll, no
 long-held CPU permit; shutdown aborts the forwarder while committed
 notices stay durable for notice-row + next-turn recovery.
 
+### Schedule materialization driver (M004, worker telemetry and targeting)
+
+A schedule is durable data with no trigger until something claims its
+occurrences. Until M004 nothing in production called
+`ScheduleStore::claim_due`; the only callers were tests. The driver
+(`src/scheduler/schedule_driver.rs`) is that trigger: one
+daemon-lifecycle-owned earliest-due wake loop per daemon, sleeping until
+the earliest durable due horizon, claiming the due occurrences in one
+bounded tick, and exiting on shutdown.
+
+Its ownership boundary against `JobScheduler` is strict:
+
+- the driver **creates** work; the scheduler **runs** it. A claimed
+  occurrence becomes a durable job through `JobSubmissionService`, and the
+  scheduler remains the only authority that admits and dispatches it;
+- the driver owns no executor and no queue of its own. Its durable state
+  is the schedule store's rows; the durable job store is the queue the
+  scheduler reconciles from;
+- there is no per-schedule timer, no second scheduler, and no model
+  polling.
+
+The driver is installed only where it can do its job: the scheduler
+enabled (the submission facade refuses every submission otherwise) and a
+pool present (a pool-less daemon has no cross-process durability to
+claim). Schedule creation and resumption wake it, so a schedule that is
+already due fires promptly rather than waiting out the sleep.
+
+The occurrence's job id is a pure function of `(schedule_id,
+scheduled_for)`, so the `job.id` primary key is the durable uniqueness
+constraint: a daemon that stopped between writing the job row and writing
+the occurrence row replays into the same job. An occurrence the
+materializer refuses is not recorded at all, so it stays retryable instead
+of being silently consumed. See `architecture/jobs.md` for the tick's
+three phases and the refusal semantics.
+
 ### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:
@@ -617,6 +773,31 @@ ID.
 `WokeReason` variants (`src/scheduler/events.rs:68`): `JobEnqueued`,
 `ExecutorCompleted`, `CancellationRequested`, `ScheduleTick`,
 `ScheduleClaimed`, `Manual`, `RetryRequested`, `Reconciled`.
+
+### Remote node host telemetry (M002)
+
+`NodeTelemetry` is a read-only operator request over the core protocol
+(`CoreRequest::NodeTelemetry { node_id }` → `CoreResponse::NodeTelemetry
+{ nodes }`). It answers with one sanitized snapshot per configured
+`[eggwork.nodes]` entry — including the nodes that could not be read, which
+carry a bounded diagnostic instead of being dropped.
+
+The coordinator is daemon-owned (`src/scheduler/eggwork_telemetry.rs`),
+independent of the scheduler: it exists whether or not job dispatch is
+enabled, and reading it never touches the queue. The node's own contract
+and the projection rules are documented in
+`architecture/jobs.md` → "Remote node host telemetry (M002)".
+
+The read is scoped to no project, so it reuses the existing remote-node
+grant: only the local owner's broad policy authorizes it, and a team
+principal fails closed on the missing scope **before** any network call.
+The operation is classified as an uninstrumented read in
+`crates/codegg-core/src/audit_instrumentation.rs` — it discloses inert host
+metadata and mutates nothing — while the refusal itself is audited by
+`authorize_request`.
+
+The TUI surfaces it as `/nodes`; the native client exposes it as
+`SessionProjectionDriver::node_telemetry`.
 
 ## Static guards
 

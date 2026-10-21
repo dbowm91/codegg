@@ -225,6 +225,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             Some(text) => app.messages_state.toasts.info(&text),
             None => app.messages_state.toasts.info("No LSP server connected"),
         },
+        TuiCommand::NodeTelemetryRequested => {
+            crate::tui::commands::diagnostics::request_node_telemetry(app);
+        }
+        TuiCommand::NodeTelemetryLoaded { nodes, error } => match error {
+            Some(error) => app.messages_state.toasts.warning(&error),
+            None => {
+                let text = crate::tui::commands::diagnostics::format_node_telemetry(&nodes);
+                app.messages_state.toasts.info(&text);
+            }
+        },
         TuiCommand::ShareSession { session_id } => {
             start_share_session(app, session_id);
         }

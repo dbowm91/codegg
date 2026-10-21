@@ -121,7 +121,7 @@ Checked against crates.io / the upstream repositories on 2026-10-09.
 | `eggup-core` / `eggup-acquisition` | git `66813b3b` | git `70ec4e63` | behind; immutable-pin policy owned by `codegg upgrade` |
 | `eggpool-*` (wire + provider-profile) | git `9ac6a131` | git `eed0d58f` | behind; M001 closure revision, pinned deliberately |
 | `eggplan-*` | git `0dd33b76` | git `37ad290c` | behind |
-| `eggwork-client` / `eggwork-core` | git `e6a5d82e` | git `17ff53fc` | behind |
+| `eggwork-client` / `eggwork-core` | git `81f34e08` | git `81f34e08` | current — upstream `main` head, carrying Workspace M004, Security M004 Landlock hardening, the M004b sandbox-helper staging correction, and the closed optional Gregg host telemetry M001+M002 (Eggwork M002) |
 
 **Why `eggserve-core` stays at 0.2.0.** `eggserve-core` 0.4.0 pulls in
 `landlock`, which is Linux-only: it references `libc::SYS_landlock_create_ruleset`,

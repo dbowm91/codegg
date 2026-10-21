@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
-    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
-    ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
-    ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto, RunQueryDto,
-    RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
-    SessionBindingDto, WorkspaceServiceHealthDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, NodeTelemetryDto,
+    ProjectDeleteRequestDto, ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto,
+    ProjectSummaryDto, ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto,
+    RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto,
+    ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1396,6 +1396,14 @@ pub enum CoreResponse {
     SchedulerSnapshot {
         snapshot: serde_json::Value,
     },
+    /// Sanitized host telemetry for the requested Eggwork nodes
+    /// (Eggwork M002).
+    ///
+    /// One snapshot per requested node, in the daemon's node order. A node
+    /// that could not be read still appears, with a bounded diagnostic.
+    NodeTelemetry {
+        nodes: Vec<NodeTelemetryDto>,
+    },
     ModelsSnapshot {
         current_model: Option<String>,
         models: Vec<String>,
@@ -1962,6 +1970,20 @@ pub enum CoreResponse {
         triggers: Vec<crate::work_order::TaskTriggerMetadataDto>,
         truncated: bool,
     },
+    /// The daemon's scratch usage report (M006).
+    ///
+    /// Carries counts, sizes, ages, and opaque digests only: never an
+    /// absolute path, never file content, never a session identity.
+    ScratchUsage {
+        report: crate::scratch::ScratchUsageReportDto,
+    },
+    /// The result of one scratch reclaim (M007).
+    ///
+    /// Carries the digest, counts, and the verdict only: never an absolute
+    /// path, never file content, never a session identity.
+    ScratchReclaim {
+        result: crate::scratch::ScratchReclaimResultDto,
+    },
 }
 
 /// Bounded projection metadata returned by the durable session promotion
@@ -2119,6 +2141,12 @@ pub enum SessionLaunchPlacementDto {
     ExistingManagedWorktree { worktree_id: String },
 }
 
+// Request variants carry bounded request payloads by design: `JobSubmit`
+// embeds the job spec (which carries the explicit remote target), and
+// `WorkOrderCreate` embeds its request. The enum's largest variant is
+// therefore the one that carries a payload, which is the point of the
+// enum — the same reason `CoreResponse` and `CoreEvent` below are allowed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {
@@ -2852,6 +2880,20 @@ pub enum CoreRequest {
     },
     /// Request the current bounded scheduler snapshot.
     SchedulerSnapshot,
+    /// Read the host telemetry of the named Eggwork nodes (Eggwork M002).
+    ///
+    /// A read-only operator request: it observes a remote node's host and
+    /// never creates, mutates or releases a job. `node_id` selects one
+    /// `[eggwork.nodes]` table key; `None` asks for every configured node.
+    ///
+    /// The answer carries one snapshot per node, including the nodes that
+    /// could not be read — a node without a usable observation reports a
+    /// bounded diagnostic rather than being omitted or zero-filled.
+    NodeTelemetry {
+        /// The `[eggwork.nodes]` table key to read, or every node.
+        #[serde(default)]
+        node_id: Option<String>,
+    },
     /// Wait for one durable job completion without giving the client direct
     /// access to scheduler internals.
     JobWait {
@@ -3704,6 +3746,20 @@ pub enum CoreRequest {
     WorkOrderTriggerRevoke {
         trigger_id: String,
     },
+    /// Measure the daemon-owned scratch tree (M006).
+    ///
+    /// The request names nothing: the daemon reports the trees it owns.
+    ScratchUsage {
+        request: crate::scratch::ScratchUsageRequestDto,
+    },
+    /// Dispose of one scratch tree (M007).
+    ///
+    /// The request names a tree by its opaque digest, never by a path. A dry
+    /// run is the default: the operator sees the verdict before anything is
+    /// removed.
+    ScratchReclaim {
+        request: crate::scratch::ScratchReclaimRequestDto,
+    },
 }
 
 /// A TUI-chosen extended-thinking setting for one turn.
@@ -3848,6 +3904,23 @@ impl CoreRequest {
                 // `cggt_...` plaintext, so issuance stays on the
                 // secret-safe local surface (no remote secret delivery).
                 | Self::TeamTokenCreate { .. }
+        )
+    }
+
+    /// Whether this request is served only on the local authenticated socket.
+    ///
+    /// The remote HTTP/WS surface is reachable by a remote client that has
+    /// authenticated to the server but is not the machine's local owner. The
+    /// daemon-owned scratch tree is local-owner state, so its operations
+    /// never leave the local socket. The remote transport denies with
+    /// `local_operation_remote_denied`.
+    pub fn is_local_only(&self) -> bool {
+        matches!(
+            self,
+            // M006: the scratch census measures the local owner's disposable
+            // cache. M007: the operator disposition removes one of those
+            // trees, and it is just as local.
+            Self::ScratchUsage { .. } | Self::ScratchReclaim { .. }
         )
     }
 }

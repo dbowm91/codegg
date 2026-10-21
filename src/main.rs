@@ -81,6 +81,37 @@ fn resolve_output_format(format: OutputFormat, json_output: bool) -> OutputForma
     }
 }
 
+fn merge_cli_policy_overrides(
+    root: Option<codegg::policy_surface::CliPolicyOverride>,
+    command: Option<codegg::policy_surface::CliPolicyOverride>,
+) -> Result<Option<codegg::policy_surface::CliPolicyOverride>, String> {
+    use codegg::policy_surface::CliPolicyOverride;
+    match (root, command) {
+        (None, None) => Ok(None),
+        (Some(policy), None) | (None, Some(policy)) => Ok(Some(policy)),
+        (Some(root), Some(command)) => {
+            let approval_mode = match (root.approval_mode, command.approval_mode) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err("top-level and ACP approval mode flags conflict".to_string());
+                }
+                (Some(value), _) | (_, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            let sandbox_profile = match (root.sandbox_profile, command.sandbox_profile) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err("top-level and ACP sandbox flags conflict".to_string());
+                }
+                (Some(value), _) | (_, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            Ok(Some(CliPolicyOverride {
+                approval_mode,
+                sandbox_profile,
+            }))
+        }
+    }
+}
+
 /// Clap log-level mapping for `-v` counting.
 ///
 /// Documented and tested exactly: no flag warns, `-v` informs, `-vv`
@@ -477,7 +508,10 @@ enum Commands {
         command: AuthSubcommand,
     },
     /// Run an ACP v1 agent over newline-delimited JSON-RPC on stdio.
-    Acp,
+    Acp {
+        #[command(flatten)]
+        policy: ExecutionPolicyArgs,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -673,6 +707,40 @@ enum DaemonCommand {
         #[arg(long, default_value = "50")]
         lines: usize,
     },
+    /// Show the daemon-owned scratch usage (M006)
+    ///
+    /// Measures the daemon's disposable scratch cache: tree count, total
+    /// size, age, and whether the reclaim path would accept each tree.
+    ScratchUsage {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit the raw report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Run a fresh measurement instead of the daemon's last snapshot
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Dispose of one daemon-owned scratch tree (M007)
+    ///
+    /// Names the tree by its opaque digest, as reported by
+    /// `codegg daemon scratch-usage`. A dry run is the default: the command
+    /// reports what it would remove and removes nothing.
+    ScratchReclaim {
+        /// The opaque digest of the tree
+        #[arg(long)]
+        tree: String,
+        /// Actually remove the tree. Without this, nothing is removed.
+        #[arg(long)]
+        apply: bool,
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit the raw result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Attach to a running daemon via local Unix socket.
     /// Canonical spelling; top-level `attach-daemon` remains as a hidden
     /// compatibility alias. Distinct from the feature-gated remote HTTP
@@ -692,6 +760,235 @@ enum DaemonCommand {
 
 fn resolve_endpoint(endpoint: Option<String>) -> String {
     codegg::core::instance::DaemonPaths::resolve_for_endpoint(endpoint.as_deref()).endpoint_uri()
+}
+
+/// The bounded wait for a daemon scratch report (M006).
+///
+/// The socket client applies no timeout of its own, so the CLI applies one.
+/// A report is a bounded measurement; a daemon that cannot answer inside the
+/// bound is reported as unavailable rather than hanging the command.
+const SCRATCH_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How many trees the human-readable scratch report prints.
+const SCRATCH_REPORT_TREE_ROWS: usize = 50;
+
+/// Fetch the daemon's scratch usage report over the local socket.
+///
+/// The daemon answers from its own snapshot unless a fresh measurement is
+/// asked for. The request names nothing: the daemon reports the trees it
+/// owns.
+async fn fetch_scratch_usage_report(
+    client: &codegg::core::transport::SocketCoreClient,
+    refresh: bool,
+) -> Result<codegg::protocol::scratch::ScratchUsageReportDto, String> {
+    let request = codegg::core::new_request(
+        "scratch-usage-1".into(),
+        CoreRequest::ScratchUsage {
+            request: codegg::protocol::scratch::ScratchUsageRequestDto { refresh },
+        },
+    );
+    let response = client
+        .request_bounded(request, SCRATCH_REPORT_TIMEOUT)
+        .await
+        .map_err(|error| {
+            // The socket server drops a frame it cannot decode, so a daemon that
+            // predates this request answers nothing at all. Hanging is not an
+            // acceptable degradation, so the bound turns that silence into a
+            // typed error.
+            format!(
+                "the running daemon does not support scratch usage ({error}); restart it to \
+                 upgrade"
+            )
+        })?;
+    match response {
+        CoreResponse::ScratchUsage { report } => Ok(report),
+        CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Fetch the daemon's verdict on one scratch tree.
+///
+/// The tree is named by its opaque digest, never by a path.
+async fn fetch_scratch_reclaim_result(
+    client: &codegg::core::transport::SocketCoreClient,
+    tree: &str,
+    apply: bool,
+) -> Result<codegg::protocol::scratch::ScratchReclaimResultDto, String> {
+    let request = codegg::core::new_request(
+        "scratch-reclaim-1".into(),
+        CoreRequest::ScratchReclaim {
+            request: codegg::protocol::scratch::ScratchReclaimRequestDto {
+                tree: tree.to_string(),
+                apply,
+            },
+        },
+    );
+    let response = client
+        .request_bounded(request, SCRATCH_REPORT_TIMEOUT)
+        .await
+        .map_err(|error| {
+            format!(
+                "the running daemon does not support scratch reclaim ({error}); restart it to \
+                 upgrade"
+            )
+        })?;
+    match response {
+        CoreResponse::ScratchReclaim { result } => Ok(result),
+        CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Print the daemon's verdict on one scratch tree.
+fn print_scratch_reclaim_result(result: &codegg::protocol::scratch::ScratchReclaimResultDto) {
+    println!(
+        "Scratch reclaim {}",
+        &result.digest[..12.min(result.digest.len())]
+    );
+    println!("  Verdict: {}", scratch_verdict_name(result.verdict));
+    println!("  Entries: {}", result.entry_count);
+    println!("  Size: {}", format_bytes(result.byte_count));
+    if result.quarantined {
+        println!("  Quarantined: the automatic path already refused this tree");
+    }
+    if let Some(refusal) = result.refusal {
+        println!(
+            "  Automatic-path refusal: {}",
+            scratch_refusal_name(refusal)
+        );
+    }
+    if result.dry_run {
+        println!("  Dry run: nothing was removed. Re-run with --apply to remove it.");
+    } else if result.removed {
+        println!("  Removed.");
+    }
+}
+
+/// The stable name of a reclaim verdict.
+fn scratch_verdict_name(
+    verdict: codegg::protocol::scratch::ScratchReclaimVerdictDto,
+) -> &'static str {
+    use codegg::protocol::scratch::ScratchReclaimVerdictDto;
+    match verdict {
+        ScratchReclaimVerdictDto::Reclaimable => "reclaimable",
+        ScratchReclaimVerdictDto::Refused => "refused",
+        ScratchReclaimVerdictDto::Leased => "leased (the tree is still in use)",
+        ScratchReclaimVerdictDto::Removed => "removed",
+        ScratchReclaimVerdictDto::Absent => "absent",
+    }
+}
+
+/// The stable name of a refusal reason.
+fn scratch_refusal_name(
+    refusal: codegg::protocol::scratch::ScratchReclaimRefusalDto,
+) -> &'static str {
+    use codegg::protocol::scratch::ScratchReclaimRefusalDto;
+    match refusal {
+        ScratchReclaimRefusalDto::SymbolicLink => "symbolic_link",
+        ScratchReclaimRefusalDto::NonRegularEntry => "non_regular_entry",
+    }
+}
+
+/// Print the daemon's scratch usage report.
+fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageReportDto) {
+    println!(
+        "Scratch usage (measured {})",
+        format_epoch_millis(report.generated_at_ms)
+    );
+    println!("  Trees: {}", report.tree_count);
+    if report.unreported_trees > 0 {
+        println!("  Unreported trees: {}", report.unreported_trees);
+    }
+    println!("  Total size: {}", format_bytes(report.total_bytes));
+    let quarantined = report.trees.iter().filter(|tree| tree.quarantined).count();
+    let refused = report
+        .trees
+        .iter()
+        .filter(|tree| tree.reclaimable == Some(false))
+        .count();
+    let unknown = report
+        .trees
+        .iter()
+        .filter(|tree| tree.reclaimable.is_none())
+        .count();
+    println!("  Quarantined trees: {quarantined}");
+    println!("  Trees the reclaim path would refuse: {refused}");
+    if unknown > 0 {
+        println!("  Trees with no verdict (the walk did not finish reading them): {unknown}");
+    }
+    if report.truncated {
+        println!("  Note: the measurement hit a bound; the totals are partial");
+    }
+    if report.trees.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "  {:<14}  {:>10}  {:>5}  {:>8}  RECLAIMABLE",
+        "DIGEST", "SIZE", "FILES", "AGE"
+    );
+    for tree in report.trees.iter().take(SCRATCH_REPORT_TREE_ROWS) {
+        println!(
+            "  {:<14}  {:>10}  {:>5}  {:>8}  {}",
+            &tree.digest[..12.min(tree.digest.len())],
+            format_bytes(tree.total_bytes),
+            tree.file_count,
+            format_age(tree.newest_modified_ms),
+            match tree.reclaimable {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unknown",
+            },
+        );
+    }
+    if report.trees.len() > SCRATCH_REPORT_TREE_ROWS {
+        println!(
+            "  ... and {} more tree(s)",
+            report.trees.len() - SCRATCH_REPORT_TREE_ROWS
+        );
+    }
+}
+
+/// Format a byte count for the operator report.
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Format the age of a timestamp for the operator report.
+fn format_age(millis: Option<i64>) -> String {
+    let Some(millis) = millis else {
+        return "unknown".to_string();
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    let seconds = ((now - millis).max(0)) / 1000;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
+    }
+}
+
+/// Format a measurement timestamp for the operator report.
+fn format_epoch_millis(millis: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(millis)
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Attach the TUI to a running daemon over the local Unix socket.
@@ -1206,6 +1503,45 @@ mod cli_surface_tests {
     }
 
     #[test]
+    fn acp_policy_flags_share_resolution_and_reject_conflicts() {
+        let command = Cli::try_parse_from([
+            "codegg",
+            "acp",
+            "--approval-mode",
+            "yolo",
+            "--sandbox",
+            "full-host",
+        ])
+        .expect("ACP policy flags parse");
+        let Some(Commands::Acp { policy }) = command.command else {
+            panic!("expected ACP command");
+        };
+        assert_eq!(
+            policy.resolve().unwrap(),
+            codegg::policy_surface::resolve_cli_policy(Some("yolo"), Some("full-host"), false)
+                .unwrap()
+        );
+
+        let conflict = Cli::try_parse_from([
+            "codegg",
+            "--approval-mode",
+            "interactive",
+            "acp",
+            "--approval-mode",
+            "yolo",
+        ])
+        .expect("each policy spelling parses before merged validation");
+        let Some(Commands::Acp { policy }) = conflict.command else {
+            panic!("expected ACP command");
+        };
+        assert!(merge_cli_policy_overrides(
+            conflict.policy.resolve().unwrap(),
+            policy.resolve().unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
     fn output_format_compat_aliases() {
         let cli = Cli::try_parse_from(["codegg", "--output-format", "json"])
             .expect("legacy root spelling parses");
@@ -1378,7 +1714,10 @@ async fn main() -> Result<(), AppError> {
             // Fallback to no-op subscriber if we can't create the file, to avoid stdout/stderr flood in TUI
             tracing_subscriber::registry().init();
         }
-    } else if matches!(cli.command, Some(Commands::CoreStdio) | Some(Commands::Acp)) {
+    } else if matches!(
+        cli.command,
+        Some(Commands::CoreStdio) | Some(Commands::Acp { .. })
+    ) {
         // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
         // on stderr so a diagnostic can never corrupt a response frame.
         tracing_subscriber::fmt()
@@ -1458,8 +1797,16 @@ async fn main() -> Result<(), AppError> {
             Commands::Auth { command } => {
                 cmd_auth(command.clone())?;
             }
-            Commands::Acp => {
-                codegg::acp::run().await?;
+            Commands::Acp { policy } => {
+                let root_policy = cli.policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid execution policy flags: {}", e))
+                })?;
+                let command_policy = policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid ACP execution policy flags: {}", e))
+                })?;
+                let policy = merge_cli_policy_overrides(root_policy, command_policy)
+                    .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
+                codegg::acp::run(policy).await?;
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;
@@ -1663,6 +2010,20 @@ async fn main() -> Result<(), AppError> {
                                             s.status
                                         );
                                     }
+                                    // M006: the scratch summary is one line,
+                                    // because this is the command an operator
+                                    // already runs. A daemon that cannot
+                                    // answer is not a reason to fail the
+                                    // status report.
+                                    if let Ok(report) =
+                                        fetch_scratch_usage_report(&client, false).await
+                                    {
+                                        println!(
+                                            "  Scratch: {} tree(s), {}",
+                                            report.tree_count,
+                                            format_bytes(report.total_bytes)
+                                        );
+                                    }
                                 }
                                 Ok(other) => {
                                     println!(
@@ -1687,6 +2048,65 @@ async fn main() -> Result<(), AppError> {
                                 eprintln!("Stale PID file found: {}", pid.trim());
                             }
                         }
+                    }
+                }
+                DaemonCommand::ScratchReclaim {
+                    tree,
+                    apply,
+                    endpoint,
+                    json,
+                } => {
+                    use codegg::core::instance::DaemonPaths;
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                    let client =
+                        codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                            .await
+                            .map_err(|error| {
+                                AppError::Other(anyhow::anyhow!(
+                                    "daemon is not running or unreachable: {error}"
+                                ))
+                            })?;
+                    let result = fetch_scratch_reclaim_result(&client, tree, *apply)
+                        .await
+                        .map_err(|message| AppError::Other(anyhow::anyhow!(message)))?;
+                    if *json {
+                        let encoded = serde_json::to_string_pretty(&result).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(
+                                "failed to encode the scratch reclaim result: {error}"
+                            ))
+                        })?;
+                        println!("{encoded}");
+                    } else {
+                        print_scratch_reclaim_result(&result);
+                    }
+                }
+                DaemonCommand::ScratchUsage {
+                    endpoint,
+                    json,
+                    refresh,
+                } => {
+                    use codegg::core::instance::DaemonPaths;
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                    let client =
+                        codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                            .await
+                            .map_err(|error| {
+                                AppError::Other(anyhow::anyhow!(
+                                    "daemon is not running or unreachable: {error}"
+                                ))
+                            })?;
+                    let report = fetch_scratch_usage_report(&client, *refresh)
+                        .await
+                        .map_err(|message| AppError::Other(anyhow::anyhow!(message)))?;
+                    if *json {
+                        let encoded = serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(
+                                "failed to encode the scratch usage report: {error}"
+                            ))
+                        })?;
+                        println!("{encoded}");
+                    } else {
+                        print_scratch_usage_report(&report);
                     }
                 }
                 DaemonCommand::Attach {

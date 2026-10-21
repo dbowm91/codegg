@@ -48,6 +48,24 @@ impl SocketCoreClient {
         self.inner.daemon_id().await.map_err(client_error)
     }
 
+    /// Send a request and await its response under a bounded timeout.
+    ///
+    /// The socket transport applies no timeout of its own, and a daemon that
+    /// cannot decode a request drops the frame silently — so a client that
+    /// asks for an operation a daemon predates would wait forever. The bound
+    /// turns that silence into a typed error instead of a hang.
+    pub async fn request_bounded(
+        &self,
+        request: RequestEnvelope<CoreRequest>,
+        timeout: std::time::Duration,
+    ) -> Result<CoreResponse, BoundedRequestError> {
+        match tokio::time::timeout(timeout, self.inner.request(request)).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => Err(BoundedRequestError::Transport(error)),
+            Err(_) => Err(BoundedRequestError::TimedOut(timeout)),
+        }
+    }
+
     pub async fn client_id(&self) -> Option<String> {
         self.inner.client_id().await
     }
@@ -89,6 +107,30 @@ impl SocketCoreClient {
 fn client_error(error: codegg_client::ClientError) -> AppError {
     AppError::Other(anyhow::anyhow!(error.to_string()))
 }
+
+/// Why a bounded request did not produce a response.
+#[derive(Debug)]
+pub enum BoundedRequestError {
+    /// The daemon did not answer inside the bound. A daemon that predates the
+    /// requested operation answers nothing at all, so this is the signal that
+    /// the operation is unsupported rather than the daemon being busy.
+    TimedOut(std::time::Duration),
+    /// The transport failed before a response arrived.
+    Transport(codegg_client::ClientError),
+}
+
+impl std::fmt::Display for BoundedRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut(timeout) => {
+                write!(formatter, "no response within {timeout:?}")
+            }
+            Self::Transport(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for BoundedRequestError {}
 
 #[async_trait]
 impl CoreClient for SocketCoreClient {
@@ -246,6 +288,76 @@ mod tests {
                 .expect("pending request must resolve after peer death");
         assert!(result.is_err(), "peer death must fail the request waiter");
         server.await.expect("peer-death fixture");
+        let _ = std::fs::remove_file(socket);
+    }
+
+    /// A daemon that never answers must not hang the client: the bound turns
+    /// the silence into a typed error. This is the degradation an older daemon
+    /// causes, because the socket server drops a frame it cannot decode.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_bounded_request_reports_a_silent_peer_instead_of_hanging() {
+        let socket = std::path::PathBuf::from(format!(
+            "/tmp/cgpd-{}.sock",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        let listener = UnixListener::bind(&socket).expect("bind test socket");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read hello");
+            let hello = CoreFrame::ServerHello(ServerHello {
+                daemon_id: "silent-daemon".into(),
+                protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+                server_capabilities: ServerCapabilities {
+                    event_replay: true,
+                    session_management: true,
+                    permission_routing: true,
+                    workspace_registration: true,
+                    workspace_snapshots: true,
+                    durable_jobs: true,
+                    durable_schedules: true,
+                    identity_aware_context: true,
+                    project_catalog: true,
+                    session_projection: true,
+                },
+                client_id: "silent-client".into(),
+            });
+            let encoded = serde_json::to_string(&hello).expect("serialize ServerHello");
+            write_half
+                .write_all(format!("{encoded}\n").as_bytes())
+                .await
+                .expect("write ServerHello");
+            write_half.flush().await.expect("flush ServerHello");
+            // Answer the handshake, then never answer the request.
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let endpoint = format!("unix://{}", socket.display());
+        let client = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            SocketCoreClient::connect(&endpoint),
+        )
+        .await
+        .expect("handshake with fixture timeout")
+        .expect("handshake with fixture");
+        let request = crate::core::new_request(
+            "silent-request".into(),
+            CoreRequest::ScratchUsage {
+                request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+            },
+        );
+        let result = client
+            .request_bounded(request, std::time::Duration::from_millis(250))
+            .await;
+        match result {
+            Err(BoundedRequestError::TimedOut(_)) => {}
+            other => panic!("a silent peer must time out, got {other:?}"),
+        }
+        server.abort();
         let _ = std::fs::remove_file(socket);
     }
 }

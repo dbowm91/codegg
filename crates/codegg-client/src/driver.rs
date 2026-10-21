@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use codegg_protocol::core::{
     CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope, PROTOCOL_VERSION,
 };
+use codegg_protocol::dto::NodeTelemetryDto;
 use codegg_protocol::projection::consumer::{
     HeadlessConnectionState, HeadlessConsumerError, HeadlessEventOutcome,
     HeadlessProjectionConsumer,
@@ -120,6 +121,22 @@ struct DriverCore {
     ignored_mismatches: u64,
     config: DriverConfig,
     updates: watch::Sender<DriverSnapshotView>,
+}
+
+/// One bounded command to the driver event loop.
+///
+/// The loop owns the consumer and the client, so a read that needs live
+/// canonical state is issued there rather than from a caller.
+enum DriverCommand {
+    /// Read one bounded artifact excerpt.
+    ArtifactRead(ArtifactReadCommand),
+    /// Read the configured remote nodes' host telemetry (Eggwork M002).
+    NodeTelemetry {
+        /// The `[eggwork.nodes]` table key to read, or every node.
+        node_id: Option<String>,
+        /// The completion channel for the read.
+        reply: oneshot::Sender<Result<Vec<NodeTelemetryDto>, DriverError>>,
+    },
 }
 
 /// One bounded artifact excerpt request to the driver event loop. The
@@ -323,6 +340,25 @@ impl DriverCore {
         let _ = cmd.reply.send(outcome);
     }
 
+    /// Read the configured remote nodes' host telemetry.
+    ///
+    /// The read is issued from the driver loop so it shares the driver's
+    /// client and its fail-closed transport handling. A daemon that refuses
+    /// the read reports [`DriverError::Denied`]; a daemon that does not know
+    /// the request reports [`DriverError::Unsupported`].
+    async fn read_node_telemetry(
+        &mut self,
+        node_id: Option<String>,
+    ) -> Result<Vec<NodeTelemetryDto>, DriverError> {
+        match self.request(CoreRequest::NodeTelemetry { node_id }).await? {
+            CoreResponse::NodeTelemetry { nodes } => Ok(nodes),
+            CoreResponse::Error { code, message } => {
+                Err(DriverError::Denied(format!("{code}: {message}")))
+            }
+            _ => Err(DriverError::Unsupported),
+        }
+    }
+
     async fn read_artifact(
         &mut self,
         cmd: &ArtifactReadCommand,
@@ -365,7 +401,7 @@ impl DriverCore {
         mut self,
         mut events: mpsc::Receiver<ClientEvent>,
         mut stop: oneshot::Receiver<()>,
-        mut commands: mpsc::Receiver<ArtifactReadCommand>,
+        mut commands: mpsc::Receiver<DriverCommand>,
     ) -> HeadlessProjectionConsumer {
         // `events` was installed before the subscribe request was sent
         // (attach/resume install it pre-request), preserving the daemon's
@@ -387,7 +423,13 @@ impl DriverCore {
                 // continues until stop.
                 cmd = commands.recv(), if !commands.is_closed() => {
                     if let Some(cmd) = cmd {
-                        self.on_artifact_read(cmd).await;
+                        match cmd {
+                            DriverCommand::ArtifactRead(cmd) => self.on_artifact_read(cmd).await,
+                            DriverCommand::NodeTelemetry { node_id, reply } => {
+                                let outcome = self.read_node_telemetry(node_id).await;
+                                let _ = reply.send(outcome);
+                            }
+                        }
                     }
                 }
                 _ = liveness.tick() => {
@@ -442,7 +484,7 @@ pub struct SessionProjectionDriver {
     task: Option<tokio::task::JoinHandle<HeadlessProjectionConsumer>>,
     snapshots: watch::Receiver<DriverSnapshotView>,
     stop_tx: Option<oneshot::Sender<()>>,
-    commands: mpsc::Sender<ArtifactReadCommand>,
+    commands: mpsc::Sender<DriverCommand>,
     session_id: String,
     generation: u64,
 }
@@ -589,13 +631,13 @@ impl SessionProjectionDriver {
     ) -> Result<ProjectionArtifactReadOutcome, DriverError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.commands
-            .send(ArtifactReadCommand {
+            .send(DriverCommand::ArtifactRead(ArtifactReadCommand {
                 project_id: project_id.to_owned(),
                 handle_id: handle_id.to_owned(),
                 start,
                 end,
                 reply: reply_tx,
-            })
+            }))
             .await
             .map_err(|_| DriverError::JoinFailed)?;
         reply_rx.await.map_err(|_| DriverError::JoinFailed)?
@@ -604,6 +646,33 @@ impl SessionProjectionDriver {
     /// bounded; slow observers coalesce rather than queue.
     pub fn subscribe_views(&self) -> watch::Receiver<DriverSnapshotView> {
         self.snapshots.clone()
+    }
+
+    /// Read the host telemetry of the configured remote Eggwork nodes
+    /// (Eggwork M002).
+    ///
+    /// A read-only operator request: it observes remote hosts and never
+    /// creates, mutates or releases a job. `node_id` selects one
+    /// `[eggwork.nodes]` table key; `None` asks for every configured node.
+    ///
+    /// The daemon answers with one snapshot per node, including the nodes
+    /// it could not read — a node without a usable observation carries a
+    /// bounded diagnostic rather than being dropped or zero-filled. A
+    /// daemon that refuses the read (it is scoped to no project, so only
+    /// the local owner passes) reports [`DriverError::Denied`].
+    pub async fn node_telemetry(
+        &self,
+        node_id: Option<String>,
+    ) -> Result<Vec<NodeTelemetryDto>, DriverError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.commands
+            .send(DriverCommand::NodeTelemetry {
+                node_id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| DriverError::JoinFailed)?;
+        reply_rx.await.map_err(|_| DriverError::JoinFailed)?
     }
 
     pub fn session_id(&self) -> &str {

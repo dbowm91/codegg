@@ -18,8 +18,11 @@ use std::time::Duration;
 
 use eggwork_runner::{LocalProcessRunner, TrustedLandlockSetup};
 use eggwork_server::{
-    FingerprintPrincipalResolver, NodeConfig, NodePrincipal, NodeServer, Operation,
+    telemetry::HostTelemetryConfig, FingerprintPrincipalResolver, NodeConfig, NodePrincipal,
+    NodeServer, Operation,
 };
+
+mod synthetic_provider;
 
 fn usage() -> String {
     r#"codegg-eggwork-test-node: bounded Eggwork fixture node
@@ -42,18 +45,36 @@ Optional:
   --max-active <n>          max active executions (default 4)
   --blob-quota-bytes <n>    (default 268435456)
   --workspace-quota-bytes <n> (default 268435456)
+  --telemetry-provider      run a synthetic loopback Gregg provider and
+                            configure the node's host telemetry against it
 "#
     .to_string()
 }
 
+#[derive(Debug)]
 struct Args {
     values: HashMap<String, String>,
 }
 
+/// Flags that carry no value.
+///
+/// The usage text above documents `--telemetry-provider` as a switch while
+/// every other option shows a `<value>`. The parser reads a value for
+/// every flag, so without this list the switch consumed the next argument
+/// — or, as the last argument, failed with "missing value". The switch is
+/// checked with `contains_key`, so its value is never read.
+const BOOLEAN_FLAGS: &[&str] = &["telemetry-provider"];
+
 impl Args {
     fn parse() -> Result<Self, String> {
+        Self::parse_from(std::env::args().skip(1))
+    }
+
+    /// Parse from an explicit argument sequence, so the contract is
+    /// testable without spawning the binary.
+    fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
         let mut values = HashMap::new();
-        let mut raw = std::env::args().skip(1).peekable();
+        let mut raw = args.into_iter().peekable();
         while let Some(arg) = raw.next() {
             if arg == "--help" || arg == "-h" {
                 return Err(usage());
@@ -61,6 +82,10 @@ impl Args {
             let Some(key) = arg.strip_prefix("--") else {
                 return Err(format!("expected --flag, got '{arg}'\n{}", usage()));
             };
+            if BOOLEAN_FLAGS.contains(&key) {
+                values.insert(key.to_string(), "true".to_string());
+                continue;
+            }
             let Some(value) = raw.next() else {
                 return Err(format!("missing value for --{key}\n{}", usage()));
             };
@@ -140,6 +165,13 @@ async fn run() -> Result<NodeServer, String> {
     )]));
     // Authorize exactly the fixed-target executor operation set. Any future
     // server operation fails closed here at compile time (no wildcard arm).
+    //
+    // Eggwork M002: the host-telemetry read is granted unconditionally. It
+    // is a read of the node's own provider state, and "no provider" is one
+    // of the answers it has to be able to give — a node with no provider
+    // must be able to say so. Forbidding the read when there is no provider
+    // would make the node answer "forbidden" instead of "disabled", which
+    // is both less honest and not what the route is for.
     let authorizer = Arc::new(|_: &NodePrincipal, operation: Operation| {
         matches!(
             operation,
@@ -154,6 +186,7 @@ async fn run() -> Result<NodeServer, String> {
                 | Operation::BlobWrite
                 | Operation::WorkspaceCreate
                 | Operation::ArtifactRead
+                | Operation::Telemetry
         )
     });
 
@@ -186,9 +219,24 @@ async fn run() -> Result<NodeServer, String> {
     let runner = Arc::new(LocalProcessRunner::new(
         TrustedLandlockSetup::discover_sibling(),
     ));
+    // Eggwork M002: the node's host telemetry is opt-in and default-off.
+    // With `--telemetry-provider` the fixture stands up a synthetic loopback
+    // Gregg provider and points the node at it; without the flag the node
+    // has no provider at all, which is the honest "no telemetry" shape.
+    let host_telemetry = if args.values.contains_key("telemetry-provider") {
+        let provider = synthetic_provider::start().await?;
+        let endpoint = format!("http://127.0.0.1:{}/v2/status", provider.port);
+        Some(
+            HostTelemetryConfig::new(&endpoint, 1, 5)
+                .map_err(|e| format!("configure host telemetry: {e:?}"))?,
+        )
+    } else {
+        None
+    };
     phase("server-starting");
     let server = NodeServer::start(
         NodeConfig {
+            host_telemetry,
             node_id,
             bind,
             execution_root: PathBuf::from(args.required("exec-root")?),
@@ -234,4 +282,70 @@ async fn main() {
     // child on completion (`kill_on_drop` guarantees cleanup on panic).
     let _ = tokio::signal::ctrl_c().await;
     server.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        Args::parse_from(args.iter().map(|s| (*s).to_string()))
+    }
+
+    /// The usage text documents `--telemetry-provider` as a switch while
+    /// every other option shows a `<value>`. A parser that reads a value
+    /// for every flag therefore rejected it — and, because the live
+    /// harness passes it last, rejected it with "missing value", so the
+    /// fixture exited before it ever reached `READY`.
+    #[test]
+    fn the_telemetry_provider_switch_takes_no_value() {
+        let args = parse(&[
+            "--node-id",
+            "node-1",
+            "--telemetry-provider",
+            "--exec-root",
+            "/tmp/exec",
+        ])
+        .expect("the switch must parse");
+        assert!(args.values.contains_key("telemetry-provider"));
+        assert_eq!(
+            args.values.get("node-id").map(String::as_str),
+            Some("node-1")
+        );
+        assert_eq!(
+            args.values.get("exec-root").map(String::as_str),
+            Some("/tmp/exec")
+        );
+    }
+
+    /// The switch must also work as the last argument, which is how the
+    /// live harness passes it.
+    #[test]
+    fn the_telemetry_provider_switch_may_be_last() {
+        let args = parse(&["--node-id", "node-1", "--telemetry-provider"])
+            .expect("a trailing switch must parse");
+        assert!(args.values.contains_key("telemetry-provider"));
+        assert_eq!(
+            args.values.get("node-id").map(String::as_str),
+            Some("node-1")
+        );
+    }
+
+    /// A switch that is absent stays absent — the default-off shape the
+    /// node's telemetry configuration depends on.
+    #[test]
+    fn an_absent_switch_is_absent() {
+        let args = parse(&["--node-id", "node-1"]).expect("parse");
+        assert!(!args.values.contains_key("telemetry-provider"));
+    }
+
+    /// A valued flag that is missing its value is still an error.
+    #[test]
+    fn a_valued_flag_without_its_value_is_refused() {
+        let error = parse(&["--node-id"]).expect_err("a valued flag needs a value");
+        assert!(
+            error.contains("missing value for --node-id"),
+            "unexpected error: {error}"
+        );
+    }
 }

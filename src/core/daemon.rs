@@ -68,6 +68,20 @@ pub struct CoreDaemon {
     /// Finite human shell runs execute on this daemon and share scheduler
     /// process admission. State/output are ephemeral and owner-scoped.
     pub human_shell_runs: Arc<crate::shell::daemon::HumanShellRunService>,
+    /// M006: the daemon-held scratch usage snapshot.
+    ///
+    /// The census is a bounded filesystem walk, so it is never run on a
+    /// request path by default and never on an agent hot path. The daemon
+    /// refreshes the snapshot on a timer and answers from it; a caller may
+    /// ask for exactly one fresh walk instead.
+    pub scratch_census: Arc<super::daemon_scratch::ScratchCensus>,
+    /// The M006 census refresh task. Held so the daemon keeps it alive for
+    /// its whole lifetime; it is a pure background measurement and owns no
+    /// authority.
+    pub _scratch_census_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The M007 scratch retention sweep. Held so the daemon keeps it alive
+    /// for its whole lifetime.
+    pub _scratch_sweep_handle: Option<tokio::task::JoinHandle<()>>,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -127,6 +141,15 @@ pub struct CoreDaemon {
     /// one loop per daemon when present; held to keep the task alive.
     pub ci_watch_driver: Option<Arc<crate::scheduler::ci_watch_idle::CiWatchIdleDriver>>,
     pub(crate) _ci_watch_driver_handle: Option<tokio::task::JoinHandle<()>>,
+    /// M004: daemon-owned schedule materialization driver (earliest-due
+    /// wake loop).
+    ///
+    /// `None` when the scheduler is disabled or when the daemon has no
+    /// pool — a pool-less daemon has no cross-process durability to
+    /// claim. Exactly one loop per daemon when present; held to keep the
+    /// task alive.
+    pub schedule_driver: Option<Arc<crate::scheduler::schedule_driver::ScheduleDriver>>,
+    pub(crate) _schedule_driver_handle: Option<tokio::task::JoinHandle<()>>,
     /// C004 daemon-owned idle-continuation grant/intent store. `None` in
     /// legacy/test daemons that never asked for the shared handle.
     /// C005 (ADR-0031, accepted): the store now feeds the authenticated
@@ -4470,6 +4493,11 @@ impl CoreDaemon {
             // `Goals` above and is not reachable here.
             super::daemon_family::DaemonRequestFamily::Lsp => {
                 Box::pin(self.handle_lsp_request(payload, trusted_client_id)).await
+            }
+            // M006: the scratch census is measurement only. It reads the
+            // daemon's own disposable cache and mutates nothing.
+            super::daemon_family::DaemonRequestFamily::Scratch => {
+                Box::pin(self.handle_scratch_request(payload, authority, authz_decision)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

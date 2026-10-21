@@ -733,6 +733,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::SessionRead),
         ),
+        // Eggwork M002: a read-only operator view of a remote node's host.
+        // It is scoped to no project, so it reuses the existing remote-node
+        // grant (`node.target`, owner-only) rather than inventing a second
+        // authority: the same principal that may target a node may observe
+        // it, and every other principal fails closed on the missing scope.
+        R::NodeTelemetry { .. } => OperationDescriptor::new(
+            "node_telemetry_read",
+            ScopeKind::Opaque,
+            Some(Capability::NodeTarget),
+        ),
         R::JobWait { .. } => {
             OperationDescriptor::new("job_wait", ScopeKind::ViaJob, Some(Capability::SessionRead))
         }
@@ -1423,6 +1433,23 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::SessionCreate),
         ),
+        // M006: the scratch census reads the daemon's own disposable cache.
+        // No project linkage exists — a tree is addressed by an opaque digest
+        // that cannot be inverted to a session — so team principals fail
+        // closed and only the local owner is authorized. It is a bounded read
+        // of disposable state and mutates nothing, so it claims no capability.
+        R::ScratchUsage { .. } => {
+            OperationDescriptor::new("scratch_usage", ScopeKind::Opaque, None)
+        }
+        // M007: the operator disposition removes one of those trees. It is
+        // still daemon-global state with no project linkage, so the scope
+        // stays `Opaque` and team principals still fail closed. Unlike the
+        // census it mutates the filesystem, so it claims `FileModify`.
+        R::ScratchReclaim { .. } => OperationDescriptor::new(
+            "scratch_reclaim",
+            ScopeKind::Opaque,
+            Some(Capability::FileModify),
+        ),
     }
 }
 
@@ -1855,6 +1882,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             spec: dummy_job_submit(),
         },
         R::SchedulerSnapshot,
+        R::NodeTelemetry { node_id: None },
         R::JobWait {
             job_id: String::new(),
             timeout_ms: None,
@@ -2452,6 +2480,15 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::WorkOrderBindRepository {
             work_order_id: String::new(),
             eggplan_plan_id: String::new(),
+        },
+        R::ScratchUsage {
+            request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+        },
+        R::ScratchReclaim {
+            request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                tree: String::new(),
+                apply: false,
+            },
         },
     ]
 }

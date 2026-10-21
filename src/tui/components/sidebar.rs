@@ -31,10 +31,17 @@ pub enum SidebarSection {
 
 /// Stable identity for one logical sidebar row. It is independent of the
 /// rendered line number, scroll offset, and collapse state.
+///
+/// Every variant here is a row the keyboard can focus **and that has an
+/// action** (invariant I5). A todo row is deliberately **not** one of them:
+/// `activate_focused` used to resolve a focused todo to
+/// `SidebarActivation::None`, so the selection highlight was painted on a row
+/// whose Enter did nothing. The variant was removed rather than left
+/// unreachable, so the model says what it means. `HoveredElement::Todo` is a
+/// different map — the mouse hit-test — and keeps its todo entries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SidebarFocusTarget {
     Section(SidebarSection),
-    Todo(usize),
     /// The projection's task identity — the same string the subagent tab set
     /// keys on, so activating a panel row and activating an overlay row
     /// address one subject rather than two lookalikes.
@@ -194,15 +201,6 @@ pub struct SidebarJob {
 /// never silently reads as a complete one.
 pub const MAX_SIDEBAR_SUBAGENT_ROWS: usize = 16;
 pub const MAX_SIDEBAR_JOB_ROWS: usize = 12;
-
-/// Narrowest a subagent descriptor may be trimmed to before it is dropped.
-///
-/// The subagent row is one line, so the descriptor competes with the name,
-/// agent type, and status for the column's width. Below this many characters
-/// what survives is a stub that reads as a rendering fault rather than as
-/// prose, so the row falls back to exactly what it showed before descriptors
-/// existed.
-pub const MIN_SIDEBAR_DESCRIPTOR_CHARS: usize = 12;
 
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
@@ -501,7 +499,6 @@ impl SidebarWidget {
         };
         let target = match target {
             SidebarFocusTarget::Section(section) => HoveredElement::Section(*section),
-            SidebarFocusTarget::Todo(index) => HoveredElement::Todo(*index),
             SidebarFocusTarget::Subagent(task_id) => HoveredElement::Subagent(task_id.clone()),
             SidebarFocusTarget::Job(job_id) => HoveredElement::Job(job_id.clone()),
             SidebarFocusTarget::McpServer(index) => HoveredElement::McpServer(*index),
@@ -637,8 +634,7 @@ impl SidebarWidget {
                 SidebarActivation::InspectSubagent(task_id)
             }
             Some(SidebarFocusTarget::Job(job_id)) => SidebarActivation::InspectJob(job_id),
-            Some(SidebarFocusTarget::Todo(_))
-            | Some(SidebarFocusTarget::McpServer(_))
+            Some(SidebarFocusTarget::McpServer(_))
             | Some(SidebarFocusTarget::FileChange(_))
             | Some(SidebarFocusTarget::ToolProgram(_))
             | Some(SidebarFocusTarget::Convergence(_)) => SidebarActivation::None,
@@ -668,10 +664,12 @@ impl SidebarWidget {
             targets.push(SidebarFocusTarget::Section(SidebarSection::Plan));
         }
         if !self.todos.is_empty() {
+            // The **header** is focusable — Enter folds and unfolds the section.
+            // The rows are not: a todo row's activation was
+            // `SidebarActivation::None`, so the highlight landed on a row with
+            // no action behind it, and `j`/`k` walked through every one of
+            // them. The mouse map still resolves them (see `line_targets`).
             targets.push(SidebarFocusTarget::Section(SidebarSection::Todos));
-            if !self.todos_collapsed {
-                targets.extend((0..self.todos.len()).map(SidebarFocusTarget::Todo));
-            }
         }
         if !self.subagents.is_empty() {
             targets.push(SidebarFocusTarget::Section(SidebarSection::Subagents));
@@ -792,7 +790,16 @@ impl SidebarWidget {
     fn hovered_to_focus(hovered: &HoveredElement) -> Option<SidebarFocusTarget> {
         match hovered {
             HoveredElement::Section(section) => Some(SidebarFocusTarget::Section(*section)),
-            HoveredElement::Todo(index) => Some(SidebarFocusTarget::Todo(*index)),
+            // A todo row is not a focus target, so a hovered todo must resolve
+            // to something that **is** one — the section header that owns the
+            // todo rows. Resolving it to `None` would be worse than either:
+            // `focus_hovered` would clear the focus outright, and the next
+            // navigation key would fall through `move_focus`'s no-current
+            // branch and jump to index 0, yanking the panel to the top.
+            //
+            // The header is in the focus list whenever there are todos to
+            // show, and a hovered todo can only exist while there are.
+            HoveredElement::Todo(_) => Some(SidebarFocusTarget::Section(SidebarSection::Todos)),
             HoveredElement::Subagent(task_id) => {
                 Some(SidebarFocusTarget::Subagent(task_id.clone()))
             }
@@ -1399,31 +1406,18 @@ impl SidebarWidget {
                     let agent = clean_inline_text(&row.agent, 16);
                     let status = clean_inline_text(&row.status, 12);
                     let name = clean_inline_text(&row.name, 24);
+                    // Three scannable facts and nothing else: name, agent type,
+                    // status. The persona is prose, and a one-line column spent
+                    // on prose pushes the facts a reader scans for to the left.
+                    // The persona moved to the tab strip, which is the surface
+                    // that has room for it — the row still says which run it
+                    // is, and the tab says what kind of run it is.
                     let tail = format!(" ({agent}) {status}");
-                    // The descriptor takes whatever the identity above did not
-                    // use. A sidebar column is shared with the sections below
-                    // it, so a second line per subagent is not available — and
-                    // a descriptor squeezed to three characters reads as a
-                    // rendering fault rather than as prose. Below the floor the
-                    // row is exactly what it was before descriptors existed.
-                    let used = 4 + name.chars().count() + tail.chars().count();
-                    let room = (area_width as usize).saturating_sub(used + 3);
-                    let mut spans = vec![
+                    let spans = vec![
                         Span::styled(format!("  {icon} "), style),
                         Span::styled(name, Style::default().fg(self.theme.primary)),
                         Span::raw(tail),
                     ];
-                    if let Some(profile) = row
-                        .profile
-                        .as_deref()
-                        .filter(|p| !p.trim().is_empty())
-                        .filter(|_| room >= MIN_SIDEBAR_DESCRIPTOR_CHARS)
-                    {
-                        spans.push(Span::raw(format!(
-                            " — {}",
-                            clean_inline_text(profile, room)
-                        )));
-                    }
                     lines.push(self.with_row_style(Line::from(spans), &target));
                 }
                 let hidden = self.truncated_subagents();
@@ -2292,8 +2286,10 @@ mod tests {
         );
     }
 
+    /// The row carries the three facts a reader scans for: name, agent type,
+    /// status. The persona is prose and lives on the tab strip now.
     #[test]
-    fn a_subagent_row_shows_its_descriptor_when_the_column_has_room() {
+    fn a_subagent_row_shows_its_name_agent_type_and_status() {
         let mut sidebar = SidebarWidget::default();
         sidebar.set_subagents(vec![SidebarSubagent {
             profile: Some("Reconnaissance generalist.".into()),
@@ -2305,18 +2301,20 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        assert!(
-            rendered.contains("Reconnaissance generalist."),
-            "the panel row dropped the descriptor: {rendered}"
-        );
         assert!(rendered.contains("Sally"), "{rendered}");
+        assert!(rendered.contains("explore"), "{rendered}");
+        assert!(rendered.contains("running"), "{rendered}");
+        assert!(
+            !rendered.contains("Reconnaissance"),
+            "the row must not spend its column on prose: {rendered}"
+        );
     }
 
-    /// Below the floor the row is byte-identical to what it was before
-    /// descriptors existed — a three-character stub would read as a rendering
-    /// fault rather than as prose.
+    /// The row no longer depends on the column's width: the descriptor is
+    /// gone, so there is nothing left to squeeze. A narrow column shows the
+    /// same three facts, not a three-character stub of the persona.
     #[test]
-    fn a_subagent_row_drops_the_descriptor_when_the_column_is_too_narrow() {
+    fn a_subagent_row_shows_the_same_facts_in_a_narrow_column() {
         let mut with_descriptor = SidebarWidget::default();
         with_descriptor.set_subagents(vec![SidebarSubagent {
             profile: Some("Reconnaissance generalist.".into()),
@@ -2335,19 +2333,59 @@ mod tests {
         assert_eq!(
             text(&with_descriptor),
             text(&without),
-            "a narrow column must fall back to the pre-descriptor row, not to a stub"
+            "the row must not change with the column width"
+        );
+        assert!(
+            text(&without).contains("Sally"),
+            "the row still names its subagent"
         );
     }
 
+    /// The row is a **scan** surface: name, agent type, status. Rendered into
+    /// a real buffer, because a claim about what a reader sees is a claim
+    /// about the painted row, not about the model behind it.
     #[test]
-    fn focus_walks_todo_then_subagent_then_job_rows_without_collapsing() {
+    fn a_rendered_subagent_row_shows_the_facts_and_not_the_prose() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![SidebarSubagent {
+            profile: Some("Reconnaissance generalist.".into()),
+            ..subagent("t1", "Sally", "explore", "running")
+        }]);
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        sidebar.render_with_title(area, &mut buf, " SESSIONS ", false);
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("Sally"), "{text}");
+        assert!(text.contains("explore"), "{text}");
+        assert!(text.contains("running"), "{text}");
+        assert!(
+            !text.contains("Reconnaissance"),
+            "the row must not spend its column on prose: {text}"
+        );
+    }
+
+    /// The walk goes **Todos header** → subagent rows → job rows.
+    ///
+    /// The old order put a todo row between the Todos header and the
+    /// Subagents header, and the todo row had no action behind it: Enter on it
+    /// resolved to `SidebarActivation::None`, so the selection highlight was
+    /// painted on a row where nothing happened. The section **header** stays —
+    /// the request is to skip the rows, not the header, and the header is what
+    /// folds the section.
+    #[test]
+    fn focus_walks_the_todos_header_then_subagent_then_job_rows_without_collapsing() {
         let mut sidebar = SidebarWidget::default();
         sidebar.set_todos(vec![todo("write the thing")]);
         sidebar.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
         sidebar.set_jobs(vec![job("j1", "test", "cargo test", "running", None)]);
         sidebar.focus_sidebar();
 
-        let walk: Vec<SidebarFocusTarget> = (0..6)
+        let walk: Vec<SidebarFocusTarget> = (0..5)
             .map(|_| {
                 let target = sidebar.focused_target().cloned();
                 sidebar.focus_next();
@@ -2359,16 +2397,177 @@ mod tests {
             walk,
             vec![
                 SidebarFocusTarget::Section(SidebarSection::Todos),
-                SidebarFocusTarget::Todo(0),
                 SidebarFocusTarget::Section(SidebarSection::Subagents),
                 SidebarFocusTarget::Subagent("t1".to_string()),
                 SidebarFocusTarget::Section(SidebarSection::Jobs),
                 SidebarFocusTarget::Job("j1".to_string()),
             ]
         );
-        // Walking is not collapsing: every body row is still reachable
-        // afterwards, which is what the exit condition asks for.
-        assert_eq!(sidebar.focus_targets().len(), 6);
+        // Walking is not collapsing: every remaining body row is still
+        // reachable afterwards, which is what the exit condition asks for.
+        assert_eq!(sidebar.focus_targets().len(), 5);
+    }
+
+    /// A todo row is never the focused target, in either direction.
+    ///
+    /// The focus list is the only thing that can produce a focused target, so
+    /// the shape of the guarantee is the list's own shape: with two todos
+    /// rendered, the list holds **one** Todos entry — the header — and not
+    /// three. The walk then confirms that every stop is on the list.
+    #[test]
+    fn a_todo_row_is_never_the_focused_target() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_todos(vec![todo("first"), todo("second")]);
+        sidebar.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
+        sidebar.set_jobs(vec![job("j1", "test", "cargo test", "running", None)]);
+        sidebar.focus_sidebar();
+
+        // Five stops for five rows — not seven, which is what two rendered
+        // todo rows used to add.
+        assert_eq!(sidebar.focus_targets().len(), 5);
+        assert_eq!(
+            sidebar
+                .focus_targets()
+                .iter()
+                .filter(|target| **target == SidebarFocusTarget::Section(SidebarSection::Todos))
+                .count(),
+            1,
+            "the Todos section contributes its header and nothing else"
+        );
+
+        for _ in 0..12 {
+            let target = sidebar.focused_target().cloned();
+            assert!(
+                sidebar
+                    .focus_targets()
+                    .contains(target.as_ref().expect("a focused target")),
+                "the walk stopped on a target the focus list cannot produce: {target:?}"
+            );
+            sidebar.focus_next();
+        }
+        for _ in 0..12 {
+            sidebar.focus_prev();
+            let target = sidebar.focused_target().cloned();
+            assert!(
+                sidebar
+                    .focus_targets()
+                    .contains(target.as_ref().expect("a focused target")),
+                "the walk stopped on a target the focus list cannot produce: {target:?}"
+            );
+        }
+    }
+
+    /// The Todos header is focusable, and Enter on it folds the section.
+    #[test]
+    fn the_todos_header_is_focusable_and_folds_the_section() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_todos(vec![todo("write the thing")]);
+        sidebar.focus_sidebar();
+
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::Section(SidebarSection::Todos))
+        );
+        assert_eq!(sidebar.activate_focused(), SidebarActivation::ToggleSection);
+
+        sidebar.toggle_focused();
+        assert!(
+            sidebar.todos_collapsed,
+            "Enter on the header folds the section"
+        );
+    }
+
+    /// Clicking a todo row must not clear the keyboard focus.
+    ///
+    /// A todo row is not a focus target, so the hover path resolves it to the
+    /// section header. Resolving it to *nothing* would clear the focus
+    /// outright, and the next navigation key would fall through `move_focus`'s
+    /// no-current branch and jump to index 0 — the panel yanking to the top
+    /// on every click of a todo row.
+    ///
+    /// The assertions are properties, not identities: the walk's shape is
+    /// P003's business, and a test that hard-coded it would fail for the
+    /// wrong reason the moment another section changed.
+    #[test]
+    fn clicking_a_hovered_todo_leaves_a_valid_focus() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_todos(vec![todo("write the thing")]);
+        sidebar.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
+        sidebar.focus_sidebar();
+
+        let hovered = sidebar
+            .line_targets()
+            .into_iter()
+            .find(|element| matches!(element, HoveredElement::Todo(_)))
+            .expect("the todo row is addressable by hover");
+        sidebar.hovered_element = hovered;
+        sidebar.focus_hovered();
+
+        let focused = sidebar.focused_target().cloned();
+        assert!(
+            focused.is_some(),
+            "clicking a todo row must not clear the focus"
+        );
+        assert!(
+            sidebar
+                .focus_targets()
+                .contains(focused.as_ref().expect("a focused target")),
+            "the focused target must be one the focus list can produce: {focused:?}"
+        );
+
+        // The next navigation key must move *on* from where the focus is, not
+        // restart the walk at the top of the panel.
+        let first = sidebar.focus_targets().first().cloned();
+        sidebar.focus_next();
+        assert_ne!(
+            sidebar.focused_target(),
+            first.as_ref(),
+            "the next navigation key jumped back to the top of the panel"
+        );
+    }
+
+    /// The mouse map is not the keyboard map.
+    ///
+    /// `line_targets()` is the hit-test and tooltip map: a todo row is still
+    /// hovered, still shows its tooltip, and still resolves to the todo on
+    /// click. Only the *focus* list changed.
+    #[test]
+    fn the_mouse_map_still_resolves_todo_rows() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_todos(vec![todo("write the thing")]);
+        let targets = sidebar.line_targets();
+        assert!(
+            targets
+                .iter()
+                .any(|target| matches!(target, HoveredElement::Todo(0))),
+            "the mouse map lost its todo entries: {targets:?}"
+        );
+    }
+
+    /// With no todos the focus list for the other sections is unchanged.
+    #[test]
+    fn with_no_todos_the_other_sections_focus_list_is_unchanged() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
+        sidebar.set_jobs(vec![job("j1", "test", "cargo test", "running", None)]);
+        sidebar.focus_sidebar();
+
+        let walk: Vec<SidebarFocusTarget> = (0..4)
+            .map(|_| {
+                let target = sidebar.focused_target().cloned();
+                sidebar.focus_next();
+                target.unwrap()
+            })
+            .collect();
+        assert_eq!(
+            walk,
+            vec![
+                SidebarFocusTarget::Section(SidebarSection::Subagents),
+                SidebarFocusTarget::Subagent("t1".to_string()),
+                SidebarFocusTarget::Section(SidebarSection::Jobs),
+                SidebarFocusTarget::Job("j1".to_string()),
+            ]
+        );
     }
 
     #[test]

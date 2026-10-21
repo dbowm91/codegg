@@ -69,6 +69,130 @@ pub(crate) fn request_lsp_status_detail(app: &mut App) {
     );
 }
 
+/// Eggwork M002: ask the daemon for the configured nodes' host telemetry.
+///
+/// The read is off the render path and goes through the shared guarded task
+/// registry, so a completion that arrives after the user moved on is
+/// droppable rather than painting a stale answer.
+pub(crate) fn request_node_telemetry(app: &mut App) {
+    let Some(client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("Not connected to a daemon; node telemetry is unavailable");
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "node_telemetry",
+        async move {
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::protocol::core::CoreRequest::NodeTelemetry { node_id: None },
+            );
+            let (nodes, error) = match client.request(request).await {
+                Ok(crate::protocol::core::CoreResponse::NodeTelemetry { nodes }) => (nodes, None),
+                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                    (Vec::new(), Some(format!("{code}: {message}")))
+                }
+                // An older daemon answers with some other shape. Treat that
+                // as an absent surface, not as a failure the user must act
+                // on: the read simply is not available there.
+                Ok(_) => (Vec::new(), None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+            Some(TuiCommand::NodeTelemetryLoaded { nodes, error })
+        },
+    );
+}
+
+/// Render the node telemetry snapshots as one bounded, readable summary.
+///
+/// The rendering keeps the node's own words for "not reported": a dimension
+/// the node could not measure is shown as `unsupported`, never as `0`.
+pub(crate) fn format_node_telemetry(nodes: &[crate::protocol::dto::NodeTelemetryDto]) -> String {
+    if nodes.is_empty() {
+        return "No remote nodes are configured".to_string();
+    }
+    let mut lines = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let mut line = format!("{} [{}]", node.node_id, telemetry_state_label(node.state));
+        if let Some(age) = node.age_ms {
+            line.push_str(&format!(" age {}ms", age));
+        }
+        if let Some(diagnostic) = node.diagnostic.as_deref() {
+            line.push_str(&format!(" - {diagnostic}"));
+        } else {
+            line.push_str(&format!(
+                " cpu {} mem {}/{}",
+                metric_pct(
+                    node.cpu.as_ref().map(|cpu| cpu.state),
+                    node.cpu.as_ref().and_then(|cpu| cpu.usage_pct),
+                ),
+                metric_bytes(
+                    node.memory.as_ref().map(|memory| memory.state),
+                    node.memory.as_ref().and_then(|memory| memory.used_bytes),
+                ),
+                metric_bytes(
+                    node.memory.as_ref().map(|memory| memory.state),
+                    node.memory.as_ref().and_then(|memory| memory.total_bytes),
+                ),
+            ));
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+fn telemetry_state_label(state: crate::protocol::dto::NodeTelemetryStateDto) -> &'static str {
+    use crate::protocol::dto::NodeTelemetryStateDto;
+    match state {
+        NodeTelemetryStateDto::Disabled => "disabled",
+        NodeTelemetryStateDto::Warming => "warming",
+        NodeTelemetryStateDto::Ready => "ready",
+        NodeTelemetryStateDto::Stale => "stale",
+        NodeTelemetryStateDto::Unavailable => "unavailable",
+        NodeTelemetryStateDto::Invalid => "invalid",
+    }
+}
+
+/// Render a percentage metric, keeping "not reported" distinct from a real
+/// zero.
+fn metric_pct(
+    state: Option<crate::protocol::dto::NodeMetricStateDto>,
+    value: Option<f64>,
+) -> String {
+    use crate::protocol::dto::NodeMetricStateDto;
+    match state {
+        Some(NodeMetricStateDto::Value) => match value {
+            Some(value) => format!("{value:.1}%"),
+            None => "n/a".to_string(),
+        },
+        Some(NodeMetricStateDto::Unknown) => "unknown".to_string(),
+        Some(NodeMetricStateDto::Unsupported) => "unsupported".to_string(),
+        None => "n/a".to_string(),
+    }
+}
+
+/// Render a byte metric, keeping "not reported" distinct from a real zero.
+fn metric_bytes(
+    state: Option<crate::protocol::dto::NodeMetricStateDto>,
+    value: Option<u64>,
+) -> String {
+    use crate::protocol::dto::NodeMetricStateDto;
+    match state {
+        Some(NodeMetricStateDto::Value) => match value {
+            Some(value) => format!("{value}B"),
+            None => "n/a".to_string(),
+        },
+        Some(NodeMetricStateDto::Unknown) => "unknown".to_string(),
+        Some(NodeMetricStateDto::Unsupported) => "unsupported".to_string(),
+        None => "n/a".to_string(),
+    }
+}
+
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_run_doctor(app: &mut App) {

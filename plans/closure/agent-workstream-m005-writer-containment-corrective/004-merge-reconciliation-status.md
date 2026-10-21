@@ -9,6 +9,11 @@ qualification of the merged tree, as §11 of the source addendum requires:
 "later supplemental evidence appended/linked rather than its history
 overwritten".
 
+It now records **two** reconciliations: the first against `origin/main`
+`a9f70375` (§1–§8) and the second against `origin/main` `9c9ffb763`
+(§9, 2026-10-21). §9 is appended, not folded in — the first reconciliation's
+inventory and defect list stand as they were written.
+
 Source corrective addendum:
 
 - `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md`
@@ -329,3 +334,170 @@ This record adds to, and does not rewrite, the evidence history:
   unchanged.
 - `main`'s `ADR-0042-composer-normal-mode-key-ownership.md` and `ADR-0043`
   are untouched.
+
+## 9. Second reconciliation — `origin/main` `9c9ffb763` (2026-10-21)
+
+The first reconciliation (§1–§8) reconciled the branch with `origin/main`
+`a9f70375`. `main` then moved on — 71 commits — and this section records the
+second reconciliation, appended rather than folded into the earlier one, per
+this record's own kind.
+
+### 9.1 Inventory
+
+Repository baseline reconciled: `origin/main` at `9c9ffb763`. The branch head
+at merge was `2cddbff3c` (the commit that qualifies macOS for the shared
+checkout profile). The merge-base was `a9f70375` — the same baseline the
+first reconciliation used, so this reconciliation is `main`'s next 71 commits
+and the branch's next 77.
+
+**20 files conflicted in 81 hunks.** Every resolution keeps both sides'
+authority semantics; none silently dropped one.
+
+| File | Hunks | Resolution |
+|---|---|---|
+| `crates/codegg-core/src/jobs/mod.rs` | 13 | Union of `ResourceRequest`'s fields (M007's `keyed_quotas`, `main`'s `remote`); the `Build`/`Format` arms keep M007's removal of the legacy global exclusivity key (§9.2.4) |
+| `crates/codegg-core/src/session/user_prompt_queue.rs` | 8 | `main`'s shared `begin_immediate` + `commit_with`; the branch's local wrapper removed (§9.2.3) |
+| `crates/codegg-core/src/storage/immediate.rs` | 7 | `main`'s version, a strict superset (§9.2.3) |
+| `src/scheduler/admission.rs` | 6 | Union of M007's quota errors and held-quota state with `main`'s remote-node errors and per-node state |
+| `tests/scheduler_phase5.rs` | 6 | Union of the reservation-dimension fields |
+| `scripts/check_queue_write_transaction_shape.py` | 5 | `main`'s version, a strict superset; the branch's C002 rationale comment kept (§9.2.3) |
+| `crates/codegg-core/src/audit.rs` | 5 | Union of the audit actions — 30 in the merged tree (§9.2.5) |
+| `plans/registry.md` | 4 | Union deduplicated by subsystem (§9.2.2) |
+| `architecture/audit.md` | 2 | Action list union; the count re-measured to 30 |
+| `architecture/overview.md` | 2 | The Verified-counts table re-measured in the merged tree (§9.2.6) |
+| `src/scheduler/permit.rs` | 2 | Union of `PermitDimensions`' fields and the test helper |
+| `src/scheduler/config.rs` | 2 | Union of M007's `quota: QuotaPolicy` with `main`'s `remote_node_capacity` |
+| `tests/scheduler_contention.rs` | 3 | Union of the reservation-dimension fields, plus §9.2.7 |
+| `src/core/mod.rs`, `src/interactive_process.rs`, `src/scheduler/scheduler.rs`, `tests/common/mod.rs`, `tests/scheduler_restart_recovery.rs`, `src/core/daemon_construct.rs`, `crates/codegg-protocol/src/core.rs` | 1 each | Unions of distinct additions (module lists, struct fields, and `main`'s scratch-census wiring kept alongside the branch's C005 human-shell wiring) |
+
+### 9.2 Defects found and fixed
+
+#### 9.2.1 `main`'s new schedule materializer did not know the branch's process refusal (main side; compile-blocking)
+
+`main`'s Eggwork M004 added `src/scheduler/schedule_materializer.rs`, which
+maps a refused submission to a stable, secret-free reason code with an
+**exhaustive** match on `JobSubmissionError`. The branch's C005 added
+`JobSubmissionError::ProcessDenied(String)`, so the merged tree did not
+compile:
+
+```
+error[E0004]: non-exhaustive patterns:
+  `&submission::JobSubmissionError::ProcessDenied(_)` not covered
+   --> src/scheduler/schedule_materializer.rs:203:11
+```
+
+The arm maps it to the slug `process_denied`. The refusal's own `Display` can
+name a path, so only the slug reaches a log line or a durable field — the
+same rule the rest of that function follows. The refusal's *retry* semantics
+are the store's existing ones: a refused occurrence is **not recorded**, so
+the occurrence stays retryable once the agent-run group holding the checkout
+finishes. A checkout that is reserved for the moment is not a failed
+occurrence.
+
+#### 9.2.2 The registry union duplicated rows (merge-introduced)
+
+Both sides had added a row for the same subsystem, and a blind union would
+have produced two rows for each. The merged registry keeps **one** row per
+subsystem: `main`'s newer row where `main` is newer (the managed-scratch row,
+which records M006 and M007 closed), and the branch's row where the branch is
+newer — the blackboard roadmap row, which carries M005's C006 conditional
+closure and the macOS qualification. Every M005 row the branch contributed is
+carried over; none is lost.
+
+#### 9.2.3 Three files where `main`'s version was a strict superset
+
+- `crates/codegg-core/src/storage/immediate.rs` — `main`'s version adds the
+  free `begin_immediate`, the error-mapping `begin_with`/`commit_with`, and
+  the shared-primitive rationale. The branch's API is a subset.
+- `scripts/check_queue_write_transaction_shape.py` — `main`'s version keeps
+  the branch's identical `PERMITTED_DEFERRED` allowlist and its identical
+  queue-store check, merges the immediate and rollback checks into one, and
+  adds the scratch-sweep check. The branch's C002 rationale comment was kept
+  on the shared-module constant.
+- `crates/codegg-core/src/session/user_prompt_queue.rs` — the branch's local
+  `begin_immediate` wrapper was removed in favour of `main`'s shared one,
+  which also removed the now-unused `ImmediateWrite` import.
+
+Taking a superset is only safe when the superset is *verified* to be one, so
+each pair was compared before the choice rather than assumed: the allowlists
+were diffed, the check functions were diffed, and the immediate-transaction
+APIs were listed side by side.
+
+#### 9.2.4 The legacy global exclusivity key (branch side; contract-bearing)
+
+`main`'s `ResourceRequest::for_kind` still attaches
+`exclusive:workspace-mutation` to the `Build` and `Format` profiles. The
+branch's M007 **removed** that key deliberately, replacing it with the
+counted, workspace-scoped build quota. `main` had simply not received M007:
+the key came from the common ancestor (`367aa8603`) and the branch removed it
+in `def70ffc1`.
+
+The merged tree keeps the branch's removal and the branch's M007-correct test
+(`the_build_class_replaces_the_legacy_global_exclusivity_key`), which asserts
+the key is *absent*. `main`'s copy of that test asserted the opposite, and
+was replaced by the branch's.
+
+#### 9.2.5 The audit action count moved (both sides)
+
+The merged `AuditAction` carries the branch's `CheckoutWriterRefusal` and
+`ProcessDenial` **and** `main`'s `ScratchReclaim`: **30** actions, not the
+branch's 29 or `main`'s 28. The `ALL` array's declared length, its entries,
+the `as_str` arms, the parse arms and `architecture/audit.md`'s count were
+all re-measured to 30 against the merged enum rather than copied from either
+side.
+
+#### 9.2.6 The Verified-counts table was re-measured, not merged (both sides)
+
+`architecture/overview.md`'s table is the single source of truth for counts,
+so it was **re-measured in the merged tree** — all 24 rows, each against its
+own listed `Source` — instead of unioned. Six rows moved against the
+branch's last measurement: distinct production tool names 60 → **61**,
+`CoreRequest` variants 259 → **262**, `CoreResponse` variants 169 → **172**,
+authorized operations 259 → **262**, built-in slash commands 166 → **167**,
+and integration test files 284 → **290**.
+
+The tool-names row moved because the branch's count missed a **fully
+qualified** `impl crate::tool::Tool for ContextReadTool`, whose literal name
+`context_read` the branch's own catalog lists. The merged tree's 61
+cross-checks against that catalog: all 59 catalogued names are present in the
+code, and the code adds exactly two the catalog omitted — `ci_watch` and
+`job` — which are now in it. The slash-command row moved because `main`'s
+Eggwork M002 `/nodes` moved the tripwire's own pin from 166 to 167; the row
+now agrees with the pin that asserts it.
+
+#### 9.2.7 A pre-existing test failure was caused by M007's contract, not by C006 (branch side)
+
+`scheduler_contention::different_exclusivity_keys_run_in_parallel` failed on
+this branch before the merge — reproduced at the branch's pre-session head
+`6767bb61e` — and failed again in hosted CI run `39616654598` and
+`39627444733`. It is **not** C006's: it measures M007's build admission.
+
+The test submits two `JobKind::Build` jobs into **one** workspace with
+different exclusivity keys and asserts they run in parallel. Under M007 they
+cannot: the submission boundary unconditionally binds the build-class quota
+to the canonical workspace (`KeyedQuotaRequest::for_workspace`), and the
+default bound is **one build slot per workspace**
+(`scheduler.quota.max_concurrent_builds_per_workspace`, default `1`). The two
+jobs are therefore serialized by the *quota* — a different admission
+dimension — and the test failed while asserting nothing about exclusivity at
+all.
+
+The fix widens the quota bound **in that test only**, so the test measures
+the dimension its name names. The quota's own contract is unchanged and is
+covered by the build-admission suite. The alternative — dropping the default
+to admit two builds per workspace — would have changed the shipped contract
+to satisfy a test, which is the wrong direction.
+
+### 9.3 What this reconciliation does not change
+
+- **The writer-fence boundary is untouched again.** `main`'s 71 commits
+  changed no file of the fence contract (`src/tool/writer_fence.rs`), the
+  daemon adapter (`src/core/writer_fence.rs`), the permit authority, the
+  disposition manifest or the writer-disposition guard. The C002–C006
+  contracts are exactly as §1 recorded them.
+- **The M005 corrective's closure status is unchanged.** C006 remains
+  *conditionally* closed, for the reasons §5.1 of the C006 record gives: the
+  Windows native backend is absent rather than unmeasured, and a *live*
+  two-agent race inside one daemon process is not claimed.
+- **The earlier reconciliation's history is not rewritten.** §1–§8 stand as
+  the record of the first reconciliation against `a9f70375`.

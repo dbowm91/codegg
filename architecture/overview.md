@@ -143,10 +143,10 @@ Built-in tools live in `src/tool/` (plus `src/tool/bash/`) and `src/context/`. T
 |------------|-------|
 | Filesystem | `read`, `write`, `edit`, `apply_patch`, `replace`, `diff`, `glob`, `grep`, `list` |
 | Shell / execution | `bash`, `verify`, `terminal`, `test`, `batch` |
-| Source intelligence | `lsp`, `lsp_read`, `lsp_preview_apply`, `codesearch`, `repo_map` |
+| Source intelligence | `lsp`, `lsp_read`, `lsp_preview_apply`, `codesearch`, `repo_map`, `ci_watch` |
 | Version control | `git`, `git_query`, `git_read`, `commit` |
 | Research / evidence | `research`, `research_search`, `repo_search`, `repo_fetch`, `security_search`, `batch_fetch`, `evidence_bundle`, `websearch`, `webfetch` |
-| Planning / tasks | `task`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item` |
+| Planning / tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item` |
 | Review / quality | `review`, `security`, plus eggsact deterministic tools |
 | Extension / resource | `mcp_resource_read`, `mcp_resource_search`, `extension_search`, `extension_install_request`, `memory_get`, `memory_search` |
 | Programmatic / meta | `tool_program`, `tool_search`, `question`, `skill`, `skill_proposal`, `image`, `context_read`, `invalid` |
@@ -267,68 +267,69 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 ## Verified counts
 
 Every count below was re-measured against the current tree on
-**2026-10-21**, each against its own listed `Source`, after the M005
-writer-containment corrective closed C006 and after the hosted macOS
-qualification lane was added. The tree it was measured in
-descends from the M005 branch reconciled with `main` (`origin/main`
-`a9f70375`), which itself was measured on 2026-10-20; earlier passes
-(2026-10-13, 2026-10-15, 2026-10-19) measured the same rows against smaller
-trees. Every row that moved carries its own note below, saying what moved
-and why; no number was carried over from another tree.
+**2026-10-21**, each against its own listed `Source`, in the tree that
+reconciles the M005 writer-containment corrective with `origin/main`
+(`9c9ffb763`). Earlier passes (2026-10-13, 2026-10-15, 2026-10-19,
+2026-10-20) measured the same rows against smaller trees. Every row that
+moved carries its own note below, saying what moved and why; no number
+was carried over from another tree.
 
-**Integration test files moved 283 → 284**, and only that row moved: the
-macOS native-containment fixture
-(`tests/macos_native_shared_checkout_containment.rs`) is the new file. The
-CI guard script row did **not** move — the macOS qualification is a
-workflow, not a `scripts/check_*` guard, so it adds a lane and not a guard.
+Both sides' tables were **re-measured in the merged tree** rather than
+unioned, because the two sides had measured some rows by different
+methods and disagreed on identical source sets. Six rows moved against
+the branch's last measurement:
 
-Three rows were corrected rather than incremented, and the corrections are
-recorded here because the pre-merge numbers disagreed on **identical**
-source sets:
+- **Distinct production tool names** is **61**, not the 60 the branch
+  recorded. The branch's count missed `impl crate::tool::Tool for
+  ContextReadTool` — a fully-qualified `Tool` impl does not match the
+  `impl Tool for` shape that count searched for — and its literal name
+  `context_read` is listed in the tool catalog above. The merged tree's
+  61 cross-checks against that catalog: all 59 catalogued names are
+  present in the code, and the code adds exactly two the catalog omits,
+  `ci_watch` and `job`, which are now in it.
+- **CoreRequest variants** is 262 (238 struct + 24 unit) and
+  **CoreResponse variants** is 172 (171 struct + 1 unit), against the
+  branch's 259 and 169: `main`'s Eggwork remote-targeting and
+  host-telemetry milestones added request and response variants.
+- **Authorized operations** is 262 — one `R::` arm per `CoreRequest`
+  variant in `operation_descriptor`, so it moves with them.
+- **Built-in slash commands** is 167, matching the tripwire
+  `built_in_command_count_matches_release_docs` asserts; `main`'s
+  Eggwork M002 `/nodes` moved it from the branch's 166.
+- **Integration test files** is 290.
+- **Database tables (`CREATE TABLE`)** is 94 statements over 91 distinct
+  names — `migration_version`, `origin_attribution` and the transient
+  `origin_attribution_new` rebuild each appear twice — so the table
+  count is 90, less the transient rebuild name.
 
-- **Tool registrations in `with_options()`** is 65, not 63 or 65-by-a-different-
-  method: the count is 52 `registry.register(` call sites **plus** 13
-  `registry.register_boxed(` call sites in `src/tool/mod.rs`. The branch's
-  pre-merge row omitted the `register_boxed` call sites.
-- **Distinct production tool names** is 60. The branch's row said 59 and
-  `main`'s said 61, yet **both trees contain the same 70 `impl Tool for`
-  blocks and the same 60 literal production names** — so both pre-merge
-  numbers were stale. The merged tree re-measures to 60 under the method in
-  the row's `Source`.
-- **Built-in slash commands** is 166, the number the
-  `built_in_command_count_matches_release_docs` tripwire asserts. The
-  branch's row said 164, which the tripwire would have failed.
-
-The `CoreRequest`, `CoreResponse` and `CoreEvent` rows keep the
-`scripts/check_authorization_matrix.py` method so the table and the guard
-count the same thing; `CoreRequest` is 259 and `operation_descriptor` has
-exactly 259 `R::` arms, one per request variant.
+The remaining rows were confirmed unchanged against their own listed
+`Source`.
 
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 90 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 65 call sites | `src/tool/mod.rs` — 52 `registry.register(` plus 13 `registry.register_boxed(` |
-| Distinct production tool names | 60 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 7 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`; 3 of the 7 use the literals `read`, `direct_only`, `no_schema`, and 4 resolve their name at runtime) |
+| Distinct production tool names | 61 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (literal `name()` strings only: 66 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 7 test-only mock impls under `#[cfg(test)]`) |
 | Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 53 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 169 (168 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 262 (238 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 172 (171 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 259 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — one `R::` arm per `CoreRequest` variant |
+| Authorized operations | 262 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — one `R::` arm per `CoreRequest` variant |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 166 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 94 | `crates/codegg-core/src/session/schema.rs` |
+| Database tables (`CREATE TABLE`) | 94 statements / 90 tables | `crates/codegg-core/src/session/schema.rs` (91 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
 | Storage layout version | 85 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 284 | `tests/*.rs` |
+| Integration test files | 290 | `tests/*.rs` |
 | CI guard scripts | 65 | `scripts/check_*` |
 
 ## Feature gates
@@ -597,7 +598,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (268 files)
+├── tests/                      # Integration tests (278 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates

@@ -7372,6 +7372,13 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            B::Nodes => {
+                // Eggwork M002: a read-only operator read of the remote
+                // nodes' host telemetry. It never touches the queue and
+                // never creates a job.
+                self.ui_state.command_mode = false;
+                self.enqueue_tui_command(TuiCommand::NodeTelemetryRequested);
+            }
             B::LspPreviews => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
@@ -13199,6 +13206,20 @@ impl App {
                 crate::tui::chat_browser::input_hints(seed)
             ));
         }
+        // The **editor** owns a keymap of its own — the `space ?` palette and
+        // the keymap overlay in the editor's bottom-right corner — so the
+        // composer's row has nothing to add for it, and leaving the row up
+        // would have two surfaces claiming the same keys.
+        //
+        // The row is **removed** rather than emptied. An allocated-but-blank
+        // row is a row of vertical space spent on nothing, and the whole
+        // point of the editor's own chrome is to stop spending vertical
+        // space on status.
+        if self.editor_state.is_open()
+            && *self.ui_state.routes.current() == crate::tui::route::Route::Editor
+        {
+            return None;
+        }
         // The LLM buffer has no panel to advertise keys for, which is exactly
         // why its own keys were undiscoverable: the one surface where a turn
         // runs long, and the one surface with nothing written above the input.
@@ -13268,10 +13289,18 @@ impl App {
         if input_mode == InputMode::Insert {
             // In Insert the composer's own verbs are not available — the
             // letters are text — so the row must not list them.
-            return fit_parts(&["COMP", "INS", "type", "Esc normal"], separator, budget);
+            //
+            // No mode badge here either: the badge directly above the input
+            // box already says `[INS]`, and a second copy of it in the row
+            // below is the same fact said twice.
+            return fit_parts(&["type", "Esc normal"], separator, budget);
         }
         let lines = self.prompt_state.prompt.line_count();
-        let mut parts: Vec<&str> = vec!["COMP", "NOR"];
+        // No `COMP`/`NOR` prefix: the badge above the input box carries the
+        // mode, and the row below it is for the **keys** — "which letters are
+        // mine right now". A row that restated the mode would be answering a
+        // question the badge has already answered.
+        let mut parts: Vec<&str> = Vec::new();
         for entry in crate::tui::composer_claims::composer_verb_entries() {
             if entry.condition.holds(lines) {
                 parts.push(entry.key_text);

@@ -116,6 +116,101 @@ embedded — use credential references.
 rows read back as `Local`). The job stores only the node id; endpoints
 and key material stay in daemon configuration (`[eggwork.nodes]`).
 
+### Explicit target boundary (M001)
+
+A client may now *ask* for a named node instead of leaving the target
+implicit. The request surface is `JobSubmitDto.target`
+(`Option<ExecutionTargetDto>`) and, for schedules, the `target` field of
+the persisted `JobTemplate`.
+
+Wire shape (`codegg-protocol/src/dto.rs`):
+
+| Form | Meaning |
+|---|---|
+| field absent / `null` | local executor — the pre-M001 behavior, unchanged |
+| `{"kind":"local"}` | local executor, stated explicitly |
+| `{"kind":"eggwork_node","node_id":"<table key>"}` | the named `[eggwork.nodes]` entry |
+| anything else | typed refusal (`invalid_job_submit` / `invalid_schedule_create`) |
+
+The target decodes **totally**: an unknown kind, a missing or empty
+node id, and any extra key (an `endpoint`, a key path — anything beyond
+the documented shape) decode to `ExecutionTargetDto::Invalid` instead of
+failing the enclosing request. Transports drop frames they cannot decode
+(`src/core/transport/daemon_socket.rs`), so a decode failure here would
+leave the caller waiting forever for a reply that can never arrive. A
+malformed target is therefore refused with a typed error, and it is
+never a silent fallback to local execution: a client that asked for a
+remote node must not receive a local job instead.
+
+The node id names a key of the daemon's `[eggwork.nodes]` table — the
+same identifier the executor resolves the target against. It is never an
+endpoint, a certificate path, or a key path.
+
+#### Host-boundary gates
+
+`CoreDaemon::admit_remote_target` (`src/core/daemon_jobs.rs`) applies
+three independent gates to a remote target *before anything is enqueued*,
+so a refused request creates no job — not even a local one — and a
+refused schedule never becomes durable and can never fire a local job
+later.
+
+1. **Shape** — `validate_remote_job` (`src/scheduler/eggwork.rs`) is the
+   single policy for "can this job run remotely". The kinds that can are
+   the ones whose payload is a typed command: `build`, `lint`, `format`,
+   `shell`, `managed_process`. `test` is deferred (remote execution
+   cannot preserve TestRunner durable evidence) and `agent_turn`,
+   `subagent`, `python`, `tool_program` have no remote executor. The
+   command argv must be coherent: non-empty, a non-blank program, no
+   blank entry, and within the remote argv bounds. The executor's own
+   `validate` calls the same function, so a job admitted at the host
+   boundary is always dispatchable, and a job refused at the host
+   boundary could never have run.
+2. **Administrator** — `RemoteTargetPolicy`
+   (`src/core/remote_targets.rs`) is built once from the daemon
+   configuration and answers whether a node may be named at all.
+   `[eggwork.allowed_target_nodes]` is the approved-node allowlist; an
+   absent allowlist approves nothing, which is the fail-closed default.
+   `[eggwork.required_isolation_policy]` and
+   `[eggwork.required_network_policy]` are the daemon-wide posture
+   ceiling a targetable node must declare.
+3. **Principal** — the caller must hold the node-target capability
+   (`Capability::NodeTarget`, wire name `node.target`) in the resolved
+   project scope. That capability is granted to project **owners** only,
+   so a contributor who may submit jobs still cannot name a remote node.
+   The local-owner broad policy owns the daemon and passes without team
+   state.
+
+The administrator gate is checked before the principal gate so an
+unauthorized caller learns nothing about which nodes exist. No gate ever
+names an endpoint, a certificate path, or a key path, and no refusal
+message contains one.
+
+Execution time re-checks the node's live posture against its declared
+policy (the executor's posture agreement). Creation time and execution
+time are deliberately different checks: creation answers "may this
+caller name this node", execution answers "does this node still meet
+its declared posture".
+
+#### Schedule target preservation
+
+`JobTemplate` carries the target (`#[serde(default)]`), so templates
+persisted before explicit targeting existed decode as `Local` — exactly
+the behavior they always had — and no storage migration is required.
+`JobTemplate::new_job_for_occurrence` is the single construction path
+for a materialized occurrence, so the template's target is carried into
+the durable `NewJob` unchanged. `ScheduleCreate` validates and admits the
+target before the schedule becomes durable; `ScheduleGet` returns the
+target identity in `ScheduleRecordDto.target_node_id`.
+
+#### Introspection
+
+`JobSummaryDto`, `JobRecordDto`, and `ScheduleRecordDto` gained an
+optional `target_node_id`. It is identity only — no endpoint, no key
+path — and it is optional on the wire, so clients that predate it keep
+working unchanged. `JobGet`, `JobWait`, `JobStatus`, `JobCancel`, and
+the terminal notice all work against a remote job through the same
+paths as a local one; there is no second remote-job registry.
+
 `RemoteExecutionHandle` (schema version 1) persists the bound remote
 identity on `JobAttempt` (`remote_handle_json`): node id, execution id,
 generation, lease id. The Eggwork executor writes it before any
@@ -126,6 +221,166 @@ never in job payloads, progress text, or audit metadata. The M003
 derived-transfer optimization cache is deliberately NOT persisted here:
 it is an in-memory, node-scoped, bounded hint that starts cold after
 restart and returns the executor to full materialization.
+
+### Remote resource limits (M003)
+
+A remote job may run under limits the node enforces with cgroup v2. The
+limit vocabulary is deliberately **separate** from the abstract scheduler
+tokens on `ResourceRequest`:
+
+| Vocabulary | Carried by | Units | Meaning |
+|---|---|---|---|
+| abstract scheduler tokens | `ResourceRequest.cpu_weight`, `.memory_mb_hint`, `.process_slots`, `.io_weight`, `.network_slots` | none — they are weights and hints | how the **local** admission controller weighs a job |
+| physical remote limits | `ResourceRequest.remote` (`Option<RemoteResourceLimits>`) | bytes, milli-percent of one CPU, task count | what the **node** must enforce |
+
+The two do not correspond, and this repository never translates one into
+the other. A CPU *weight* is not a CPU *quota*; a memory *hint* is not a
+byte count. `scripts/check_eggwork_target_routing.py` rule 9 rejects any
+`ResourceRequirements` literal that mentions an abstract token, and rule
+8 confines node-limit construction to
+`src/scheduler/eggwork_limits.rs` (the resolution) and
+`src/scheduler/eggwork.rs` (the command spec).
+
+#### The `cpu_millis` trap
+
+The node's CPU field is named `cpu_millis`, which reads like a
+millisecond CPU-time budget. **It is not.** It is a CPU *quota* expressed
+in *milli-percent of one CPU*, and the node renders it as
+`CPUQuota = value/10 . value%10 %`:
+
+| Value | cgroup property | Meaning |
+|---|---|---|
+| `1000` | `CPUQuota=100.0%` | one full CPU |
+| `500` | `CPUQuota=50.0%` | half a CPU |
+| `2000` | `CPUQuota=200.0%` | two CPUs |
+| `1` | `CPUQuota=0.1%` | a thousandth of a CPU |
+
+Treating it as a time budget would ask for a thousandth of the intended
+CPU — or, in the other direction, for a thousand times too much.
+`eggwork_limits::cpu_quota_percent` is the single place that mapping is
+written down, and CodeGG's own field is named
+`cpu_quota_milli_percent` for the same reason.
+
+#### Operator ceiling and job request
+
+The **operator ceiling** is authoritative. It is written per node in
+`[eggwork.nodes.<id>].resource_limits`, and each dimension carries a
+value and an enforcement kind:
+
+```jsonc
+"resource_limits": {
+  "memory_bytes":           { "value": 1073741824, "enforcement": "required" },
+  "cpu_quota_milli_percent": { "value": 1000,         "enforcement": "required" },
+  "pids":                   { "value": 64,            "enforcement": "required" }
+}
+```
+
+`required` is a hard contract: the daemon refuses to submit when the
+node cannot enforce the limit. `best_effort` is advisory: the node may
+decline to apply it, and the outcome is reported truthfully as *not
+applied* rather than being downgraded to *not requested*.
+
+A job may supply its own request (`JobSubmitDto.remote_resources`).
+The rules, in order of authority:
+
+1. A job may **narrow** a dimension. The effective value is the job's.
+2. A job may **not widen** a dimension — refused with
+   `remote_limit_exceeds_ceiling`.
+3. A job may **not introduce** a dimension the operator never configured
+   — refused with `remote_limit_not_configured`.
+4. A job may **not weaken** a `required` ceiling to `best_effort` —
+   refused with `remote_limit_downgrade_refused`.
+5. A job **may strengthen** a `best_effort` ceiling to `required`.
+
+With no ceiling configured, a node runs remote work unconstrained — the
+pre-M003 behavior — and a job that asks for limits against such a node
+is refused (`remote_limit_not_configured`), because the operator wrote
+no limit for it.
+
+Every refusal happens at the host boundary, before the job becomes
+durable, so a refused submission creates no job at all.
+
+#### Durable representation
+
+`ResourceRequest.remote` is `#[serde(default)]` and the request is
+persisted inside the existing `resource_json` blob, so a job written
+before M003 decodes as "no remote limits" and **no storage migration is
+required**. The decision is documented rather than assumed: the stored
+representation is a JSON document, so the extension is additive and
+backward compatible by construction.
+
+#### Capability gate
+
+A `required` dimension needs the node to advertise the matching
+capability (`resources.cgroups-v2.memory` / `.cpu` / `.pids`). The gate
+runs in the executor's preflight against the **fresh** authenticated
+capability set, and it refuses *before the workspace upload* — a limit
+the node cannot enforce never reaches the node. A stale or empty
+capability set refuses rather than assuming.
+
+#### Truthful outcome
+
+The node reports per-dimension outcomes (`NotRequested`, `NotApplied`,
+`Applied`, `LimitExceeded`). The executor records them, together with
+the limits that were asked for, in the RunStore manifest
+(`RunManifest.remote_resources`, a `RemoteResourceRecord`). A node that
+reported nothing leaves `outcomes` absent, which is deliberately not the
+same claim as "no limit was applied".
+
+The record never contains an endpoint, a certificate path, a key path, or
+a host measurement, and `ExecutorMetrics.cpu_time_ms` /
+`peak_memory_mb` are **not** populated from remote numbers — those are
+Gregg host telemetry and belong to M002.
+
+### Remote node host telemetry (M002)
+
+`src/scheduler/eggwork_telemetry.rs` owns the read-only view of a remote
+node's **host**. The node polls its own Gregg provider and serves the
+resulting observation over its authenticated telemetry route; CodeGG reads
+that route and nothing else. There is no Gregg connection in CodeGG, no
+provider poll, and no daemon-managed provider process.
+
+**The upstream contract is frozen.** `eggwork_core::NodeTelemetry` at schema
+version 1 (`deny_unknown_fields`, with a `validate()` that enforces the
+documented `state`/`observation` pairing and the age invariant), served by
+`GET /v1/node/telemetry` behind the separate narrow `Operation::Telemetry`
+grant — not folded into `status` — and read through
+`NodeClient::telemetry()` / `telemetry_for(&NodeId)`.
+
+**Identity is checked before the join.** The read uses `telemetry_for`, so a
+document addressed to another node is refused rather than returned. The
+snapshot is only ever joined to the node that was asked for.
+
+**What CodeGG projects.** The snapshot carries the provider's state, the
+freshness of the observation, and the metric dimensions the node actually
+reported. Each dimension keeps the upstream tri-state: `Value` (the node
+reported it), `Unknown` (the node supports it but did not report it this
+time), and `Unsupported` (the host platform cannot produce it). The last
+two are never rendered as a zero. The provider's error *category* is
+carried; its message is not. No interface identity, hostname, mount path or
+process id is ever carried.
+
+**What the read is not.** It is not a measurement of a CodeGG execution:
+per-attempt CPU, RSS and elapsed time stay the executor's own numbers. It
+is not an admission input: a node's free memory never reserves capacity.
+It is not a second scheduler: a read never creates, mutates or releases a
+job, and it does not touch the queue.
+
+**One coordinator.** `NodeTelemetryService` is daemon-owned and holds one
+cache and one probe lock per named node. Concurrent readers of the same node
+coalesce onto a single upstream read, and a repeated read inside the
+30 s freshness window is served from the cache — a refresh loop cannot
+amplify the node's poll of its provider. A failed probe is remembered for
+3 s only, so a fixed node is visible again quickly. The read is bounded at
+10 s, well inside the upstream client's own 120 s unary deadline.
+
+**Refusals are typed and distinct.** A node that does not implement the
+contract (`TelemetryUnsupported`), a node whose schema this client does not
+understand (`ProtocolIncompatible`), a rejected response
+(`InvalidResponse`), a transport failure and a timeout each produce their
+own bounded diagnostic. A node that cannot be read still appears in the
+answer with a diagnostic — it is never dropped, and it never reports a
+measurement.
 
 ### Eggwork lease-fencing contract (corrective C001)
 
@@ -271,21 +526,108 @@ the projection replay path (`projection_replay/publication.rs:514`).
 | `list(ScheduleQuery)` | Filter by workspace/state |
 | `claim_due(DateTime, &dyn OccurrenceMaterializer)` | Atomically claim due occurrences, create jobs |
 
-### `claim_due` Semantics (`schedule.rs:262`, impls `schedule_store.rs:243`, `:521`)
+### `claim_due` Semantics (`schedule.rs`, impls `schedule_store.rs`)
 
-`claim_due` scans schedules where `next_run_at <= now` and state is
-`Active`. For each due schedule, it:
-1. Computes `missed_run_targets` based on `MissedRunPolicy`
-2. Checks overlap policy against existing running/queued occurrences
-3. Atomically inserts `schedule_occurrence` rows with
-   `PRIMARY KEY(schedule_id, scheduled_for)` — duplicate claims fail
-   with `DuplicateOccurrence`
-4. Calls `OccurrenceMaterializer::materialize` to create the job
-   from the `JobTemplate`
-5. Updates `schedule.next_run_at` via `compute_next_run`
+`claim_due` is the only way an occurrence becomes a job. It runs in three
+phases, and the split is load-bearing:
+
+1. **Plan** — a short read of the schedules where `next_run_at <= now` and
+   state is `Active`, plus the occurrences each one owes
+   (`missed_run_targets`, by `MissedRunPolicy`) and the schedule's
+   running-job count for the overlap policy. No transaction is held.
+2. **Materialize** — the slow part: a job submission, and for a remote
+   target a node round trip. It runs with **no** transaction open.
+3. **Commit** — one write transaction that inserts the
+   `schedule_occurrence` rows and advances the schedules' cursors
+   together.
+
+The split is not cosmetic. Materialization needs the job store, the job
+store needs a pool connection, and materializing while the schedule store
+held its own connection waits for a second connection that a
+single-connection pool never has — a self-deadlock that no amount of
+waiting resolves. The phases are safe to separate because the occurrence's
+job id is a pure function of the occurrence (below), so a crash between
+the materialization and the commit replays into the *same* job.
+
+The commit transaction reads each schedule's stored cursor and writes it
+back, so it opens with `BEGIN IMMEDIATE` (`ImmediateWrite`) rather than a
+deferred transaction — a deferred transaction holds a shared read lock
+across the read and then has to upgrade it to write, which SQLite refuses
+with `SQLITE_BUSY` without waiting (C002).
 
 The `PRIMARY KEY(schedule_id, scheduled_for)` constraint prevents
-double-firing after restart.
+double-firing after restart, and the cursor only ever advances.
+
+### Occurrence identity and idempotency (M004)
+
+An occurrence is the pair `(schedule_id, scheduled_for)`. Its job id is a
+pure function of that pair — `occurrence_job_id` in
+`crates/codegg-core/src/jobs/schedule.rs` — and the job store derives a
+scheduled job's id from its source. The `job.id` primary key is therefore
+the **durable** uniqueness constraint for an occurrence: a database
+guarantee, not a convention. `JobStore::create_job` is idempotent on that
+id; a non-scheduled job keeps a random UUID v4, which cannot collide.
+
+The consequence is that a daemon which stopped between "the job row was
+written" and "the occurrence row was written" replays into the **same**
+job. The occurrence table's primary key then records it. One occurrence
+never owns two jobs.
+
+The occurrence identity is **derived, not stored** — no migration, and
+`STORAGE_LAYOUT_VERSION` is unchanged.
+
+### Refused occurrences (M004)
+
+A refused occurrence is **not** recorded. The occurrence row is the
+durable "this already happened" marker, and its primary key would turn
+the later retry into a no-op, so an unrecorded occurrence stays
+retryable. The consequences are all deliberate:
+
+- the schedule's `last_occurrence_at` does not advance past the refusal,
+  so the occurrence is re-planned;
+- the schedule's next horizon does not move past the refusal, so the
+  occurrence is not skipped;
+- `OccurrenceStatus::Failed` and `ClaimedOccurrence::job_id: Option<JobId>`
+  report the outcome. An occurrence that produced no job says `None`,
+  never a synthetic id.
+- `ClaimedOccurrence::failure_code` carries the refusal's stable,
+  secret-free reason code — `remote_target_not_approved`, `invalid_template`,
+  `job_store_error` — so the operator's log says *why* a schedule did not
+  fire, without any message, endpoint, or policy detail.
+
+The code is a log-line fact, not a durable one: a refused occurrence is
+not recorded, so the schedule's own durable state cannot answer "why did
+my schedule not run?". That remains an open operability gap.
+
+The cursor advances to the **occurrence**, not to the tick time. An
+interval schedule anchored at `T0` therefore keeps its own grid instead
+of drifting to whenever the daemon happened to tick.
+
+### Production materialization (M004)
+
+`src/scheduler/schedule_materializer.rs` is the production
+`OccurrenceMaterializer`; `src/scheduler/schedule_driver.rs` is the
+daemon-owned earliest-due wake loop that calls it. The materializer
+creates a job through `JobSubmissionService` — the single production
+admission facade — so a scheduled job is admitted exactly like a submitted
+one, and it invokes no executor.
+
+The materializer **re-applies the host-boundary gates** at materialization
+time: the remotely-runnable shape, the administrator's approval, and the
+operator's resource ceiling. A schedule is authorized once, when it is
+created; by the time an occurrence fires, the daemon may have restarted
+with a different configuration, and the administrator may have withdrawn
+the node's approval. The *principal* gate is deliberately not re-applied:
+a timer-driven occurrence has no live principal, and re-deriving one
+would manufacture authority rather than check it.
+
+Refusals carry a stable, secret-free reason code. No endpoint, credential
+path, or policy detail reaches a log line or a durable field.
+
+The driver is installed only where it can do its job: the scheduler
+enabled (the submission facade refuses every submission otherwise) and a
+pool present (a pool-less daemon has no cross-process durability to
+claim). Schedule creation and resumption wake it.
 
 ### Delegated scratch attempt leases (managed-agent-scratch M002)
 

@@ -139,13 +139,16 @@ pub enum AuditAction {
     /// is shared by a live agent-run group, and a shared checkout admits
     /// no unqualified process.
     ProcessDenial,
+    /// M007: the operator disposition removed one of the daemon's own
+    /// disposable scratch trees.
+    ScratchReclaim,
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 29] = [
+    pub const ALL: [&'static str; 30] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -175,6 +178,7 @@ impl AuditAction {
         "human_shell_run",
         "checkout_writer_refusal",
         "process_denial",
+        "scratch_reclaim",
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -208,6 +212,7 @@ impl AuditAction {
             Self::HumanShellRun => "human_shell_run",
             Self::CheckoutWriterRefusal => "checkout_writer_refusal",
             Self::ProcessDenial => "process_denial",
+            Self::ScratchReclaim => "scratch_reclaim",
             Self::Unknown => "unknown",
         }
     }
@@ -244,6 +249,7 @@ impl AuditAction {
             "human_shell_run" => Self::HumanShellRun,
             "checkout_writer_refusal" => Self::CheckoutWriterRefusal,
             "process_denial" => Self::ProcessDenial,
+            "scratch_reclaim" => Self::ScratchReclaim,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));
             }

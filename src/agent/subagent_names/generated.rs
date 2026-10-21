@@ -2,10 +2,11 @@
 
 /// One entry in the curated pool of human-readable subagent names.
 ///
-/// A name is held only while its subagent is active. When the pool entry
-/// is already taken, the registry appends the next free numeric variant
-/// (`Name`, `Name-2`, `Name-3`, ...) at assignment time; the numeric
-/// suffix is never stored here.
+/// A name is held only while its subagent is active. The registry
+/// prefers a free name from this pool; only when every name here is
+/// held does it take the next free numeric variant (`Name`, `Name-2`,
+/// `Name-3`, ...) at assignment time; the numeric suffix is never
+/// stored here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubagentName {
     /// Display name assigned to a subagent identifier.

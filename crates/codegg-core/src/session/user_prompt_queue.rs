@@ -18,7 +18,7 @@ use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;
 
 use crate::error::StorageError;
-use crate::storage::immediate::ImmediateWrite;
+use crate::storage::immediate::begin_immediate;
 
 /// Bounds chosen for a *user prompt* rather than a derived shell projection.
 /// See ADR-0035 for the ownership contract these encode.
@@ -648,7 +648,7 @@ impl UserPromptQueueStore {
         // refusing early keeps a bad due time from ever opening a write.
         let expires_at_ms = now_ms.saturating_add(USER_PROMPT_QUEUE_TTL_MS);
         validate_run_at(run_at_ms, expires_at_ms)?;
-        let mut tx = begin_immediate(&self.pool).await?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(storage_error)?;
 
         let ownership = resolve_ownership(&mut tx, session_id).await?;
         match &ownership {
@@ -763,7 +763,7 @@ impl UserPromptQueueStore {
         };
 
         let record = UserPromptQueueEntryRecord::try_from(entry)?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit_with(storage_error).await?;
         Ok(live_from(&record))
     }
 
@@ -790,7 +790,7 @@ impl UserPromptQueueStore {
     ) -> Result<UserPromptQueueLiveEntry, UserPromptQueueError> {
         validate_principal(caller)?;
         let text_bytes = Self::validate_entry(entry_id, session_id, text)?;
-        let mut tx = begin_immediate(&self.pool).await?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(storage_error)?;
         authorize_owned_queue(&mut tx, caller, session_id).await?;
         sweep_expired(&mut tx, session_id, now_ms).await?;
 
@@ -841,7 +841,7 @@ impl UserPromptQueueStore {
             .await?
             .ok_or(UserPromptQueueError::NotFound)?;
         let record = UserPromptQueueEntryRecord::try_from(row)?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit_with(storage_error).await?;
         Ok(live_from(&record))
     }
 
@@ -866,7 +866,7 @@ impl UserPromptQueueStore {
         validate_principal(caller)?;
         validate_entry_id(entry_id)?;
         validate_session_id(session_id)?;
-        let mut tx = begin_immediate(&self.pool).await?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(storage_error)?;
         authorize_owned_queue(&mut tx, caller, session_id).await?;
         sweep_expired(&mut tx, session_id, now_ms).await?;
 
@@ -894,7 +894,7 @@ impl UserPromptQueueStore {
         renumber_dense(&mut tx, session_id, now_ms, &survivor_ids).await?;
 
         let projection = list_projected_in(&mut tx, session_id, now_ms).await?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit_with(storage_error).await?;
         Ok(projection)
     }
 
@@ -926,7 +926,7 @@ impl UserPromptQueueStore {
         for entry_id in entry_ids {
             validate_entry_id(entry_id)?;
         }
-        let mut tx = begin_immediate(&self.pool).await?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(storage_error)?;
         authorize_owned_queue(&mut tx, caller, session_id).await?;
         sweep_expired(&mut tx, session_id, now_ms).await?;
 
@@ -938,7 +938,7 @@ impl UserPromptQueueStore {
         renumber_dense(&mut tx, session_id, now_ms, entry_ids).await?;
 
         let projection = list_projected_in(&mut tx, session_id, now_ms).await?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit_with(storage_error).await?;
         Ok(projection)
     }
 
@@ -965,7 +965,7 @@ impl UserPromptQueueStore {
     ) -> Result<UserPromptQueueOwnerRecord, UserPromptQueueError> {
         validate_principal(caller)?;
         validate_session_id(session_id)?;
-        let mut tx = begin_immediate(&self.pool).await?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(storage_error)?;
         let record = match resolve_ownership(&mut tx, session_id).await? {
             UserPromptQueueOwnership::Owned(record) => {
                 if record.owner_principal != caller {
@@ -991,7 +991,7 @@ impl UserPromptQueueStore {
                     .ok_or(UserPromptQueueError::NotFound)?
             }
         };
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit_with(storage_error).await?;
         Ok(record)
     }
 
@@ -1018,7 +1018,7 @@ impl UserPromptQueueStore {
         validate_principal(recipient)?;
         validate_session_id(session_id)?;
         let expected = i64::try_from(expected_revision).unwrap_or(i64::MAX);
-        let mut tx = begin_immediate(&self.pool).await?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(storage_error)?;
 
         let current = match resolve_ownership(&mut tx, session_id).await? {
             UserPromptQueueOwnership::Owned(record) => record,
@@ -1067,20 +1067,9 @@ impl UserPromptQueueStore {
             });
         };
 
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit_with(storage_error).await?;
         Ok(record)
     }
-}
-
-/// Open a write transaction that takes SQLite's write lock **at `BEGIN`**.
-///
-/// Every read-then-write path in this store goes through here. See
-/// [`ImmediateWrite`] for why that is not the same as `pool.begin()`.
-///
-/// This is a plain function rather than an associated one so the call sites read
-/// `begin_immediate(&self.pool)` instead of naming the type twice.
-async fn begin_immediate(pool: &SqlitePool) -> Result<ImmediateWrite, UserPromptQueueError> {
-    ImmediateWrite::begin(pool).await.map_err(storage_error)
 }
 
 /// Resolve the three-valued ownership state on an open transaction.
@@ -1643,7 +1632,7 @@ impl UserPromptQueueStore {
         now_ms: i64,
     ) -> Result<Option<UserPromptQueueDeliveryClaim>, UserPromptQueueError> {
         validate_session_id(session_id)?;
-        let mut conn = begin_immediate(&self.pool).await?;
+        let mut conn = begin_immediate(&self.pool).await.map_err(storage_error)?;
 
         // Ownership is checked before the claim, inside the same transaction, so
         // a queue whose owner vanished is never claimed in the first place.
@@ -1791,7 +1780,7 @@ impl UserPromptQueueStore {
         validate_entry_id(entry_id)?;
         validate_session_id(session_id)?;
         validate_turn_id(turn_id)?;
-        let mut conn = begin_immediate(&self.pool).await?;
+        let mut conn = begin_immediate(&self.pool).await.map_err(storage_error)?;
         authorize_owned_queue(&mut conn, caller, session_id).await?;
         // A settlement must not be able to write a row the read projection would
         // already have hidden, for the same reason `delete` sweeps first.

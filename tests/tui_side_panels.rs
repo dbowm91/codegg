@@ -17,10 +17,12 @@ use codegg::protocol::core::{
 };
 use codegg::tui::app::state::subagents::SubagentRow;
 use codegg::tui::app::state::WorkspaceFocus;
-use codegg::tui::app::TuiMsg;
+use codegg::tui::app::{TodoEntry, TuiMsg};
 use codegg::tui::components::component::DialogType;
 use codegg::tui::components::dialogs::panel_manager::PanelManagerDialog;
-use codegg::tui::components::sidebar::{SidebarFocusTarget, SidebarJob, SidebarSubagent};
+use codegg::tui::components::sidebar::{
+    SidebarFocusTarget, SidebarJob, SidebarSection, SidebarSubagent,
+};
 use codegg::tui::input::InputMode;
 use codegg::tui::panels::SidePanelId;
 use codegg::tui::route::Route;
@@ -940,4 +942,69 @@ async fn a_job_row_is_read_only_and_never_reaches_the_composer() {
         "the key was consumed by the panel, not submitted as a turn"
     );
     assert!(app.panel_host.is_focused());
+}
+
+/// The session panel's keyboard walk skips todo **rows** and keeps their
+/// header.
+///
+/// A todo row had no action behind it — `Enter` on it resolved to
+/// `SidebarActivation::None` — so the selection highlight was painted on a row
+/// where nothing happened, and `j`/`k` walked through every one of them. The
+/// "Todos" header stays focusable and still folds the section: the request was
+/// to skip the rows, not the header.
+#[tokio::test(flavor = "current_thread")]
+async fn the_session_panel_walk_skips_todo_rows_but_keeps_their_header() {
+    let mut app = test_app();
+    app.sidebar.set_todos(vec![
+        TodoEntry {
+            content: "write the thing".to_string(),
+            status: "pending".to_string(),
+            priority: String::new(),
+        },
+        TodoEntry {
+            content: "write the other thing".to_string(),
+            status: "pending".to_string(),
+            priority: String::new(),
+        },
+    ]);
+    app.sidebar
+        .set_subagents(vec![sidebar_subagent("42", "Sally", "explore", "running")]);
+    app.sidebar.set_jobs(vec![SidebarJob {
+        job_id: "j1".to_string(),
+        kind: "test".to_string(),
+        summary: "cargo test".to_string(),
+        state: "running".to_string(),
+        error_class: None,
+    }]);
+    focus_session(&mut app);
+
+    // Pin the walk to the first target, so the sequence does not depend on
+    // where the panel happened to leave the cursor.
+    app.on_key(plain('k'));
+    let mut walk = Vec::new();
+    for _ in 0..5 {
+        walk.push(app.sidebar.focused_target().cloned());
+        app.on_key(plain('j'));
+    }
+
+    assert_eq!(
+        walk,
+        vec![
+            Some(SidebarFocusTarget::Section(SidebarSection::Todos)),
+            Some(SidebarFocusTarget::Section(SidebarSection::Subagents)),
+            Some(SidebarFocusTarget::Subagent("42".to_string())),
+            Some(SidebarFocusTarget::Section(SidebarSection::Jobs)),
+            Some(SidebarFocusTarget::Job("j1".to_string())),
+        ],
+        "the walk skips the two todo rows and keeps the header"
+    );
+
+    // And the walk is exhausted: there is no sixth stop for a todo row to
+    // hide behind.
+    app.on_key(plain('j'));
+    assert_eq!(
+        app.sidebar.focused_target(),
+        Some(&SidebarFocusTarget::Job("j1".to_string())),
+        "the walk ran past the last actionable row"
+    );
 }

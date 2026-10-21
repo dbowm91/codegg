@@ -2304,6 +2304,9 @@ fn build_permit_dimensions(job: &JobRecord) -> PermitDimensions {
         // M007: the keyed quota scopes travel with the job, so a job
         // that was admitted under a scope releases exactly that scope.
         keyed_quotas: job.resource_request.keyed_quotas.clone(),
+        // A remotely targeted job is reserved against its node, not
+        // against the controller's local CPU/memory/process budget.
+        remote_node: job.target.eggwork_node_id().map(str::to_owned),
     }
 }
 

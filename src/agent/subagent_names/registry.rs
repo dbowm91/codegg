@@ -21,16 +21,23 @@
 //! # Collision policy
 //!
 //! Two subagents of the same agent type must never share a name, or the
-//! sessions panel lists two indistinguishable rows. On collision the registry
-//! takes the first free of `Name`, `Name-2`, `Name-3`, … The suffix belongs to
-//! the *active* lease only; the pool entry itself is never mutated, so a
-//! released `Sally-2` does not leave `Sally-2` permanently burned.
+//! sessions panel lists two indistinguishable rows. The registry therefore
+//! draws in **two passes**: first every *free* pool name, in a random order,
+//! and only then the numeric ladder. **A free pool name always beats a
+//! numeric variant of a taken one** — `Sally` is a better answer than
+//! `Sally-2` while forty-five other names sit unheld, and the pool is large
+//! enough that the free-name pass essentially always succeeds.
+//!
+//! The suffix belongs to the *active* lease only; the pool entry itself is
+//! never mutated, so a released `Sally-2` does not leave `Sally-2`
+//! permanently burned, and a released `Sally` may be drawn again.
 //!
 //! # Determinism within a lease
 //!
-//! Two subagents that draw the same base name must not be handed the same
-//! suffix either. The suffix counter therefore walks forward from the base
-//! name against the *currently held* set rather than from a global counter.
+//! When the pool is exhausted, two subagents that draw the same base name
+//! must not be handed the same suffix either. The suffix counter therefore
+//! walks forward from the base name against the *currently held* set rather
+//! than from a global counter.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -143,10 +150,24 @@ impl SubagentNameRegistry {
 
 /// Draw a name that does not collide with anything in `active`.
 ///
-/// Walks the pool in a randomly chosen order so that concurrent spawns do not
-/// march in lockstep through the same prefix, then applies the `-N` suffix
-/// rule for the unlucky ones that land on a held base name.
+/// The pool is walked in a randomly chosen order so that concurrent spawns do
+/// not march in lockstep through the same prefix. The selection itself is in
+/// [`draw_from`].
 fn draw(active: &HashMap<u64, String>) -> String {
+    draw_from(active, random_index(SUBAGENT_NAMES.len()))
+}
+
+/// The draw, with its random start index supplied.
+///
+/// Split out from [`draw`] so the selection rule can be exercised against
+/// **every** start index rather than only the one the RNG happens to pick. A
+/// rule that is observable only through a random draw has regression evidence
+/// that is a probability, and a probability is not evidence.
+///
+/// The two passes share one start index, so they agree on the ordering and
+/// the result stays spread across the pool rather than always beginning at
+/// index 0.
+fn draw_from(active: &HashMap<u64, String>, start: usize) -> String {
     // Clippy evaluates `SUBAGENT_NAMES` as a const and sees 46 entries, so it
     // reports this branch as dead. It is not permanently dead: the pool is
     // generated from an authored TOML, and emptying that file would make the
@@ -159,12 +180,29 @@ fn draw(active: &HashMap<u64, String>) -> String {
         return FALLBACK.to_string();
     }
 
-    let start = random_index(SUBAGENT_NAMES.len());
+    // Pass 1 — a free *bare* name.
+    //
+    // A free pool name always beats a numeric variant of a taken one. The
+    // pool holds 46 names against a projection cap of 16 live subagents, so
+    // this pass essentially always succeeds; handing out `Sally-2` while
+    // forty-five names sit free is a worse answer than `Sally`.
     for step in 0..SUBAGENT_NAMES.len() {
         let idx = (start + step) % SUBAGENT_NAMES.len();
         let base = &SUBAGENT_NAMES[idx].name;
-        let candidate = first_free(base, active);
-        if let Some(name) = candidate {
+        if !is_taken(base, active) {
+            return base.to_string();
+        }
+    }
+
+    // Pass 2 — the numeric ladder, over the same bases in the same order.
+    //
+    // Reached only when every base name is held. `first_free` yields the
+    // first free `base-2`, `base-3`, … for that base, and `None` once that
+    // base's ladder is exhausted, which moves the walk on to the next base.
+    for step in 0..SUBAGENT_NAMES.len() {
+        let idx = (start + step) % SUBAGENT_NAMES.len();
+        let base = &SUBAGENT_NAMES[idx].name;
+        if let Some(name) = first_free(base, active) {
             return name;
         }
     }
@@ -488,6 +526,130 @@ mod tests {
         let mut active: HashMap<u64, String> = HashMap::new();
         active.insert(1, "Greg-2".to_string());
         assert_eq!(first_free("Greg", &active).as_deref(), Some("Greg"));
+    }
+
+    /// Whether a name carries a registry numeric suffix (`-2`, `-3`, …).
+    fn has_numeric_suffix(name: &str) -> bool {
+        name.rsplit_once('-')
+            .is_some_and(|(_, tail)| !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// A free pool name beats a numeric variant of a taken one — at **every**
+    /// start index.
+    ///
+    /// The old rule took the first free of `Name`, `Name-2`, `Name-3`, … at
+    /// the *first* base the walk reached, so a held base consumed the suffix
+    /// while forty-five names sat free. Holding every base but one and
+    /// exercising every start index pins that down without appealing to a
+    /// probability: under the old rule 45 of the 46 starts returned a
+    /// suffixed name, and under this one every start returns the same bare
+    /// name.
+    #[test]
+    fn every_start_index_prefers_a_free_base_name_over_a_suffix() {
+        let free = SUBAGENT_NAMES.last().expect("a non-empty pool");
+        let mut active: HashMap<u64, String> = HashMap::new();
+        let mut key = 0u64;
+        for entry in SUBAGENT_NAMES.iter() {
+            if entry.name == free.name {
+                continue;
+            }
+            key += 1;
+            active.insert(key, entry.name.to_string());
+        }
+
+        for start in 0..SUBAGENT_NAMES.len() {
+            let name = draw_from(&active, start);
+            assert_eq!(
+                name, free.name,
+                "start {start}: a free pool name must beat a numeric variant"
+            );
+            assert!(
+                !has_numeric_suffix(&name),
+                "start {start}: {name} is a variant while a bare name is free"
+            );
+        }
+    }
+
+    /// Half the pool held, the other half free: no start may produce a
+    /// suffix.
+    ///
+    /// This is the shape the old rule got wrong most often: the walk lands on
+    /// an occupied base roughly half the time, and the old rule answered
+    /// `Name-2` instead of moving on to a free name.
+    #[test]
+    fn a_free_base_is_never_suffixed_while_another_base_is_free() {
+        let mut active: HashMap<u64, String> = HashMap::new();
+        let mut key = 0u64;
+        for (idx, entry) in SUBAGENT_NAMES.iter().enumerate() {
+            if idx % 2 == 0 {
+                key += 1;
+                active.insert(key, entry.name.to_string());
+            }
+        }
+        assert!(
+            active.len() < SUBAGENT_NAMES.len(),
+            "the test needs a free name to exist"
+        );
+
+        for start in 0..SUBAGENT_NAMES.len() {
+            let name = draw_from(&active, start);
+            assert!(
+                !has_numeric_suffix(&name),
+                "start {start}: {name} is a variant while bare names are free"
+            );
+            assert!(!is_taken(&name, &active), "{name} collided");
+        }
+    }
+
+    /// The numeric ladder still applies once **every** base name is held.
+    ///
+    /// The suffix is the fallback, not the mechanism: it must still be there
+    /// for the case it was written for.
+    #[test]
+    fn the_suffix_ladder_applies_only_once_every_base_is_held() {
+        let mut active: HashMap<u64, String> = HashMap::new();
+        let mut key = 0u64;
+        for entry in SUBAGENT_NAMES.iter() {
+            key += 1;
+            active.insert(key, entry.name.to_string());
+        }
+
+        for start in 0..SUBAGENT_NAMES.len() {
+            let name = draw_from(&active, start);
+            assert!(
+                name.ends_with("-2"),
+                "start {start}: with every base held the ladder applies, got {name}"
+            );
+            assert!(!is_taken(&name, &active), "{name} collided");
+        }
+    }
+
+    /// The public surface: a run of spawns never carries a numeric suffix
+    /// while the pool still has a free name.
+    ///
+    /// One lease short of the pool's size, every name is a bare pool name.
+    /// Under the old rule this failed with near-certainty — the probability
+    /// that 45 random walks all happened to land on a free base is about
+    /// 2e-19.
+    #[test]
+    fn a_run_of_spawns_never_carries_a_numeric_suffix_while_a_name_is_free() {
+        let registry = registry();
+        let leases = SUBAGENT_NAMES.len() - 1;
+        let names: Vec<String> = (0..leases)
+            .map(|task_id| registry.assign(task_id as u64))
+            .collect();
+
+        for name in &names {
+            assert!(
+                !has_numeric_suffix(name),
+                "{name} is a variant while a bare pool name was free"
+            );
+            assert!(pool_entry(name).is_some(), "{name} is not a pool name");
+        }
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "duplicate name in {names:?}");
     }
 
     #[test]

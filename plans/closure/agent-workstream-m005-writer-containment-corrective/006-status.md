@@ -268,6 +268,18 @@ matrix 16/16 on a native macOS runner. `macos` was therefore added to
 `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` — a recorded decision with that
 evidence behind it, not a quiet edit.
 
+The lane was then **re-run on the flip itself** — run **`39627440691`**
+(2026-10-21, head `2cddbff3c`, the commit that adds `macos` to the
+table) — and it passed again: the native containment fixture 2/2, the C006
+suite 16/16, and the containment matrix 16/16. That second run is the
+evidence for the *changed* behaviour: `the_shared_profile_is_platform_gated`
+now asserts **available** on macOS instead of asserting the refusal, so a
+macOS host is proved to take the shared profile rather than merely to
+contain a process. The Seatbelt arms reported the real backend —
+`Enforced { backend: BackendId("seatbelt") }`, with the guarantee
+"writes confined to the workspace and scratch space" — so the lane
+observed enforcement, not merely a registered backend.
+
 **Windows — a capability gap, not an evidence gap.** No filesystem-enforcement
 backend is registered for Windows at all, so a constrained request is refused
 before any process is created. No CI run can produce the missing evidence,
@@ -355,6 +367,12 @@ executor marker — and proves each is reported. The guard is wired into
   **`39616896281`** on head `ec1816ad8`: **success**. The native containment
   fixture 2/2, the C006 suite 16/16, and the containment matrix 16/16 on a
   native macOS runner. See §5.1.
+* **Hosted macOS (on the flip)** — `Shared checkout macOS qualification`
+  run **`39627440691`** on head `2cddbff3c`, the commit that adds `macos`
+  to the qualified table: **success**. The C006 suite 16/16 with
+  `the_shared_profile_is_platform_gated` now asserting *available* on
+  macOS, the native fixture 2/2, and the containment matrix 16/16 with
+  Seatbelt enforcement reported. See §5.1.
 * `scripts/verify.sh quick` — pass (exit 0).
 * `cargo fmt --all -- --check` — pass.
 * `cargo clippy --workspace --all-targets -- -D warnings` — pass.

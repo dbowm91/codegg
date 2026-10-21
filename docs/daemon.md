@@ -10,9 +10,13 @@ The daemon is the core runtime: the part of CodeGG that owns session state,
 job execution, and the event stream. Frontends — the TUI, the HTTP server —
 are clients of it.
 
-There is exactly **one daemon per OS user**, enforced by an advisory lock
-(`daemon.lock`) that the daemon holds for its whole lifetime. This is not an
-optimization; it is the invariant the rest of the system is built on.
+Ordinary CodeGG clients share exactly **one default daemon per OS user**,
+enforced by an advisory lock (`daemon.lock`) that the daemon holds for its
+whole lifetime. This is not an optimization; it is the invariant the rest of
+the system is built on. `CODEGG_DAEMON_HOME` deliberately selects a separate
+runtime root, with its own lock and state; CodeGG does not discover or attach
+to those roots unless that override is supplied. The developer-only Harness
+Lab uses private roots this way and does not change the ordinary user daemon.
 
 It exists so that:
 
@@ -50,7 +54,10 @@ Defaults per platform:
 
 Set **`CODEGG_DAEMON_HOME`** to move that root somewhere else. Every daemon
 subcommand and every frontend honors it, so pointing the whole system at one
-directory keeps them consistent.
+directory keeps them consistent. The override must identify state you intend
+to keep separate: lock, metadata, socket, catalog, configuration, and other
+user-scoped writers are rooted through their corresponding CodeGG/XDG
+overrides. See `dev/harness_lab/README.md` for the isolated test setup.
 
 ## You do not normally start the daemon
 
@@ -110,15 +117,53 @@ lock steps in `docs/TROUBLESHOOTING.md`.
 |---|---|
 | `codegg daemon start` | Starts the daemon **in the foreground** (see above). `--endpoint` picks the socket; `--force-take-lock` is accepted but cannot override a held lock. |
 | `codegg daemon stop` | Graceful shutdown. Verifies the live daemon's identity first, then signals it. Unix only. |
-| `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, and connected clients. |
+| `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, connected clients, and a one-line scratch usage summary. |
+| `codegg daemon scratch-usage` | Measures the daemon's disposable scratch cache: tree count, total size, age, and the reclaim path's verdict for each tree. A tree the walk did not finish reading carries **no** verdict — it is reported as `unknown`, never as reclaimable. `--json` emits the raw report; `--refresh` runs a fresh measurement instead of the daemon's last snapshot. |
+| `codegg daemon scratch-reclaim` | Disposes of one scratch tree, named by its opaque digest. A dry run is the default: the command reports what it would remove and removes nothing. `--apply` actually removes it. |
 | `codegg daemon logs` | Shows the tail of `daemon.log`. `--lines` defaults to `50`; `--file` reads a specific file. |
 | `codegg daemon attach` | Opens the TUI against a running daemon over the local socket. `--endpoint`, `--session`, `--new`. |
 
 ```bash
 codegg daemon status
+codegg daemon scratch-usage
 codegg daemon logs --lines 200
 codegg daemon stop
 ```
+
+`daemon scratch-usage` is a **measurement**, not a lifecycle event. It reads
+the daemon's own disposable scratch cache and reports counts, sizes, ages, and
+the opaque digest that names each tree — never a path, a file name, file
+content, or a session identity. The daemon answers from its last snapshot;
+`--refresh` asks for exactly one fresh bounded walk. The command is served on
+the local daemon socket only.
+
+Each tree carries the reclaim path's own verdict, and the verdict has three
+states: **yes**, **no**, and **unknown**. A tree whose walk hit a budget
+before the tree was fully read has no verdict at all — the entries it did not
+reach could be ones the reclaim path would refuse, so the report says
+`unknown` rather than claiming the tree is reclaimable. A tree that vanished
+while it was being read is `unknown` for the same reason.
+
+`daemon scratch-reclaim` is the operator disposition for a tree the automatic
+reclaim path can never accept — a tree holding a planted symlink, say. It is
+named by the same opaque digest `scratch-usage` reports. The command is a dry
+run by default: it reports the tree's entry count, size, and the automatic
+path's verdict, and removes nothing until `--apply` is passed. The lease is
+honoured exactly as the sweep honours it, so a tree whose session still has an
+accepted turn, a non-terminal run, or a non-terminal job is refused. The
+ownership, containment, and owner-record checks are unchanged; only the
+entry-content refusals are relaxed, and every attempt is audited.
+
+The daemon also runs the retention sweep itself, on its own interval. It
+reclaims a session's tree once that session has been idle past
+`scratch.retention_days` (14 days by default), a soft-deleted session's tree
+once its lease is clear, and a tree that no durable session owns once it has
+been untouched past `scratch.orphan_grace_hours` (24 hours by default). The
+sweep never runs on the agent hot path and never blocks a tool call. The whole
+policy — including `scratch.enabled`, which turns the sweep off entirely — is
+in the `scratch` configuration section; see `architecture/config.md` for the
+defaults and the floors. The daemon reads that section once, at startup, so a
+policy change needs a daemon restart.
 
 `daemon stop` is a bounded, verified operation: it will not signal a PID it
 has not confirmed is the live daemon. On timeout it reports the failure

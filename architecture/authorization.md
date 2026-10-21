@@ -245,6 +245,37 @@ submits, `session.read` for job references) before creating anything,
 so a chat grant alone never authorizes execution. See
 `architecture/collaboration.md`.
 
+### Remote node targeting (Eggwork M001)
+
+`job.submit` says the caller may submit work to a project; it does not
+say the caller may send that work to another machine. A job or schedule
+that names an Eggwork node therefore passes a **second** authorization
+gate: the caller must hold `Capability::NodeTarget` (wire name
+`node.target`) in the resolved project scope. The capability is granted
+to project **owners** only, so a contributor who may submit jobs still
+cannot name a remote node.
+
+The gate is not a `CoreRequest` variant — it is a second decision
+evaluated inside the `job_submit` / `schedule_create` handlers, using
+the same `AuthorizationService` and the same `OperationDescriptor`
+mechanism under the operation name `job_submit_node_target`. It is
+deliberately *not* a new request: naming a node is an attribute of a
+job submission, not a separate authority to acquire.
+
+The second gate is only half the decision. The daemon-owned
+`RemoteTargetPolicy` (`src/core/remote_targets.rs`) is the other half:
+it holds the administrator's approved-node allowlist and posture
+ceiling from the daemon configuration. Both gates fail closed, and the
+administrator gate runs first so an unauthorized caller learns nothing
+about which nodes exist. Neither gate — nor any refusal message — ever
+names an endpoint, a certificate path, or a key path.
+
+The local-owner broad policy owns the daemon and passes the node-target
+gate without team state, exactly as it passes every other gate.
+
+See `architecture/jobs.md` ("Explicit target boundary") for the shape
+gate and the schedule-preservation contract.
+
 ### Team membership and device-token administration (team-collaboration M003)
 
 Membership operations (`team_membership_list/add/update/revoke`) are
@@ -543,6 +574,8 @@ not a Core operation):
 | `run_list` | opaque | `session.read` |
 | `run_rerun` | via_session | `agent.invoke` |
 | `runtime_policy_set` | global | `none` |
+| `scratch_reclaim` | opaque | `file.modify` |
+| `scratch_usage` | opaque | `none` |
 | `sandbox_profile_set` | global | `none` |
 | `schedule_create` | via_session | `job.submit` |
 | `schedule_delete` | opaque | `job.cancel` |
