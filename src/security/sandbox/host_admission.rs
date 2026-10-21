@@ -100,7 +100,7 @@ pub struct NativeNegativeEvidence {
 }
 
 /// A maintainer's decision about whether this host configuration is supported.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MaintainerAdmission {
     /// False unless a maintainer recorded a decision.
     pub admitted: bool,
@@ -108,17 +108,6 @@ pub struct MaintainerAdmission {
     pub admitted_at: Option<String>,
     /// What the admission covers, when it is granted.
     pub scope: Option<String>,
-}
-
-impl Default for MaintainerAdmission {
-    fn default() -> Self {
-        Self {
-            admitted: false,
-            admitted_by: None,
-            admitted_at: None,
-            scope: None,
-        }
-    }
 }
 
 /// The complete manifest.

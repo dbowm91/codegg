@@ -547,6 +547,153 @@ else:
     drop((tcp4, tcp6, inherited_stream));
 }
 
+/// C002: the delegated Tool Program child route's accepted ceiling reaches the
+/// process owner, and the owner enforces it on a qualified Linux host.
+///
+/// The payload is built by the production delegated-child builder, so the axes
+/// under test are exactly the ones the Tool Program route now carries — the
+/// route that previously hard-coded an unrestricted intent and no profile.
+///
+/// The executable is a network probe rather than `cargo`, because the Tool
+/// Program contract restricts a delegated child's argv to `cargo`
+/// (`ChildJobConfig::validate`): a delegated child can never be an arbitrary
+/// network probe. What this proves is therefore the *policy* the delegated
+/// route carries and the owner's enforcement of it — not a cargo-specific
+/// network fetch, which the sibling test above covers for the direct route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native delegated-child proof");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("C002 delegated-child proof requires qualified M004 process/IPC setup: {reason}");
+    }
+
+    // Host positive control: the host reaches its own loopback listener, so a
+    // denial below cannot be mistaken for a broken fixture.
+    let tcp4 = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host IPv4 listener");
+    let tcp4_addr = tcp4.local_addr().expect("host IPv4 listener address");
+    {
+        let stream = std::net::TcpStream::connect_timeout(&tcp4_addr, Duration::from_secs(2))
+            .expect("host positive-control TCP connect");
+        drop(stream);
+        let (accepted, _) = tcp4.accept().expect("accept host positive-control TCP");
+        drop(accepted);
+    }
+    let udp4 = UdpSocket::bind(("127.0.0.1", 0)).expect("host IPv4 UDP listener");
+    udp4.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set host IPv4 UDP timeout");
+    let udp4_addr = udp4.local_addr().expect("host IPv4 UDP address");
+
+    // The delegated child's payload, built by the production builder from the
+    // accepted ceiling.
+    let workspace = tempfile::tempdir().expect("delegated child workspace");
+    let ceiling_profile = codegg_core::approval::SandboxProfile::WorkspaceWrite;
+    let ceiling_intent = codegg_core::approval::NetworkIntent::OfflineRequired;
+    let config = codegg_core::tool_program::child_job::ChildJobConfig::Build(
+        codegg_core::tool_program::child_job::BuildJobConfig::default(),
+    );
+    let (_kind, payload, _timeout) = codegg::scheduler::tool_program_executor::child_job_payload(
+        &config,
+        &Some(workspace.path().to_string_lossy().into_owned()),
+        Some(ceiling_profile),
+        ceiling_intent,
+    );
+
+    // The delegated child's axes, read back the way the scheduler executor
+    // reads them off the payload.
+    let (payload_profile, payload_intent) = match &payload {
+        codegg_core::jobs::JobPayload::ManagedArgv {
+            sandbox_profile,
+            network_intent,
+            ..
+        } => (*sandbox_profile, *network_intent),
+        other => panic!("unexpected delegated child payload: {other:?}"),
+    };
+    assert_eq!(
+        payload_intent, ceiling_intent,
+        "the delegated child must carry the accepted offline intent"
+    );
+    assert_eq!(
+        payload_profile,
+        Some(ceiling_profile),
+        "the delegated child must carry the accepted filesystem ceiling"
+    );
+
+    // The launcher the executor builds for a constrained payload.
+    let marker = workspace.path().join("delegated-child-marker");
+    let probe = r#"
+import socket, sys
+host, port, udp_port, marker = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+try:
+    conn = socket.create_connection((host, port), timeout=3)
+    conn.close()
+except OSError:
+    pass
+else:
+    sys.exit(10)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(3)
+try:
+    sock.sendto(b"delegated-child", (host, udp_port))
+except OSError:
+    pass
+open(marker, "w").write("offline")
+"#;
+    let sandbox_config = codegg::security::sandbox::sandbox_config_for_profile(
+        payload_profile.expect("the delegated child must carry a profile"),
+        workspace.path(),
+    )
+    .expect("the constrained profile must have a launch configuration");
+    let spec = sandbox_config
+        .launch_spec(
+            "python3",
+            &[
+                "-c".into(),
+                probe.to_string(),
+                "127.0.0.1".into(),
+                tcp4_addr.port().to_string(),
+                udp4_addr.port().to_string(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            Some(workspace.path()),
+        )
+        .expect("delegated child launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-c002", "delegated-child-offline-probe"),
+    );
+    request.timeout = Some(Duration::from_secs(15));
+    request.sandbox = SandboxRequest::Required(spec);
+    // The two assignments the scheduler executor makes when it hands the
+    // delegated child's payload to the owner.
+    request.required_sandbox_profile = payload_profile;
+    request.required_network_intent = payload_intent;
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("the offline delegated child should launch");
+    assert!(
+        result.exit_status.success(),
+        "the delegated child reached the host network or failed: {}",
+        result.stderr.to_string_lossy()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("delegated child marker"),
+        "offline"
+    );
+    let mut datagram = [0_u8; 128];
+    assert!(
+        udp4.recv_from(&mut datagram).is_err(),
+        "the delegated child reached the host IPv4 UDP listener"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_only_contained_git_reads_live_objects_and_contains_configured_command() {
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {

@@ -59,6 +59,7 @@ CORE_JOBS = Path("crates/codegg-core/src/jobs/mod.rs")
 TOOL_CONTEXT = Path("src/tool/tool_program_context.rs")
 EXECUTOR = Path("src/scheduler/tool_program_executor.rs")
 SCHEDULER_EXECUTORS = Path("src/scheduler/executors.rs")
+TEST_RUNNER = Path("src/test_runner/runner.rs")
 MANAGED_PROCESS = Path("src/managed_process.rs")
 M004_WORKFLOW = Path(".github/workflows/linux-m004-native.yml")
 
@@ -324,21 +325,39 @@ def check_durable_payload_variants(root: Path) -> list[str]:
 
 
 def check_scheduler_forwarding(root: Path) -> list[str]:
-    """Check 5: the scheduler executor forwards both axes to the process owner."""
+    """Check 5: the scheduler executors forward both axes to the process owner."""
     problems: list[str] = []
     text = read(root, SCHEDULER_EXECUTORS)
     if text is None:
-        return [f"{SCHEDULER_EXECUTORS}: unreadable"]
-    if "request.required_sandbox_profile = sandbox_profile;" not in text:
-        problems.append(
-            f"{SCHEDULER_EXECUTORS}: the managed executor does not forward the payload's "
-            "sandbox_profile to the process owner"
-        )
-    if "request.required_network_intent = network_intent;" not in text:
-        problems.append(
-            f"{SCHEDULER_EXECUTORS}: the managed executor does not forward the payload's "
-            "network_intent to the process owner"
-        )
+        problems.append(f"{SCHEDULER_EXECUTORS}: unreadable")
+    else:
+        if "request.required_sandbox_profile = sandbox_profile;" not in text:
+            problems.append(
+                f"{SCHEDULER_EXECUTORS}: the managed executor does not forward the payload's "
+                "sandbox_profile to the process owner"
+            )
+        if "request.required_network_intent = network_intent;" not in text:
+            problems.append(
+                f"{SCHEDULER_EXECUTORS}: the managed executor does not forward the payload's "
+                "network_intent to the process owner"
+            )
+    # The `Test` payload takes a different route to the owner than the managed
+    # argv one. A delegated `cargo test` child reaches the owner through the
+    # test runner, so that route has to carry the axes as well.
+    runner_text = read(root, TEST_RUNNER)
+    if runner_text is None:
+        problems.append(f"{TEST_RUNNER}: unreadable")
+    else:
+        if "process.required_sandbox_profile = sandbox_profile;" not in runner_text:
+            problems.append(
+                f"{TEST_RUNNER}: the test runner does not forward the payload's sandbox_profile "
+                "to the process owner"
+            )
+        if "process.required_network_intent = network_intent;" not in runner_text:
+            problems.append(
+                f"{TEST_RUNNER}: the test runner does not forward the payload's network_intent "
+                "to the process owner"
+            )
     return problems
 
 
@@ -499,6 +518,15 @@ def self_test() -> int:
             "                execution_context.network_intent,\n"
             "            )",
             "            .with_execution_ceiling(None, Default::default())",
+        )
+
+    @case("the test runner stops forwarding the payload's network intent")
+    def _drop_test_runner_forwarding(root: Path) -> None:
+        mutate(
+            root,
+            TEST_RUNNER,
+            "    process.required_network_intent = network_intent;\n",
+            "",
         )
 
     @case("the native workflow stops triggering on the Tool Program paths")
