@@ -166,6 +166,59 @@ whole-suite signal is the hosted `verify` job, whose runner is not shared.
 Hosted CI on the pull-request head: recorded in this section after the run
 completes.
 
+### 4.4 The first hosted CI run failed, and what it found
+
+The first hosted `verify` run on this milestone's head failed on
+`scratch_retention_sweep::the_live_daemon_reclaims_its_own_aged_trees` — the
+one test that asserts the **daemon's own** sweep fires. It failed after
+30.6 s, which was the test's own deadline. Every other test in the suite
+passed, including the three other tests in the same binary.
+
+The cause is **the sweep's first pass not completing inside the test's
+deadline**, and the fix covers the whole class of reasons it might not:
+
+- The sweep's first pass takes SQLite's **writer lock** (`BEGIN IMMEDIATE`),
+  and the daemon's startup writes hold that lock while the daemon is coming
+  up. The store's own busy timeout is **30 seconds**, so the first pass can
+  legitimately wait that long before it does anything at all — and the test's
+  deadline was **also 30 seconds**. On a loaded runner the two expired
+  together.
+- A first pass that *failed* — a transient lock, a store not yet reachable —
+  used to wait out the whole interval, **six hours**, before it tried again.
+  That is the part that turned a slow first pass into a total failure, and it
+  is a production defect rather than a test artifact.
+
+Three things changed because of it:
+
+1. **The sweep now retries a failed pass.** A pass that could not reach the
+   durable store now retries after `SWEEP_RETRY_SECONDS` (15 s), bounded to
+   `SWEEP_MAX_CONSECUTIVE_RETRIES` (3) consecutive retries so that a broken
+   store cannot become a busy loop. This is a **production** fix, not a test
+   fix: it is the reason a transient lock no longer costs six hours.
+2. **The test's bound is now 90 seconds**, which exceeds the store's 30-second
+   busy timeout with room to spare.
+3. **The test states its own premises instead of inheriting them.** It
+   isolates every XDG root as well as `HOME` — on Linux those are what `dirs`
+   reads, and a runner that sets them would otherwise give two tests in one
+   binary the same config directory, so a config file one test wrote would
+   silently change what another test's daemon did. It writes its own daemon
+   configuration rather than inheriting one, it **asserts that the tree's
+   modification time was actually backdated** (so a platform whose timestamp
+   setter does not apply to a directory fails as a named premise rather than a
+   bare timeout), and on failure it asks the daemon for its census, which
+   distinguishes "the sweep never ran" from "the sweep ran and the validator
+   refused the tree".
+
+The other candidate causes were eliminated rather than left standing: the
+XDG isolation removes a shared config directory, the explicit configuration
+removes an inherited policy, and the backdating assertion removes a silently
+ineffective timestamp setter. What remains is the first pass not finishing,
+and the retry addresses it.
+
+The census test now also asserts that the reported **age spread** is real —
+the planted trees span a year, and the census reports each tree's own age —
+so the WP0 measurement cannot be a single instant wearing a spread's clothes.
+
 ### 4.1 The WP0 census (M006's census, run against a populated scratch tree)
 
 The census was run against a **real daemon** over the local socket, against a

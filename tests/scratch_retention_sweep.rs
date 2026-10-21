@@ -68,12 +68,21 @@ fn codegg_binary() -> PathBuf {
 
 /// An isolated environment: its own `HOME` (so the scratch cache root is
 /// isolated), its own daemon home, and its own data home.
+///
+/// The XDG variables are isolated too. On Linux they are what `dirs` reads
+/// for the cache, config, data, and state roots, and a runner that sets
+/// them would otherwise give two tests in this binary the **same** config
+/// directory — so a config file one test wrote would silently change what
+/// another test's daemon does.
 struct IsolatedEnv {
     _lock: MutexGuard<'static, ()>,
     old_home: Option<std::ffi::OsString>,
     old_daemon_home: Option<std::ffi::OsString>,
     old_data_home: Option<std::ffi::OsString>,
     old_xdg_cache: Option<std::ffi::OsString>,
+    old_xdg_config: Option<std::ffi::OsString>,
+    old_xdg_data: Option<std::ffi::OsString>,
+    old_xdg_state: Option<std::ffi::OsString>,
 }
 
 impl IsolatedEnv {
@@ -84,17 +93,36 @@ impl IsolatedEnv {
         let old_daemon_home = std::env::var_os("CODEGG_DAEMON_HOME");
         let old_data_home = std::env::var_os("CODEGG_DATA_HOME");
         let old_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
-        std::env::set_var("HOME", root.join("home"));
+        let old_xdg_config = std::env::var_os("XDG_CONFIG_HOME");
+        let old_xdg_data = std::env::var_os("XDG_DATA_HOME");
+        let old_xdg_state = std::env::var_os("XDG_STATE_HOME");
+        let home = root.join("home");
+        std::env::set_var("HOME", &home);
         std::env::set_var("CODEGG_DAEMON_HOME", root.join("daemon"));
         std::env::set_var("CODEGG_DATA_HOME", root.join("data"));
-        std::env::remove_var("XDG_CACHE_HOME");
-        std::fs::create_dir_all(root.join("home")).ok();
+        // Every XDG root is redirected into the isolated home, so the daemon
+        // resolves its config, cache, data, and state roots the same way the
+        // test process does — whatever the runner's environment says.
+        for (key, leaf) in [
+            ("XDG_CACHE_HOME", "cache"),
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_DATA_HOME", "data"),
+            ("XDG_STATE_HOME", "state"),
+        ] {
+            let path = home.join(leaf);
+            std::fs::create_dir_all(&path).ok();
+            std::env::set_var(key, path);
+        }
+        std::fs::create_dir_all(&home).ok();
         Self {
             _lock: lock,
             old_home,
             old_daemon_home,
             old_data_home,
             old_xdg_cache,
+            old_xdg_config,
+            old_xdg_data,
+            old_xdg_state,
         }
     }
 }
@@ -106,6 +134,9 @@ impl Drop for IsolatedEnv {
             ("CODEGG_DAEMON_HOME", self.old_daemon_home.take()),
             ("CODEGG_DATA_HOME", self.old_data_home.take()),
             ("XDG_CACHE_HOME", self.old_xdg_cache.take()),
+            ("XDG_CONFIG_HOME", self.old_xdg_config.take()),
+            ("XDG_DATA_HOME", self.old_xdg_data.take()),
+            ("XDG_STATE_HOME", self.old_xdg_state.take()),
         ] {
             match value {
                 Some(value) => std::env::set_var(key, value),
@@ -523,6 +554,15 @@ fn isolated_config_dir() -> PathBuf {
     dirs::config_dir().expect("config dir").join("codegg")
 }
 
+/// Write the isolated daemon's configuration.
+///
+/// The test states the policy it depends on rather than inheriting whatever
+/// the runner's environment happens to provide.
+fn write_isolated_config(body: &str) {
+    std::fs::create_dir_all(isolated_config_dir()).expect("create the config directory");
+    std::fs::write(isolated_config_dir().join("codegg.jsonc"), body).expect("write the config");
+}
+
 /// M007's WP0: the census input.
 ///
 /// The census that M006 produces is what turns the retention default from a
@@ -557,12 +597,7 @@ async fn the_census_measures_a_populated_scratch_tree() {
     let _env = IsolatedEnv::new(&root);
 
     // Disable the retention sweep for the measurement.
-    std::fs::create_dir_all(isolated_config_dir()).expect("create the config directory");
-    std::fs::write(
-        isolated_config_dir().join("codegg.jsonc"),
-        b"{\n  \"scratch\": {\n    \"enabled\": false\n  }\n}\n",
-    )
-    .expect("write the isolated config");
+    write_isolated_config("{\n  \"scratch\": {\n    \"enabled\": false\n  }\n}\n");
 
     // A spread of ages: a day, a week, a month, and a year.
     for (label, age_days) in [("day", 1), ("week", 7), ("month", 30), ("year", 365)] {
@@ -660,6 +695,20 @@ async fn the_census_measures_a_populated_scratch_tree() {
 
     // Exactly one tree is refused, and it is refused for the symlink.
     let trees = report["trees"].as_array().expect("trees array");
+    // The age distribution is real, not a single instant: the planted trees
+    // span a year, and the census reports each tree's own age.
+    let tree_ages = trees
+        .iter()
+        .filter_map(|tree| tree["oldest_modified_ms"].as_i64())
+        .collect::<Vec<_>>();
+    assert_eq!(tree_ages.len(), 6, "report: {json_text}");
+    let oldest = tree_ages.iter().min().expect("at least one tree");
+    let newest = tree_ages.iter().max().expect("at least one tree");
+    assert!(
+        newest - oldest >= 300 * DAY_MS,
+        "the planted age spread is missing from the census: {json_text}"
+    );
+
     let refused: Vec<&serde_json::Value> = trees
         .iter()
         .filter(|tree| tree["reclaimable"].as_bool() == Some(false))
@@ -725,6 +774,12 @@ async fn the_live_daemon_reclaims_its_own_aged_trees() {
 
     let _env = IsolatedEnv::new(&root);
 
+    // State the policy this test depends on, so the daemon does not inherit
+    // whatever the runner's environment happens to provide.
+    write_isolated_config(
+        "{\n  \"scratch\": {\n    \"enabled\": true,\n    \"sweep_interval_minutes\": 5,\n    \"orphan_grace_hours\": 1\n  }\n}\n",
+    );
+
     let mut aged = Vec::new();
     for (label, age_days) in [("two", 2), ("ten", 10), ("hundred", 100)] {
         let session_id = format!("scratch-live-{label}");
@@ -732,6 +787,23 @@ async fn the_live_daemon_reclaims_its_own_aged_trees() {
         std::fs::write(tree.join("artifact.bin"), vec![b'x'; 1024]).expect("plant an artifact");
         #[cfg(unix)]
         age_tree(&tree, age_days as i64 * DAY_MS);
+        // Prove the premise: the sweep reads the tree root's own modification
+        // time, so the tree has to actually look old. Without this check a
+        // platform whose timestamp setter does not apply to a directory would
+        // fail later as a bare timeout instead of naming the cause.
+        #[cfg(unix)]
+        {
+            let modified = std::fs::symlink_metadata(&tree)
+                .and_then(|metadata| metadata.modified())
+                .expect("read the tree's modification time");
+            let age = std::time::SystemTime::now()
+                .duration_since(modified)
+                .expect("the tree's modification time is not in the future");
+            assert!(
+                age.as_millis() >= (age_days as i64 * DAY_MS) as u128,
+                "the tree root's modification time was not backdated: {age:?}"
+            );
+        }
         aged.push(tree);
     }
     let fresh_session = "scratch-live-fresh";
@@ -756,21 +828,31 @@ async fn the_live_daemon_reclaims_its_own_aged_trees() {
 
     // The sweep runs on its own interval; wait for it to have reclaimed the
     // aged trees rather than assume a timing.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    //
+    // The bound is generous on purpose. The sweep's first pass takes the
+    // store's writer lock, and the daemon's own startup writes hold it; the
+    // store's busy timeout is 30 seconds, so a loaded runner can make the
+    // first pass wait that long before it does anything.
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
     while std::time::Instant::now() < deadline && aged.iter().any(|tree| tree.exists()) {
         sleep(Duration::from_millis(100)).await;
     }
 
-    for tree in &aged {
-        assert!(
-            !tree.exists(),
-            "the live daemon must reclaim an aged tree with no human action"
-        );
-    }
-    assert!(
-        fresh.exists(),
-        "a tree inside the grace period must survive the sweep"
-    );
+    let unreclaimed = aged.iter().any(|tree| tree.exists());
+
+    // Ask the daemon what it sees. A tree that is still there and is not
+    // quarantined means the sweep never ran; a quarantined tree means the
+    // sweep ran and the reclaim validator refused it. Either way the report
+    // names the cause instead of leaving a bare timeout.
+    let census = Command::new(&bin)
+        .args(["daemon", "scratch-usage", "--json", "--refresh"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("run scratch-usage --json");
+    let census_text = String::from_utf8_lossy(&census.stdout).to_string();
 
     let stop = Command::new(&bin)
         .args(["daemon", "stop"])
@@ -784,6 +866,16 @@ async fn the_live_daemon_reclaims_its_own_aged_trees() {
         stop.status.success(),
         "daemon stop failed: {}",
         String::from_utf8_lossy(&stop.stderr)
+    );
+
+    assert!(
+        !unreclaimed,
+        "the live daemon must reclaim an aged tree with no human action; \
+         the daemon's census says: {census_text}"
+    );
+    assert!(
+        fresh.exists(),
+        "a tree inside the grace period must survive the sweep"
     );
 
     let _ = std::fs::remove_dir_all(&root);

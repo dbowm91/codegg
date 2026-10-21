@@ -118,6 +118,20 @@ pub const SWEEP_MAX_RECLAIMS: usize = 256;
 /// ran unbounded would hold that lock against every other writer.
 pub const SWEEP_WALL_CLOCK_MS: u64 = 30_000;
 
+/// How long the sweep waits before retrying a pass that failed.
+///
+/// A pass that could not reach the durable store — a transient lock, a
+/// database still migrating — is not a reason to wait the whole interval.
+/// Without this, one unlucky pass would defer the next sweep by six hours.
+pub const SWEEP_RETRY_SECONDS: u64 = 15;
+
+/// How many times in a row the sweep retries a failed pass before it goes
+/// back to waiting for the interval.
+///
+/// A store that is broken stays broken, and a broken store must not turn the
+/// sweep into a busy loop.
+pub const SWEEP_MAX_CONSECUTIVE_RETRIES: u32 = 3;
+
 /// The bounds one sweep pass works within.
 ///
 /// A pass that hits a bound stops and records that it stopped: a truncated
@@ -714,6 +728,7 @@ pub fn spawn_scratch_sweep(
         let interval = Duration::from_secs(u64::from(policy.sweep_interval_minutes) * 60);
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut consecutive_failures: u32 = 0;
         loop {
             ticker.tick().await;
             let report = sweep_scratch_once(
@@ -742,6 +757,20 @@ pub fn spawn_scratch_sweep(
                     stopped = report.stopped.map(SweepStop::as_str),
                     "scratch retention sweep completed"
                 );
+            }
+            // A pass that could not reach the durable store is retried
+            // shortly, not at the next interval. The store's own busy timeout
+            // is 30 seconds, so a pass that lost a race with another writer
+            // would otherwise wait out the whole interval to try again. The
+            // retry is bounded: a broken store must not become a busy loop.
+            if report.failed > 0 {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                if consecutive_failures <= SWEEP_MAX_CONSECUTIVE_RETRIES {
+                    tokio::time::sleep(Duration::from_secs(SWEEP_RETRY_SECONDS)).await;
+                    continue;
+                }
+            } else {
+                consecutive_failures = 0;
             }
         }
     })

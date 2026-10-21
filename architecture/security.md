@@ -385,7 +385,10 @@ it adds no second lock for a tree the reclaim path already serializes. A pass
 is bounded three ways — the number of candidates it examines, the number of
 trees it reclaims, and a wall-clock budget — and a pass that hits a bound
 records which bound stopped it, so a truncated pass is never presented as a
-complete sweep. The policy is configurable (`scratch.enabled`,
+complete sweep. A pass that could not reach the durable store is retried
+shortly rather than at the next interval, and the retry is bounded, so one
+transient lock does not defer the sweep by six hours and a broken store does
+not become a busy loop. The policy is configurable (`scratch.enabled`,
 `scratch.retention_days`, `scratch.sweep_interval_minutes`,
 `scratch.orphan_grace_hours`), and every value is clamped upward at its floor
 rather than rejected. The daemon reads the policy once, at construction, so a
