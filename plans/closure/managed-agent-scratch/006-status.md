@@ -296,6 +296,35 @@ reporting-accuracy defect, not a data-loss one. The property §1 claims —
 that the verdict is the validator's own rule rather than a restatement of it
 — was and remains true.
 
+### 2026-10-21 — hosted CI evidence for the tri-state verdict
+
+The correction above landed on `main` as a follow-up change (PR #154, head
+`011e8d92`). Its hosted verification, recorded here so the evidence sits with
+the record rather than only in the PR:
+
+| Run | Workflow | Result |
+|---|---|---|
+| `39606838044` | CI | **success** — 15719 tests run, 15719 passed, 7 skipped; all 41 guard and build steps green |
+| `39606838255` | Windows process launcher | **success** |
+| `39606838180` | Desktop E2E | **failure** — pre-existing, not this change |
+
+The Desktop E2E failure is the same `m004-session.e2e.ts` timeout recorded
+against `main` itself: `element ("[data-testid=\"permission-list\"]") still
+not existing after 120000ms`. It is not caused by this correction —
+`main` fails it identically on `48a5ca7d` (an ancestor of `origin/main`),
+and also on `84aa4752`, `31a41284`, `a9f70375`, and `0f7d0d30`. The
+correction touches the census verdict and its wire shape; the desktop
+trajectory's failing step is the permission list, which the correction does
+not reach.
+
+Local verification on the same head, on macOS/arm64: `cargo fmt --all
+-- --check` clean, `cargo +stable clippy --workspace --all-targets --locked
+-- -D warnings` exit 0 with no findings, `scripts/verify.sh quick` green,
+`cargo test --locked -p codegg --lib scratch::` 24 passed,
+`cargo test --locked --test scratch_usage_census` 2 passed,
+`cargo test --locked --test scratch_retention_sweep` 4 passed, and
+`cargo test --locked -p codegg-protocol` 289 passed.
+
 ## 14. Handoff notes
 
 - **M007's WP0 can now run.** The census exists, is read-only, and is
