@@ -490,6 +490,11 @@ pub(crate) fn apply_editor_opened(
         if !app.editor_state.request.fail(request_id, message) {
             return;
         }
+        // The open failed, so the keyboard stays where it was. The file tree
+        // asked for this document; the tree is still the surface the reader
+        // is on, and taking the keyboard would hand them an editor with no
+        // document in it.
+        super::file_tree::complete_editor_open_handoff(app, false);
         app.editor_state.operation = None;
         app.editor_state.status = EditorStatus::Closed;
         app.editor_state.detach();
@@ -507,6 +512,13 @@ pub(crate) fn apply_editor_opened(
     if let Some(session) = app.editor_state.session.as_mut() {
         session.presentation_mut().reset_for_open();
     }
+    // The open succeeded, so the file tree hands the keyboard to the editor
+    // and puts it in **Normal** mode.
+    //
+    // The handoff is here rather than at the request because the request is
+    // not the outcome: handing the keyboard to an editor whose document has
+    // not attached yet would show the reader an empty buffer.
+    super::file_tree::complete_editor_open_handoff(app, true);
     app.editor_state.clear_notice();
     refresh_editor_diagnostics(app);
     request_editor_semantic_tokens(app);
@@ -2161,6 +2173,23 @@ pub(crate) fn enter_editor_normal(app: &mut App) {
     leave_insert_mode(&mut app.editor_state);
 }
 
+/// Leave select mode: the held selection is dropped and the buffer returns to
+/// Normal.
+///
+/// `Esc` is the way out, and it is a **mode** step rather than an exit — the
+/// document stays open, exactly as `Esc` leaves Insert to Normal.
+///
+/// The selection goes with the mode. A select mode with nothing selected is
+/// a mode the reader cannot see the point of, and the whole reason the mode
+/// exists is the selection it holds.
+pub(crate) fn leave_editor_select(app: &mut App) {
+    if let Some(session) = app.editor_state.session.as_mut() {
+        let presentation = session.presentation_mut();
+        presentation.mode = EditorMode::Normal;
+        presentation.clear_selections();
+    }
+}
+
 /// Leave insert mode: back to the Helix verbs, with the typing burst
 /// committed as one undo step.
 ///
@@ -2193,74 +2222,14 @@ pub(crate) fn leave_insert_mode(state: &mut EditorState) {
 /// Returns `true` only for keys the tree owns. Everything else returns
 /// `false` so it falls through to the editor and composer unchanged — the
 /// non-modal contract depends on this being a strict subset.
+/// The file tree's own keymap, when the tree holds the keyboard.
+///
+/// The chords live in [`super::file_tree::handle_panel_key`] rather than here,
+/// because the tree's verbs are the tree's: the peek motion, the insert-mode
+/// filter, and the page verbs all change the *panel's* state, and a list of
+/// them here would be a second copy of the panel's grammar.
 fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
-    use crossterm::event::{KeyCode, KeyModifiers};
-    // Paging is checked before the character arms below: `Ctrl+d`/`Ctrl+u`
-    // carry `Char('d')`/`Char('u')` codes, and a listing that does not fit
-    // the pane needs a verb that moves more than one row. The tree only
-    // claims them while focused, so the editor's own half-page motions are
-    // untouched.
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        match key.code {
-            KeyCode::Char('d') => {
-                super::file_tree::page_selection(app, 1);
-                return true;
-            }
-            KeyCode::Char('u') => {
-                super::file_tree::page_selection(app, -1);
-                return true;
-            }
-            _ => {}
-        }
-    }
-    match key.code {
-        // Leaving the tree returns focus to the editor buffer without
-        // changing the route, so the composer stays reachable.
-        KeyCode::Esc => {
-            super::file_tree::set_focus(app, false);
-            true
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            super::file_tree::move_selection(app, 1);
-            true
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            super::file_tree::move_selection(app, -1);
-            true
-        }
-        // `l` re-roots the pane on the selected directory and `h` steps back
-        // out one level, matching the `/files` box. `h` at the workspace
-        // root falls back to the in-listing collapse verb inside the command,
-        // so it is never a dead key.
-        KeyCode::Char('l') | KeyCode::Right => {
-            let Some(path) = app
-                .file_tree_state
-                .selected_row()
-                .filter(|row| row.kind == crate::tui::file_tree::TreeNodeKind::Directory)
-                .map(|row| row.path)
-            else {
-                return true;
-            };
-            super::file_tree::descend_to(app, &path);
-            true
-        }
-        KeyCode::Char('h') | KeyCode::Left => {
-            super::file_tree::ascend_one_level(app);
-            true
-        }
-        // Enter opens a file, or expands a directory, through the existing
-        // controller-backed open path.
-        KeyCode::Enter => {
-            super::file_tree::activate_selected(app);
-            true
-        }
-        // `r` re-walks the workspace.
-        KeyCode::Char('r') => {
-            super::file_tree::rebuild(app);
-            true
-        }
-        _ => false,
-    }
+    super::file_tree::handle_panel_key(app, key)
 }
 
 pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
@@ -2316,9 +2285,28 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             }
             return true;
         }
+        // The keymap box closes before anything else, for the same reason the
+        // two modal input lines do: `Esc` undoes the most recent thing the
+        // user asked for, and the box is a thing they asked for.
+        if app
+            .editor_state
+            .session
+            .as_ref()
+            .is_some_and(|session| session.presentation().keymap_overlay)
+        {
+            if let Some(session) = app.editor_state.session.as_mut() {
+                session.presentation_mut().keymap_overlay = false;
+            }
+            return true;
+        }
         if app.ui_state.input_mode == crate::tui::input::InputMode::Insert {
             enter_editor_normal(app);
             app.editor_state.clear_notice();
+        } else if app.editor_state.mode() == EditorMode::Select {
+            // Select mode is a *verb* mode, so `Esc` leaves it the way it
+            // entered: the selection goes and the buffer is back to Normal.
+            // The document stays open — `Esc` is a mode step, never an exit.
+            leave_editor_select(app);
         } else {
             app.messages_state
                 .toasts
@@ -2559,6 +2547,7 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
         EditorPendingEffect::YankPrimary => yank_primary_selection(app),
         EditorPendingEffect::OpenFilePicker => open_editor_file_picker(app),
         EditorPendingEffect::OpenCommandPalette => open_editor_command_palette(app),
+        EditorPendingEffect::OpenKeymap => toggle_editor_keymap(app),
         EditorPendingEffect::RenamePrompt => open_editor_rename_prompt(app),
     }
 }
@@ -2651,6 +2640,20 @@ fn open_editor_command_palette(app: &mut App) {
     session.presentation_mut().open_command_line("");
 }
 
+/// Toggle the editor's **keymap box** — its own catalogue of its keys, in
+/// the bottom-right corner of the editor.
+///
+/// A toggle rather than an open, because the box is the editor's own chrome
+/// and a reader who opens it twice should get their document back rather
+/// than a second box.
+fn toggle_editor_keymap(app: &mut App) {
+    let Some(session) = app.editor_state.session.as_mut() else {
+        return;
+    };
+    let presentation = session.presentation_mut();
+    presentation.keymap_overlay = !presentation.keymap_overlay;
+}
+
 /// Open the **rename prompt** — the `:` line, pre-filled with the rename
 /// command and waiting for the new name.
 ///
@@ -2671,6 +2674,34 @@ fn open_editor_rename_prompt(app: &mut App) {
         "{} ",
         editor::EditorCommandName::RenamePreview.spec()
     ));
+}
+
+/// Move the cursor to `line`, counted from one.
+///
+/// The jump drops any held selection and re-anchors the view, because a jump
+/// is a discontinuity rather than a step along a column — the same rule the
+/// `/` search and the LSP jumps follow, so all three land the same way.
+fn goto_editor_line(app: &mut App, line: usize) {
+    if line == 0 {
+        app.messages_state
+            .toasts
+            .warning("`:0` is not a line — the first line is `:1`");
+        return;
+    }
+    let Some(session) = app.editor_state.session.as_mut() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    // One-based in, zero-based in the document.
+    let target = line.saturating_sub(1).min(last_line);
+    let Some(offset) = editor::line_start(&snapshot, target) else {
+        return;
+    };
+    let presentation = session.presentation_mut();
+    editor::move_cursor_to(presentation, &snapshot, offset, visible_line_estimate());
 }
 
 /// Execute one parsed `:` command.
@@ -2720,6 +2751,28 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
                 return;
             };
             open_editor(app, &path);
+        }
+        // `:goto <n>` / `:50` — jump to a line.
+        //
+        // The line number is **one-based**, because that is how a reader
+        // counts the lines they are looking at. `:0` is refused rather than
+        // clamped: line zero does not exist, and silently landing on line one
+        // would be a jump to somewhere the reader did not ask for.
+        EditorCommandName::GotoLine => {
+            let Some(argument) = argument else {
+                app.messages_state
+                    .toasts
+                    .warning("`:goto` needs a line number");
+                return;
+            };
+            let trimmed = argument.trim();
+            let Ok(line) = trimmed.parse::<usize>() else {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("`:{trimmed}` is not a line number"));
+                return;
+            };
+            goto_editor_line(app, line);
         }
         // `:complete` takes no argument; the parser already refuses one.
         EditorCommandName::Complete => start_editor_completion(app),
@@ -3865,12 +3918,15 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             helix_motion(state, EditorCommand::MoveRight, visible_lines);
             BufferKey::Consumed
         }
+        // `PageDown`/`PageUp` are a **full** page, and `Ctrl+d`/`Ctrl+u` are
+        // half of one. They used to be the same motion behind two names, so
+        // `PageDown` moved half a screen and the key's name was a lie.
         (m, KeyCode::PageDown) if m == none => {
-            helix_motion(state, EditorCommand::HalfPageDown, visible_lines);
+            helix_motion(state, EditorCommand::PageDown, visible_lines);
             BufferKey::Consumed
         }
         (m, KeyCode::PageUp) if m == none => {
-            helix_motion(state, EditorCommand::HalfPageUp, visible_lines);
+            helix_motion(state, EditorCommand::PageUp, visible_lines);
             BufferKey::Consumed
         }
         (m, KeyCode::Char('0')) if m == none => {
@@ -3889,6 +3945,12 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // second key is consumed rather than retried.
         (m, KeyCode::Char('g')) if m == none => {
             session.presentation_mut().arm_prefix(EditorPrefix::Goto);
+            BufferKey::Consumed
+        }
+        // `z` — Helix's view mode. The page scrolls and the cursor stays put,
+        // which is the one thing a cursor-bound viewport cannot do.
+        (m, KeyCode::Char('z')) if m == none => {
+            session.presentation_mut().arm_prefix(EditorPrefix::View);
             BufferKey::Consumed
         }
         // Helix's `m` — match mode. The **first** level of a two-level
@@ -5887,7 +5949,7 @@ mod tests {
 
         let (mut state, _daemon) = opened_writer("foo.bar baz").await;
         assert_eq!(normal(&mut state, KeyCode::Char('w')), BufferKey::Consumed);
-        assert_eq!(cursor(&state), 4, "`w` stopped at `bar`");
+        assert_eq!(cursor(&state), 3, "`w` stopped on the punctuation run");
 
         let (mut state, _daemon) = opened_writer("foo.bar baz").await;
         normal(&mut state, KeyCode::Char('W'));
@@ -6040,10 +6102,13 @@ mod tests {
         );
         assert_eq!(cursor(&state), 0, "Ctrl+u moves a half page up");
 
+        // A **full** page, and a different distance from the half page's.
+        // They used to be the same motion behind two names, so `PageDown`
+        // moved half a screen and the key's name was a lie.
         assert_eq!(normal(&mut state, KeyCode::PageDown), BufferKey::Consumed);
-        assert_eq!(cursor(&state), 70, "PageDown moves a half page down");
+        assert_eq!(cursor(&state), 140, "PageDown moves a full page down");
         assert_eq!(normal(&mut state, KeyCode::PageUp), BufferKey::Consumed);
-        assert_eq!(cursor(&state), 0, "PageUp moves a half page up");
+        assert_eq!(cursor(&state), 0, "PageUp moves a full page up");
 
         // ── Character and line motions, letters and arrows both. These are
         //    sequential rather than a table of independent cases: each
@@ -6367,7 +6432,9 @@ mod tests {
         // claiming a key is supposed to require removing it here rather than
         // quietly widening the buffer. It is a to-do list for whoever claims
         // the next one, not a permanent record.
-        for letter in ['q', 'z', 'c', 's', 'J', '?'] {
+        // `z` left this list when view mode claimed it: it is the prefix
+        // that scrolls the page without moving the cursor.
+        for letter in ['q', 'c', 's', 'J', '?'] {
             assert_eq!(
                 normal(&mut state, KeyCode::Char(letter)),
                 BufferKey::Unhandled,
@@ -6741,7 +6808,7 @@ mod tests {
                 "{label} re-arms"
             );
             assert_eq!(
-                normal(&mut state, KeyCode::Char('z')),
+                normal(&mut state, KeyCode::Char('q')),
                 BufferKey::Unhandled,
                 "{label} then an unbound key reaches the composer"
             );
@@ -9804,9 +9871,9 @@ mod tests {
             let (mut state, _daemon) = opened_writer("hello").await;
             press(&mut state, KeyCode::Char(arming), KeyModifiers::NONE);
             assert_eq!(
-                press(&mut state, KeyCode::Char('z'), KeyModifiers::NONE),
+                press(&mut state, KeyCode::Char('q'), KeyModifiers::NONE),
                 BufferKey::Unhandled,
-                "`{arming}z` still reaches the composer"
+                "`{arming}q` still reaches the composer"
             );
             assert_eq!(pending(&state), "", "`{arming}` disarmed");
         }
@@ -10731,7 +10798,7 @@ mod tests {
         let (mut state, _daemon) = opened_writer("abc").await;
         assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
         assert_eq!(
-            normal(&mut state, KeyCode::Char('z')),
+            normal(&mut state, KeyCode::Char('q')),
             BufferKey::Unhandled,
             "an unmatched second key must reach the composer, not be eaten"
         );
@@ -10885,7 +10952,7 @@ mod tests {
         assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
         assert_eq!(normal(&mut state, KeyCode::Char('i')), BufferKey::Consumed);
         assert_eq!(
-            normal(&mut state, KeyCode::Char('z')),
+            normal(&mut state, KeyCode::Char('q')),
             BufferKey::Unhandled,
             "a character that names no object must not be swallowed"
         );
@@ -11260,26 +11327,42 @@ mod tests {
         }
     }
 
-    /// `space ?` opens the editor's own palette — the `:` command line —
-    /// and not the global help dialog. Bare `?` still opens the help.
+    /// `space ?` opens the editor's own **keymap box** — the catalogue of
+    /// its keys, in its bottom-right corner — and not the global help dialog.
+    /// Bare `?` still opens the help.
+    ///
+    /// It used to open the `:` command palette, but the `:` line is the
+    /// command matcher and the palette was a second way to reach the same
+    /// commands: the key that was supposed to answer "what can I press
+    /// here?" answered a different question.
     #[tokio::test]
-    async fn space_question_mark_opens_the_editors_own_command_palette() {
+    async fn space_question_mark_opens_the_editors_keymap_box() {
         let (state, _daemon) = opened_writer("hello").await;
         let mut app = app_on_the_editor_route(state).await;
 
         press_space(&mut app, '?');
 
         let presentation = app.editor_state.session.as_ref().unwrap().presentation();
-        assert!(presentation.command_active, "the palette is open");
-        assert_eq!(
-            presentation.command_matches().len(),
-            EditorCommandName::ALL.len(),
-            "the palette lists every editor command"
+        assert!(presentation.keymap_overlay, "the keymap box is open");
+        assert!(
+            !presentation.command_active,
+            "and it is not the `:` command line"
         );
-        assert_eq!(
-            EditorCommandName::ALL.len(),
-            13,
-            "thirteen commands — M015 added the rename preview"
+
+        // `Esc` closes it.
+        app.editor_state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .keymap_overlay = false;
+        assert!(
+            !app.editor_state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .keymap_overlay
         );
     }
 

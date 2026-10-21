@@ -123,7 +123,19 @@ impl<'a> FileTreeView<'a> {
         // the listing is never silently cropped by the pane height.
         let notice = self.state.truncated.as_deref();
         let notice_rows = u16::from(notice.is_some());
-        let visible_height = inner.height.saturating_sub(notice_rows) as usize;
+        // The **filter field** takes a row of its own when it has something to
+        // show. It is a row rather than an overlay because the pane is a
+        // listing, and a listing that silently changed under a typed filter
+        // would be a listing the reader could not account for.
+        let field = crate::tui::file_tree::TreeFilterField::new(
+            &self.state.filter,
+            self.state.panel_mode == crate::tui::app::state::file_tree::TreePanelMode::Insert,
+        );
+        let field_rows = u16::from(field.is_visible());
+        let visible_height = inner
+            .height
+            .saturating_sub(notice_rows)
+            .saturating_sub(field_rows) as usize;
 
         let total = rows.len();
         let scroll = self.state.scroll.min(total.saturating_sub(1));
@@ -139,12 +151,33 @@ impl<'a> FileTreeView<'a> {
         for (offset, row) in rows[scroll..end].iter().enumerate() {
             lines.push(self.row_line(row, &rows, scroll + offset, inner.width));
         }
-        frame.render_widget(Paragraph::new(lines), inner);
+        // The listing is drawn in the rows **above** the filter field, so the
+        // field does not push the notice row out of the pane.
+        frame.render_widget(
+            Paragraph::new(lines),
+            Rect {
+                height: inner.height.saturating_sub(field_rows),
+                ..inner
+            },
+        );
+
+        if field_rows == 1 {
+            field.render(
+                frame,
+                Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height.saturating_sub(1),
+                    width: inner.width,
+                    height: 1,
+                },
+                &theme,
+            );
+        }
 
         if let Some(notice) = notice {
             let notice_area = Rect {
                 x: inner.x,
-                y: inner.y + inner.height.saturating_sub(1),
+                y: inner.y + inner.height.saturating_sub(1 + field_rows),
                 width: inner.width,
                 height: 1,
             };

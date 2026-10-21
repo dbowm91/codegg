@@ -382,36 +382,56 @@ model to the wrong connection.
   and the Ctrl+T pane use. Only a *file* emits an open intent; a directory has
   no document. `/files` is `DocumentScope::Workspace`, so the editor's
   `[project]` badge is the honest reading.
-- **`Enter` expands, `l` re-roots, `h` goes up a level.** `Enter` reveals a
-  directory's contents in place and leaves the cursor alone. `l` makes the
-  selected directory the listing's **root** — a daemon round-trip scoped by
+- **`Enter` expands, `l` peeks, `h` goes up a level.** `Enter` reveals a
+  directory's contents in place and leaves the cursor alone. `l` **peeks**:
+  the selected directory opens in place and the cursor moves into it, so the
+  parent and the siblings stay on screen — it does **not** make the directory
+  the listing's root. Only a directory at the listing window's edge (the
+  daemon's listing reaches three levels) slides the scope to the directory's
+  **parent**, with the directory still selected and expanded. `h` is the
+  mirror: from inside a directory it moves the cursor to the parent row and
+  collapses that directory; from a top-level row it slides the scope up one
+  level; at the workspace root it collapses the selected directory in place,
+  so the key is never dead. The pair reads as a horizontal Helix motion — `l`
+  right (deeper), `h` left (shallower).
+  A scope change is a daemon round-trip scoped by
   `WorkspaceDirectoryListRequestDto::prefix`, not a local filter of the
   already-loaded rows, which would drop everything the first walk hit its
-  bounds on and present the remainder as if it were the directory. `h` pops
-  `FileTreeState::root_history` and lands the cursor on the directory just
-  left behind; at the workspace root, where there is no level to leave, it
-  falls back to `leave_selected` (collapse in place, else step to the parent)
-  rather than making the key inert at the one depth every listing starts at.
+  bounds on and present the remainder as if it were the directory.
   All of it lives on `FileTreeState`, so the box, the hosted panel, and the
-  Ctrl+T pane cannot drift; re-rooting and ascending are **intents**
+  Ctrl+T pane cannot drift; descending and ascending are **intents**
   (`TuiMsg::FilesDescend` / `FilesAscend`) because the box holds a copy.
   `root_history`'s last entry *is* the current root — one axis, not a prefix
   field and an expansion set that can disagree — and it is re-seeded with the
   workspace root before the first push, or the very first `l` becomes one-way.
+- **The panel's filter is panel-local, and it survives leaving it.** `i` opens
+  the filter, the rows narrow as the filter is typed, and `Esc` leaves the
+  filter mode while **keeping** the filter — the reader is navigating the rows
+  they narrowed down, not discarding the search. The mode is
+  `FileTreeState::panel_mode`, not the app's `InputMode`, so the composer's
+  badge does not move and the app keeps one keyboard axis. The panel's
+  navigation verbs are unreachable while the filter is being typed, because a
+  printable key is a filter character there; paging stays available in both
+  modes, because a `Ctrl+d` that leaked to the editor would scroll a document
+  the reader is not looking at.
 - **Depth is display arithmetic, and only one function owns it.** A subtree
   walk counts depth from the subtree, so a listing scoped with `l` arrives at
   the same depth the workspace root's top level does — and rendering `row.depth`
   alone therefore drew the two identically. `FileTreeState::display_depth`
-  adds `scope_depth()` back and clamps at `MAX_INDENT_DEPTH`; `indent_for`
-  pairs that with last-ness for `└─` over `├─`; `file_icons::tree_indent`
-  renders both. The box and the Ctrl+T pane call that last one rather than each
-  carrying their own `"  ".repeat(...)` and their own cap. The guide is BMP box
-  drawing and deliberately **not** behind `CODEGG_FILE_ICONS` — hierarchy must
-  not depend on a patched font — and it is elided before the name, never after.
-  The box title is the same fact in words: a `workspace › src › tui`
-  breadcrumb. `display_depth` reads state and never writes it; if it starts
-  changing expansion, selection or what a walk returns, it has become
-  navigation and stopped being a display concern.
+  renders the indent **relative to the scope** and clamps at
+  `MAX_INDENT_DEPTH`; `indent_for` pairs that with last-ness for `└─` over
+  `├─`; `file_icons::tree_indent` renders both. The relative indent is what
+  makes peek work: under peek the absolute scope depth is unbounded while the
+  relative depth stays within 0-2, so an absolute clamp flattened exactly the
+  deep scopes peek is designed to reach — the breadcrumb carries the absolute
+  position instead. The box and the Ctrl+T pane call that last one rather than
+  each carrying their own `"  ".repeat(...)` and their own cap. The guide is
+  BMP box drawing and deliberately **not** behind `CODEGG_FILE_ICONS` —
+  hierarchy must not depend on a patched font — and it is elided before the
+  name, never after. The box title is the same fact in words: a
+  `workspace › src › tui` breadcrumb. `display_depth` reads state and never
+  writes it; if it starts changing expansion, selection or what a walk
+  returns, it has become navigation and stopped being a display concern.
 - **`Ctrl+d`/`Ctrl+u` page a listing that does not fit.** They carry
   `Char('d')`/`Char('u')` codes, so the tree checks modifiers *before* its
   character arms. A page is two thirds of `FileTreeState::viewport_rows`,
@@ -453,6 +473,43 @@ model to the wrong connection.
   fallback — the editor claims navigation and editing and everything else
   stays a composer keystroke. Same contract as `/terminal`: NOR reads, INS
   types.
+- **`EditorMode::Select` is a VERB mode, not a second keyboard axis.**
+  `EditorMode` now has three states: `Normal`, `Insert`, and `Select`. `Select`
+  is entered by `v` and left by `v` again or `Esc`, and while it is held a
+  movement **grows** the held selection instead of dropping it. Outside it, a
+  movement drops the selection — a selection that outlives the movement that
+  made it reads as "something is still selected" long after the reader thought
+  it was gone. The badge above the input box reads `[SEL]`.
+  It is a *verb* mode, so it never coexists with `InputMode::Insert`: the keys
+  that extend a selection are the Helix verbs, and those live in the buffer.
+  **Do not** read it as a focus answer — which region owns the keyboard is
+  still `ui_state.input_mode` alone, the invariant above.
+- **The editor has ONE bottom row, and it says the file's path.**
+  `CHROME_ROWS` is `1`. The block's top border carries **no label**; the path
+  is on the bottom row's left, the status cluster on its right, and the `:`/`/`
+  modal line takes the same slot (erasing the path) while it is open. The
+  command's match list is a **floating overlay** on the row above, not an
+  allocated row: an allocated row changes the text area's height, which
+  re-resolves the viewport and can move the cursor's screen row under the
+  reader's first keystroke.
+- **The bottom row's cluster reads left to right, and it is fitted by rank.**
+  Persistent signals first (modified, scope badge, writable, the caveats),
+  then the transient disclosure, then the notice, then the **armed prefix** —
+  the prefix is **last** because it is the one element that comes and goes on
+  its own, and the right end of the row is a home nothing else competes for.
+  The path and the cluster **never overlap**: the path keeps up to a third of
+  the row, the cluster takes the rest, and a cluster that still does not fit
+  is fitted by `ClusterWeight` (`src/tui/components/editor.rs`) — the least
+  important group is dropped first, and a group that is alone and too wide is
+  cut from the **right** so the head of the sentence survives. A caveat
+  ("line too long") outranks everything except the notice and the prefix:
+  dropping it is not a smaller truth, it is a misleading one.
+- **An armed prefix's indicator is a styled span, not a letter.**
+  The chrome row paints it in the primary + bold style, which is the only
+  thing on that row painted that way. A test that looks for it by searching
+  the row's *text* cannot work: the scope badge (`[project]`) and the
+  writable marker carry the same letters as the `t`, `f`, `m`, and `[`
+  indicators. Read the indicator out of the frame's **styles** instead.
 - **A file opens in `Normal`, not `Insert`.** Same choice `/terminal` and the
   panels make: they are read before they are typed into, and `i` is one
   keystroke away. It used to enter `Insert`, which cost two concrete things —
@@ -516,8 +573,8 @@ model to the wrong connection.
   gestures and **report** their boundary ("no earlier change" / "no later
   change" in the status row); `u` and `U` stay silent there, as they always
   have — a CodeGG convention, not a Helix behaviour. The position is
-  observable: while the cursor is not at the tip the banner row says
-  `history <at>/<of>`, and at the tip it says nothing.
+  observable: while the cursor is not at the tip the editor's bottom status
+  row says `history <at>/<of>`, and at the tip it says nothing.
 - **A modifier is an exact bitmask, and a capital has two spellings.**
   An arm's modifier predicate is read as the set of **exact** bitmasks it
   admits: `m == alt || m == alt_shift` admits exactly `ALT` and exactly
@@ -1395,7 +1452,15 @@ model to the wrong connection.
     interactive terminal panel's shape (`src/tui/panels/terminal.rs:416`). The
     row names the composer's **keys**, not their descriptions: the
     descriptions live in the help, and a row spelling out fourteen verbs does
-    not fit eighty columns.
+    not fit eighty columns. It does **not** repeat the mode: the badge
+    immediately above the input box already says `[NOR]`, `[INS]` or `[SEL]`,
+    and a second copy of it one line below is the same fact said twice.
+  - **The editor's surface has no row at all.** While the editor is the
+    active surface the composer's hint row is **removed**, not emptied: the
+    editor has a keymap of its own (`space ?` opens it in the editor's
+    bottom-right corner), and two surfaces claiming the same keys is how a
+    keymap becomes a lie. An allocated-but-blank row is a row of vertical
+    space spent on nothing.
   - **A part is never split.** The row is bounded by dropping whole parts from
     the end, because a row cut in the middle of a key names a key that does not
     exist. `fit_parts` measures display columns, not bytes.
