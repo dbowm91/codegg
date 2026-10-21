@@ -1,7 +1,7 @@
 # Managed Agent Scratch Milestone M006 — Scratch usage census and operator visibility
 
 Status: ready for handoff
-Repository baseline: `568f7b4b` on `main`
+Repository baseline: `b7e28698` on `main`
 
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`
 Source predecessor: `plans/implementation/managed-agent-scratch/005-temp-root-redirect-offer-before-human-approval.md`
@@ -119,7 +119,7 @@ periodic cleanup". M006 is that requirement, scoped to measurement only.
 **Protocol and CLI facts the implementation needs.**
 
 - `CoreRequest` / `CoreResponse` are typed enums in
-  `crates/codegg-protocol/src/core.rs:2076` and `:1050`; the daemon
+  `crates/codegg-protocol/src/core.rs:2090` and `:1050`; the daemon
   dispatches on them in `src/core/daemon.rs`.
 - `PROTOCOL_VERSION` is `2` (`crates/codegg-protocol/src/core.rs:29`).
 - The socket server decodes each frame with
@@ -130,9 +130,9 @@ periodic cleanup". M006 is that requirement, scoped to measurement only.
   §9 requires a bounded client timeout rather than an unbounded wait.
 - The daemon CLI registry is `enum DaemonCommand` in `src/main.rs:618-665`
   (`Start`, `Stop`, `Status`, `Logs`, `Attach`); the operator-facing table is
-  `docs/daemon.md:107-121`.
+  `docs/daemon.md:114-128`.
 - `codegg daemon status` already reports "active sessions, and connected
-  clients" (`docs/daemon.md:113`), and reaches the daemon through
+  clients" (`docs/daemon.md:120`), and reaches the daemon through
   `SocketCoreClient::connect` (`src/main.rs:1584-1597`).
 
 ## 4. Invariants that must not regress
@@ -247,7 +247,7 @@ The census reads only the filesystem.
 
 - The refresh runs on a fixed internal interval owned by the daemon
   construction, modelled on the existing 300 s projection maintenance tick
-  (`src/core/daemon_construct.rs:163-176`). It is **not** the projection
+  (`src/core/daemon_construct.rs:279-291`). It is **not** the projection
   tick's business: that owner is the projection retention service, and
   ADR-0039 already rejected coupling unrelated concerns to it.
 - The refresh is a plain `tokio::spawn`ed task holding the last report in an
