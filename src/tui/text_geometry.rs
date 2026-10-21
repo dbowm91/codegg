@@ -22,11 +22,17 @@
 //!
 //! ## The word policy
 //!
-//! [`is_word_byte`] is the tree's word-segmentation policy. It is the rule
-//! Helix uses (alphanumerics and `_`, with every non-ASCII byte treated as
-//! word content so a multi-byte character is never split), and it is here
-//! rather than in the editor so the composer inherits it instead of
-//! re-deciding it.
+//! [`classify_byte`] is the tree's word-segmentation policy, and it is
+//! **three-way**: word content, punctuation, and whitespace. That split is
+//! Helix's, and upstream's own test names it — *"alphanumeric.!,and.?=
+//! punctuation are considered 'words' for the purposes of word motion"*. A
+//! two-way "is this a word byte" predicate cannot express it: it has nowhere
+//! to put punctuation, so punctuation reads as a separator and `e` stalls on
+//! it. Word content is alphanumerics and `_`, with every non-ASCII byte
+//! treated as word content so a multi-byte character is never split.
+//!
+//! The geometry lives here rather than in the editor so the composer inherits
+//! the policy instead of re-deciding it.
 //!
 //! The interactive terminal panel has a **different** rule on purpose: it
 //! selects a whitespace-delimited *token* out of a build log, which is not
@@ -102,6 +108,43 @@ pub trait TextSource {
     }
 }
 
+/// The category a byte belongs to, for word motion.
+///
+/// Helix sorts characters into three buckets and treats a **category change**
+/// as the word boundary. Upstream's own test is named for the rule: *"the
+/// alphanumeric `.!,` and `.?=` punctuation are considered 'words' for the
+/// purposes of word motion"*.
+///
+/// The split matters because punctuation is neither word content nor
+/// whitespace. Under a two-way predicate it reads as a separator, so `e`
+/// steps over a whole `.b.` region and then stalls on the letter it landed
+/// on. Under three buckets a punctuation run is a word in its own right, and
+/// `e` walks it like any other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordClass {
+    /// Word content: ASCII alphanumerics, `_`, and every byte `>= 0x80`.
+    Word,
+    /// Punctuation: everything that is not word content and not whitespace.
+    Punctuation,
+    /// ASCII whitespace.
+    Whitespace,
+}
+
+/// Classify `byte` for word motion.
+///
+/// The `>= 0x80` clause is what keeps a multi-byte character in one piece:
+/// every byte of a UTF-8 sequence is word content, so a byte-at-a-time walk
+/// cannot mistake the interior of a character for a boundary.
+pub fn classify_byte(byte: u8) -> WordClass {
+    if byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80 {
+        WordClass::Word
+    } else if byte.is_ascii_whitespace() {
+        WordClass::Whitespace
+    } else {
+        WordClass::Punctuation
+    }
+}
+
 /// Whether `byte` is word content.
 ///
 /// This is the tree's word-segmentation policy: ASCII alphanumerics, `_`, and
@@ -110,7 +153,26 @@ pub trait TextSource {
 /// content, so a byte-at-a-time walk cannot mistake the interior of a
 /// character for a separator.
 pub fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
+    classify_byte(byte) == WordClass::Word
+}
+
+/// A maximal run of one [`WordClass`] over the buffer.
+///
+/// The three offsets are distinct on purpose. `start` and `last` are
+/// character boundaries a caret may sit on; `end` is the **exclusive** byte
+/// end of the run and is a boundary too, but the caret may not rest there
+/// when the run's last character is multi-byte — `last` is that character's
+/// own start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordRun {
+    /// First byte of the run.
+    pub start: usize,
+    /// Start byte of the run's **last character**.
+    pub last: usize,
+    /// Exclusive end of the run.
+    pub end: usize,
+    /// The class every byte in the run belongs to.
+    pub class: WordClass,
 }
 
 /// Whether `ch` is part of a whitespace-delimited token.
@@ -188,55 +250,247 @@ pub fn buffer_content_end<S: TextSource + ?Sized>(source: &S) -> usize {
         .unwrap_or_else(|| source.len_bytes())
 }
 
-/// Start of the next word at or after `offset`.
-pub fn word_forward<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize {
-    let mut cursor = clamp_offset(source, offset);
-    let end = source.len_bytes();
-    while cursor < end {
-        if !is_word_byte(source.byte_at(cursor).unwrap_or(0)) {
-            cursor += 1;
-            continue;
+/// The run of one class that contains `offset`.
+///
+/// The run is expanded on both sides, so the answer is the same for every
+/// offset inside it — which is what lets a word motion ask "which word am I
+/// in" without also asking "where exactly am I".
+fn category_run_at<S: TextSource + ?Sized>(source: &S, offset: usize) -> WordRun {
+    let offset = clamp_offset(source, offset);
+    let len = source.len_bytes();
+    let class = classify_byte(source.byte_at(offset).unwrap_or(b'\n'));
+    // Expand left over the same class.
+    let mut start = offset;
+    while start > 0 {
+        let previous = prev_char_boundary(source, start);
+        if previous >= start || classify_byte(source.byte_at(previous).unwrap_or(b'\n')) != class {
+            break;
         }
-        while cursor < end && is_word_byte(source.byte_at(cursor).unwrap_or(0)) {
-            cursor = next_char_boundary(source, cursor).unwrap_or(end);
-        }
-        if cursor >= end {
-            return buffer_content_end(source);
-        }
-        // Skip the separator run, then report the next word start.
-        while cursor < end && !is_word_byte(source.byte_at(cursor).unwrap_or(0)) {
-            cursor = next_char_boundary(source, cursor).unwrap_or(end);
-        }
-        return cursor;
+        start = previous;
     }
-    buffer_content_end(source)
+    // Expand right over the same class, remembering the last character's start.
+    //
+    // `end` is the start of the first character **after** the run, so the
+    // character that starts there is the one to test next. Advancing `end` to
+    // the *end* of the last matching character instead would step over the
+    // character that ends the run — on `日本語 text` that swallowed the space
+    // and merged the two words into one run.
+    let mut last = offset;
+    let mut end = next_char_boundary(source, offset).unwrap_or(len);
+    while end < len {
+        if classify_byte(source.byte_at(end).unwrap_or(b'\n')) != class {
+            break;
+        }
+        last = end;
+        end = next_char_boundary(source, end).unwrap_or(len);
+    }
+    WordRun {
+        start,
+        last,
+        end,
+        class,
+    }
+}
+
+/// The word run containing `offset`.
+///
+/// `None` when `offset` is on whitespace or past the end of the buffer — a
+/// whitespace run is not a word, and a caret past the end is nowhere.
+pub fn word_run_at<S: TextSource + ?Sized>(source: &S, offset: usize) -> Option<WordRun> {
+    let offset = clamp_offset(source, offset);
+    if offset >= source.len_bytes() {
+        return None;
+    }
+    let run = category_run_at(source, offset);
+    (run.class != WordClass::Whitespace).then_some(run)
+}
+
+/// The extent of the word a word motion landed on.
+///
+/// `(start, end)` is the run's byte span with `end` **exclusive**, so a caller
+/// that wants the selected bytes asks for `start..end` and a caller that
+/// wants a caret position asks for `start` or the run's `last`.
+///
+/// This is the helper the auto-selection needs: the motion already knows
+/// which run it landed on, and the selection is that run's extent. One
+/// function answers both, so the caret and the highlight can never disagree
+/// about which word was jumped to.
+pub fn word_bounds<S: TextSource + ?Sized>(source: &S, offset: usize) -> Option<(usize, usize)> {
+    word_run_at(source, offset).map(|run| (run.start, run.end))
+}
+
+/// The maximal run of **word content** containing `offset`.
+///
+/// `(start, end)` is the run's byte span with `end` **exclusive**.
+///
+/// This is the word the `w` **text object** names, and it is *not* the word
+/// the `w` **motion** moves over. The motion's word is a run of word content
+/// **or punctuation** — Helix's category model — so `a.b` is one
+/// motion-word. The object's word is word content only, so `a.b` is two
+/// object-words, and taking one of them does not take the dot with it.
+///
+/// `None` when `offset` is not on word content.
+pub fn word_content_run_at<S: TextSource + ?Sized>(
+    source: &S,
+    offset: usize,
+) -> Option<(usize, usize)> {
+    let offset = clamp_offset(source, offset);
+    if offset >= source.len_bytes() || !is_word_byte(source.byte_at(offset).unwrap_or(0)) {
+        return None;
+    }
+    // Expand left over word content.
+    let mut start = offset;
+    while start > 0 {
+        let previous = prev_char_boundary(source, start);
+        if previous >= start || !is_word_byte(source.byte_at(previous).unwrap_or(0)) {
+            break;
+        }
+        start = previous;
+    }
+    // Expand right over word content.
+    let len = source.len_bytes();
+    let mut end = next_char_boundary(source, offset).unwrap_or(len);
+    while end < len {
+        if !is_word_byte(source.byte_at(end).unwrap_or(0)) {
+            break;
+        }
+        end = next_char_boundary(source, end).unwrap_or(len);
+    }
+    Some((start, end))
+}
+
+/// The next run of **word content** at or after `offset`.
+///
+/// `None` when the buffer holds no word content from `offset` onwards.
+///
+/// The text object's counterpart to [`word_content_run_at`]: a caret on a
+/// separator names the next word, the same rule the `e` motion uses to step
+/// onto one.
+pub fn next_word_content_run<S: TextSource + ?Sized>(
+    source: &S,
+    offset: usize,
+) -> Option<(usize, usize)> {
+    let len = source.len_bytes();
+    let mut cursor = clamp_offset(source, offset);
+    while cursor < len {
+        if is_word_byte(source.byte_at(cursor).unwrap_or(0)) {
+            return word_content_run_at(source, cursor);
+        }
+        cursor = next_char_boundary(source, cursor).unwrap_or(len);
+    }
+    None
+}
+
+/// The first word run that begins strictly after `offset`.
+///
+/// A caret inside a run skips the rest of that run, so the answer is the
+/// *next* word rather than the one the caret is already in. That is what
+/// makes `w` advance.
+pub fn next_word_run<S: TextSource + ?Sized>(source: &S, offset: usize) -> Option<WordRun> {
+    let offset = clamp_offset(source, offset);
+    let len = source.len_bytes();
+    if offset >= len {
+        return None;
+    }
+    // A caret on word content or punctuation continues past the rest of its
+    // run; a caret on whitespace has nothing to skip.
+    let mut cursor = match word_run_at(source, offset) {
+        Some(run) => run.end,
+        None => offset,
+    };
+    while cursor < len {
+        let class = classify_byte(source.byte_at(cursor).unwrap_or(b'\n'));
+        if class != WordClass::Whitespace {
+            let run = category_run_at(source, cursor);
+            return Some(run);
+        }
+        cursor = next_char_boundary(source, cursor).unwrap_or(len);
+    }
+    None
+}
+
+/// The last word run that begins strictly before `offset`.
+///
+/// A caret inside a run is answered with **that** run, so `b` lands on the
+/// start of the word the caret is in. A caret at a run's start — or on
+/// whitespace — is answered with the run before it, so `b` keeps walking
+/// backwards through the words.
+pub fn prev_word_run<S: TextSource + ?Sized>(source: &S, offset: usize) -> Option<WordRun> {
+    let offset = clamp_offset(source, offset);
+    if offset == 0 {
+        return None;
+    }
+    let mut cursor = offset;
+    while cursor > 0 {
+        let previous = prev_char_boundary(source, cursor);
+        if previous >= cursor {
+            break;
+        }
+        cursor = previous;
+        let class = classify_byte(source.byte_at(cursor).unwrap_or(b'\n'));
+        if class != WordClass::Whitespace {
+            return Some(category_run_at(source, cursor));
+        }
+    }
+    None
+}
+
+/// The word run a Helix `e` lands on.
+///
+/// The rule is Helix's: `e` moves to the **end** of the next word. A caret
+/// inside a word is answered with that word; a caret already on a word's
+/// last byte — or on whitespace — is answered with the word **after** it.
+///
+/// The second case is the whole of the "e stalls" defect. A motion that
+/// returned the caret's own offset whenever it was already on the last byte
+/// of a word froze there forever, and a held `e` stopped skipping. Upstream
+/// does not stall: its own test asserts *"Basic forward motion from the end
+/// of a word to the end of the next"*.
+pub fn word_end_run<S: TextSource + ?Sized>(source: &S, offset: usize) -> Option<WordRun> {
+    let offset = clamp_offset(source, offset);
+    match word_run_at(source, offset) {
+        // Strictly inside the run: this is the word `e` ends on.
+        Some(run) if offset < run.last => Some(run),
+        // Already on its last byte: `e` still has to advance, so the next
+        // word is the target.
+        Some(run) => next_word_run(source, run.last),
+        // On whitespace: the next word is the target.
+        None => next_word_run(source, offset),
+    }
+}
+
+/// Start of the next word at or after `offset`.
+///
+/// Helix `w` — "Move next word start". The word is a run of word content or
+/// punctuation, and whitespace runs are stepped over rather than stopped on.
+pub fn word_forward<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize {
+    match next_word_run(source, offset) {
+        Some(run) => run.start,
+        None => buffer_content_end(source),
+    }
 }
 
 /// Start of the previous word strictly before `offset`.
+///
+/// Helix `b` — "Move previous word start".
 pub fn word_backward<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize {
-    let mut cursor = clamp_offset(source, offset);
-    while cursor > 0 {
-        let previous = prev_char_boundary(source, cursor);
-        if is_word_byte(source.byte_at(previous).unwrap_or(0)) {
-            break;
-        }
-        cursor = previous;
+    match prev_word_run(source, offset) {
+        Some(run) => run.start,
+        // Nowhere to go: the caret stays where it is, which is Helix's
+        // "a failed motion does not modify the range".
+        None => clamp_offset(source, offset),
     }
-    while cursor > 0 {
-        let previous = prev_char_boundary(source, cursor);
-        if !is_word_byte(source.byte_at(previous).unwrap_or(0)) {
-            break;
-        }
-        cursor = previous;
-    }
-    cursor
 }
 
-/// Byte offset of the last byte of the word at or after `offset`.
+/// Byte offset of the last character of the word `e` lands on.
 ///
-/// Helix `e`. When the cursor is not already on word bytes it first steps to
-/// the next word, so `e` from whitespace lands on a word rather than standing
-/// still.
+/// Helix `e` — "Move next word end". The caret rests on the word's **last
+/// character**, which is what makes the auto-selection read as "this word is
+/// selected" rather than "this word and the character after it".
+///
+/// The word is a run of word content **or punctuation**, and the motion
+/// always advances: a caret already on a word's last byte moves on to the
+/// next word instead of standing still.
 ///
 /// It steps **a whole character at a time** rather than probing `offset + 1`.
 /// The probe was the original design on the reasoning that [`is_word_byte`]
@@ -245,23 +499,13 @@ pub fn word_backward<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize
 /// false, because a one-byte read inside a multi-byte character is not
 /// readable at all, so the interior could never be classified. Worse, the
 /// final `.unwrap_or(cursor)` then had nowhere to advance to on the last
-/// character of a document, which is a spin.
+/// character of a document, which was a spin.
 pub fn word_end<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize {
-    let end = source.len_bytes();
-    let mut cursor = clamp_offset(source, offset);
-    if !is_word_byte(source.byte_at(cursor).unwrap_or(0)) {
-        cursor = word_forward(source, cursor);
-        if cursor >= end || !is_word_byte(source.byte_at(cursor).unwrap_or(0)) {
-            return buffer_content_end(source);
-        }
+    match word_end_run(source, offset) {
+        Some(run) => run.last,
+        // No word left to land on: the caret stays where it is.
+        None => clamp_offset(source, offset),
     }
-    while let Some(next) = next_char_boundary(source, cursor) {
-        match source.byte_at(next) {
-            Some(byte) if is_word_byte(byte) => cursor = next,
-            _ => break,
-        }
-    }
-    cursor
 }
 
 /// Move `offset` by `delta` lines, preserving the display column as closely
@@ -541,15 +785,75 @@ mod tests {
     }
 
     #[test]
-    fn an_underscore_is_word_content_and_a_separator_is_not() {
+    fn an_underscore_is_word_content_and_a_punctuation_run_is_a_word_of_its_own() {
         let text = "foo_bar baz";
         // `foo_bar` is one word: the underscore is word content. The next
         // word starts after the space, at byte 8.
         assert_eq!(word_forward(text, 0), 8);
         assert_eq!(word_forward(text, 8), 11);
         assert_eq!(word_backward(text, 11), 8);
-        // A hyphen is a separator under this policy, so it splits the word.
-        assert_eq!(word_forward("foo-bar", 0), 4);
+        // A hyphen is **punctuation**, and Helix counts a punctuation run as a
+        // word of its own — so `w` lands on it rather than stepping over it.
+        assert_eq!(word_forward("foo-bar", 0), 3);
+        // And the run after the hyphen is the next word.
+        assert_eq!(word_forward("foo-bar", 3), 4);
+    }
+
+    #[test]
+    fn a_word_end_motion_never_stands_still() {
+        // The defect: `e` returned the cursor's own offset whenever the cursor
+        // already sat on a word's last byte, so a held `e` froze there.
+        let text = "one two three";
+        // From inside "one" it lands on the last character of "one".
+        assert_eq!(word_end(text, 0), 2);
+        // From that last character it must still advance — to the last
+        // character of the *next* word.
+        assert_eq!(word_end(text, 2), 6);
+        assert_eq!(word_end(text, 6), 12);
+        // And from whitespace it steps onto the next word.
+        assert_eq!(word_end(text, 3), 6);
+        // At the end of the buffer there is nowhere left to go.
+        assert_eq!(word_end(text, 13), 13);
+    }
+
+    #[test]
+    fn a_punctuation_run_is_one_word() {
+        // Helix's own rule, named by upstream's test: punctuation counts as a
+        // word for the purposes of word motion.
+        let text = "a.b.c";
+        // `e` walks the punctuation runs rather than stalling on them.
+        assert_eq!(word_end(text, 0), 1);
+        assert_eq!(word_end(text, 1), 2);
+        assert_eq!(word_end(text, 2), 3);
+        assert_eq!(word_end(text, 3), 4);
+        // `w` lands on the start of the next run.
+        assert_eq!(word_forward(text, 0), 1);
+        assert_eq!(word_forward(text, 1), 2);
+        // And a punctuation run's extent is the whole run, not one character.
+        assert_eq!(word_bounds(text, 3), Some((3, 4)));
+    }
+
+    #[test]
+    fn a_word_motion_lands_on_a_character_boundary() {
+        // The run's last character is two bytes wide, so the caret has to rest
+        // on the character's *start* rather than on the run's last byte.
+        let text = "café au";
+        assert_eq!(word_end(text, 0), 3);
+        assert!(text.is_char_boundary(word_end(text, 0)));
+        assert_eq!(word_bounds(text, 3), Some((0, 5)));
+    }
+
+    #[test]
+    fn a_word_backward_motion_lands_on_the_start_of_a_word() {
+        let text = "one two three";
+        // From inside "two" it lands on the start of "two" ...
+        assert_eq!(word_backward(text, 5), 4);
+        // ... and from that start it moves on to the word before.
+        assert_eq!(word_backward(text, 4), 0);
+        // From whitespace it skips back to the word before the gap.
+        assert_eq!(word_backward(text, 3), 0);
+        // And at the very start there is nowhere to go.
+        assert_eq!(word_backward(text, 0), 0);
     }
 
     #[test]

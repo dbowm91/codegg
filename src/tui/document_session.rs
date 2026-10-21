@@ -140,6 +140,34 @@ pub struct TuiDocumentPresentation {
     /// First visible line, zero-based. The hard-wrap viewport is one
     /// screen row per logical line.
     pub viewport_line: usize,
+    /// The text area's height in rows, as last measured by the renderer.
+    ///
+    /// A page motion needs the **real** height: a half page in a twelve-row
+    /// pane is six rows, and the ten a fixed guess would give is more than
+    /// half of what the reader can see. Zero means "not measured yet" — the
+    /// first frame has not been drawn — and the nominal height stands in
+    /// until it is.
+    pub visible_lines: usize,
+    /// The first visible line when the view has been scrolled **away from the
+    /// cursor**.
+    ///
+    /// `None` is the ordinary case: the view follows the cursor. `Some` is
+    /// Helix's view mode — the page moves and the cursor stays where it is.
+    /// A cursor motion clears it, because a view that has been scrolled away
+    /// is only meaningful while the reader is reading it.
+    pub view_scroll: Option<usize>,
+    /// Whether the editor's **keymap box** is open in its bottom-right
+    /// corner.
+    ///
+    /// The editor's own catalogue of its keys, opened with `space ?`. It is a
+    /// **box** rather than a row because the keys are a list, and a list on a
+    /// row is a list that has to be truncated — and a truncated keymap names
+    /// only some of the keys, which is worse than no keymap.
+    ///
+    /// The box is a floating overlay: it covers the corner of the text area
+    /// rather than taking rows away from the document, so opening it does not
+    /// reflow the text under the reader.
+    pub keymap_overlay: bool,
     /// Horizontal scroll in display columns.
     pub viewport_column: usize,
     /// Buffer edit mode.
