@@ -702,6 +702,31 @@ no-admission decision stands regardless.
    `cargo` child's own network attempt is refused rather than merely
    unexercised.
 
+   **Why it was not attempted in this pass, and what it would take.** The
+   delegated child's argv allowlist (`ChildJobConfig::validate`) permits only
+   `cargo build`, `cargo check`, `cargo test`, `cargo clippy` and
+   `cargo fmt --check`, so the probe cannot be `cargo search` or
+   `cargo fetch` — the two commands that would make an obvious network
+   request without a dependency fetch. The reachable carrier is a `cargo
+   check` whose fixture depends on a crate that is **not** in the runner's
+   warm registry cache, which forces a crates.io fetch.
+
+   That needs two things this pass could not honestly supply: a fixture whose
+   dependency is guaranteed absent from the cache (otherwise the attempt is
+   never made and the proof is vacuous), and a **positive control** showing
+   the same uncontained `cargo check` does reach crates.io — so a refusal is
+   attributable to the sandbox rather than to the runner having no network.
+   The existing sibling `offline_network_runs_cargo_metadata_and_check_without_network`
+   does **not** supply that control: it proves cargo still *works* under
+   `CARGO_NET_OFFLINE=true`, not that a fetch is refused.
+
+   Attempting it would also need its own hosted qualification cycle on a
+   qualified Linux host, because the claim is an enforcement claim. The local
+   scope was narrowed at the owner's direction, and this item does not close
+   C002 on its own — §10.1b is independent of it — so it was deliberately
+   left outstanding rather than half-built here. The evidence above is the
+   exact specification for the next pass.
+
 **Stop conditions carried forward.** If any nested route silently loses
 intent, `OfflineRequired` executes with host network, a status receipt is
 forged from policy or probe alone, or a socket/FD crosses isolation, this
