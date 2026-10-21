@@ -1960,6 +1960,13 @@ pub enum CoreResponse {
     ScratchUsage {
         report: crate::scratch::ScratchUsageReportDto,
     },
+    /// The result of one scratch reclaim (M007).
+    ///
+    /// Carries the digest, counts, and the verdict only: never an absolute
+    /// path, never file content, never a session identity.
+    ScratchReclaim {
+        result: crate::scratch::ScratchReclaimResultDto,
+    },
 }
 
 /// Bounded projection metadata returned by the durable session promotion
@@ -3679,6 +3686,14 @@ pub enum CoreRequest {
     ScratchUsage {
         request: crate::scratch::ScratchUsageRequestDto,
     },
+    /// Dispose of one scratch tree (M007).
+    ///
+    /// The request names a tree by its opaque digest, never by a path. A dry
+    /// run is the default: the operator sees the verdict before anything is
+    /// removed.
+    ScratchReclaim {
+        request: crate::scratch::ScratchReclaimRequestDto,
+    },
 }
 
 /// A TUI-chosen extended-thinking setting for one turn.
@@ -3837,8 +3852,9 @@ impl CoreRequest {
         matches!(
             self,
             // M006: the scratch census measures the local owner's disposable
-            // cache.
-            Self::ScratchUsage { .. }
+            // cache. M007: the operator disposition removes one of those
+            // trees, and it is just as local.
+            Self::ScratchUsage { .. } | Self::ScratchReclaim { .. }
         )
     }
 }

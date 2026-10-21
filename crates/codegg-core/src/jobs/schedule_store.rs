@@ -37,7 +37,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::StorageError;
 use crate::jobs::{JobId, JobState, JobStore, JobStoreQuery, ScheduleId};
-use crate::session::user_prompt_queue::ImmediateWrite;
+use crate::storage::immediate::ImmediateWrite;
 use crate::workspace::WorkspaceId;
 
 use super::schedule::{

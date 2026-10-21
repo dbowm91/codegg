@@ -119,6 +119,7 @@ lock steps in `docs/TROUBLESHOOTING.md`.
 | `codegg daemon stop` | Graceful shutdown. Verifies the live daemon's identity first, then signals it. Unix only. |
 | `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, connected clients, and a one-line scratch usage summary. |
 | `codegg daemon scratch-usage` | Measures the daemon's disposable scratch cache: tree count, total size, age, and whether the reclaim path would accept each tree. `--json` emits the raw report; `--refresh` runs a fresh measurement instead of the daemon's last snapshot. |
+| `codegg daemon scratch-reclaim` | Disposes of one scratch tree, named by its opaque digest. A dry run is the default: the command reports what it would remove and removes nothing. `--apply` actually removes it. |
 | `codegg daemon logs` | Shows the tail of `daemon.log`. `--lines` defaults to `50`; `--file` reads a specific file. |
 | `codegg daemon attach` | Opens the TUI against a running daemon over the local socket. `--endpoint`, `--session`, `--new`. |
 
@@ -135,6 +136,27 @@ the opaque digest that names each tree — never a path, a file name, file
 content, or a session identity. The daemon answers from its last snapshot;
 `--refresh` asks for exactly one fresh bounded walk. The command is served on
 the local daemon socket only.
+
+`daemon scratch-reclaim` is the operator disposition for a tree the automatic
+reclaim path can never accept — a tree holding a planted symlink, say. It is
+named by the same opaque digest `scratch-usage` reports. The command is a dry
+run by default: it reports the tree's entry count, size, and the automatic
+path's verdict, and removes nothing until `--apply` is passed. The lease is
+honoured exactly as the sweep honours it, so a tree whose session still has an
+accepted turn, a non-terminal run, or a non-terminal job is refused. The
+ownership, containment, and owner-record checks are unchanged; only the
+entry-content refusals are relaxed, and every attempt is audited.
+
+The daemon also runs the retention sweep itself, on its own interval. It
+reclaims a session's tree once that session has been idle past
+`scratch.retention_days` (14 days by default), a soft-deleted session's tree
+once its lease is clear, and a tree that no durable session owns once it has
+been untouched past `scratch.orphan_grace_hours` (24 hours by default). The
+sweep never runs on the agent hot path and never blocks a tool call. The whole
+policy — including `scratch.enabled`, which turns the sweep off entirely — is
+in the `scratch` configuration section; see `architecture/config.md` for the
+defaults and the floors. The daemon reads that section once, at startup, so a
+policy change needs a daemon restart.
 
 `daemon stop` is a bounded, verified operation: it will not signal a PID it
 has not confirmed is the live daemon. On timeout it reports the failure

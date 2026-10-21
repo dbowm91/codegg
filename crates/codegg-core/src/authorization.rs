@@ -653,6 +653,38 @@ mod tests {
         assert_eq!(decision.policy, PolicyKind::LocalOwnerBroad);
     }
 
+    /// M007: the operator reclaim removes one of the daemon's own scratch
+    /// trees. A tree has no project linkage — it is named by a one-way
+    /// digest that cannot be inverted to a session — so the operation is
+    /// `Opaque` and claims `FileModify`. A team principal therefore has no
+    /// project grant to resolve it against and the request fails closed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_scratch_reclaim_operation_fails_closed_for_team_principals() {
+        let (team, service) = test_service().await;
+        let descriptor =
+            operation_descriptor(&codegg_protocol::core::CoreRequest::ScratchReclaim {
+                request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                    tree: "0".repeat(64),
+                    apply: true,
+                },
+            });
+        assert_eq!(descriptor.operation, "scratch_reclaim");
+        assert_eq!(descriptor.scope_kind, ScopeKind::Opaque);
+        assert_eq!(descriptor.capability, Some(Capability::FileModify));
+
+        // A team principal is refused rather than guessed at.
+        let principal = human_with_token(&team, "Ada", "client-ada").await;
+        let request =
+            AuthorizationRequest::new(principal, descriptor, None, "corr-scratch-reclaim");
+        let error = service.authorize(&request).await.unwrap_err();
+        assert!(matches!(error, AuthorizationError::MissingScope { .. }));
+
+        // The local owner is authorized.
+        let owner = local_owner_request("scratch_reclaim", Some(Capability::FileModify), None);
+        let decision = service.authorize(&owner).await.unwrap();
+        assert_eq!(decision.policy, PolicyKind::LocalOwnerBroad);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn missing_scope_fails_closed_for_team_principals() {
         let (team, service) = test_service().await;

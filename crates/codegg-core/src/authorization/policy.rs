@@ -1429,6 +1429,15 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::ScratchUsage { .. } => {
             OperationDescriptor::new("scratch_usage", ScopeKind::Opaque, None)
         }
+        // M007: the operator disposition removes one of those trees. It is
+        // still daemon-global state with no project linkage, so the scope
+        // stays `Opaque` and team principals still fail closed. Unlike the
+        // census it mutates the filesystem, so it claims `FileModify`.
+        R::ScratchReclaim { .. } => OperationDescriptor::new(
+            "scratch_reclaim",
+            ScopeKind::Opaque,
+            Some(Capability::FileModify),
+        ),
     }
 }
 
@@ -2452,6 +2461,12 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::ScratchUsage {
             request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+        },
+        R::ScratchReclaim {
+            request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                tree: String::new(),
+                apply: false,
+            },
         },
     ]
 }

@@ -287,6 +287,8 @@ pub struct Config {
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
+    /// The daemon-owned scratch retention policy (M007).
+    pub scratch: Option<ScratchConfig>,
     pub scheduler: Option<SchedulerConfig>,
     pub catalog: Option<CatalogConfig>,
     /// Explicit, opt-in project discovery configuration.
@@ -2123,6 +2125,110 @@ impl DaemonConfig {
         if other.shutdown_timeout_ms.is_some() {
             self.shutdown_timeout_ms
                 .clone_from(&other.shutdown_timeout_ms);
+        }
+    }
+}
+
+/// The daemon-owned scratch retention policy (M007).
+///
+/// The daemon owns one disposable scratch tree per session. Scratch contents
+/// are disposable by contract, so the tree is reclaimed once its session has
+/// been idle for longer than the retention window. The defaults are derived
+/// from that disposal contract: they are **specified**, not measured.
+///
+/// Every field is optional so a config layer that sets one key does not
+/// reset the others: an absent field inherits the layer beneath it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct ScratchConfig {
+    /// Whether the daemon-owned sweep runs at all. Off means the sweep never
+    /// fires; the existing event-driven reclaimers are unaffected either way.
+    pub enabled: Option<bool>,
+    /// Age, in days, past which an **idle** session's scratch tree is
+    /// reclaimable. A value below `1` is clamped — `0` would mean "reclaim
+    /// every idle tree immediately", which is not a policy anyone can intend.
+    pub retention_days: Option<u32>,
+    /// How often the sweep runs, in minutes. A value below `5` is clamped, so
+    /// a mistyped value cannot become a busy loop.
+    pub sweep_interval_minutes: Option<u32>,
+    /// How long a tree whose digest matches no durable session is left alone
+    /// before it is reclaimed as an orphan, in hours. The grace period
+    /// absorbs the window in which a tree exists before its durable session
+    /// row is visible to the sweeper.
+    pub orphan_grace_hours: Option<u32>,
+}
+
+/// The resolved retention policy: every default applied, every floor
+/// enforced.
+///
+/// This is what the daemon acts on. The configured form and the resolved
+/// form are separate types because "unset" and "set to the default" are
+/// different things until the merge has run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScratchRetentionSettings {
+    /// Whether the daemon-owned sweep runs at all.
+    pub enabled: bool,
+    /// Age, in days, past which an idle session's scratch tree is
+    /// reclaimable.
+    pub retention_days: u32,
+    /// How often the sweep runs, in minutes.
+    pub sweep_interval_minutes: u32,
+    /// The orphan grace period, in hours.
+    pub orphan_grace_hours: u32,
+}
+
+/// The floors the retention policy enforces.
+///
+/// A value below a floor is clamped rather than rejected: a mistyped
+/// retention window must not become "reclaim every tree now", and it must
+/// not stop the daemon from starting either.
+pub const SCRATCH_RETENTION_DAYS_FLOOR: u32 = 1;
+pub const SCRATCH_SWEEP_INTERVAL_MINUTES_FLOOR: u32 = 5;
+pub const SCRATCH_ORPHAN_GRACE_HOURS_FLOOR: u32 = 1;
+
+/// The built-in defaults, before any measurement.
+pub const SCRATCH_RETENTION_DAYS_DEFAULT: u32 = 14;
+pub const SCRATCH_SWEEP_INTERVAL_MINUTES_DEFAULT: u32 = 360;
+pub const SCRATCH_ORPHAN_GRACE_HOURS_DEFAULT: u32 = 24;
+
+impl ScratchConfig {
+    /// Merge a later config layer into this one: every field that is set in
+    /// `other` wins, and every field that is absent in `other` is inherited
+    /// from the layer beneath it.
+    pub fn merge(&mut self, other: &Self) {
+        if other.enabled.is_some() {
+            self.enabled.clone_from(&other.enabled);
+        }
+        if other.retention_days.is_some() {
+            self.retention_days.clone_from(&other.retention_days);
+        }
+        if other.sweep_interval_minutes.is_some() {
+            self.sweep_interval_minutes
+                .clone_from(&other.sweep_interval_minutes);
+        }
+        if other.orphan_grace_hours.is_some() {
+            self.orphan_grace_hours
+                .clone_from(&other.orphan_grace_hours);
+        }
+    }
+
+    /// The resolved policy, with every default applied and every floor
+    /// enforced.
+    pub fn effective(&self) -> ScratchRetentionSettings {
+        ScratchRetentionSettings {
+            enabled: self.enabled.unwrap_or(true),
+            retention_days: self
+                .retention_days
+                .unwrap_or(SCRATCH_RETENTION_DAYS_DEFAULT)
+                .max(SCRATCH_RETENTION_DAYS_FLOOR),
+            sweep_interval_minutes: self
+                .sweep_interval_minutes
+                .unwrap_or(SCRATCH_SWEEP_INTERVAL_MINUTES_DEFAULT)
+                .max(SCRATCH_SWEEP_INTERVAL_MINUTES_FLOOR),
+            orphan_grace_hours: self
+                .orphan_grace_hours
+                .unwrap_or(SCRATCH_ORPHAN_GRACE_HOURS_DEFAULT)
+                .max(SCRATCH_ORPHAN_GRACE_HOURS_FLOOR),
         }
     }
 }
@@ -5393,5 +5499,83 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.contains("initial_backoff_ms") && e.contains("max_backoff_ms")));
+    }
+
+    /// The retention section's defaults are the specified ones: 14 days,
+    /// every six hours, and a 24-hour orphan grace period.
+    #[test]
+    fn the_scratch_retention_defaults_are_the_specified_ones() {
+        let resolved = ScratchConfig::default().effective();
+        assert!(resolved.enabled);
+        assert_eq!(resolved.retention_days, 14);
+        assert_eq!(resolved.sweep_interval_minutes, 360);
+        assert_eq!(resolved.orphan_grace_hours, 24);
+    }
+
+    /// A later layer's value wins, and a field the later layer omits is
+    /// inherited from the layer beneath it.
+    #[test]
+    fn the_scratch_retention_merge_lets_a_later_layer_win_and_inherits_the_rest() {
+        let mut lower = ScratchConfig {
+            enabled: Some(true),
+            retention_days: Some(30),
+            sweep_interval_minutes: Some(120),
+            orphan_grace_hours: Some(48),
+        };
+        let upper = ScratchConfig {
+            retention_days: Some(7),
+            ..Default::default()
+        };
+        lower.merge(&upper);
+
+        assert_eq!(lower.retention_days, Some(7), "the later layer wins");
+        assert_eq!(
+            lower.sweep_interval_minutes,
+            Some(120),
+            "an absent field inherits the layer beneath it"
+        );
+        assert_eq!(
+            lower.orphan_grace_hours,
+            Some(48),
+            "an absent field inherits the layer beneath it"
+        );
+        assert_eq!(lower.enabled, Some(true));
+
+        let resolved = lower.effective();
+        assert_eq!(resolved.retention_days, 7);
+        assert_eq!(resolved.sweep_interval_minutes, 120);
+        assert_eq!(resolved.orphan_grace_hours, 48);
+    }
+
+    /// A value below a floor is clamped rather than silently accepted.
+    #[test]
+    fn the_scratch_retention_floors_are_enforced() {
+        let resolved = ScratchConfig {
+            enabled: Some(true),
+            retention_days: Some(0),
+            sweep_interval_minutes: Some(0),
+            orphan_grace_hours: Some(0),
+        }
+        .effective();
+        assert_eq!(resolved.retention_days, SCRATCH_RETENTION_DAYS_FLOOR);
+        assert_eq!(
+            resolved.sweep_interval_minutes,
+            SCRATCH_SWEEP_INTERVAL_MINUTES_FLOOR
+        );
+        assert_eq!(
+            resolved.orphan_grace_hours,
+            SCRATCH_ORPHAN_GRACE_HOURS_FLOOR
+        );
+    }
+
+    /// The section deserializes additively: an absent key is unset, not
+    /// zero.
+    #[test]
+    fn the_scratch_retention_section_deserializes_additively() {
+        let config: ScratchConfig = serde_json::from_str(r#"{"retention_days": 21}"#).unwrap();
+        assert_eq!(config.retention_days, Some(21));
+        assert_eq!(config.sweep_interval_minutes, None);
+        assert_eq!(config.orphan_grace_hours, None);
+        assert_eq!(config.enabled, None);
     }
 }

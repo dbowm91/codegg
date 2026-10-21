@@ -399,6 +399,12 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                 None => merged.daemon = Some(v.clone()),
             }
         }
+        if let Some(ref v) = config.scratch {
+            match &mut merged.scratch {
+                Some(existing) => existing.merge(v),
+                None => merged.scratch = Some(v.clone()),
+            }
+        }
         if let Some(ref v) = config.scheduler {
             match &mut merged.scheduler {
                 Some(existing) => existing.merge(v),

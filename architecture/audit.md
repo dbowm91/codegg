@@ -59,7 +59,7 @@ best-effort emission, redaction, backpressure, and operator reads).
 
 ## Action and visibility taxonomy
 
-Known actions (`AuditAction::ALL`, 26): `authentication`,
+Known actions (`AuditAction::ALL`, 28): `authentication`,
 `authorization_decision`, `membership_change`, `node_enrollment`,
 `session_create`, `session_attach`, `prompt_submit`,
 `provider_select`, `model_select`, `agent_delegate`,
@@ -67,7 +67,8 @@ Known actions (`AuditAction::ALL`, 26): `authentication`,
 `file_mutate`, `git_operation`, `worktree_lifecycle`, `job_submit`,
 `job_cancel`, `job_complete`, `remote_execute`,
 `chat_triggered_action`, `config_change`, `asset_refresh`,
-`audit_export`, `audit_query`, `work_order_lifecycle`.
+`audit_export`, `audit_query`, `work_order_lifecycle`,
+`human_shell_run`, `scratch_reclaim`.
 
 Writers use strict parsing (unknown actions fail closed at build
 time). Readers use lenient parsing: unknown stored actions degrade to
@@ -567,6 +568,17 @@ scripts/verify.sh quick
 ```
 
 ## Source verification
+
+Re-verified 2026-10-21 after M007 added `scratch_reclaim`. The action
+taxonomy above was **stale**: it claimed 26 known actions and omitted
+`human_shell_run`, which the code has carried since the human-shell
+milestone. The list and its count are now 28, and both were re-measured
+against `AuditAction::ALL` in `crates/codegg-core/src/audit.rs` rather than
+copied forward. M007's new action is `scratch_reclaim`, the operator
+disposition of one of the daemon's own disposable scratch trees; its
+metadata is bounded to the digest, the entry and byte counts, the verdict,
+the refusal reason, and the outcome — never a path, a file name, file
+content, or a session identity.
 
 Verified 2026-10-06 against `crates/codegg-core/src/audit.rs`,
 `crates/codegg-core/src/audit_instrumentation.rs`,

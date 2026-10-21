@@ -85,8 +85,10 @@ impl DaemonRequestFamily {
             | CoreRequest::LspDiagnosticsSubscribe { .. }
             | CoreRequest::LspCompletionGet { .. } => Self::Lsp,
             // M006: the scratch census is measurement only. It never mutates
-            // the tree it measures, so it owns no write authority.
-            CoreRequest::ScratchUsage { .. } => Self::Scratch,
+            // the tree it measures, so it owns no write authority. M007: the
+            // operator disposition removes one tree, and it owns no project
+            // authority either.
+            CoreRequest::ScratchUsage { .. } | CoreRequest::ScratchReclaim { .. } => Self::Scratch,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -457,6 +459,15 @@ mod tests {
                 },
                 DaemonRequestFamily::Scratch,
             ),
+            (
+                CoreRequest::ScratchReclaim {
+                    request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                        tree: "0".repeat(64),
+                        apply: false,
+                    },
+                },
+                DaemonRequestFamily::Scratch,
+            ),
         ];
         for (request, expected) in &cases {
             assert_eq!(DaemonRequestFamily::of(request), *expected);
@@ -491,6 +502,17 @@ mod tests {
         // authenticated to the server, not to this machine's owner.
         let request = CoreRequest::ScratchUsage {
             request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+        };
+        assert!(request.is_local_only());
+
+        // M007: the operator disposition removes one of those trees, so it
+        // is local-only for the same reason — and it is destructive, so a
+        // remote client must never reach it.
+        let request = CoreRequest::ScratchReclaim {
+            request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                tree: "0".repeat(64),
+                apply: true,
+            },
         };
         assert!(request.is_local_only());
     }

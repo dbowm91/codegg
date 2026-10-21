@@ -241,6 +241,21 @@
     "paths": ["./docs/skills"]
   },
 
+  // The daemon-owned scratch retention policy. The daemon keeps one
+  // disposable scratch tree per session; scratch contents are disposable by
+  // contract, so a tree is reclaimed once its session has been idle longer
+  // than the retention window. Every value below is the built-in default,
+  // and every one of them is clamped upward at its floor: `retention_days`
+  // below 1, `sweep_interval_minutes` below 5, and `orphan_grace_hours`
+  // below 1. Setting `enabled` to false stops the sweep entirely; the
+  // event-driven reclaimers are unaffected either way.
+  "scratch": {
+    "enabled": true,
+    "retention_days": 14,
+    "sweep_interval_minutes": 360,
+    "orphan_grace_hours": 24
+  },
+
   // Raw model shell selection is only used on Windows. PowerShell is the
   // default; choose cmd explicitly when the command needs cmd syntax.
   "shell": {
