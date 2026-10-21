@@ -396,23 +396,41 @@ claim that is still *not* made is that two *live* agents have been observed
 issuing real writes through the broker inside one daemon process. That needs
 a live model and a contained Git backend, and it stays a narrow follow-up.
 
-### 8.4 The regression the hosted CI found
+### 8.4 The regressions the hosted CI found
 
-The hosted run found a defect the local scoped suites could not: the M003
-tool-advisor receipt no longer matched its recomputation. The receipt is
-frozen, and the test reconstructs the M003-era tool schemas by reversing every
-recorded post-M003 change — the scratch fields, the claim fields, the action
-enum, the identifier shapes and the `path` descriptions. C006 added the
-`task` tool's `placement` parameter, which is one more post-M003 change, and
-the reconstruction did not know about it.
+The hosted runs found two real defects that the local scoped suites could not
+have found, both introduced by C005 and both invisible to a run that only
+touches the corrective's own suites.
 
-The fix is the one the test's own design calls for: `placement` is removed
-from the reconstructed historical schema, with an assertion that it is
-present, so the receipt stays immutable and the live schema keeps the opt-in
-placement. This is recorded because it is the reason a full-workspace hosted
-run is not a formality: the local evidence for C006 was scoped to the
-corrective's own suites, and the frozen receipt lived in a suite they never
-touched.
+**The frozen M003 tool-advisor receipt.** The receipt test reconstructs the
+M003-era tool schemas by reversing every recorded post-M003 change — the
+scratch fields, the claim fields, the action enum, the identifier shapes and
+the `path` descriptions — and asserts the reconstructed catalog still
+fingerprints to the stored receipt. C006 added the `task` tool's `placement`
+parameter, which is one more post-M003 change, and the reconstruction did not
+know about it. The fix is the one the test's own design calls for:
+`placement` is removed from the reconstructed historical schema, with an
+assertion that it is present, so the receipt stays immutable and the live
+schema keeps the opt-in placement. Nothing about the receipt itself changed.
+
+**The branch did not compile on Windows.** The Windows native probe workflow
+failed to compile the `codegg` lib while `main` compiles the same files
+cleanly. Both errors came from C005: the C005 admission check in
+`src/interactive_process.rs` sat between the `#[cfg(not(unix))]` early return
+and the `#[cfg(unix)]` handle creation, so on Windows the check's `if let`
+became the function's tail expression; and the test-only Windows AppContainer
+launcher in `src/managed_process.rs` destructured `ManagedProcessRequest`
+without listing the two fields C005 had added. The first is fixed by making
+the check Unix-only — the interactive PTY is refused outright on every other
+platform, so there is no child for the profile to deny — and by letting the
+`#[cfg(not(unix))]` block's `return` give the block the `never` type. The
+second is fixed by listing and ignoring the two fields. Windows behaviour is
+unchanged in both cases: the refusal there is the platform's, not the
+profile's.
+
+Both are recorded because they are the reason a full-workspace hosted run is
+not a formality. C005 was committed with no hosted CI run at all, and two
+platform-specific defects shipped with it.
 
 ---
 
