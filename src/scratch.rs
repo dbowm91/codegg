@@ -1820,11 +1820,25 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let plain = root.path().join("plain.txt");
         std::fs::write(&plain, b"x").unwrap();
-        let link = root.path().join("link");
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        // A symlink is probed on Unix only. Creating one on Windows needs a
+        // privilege the CI runner does not have, so the Windows probe covers
+        // the regular-file and directory shapes and the link shape is covered
+        // where a link can be created.
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&plain, &link).unwrap();
+        let link = {
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&plain, &link).unwrap();
+            Some(link)
+        };
+        #[cfg(not(unix))]
+        let link: Option<std::path::PathBuf> = None;
 
-        for path in [&plain, &link] {
+        let mut candidates = vec![plain, nested];
+        candidates.extend(link);
+
+        for path in &candidates {
             let metadata = std::fs::symlink_metadata(path).unwrap();
             let refusal = reclaim_entry_refusal(&metadata);
             let validator_refused = validate_reclaim_tree(path).is_err();
