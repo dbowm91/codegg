@@ -263,6 +263,19 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   documentation — so this merge introduced **no new cross-file pairing**. This
   advance **is** count-neutral: the calibrated measure reproduces 262 / 171 /
   246 / 286 exactly, so no published row moved. See §3.20 of the closure.
+- **Reconciliation with `main` at `239f06e7f` — 2026-10-21 (recorded, not
+  silent).** `main` advanced again — PR #154, the M006 scratch census's tri-state
+  reclaimable verdict — and it advanced onto **this branch's own scratch surface**.
+  Reconciled by a fifth **merge**. The merge was **textually clean and that was not
+  sufficient**: `main` moves the verdict from `bool` to `Option<bool>` across the
+  domain type and the protocol DTO, while the **mapping site in
+  `src/core/daemon_scratch.rs` is not in `main`'s changed-file set** — the two ends
+  of the assignment moved and the middle did not. That is the cross-file pairing
+  class a file-level proof cannot see, and the **compile-level proof settled it**:
+  zero conflicts and `cargo check --workspace --all-targets --locked` → **exit 0**,
+  with the branch's own `current_owner_uid()` and `ensure_private_cache_root(...)`
+  intact. The advance is **count-neutral** — the calibrated measure reproduces
+  262 / 171 / 246 / 286 exactly. See §3.21 of the closure.
 - **The verification plan was pruned, deliberately and on the record — 2026-10-21.**
   This linked worktree's build cache was **cold** at the start of the fourth
   reconciliation, so a local full-workspace sweep means compiling and linking
@@ -476,4 +489,4 @@ This roadmap is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped, re-observed green at 15755/15755 on the first reconciled head and at 15771/15771 on the twice-merged head; the branch is reconciled with `main` at `c93211542` and carries its tip as a direct ancestor, through four merges — `2a0bae08f`, `84aa47528`, `28724bd83`, `c93211542`) | |
+| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped, re-observed green at 15755/15755 on the first reconciled head and at 15771/15771 on the twice-merged head; the branch is reconciled with `main` at `c93211542` and carries its tip as a direct ancestor, through five merges — `2a0bae08f`, `84aa47528`, `28724bd83`, `c93211542`, `239f06e7f`) | |

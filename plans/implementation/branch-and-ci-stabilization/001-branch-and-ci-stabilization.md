@@ -445,6 +445,36 @@ integration binaries each mapping to a file this branch changed, and the four
 crates this branch changed in full. §13 records that the full sweep was not run
 locally on this tree, and the closure records the same fact.
 
+**WP-R — The fifth reconciliation, with `main` at `239f06e7f` (2026-10-21).**
+`main` advanced once more — PR #154, the M006 scratch census's tri-state
+reclaimable verdict — and it advanced onto **this branch's own scratch
+surface**.
+
+**The merge was textually clean, and that was not sufficient.** `main` moves
+the per-tree reclaim verdict from `bool` to `Option<bool>` across the domain
+type in `src/scratch.rs` and the DTO in `crates/codegg-protocol/src/scratch.rs`,
+while the **mapping site in `src/core/daemon_scratch.rs` is not in `main`'s
+changed-file set** — `main` changed the two ends of the assignment and left the
+middle alone. That is precisely the cross-file pairing a file-level proof
+cannot see.
+
+**The compile-level proof is what settled it, and it passed**: the merge
+resolved with **zero conflicts** and `cargo check --workspace --all-targets
+--locked` → **exit 0**. The branch's own scratch work survived it —
+`current_owner_uid()`, `ensure_private_cache_root(...)`, and the call site at
+`src/scratch.rs:198`.
+
+**This advance is count-neutral.** The calibrated measure reproduces
+262 / 171 / 246 / 286 **exactly** on the five-times-merged tree: the tri-state
+change alters a field's *type*, not the number of protocol variants.
+
+**Why the reconciliation was done rather than deferred.** GitHub's `MERGEABLE`
+proves only that the two sides merge without a text conflict; it says nothing
+about whether the result compiles. Merging the pull request without carrying
+`main`'s tip would have handed the owner a merge whose compile status nobody
+had checked. Carrying `main`'s tip and proving the merged tree compiles turns
+the pull request's merge into a reviewed one.
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by

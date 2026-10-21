@@ -1020,6 +1020,48 @@ narrowing is specified rather than implied:
 **not** run locally on the four-times-merged tree. §13 records that plainly,
 and the claim for this head rests on the hosted run.
 
+### 3.21 The fifth reconciliation, with `main` at `239f06e7f`
+
+`main` advanced once more — PR #154, the M006 scratch census's **tri-state**
+reclaimable verdict — and it advanced onto **this branch's own scratch
+surface**. That is the reason this reconciliation is recorded in its own right
+rather than folded into the previous one.
+
+**The merge was textually clean — and that was not sufficient.** `main`'s
+change makes the per-tree reclaim verdict tri-state: `ScratchTreeUsage.reclaimable`
+and the protocol DTO's `reclaimable` both move from `bool` to `Option<bool>`,
+where `None` means the verdict could not be established because the walk was
+truncated or the tree vanished. The type change spans **three** files — the
+domain type in `src/scratch.rs`, the DTO in
+`crates/codegg-protocol/src/scratch.rs`, and the mapping site in
+`src/core/daemon_scratch.rs` — and the mapping site is **not** in `main`'s
+changed-file set, because `main` changed the two ends of the assignment and
+left the middle alone.
+
+**This is exactly the class a file-level proof cannot see, which is why the
+compile-level proof is not a formality.** The merge resolved with **zero
+conflicts** and the tree **compiles**:
+`cargo check --workspace --all-targets --locked` → **exit 0**
+(`Finished dev profile in 1m 39s`). The branch's own scratch work survived it
+— `current_owner_uid()`, `ensure_private_cache_root(...)`, and the call site at
+`src/scratch.rs:198` — and `main`'s tri-state verdict is carried through
+unchanged.
+
+**The advance is count-neutral.** The same calibrated measure that produced
+262 / 171 / 246 / 286 on the four-times-merged tree reproduces those values
+**exactly** on the five-times-merged tree. The tri-state change alters a
+field's *type*, not the number of protocol variants, and the DTO is not one of
+the counted surfaces.
+
+**Why this reconciliation happened at all.** The branch was green and
+`MERGEABLE` on `3a023b04e` when `main` advanced. GitHub's `MERGEABLE` proves
+only that the two sides merge without a text conflict — it says nothing about
+whether the *result* compiles. Merging the pull request without carrying
+`main`'s tip would have combined the branch's scratch work with `main`'s
+tri-state verdict and handed the owner a merge whose compile status nobody had
+checked. Carrying `main`'s tip as a direct ancestor, and proving the merged
+tree compiles, is what turns the pull request's merge into a reviewed one.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
