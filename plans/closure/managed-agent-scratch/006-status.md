@@ -305,11 +305,19 @@ stays owned by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
 The pull request is [#145](https://github.com/dbowm91/codegg/pull/145).
 
-| Run | Head | Result |
-|---|---|---|
-| **`39529050947`** (`CI`) | `67d88db9` | **success** — all 27 guards, workspace Clippy, and the workspace tests: **15643 run, 15643 passed, 7 skipped** (515 s) |
-| **`39529050572`** (`Windows process launcher`) | `67d88db9` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
-| `39529050607` (`Desktop E2E`) | `67d88db9` | **failure** — pre-existing on `main`; see below |
+The final head is **`844a5967`**, and every job on it is green except the
+one that is already red on `main`:
+
+| Run | Head | Job | Result |
+|---|---|---|---|
+| **`39533112385`** | `844a5967` | `CI` | **success** — all 27 guards, workspace Clippy, and the workspace tests: **15643 run, 15643 passed, 7 skipped** (433 s) |
+| **`39533112371`** | `844a5967` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
+| `39533112394` | `844a5967` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
+
+The same two jobs were also green on the code head **`67d88db9`**
+(`CI` run `39529050947`, **15643 run, 15643 passed, 7 skipped**; Windows run
+`39529050572`, **26 passed, 0 failed**). The three commits after `67d88db9`
+change only the plans and closure record, so the code is the same in both.
 
 The first Windows run, `39527099234` on the pre-fix head `8e4c2ad5`, failed
 exactly one test: `scratch::tests::the_census_refusal_rule_agrees_with_the_reclaim_validator`.
