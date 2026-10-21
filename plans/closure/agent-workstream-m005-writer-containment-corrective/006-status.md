@@ -64,8 +64,9 @@ each is enforced in code rather than in a convention:
   checkout must **already exist**, and the placement **joins** it. The
   coordinator's create branch is the same code path the isolated path uses,
   and fails the same way.
-* **The shared profile on macOS and Windows.** The gate keeps it disabled
-  there. See §4.
+* **The shared profile on Windows.** The gate keeps it disabled there, for a
+  named reason: there is no filesystem-enforcement backend registered for
+  Windows at all. macOS is qualified — see §4 and §5.1.
 
 ---
 
@@ -335,7 +336,7 @@ executor marker — and proves each is reported. The guard is wired into
 | Q1 | Two mutation-capable agents on one checkout, real SQLite, real Git checkout, real durable group | `tests/shared_checkout_c006.rs` — `a_group_member_joins_the_groups_checkout`, `two_members_racing_for_one_group_end_up_on_one_checkout` | met at the authority level |
 | Q2 | One writer at a time; readers overlap; clean release | `two_writers_on_the_shared_checkout_never_overlap` (the second writer is refused with `Held`, and takes the checkout after the first settles) | met |
 | Q3 | Every known CodeGG file API and prohibited process surface against the reserved worktree | `a_process_effect_is_refused_on_a_shared_checkout`, `the_shared_profile_denies_every_process_capable_tool`, plus the C005 suite (18 tests) and the C003 suite (10 tests) | met |
-| Q4 | Linux, macOS and Windows independently | The gate qualifies Linux and **disables** macOS and Windows with a named reason | met by disabling the unqualified platforms (§9.1) |
+| Q4 | Linux, macOS and Windows independently | The gate qualifies Linux and macOS on native containment evidence, and **disables** Windows with a named reason — it has no filesystem-enforcement backend registered at all, so no run could produce the missing evidence | met by disabling the unqualified platform (§9.1) |
 | Q5 | A controlled opt-in, a typed error, and an operator-visible reason | `parse_run_placement` in the task tool; the `placement` parameter in the tool's schema; the platform refusal that names the platform | met |
 | — | The default is unchanged | `the_default_placement_is_the_isolated_one` — a legacy durable payload decodes as `Auto` | met |
 | — | The group cannot grant itself membership | `the_placement_is_refused_for_an_unknown_group`, `the_placement_is_refused_for_a_run_outside_the_group` | met |
