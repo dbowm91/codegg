@@ -394,6 +394,12 @@ executor marker — and proves each is reported. The guard is wired into
   contention failure and the stale WorkOrder assertion fixed; the runs before
   it each stopped at their first failure and left roughly 3,800 tests unrun,
   which is how the second of those two defects stayed invisible (§8.4).
+* **Hosted CI (green, settled head)** — `CI / verify` run **`39656673212`** on
+  head `81596313f`: **success**, **15,909 tests run, 15,909 passed, 7
+  skipped, 0 failed**. This is the branch's final hosted evidence: it
+  includes the merge reconciliation, the macOS qualification flip, the
+  contention fix and the stale-diagnostic fix, plus the umask-independent
+  scratch test root.
 * **The complete local sweep** — `cargo nextest run --workspace --locked --profile
   ci --no-fail-fast`, run under `umask 022`: **15,909 tests run, 15,900
   passed, 6 failed, 3 timed out, 7 skipped**. The nine that did not pass are
