@@ -20,6 +20,15 @@ Predecessor milestones (all closed):
 
 Repository baseline reviewed: `cb0e79c0` on `main`
 
+Implementation commits:
+
+- `9c5ae75f` — `feat(scratch): the read-only scratch usage census and its
+  operator surfaces`
+- `8e4c2ad5` — `docs(scratch,plans): record the M006 census contract and
+  close the milestone`
+- `67d88db9` — `fix(scratch): make the shared-rule test's link probe
+  Unix-only`
+
 ## 1. Executive finding
 
 M006 delivers what it promised and nothing beyond it: a **measurement**, not a
@@ -144,12 +153,8 @@ Local (macOS, arm64):
 | `cargo test --locked --test scratch_usage_census` | pass — **7 passed**, 0 failed |
 | `scripts/verify.sh quick` | pass — every guard green, including `check_authorization_matrix.py` and `check_audit_coverage.py`, and `cargo check --workspace --all-targets --locked` clean |
 
-The full workspace suite and the hosted CI runs are recorded in §4.1.
-
-### 4.1 Whole-suite and hosted CI evidence
-
-See §13 for the whole-suite and hosted-CI results, including the run IDs and
-the exact heads they were taken on.
+The whole-suite sweep and the hosted CI runs are recorded in §13, with the run
+IDs and the exact heads they were taken on.
 
 ## 5. Invariant review
 
@@ -296,7 +301,66 @@ stays owned by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
 ## 13. Whole-suite and hosted CI evidence
 
-See §14.
+### Hosted CI
+
+The pull request is [#145](https://github.com/dbowm91/codegg/pull/145).
+
+| Run | Head | Result |
+|---|---|---|
+| **`39529050947`** (`CI`) | `67d88db9` | **success** — all 27 guards, workspace Clippy, and the workspace tests: **15643 run, 15643 passed, 7 skipped** (515 s) |
+| **`39529050572`** (`Windows process launcher`) | `67d88db9` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
+| `39529050607` (`Desktop E2E`) | `67d88db9` | **failure** — pre-existing on `main`; see below |
+
+The first Windows run, `39527099234` on the pre-fix head `8e4c2ad5`, failed
+exactly one test: `scratch::tests::the_census_refusal_rule_agrees_with_the_reclaim_validator`.
+The test was gated `#[cfg(any(unix, windows))]` but only created its symlink
+under `#[cfg(unix)]`, so on Windows `symlink_metadata` was called on a path
+that did not exist and the `unwrap` panicked with
+`Os { code: 2, kind: NotFound }`. Creating a symlink on Windows needs a
+privilege the CI runner does not have, so the link shape cannot be probed
+there; the test now probes the regular-file and directory shapes on every
+platform and adds the link shape only where a link can be created. The
+assertion is unchanged, and the re-run on `67d88db9` is green: **26 passed,
+0 failed**.
+
+### The Desktop E2E failure is `main`'s own
+
+The `Desktop E2E` job fails on this branch with
+`element ("[data-testid="permission-list"]") still not existing after 120000ms`
+in `e2e/specs/m004-session.e2e.ts`, the `M004 built-app session vertical
+slice` spec. The **identical** failure signature occurs on `main` itself:
+
+| Run | Head | What it is |
+|---|---|---|
+| `39502828002` | `31a41284` (a `main` head) | same failure, same spec, same message |
+| `39463448048` | `a9f70375` (a `main` head) | same failure |
+| `39416798574` | `0f7d0d30b` (a `main` head) | same failure |
+| `39345242816` | `a5d88eb7a` | green — the last green Desktop E2E |
+
+This branch touches nothing under `apps/` or `e2e/`
+(`git diff --name-only origin/main...HEAD -- apps/ e2e/` is empty), and the
+failure was already present on `main` before this branch existed. The cause is
+`main`'s own PR #134 temp-root redirect offer answering the model instead of
+raising a human decision, which was recorded in the M005 closure record. It
+is **not** a regression of this milestone and is not repaired here.
+
+### The local whole-suite sweep
+
+`cargo nextest run --workspace --locked --profile ci --no-fail-fast` on this
+branch: **15616 run, 15613 passed, 2 failed, 1 timed out, 7 skipped**
+(678 s).
+
+The three non-green results are **`main`'s own** and are not caused by this
+branch:
+
+| Test | Result | Why it is not this milestone's |
+|---|---|---|
+| `core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances` | fail | `register workspace: InvalidRootPath("/tmp")` — the test registers `/tmp` as a workspace root and the registry refuses it on this host. Reproduced **identically on `origin/main`** (`cb0e79c0`) in a separate worktree: the same panic at the same line. |
+| `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs` | fail | the same `InvalidRootPath("/tmp")` panic, reproduced identically on `origin/main`. |
+| `agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication` | timeout (300 s) | A load-sensitive race in that test's own `BlockingBuilder`, which parks a thread and is released by an `unpark` from the test. It **constructs no `CoreDaemon`**, so the census refresh task this milestone adds to the daemon construction is provably not in its path. It passes in isolation in 0.01 s. The hosted CI run of the same suite is fully green, which is the stronger evidence. |
+
+The hosted `CI` run is the authoritative whole-suite result: **15643 run,
+15643 passed, 7 skipped**, with none of these three present.
 
 ## 14. Notes on what this milestone does not claim
 
