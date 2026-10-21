@@ -374,6 +374,32 @@ executor marker — and proves each is reported. The guard is wired into
   `the_shared_profile_is_platform_gated` now asserting *available* on
   macOS, the native fixture 2/2, and the containment matrix 16/16 with
   Seatbelt enforcement reported. See §5.1.
+* **Hosted macOS (on the merged head)** — `Shared checkout macOS
+  qualification` run **`39635541949`** on head `4710b2966` (the merge
+  reconciliation): **success**. The C006 suite 16/16 with the gate
+  asserting *available* on macOS, the native fixture 2/2, and the
+  containment matrix 16/16 with Seatbelt enforcement reported — so the
+  merge did not disturb the qualification.
+* **Hosted Windows (on the merged head)** — `Windows native probe contract`
+  run **`39635542007`** on head `4710b2966`: **success**. The AppContainer
+  native probe matrix 1/1 and the restricted-child
+  timeout/cancellation/descendant coverage 6/6 on a Windows runner — so the
+  merge did not disturb the Windows compile fix either.
+* **Local, on the merged tree** — `scripts/verify.sh quick` — pass (exit 0);
+  `cargo check --workspace --all-targets --locked` — pass (exit 0);
+  `cargo fmt --all -- --check` — pass; `codegg validate --config
+  codegg.example.jsonc` — **"Configuration is valid"**; the affected guards
+  and their self-tests (`check_queue_write_transaction_shape`,
+  `check_shared_checkout`, `check_writer_disposition`, `check_process_denial`,
+  `check_scheduler_bypass`, `check_execution_ownership`,
+  `check-core-boundary`) — pass; and **143 tests** across the M005 writer
+  suites and the three merged scheduler binaries, 0 failed:
+  `shared_checkout_c006` 16, `process_denial_c005` 18,
+  `checkout_reservation_c004` 14, `writer_fence_c003` 10,
+  `writer_disposition_guards` 5, `scheduler_executor_coverage` 1,
+  `writer_permit_service` 12, `tool_broker_integration` 25,
+  `scheduler_contention` 14, `scheduler_phase5` 13,
+  `scheduler_restart_recovery` 15.
 * `scripts/verify.sh quick` — pass (exit 0).
 * `cargo fmt --all -- --check` — pass.
 * `cargo clippy --workspace --all-targets -- -D warnings` — pass.
@@ -404,7 +430,7 @@ executor marker — and proves each is reported. The guard is wired into
   result — which is why the merge reconciliation is a separate, named piece of
   work and not something this record's runs were asked to cover. It has since
   been done: merge commit `42707515b` reconciles the branch with
-  `origin/main` `9c9ffb763` (20 files conflicted in 81 hunks), and is recorded
+  `origin/main` `9c9ffb763` (20 files conflicted in 72 hunks), and is recorded
   in §9 of
   `plans/closure/agent-workstream-m005-writer-containment-corrective/004-merge-reconciliation-status.md`.
 

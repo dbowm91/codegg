@@ -350,8 +350,13 @@ checkout profile). The merge-base was `a9f70375` — the same baseline the
 first reconciliation used, so this reconciliation is `main`'s next 71 commits
 and the branch's next 77. The merge commit on the branch is `42707515b`.
 
-**20 files conflicted in 81 hunks.** Every resolution keeps both sides'
+**20 files conflicted in 72 hunks.** Every resolution keeps both sides'
 authority semantics; none silently dropped one.
+
+The merge commit's own message says 81 hunks. The measured count is **72**,
+and the per-file table below is that measurement — it sums to 72. The
+commit message is left as published rather than rewriting published
+history over a count; this record carries the corrected figure.
 
 | File | Hunks | Resolution |
 |---|---|---|
