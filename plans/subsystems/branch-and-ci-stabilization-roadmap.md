@@ -221,13 +221,28 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   green at **15755/15755** and its feature-enabled tier at **12496/12496**,
   with the live Eggwork qualification **16/16** on its own. See §3.16 of the
   closure.
+- **Reconciliation with `main` at `84aa47528` — 2026-10-21 (recorded, not
+  silent).** `main` advanced again — PR #151, the M006 scratch usage census —
+  and the pull request was `CONFLICTING` again. Reconciled by a second
+  **merge**, for the same reason as the first. This advance is **not**
+  count-neutral: it added a `CoreRequest` variant, a `CoreResponse` variant,
+  an authorized operation, and an integration test file, so **four** published
+  rows moved and were re-derived against their own listed `Source` —
+  `CoreRequest` variants 260 → **261** (237 struct + 24 unit), `CoreResponse`
+  variants 169 → **170**, authorized operations 244 → **245**, integration test
+  files 284 → **285**. The enum-variant measure was **calibrated** against the
+  pre-merge tree's published values before it was applied to the merged tree.
+  The twice-merged tree's sweep is green at **15771/15771** and its
+  feature-enabled tier at **12512/12512**. See §3.17 of the closure.
 - **Hosted evidence — 2026-10-21 (recorded, not silent).** The default sweep
   and the five native workflows ran on the rebased head and **concluded
   green**: the hosted default sweep reports **15733 tests run: 15733 passed, 8
   skipped** — the same count the local sweep reports — and the M004/M005
   native tier is qualified on a Landlock-ABI-6 host this workstation does not
-  have. The `pull_request` event did not create a `CI` run for this pull
-  request on any of its heads, so the run carrying the evidence is a
+  have. The same was re-observed on the head after the first reconciliation
+  (**15755 run, 15755 passed, 8 skipped**, and all five native workflows
+  **success**). The `pull_request` event did not create a `CI` run for this
+  pull request on any of its heads, so the run carrying the evidence is a
   `workflow_dispatch` against the branch head; the cause is not in the
   repository's workflow file and is **not diagnosed** here. See §4.3 of the
   closure.
@@ -396,4 +411,4 @@ This roadmap is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped; the branch is also reconciled with `main` at `2a0bae08f` and carries its tip as a direct ancestor) | |
+| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped, and re-observed green on the next head at 15755/15755; the branch is reconciled with `main` at `84aa47528` and carries its tip as a direct ancestor) | |

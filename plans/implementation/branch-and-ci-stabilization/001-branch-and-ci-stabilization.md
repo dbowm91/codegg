@@ -317,6 +317,36 @@ not create a `CI` run for this pull request, on any of its heads, so the run
 that carries the evidence is a `workflow_dispatch` against the branch head
 (§4.3 of the closure).
 
+**WP-O — The second reconciliation, with `main` at `84aa47528` (2026-10-21).**
+`main` advanced again — PR #151, the M006 scratch usage census — and the pull
+request was `CONFLICTING` again. Reconciled by a second merge, for the same
+reason as WP-M.
+
+**This advance is not count-neutral**, and that is the difference from WP-M.
+It added a `CoreRequest` variant, a `CoreResponse` variant, an authorized
+operation, and an integration test file, so **four** rows of the published
+counts moved: `CoreRequest` variants 260 → **261** (237 struct + 24 unit),
+`CoreResponse` variants 169 → **170**, authorized operations 244 → **245**,
+integration test files 284 → **285**. Two files conflicted, both documentation:
+the authorization operations table (this branch's `network_intent_set` and
+`main`'s `scratch_usage` are **both** kept) and the counts table.
+
+**The enum-variant measure was calibrated, not assumed.** The counting method
+(struct variants and unit variants counted separately at the enum's own brace
+depth, attributes and comments stripped first, because
+`#[derive(Clone, Debug)]` otherwise reads as variants) **reproduces the
+published values exactly on the pre-merge tree** before it is applied to the
+merged tree. The first counter written for this merge produced 723
+`CoreRequest` "variants" and was discarded. The authorized-operations row keeps
+the `representative_requests()` measure pinned in WP-L's pass; `main`'s own
+published 254 used the superseded `operation_descriptor` measure.
+
+The twice-merged tree's gates: `cargo check --workspace --all-targets --locked`
+exit 0, `scripts/verify.sh quick` "Quick verification passed.", workspace sweep
+**15771/15771**, feature-enabled tier **12512/12512**, and the hosted default
+sweep re-observed green on the head after WP-M (**15755 run, 15755 passed, 8
+skipped**).
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by
