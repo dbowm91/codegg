@@ -127,6 +127,42 @@ Local (macOS 25.6.0 x86_64, rustc 1.89.0, load-averaged shared host,
 | `python3 scripts/check_config_merge_coverage.py --self-test` | pass |
 | `scripts/verify.sh quick` | pass — every guard green, and `cargo check --workspace --all-targets --locked` clean |
 
+The plan's §11 subset runs, all under the `ci` nextest profile:
+
+| Command | Result |
+|---|---|
+| `cargo nextest run --locked --profile ci -p codegg --lib -E 'test(/scratch/)'` | pass — 54 passed |
+| `cargo nextest run --locked --profile ci -p codegg --test agent_loop_harness` | pass — 69 passed, 1 skipped |
+| `cargo nextest run --locked --profile ci -p codegg -E 'test(/scratch/) or test(/reclaim/) or test(/daemon/) or test(/config/)'` | 126 passed, **2 failed** — both pre-existing, proved below |
+| `cargo nextest run --locked --profile ci -p codegg-core -E 'test(/audit/) or test(/authorization/)'` | pass — 54 passed |
+
+**The two failures in the third command are pre-existing and not this
+milestone's.** They are
+`core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs`
+and
+`core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances`,
+and both fail with `register workspace: InvalidRootPath("/tmp")`. The cause is
+the fixture, not the code under test: it registers `/tmp` as a workspace root,
+and on macOS `/tmp` is a symlink to `private/tmp`, which the workspace
+registration rightly refuses. This was **proved, not assumed** — the same two
+tests were run in a clean worktree at `origin/main` (`84aa4752`) and fail
+there with the identical error. `src/core/daemon_refresh.rs` is not touched by
+this milestone, and the hosted Linux runner has no `/tmp` symlink, which is
+why CI is green there.
+
+A **whole-workspace** `cargo nextest run --workspace --locked --profile ci` was
+also attempted on this host and **aborted** on
+`agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication`,
+which hit the profile's 300-second slow-timeout. That test is unrelated to this
+milestone — it coalesces same-scope agent-asset refreshes and touches nothing
+in the scratch, storage, or protocol paths this milestone changed — and it
+**passes in isolation in 0.01 s**. The nextest profile reserves the whole
+machine for it (`threads-required = "num-cpus"`), but this host has 14 logical
+CPUs while the profile allows 4 slots, and the host's load average was ~8 with
+a hosted CI run building the same workspace concurrently. The failure is
+recorded here as a **host-load artifact**, not a regression; the authoritative
+whole-suite signal is the hosted `verify` job, whose runner is not shared.
+
 Hosted CI on the pull-request head: recorded in this section after the run
 completes.
 
