@@ -2,8 +2,8 @@
 
 **Corrective:** C006 — restricted shared-checkout qualification (Q1–Q5).
 **Status:** **Conditionally closed.** The shared profile is implemented,
-wired and qualified on Linux. Two named gaps keep it from *strict* closure,
-and both are recorded as narrow follow-ups in §9.
+wired and qualified on Linux and macOS. Two named gaps keep it from *strict*
+closure, and both are recorded as narrow follow-ups in §9.
 **Predecessors:** C002 (writer permit), C003 (writer fence), C004 (checkout
 reservation and mediation), C005 (process deny contract) — all closed.
 
@@ -32,7 +32,9 @@ each is enforced in code rather than in a convention:
    checkout it does not belong to.
 3. **The profile is platform-gated.** It is available only where there is
    native containment evidence, and the refusal names the platform and the
-   missing evidence. It is **off** on macOS and Windows in this tree.
+   missing evidence. It is **on** for Linux and macOS — each qualified on a
+   native runner — and **off** on Windows, which has no filesystem-enforcement
+   backend registered at all.
 
 ### 1.1 What is live in production today, and what is not
 
@@ -230,7 +232,7 @@ write into a checkout outside them. The fixture *fails* a host that cannot
 obtain Seatbelt rather than skipping it, so a skipped qualification can never
 be read as a passed one.
 
-**What is claimed on Linux, and what is not.** The qualification covers the
+**What is claimed on Linux and macOS, and what is not.** The qualification covers the
 *mediation*: the placement, the group authorization, the permit's mutual
 exclusion, the C005 preflight, the profile narrowing and the platform gate.
 It does **not** cover descendant quiescence: no claim is made on any
