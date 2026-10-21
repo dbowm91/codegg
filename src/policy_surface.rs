@@ -16,7 +16,7 @@
 //! truth comes from the daemon via `ExecutionPolicyGet`; this module only
 //! formats it. See `scripts/check_policy_surface.py`.
 
-use codegg_core::approval::{ApprovalMode, SandboxProfile};
+use codegg_core::approval::{ApprovalMode, NetworkIntent, SandboxProfile};
 
 /// Severity of a mode/profile combination warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +155,8 @@ pub struct EffectivePolicyView {
     pub effective_mode: ApprovalMode,
     pub requested_profile: SandboxProfile,
     pub effective_profile: SandboxProfile,
+    pub requested_network_intent: NetworkIntent,
+    pub effective_network_intent: NetworkIntent,
     pub enforcement_summary: String,
     pub reviewer_available: bool,
     pub reviewer_detail: String,
@@ -168,6 +170,7 @@ impl EffectivePolicyView {
     pub fn is_degraded(&self) -> bool {
         self.requested_mode != self.effective_mode
             || self.requested_profile != self.effective_profile
+            || self.requested_network_intent != self.effective_network_intent
             || (self.effective_mode == ApprovalMode::Automatic && !self.reviewer_available)
     }
 }
@@ -182,6 +185,11 @@ pub fn format_policy_line(view: &EffectivePolicyView) -> String {
         view.requested_profile,
         view.effective_profile,
     ));
+    line.push_str(" network:");
+    line.push_str(match view.effective_network_intent {
+        NetworkIntent::LegacyUnrestricted => "unrestricted",
+        NetworkIntent::OfflineRequired => "offline-required",
+    });
     if view.effective_profile == SandboxProfile::FullHost {
         line.push_str(" (no containment)");
     }
@@ -229,17 +237,20 @@ fn profile_label(requested: SandboxProfile, effective: SandboxProfile) -> &'stat
 pub fn format_policy_detail(view: &EffectivePolicyView) -> Vec<String> {
     let mut lines = Vec::with_capacity(8);
     lines.push(format!(
-        "Requested: approval={} sandbox={}",
+        "Requested: approval={} sandbox={} network={}",
         view.requested_mode.as_str(),
         view.requested_profile.as_str(),
+        view.requested_network_intent.as_str(),
     ));
     lines.push(format!(
-        "Effective: approval={} sandbox={}",
+        "Effective: approval={} sandbox={} network={}",
         view.effective_mode.as_str(),
         view.effective_profile.as_str(),
+        view.effective_network_intent.as_str(),
     ));
     if view.requested_mode != view.effective_mode
         || view.requested_profile != view.effective_profile
+        || view.requested_network_intent != view.effective_network_intent
     {
         lines.push(
             "The effective state is stricter than the request: a project or administrator ceiling applies."
@@ -431,6 +442,8 @@ mod tests {
     #[test]
     fn policy_line_shows_effective_state_and_degradation() {
         let plain = EffectivePolicyView {
+            requested_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            effective_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             requested_mode: ApprovalMode::Yolo,
             effective_mode: ApprovalMode::Yolo,
             requested_profile: SandboxProfile::WorkspaceWrite,
@@ -455,6 +468,8 @@ mod tests {
         assert!(line.contains("narrowed"));
 
         let auto_degraded = EffectivePolicyView {
+            requested_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            effective_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             requested_mode: ApprovalMode::Automatic,
             effective_mode: ApprovalMode::Automatic,
             requested_profile: SandboxProfile::WorkspaceWrite,
@@ -475,6 +490,8 @@ mod tests {
     #[test]
     fn restore_summary_reports_fallbacks() {
         let view = EffectivePolicyView {
+            requested_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            effective_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             requested_mode: ApprovalMode::Interactive,
             effective_mode: ApprovalMode::Interactive,
             requested_profile: SandboxProfile::WorkspaceWrite,

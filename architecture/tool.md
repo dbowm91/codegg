@@ -597,6 +597,21 @@ for executable Git capabilities. Direct legacy tool calls without an accepted
 context retain tool-local preflight behavior. This check does not establish
 network or IPC confinement.
 
+Command M004 route qualification is tracked in
+`research/command-authorization-m004-route-coverage.md`. The active
+command-intent routes dispatched from Bash remain explicit-FullHost-only;
+classifier labels do not grant authority. The typed `test` and `python_script`
+tools check the immutable accepted authorization before scheduler submission.
+Test and Python now carry a valid accepted profile through their durable job
+payloads to `ManagedProcessService`. Test uses managed streaming and refuses
+ReadOnly before submission because test commands write build and report
+artifacts. Python's mode policy can narrow WorkspaceWrite to read-only
+execution, and ReadOnly refuses transform mode before submission. The managed
+owner refuses a constrained job without a sandbox request. Corrective plan 008
+tracks native effect and cross-platform qualification. Git filters/hooks and
+remote operations remain behind Linux C002/C003 containment and transport
+gates.
+
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`
 and passed through from `with_config()`, `with_session_config_defaults()`,

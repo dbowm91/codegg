@@ -53,6 +53,7 @@ pub mod hunk_nav_parser;
 pub mod hunk_nav_policy;
 pub mod hunk_nav_prompt;
 pub mod hunk_nav_ranges;
+pub(crate) mod m004;
 pub mod mutation;
 pub mod semantic_context;
 pub mod service {

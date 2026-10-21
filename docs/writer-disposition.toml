@@ -3,7 +3,7 @@
 # WHAT THIS FILE IS
 #   A contract manifest. It records, for every CodeGG writer root identified
 #   by the C001 source audit, the restricted-profile disposition that the
-#   ADR-0044 contract assigns to it.
+#   ADR-0047 contract assigns to it.
 #
 # WHAT THIS FILE IS NOT
 #   It is not a permission, a permit, a fence, or an enablement. No entry
@@ -11,7 +11,7 @@
 #   successor milestones C002/C003 to consider -- it does not fence anything
 #   today.
 #
-#   ADR-0044 option B was ACCEPTED on 2026-10-19. That acceptance unblocked
+#   ADR-0047 option B was ACCEPTED on 2026-10-19. That acceptance unblocked
 #   C002 only; it enabled no writer, and C003-C006 remain blocked on their
 #   own predecessor closures. This manifest exists so that a new writer route
 #   cannot appear without someone deciding its disposition explicitly.
@@ -926,7 +926,7 @@ owner = "none: CodeGG does not own these writers"
 locator = "outside CodeGG's control"
 lifetime = "not controlled by CodeGG"
 kind = "module"
-note = "Editors, shells and agents the user runs outside CodeGG under the same OS user. ADR-0044 option B explicitly does not exclude them; excluding them needs a separate OS isolation ADR."
+note = "Editors, shells and agents the user runs outside CodeGG under the same OS user. ADR-0047 option B explicitly does not exclude them; excluding them needs a separate OS isolation ADR."
 
 # ---------------------------------------------------------------------------
 # M005 corrective C005 — persistent-process users.

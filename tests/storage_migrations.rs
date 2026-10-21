@@ -296,7 +296,7 @@ async fn project_catalog_v28_and_discovery_v29_are_additive_and_idempotent() {
 /// pre-existing entry reported as scheduled. The two are indistinguishable in
 /// the delivery query and only distinguishable here.
 #[tokio::test]
-async fn v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel() {
+async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -329,6 +329,16 @@ async fn v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel() {
         .execute(&pool)
         .await
         .expect("failed to seed session row");
+
+    // This v81 fixture predates the Linux M005 preference column but already
+    // contains the preference table. Keep its schema minimal so the upgrade
+    // proves the additive v84 migration runs after the queue v82 migration.
+    sqlx::query(
+        "CREATE TABLE runtime_preferences (principal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to create pre-network-intent preferences table");
 
     sqlx::query(
         r#"
@@ -371,7 +381,7 @@ async fn v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel() {
 
     codegg::session::schema::migrate(&pool)
         .await
-        .expect("v82 migration should apply over a v81 database");
+        .expect("latest migrations should apply over a v81 database");
 
     let final_version: i64 =
         sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
@@ -381,8 +391,22 @@ async fn v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel() {
     assert_eq!(
         final_version,
         codegg::storage::STORAGE_LAYOUT_VERSION as i64,
-        "v82 must land exactly at the declared storage layout version"
+        "latest migration must land exactly at the declared storage layout version"
     );
+    // The network-intent migration is v84 — it follows v83's managed-scratch
+    // migration (v82 was the queue `run_at_ms` migration). It is pinned by the
+    // column appearing over this v81 fixture, whose pre-v82 queue row the v82
+    // upgrade preserved, and **not** by a hard-coded "latest version" number:
+    // a hard-coded number here has to move with every later migration, and the
+    // assertion above already proves the chain reached the declared latest.
+
+    let network_intent: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('runtime_preferences') WHERE name = 'network_intent'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("failed to inspect network-intent migration");
+    assert_eq!(network_intent, 1, "v84 adds the nullable network intent");
 
     // The column exists and is nullable.
     let run_at_type: String = sqlx::query_scalar(

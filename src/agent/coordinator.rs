@@ -132,6 +132,8 @@ pub(super) struct AgentLoopServices {
     /// production wiring lands in M005, but the preference is already
     /// durable and part of the captured snapshot.
     pub(super) sandbox_profile: codegg_core::approval::SandboxProfile,
+    /// M005: principal network policy, independent from filesystem profile.
+    pub(super) network_intent: codegg_core::approval::NetworkIntent,
 }
 
 /// Explicit lifecycle states used by the coordinator.

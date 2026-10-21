@@ -982,6 +982,7 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "approval_preference_get",
     "approval_mode_set",
     "sandbox_profile_set",
+    "network_intent_set",
     "runtime_policy_set",
     "task_model_preference_set",
     "execution_policy_get",

@@ -210,6 +210,17 @@ run_full() {
         exit 1
     fi
 
+    # The scratch allocator refuses a per-user cache root another user could
+    # write to, and it creates the root it depends on privately. The sweep must
+    # not inherit the operator's cache root: its result has to be a property of
+    # the product rather than of the machine the sweep ran on. A private
+    # directory outside the workspace keeps the scratch root outside every
+    # granted workspace root, exactly as the real per-user cache root is.
+    sweep_cache_home="$(mktemp -d "${TMPDIR:-/tmp}/codegg-sweep-cache.XXXXXX")"
+    export XDG_CACHE_HOME="$sweep_cache_home"
+    trap 'rm -rf "$sweep_cache_home"' EXIT
+    echo "==> Sweep cache root: $XDG_CACHE_HOME"
+
     # Quick checks first
     run_quick
 

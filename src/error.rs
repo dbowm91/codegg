@@ -98,6 +98,7 @@ impl IntoResponse for AxumAppError {
             | AppError::Permission(PermissionError::Denied { .. }) => StatusCode::FORBIDDEN,
             AppError::Tool(ToolError::Timeout(_)) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Tool(ToolError::Disabled(_)) => StatusCode::FORBIDDEN,
+            AppError::Tool(ToolError::BackendUnavailable(_)) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Tool(ToolError::Execution(_))
             | AppError::Tool(ToolError::Format(_))
             | AppError::Tool(ToolError::Io(_))

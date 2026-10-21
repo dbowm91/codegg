@@ -19,6 +19,7 @@ review that never mutates files.
 | Containment policy + allowance sets | `src/security/sandbox/policy.rs` |
 | Backend registry (`BackendId`, `SandboxBackend`, `BACKENDS`) | `src/security/sandbox/backend.rs` |
 | Landlock backend (Linux) | `src/security/sandbox/landlock.rs` |
+| Opt-in Linux mount-view compiler | `src/security/sandbox/linux_mount_view.rs` |
 | Seatbelt backend (macOS) | `src/security/sandbox/seatbelt.rs` |
 | `SandboxConfig`, `SandboxLaunchSpec`, capability, status protocol | `src/security/sandbox.rs` |
 | Security policy (`action_for_command`, `action_for_findings`) | `src/security/policy.rs` |
@@ -85,13 +86,44 @@ Linux enforcement uses the maintained `landlock` crate.
 
 The trusted CodeGG Git subprocess policy is a separate boundary: it pins
 repository-configured hooks/fsmonitor/external diff/textconv/credential helper
-and signing behavior, then returns a typed capability outcome before spawn.
+and signing behavior, binds Git to the canonical worktree selected by the
+daemon, disables system/global config, then returns a typed capability outcome before spawn.
 Requests needing repository-controlled filters, merge drivers, executable
 aliases, or remote transport require a contained/mediated backend and do not
 fall through to a raw Git command. This does not make writable `.git`
-metadata immutable and does not establish network isolation. See
+metadata immutable and does not establish network isolation. Future nested
+repositories are permitted as workspace content; they must not redirect a
+trusted operation outside its selected worktree or introduce executable Git
+metadata on a trusted route. See
 `architecture/git.md` and the Linux execution-isolation corrective closure
 records for current evidence and open items.
+
+Trusted `egggit` preflight rejects a repository whose `.git/objects` or
+linked-worktree common object store already contains `objects/info/alternates`.
+For the exact trusted read allowlist, it creates a private object directory
+containing copies of regular loose and packed object files, then sets
+`GIT_OBJECT_DIRECTORY` to that directory. The private view omits
+`objects/info`; Git therefore cannot follow an alternate created in the
+repository after admission. Copying object bytes (rather than hard-linking
+them) also prevents later writes to a source object from changing a child's
+view. C011 retains a bounded daemon-owned cache of these immutable views;
+Linux inotify events invalidate changed generations, and cache misses use a
+SHA-256 inventory fingerprint plus a post-copy stability check. Other hosts
+use the fingerprint on cache hits. The cache is limited to four views and 2
+GiB, children hold leases until exit, and daemon shutdown releases the cached
+views. Cache pressure uses a command-scoped private snapshot; it never falls
+back to source objects or alternates.
+Unsupported object-store entries and setup failures return typed
+`BackendUnavailable[RepositoryAlias]` before spawn. This contract applies only
+to the explicit trusted read allowlist; object-writing mutations such as
+commit/tag creation remain on the separate C002 contained-Git path and are not
+qualified by this snapshot. A local measurement on a 105 MiB, 3,945-file
+object store on ext4 without reflink support took 2.95 seconds for view setup
+plus trusted `git status`; this is a material performance limit for fragmented
+repositories. The C011 repeated-use qualification materially lowers cache-hit
+cost, but fragmented cold misses still exceed the existing latency threshold;
+no production Git routing is enabled. The view does not make the repository's
+`.git` metadata immutable or establish network isolation.
 
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the
@@ -120,6 +152,7 @@ pub struct SandboxConfig {
 pub struct SandboxLaunchSpec {
     pub target: PathBuf,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>, // optional explicit, bounded target environment
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
     pub deny_paths: Vec<PathBuf>,  // never readable/writable, regardless of profile
@@ -132,16 +165,88 @@ serves every backend.
 **Linux launch contract (M002 interface slice):**
 `src/security/sandbox/linux_launch.rs` models requested filesystem, network,
 process/IPC, syscall, and resource dimensions under an immutable parent
-ceiling. `ManagedProcessService` routes today's constrained Linux launches
-through that contract and selects only the existing private helper. Its
+ceiling. `ManagedProcessService` routes constrained Linux launches through
+that contract. Existing requests select the private Landlock helper. An
+explicit internal `SandboxConfig::with_linux_protected_mount_view(true)`
+request selects the Bubblewrap protected-mount path; the option defaults off
+and is not a persisted user setting. Its
 read-only host probe reports namespace objects/limits, seccomp and proc
 kernel inputs, a fixed-location root-owned Bubblewrap candidate, Landlock,
 cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
-do not prove a child obtained enforcement. No namespace backend is registered
-or promoted. Offline networking, protected mounts, seccomp, and resource
-limits remain unavailable until their ADR and native evidence gates close.
-The existing Landlock-only default and unrestricted network behavior are
-unchanged.
+do not prove a child obtained enforcement. The mount path builds a fresh root
+from explicit read/write grants, opens bind sources without following links,
+checks captured device/inode identities, and overlays Git metadata read-only.
+It omits host `/proc`, `/run`, and `/sys` and rejects nested mounts beneath
+granted roots. The opt-in Bubblewrap candidate also refuses deny paths beneath
+writable grants: a mask on a host-backed writable directory entry can be
+detached by renaming that entry after mount setup. Denies outside writable
+grants remain absent or masked according to the compiled path scope.
+Bubblewrap's private JSON status is
+not used as proof that the requested command has not already started. The
+trusted in-sandbox gate reports a framed setup receipt over the private status
+pipe and waits for an acknowledgment from `ManagedProcessService` before it
+execs the requested command. The helper clears close-on-exec on both protocol
+descriptors before starting Bubblewrap; the in-sandbox gate consumes the
+acknowledgment descriptor and marks the status descriptor close-on-exec before
+the requested exec. Missing receipts, malformed status, unsupported options,
+or setup failure refuse the launch. The obtained result records the exact path
+scope. Network, PID/IPC, seccomp, and resource limits are not inferred from
+mount setup.
+
+An additional internal `SandboxConfig::with_linux_process_isolation(true)` opt-in
+composes the mount view with Bubblewrap's PID and IPC namespaces and a private
+`/proc` mount. It requires Landlock ABI 6 signal and abstract-Unix-socket scopes
+before starting Bubblewrap, which keeps the existing outbound-network policy
+separate from M005's offline intent. This scoped path is intentionally
+fail-closed on hosts without those ABI features. The helper closes inherited
+descriptors except stdio and its private status/ack descriptors before exec,
+and passes an architecture-checked `seccompiler` denylist to Bubblewrap for
+installation before target exec. The filter blocks namespace and legacy/new
+mount changes, tracing, selected kernel control interfaces, and namespace flags
+passed to `clone`; it does not implement network denial. Exact-head hosted run
+[`38764899922`](https://github.com/dbowm91/codegg/actions/runs/38764899922)
+passed M004 host-PID/proc and proc-content invisibility, signal, abstract/pathname
+socket, descriptor, seccomp, ptrace/process_vm denial, detached-session descendant
+cancellation, and Rustup/rustc probes, plus protected-mount and trusted-Git
+regressions. The runner relaxed its ephemeral unprivileged-userns AppArmor
+sysctl. Later exact-head qualification added Cargo workspace compatibility,
+offline-network probes, concurrent namespace separation, and C013 constrained
+PTY routing with descendant cleanup and restricted-userns refusal. Exact-source
+M004 qualification [run 39003759157](https://github.com/dbowm91/codegg/actions/runs/39003759157)
+also passed the daemon-owned constrained LSP duplex/procfs route, constrained
+PTY owner and route, protected-mount/Git regression slice, and restricted-host
+refusal checks. M004 is closed for the recorded hosted Linux configuration;
+broader host-policy qualification remains a rollout concern. This does not
+change C010's no-admission decision for the general M003 protected-mount
+backend.
+
+The interactive PTY owner now has an internal long-lived M004 launch path:
+`ManagedProcessService` retains the helper setup receipt/ack protocol while
+`InteractiveProcessService` owns the PTY descriptors, child wait, status
+monitor, resize, cancellation, and scheduler permit. The helper receives a
+bounded explicit environment in the private launch spec and rejects duplicate,
+malformed, or oversized entries; `HOME`, `TMPDIR`, and Git config roots remain
+helper-owned. When all three standard streams are terminals, the helper pins its
+own executable into the private mount view and uses it as an in-namespace
+bootstrap to establish a PID-namespace-visible foreground process group before
+execing the requested target in place. After exact-host owner qualification,
+the daemon routes the principal-resolved constrained profile through this
+owner. Unsupported setup fails before target start, handle creation, or success
+audit; there is no direct-spawn fallback. This work does not change M003's
+no-admission decision or claim offline networking. Constrained LSP uses a
+separate daemon-owned per-turn service bound to the resolved profile and
+canonical workspace. Initial starts and restarts use the M004 helper; the
+`egglsp` runtime retains its private status receipt through child exit while
+preserving JSON-RPC pipes. Failure to construct or launch this scope keeps the
+constrained LSP tools unavailable.
+
+ADR-0046 accepts Bubblewrap-based Linux namespace/mount composition as the
+selected architecture. The existing Landlock-only default and unrestricted
+network behavior are unchanged. The opt-in mount path is implemented but
+remains unqualified until the native protected-mount, descriptor, race,
+cancellation, and tool-compatibility matrix passes on supported Linux hosts.
+No default backend selection or rollout is authorized by this internal
+opt-in.
 
 Ordinary command syntax is not an additional authority boundary: once the
 workspace and requested action are authorized, quotes, wrappers, environment
@@ -182,6 +287,63 @@ a compat parser name mapping to `FullHost` vocabulary; it must never be
 constructed for new execution. Child sandboxes narrow via
 `resolve_child_sandbox()` and a worktree child's writable root is its
 leased worktree. Guard: `scripts/check_sandbox_policy_wiring.py`.
+
+Interactive PTY creation resolves the transport-bound principal's persisted
+sandbox preference in the daemon; the create DTO cannot select a profile.
+`FullHost` keeps the established PTY route. `ReadOnly` and `WorkspaceWrite`
+use the qualified M004 helper; preference lookup or helper setup failure
+refuses before spawn. The hosted C013 probes cover positive routing,
+descendant cleanup, and restricted-userns refusal-before-target.
+
+Linux offline networking is an explicit per-principal intent, separate from
+filesystem profile and approval mode. `/network offline` stores a revisioned
+preference; the legacy default remains unrestricted. The daemon copies the
+intent into an immutable execution snapshot or durable Test/Python job payload.
+Managed finite, Test, Python, PTY, and LSP owners require a constrained profile
+and the M004 process/IPC composition before requesting Bubblewrap
+`--unshare-net`; FullHost and unsupported platforms refuse an offline-required
+launch. Old preference rows and old job payloads decode as unrestricted.
+
+This production-owner wiring is a candidate pending exact-head hosted
+qualification. Kernel candidate probes have covered TCP/UDP, IPv4/IPv6, DNS,
+resolver rebinding, and inherited connected sockets, but the new authenticated
+preference-to-owner path still needs hosted evidence on supported hosts and
+refusal evidence under restricted user namespaces. Until that evidence is
+recorded, Linux M005 remains active and no broad supported-host admission is
+claimed.
+
+**The obtained network fact.** `NetworkEnforcement::Enforced` is reported only
+from an actually obtained managed-process result; a requested policy or
+namespace flag alone is not evidence. That rule is now implemented rather than
+stated:
+
+- `SandboxExecutionOutcome::Enforced` carries a typed `network:
+  NetworkEnforcement` — the boundary the launch **obtained**, never the one it
+  requested. The legacy Landlock route reports `Unrestricted`, which is
+  truthful: Landlock scopes the filesystem and has no network dimension.
+- The Bubblewrap route derives the boundary in
+  `obtained_network_enforcement()` from the **observed** setup receipt
+  (`decode_bubblewrap_json_status` → `BubblewrapObservedStatus::child_pid`)
+  *and* the requested dimension. Bubblewrap writes its `child-pid` status
+  record only after the namespace and mount setup completed and the sandbox
+  child was forked, so a requested namespace that could not be created aborts
+  the launch before that child exists and no receipt is produced. Neither half
+  is sufficient alone: the request alone is a hope, and the receipt alone does
+  not say which namespaces were created.
+- The claim is deliberately narrow. It is about the network namespace the
+  child was placed in. It says nothing about transports that do not use the
+  network, and M004's seccomp filter denies the child from creating or joining
+  a namespace of its own, so the child cannot widen it.
+
+**Policy snapshot versus per-launch fact.** `SandboxEnforcementDto` describes a
+*profile* on a *host*, which is not a launch. Its summary is therefore derived
+from its own fields (`summary_for`), and `with_network()` rebuilds the summary
+when the network fact changes, so the summary can never contradict the field
+it summarises. A snapshot with an `OfflineRequired` intent reports its network
+as `Unavailable` — "verified per child launch, not by the policy snapshot" —
+rather than claiming an unrestricted network next to a boundary it does not
+establish. The obtained boundary reaches the caller that launched the child,
+on the launch result.
 
 **Scheduler-owned Tool Program binding:** `ToolProgramExecutor` is registered
 during `CoreDaemon` construction, which routinely happens before any frontend
@@ -291,7 +453,12 @@ Persistent writes are restricted to approved workspace roots, authorized
 session scratch roots, and stateless device nodes. A model process with a
 trusted session identity receives an owner-private directory under the
 per-user CodeGG cache root (`dirs::cache_dir()/codegg`) as
-`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. This is kept outside the
+`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. The per-user cache root the
+allocator depends on is created private (0700) when the product creates it, so
+the process umask cannot produce a root the ownership check would then refuse;
+a cache root that already exists is validated rather than re-permissioned, and
+one another user could write to is refused with a typed `WrongOwner` error
+instead of being silently tightened. This is kept outside the
 macOS credential-denied daemon data root; scratch contents are disposable and
 may be removed by host cache maintenance. The Required launch adds the exact
 path as a read/write root. Durable child runs receive a separate owner-private

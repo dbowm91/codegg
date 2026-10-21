@@ -285,6 +285,11 @@ async fn a_process_class_job_is_refused_at_submission() {
             command: "echo hello".to_owned(),
             argv: None,
             cwd: None,
+            // A legacy-shaped payload: no captured profile ceiling and the
+            // unrestricted network intent, which is what this payload decodes
+            // to when the fields are absent.
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: codegg_core::jobs::ResourceRequest::default(),
         timeout: None,

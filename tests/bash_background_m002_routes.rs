@@ -40,7 +40,7 @@ async fn harness() -> (
         .get_or_register(&workspace_root)
         .await
         .expect("register");
-    let workspace_root = root.path().to_path_buf();
+    let workspace_root = root.path().canonicalize().expect("canonical workspace");
     std::mem::forget(root);
     let services = WorkspaceServiceRegistry::new(
         workspace_registry,
@@ -114,9 +114,11 @@ fn bash_tool_with(
     workspace_root: std::path::PathBuf,
 ) -> codegg::tool::bash::BashTool {
     codegg::tool::bash::BashTool::default()
-        .with_workspace_root(workspace_root)
+        .with_workspace_root(workspace_root.clone())
         .with_submission(submission)
         .with_job_notifications(notifications)
+        .with_workspace_root(workspace_root.clone())
+        .with_allowed_paths(vec![workspace_root.to_string_lossy().into_owned()])
 }
 
 #[test]
@@ -219,6 +221,8 @@ async fn background_shell_handle_subscribe_and_single_notice() {
                     command: "echo a | cat".into(),
                     argv: Some(vec!["sh".into(), "-c".into(), "echo a | cat".into()]),
                     cwd: Some("/tmp".into()),
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: ResourceRequest::for_kind(JobKind::Shell),
                 timeout: Some(Duration::from_secs(60)),
@@ -305,6 +309,8 @@ async fn identical_commands_distinct_ids_same_invocation_reuses() {
             command: cmd.into(),
             argv: None,
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Shell),
         timeout: None,

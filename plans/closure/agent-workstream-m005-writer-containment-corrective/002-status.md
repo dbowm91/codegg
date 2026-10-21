@@ -3,9 +3,9 @@
 Status: closed
 Source implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/002-durable-writer-permit-and-quarantine.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C002)
-Repository baseline reviewed: `aa65cf7c` (post-C001, post-ADR-0044 acceptance `37a82843`)
+Repository baseline reviewed: `aa65cf7c` (post-C001, post-ADR-0047 acceptance `37a82843`)
 Implementation commits: `190f5df1` (pre-existing branch lints, see §4.2), `7fb56e11` (the permit, the adapter, the schema and the qualification tests)
-Decision: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
+Decision: `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
 
 ## 1. Executive finding
 
@@ -340,7 +340,7 @@ operator with proven quiescence. There is no automatic path out of quarantine.
   tracks the highest wired schema migration.
 - The migration is idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF
   NOT EXISTS`), so a re-run against a partially migrated database is safe.
-- A database that predates v84 simply has no permit rows; nothing reads them
+- A database that predates v86 simply has no permit rows; nothing reads them
   until a permit is first taken.
 - The `user_prompt_queue` refactor changed **no** stored shape. The queue
   store's transaction shape is byte-for-byte the same shape it was guarded
@@ -371,7 +371,7 @@ operator with proven quiescence. There is no automatic path out of quarantine.
   with proven quiescence can, and it never touches the checkout.
 - **The permit is not a sandbox and not an exclusion.** It coordinates
   CodeGG's own writers only. An unrelated process running as the same user is
-  outside its guarantee, exactly as ADR-0044 clause 1 requires. The user-facing
+  outside its guarantee, exactly as ADR-0047 clause 1 requires. The user-facing
   label stays "CodeGG-mediated serialized checkout".
 
 ## 9. Documentation and operations
@@ -416,7 +416,7 @@ No critical or high finding remains. Nothing here blocks C003.
   all exist.
 - **C003 (native file/Git writer interposition, Q2): unblocked** by this
   closure, subject to its own predecessor check. C003's plan header now reads
-  "accepted ADR-0044 (option B, 2026-10-19)". C003 remains *not started*.
+  "accepted ADR-0047 (option B, 2026-10-19)". C003 remains *not started*.
 - **C004, C005, C006: still blocked**, on their own ordered predecessors.
 - **Parent M005: still not closed.** C001–C006 and the Q1–Q5 evidence are all
   still required, and C006 must produce a real production path.

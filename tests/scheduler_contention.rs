@@ -174,6 +174,8 @@ fn build_spec(ws: &WorkspaceId, priority: JobPriority) -> NewJob {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "ok".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

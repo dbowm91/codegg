@@ -24,6 +24,9 @@ use super::scheduler::{JobScheduler, JobSchedulerError};
 
 const MAX_SUBMISSION_KEY_BYTES: usize = 256;
 const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+const MAX_SUBMISSION_LABELS: usize = 64;
+const MAX_LABEL_KEY_BYTES: usize = 128;
+const MAX_LABEL_VALUE_BYTES: usize = 4096;
 
 /// Caller-provided retry identity. It is deliberately opaque: the daemon
 /// never parses it or treats it as a database identifier.
@@ -70,6 +73,8 @@ pub enum JobSubmissionError {
     SubmissionKeyConflict,
     #[error("job payload exceeds the {MAX_PAYLOAD_BYTES}-byte limit")]
     PayloadTooLarge,
+    #[error("job metadata exceeds its bounded label limits")]
+    LabelsTooLarge,
     #[error("unsupported job payload for kind '{0}'")]
     InvalidPayload(String),
     #[error("active goal lookup failed: {0}")]
@@ -245,7 +250,19 @@ impl JobSubmissionService {
     pub async fn submit(
         &self,
         key: Option<SubmissionKey>,
+        spec: NewJob,
+    ) -> Result<SubmittedJob, JobSubmissionError> {
+        self.submit_with_labels(key, spec, HashMap::new()).await
+    }
+
+    /// Submit a job with caller-owned, bounded metadata that must be
+    /// available to the executor at first dispatch. These labels are
+    /// persisted atomically with the job before it is enqueued.
+    pub async fn submit_with_labels(
+        &self,
+        key: Option<SubmissionKey>,
         mut spec: NewJob,
+        caller_labels: HashMap<String, String>,
     ) -> Result<SubmittedJob, JobSubmissionError> {
         if !self.scheduler.is_enabled() {
             return Err(JobSubmissionError::SchedulerDisabled);
@@ -296,7 +313,19 @@ impl JobSubmissionService {
         }
 
         apply_resource_policy(&mut spec);
-        let labels = self.goal_provenance_labels(&spec).await?;
+        let mut labels = self.goal_provenance_labels(&spec).await?;
+        for (name, value) in caller_labels {
+            labels.entry(name).or_insert(value);
+        }
+        if labels.len() > MAX_SUBMISSION_LABELS
+            || labels.iter().any(|(name, value)| {
+                name.is_empty()
+                    || name.len() > MAX_LABEL_KEY_BYTES
+                    || value.len() > MAX_LABEL_VALUE_BYTES
+            })
+        {
+            return Err(JobSubmissionError::LabelsTooLarge);
+        }
         let fingerprint = fingerprint(&spec);
 
         // Check the in-memory retry index without holding its lock across
@@ -704,6 +733,8 @@ mod tests {
                 cwd: Some("/tmp".into()),
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1022,6 +1053,8 @@ mod tests {
             source_hash: Some(source_hash.clone()),
             cwd: Some("/tmp".into()),
             timeout_secs: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         };
 
         let key = SubmissionKey::new(format!("python:{source_hash}")).expect("key");
@@ -1067,6 +1100,11 @@ mod tests {
         job.payload = JobPayload::ManagedArgv {
             argv: vec!["cargo".into(), "build".into()],
             cwd: None,
+            // Legacy-shaped payload: no captured profile ceiling and the
+            // unrestricted network intent, which is what these payloads
+            // decode as when the fields are absent.
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         };
         apply_resource_policy(&mut job);
         assert_eq!(job.resource_request.keyed_quotas.len(), 1);
@@ -1091,6 +1129,11 @@ mod tests {
         job.payload = JobPayload::ManagedArgv {
             argv: vec!["cargo".into(), "build".into()],
             cwd: None,
+            // Legacy-shaped payload: no captured profile ceiling and the
+            // unrestricted network intent, which is what these payloads
+            // decode as when the fields are absent.
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         };
         // A request that names the legacy global key, or a quota of its
         // own, must not survive the boundary.

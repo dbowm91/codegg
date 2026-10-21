@@ -39,6 +39,11 @@ pub struct GitTool {
     read_only_only: bool,
     /// Agent name for the refusal message. Never used for routing.
     agent_label: String,
+    /// C007: the private index publication backend.
+    ///
+    /// `None` means the `Add` mutation is refused rather than downgraded to
+    /// the legacy in-place `git add` route.
+    publication: Option<std::sync::Arc<crate::git_publication::GitIndexPublisher>>,
 }
 
 impl GitTool {
@@ -50,6 +55,7 @@ impl GitTool {
             child_policy: None,
             read_only_only: false,
             agent_label: "unknown".to_string(),
+            publication: None,
         }
     }
 
@@ -80,6 +86,15 @@ impl GitTool {
 
     pub fn with_child_policy(mut self, policy: ChildGitPolicy) -> Self {
         self.child_policy = Some(policy);
+        self
+    }
+
+    /// Inject the C007 private index publication backend.
+    pub fn with_publication(
+        mut self,
+        publication: std::sync::Arc<crate::git_publication::GitIndexPublisher>,
+    ) -> Self {
+        self.publication = Some(publication);
         self
     }
 
@@ -414,6 +429,7 @@ impl GitTool {
                 child_policy: self.child_policy,
                 read_only_only: self.read_only_only,
                 agent_label: self.agent_label.clone(),
+                publication: self.publication.clone(),
             };
             if let Some(result) = tool.try_structured_read(subcommand, &args).await {
                 return result;
@@ -660,6 +676,12 @@ impl GitTool {
         };
         let exec = match audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()) {
             Some(authorization) => exec.with_execution_authorization(authorization),
+            None => exec,
+        };
+        // C007: the `Add` mutation publishes the repository index through the
+        // private index publication backend.
+        let exec = match self.publication.clone() {
+            Some(publication) => exec.with_publication(publication),
             None => exec,
         };
         let paths = || -> Vec<String> {
@@ -1263,6 +1285,15 @@ fn map_mutation_err(e: GitMutationError) -> ToolError {
         GitMutationError::StateMismatch { expected, actual } => ToolError::Execution(format!(
             "state mismatch: expected operation '{expected}' but found '{actual}' on disk"
         )),
+        GitMutationError::PublicationConflict(conflict) => {
+            ToolError::Execution(format!("publication conflict: {conflict}"))
+        }
+        GitMutationError::PublicationRefused(refusal) => {
+            ToolError::Execution(format!("publication refused: {refusal}"))
+        }
+        GitMutationError::PublicationFailed(message) => {
+            ToolError::Execution(format!("publication failed: {message}"))
+        }
     }
 }
 

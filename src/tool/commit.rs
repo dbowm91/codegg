@@ -27,6 +27,11 @@ pub struct CommitTool {
     workdir: PathBuf,
     run_store: Option<std::sync::Arc<dyn codegg_core::run_store::RunStore>>,
     provider: Option<std::sync::Arc<dyn Provider>>,
+    /// C007: the private index publication backend.
+    ///
+    /// `None` means the `Add` mutation is refused rather than downgraded to
+    /// the legacy in-place `git add` route.
+    publication: Option<std::sync::Arc<crate::git_publication::GitIndexPublisher>>,
 }
 
 impl CommitTool {
@@ -35,6 +40,7 @@ impl CommitTool {
             workdir: crate::tool::util::unresolved_workspace_root(),
             run_store: None,
             provider: None,
+            publication: None,
         }
     }
 
@@ -51,6 +57,15 @@ impl CommitTool {
         self
     }
 
+    /// Inject the C007 private index publication backend.
+    pub fn with_publication(
+        mut self,
+        publication: std::sync::Arc<crate::git_publication::GitIndexPublisher>,
+    ) -> Self {
+        self.publication = Some(publication);
+        self
+    }
+
     /// Override provider selection for callers that already own a provider
     /// and for focused nested-request tests.
     pub fn with_provider(mut self, provider: std::sync::Arc<dyn Provider>) -> Self {
@@ -60,7 +75,13 @@ impl CommitTool {
 
     /// Build a `GitMutationExecutor` rooted at this tool's workdir.
     fn executor(&self) -> GitMutationExecutor {
-        GitMutationExecutor::new().with_env_policy(GitEnvPolicy::default())
+        let exec = GitMutationExecutor::new().with_env_policy(GitEnvPolicy::default());
+        // C007: the `Add` mutation publishes the repository index through the
+        // private index publication backend.
+        match self.publication.clone() {
+            Some(publication) => exec.with_publication(publication),
+            None => exec,
+        }
     }
 
     /// Generate a commit message from the staged diff via the LLM.
@@ -174,6 +195,15 @@ impl CommitTool {
             GitMutationError::StateMismatch { expected, actual } => ToolError::Execution(format!(
                 "state mismatch: expected operation '{expected}' but found '{actual}' on disk"
             )),
+            GitMutationError::PublicationConflict(conflict) => {
+                ToolError::Execution(format!("publication conflict: {conflict}"))
+            }
+            GitMutationError::PublicationRefused(refusal) => {
+                ToolError::Execution(format!("publication refused: {refusal}"))
+            }
+            GitMutationError::PublicationFailed(message) => {
+                ToolError::Execution(format!("publication failed: {message}"))
+            }
         }
     }
 }

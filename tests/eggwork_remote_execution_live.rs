@@ -272,9 +272,152 @@ async fn ensure_helper_built(path: &Path) {
         .await;
 }
 
+// ── Trusted fixture staging ───────────────────────────────────────────────────
+
+/// The file name the pinned node discovers its sandbox helper under.
+///
+/// `TrustedLandlockSetup::discover_sibling` resolves the helper as a
+/// sibling of the node's own executable, so the staged pair must keep the
+/// helper under exactly this name.
+const SANDBOX_HELPER_NAME: &str = "eggwork-sandbox-helper";
+
+/// The file name the staged node binary keeps.
+const STAGED_NODE_NAME: &str = "codegg-eggwork-test-node";
+
+/// Give a staged file the mode the node's trust check requires: executable,
+/// and never group- or world-writable.
+fn set_trusted_mode(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|error| panic!("set trusted mode on {path:?}: {error}"));
+}
+
+/// Set a directory's mode to owner-only.
+///
+/// `tempfile` creates its directories with the *process umask* — it does
+/// not narrow them to owner-only — so on a host with a permissive umask the
+/// staging directory would be group-writable, and the node's trust check
+/// refuses a helper whose directory is group-writable. The mode is set
+/// explicitly so the trust chain does not follow the operator's umask.
+fn set_private_directory_mode(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .unwrap_or_else(|error| panic!("set private mode on {path:?}: {error}"));
+}
+
+/// Place the node binary into the staging directory.
+///
+/// The node binary is not trust-checked — only its sandbox helper is — so a
+/// hard link is enough and keeps the 100+ MiB binary cheap. A copy is the
+/// fallback when the staging directory lives on another filesystem.
+fn stage_node_binary(source: &Path, destination: &Path) {
+    if std::fs::hard_link(source, destination).is_err() {
+        std::fs::copy(source, destination)
+            .unwrap_or_else(|error| panic!("stage {source:?}: {error}"));
+    }
+}
+
+/// Place the sandbox helper into the staging directory as an independent
+/// copy with an explicitly trusted mode.
+///
+/// A copy — not a link — is deliberate: the staged helper must carry the
+/// mode this fixture gives it, independently of the build artifact's own
+/// mode, so the guarantee is the staging's and not a side effect on the
+/// build tree.
+fn stage_sandbox_helper(source: &Path, destination: &Path) {
+    std::fs::copy(source, destination).unwrap_or_else(|error| panic!("stage {source:?}: {error}"));
+    set_trusted_mode(destination);
+}
+
+/// Mirror of the pinned node's sandbox-helper trust check.
+///
+/// `eggwork-runner`'s `verify_trusted_helper` (pinned revision `e6a5d82`)
+/// refuses a helper that is not a regular file, is a symlink, is owned by
+/// neither root nor the invoking user, is group- or world-writable, is not
+/// executable, or has a group- or world-writable directory above it. A
+/// root-owned sticky directory is exempt. This mirror lets the fixture
+/// assert the staged pair without reaching into the pinned crate.
+///
+/// The invoking user is taken from the owner of the helper's own directory:
+/// the fixture creates that directory, so its owner is the user who runs the
+/// qualification.
+fn helper_is_trusted(helper: &Path) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let Some(parent) = helper.parent() else {
+        return false;
+    };
+    let Ok(parent_metadata) = std::fs::metadata(parent) else {
+        return false;
+    };
+    let invoking_uid = parent_metadata.uid();
+    let Ok(metadata) = std::fs::symlink_metadata(helper) else {
+        return false;
+    };
+    let mode = metadata.permissions().mode();
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || (metadata.uid() != 0 && metadata.uid() != invoking_uid)
+        || mode & 0o022 != 0
+        || mode & 0o111 == 0
+    {
+        return false;
+    }
+    if !parent_metadata.is_dir()
+        || (parent_metadata.uid() != 0 && parent_metadata.uid() != invoking_uid)
+        || parent_metadata.permissions().mode() & 0o022 != 0
+    {
+        return false;
+    }
+    let mut ancestor = parent;
+    while let Some(next) = ancestor.parent() {
+        let Ok(metadata) = std::fs::metadata(next) else {
+            return false;
+        };
+        let mode = metadata.permissions().mode();
+        let sticky_root_directory = metadata.is_dir() && metadata.uid() == 0 && mode & 0o1000 != 0;
+        if !metadata.is_dir()
+            || ((metadata.uid() != 0 && metadata.uid() != invoking_uid) && !sticky_root_directory)
+            || (mode & 0o022 != 0 && !sticky_root_directory)
+        {
+            return false;
+        }
+        ancestor = next;
+    }
+    true
+}
+
+/// Stage the node and its sandbox helper in a private directory.
+///
+/// The pinned Eggwork node refuses a sandbox helper it cannot trust: the
+/// helper must be executable, owned by the invoking user, and neither it
+/// nor any directory above it may be group- or world-writable. Cargo
+/// installs build artifacts with the *process umask*, so on a host with a
+/// permissive umask the helper lands group-writable and the node stops
+/// advertising `isolation.landlock.workspace-rw.v1` — the live isolation
+/// qualifications then fail on a capability refusal with the tree, the
+/// fixture, and the code all identical, and the outcome follows the
+/// operator's umask instead of the product.
+///
+/// Staging the pair in a private directory makes the trust chain depend on
+/// the fixture alone: the staged directory is owner-only, the staged helper
+/// is explicitly non-writable by group or other, and the only ancestor
+/// above it is the system temp root (sticky and root-owned, which the
+/// trust check exempts).
+fn stage_trusted_fixtures(node_binary: &Path, helper: &Path) -> (tempfile::TempDir, PathBuf) {
+    let staging = tempfile::TempDir::new().expect("private staging directory");
+    set_private_directory_mode(staging.path());
+    let staged_node = staging.path().join(STAGED_NODE_NAME);
+    stage_node_binary(node_binary, &staged_node);
+    stage_sandbox_helper(helper, &staging.path().join(SANDBOX_HELPER_NAME));
+    (staging, staged_node)
+}
+
 struct LiveNode {
-    _temp: tempfile::TempDir,
+    // The child is declared first so the node is killed before the staged
+    // fixtures (and their directory) are removed.
     child: Option<tokio::process::Child>,
+    _staging: tempfile::TempDir,
+    _temp: tempfile::TempDir,
     node: ResolvedEggworkNode,
     factory: Arc<CountingFactory>,
 }
@@ -290,6 +433,9 @@ impl LiveNode {
     async fn start_with_options(telemetry_provider: bool) -> Self {
         init_crypto();
         let temp = tempfile::TempDir::new().unwrap();
+        // The TLS material below (including the client key) lives in this
+        // directory, so it must not be writable by group or other.
+        set_private_directory_mode(temp.path());
         let (root, ca, ca_key) = test_ca();
         let server_identity = issue_identity(&ca, &ca_key, vec!["localhost".to_string()]);
         let client_identity =
@@ -310,7 +456,13 @@ impl LiveNode {
 
         let helper = helper_binary();
         ensure_helper_built(&helper).await;
-        let mut command = tokio::process::Command::new(&helper);
+        // The node discovers its sandbox helper as a sibling of its own
+        // executable and refuses a helper it cannot trust, so the pair is
+        // staged in a private directory whose modes do not follow the
+        // operator's umask.
+        let (staging, node_binary) =
+            stage_trusted_fixtures(&helper, &sandbox_helper_binary(&helper));
+        let mut command = tokio::process::Command::new(&node_binary);
         command
             .arg("--node-id")
             .arg("live-node-1")
@@ -443,8 +595,9 @@ impl LiveNode {
             resource_limits: None,
         };
         Self {
-            _temp: temp,
             child: Some(child),
+            _staging: staging,
+            _temp: temp,
             node,
             factory: Arc::new(CountingFactory::new()),
         }
@@ -662,7 +815,12 @@ fn argv_record(argv: Vec<String>) -> JobRecord {
         kind: JobKind::Build,
         source: JobSource::Interactive,
         priority: JobPriority::Interactive,
-        payload: JobPayload::ManagedArgv { argv, cwd: None },
+        payload: JobPayload::ManagedArgv {
+            argv,
+            cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        },
         resource_request: ResourceRequest::default(),
         timeout: None,
         retry_policy: RetryPolicy::no_retry(),
@@ -722,7 +880,12 @@ async fn create_remote_job(
             kind: JobKind::Build,
             source: JobSource::Interactive,
             priority: JobPriority::Interactive,
-            payload: JobPayload::ManagedArgv { argv, cwd: None },
+            payload: JobPayload::ManagedArgv {
+                argv,
+                cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            },
             resource_request: ResourceRequest::default(),
             timeout: None,
             retry_policy: RetryPolicy::no_retry(),
@@ -1216,6 +1379,8 @@ async fn live_scheduler_end_to_end_remote_only() {
                 payload: JobPayload::ManagedArgv {
                     argv: vec!["sh".to_string(), "build.sh".to_string()],
                     cwd: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: ResourceRequest::default(),
                 timeout: None,
@@ -1471,4 +1636,89 @@ async fn live_node_without_a_provider_reports_no_observation() {
     assert!(snapshot.diagnostic.is_some());
 
     live.shutdown().await;
+}
+
+// ── Fixture trust contract ───────────────────────────────────────────────────
+
+/// The live isolation qualifications depend on the pinned node *trusting* its
+/// sandbox helper: an untrusted helper makes the node drop
+/// `isolation.landlock.workspace-rw.v1`, and the executor then refuses every
+/// required-isolation run.
+///
+/// Cargo installs that helper with the process umask, so a host with a
+/// permissive umask used to produce a group-writable helper inside a
+/// group-writable target directory. The node refused it, five live
+/// qualifications failed on an otherwise identical tree, and the outcome
+/// followed the operator's umask instead of the product. Staging must make
+/// the trust chain independent of both the umask and the build tree's own
+/// directory modes.
+#[test]
+fn a_staged_sandbox_helper_is_trusted_whatever_the_umask() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // The build tree as cargo leaves it under a permissive umask: the
+    // helper is group-writable, and so is the directory above it.
+    let source = tempfile::tempdir().expect("build directory");
+    let node = source.path().join(STAGED_NODE_NAME);
+    let helper = source.path().join(SANDBOX_HELPER_NAME);
+    std::fs::write(&node, b"node").expect("node");
+    std::fs::write(&helper, b"helper").expect("helper");
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o775))
+        .expect("group-writable helper");
+    std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o775))
+        .expect("group-writable build directory");
+
+    // The un-staged helper is exactly what the node refuses; the mirror
+    // discriminates, so a staging that did nothing could not pass.
+    assert!(
+        !helper_is_trusted(&helper),
+        "a group-writable helper in a group-writable directory must not be trusted"
+    );
+
+    let (staging, staged_node) = stage_trusted_fixtures(&node, &helper);
+    let staged_helper = staging.path().join(SANDBOX_HELPER_NAME);
+
+    assert!(
+        helper_is_trusted(&staged_helper),
+        "the staged helper must be trusted: the node refuses an untrusted helper \
+         and then drops the required-isolation capability"
+    );
+    // The guarantee is the staging's, not a side effect on the build tree:
+    // the build artifact keeps the mode the operator's umask gave it.
+    let source_mode = std::fs::metadata(&helper)
+        .expect("source helper metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        source_mode & 0o7777,
+        0o775,
+        "staging must not rewrite the build artifact's mode: {source_mode:04o}"
+    );
+    let mode = std::fs::metadata(&staged_helper)
+        .expect("staged helper metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o022,
+        0,
+        "the staged helper must not be group- or world-writable: {mode:04o}"
+    );
+    assert_ne!(
+        mode & 0o111,
+        0,
+        "the staged helper must stay executable: {mode:04o}"
+    );
+    let staged_mode = std::fs::metadata(staging.path())
+        .expect("staging directory metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        staged_mode & 0o022,
+        0,
+        "the staging directory must not be group- or world-writable: {staged_mode:04o}"
+    );
+    assert!(
+        staged_node.exists(),
+        "the staged node binary must exist next to the staged helper"
+    );
 }

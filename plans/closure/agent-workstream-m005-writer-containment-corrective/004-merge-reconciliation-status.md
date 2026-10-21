@@ -9,10 +9,11 @@ qualification of the merged tree, as §11 of the source addendum requires:
 "later supplemental evidence appended/linked rather than its history
 overwritten".
 
-It now records **two** reconciliations: the first against `origin/main`
-`a9f70375` (§1–§8) and the second against `origin/main` `9c9ffb763`
-(§9, 2026-10-21). §9 is appended, not folded in — the first reconciliation's
-inventory and defect list stand as they were written.
+It now records **three** reconciliations: the first against `origin/main`
+`a9f70375` (§1–§8), the second against `origin/main` `9c9ffb763` (§9,
+2026-10-21) and the third against `origin/main` `2c1953347` (§10, 2026-10-21).
+§9 and §10 are appended, not folded in — the earlier reconciliations'
+inventories and defect lists stand as they were written.
 
 Source corrective addendum:
 
@@ -59,7 +60,8 @@ left the merged tree red:
   since it forked. The ADR integrity guard failed on the duplicate *and* on
   every reference to the branch's ADR, because only one path can be canonical
   for a number. The branch's writer contract is renumbered **`ADR-0044`** and
-  every reference to it is updated (§3.1).
+  every reference to it is updated (§3.1). A **second** collision with `main`
+  later renumbered it again, to **`ADR-0047`** — see §10.1.
 - **`main`'s new scheduler-lifecycle publisher did not carry the M007 scope
   fields.** The merged tree therefore did not compile (§3.2).
 
@@ -328,10 +330,11 @@ This record adds to, and does not rewrite, the evidence history:
 - `002-status.md` (C002) is unchanged apart from the ADR renumbering.
 - `003-status.md` (C003) is unchanged apart from the ADR renumbering.
 - The branch's writer-contract ADR is preserved under its new number, as
-  `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md`.
-  Its previous filename carried the number `ADR-0042`, which `main` had
-  already taken; its content, its decision and its acceptance record are
-  unchanged.
+  `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md`.
+  Its original filename carried the number `ADR-0042`, which `main` had
+  already taken (§3.1), and it then carried `ADR-0044`, which `main` took in a
+  later advance (§10.1); its content, its decision and its acceptance record
+  are unchanged.
 - `main`'s `ADR-0042-composer-normal-mode-key-ownership.md` and `ADR-0043`
   are untouched.
 
@@ -523,3 +526,223 @@ unchanged.
   two-agent race inside one daemon process is not claimed.
 - **The earlier reconciliation's history is not rewritten.** §1–§8 stand as
   the record of the first reconciliation against `a9f70375`.
+
+## 10. Third reconciliation — `origin/main` `2c1953347` (2026-10-21)
+
+The second reconciliation (§9) reconciled the branch with `origin/main`
+`9c9ffb763`. `main` then moved on again — **323 commits** — and this section
+records the third reconciliation, appended rather than folded into the earlier
+ones, per this record's own kind.
+
+`main` at `2c1953347` is the Linux sandbox admission and ADR cleanup (PR #149).
+Its advance is the largest this branch has had to absorb, and it is not
+count-neutral: it added a `CoreRequest` variant, a `CoreResponse` variant,
+`codegg-core` modules, tool registrations, an integration test file, a storage
+migration and two ADRs.
+
+### 10.1 Inventory
+
+Merge-base `239f06e7f` ("docs(plans): record the census's tri-state verdict in
+the M006 rows"). `main` carried **323** commits above that base; the branch
+carried **88**. Eight files conflicted, in **16 hunks**. The writer-fence
+boundary was untouched again: none of `src/tool/writer_fence.rs`,
+`src/core/writer_fence.rs`, `crates/codegg-core/src/writer_permit.rs`,
+`docs/writer-disposition.toml` or `scripts/check_writer_disposition.py`
+conflicted.
+
+| Conflict | Resolution |
+|---|---|
+| `crates/codegg-core/src/error.rs` | Additive union: the branch's `ToolError::ProcessDenied` (C005) and `main`'s `ToolError::BackendUnavailable`. Neither side replaced the other. |
+| `src/managed_process.rs` (4 hunks) | Additive union of four request fields: the branch's `process_admission` / `process_kind` (C005) and `main`'s `required_sandbox_profile` / `required_network_intent`. Both destructuring sites bind each side's fields. |
+| `src/scheduler/executors.rs` | Union: the branch's C005 process-admission refusal runs *before* the payload is destructured, and `main`'s extended destructuring (`sandbox_profile`, `network_intent`) is kept. |
+| `crates/codegg-core/tests/user_prompt_queue.rs` | The branch's durable **floor** wins over `main`'s hard-coded `assert_eq!(STORAGE_LAYOUT_VERSION, 85)`. The floor reads the version out of the database, so it is a test; a comparison between two constants is folded away by the compiler, so it is not. `main`'s literal was also already wrong after the renumbering in §10.2. |
+| `crates/codegg-core/tests/user_prompt_queue_mutation.rs` | The same floor form, for the same reason. |
+| `tests/job_background_test_slice.rs` | Union: `main`'s authorization context (a real receipt) and the branch's `process_admission: None` — this fixture is not under the restricted shared-checkout profile, so the launch carries no admission policy. |
+| `tests/tool_execution.rs` (4 hunks) | `main`'s root at the marker's *own* directory wins for the allowlist test, so the denial it asserts comes from the allowlist rather than from a path outside the tool's workspace root. The branch's `rooted_bash_tool()` helper — used by fifteen other tests in the same file — is kept everywhere else. |
+| `architecture/overview.md` (3 hunks) | The Verified-counts table was **re-measured**, not copied from either side (§10.4). |
+
+### 10.2 Two identity collisions the auto-merge did not report
+
+The first reconciliation's ADR collision was *reported* by the guard. These two
+were not: both sides allocated the same durable identities independently, and
+git's auto-merge produced a tree that no side had ever asserted.
+
+**The storage migration numbers collided.** Both sides allocated v84 and v85.
+`main` published v84 (the additive network-intent preference) and v85 (the
+private index publication journal); this branch's writer permit and session
+launch took v84 and v85 as well. Because the two sides' migrations were added
+at different anchors in `crates/codegg-core/src/session/schema.rs`, the
+auto-merge **concatenated both** rather than conflicting: the merged tree held
+two `migrate_v84` functions and two `migrate_v85` functions, which is a
+duplicate-definition compile error.
+
+The branch yields the lower numbers to `main` — the same rule its ADR
+renumbering follows, and the same rule the branch already used when `main`
+took ADR-0042 (§3.1). The writer permit becomes **v86** and the session launch
+**v87**, and `STORAGE_LAYOUT_VERSION` moves 85 → **87**. The renumbering is
+additive and changes the meaning of no published database: every version
+`main` can produce is still below the branch's two.
+
+**The ADR numbers collided again.** `main` published
+`ADR-0044-contained-git-live-objects-and-metadata-authority.md`; this branch's
+writer-contract ADR was still numbered `ADR-0044` from the first
+reconciliation. `scripts/check_adr_integrity.py` failed on the duplicate and
+on all eleven references to the branch's ADR. The branch's ADR is renumbered
+**`ADR-0047`** (§10.4): the file is renamed, its own mentions updated, and
+every reference to it updated — **24 documents**, including
+`plans/adrs/README.md`, `architecture/writer_permit.md`,
+`docs/writer-disposition.toml`, `src/tool/process_admission.rs`, the agent-
+workstream roadmap, the M005 corrective addendum, every
+implementation/evidence/closure document of the corrective line, and the
+M005 rows of `plans/registry.md`. `main`'s ADR-0044 and every reference to it
+are untouched.
+
+### 10.3 Three defects the merged tree did not compile or pass its guards under
+
+**The merged tree did not compile.** `main` added two fields to four
+`codegg_core::jobs::JobPayload` variants — `Test`, `ManagedArgv`, `Shell` and
+`Python` — namely `sandbox_profile` and `network_intent`, and the branch's own
+code constructs those payloads without them. Three construction sites are
+filled with `sandbox_profile: None` and
+`network_intent: NetworkIntent::LegacyUnrestricted`, which is what a legacy
+payload decodes to when the fields are absent — the same spelling `main`'s own
+tests use: the two M007 build-class binding tests in
+`src/scheduler/submission.rs` and the C005 suite's shell job in
+`tests/process_denial_c005.rs`. The remaining `JobPayload` constructions in
+the tree are match patterns, not constructions, and needed no change.
+
+**The reviewed read-only palette no longer matched the live catalog.** The
+branch's C001 gate asserts that the live catalog's read-only set equals a
+reviewed palette of tool *names*. `main` changed how the LSP tools are
+registered: a profile that requires filesystem containment attaches a
+**disabled stub** for `lsp` and `lsp_read` unless the daemon supplies an
+M004-scoped service, and a disabled stub carries no contract of its own, so
+its effect class is the conservative legacy default rather than `ReadOnly`.
+The palette is therefore read from a registry built at the `FullHost` profile,
+where the read-only tools are live; reading it from a constrained registry
+would make the reviewed set flip with the profile and would report `lsp_read`
+as "no longer read-only" when it is exactly as read-only as it was. The
+palette itself is unchanged — a reviewed tool is not dropped to make a test
+pass, and a live read-only tool is not un-reviewed.
+
+**The writer-disposition guard failed on a module that does not write.** The
+guard strips test-only module bodies before it scans a file for write
+primitives, so a module whose only writes live in its unit tests is not
+counted as a production writer root. `main` added `src/lsp/m004.rs`, whose
+test module is gated by `#[cfg(all(test, target_os = "linux"))]` — a predicate
+the stripper did not recognise, so the module's test-only `std::fs::write`
+calls were read as production writes, and the guard demanded a disposition row
+for a module that has none.
+
+The fix is in the **guard**, not in the manifest: a disposition row would have
+recorded a false positive as truth. The stripper now recognises *any* test-only
+`cfg` predicate — `test` alone, `all(...)` with any test-only member, and
+`any(...)` whose every member is test-only — and keeps a body whose predicate
+can select it in a production build (`any(test, feature = …)`, `not(test)`, a
+bare target). The self-test covers both directions: a test-only module is
+stripped under each predicate shape, and a production-reachable module is kept
+under each production shape. The guard reports 58 declared roots, 17 writer
+tools and 35 writer modules on the merged tree.
+
+### 10.4 The ADR renumbering, second time
+
+The branch's writer-contract ADR has now been renumbered twice, and both times
+for the same reason — `main` took a number the branch had already used:
+
+| Number | Taken by `main` | The branch's ADR became |
+|---|---|---|
+| ADR-0042 | `ADR-0042-composer-normal-mode-key-ownership.md` | ADR-0044 (§3.1) |
+| ADR-0044 | `ADR-0044-contained-git-live-objects-and-metadata-authority.md` | **ADR-0047** (§10.2) |
+
+The ADR's *content* is untouched: the decision, the option-B acceptance record
+and the 2026-10-19 acceptance date are unchanged. Only the identifier moved.
+ADR-0044 is now `main`'s, and the number must not be reused for this line.
+
+### 10.5 The Verified-counts table was re-measured, and one row changed measure
+
+The table was **re-measured**, never merged. Every row was counted against its
+own listed `Source` in the merged tree, and the counting method was first
+calibrated by reproducing both sides' published values exactly on their own
+trees — 290 test files, 83 tool source files, 90 architecture docs and 65
+guard scripts on the branch; 286 / 80 / 87 / 62 on `main`.
+
+Twelve rows moved: `codegg-core` modules 53 → **54**, `CoreRequest` variants
+262 → **263** (239 struct + 24 unit), tool registrations 65 → **67**, distinct
+production tool names **61** (unchanged), authorized operations → **257**, built-in
+slash commands 167 → **168**, database tables 94 statements / 90 tables →
+**95 statements / 91 tables**, storage layout version 85 → **87**, integration
+test files 290 → **296**, and the directory tree's "Integration tests (286
+files)" becomes 296.
+
+The **authorized-operations** row changed its measure, and the change is a
+correction rather than a drift. The two sides' published numbers had been
+measuring two different things: this branch's 262 was the count of `CoreRequest`
+variants reachable in `operation_descriptor` — the same number as the
+`CoreRequest` row, which is why it tracked that row — while `main`'s 246 was
+the length of `representative_requests()`. The latter is a *sample* of
+operations, not the operation set: its doc comment claims "one representative
+request per `CoreRequest` operation", but ten operations have no representative
+request at all (`document_read`, `document_create`, `document_delete`,
+`document_modify`, `document_capabilities`, `project_delete`,
+`project_init_draft`, `project_init_publish`, `user_prompt_queue_send_now`,
+`workspace_directory_list`). The row now names the measure it actually means —
+the distinct operation names in `operation_descriptor`, which
+`architecture/authorization.md` already calls the source of truth for the
+operation set — and publishes **257**, with the representative list's 247
+recorded beside it.
+
+### 10.6 Registry and status-word hygiene
+
+The merge also carried a drift the audit surfaced, and it is corrected here
+rather than landed:
+
+- **Closed work was listed as blocked.** The M005 C004, C005 and C006 rows sat
+  in `## Blocked work` with the status words `Closed` and `Conditionally
+  closed`, while the same three milestones also appeared in `## Recently closed
+  or conditionally closed work`. The three blocked-table rows are removed; the
+  recently-closed table is the single home for them.
+- **C003 was missing from the recently-closed table.** It appears in the
+  dependency-ready table as `closed` but had no row in the recently-closed
+  table. It is added there, between C002 and C004.
+- **The blackboard M005 row still claimed the shared profile was disabled.**
+  It said `active; shared mutation disabled` and "Q1–Q5 remain unrun and
+  shared-write unavailable", which C006's closure contradicted. The row now
+  says the corrective closed C001–C006 with C006 conditional, the shared
+  profile is opt-in and platform-gated (Linux and macOS qualified, Windows
+  disabled), and the WorkOrder `shared`/`serialized` mutation policy still
+  fails closed — so no WorkOrder agent is placed on a shared checkout.
+- **The C003 row's note still said "C004–C006 remain blocked on their own
+  predecessors."** They are closed on their own predecessors, C006
+  conditionally.
+- **The implementation plan's status line still said "Q1–Q5 and shared
+  mutation remain unqualified".** Updated to the same truth.
+- **Two roadmap rows still said "Linux-qualified"** while the roadmap's own
+  header said "Linux and macOS qualified". Both now say Linux and macOS.
+- **`architecture/writer_permit.md` still said the shared profile "is not live
+  yet"** in its C003 section, while its C006 section said the opposite. The
+  earlier paragraph now states that the C003-era boundary has since moved and
+  points at the C006 section.
+- **M008's shared-checkout arm was still recorded as blocked on "M005
+  closure."** C006 discharged that gate: the shared checkout is a real opt-in
+  path on the platforms the table qualifies. The M008 plan, the roadmap and the
+  registry now record S4 as eligible on **Linux and macOS** and **unrun on
+  Windows**, where the profile is disabled for a capability reason rather than
+  an evidence reason. The two claims that carry into S4 unchanged are stated
+  there: the three C005 process surfaces that are not refused pre-effect keep
+  their recorded compensating controls, and a shared checkout still admits no
+  unqualified process, so S4's Rust build arm is unavailable by contract.
+
+### 10.7 What this reconciliation does not change
+
+- **The M005 line's own state is unchanged.** C001–C005 stay closed, C006 stays
+  conditionally closed, and the shared checkout stays **opt-in** and
+  **platform-gated**. The Windows backend remains a capability gap, not an
+  evidence gap: no filesystem-enforcement backend is registered for Windows at
+  all, so no CI run could produce the missing evidence.
+- **The composed two-agent race is still claimed at the carrier level only.**
+  The re-measurement of the platform evidence did not change it, and a *live*
+  two-agent race inside one daemon process is still not claimed — it needs a
+  live model and the contained Git backend that does not exist in this tree.
+- **No product behaviour changed beyond the migration renumbering.** The
+  renumbering changes which version number a table is created at, not what is
+  created: both migrations are `CREATE TABLE IF NOT EXISTS`.

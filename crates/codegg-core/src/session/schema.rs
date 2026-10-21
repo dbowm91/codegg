@@ -277,6 +277,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 85 {
         migrate_and_record(pool, 85).await?;
     }
+    if current_version < 86 {
+        migrate_and_record(pool, 86).await?;
+    }
+    if current_version < 87 {
+        migrate_and_record(pool, 87).await?;
+    }
 
     Ok(())
 }
@@ -374,6 +380,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             83 => migrate_v83(&mut tx).await?,
             84 => migrate_v84(&mut tx).await?,
             85 => migrate_v85(&mut tx).await?,
+            86 => migrate_v86(&mut tx).await?,
+            87 => migrate_v87(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3580,7 +3588,14 @@ async fn migrate_v83(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// `state` is a closed enum: `available`, `held`, `releasing`, `quarantined`.
 /// `quarantined` is terminal until an operator releases it; a lease deadline
 /// never frees a permit.
-async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+///
+/// This migration was **v84** on the writer-containment branch and is **v86**
+/// in the merged tree. `main` had already published v84 (the additive
+/// network-intent preference) and v85 (the private index publication journal),
+/// so the branch yields the lower numbers to `main` — the same rule the ADR
+/// renumbering follows. No published database changes meaning: v86 is additive
+/// and runs after every version `main` can produce.
+async fn migrate_v86(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS writer_permit (
@@ -3633,7 +3648,11 @@ async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 ///
 /// `stage` is a closed enum. `needs_attention` is terminal until an
 /// operator resolves it; a launch never silently re-enters a stage.
-async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+///
+/// This migration was **v85** on the writer-containment branch and is **v87**
+/// in the merged tree, for the same reason as the writer permit above: `main`
+/// had already published v84 and v85, so the branch's numbers move above them.
+async fn migrate_v87(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS session_launch (
@@ -3837,6 +3856,62 @@ async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
+    Ok(())
+}
+
+/// Linux execution isolation M005: persist the principal's explicit network
+/// intent. Missing values resolve to the legacy unrestricted behavior.
+async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
+        add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
+    }
+    Ok(())
+}
+
+/// C007: the durable journal for private Git index publication.
+///
+/// Additive only — one table and one index. No existing table is altered and
+/// no stored data is rewritten.
+///
+/// The table records one row per publication intent, carrying the gitdir
+/// identity the publication is bound to, the fingerprint of the real index the
+/// staging observed (the compare-and-swap operand), the fingerprint of the
+/// index that was staged, and the path of the private staged index. That is
+/// the evidence a recovery pass needs to decide — after a crash — whether the
+/// publication committed, aborted, or is ambiguous, without re-running the
+/// operation.
+async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS git_index_publication (
+            id TEXT PRIMARY KEY NOT NULL,
+            workspace_root TEXT NOT NULL,
+            gitdir_path TEXT NOT NULL,
+            gitdir_dev TEXT NOT NULL,
+            gitdir_ino TEXT NOT NULL,
+            private_index_path TEXT NOT NULL,
+            expected_index_fingerprint TEXT NOT NULL,
+            published_index_fingerprint TEXT NOT NULL,
+            staged_paths TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (
+                state IN ('prepared', 'publishing', 'committed', 'aborted', 'ambiguous')
+            ),
+            detail TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_git_index_publication_state \
+         ON git_index_publication(state, created_at_ms)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 

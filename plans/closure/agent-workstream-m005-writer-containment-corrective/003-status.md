@@ -4,7 +4,7 @@ Status: closed
 Source implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/003-native-file-and-git-writer-interposition.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C003)
 Repository baseline reviewed: `6717d30b` (post-C002, post-M006/M007 closure)
-Decision: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
+Decision: `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
 Predecessor closure: `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md`
 
 ## 1. Executive finding

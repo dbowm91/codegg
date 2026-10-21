@@ -277,6 +277,199 @@ def check_backend_registry() -> list[str]:
     return errors
 
 
+def check_network_intent_owner_wiring() -> list[str]:
+    """The M005 network intent must reach every launch owner, and no owner may
+    quietly drop it.
+
+    The failure this guards against is a *silent* widening: a launch owner
+    reads the principal's authenticated network intent, but the request that
+    reaches the process owner carries a hardcoded unrestricted default, so an
+    offline principal still gets host networking. Nothing looks broken; the
+    principal simply is not contained.
+
+    Every assertion below names a specific owner and the specific way that
+    owner is allowed to honor or refuse the intent.
+    """
+    errors: list[str] = []
+
+    # 1. The intent type and the monotonic ceiling live in core.
+    approval_rs = ROOT / "crates/codegg-core/src/approval.rs"
+    for pattern, what in [
+        (r"enum NetworkIntent", "NetworkIntent"),
+        (r"OfflineRequired", "NetworkIntent::OfflineRequired"),
+        (r"fn with_network_intent", "ExecutionPolicySnapshot::with_network_intent"),
+    ]:
+        err = check_contains(approval_rs, pattern, what)
+        if err:
+            errors.append(err)
+
+    # 2. The process owner reads the intent from the authorization snapshot
+    #    (the ceiling), and refuses rather than falling back.
+    managed_rs = ROOT / "src/managed_process.rs"
+    for pattern, what in [
+        (r"authorization\s*\n?\s*\.as_ref\(\)\s*\n?\s*\.map\(\|authorization\| authorization\.snapshot\.network_intent\(\)\)",
+         "process owner reads the network intent from the authorization snapshot"),
+        (r"OfflineRequired currently requires a constrained filesystem profile",
+         "process owner refuses OfflineRequired under an unconstrained profile"),
+        (r"accepted OfflineRequired policy cannot run without a required sandbox launch",
+         "process owner refuses OfflineRequired without a required sandbox launch"),
+        (r"OfflineRequired is unavailable on this platform",
+         "process owner refuses OfflineRequired on an unsupported platform"),
+    ]:
+        err = check_contains(managed_rs, pattern, what)
+        if err:
+            errors.append(err)
+
+    # 3. The durable payloads that carry a command to the scheduler must
+    #    carry the intent and the accepted profile ceiling with it.
+    jobs_rs = ROOT / "crates/codegg-core/src/jobs/mod.rs"
+    for variant in ("ManagedArgv", "Shell", "Test", "Python"):
+        body = job_payload_variant(jobs_rs.read_text(), variant)
+        if body is None:
+            errors.append(f"crates/codegg-core/src/jobs/mod.rs: missing JobPayload::{variant}")
+            continue
+        for pattern, what in [
+            (r"network_intent\s*:\s*crate::approval::NetworkIntent", f"{variant} network intent"),
+            (r"sandbox_profile\s*:\s*Option<crate::approval::SandboxProfile>", f"{variant} profile ceiling"),
+        ]:
+            if not re.search(pattern, body, re.DOTALL):
+                errors.append(
+                    f"crates/codegg-core/src/jobs/mod.rs: JobPayload::{variant} is missing {what}"
+                )
+
+    # 4. The bash dispatch threads the authenticated intent into the
+    #    durable payload, and the shell executor consumes it.
+    bash_process_rs = ROOT / "src/tool/bash/process.rs"
+    for pattern, what in [
+        (r"snapshot\.network_intent\(\)", "bash dispatch reads the network intent"),
+        (r"JobPayload::Shell \{[^}]*network_intent", "bash dispatch carries the intent into the Shell payload"),
+        (r"JobPayload::ManagedArgv \{[^}]*network_intent", "bash dispatch carries the intent into the ManagedArgv payload"),
+    ]:
+        err = check_contains(bash_process_rs, pattern, what)
+        if err:
+            errors.append(err)
+
+    executors_rs = ROOT / "src/scheduler/executors.rs"
+    for pattern, what in [
+        (r"request\.required_network_intent\s*=\s*network_intent", "shell executor applies the carried network intent"),
+        (r"request\.required_sandbox_profile\s*=\s*sandbox_profile", "shell executor applies the carried profile ceiling"),
+        (r"sandbox_config_for_profile", "shell executor rebuilds the accepted containment"),
+    ]:
+        err = check_contains(executors_rs, pattern, what)
+        if err:
+            errors.append(err)
+
+    # 5. The other launch owners apply the intent to their sandbox config.
+    for relative, what in [
+        ("src/interactive_process.rs", "PTY owner"),
+        ("src/lsp/m004.rs", "LSP owner"),
+    ]:
+        path = ROOT / relative
+        err = check_contains(
+            path,
+            r"NetworkIntent::OfflineRequired\s*=>\s*\{[^}]*with_linux_offline_network\(true\)",
+            f"{what} applies the offline network candidate",
+        )
+        if err:
+            errors.append(err)
+
+    # 6. The durable Test/Python owners apply the carried intent.
+    for relative, what in [
+        ("src/test_runner/runner.rs", "Test owner"),
+        ("src/python_script/executor.rs", "Python owner"),
+    ]:
+        path = ROOT / relative
+        err = check_contains(
+            path,
+            r"required_network_intent\s*=\s*network_intent",
+            f"{what} applies the carried network intent",
+        )
+        if err:
+            errors.append(err)
+
+    # 7. No production owner may hardcode the unrestricted intent into a
+    #    payload or spawn spec. A hardcoded `LegacyUnrestricted` is exactly
+    #    the silent widening this guard exists to catch: the principal asked
+    #    for offline execution and the field says otherwise.
+    #
+    #    A producer with no authenticated intent in scope may use the
+    #    unrestricted default, but only when the daemon stamps the
+    #    principal's own policy onto the job before it runs. Each such site
+    #    is listed with that reason, so the allowlist cannot grow silently.
+    no_intent_in_scope = {
+        "src/tui/commands/test.rs": (
+            "the TUI has no authenticated intent in scope; the daemon stamps the "
+            "principal's policy onto the payload at job admission"
+        ),
+        "src/run_rerun.rs": (
+            "the rerun builder has no authenticated intent in scope; the daemon "
+            "stamps the principal's policy onto the child job at admission"
+        ),
+        "src/interactive_process.rs": (
+            "SpawnSpec::new is a constructor default; the daemon-owned spawn path "
+            "sets the intent on every spec it launches"
+        ),
+        "src/scheduler/tool_program_executor.rs": (
+            "the tool-program child-job builder has no authenticated intent in "
+            "scope; ChildJobRequest does not yet carry one"
+        ),
+    }
+    for relative in (
+        "src/tool/bash/process.rs",
+        "src/scheduler/executors.rs",
+        "src/scheduler/tool_program_executor.rs",
+        "src/test_runner/runner.rs",
+        "src/python_script/executor.rs",
+        "src/interactive_process.rs",
+        "src/lsp/m004.rs",
+        "src/run_rerun.rs",
+        "src/tui/commands/test.rs",
+    ):
+        path = ROOT / relative
+        try:
+            text = path.read_text()
+        except Exception:
+            continue
+        production = text.split("#[cfg(test)]", 1)[0]
+        for idx, line in enumerate(production.splitlines(), start=1):
+            # Only a field initializer is a widening. A `match` arm that names
+            # the unrestricted variant is how an owner *handles* the intent,
+            # and a bare default argument is a convenience wrapper.
+            if not re.search(
+                r"network_intent\s*:\s*\S*NetworkIntent::LegacyUnrestricted", line
+            ):
+                continue
+            reason = no_intent_in_scope.get(relative)
+            if reason is None:
+                errors.append(
+                    f"{relative}:{idx}: production owner hardcodes the unrestricted network intent"
+                )
+            else:
+                print(
+                    f"note: {relative}:{idx} uses the unrestricted default because {reason}",
+                    file=sys.stderr,
+                )
+
+    return errors
+
+
+def job_payload_variant(text: str, variant: str) -> str | None:
+    """Return the body of the `JobPayload::<variant>` *definition*.
+
+    A plain search for `Variant {` also matches a match-arm pattern such as
+    `JobPayload::Python { source_hash, .. }`, whose body carries no fields to
+    check and which appears earlier in the file than the declaration. The
+    definition is the variant declared at the enum's own indentation, so the
+    search is anchored to that indentation.
+    """
+    m = re.search(
+        rf"^    {re.escape(variant)} \{{(.*?)^    \}}",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
+    return m.group(1) if m else None
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -366,6 +559,7 @@ def main() -> int:
             errors.append(err)
 
     errors.extend(check_backend_registry())
+    errors.extend(check_network_intent_owner_wiring())
 
     if errors:
         print("sandbox-policy-wiring guard failed:", file=sys.stderr)

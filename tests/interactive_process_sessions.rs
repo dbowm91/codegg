@@ -235,7 +235,9 @@ async fn environment_overrides_apply_while_denied_vars_stay_stripped() {
     let mut spec = SpawnSpec::new(vec![
         OsString::from("sh"),
         OsString::from("-c"),
-        OsString::from("env"),
+        OsString::from(
+            "printf 'CODEGG_PTY_TEST_VAR=%s\\n' \"$CODEGG_PTY_TEST_VAR\"; [ -z \"$LD_PRELOAD\" ] || printf 'LD_PRELOAD_PRESENT\\n'; printf 'TERM=%s\\n' \"$TERM\"",
+        ),
     ]);
     spec.env_overrides = vec![
         (

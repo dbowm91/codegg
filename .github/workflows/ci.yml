@@ -221,10 +221,20 @@ jobs:
 
       # Constrained Linux integration tests resolve this managed sidecar from
       # the target profile directory shared with their Cargo `deps` binaries.
-      - name: Build sandbox helper for integration tests
-        run: cargo build --locked --bin codegg-sandbox-helper
+      # Product builds still resolve only their installation-owned sibling.
+      - name: Build trusted sandbox helper for integration tests
+        run: |
+          cargo build --locked --bin codegg-sandbox-helper
+          cp target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
 
       - name: Workspace tests
+        env:
+          # The scratch allocator refuses a per-user cache root another user
+          # could write to. The sweep gets a private cache root of its own so
+          # its result is a property of the product rather than of the runner's
+          # home directory, and the root stays outside every workspace root the
+          # tests grant.
+          XDG_CACHE_HOME: ${{ runner.temp }}/codegg-sweep-cache
         run: |
           if [ "${{ steps.live.outputs.live_required }}" = "true" ]; then
             echo "Live Eggwork qualification included (relevant change or main push)."

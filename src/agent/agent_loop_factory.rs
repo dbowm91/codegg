@@ -39,6 +39,9 @@ pub struct AgentLoopBuildInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005: principal network intent captured independently of filesystem
+    /// containment. Missing means legacy unrestricted networking.
+    pub network_intent: Option<codegg_core::approval::NetworkIntent>,
     /// M010: optional inference feedback bound to the session's selected
     /// provider connection revision.
     pub credential_observer:
@@ -143,6 +146,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     }
     if let Some(profile) = input.sandbox_profile {
         agent_loop.set_sandbox_profile(profile);
+    }
+    if let Some(network_intent) = input.network_intent {
+        agent_loop.set_network_intent(network_intent);
     }
     agent_loop
 }

@@ -250,8 +250,12 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign allowlist marker root");
     let marker = dir.path().join("benign-allowlist-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let (_root2, tool) = rooted_bash_tool();
-    let tool = tool.with_allowlist(vec!["echo"]);
+    // Root the tool at the marker's own directory so the denial this test
+    // asserts comes from the allowlist, not from a path that sits outside the
+    // tool's workspace root.
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_allowlist(vec!["echo"]);
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -265,8 +269,9 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     );
 
     // `deny_all` control denies even a trivial `echo`.
-    let (_root3, tool) = rooted_bash_tool();
-    let tool = tool.with_deny_all();
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_deny_all();
     let result = tool
         .execute(serde_json::json!({ "command": "echo hello" }))
         .await;

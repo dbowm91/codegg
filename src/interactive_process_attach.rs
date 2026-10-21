@@ -614,6 +614,27 @@ impl InteractiveProcessProtocol {
         &self,
         client_id: &str,
         ctx: &Arc<ExecutionContext>,
+        profile: codegg_core::approval::SandboxProfile,
+        dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
+        audit: Option<InteractiveAuditHook>,
+    ) -> CoreResponse {
+        self.create_with_network_intent(
+            client_id,
+            ctx,
+            profile,
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            dto,
+            audit,
+        )
+        .await
+    }
+
+    pub async fn create_with_network_intent(
+        &self,
+        client_id: &str,
+        ctx: &Arc<ExecutionContext>,
+        profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
         dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
         audit: Option<InteractiveAuditHook>,
     ) -> CoreResponse {
@@ -623,10 +644,22 @@ impl InteractiveProcessProtocol {
         if let Err(error) = dto.validate() {
             return map_protocol_error(&error);
         }
-        let spec = match create_to_spec(dto) {
+        let mut spec = match create_to_spec(dto) {
             Ok(spec) => spec,
             Err(error) => return error.response(),
         };
+        if profile != codegg_core::approval::SandboxProfile::FullHost {
+            spec.constrained_profile = Some(profile);
+        }
+        if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired
+            && profile == codegg_core::approval::SandboxProfile::FullHost
+        {
+            return InteractiveAttachError::InvalidRequest(
+                "OfflineRequired PTY policy requires a constrained profile",
+            )
+            .response();
+        }
+        spec.network_intent = network_intent;
         match self.service.spawn(ctx, spec).await {
             Ok(handle) => match self.service.snapshot(&handle).await {
                 Ok(snapshot) => {

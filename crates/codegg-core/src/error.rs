@@ -190,6 +190,9 @@ pub enum ToolError {
         recovery: String,
     },
 
+    #[error("execution backend unavailable: {0}")]
+    BackendUnavailable(String),
+
     #[error("I/O error: {0}")]
     Io(String),
 

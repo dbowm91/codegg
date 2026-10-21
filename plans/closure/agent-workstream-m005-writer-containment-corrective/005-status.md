@@ -4,7 +4,7 @@ Status: closed
 Source implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/005-process-and-persistent-service-deny-contract.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C005)
 Repository baseline reviewed: `2a6f5ed8` (the C004 closure commit on `work/agent-workstream-m005-writer-audit`)
-Decision: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
+Decision: `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
 Predecessor closure: `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`
 
 ## 1. Executive finding
@@ -431,7 +431,7 @@ why the profile refuses processes instead of containing them.
 2. **A process launched outside the reserved checkout can still write into
    it.** CodeGG cannot enumerate a program's write set. A process running in
    a *different* checkout is the same class of risk as an unrelated program
-   the same OS user starts outside CodeGG — which ADR-0044 clause 1
+   the same OS user starts outside CodeGG — which ADR-0047 clause 1
    explicitly places **out of contract**. The restricted profile's
    guarantee is scoped to the reserved checkout and to CodeGG's own
    launches against it.

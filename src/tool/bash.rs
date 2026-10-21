@@ -91,6 +91,13 @@ pub struct BashTool {
     /// `/tmp/…`, and `/usr/bin/git`.
     pub(crate) child_workspace_ceiling: Option<PathBuf>,
     pub(crate) windows_shell: Option<crate::config::schema::WindowsShellKind>,
+    /// C007: the private index publication backend.
+    ///
+    /// A bash-routed `git add` is an authorized `Add`, so it must reach the
+    /// same publisher the native `git` and `commit` tools reach. Without it,
+    /// the typed executor **refuses** the `Add` — it does not fall back to
+    /// the in-place route — so an ordinary `git add` in a shell would break.
+    pub(crate) publication: Option<Arc<crate::git_publication::GitIndexPublisher>>,
 }
 
 impl BashTool {
@@ -115,6 +122,7 @@ impl BashTool {
             workspace_root: None,
             child_workspace_ceiling: None,
             windows_shell: None,
+            publication: None,
         }
     }
 
@@ -168,6 +176,17 @@ impl BashTool {
         self
     }
 
+    /// C007: give the bash-routed Git mutations the private index
+    /// publication backend, so a bash `git add` is published rather than
+    /// refused.
+    pub fn with_publication(
+        mut self,
+        publication: Arc<crate::git_publication::GitIndexPublisher>,
+    ) -> Self {
+        self.publication = Some(publication);
+        self
+    }
+
     pub fn with_submission(
         mut self,
         submission: Arc<crate::scheduler::JobSubmissionService>,
@@ -208,7 +227,11 @@ impl BashTool {
         self
     }
 
-    pub(crate) fn with_configured_sandbox_profile(
+    /// Configure the sandbox profile this tool instance was built to enforce.
+    ///
+    /// The per-call accepted authorization still has to match this profile;
+    /// this setting alone does not grant execution authority.
+    pub fn with_configured_sandbox_profile(
         mut self,
         profile: codegg_core::approval::SandboxProfile,
     ) -> Self {
@@ -277,9 +300,14 @@ impl BashTool {
     /// Truthful enforcement for the current config/host (M005).
     ///
     /// `requested` is the daemon-resolved profile. Filesystem enforcement
-    /// reflects host Landlock availability; network is always
-    /// `Unrestricted` for shell (no OS backend). Approval mode never
-    /// alters this value.
+    /// reflects host Landlock availability. Approval mode never alters this
+    /// value.
+    ///
+    /// This is the **profile on the host**, not a launch. Its network field
+    /// is the profile's network posture, because an obtained network
+    /// boundary belongs to a launch: the launch reports it on its outcome,
+    /// and the audit record states it from there. A snapshot cannot report
+    /// an obtained boundary, so it does not claim one.
     pub fn sandbox_enforcement(
         &self,
         requested: codegg_core::approval::SandboxProfile,
@@ -317,6 +345,7 @@ impl BashTool {
         outcome: &str,
         route: Option<&str>,
         filesystem_enforcement: Option<&str>,
+        network_enforcement: Option<&str>,
         risk_level: Option<&str>,
         result_metadata: Option<crate::live_execution_audit::CommandExecutionResultMetadata>,
     ) {
@@ -339,7 +368,11 @@ impl BashTool {
             ctx.execution_authorization.as_ref(),
             route,
             filesystem_enforcement,
-            ctx.execution_authorization.as_ref().map(|_| "unrestricted"),
+            // The network boundary is recorded only when it was observed. A
+            // record that asserted "unrestricted" for every authorized
+            // command would state a boundary nobody saw, and it would
+            // contradict the launch when the launch obtained one.
+            network_enforcement,
             risk_level,
             result_metadata,
         )
@@ -367,6 +400,32 @@ fn sandbox_outcome_label(
         #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
         crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer { .. } => {
             "test_only_appcontainer_no_filesystem_claim".into()
+        }
+    }
+}
+
+/// The obtained network boundary, as the audit record states it.
+///
+/// The audit states the boundary the launch **obtained**, never the one it
+/// requested. A record that named the request would overstate what the
+/// system actually provided; a record that asserted a boundary nobody
+/// observed would understate it.
+fn network_outcome_label(outcome: &crate::managed_process::SandboxExecutionOutcome) -> String {
+    use codegg_core::approval::NetworkEnforcement;
+    match outcome {
+        crate::managed_process::SandboxExecutionOutcome::Enforced { network, .. } => {
+            match network {
+                NetworkEnforcement::Enforced { backend } => format!("enforced:{backend}"),
+                NetworkEnforcement::Unrestricted => "unrestricted".into(),
+                NetworkEnforcement::Unavailable { .. } => "unavailable".into(),
+            }
+        }
+        // A disabled sandbox means the child ran with the host's network, so
+        // "unrestricted" is the obtained fact rather than a request.
+        crate::managed_process::SandboxExecutionOutcome::Disabled => "unrestricted".into(),
+        #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+        crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer { .. } => {
+            "unrestricted".into()
         }
     }
 }
@@ -731,6 +790,9 @@ impl BashTool {
                 "submitted",
                 Some("scheduler_background"),
                 None,
+                // The child has not run yet, so no network boundary was
+                // obtained. The field is omitted rather than asserted.
+                None,
                 intent_risk_label(intent.as_ref()),
                 None,
             )
@@ -813,6 +875,9 @@ impl BashTool {
                             audit_ctx
                                 .and_then(|ctx| ctx.execution_authorization.as_ref())
                                 .map(|_| "full_host"),
+                            // The executor does not carry the launch's
+                            // obtained boundary, so nothing is asserted.
+                            None,
                             intent_risk_label(intent.as_ref()),
                             None,
                         )
@@ -855,6 +920,7 @@ impl BashTool {
                                 crate::live_execution_audit::OUTCOME_TIMEOUT,
                                 Some("active_route"),
                                 Some("full_host"),
+                                None,
                                 intent_risk_label(intent.as_ref()),
                                 None,
                             )
@@ -888,6 +954,9 @@ impl BashTool {
                         crate::live_execution_audit::OUTCOME_TIMEOUT,
                         Some("raw_shell"),
                         Some("timeout_outcome_not_reported"),
+                        // The launch outcome was not reported, so no network
+                        // boundary was observed.
+                        None,
                         intent_risk_label(intent.as_ref()),
                         None,
                     )
@@ -913,6 +982,8 @@ impl BashTool {
                     &sandbox_outcome,
                     audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref()),
                 )),
+                // The launch's obtained boundary, stated as observed.
+                Some(&network_outcome_label(&sandbox_outcome)),
                 intent_risk_label(intent.as_ref()),
                 Some(
                     crate::live_execution_audit::CommandExecutionResultMetadata {
@@ -991,6 +1062,150 @@ mod tests {
         // repository is what the process cwd used to supply implicitly.
         tool.workspace_root = Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         tool
+    }
+
+    /// The audit's network field states the boundary the launch **obtained**.
+    ///
+    /// The anti-overclaim case is the third one: a launch that could not
+    /// determine its network boundary is recorded as `unavailable`, never as
+    /// `unrestricted` — reporting "no isolation" for a boundary nobody
+    /// observed would be a claim, and a claim in an audit record is worse
+    /// than an absence.
+    #[test]
+    fn the_audit_network_label_states_the_obtained_boundary() {
+        use crate::managed_process::SandboxExecutionOutcome;
+        use codegg_core::approval::NetworkEnforcement;
+
+        let enforced = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Enforced {
+                backend: "bubblewrap-netns".into(),
+            },
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(
+            network_outcome_label(&enforced),
+            "enforced:bubblewrap-netns"
+        );
+
+        let unrestricted = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Unrestricted,
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(network_outcome_label(&unrestricted), "unrestricted");
+
+        let unavailable = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Unavailable {
+                reason: "not observed".into(),
+            },
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(network_outcome_label(&unavailable), "unavailable");
+
+        // A disabled sandbox means the child ran with the host's network, so
+        // "unrestricted" is the obtained fact.
+        assert_eq!(
+            network_outcome_label(&SandboxExecutionOutcome::Disabled),
+            "unrestricted"
+        );
+    }
+
+    /// C007: a bash-routed `git add` is an authorized `Add`, so the bash
+    /// tool must build its Git mutation executor **with** the private index
+    /// publication backend.
+    ///
+    /// Without it the typed executor refuses the `Add` rather than falling
+    /// back to the in-place `git add` route, so an ordinary `git add` in a
+    /// shell would break with "the private index publication backend is not
+    /// configured".
+    #[tokio::test]
+    async fn the_bash_git_executor_carries_the_publication_backend() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let url = format!(
+            "file:codegg_bash_publication_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let options = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite options")
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect to in-memory sqlite");
+        let store = std::sync::Arc::new(
+            codegg_core::git_publication::GitIndexPublicationStore::new(pool.clone()),
+        );
+        let publisher = std::sync::Arc::new(crate::git_publication::GitIndexPublisher::new(
+            store,
+            std::env::temp_dir(),
+            std::sync::Arc::new(crate::git_publication::ContainedGitIndexStaging::new(
+                std::path::PathBuf::from("/usr/bin/git"),
+            )),
+            std::time::Duration::from_secs(1),
+        ));
+
+        let without = BashTool::new();
+        assert!(
+            without
+                .git_mutation_executor(std::time::Duration::from_secs(1))
+                .publication
+                .is_none(),
+            "a bash tool without a backend must not claim one"
+        );
+
+        let with = BashTool::new().with_publication(publisher);
+        assert!(
+            with.git_mutation_executor(std::time::Duration::from_secs(1))
+                .publication
+                .is_some(),
+            "a bash-routed `git add` must reach the publisher"
+        );
+    }
+
+    fn accepted_full_host_context() -> ToolExecutionContext {
+        let mut context =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Yolo,
+                    codegg_core::approval::SandboxProfile::FullHost,
+                    None,
+                    Some("session".into()),
+                    Some("agent".into()),
+                    Some("policy".into()),
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                    "yolo",
+                    Some("policy".into()),
+                ),
+                command_preflight: None,
+                scratch_scope: None,
+            });
+        context
+    }
+
+    async fn execute_with_accepted_full_host(
+        tool: &BashTool,
+        input: serde_json::Value,
+    ) -> Result<String, ToolError> {
+        let context = accepted_full_host_context();
+        let tool = tool
+            .clone()
+            .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
+        tool.execute_inner(input, Some(&context)).await
     }
 
     #[test]
@@ -1391,7 +1606,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
-        let result = tool.execute(input).await.unwrap();
+        let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(
             result.contains("[exit code:"),
             "command must produce exit code in output: {}",
@@ -1414,8 +1629,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("active test routing must not bypass the scheduler");
         assert!(error.to_string().contains("requires the daemon scheduler"));
@@ -1477,8 +1691,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo check"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("build routing must not bypass the scheduler");
         assert!(error.to_string().contains("requires the daemon scheduler"));
@@ -1494,8 +1707,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'print(42)'"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("python routing must not bypass the scheduler");
         assert!(
@@ -1515,8 +1727,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'import sys; print(sys.version)'"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("scheduler unavailability must not panic");
         let msg = error.to_string();
@@ -1537,15 +1748,14 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "rg --version"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("search routing must not bypass the scheduler");
         assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
     #[tokio::test]
-    async fn route_mode_still_falls_back_to_observe() {
+    async fn route_mode_alias_uses_active_git_route_with_accepted_authority() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Active);
@@ -1553,11 +1763,11 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
-        let result = tool.execute(input).await.unwrap();
+        let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(result.contains("[exit code:"));
         assert!(
-            result.contains("mode: route (fallback: observe)"),
-            "metadata must show route mode"
+            result.contains("backend: git"),
+            "deprecated route mode must use the active Git route"
         );
     }
 

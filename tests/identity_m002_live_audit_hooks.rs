@@ -91,6 +91,27 @@ fn tool_ctx(
     ctx
 }
 
+fn authorize_full_host(ctx: &mut ToolExecutionContext) {
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                ctx.session_id.clone(),
+                Some("agent".into()),
+                Some("policy-m002".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "reviewer_allow",
+                Some("policy-m002".into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        });
+}
+
 async fn events_for(
     pool: &sqlx::SqlitePool,
     action: &str,
@@ -160,6 +181,8 @@ fn audited_executor(
 async fn bash_shell_success_emits_one_structural_event() {
     let pool = test_pool().await;
     let mut ctx = tool_ctx(&pool, "corr-bash-ok", "inv-bash-ok");
+    let root = tempfile::tempdir().expect("workspace tempdir");
+    ctx.cwd = root.path().to_path_buf();
     ctx.execution_authorization =
         Some(codegg::tool::authorization::ExecutionAuthorizationContext {
             snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
@@ -435,6 +458,9 @@ async fn bash_failure_timeout_and_denial_matrix() {
     // command syntax alone is advisory in the current policy.
     let ctx = tool_ctx(&pool, "corr-bash-denied", "inv-bash-denied");
     let err = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+        )
         .with_deny_all()
         .execute_structured(serde_json::json!({"command": "echo denied"}), Some(ctx))
         .await
@@ -547,7 +573,14 @@ impl JobExecutor for ImmediateTestExecutor {
     ) -> Result<(), codegg::scheduler::executor::ExecutorValidationError> {
         Ok(())
     }
-    async fn execute(&self, _ctx: JobExecutionContext) -> ExecutorCompletion {
+    async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        assert!(matches!(
+            &ctx.job.payload,
+            codegg_core::jobs::JobPayload::Test {
+                sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+                ..
+            }
+        ));
         ExecutorCompletion {
             status: codegg::scheduler::executor::ExecutorStatus::Completed,
             summary: "immediate-test-ok".into(),
@@ -619,6 +652,25 @@ async fn scheduler_test_dispatch_emits_test_family_event() {
     let tool = codegg::tool::test::TestTool::new().with_submission(submission);
     let mut ctx = tool_ctx(&pool, "corr-testtool", "inv-testtool");
     ctx.session_id = Some("session-corr-testtool".to_owned());
+    let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+        codegg_core::approval::ApprovalMode::Interactive,
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        Some("test-principal".into()),
+        Some("session-corr-testtool".into()),
+        None,
+        Some("test-policy-r1".into()),
+        None,
+    );
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot,
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "test",
+                Some("test-policy-r1".into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        });
     let out = tool
         .execute_structured(
             serde_json::json!({
@@ -726,7 +778,8 @@ async fn scheduler_test_cancel_and_interrupt_stay_distinguishable() {
         );
         let tool = codegg::tool::test::TestTool::new().with_submission(submission);
         let correlation = format!("corr-testtool-{outcome}");
-        let ctx = tool_ctx(&pool, &correlation, &format!("inv-testtool-{outcome}"));
+        let mut ctx = tool_ctx(&pool, &correlation, &format!("inv-testtool-{outcome}"));
+        authorize_full_host(&mut ctx);
         tool.execute_structured(
             serde_json::json!({
                 "scope": "custom",
@@ -797,7 +850,15 @@ async fn interactive_create_emits_without_input_retention() {
         rows: Some(24),
         scrollback_bytes: None,
     };
-    let response = protocol.create("client-m002", &ctx, &dto, Some(hook)).await;
+    let response = protocol
+        .create(
+            "client-m002",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &dto,
+            Some(hook),
+        )
+        .await;
     let handle = match response {
         codegg::protocol::core::CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
         other => panic!("expected created, got {other:?}"),
@@ -1102,9 +1163,12 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
         ..Default::default()
     };
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(repo_root.clone())
+        .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
         .with_routing_disabled_env(false)
         .with_command_intent_config(cic);
-    let ctx = tool_ctx(&pool, "corr-git-routed", "inv-git-routed");
+    let mut ctx = tool_ctx(&pool, "corr-git-routed", "inv-git-routed");
+    authorize_full_host(&mut ctx);
     let out = tool
         .execute_structured(
             serde_json::json!({
@@ -1173,9 +1237,12 @@ async fn bash_managed_git_plumbing_emits_single_shell_event() {
         ..Default::default()
     };
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(repo.path().to_path_buf())
+        .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
         .with_routing_disabled_env(false)
         .with_command_intent_config(cic);
-    let ctx = tool_ctx(&pool, "corr-git-plumbing", "inv-git-plumbing");
+    let mut ctx = tool_ctx(&pool, "corr-git-plumbing", "inv-git-plumbing");
+    authorize_full_host(&mut ctx);
     let command = format!("git -C {} add plumbing.txt", repo.path().to_string_lossy());
     let out = tool
         .execute_structured(

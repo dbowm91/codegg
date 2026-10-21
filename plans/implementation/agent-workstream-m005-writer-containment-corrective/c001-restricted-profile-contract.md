@@ -3,7 +3,7 @@
 Milestone: **M005 writer-containment corrective C001**
 Status: **decision/negative-test handoff only — creates no permit and enables no writer**
 Baseline SHA: `e78497d2` (worktree `work/agent-workstream-m005-writer-audit`)
-ADR: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` — **`proposed`, NOT accepted** at C001 close. **Accepted 2026-10-19 (option B)** — see the ADR's "Acceptance record" section. Acceptance unblocks C002 and enables nothing.
+ADR: `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md` — **`proposed`, NOT accepted** at C001 close. **Accepted 2026-10-19 (option B)** — see the ADR's "Acceptance record" section. Acceptance unblocks C002 and enables nothing.
 
 ## 1. What this document is, and what it is not
 
@@ -17,7 +17,7 @@ It is **not** authority. C001 enables nothing:
 - No writer permit, fence, lease, lock or reservation is created here.
 - `fenced-native` marks a **candidate** for C002/C003 to consider. It does not
   fence anything today, and it must not be read as "now safe".
-- ADR-0044 remained `proposed` at C001 close, and C002–C006 stayed blocked
+- ADR-0047 remained `proposed` at C001 close, and C002–C006 stayed blocked
   until a maintainer recorded an explicit accept/reject decision. **C001 closed
   with the decision outcome "still proposed"**, which is an honest outcome, not
   a blocked one: C001's own scope is the decision package, and it is complete.
@@ -51,7 +51,7 @@ write managed state that is simply outside the checkout guarantee
 
 ## 3. Scope boundary — what the guarantee covers, and what it does not
 
-ADR-0044 option B is a **restricted CodeGG-managed** contract. It coordinates
+ADR-0047 option B is a **restricted CodeGG-managed** contract. It coordinates
 CodeGG-initiated mutations. It does **not** exclude unrelated same-UID
 programs.
 
@@ -366,7 +366,7 @@ set from silently drifting.
 
 ## 10. Decision request
 
-**At C001 close, ADR-0044 was `proposed` and remained `proposed`.** C001's
+**At C001 close, ADR-0047 was `proposed` and remained `proposed`.** C001's
 decision outcome was **"still proposed"** — a complete decision package
 awaiting an independent maintainer accept/reject decision.
 

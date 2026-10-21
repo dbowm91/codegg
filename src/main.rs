@@ -4586,6 +4586,9 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
             "durable job recovery produced no report; previously scheduled work may not be recovered"
         );
     }
+    // C007: resolve any private Git index publication a prior daemon
+    // generation left in flight.
+    daemon.reconcile_git_index_publications().await;
 
     // Step 4: bind the socket (now that we own the lock).
     let listener = match codegg::core::transport::daemon_socket::bind_listener(&paths.socket_path) {
@@ -4863,6 +4866,9 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
             "durable job recovery produced no report; previously scheduled work may not be recovered"
         );
     }
+    // C007: resolve any private Git index publication a prior daemon
+    // generation left in flight.
+    daemon.reconcile_git_index_publications().await;
 
     codegg::server::run_server(host, port, Some(daemon))
         .await

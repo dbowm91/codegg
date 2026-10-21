@@ -1,19 +1,189 @@
 # Linux Execution Isolation M005 — Offline Network Isolation
 
-Status: blocked — hard: M002 and M004
+Status: active — daemon-owned opt-in policy and launch-owner wiring implemented; exact-head hosted owner qualification executed and passed; the obtained network fact is still unreported
 Primary class: capability
-Repository baseline: `main` @ `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`, 2026-10-13.
+Repository baseline: reconciled feature branch at `81e857326b3d53a9ab2b606a0e9db736f43bc429`, 2026-10-15.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016. ADR-0027 remains proposed, not accepted.
-No production implementation or verification is asserted by this plan.
+Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0046.
 Target closure record: `plans/closure/linux-execution-isolation/005-status.md`.
+
+Current limitation: the daemon now persists a revisioned, per-principal
+`OfflineRequired` intent and carries it through finite managed processes,
+scheduler-owned Test/Python payloads, constrained PTYs, and contained LSP
+launches. Legacy rows and payloads remain unrestricted. The default is not
+changed. Exact-head hosted qualification of the authenticated owner wiring and
+supported-host policy is pending; do not infer production admission from the
+candidate kernel probes or this implementation alone.
 
 ## 1. Objective
 Introduce operator-opted `OfflineRequired` for local Linux child execution, independent from `SandboxProfile` and `ApprovalMode`, with **measured** inability to communicate with external/host-local network services. Retain existing unrestricted networking as the legacy default. Network isolation must be installed before user code is executed, not inferred from static Python analysis or shell command classification.
 
 ## 2. Why this milestone and existing evidence
 `codegg-core/src/approval.rs` explicitly reports `NetworkEnforcement::Unrestricted`; `src/python_script/sandbox.rs` only provides static capability inspection. Landlock filesystem ABI 3 does not isolate egress; Landlock ABI4 TCP port rules alone do not stop UDP, DNS or destination-specific traffic. M002 owns dimensional launch authority; M004 owns descriptor/Unix socket/PID and proc isolation. Reuse the real helper rather than adding an unowned Bash spawn path.
+
+### Implementation progress — 2026-10-15
+
+- `SandboxConfig::with_linux_offline_network(true)` selects a private internal
+  candidate that composes M004 process/IPC isolation and compiles Bubblewrap's
+  `--unshare-net` before target exec. It cannot be enabled by persisted
+  sandbox profiles; required setup failures remain fatal.
+- A deterministic compile test asserts the network namespace option is
+  present alongside PID/IPC namespaces. An opt-in native test holds a host
+  loopback TCP listener open and verifies the contained child cannot connect.
+  Exact-head hosted workflow [38822273062](https://github.com/dbowm91/codegg/actions/runs/38822273062)
+  passed the full M004 native target (8/8), including both the offline compile
+  assertion and native loopback TCP denial probe, on its qualified ephemeral
+  Ubuntu runner after user-namespace setup. Its protected-mount and trusted-Git
+  regression targets also passed (11/11 and 18/18); the separate restricted-
+  userns refusal job passed.
+- This is not closure evidence for IPv6, UDP, DNS, inherited connected
+  descriptors, all launch entry points, or restricted host configurations.
+  Those remain required before any `NetworkEnforcement::Enforced` result or
+  production preference can be exposed.
+
+### Expanded hosted candidate probe — 2026-10-16
+
+Exact-head hosted workflow [38829815162](https://github.com/dbowm91/codegg/actions/runs/38829815162)
+on `b30ebdcd53f5ac3a411e3365fe7288ceff1a4acd` passed the expanded native test
+inside the M004 suite. The contained Python child could not connect to host
+IPv4/IPv6 loopback TCP listeners, deliver IPv4/IPv6 UDP datagrams to host
+listeners, resolve `example.com`, connect to the reserved external address
+`198.51.100.1:443`, or use a deliberately inherited host TCP descriptor.
+The Python fixture was rewritten as a raw multiline string after review found
+that Rust's continued-string whitespace elision had removed indentation from a
+`try` block; the hosted result is for the corrected script.
+
+This remains bounded candidate evidence. The DNS and reserved-address probes
+did not include positive controls proving those same services were reachable
+from the host, and do not satisfy the plan's full external-route/DNS-rebinding
+qualification. No offline Cargo/toolchain workflow or production launch owner
+was exercised. M004 production-owner, host-qualification and no-admission
+gates remain; no persisted preference, default, or `NetworkEnforcement::Enforced`
+claim is enabled.
+
+### Offline toolchain candidate probe — 2026-10-16
+
+The opt-in native test `offline_network_runs_cargo_metadata_and_check_without_network`
+runs the actual CodeGG workspace through the required offline M005 namespace.
+It performs `cargo metadata --offline --locked --no-deps` followed by
+`cargo check --offline --locked --workspace`, with the runner's Rustup and
+Cargo roots explicitly restored inside the child. The companion M004 test
+also performs an offline workspace check and runs managed-process regressions.
+This exercises workspace build scripts, cached third-party dependencies, Cargo,
+rustc, and the existing process test suite while the network namespace is active.
+
+Hosted M004/M005 run
+[38869606745](https://github.com/dbowm91/codegg/actions/runs/38869606745)
+on `7312acad74f4f6f10ee6b505a61fc9ce51f3f7ac` passed the complete
+`M004 managed-process host PID and IPC denial probes` step with the full
+workspace offline metadata/check probes. The separate restricted-userns
+refusal-before-target job also passed. The same run's protected-mount and
+trusted-Git regressions passed 11/11 and 18/18. Fresh full CI
+[38869639397](https://github.com/dbowm91/codegg/actions/runs/38869639397)
+passed 14,020 tests with 7 skipped; all ADR, sandbox, execution-ownership and
+other workflow guards, formatting, Clippy, and Eggwork fixture prebuild passed.
+
+The test target compiles locally, but the opt-in test cannot run on this
+workstation because it rejects the Landlock ABI 6 signal/abstract-socket scope
+request. That local host result is unsupported and is not counted as candidate
+evidence; the qualified hosted runner supplies the native result. The first
+full-workspace attempt, run `38867063304`, exposed an invalid `cargo metadata
+--workspace` argument; its workspace `cargo check` test passed. Commit `7312acad`
+removed that unsupported argument, and the corrected hosted process/IPC step
+passed all 9 tests, including both offline workspace checks and the contained
+managed-process regression suite. The exact-head native run also passed the
+protected-mount and trusted-Git regressions.
+
+This earlier evidence qualified only the initial denial matrix. The
+exact-head corrective below subsequently qualified the host-configured
+resolver and changing-answer loopback DNS fixtures on the hosted candidate.
+Neither run qualifies every production launch owner, supported-host admission,
+or a persisted `OfflineRequired` route. M005 remains unenforced and M004's
+PTY/LSP owner gates remain open.
+
+### Resolver endpoint and changing-answer probe corrective — exact-head native candidate passed
+
+The fixture records the configured nameserver, proves it answers the same
+bounded DNS query from the host, then sends that query from the private network
+namespace; receiving any child-side reply is a test failure. A second loopback
+DNS fixture returns two different A records for the same query (`127.0.0.1`,
+then `198.51.100.1`), verifies both host-side answers differ, and has the
+contained child attempt to query that fixture directly.
+
+Exact-head hosted M004/M005 run
+[`38928962604`](https://github.com/dbowm91/codegg/actions/runs/38928962604)
+on `863537c0f36e0f71c4b1f784137ed69ff8ad4295` passed the native process/IPC
+step 9/9, including the configured-resolver and changing-answer loopback
+probes, offline workspace `cargo metadata`/`cargo check`, and managed-process
+regressions. The same workflow passed protected-mount tests 11/11, trusted-Git
+tests 20/20, and the separate restricted-userns refusal-before-target job.
+The hosted changing-answer probe is candidate evidence only: an external
+network positive control, production PTY/LSP owners, and supported-host
+qualification remain open. No `OfflineRequired` profile or
+`NetworkEnforcement::Enforced` claim is enabled.
+
+Earlier exact-head attempt `38913230183` ran 8/9 native tests successfully,
+including the offline workspace checks, but the new Python probe received
+Rust's lowercase `false` literal for its IPv6-family selector and exited with a
+`NameError` before the resolver packet check. This was a fixture-formatting
+failure, not a network-boundary result. The selector now receives numeric
+`0`/`1`; the corrected exact-head hosted result is recorded above.
+
+### Exact-head follow-up candidate run (2026-10-16)
+
+Linux workflow [`38944358636`](https://github.com/dbowm91/codegg/actions/runs/38944358636)
+on implementation head `0ddafd40609be6e57d09046584e3478d79c7ca63` passed the
+combined M004/M005 native target 9/9, including the host-configured resolver
+and changing-answer DNS fixtures, offline Cargo workspace checks, and process
+containment probes. Protected-mount tests passed 11/11, trusted-Git tests
+20/20, and restricted-userns refusal-before-target passed. This repeats the
+kernel-level candidate evidence; no normal shell, Test/Python, PTY, or LSP owner
+has yet demonstrated an authenticated `OfflineRequired` launch. Full CI on the
+same code head failed one `ChangedFiles` payload test on its first attempt; a
+same-SHA full-CI rerun remains in progress.
+
+### Exact-source M004 owner-matrix follow-up — 2026-10-19
+
+Hosted run [`39200873597`](https://github.com/dbowm91/codegg/actions/runs/39200873597)
+on `0fa4e1e5102e4900ba18326a8ef5a27a49ed2b63` passed the current 15-test
+process/IPC/offline candidate suite. The M005 fixture uses host-positive
+controls for IPv4/IPv6 loopback TCP and UDP, outbound DNS/TCP to GitHub, the
+configured resolver, and two different answers from the same loopback DNS
+query. The contained candidate then proved that the child could not reach
+host TCP/UDP listeners, the configured resolver or loopback rebinding fixture,
+resolve through the host resolver, reach the reserved external endpoint, or
+reuse an inherited connected host socket. The same exact-source workflow
+passed constrained PTY live-owner and routing, constrained LSP duplex/procfs,
+protected-mount/Git (20/20), and all restricted-userns refusal checks. This
+closes the prior DNS-rebinding-fixture and M004-owner-matrix evidence gaps for
+the private candidate at that revision. It did not add authenticated launch
+policy or persisted preference; those are tracked below. M005 remains active.
+
+### Authenticated preference and production-owner wiring — 2026-10-19
+
+The daemon now stores a revisioned per-principal network preference with an
+additive storage migration. New and legacy preference rows resolve to
+`LegacyUnrestricted` unless explicitly changed through `/network offline`.
+Immutable execution snapshots carry the intent; durable Test/Python job
+payloads carry it across scheduler admission and restart. `ManagedProcessService`
+uses the authenticated snapshot or scheduler-carried intent to require M004
+filesystem/process/IPC containment and the offline network namespace. PTY and
+LSP owners construct their launch requests with the same intent; FullHost,
+unsupported platforms, missing constrained launch specs, and setup failures
+refuse before target execution. The policy command shows requested and
+effective network intent and requires `/network unrestricted confirm` to
+restore host networking.
+
+Local formatting, library compile, root library test compilation, execution
+ownership, sandbox-contract, sandbox-policy-wiring, ADR-integrity, storage
+catalog, and diff guards passed. The new authenticated native owner probe could
+not run on this workstation: its kernel rejects the required Landlock ABI 6
+Signal/AbstractUnixSocket scope. The exact-source hosted M004/M005 workflow must
+run on the qualified ephemeral host before this wiring is called verified.
+The persisted intent is implemented, but M005 remains active pending that run,
+negative owner-path qualification, broader host support, and the separate
+production-admission decision.
 
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.

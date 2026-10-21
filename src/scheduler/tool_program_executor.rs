@@ -594,6 +594,8 @@ impl BrokerCallback for BrokerAdapter {
                         cwd: resolved_cwd.clone(),
                         scope: cfg.scope.clone(),
                         parent_run_id: None,
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )
@@ -609,6 +611,8 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
                         cwd: resolved_cwd.clone(),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )
@@ -629,6 +633,8 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
                         cwd: resolved_cwd.clone(),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )
@@ -643,6 +649,8 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
                         cwd: resolved_cwd.clone(),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )
@@ -2408,6 +2416,8 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

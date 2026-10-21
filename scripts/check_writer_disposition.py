@@ -340,21 +340,92 @@ def _blank_literals_and_comments(text: str) -> str:
     return "".join(out)
 
 
+def _split_cfg_arguments(expr: str) -> list[str]:
+    """Split a cfg predicate's arguments on top-level commas."""
+    parts: list[str] = []
+    depth = 0
+    current = ""
+    for ch in expr:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+    parts.append(current)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def cfg_condition_is_test_only(expr: str) -> bool:
+    """Whether a ``cfg`` predicate selects **only** test builds.
+
+    ``test`` alone is test-only. ``all(...)`` is test-only when **any** of
+    its members is test-only, because every member must hold. ``any(...)``
+    is test-only only when **all** of its members are test-only, because
+    any one of them can select the item on its own. Anything else — a
+    feature, a target, ``not(...)`` — is not test-only, so the guarded item
+    is kept in the production set.
+    """
+    expr = expr.strip()
+    if expr == "test":
+        return True
+    if expr.startswith("all(") and expr.endswith(")"):
+        members = _split_cfg_arguments(expr[4:-1])
+        return any(cfg_condition_is_test_only(member) for member in members)
+    if expr.startswith("any(") and expr.endswith(")"):
+        members = _split_cfg_arguments(expr[4:-1])
+        return bool(members) and all(
+            cfg_condition_is_test_only(member) for member in members
+        )
+    return False
+
+
 def strip_test_modules(text: str) -> str:
-    """Remove ``#[cfg(test)]`` module bodies before scanning for effects.
+    """Remove test-only module bodies before scanning for effects.
 
     A source file that only writes files inside its own unit-test module is
     not a production writer root. Brace matching over a literal- and
     comment-blanked copy keeps the removal precise for the Rust shapes this
     repository uses: a brace inside a string literal cannot desynchronise
     the matcher and leave a test-only writer in the production set.
+
+    The predicate is **any** test-only ``cfg``, not the literal
+    ``#[cfg(test)]``: ``#[cfg(all(test, target_os = "linux"))]`` selects the
+    same test-only module, and a module whose only writes live in one is no
+    more a production writer than a plain ``#[cfg(test)]`` one. A predicate
+    that can select the item in a production build (``any(test, feature = …)``,
+    ``not(test)``, a bare target) keeps the body in the production set.
     """
     out = _blank_literals_and_comments(text)
     while True:
-        index = out.find("#[cfg(test)]")
+        index = out.find("#[cfg(")
         if index == -1:
             return out
-        brace = out.find("{", index)
+        open_paren = out.find("(", index)
+        if open_paren == -1:
+            return out
+        depth = 0
+        close = -1
+        for pos in range(open_paren, len(out)):
+            if out[pos] == "(":
+                depth += 1
+            elif out[pos] == ")":
+                depth -= 1
+                if depth == 0:
+                    close = pos
+                    break
+        if close == -1:
+            return out
+        condition = out[open_paren + 1 : close]
+        if not cfg_condition_is_test_only(condition):
+            # The item can be selected in a production build: keep its body,
+            # but blank the attribute so the scan does not find it again.
+            out = out[:index] + " " * (close - index + 1) + out[close + 1 :]
+            continue
+        brace = out.find("{", close)
         if brace == -1:
             return out
         depth = 0
@@ -697,6 +768,38 @@ impl Tool for SneakyWriter {
         failures.append("a module performing std::fs::write was not detected as a writer module")
     if has_effect_primitive("fn go() { let x = read_to_string(\"/tmp/x\").unwrap(); }"):
         failures.append("a read-only module was wrongly detected as a writer module")
+
+    # A test-only module is not a production writer, whatever shape its cfg
+    # predicate takes.
+    for label, attribute in (
+        ("#[cfg(test)]", "#[cfg(test)]"),
+        ("#[cfg(all(test, target_os = \"linux\"))]", "#[cfg(all(test, target_os = \"linux\"))]"),
+        ("#[cfg(all(target_os = \"linux\", test))]", "#[cfg(all(target_os = \"linux\", test))]"),
+    ):
+        source = f"{attribute}\nmod tests {{\n fn go() {{ std::fs::write(\"/tmp/x\", b\"y\").unwrap(); }}\n}}\n"
+        if has_effect_primitive(strip_test_modules(source)):
+            failures.append(f"a test-only module under {label} was counted as a production writer")
+
+    # A predicate that can select the item in a production build must keep
+    # the body in the production set.
+    for label, attribute in (
+        ("#[cfg(any(test, feature = \"x\"))]", "#[cfg(any(test, feature = \"x\"))]"),
+        ("#[cfg(not(test))]", "#[cfg(not(test))]"),
+        ("#[cfg(target_os = \"linux\")]", "#[cfg(target_os = \"linux\")]"),
+        ("#[cfg(all(windows, feature = \"windows-sandbox-test-support\"))]",
+         "#[cfg(all(windows, feature = \"windows-sandbox-test-support\"))]"),
+    ):
+        source = f"{attribute}\nmod m {{\n fn go() {{ std::fs::write(\"/tmp/x\", b\"y\").unwrap(); }}\n}}\n"
+        if not has_effect_primitive(strip_test_modules(source)):
+            failures.append(f"a production-reachable module under {label} was wrongly stripped")
+
+    # The predicate helper itself.
+    for expr in ("test", "all(test, target_os = \"linux\")", "all(target_os = \"linux\", test)"):
+        if not cfg_condition_is_test_only(expr):
+            failures.append(f"cfg predicate {expr!r} was not recognised as test-only")
+    for expr in ("any(test, feature = \"x\")", "not(test)", "target_os = \"linux\"", "unix"):
+        if cfg_condition_is_test_only(expr):
+            failures.append(f"cfg predicate {expr!r} was wrongly recognised as test-only")
 
     # A writer tool with no manifest entry must be reported.
     problems = check(

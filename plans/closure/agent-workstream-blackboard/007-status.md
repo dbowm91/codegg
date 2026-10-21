@@ -203,7 +203,7 @@ layout to 84 and did not update them, so both tests had been failing
 since `7fb56e11`. Nothing caught it: `verify.sh quick` does not run the
 workspace tests, and the failure was invisible to every gate CI runs.
 
-M006's own v85 bump would have failed them again. Both assertions are
+M006's own v85 bump (now v87) would have failed them again. Both assertions are
 now **floors** (`>= 80` and `>= 82`) rather than equalities. The
 relationship that actually matters — the constant equals the highest
 wired migration — is already asserted directly above in both files, and

@@ -280,7 +280,7 @@ Two more are **not claimed** for the same reason:
 
 The **newer** clippy on this host (1.99.0) has the
 `assertions_on_constants` lint, and it fired on the two storage-layout
-**floor** assertions that M006's own v85 bump had introduced in
+**floor** assertions that M006's own v85 bump (now v87) had introduced in
 `crates/codegg-core/tests/user_prompt_queue.rs` and
 `…/user_prompt_queue_mutation.rs`: a comparison between two constants has
 a value the compiler folds away, and a folded assertion is not a test.

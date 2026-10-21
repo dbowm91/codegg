@@ -3,7 +3,7 @@
 Status: closed — 2026-10-19. Closure: `plans/closure/agent-workstream-blackboard/006-status.md`
 
 Delivered: the durable, idempotent launch saga in `codegg-core`
-(`session_launch`, storage layout v85), the typed worktree request with a base
+(`session_launch`, storage layout v87), the typed worktree request with a base
 ref and a target branch, the daemon-side `SessionLaunchService`, the
 `CoreRequest::SessionLaunch` / `CoreResponse::SessionLaunch` protocol pair, the
 `workspace_project_binding.worktree_id` binding that was never written, the

@@ -31,7 +31,7 @@
 //! stops CodeGG from *starting* a process in a reserved checkout. It says
 //! nothing about a process that was already running, and it says nothing
 //! about an unrelated program the same OS user starts outside CodeGG —
-//! those are out of contract by design (ADR-0044 clause 1).
+//! those are out of contract by design (ADR-0047 clause 1).
 //!
 //! The tool layer never imports `crate::core`: the daemon adapter supplies
 //! the authority, the tool layer supplies the question.

@@ -158,6 +158,9 @@ pub struct TurnRunInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005: principal network intent, captured with the immutable turn
+    /// policy and passed to canonical process owners.
+    pub network_intent: Option<codegg_core::approval::NetworkIntent>,
     /// M010: runtime inference feedback bound to one concrete durable provider
     /// connection revision. `None` when the turn is not bound to a durable
     /// connection, in which case no credential verdict is inferred or
@@ -236,6 +239,40 @@ impl TurnRuntime for DefaultTurnRuntime {
     async fn run_turn(&self, input: TurnRunInput) -> Result<TurnRunOutput, AppError> {
         use crate::agent::agent_loop_factory::AgentLoopBuildInput;
 
+        let profile = input
+            .sandbox_profile
+            .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+        let m004_lsp_scope: Option<Arc<crate::lsp::m004::M004LspServiceScope>> = if profile
+            .requires_filesystem_containment()
+        {
+            #[cfg(target_os = "linux")]
+            {
+                match crate::lsp::m004::M004LspServiceScope::new_with_network_intent(
+                    profile,
+                    input.network_intent.unwrap_or_default(),
+                    input.execution.workspace_root.clone(),
+                    crate::lsp::config_lsp_to_egglsp(input.config.lsp.clone().unwrap_or_default()),
+                ) {
+                    Ok(scope) => Some(scope),
+                    Err(error) => {
+                        tracing::warn!(%error, "constrained LSP service could not be constructed");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
+        } else {
+            None
+        };
+        let lsp_service = if profile.requires_filesystem_containment() {
+            m004_lsp_scope.as_ref().map(|scope| scope.service())
+        } else {
+            input.lsp_service.clone()
+        };
+
         let TurnRunInput {
             session_id,
             agents_dto,
@@ -250,7 +287,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             memory_store,
             event_log,
             turn_id,
-            lsp_service,
+            lsp_service: _,
             document_service,
             lsp_context_input,
             plugin_service,
@@ -267,6 +304,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             asset_pin,
             approval_mode,
             sandbox_profile,
+            network_intent,
             credential_observer,
             shared_job_notification_service,
             shared_ci_watch_service,
@@ -907,6 +945,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             ci_watch_service: Some(ci_watch_service),
             approval_mode,
             sandbox_profile,
+            network_intent,
             credential_observer,
             // M005 corrective C005: the turn's process admission policy.
             process_admission: process_admission.clone(),
@@ -980,6 +1019,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         let event_log_for_spawn = event_log;
         let specialized_prepared_for_spawn = specialized_prepared;
         let run_control_for_spawn = run_control;
+        let m004_lsp_scope_for_spawn = m004_lsp_scope;
         let title_model = request.model.clone();
         tokio::spawn(async move {
             // A panic inside the agent-loop task must not vanish with the
@@ -1090,6 +1130,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                         }
                     }
                 }
+            }
+            if let Some(scope) = m004_lsp_scope_for_spawn {
+                scope.shutdown().await;
             }
         });
 

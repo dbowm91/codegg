@@ -53,6 +53,8 @@ fn build_managed_process_spec(workspace: &WorkspaceId, argv: Vec<String>) -> New
         payload: JobPayload::ManagedArgv {
             argv,
             cwd: Some("/tmp".into()),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

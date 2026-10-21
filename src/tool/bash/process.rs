@@ -48,6 +48,7 @@ use crate::command_intent::CommandIntentKind;
 use crate::command_outcome::ActualExecutor;
 use crate::config::schema::CommandIntentFamily;
 use crate::error::ToolError;
+use crate::git_mutations::{GitEnvPolicy, GitMutationExecutor};
 
 /// Bytes of partial output carried into a timeout result.
 ///
@@ -332,6 +333,27 @@ pub(crate) fn synth_output(
 }
 
 impl BashTool {
+    /// The Git mutation executor this tool builds for a bash-routed Git
+    /// operation.
+    ///
+    /// C007: a bash-routed `git add` is an authorized `Add`, so it is
+    /// published through the same private-index path the native `git` and
+    /// `commit` tools use. Without the backend the typed executor **refuses**
+    /// the `Add` rather than falling back to the in-place `git add` route, so
+    /// an ordinary `git add` in a shell would break.
+    pub(crate) fn git_mutation_executor(
+        &self,
+        timeout: std::time::Duration,
+    ) -> GitMutationExecutor {
+        let exec = GitMutationExecutor::new()
+            .with_env_policy(GitEnvPolicy::default())
+            .with_timeout(timeout);
+        match self.publication.as_ref() {
+            Some(publication) => exec.with_publication(publication.clone()),
+            None => exec,
+        }
+    }
+
     /// Execute a command via raw shell (`sh -c`). This is the original behavior
     /// used by observe mode and as a fallback when active routing is disabled
     /// or dispatch fails.
@@ -565,6 +587,7 @@ impl BashTool {
         _validated_command: Option<&str>,
         timeout: Duration,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests,
@@ -602,6 +625,8 @@ impl BashTool {
                         cwd: Some(run_cwd.to_string_lossy().into_owned()),
                         scope: Some("bash-dispatch".into()),
                         parent_run_id: None,
+                        sandbox_profile: None,
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -738,6 +763,7 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<DispatchOutcome, ToolError> {
         use crate::python_script::PythonExecutionMode;
 
@@ -773,7 +799,7 @@ impl BashTool {
         // Scheduler-owned path: submit through JobSubmissionService
         if let Some(ref submission) = self.submission {
             return self
-                .dispatch_python_via_scheduler(&request, submission, mode, timeout)
+                .dispatch_python_via_scheduler(&request, submission, mode, timeout, network_intent)
                 .await;
         }
 
@@ -790,6 +816,7 @@ impl BashTool {
         submission: &Arc<crate::scheduler::JobSubmissionService>,
         mode: &str,
         timeout: Duration,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<DispatchOutcome, ToolError> {
         use codegg_core::jobs::{
             ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
@@ -824,6 +851,8 @@ impl BashTool {
             source_hash: Some(source_hash.clone()),
             cwd: Some(request.cwd.to_string_lossy().to_string()),
             timeout_secs: request.timeout_secs,
+            sandbox_profile: None,
+            network_intent,
         };
 
         let mut labels = std::collections::HashMap::new();
@@ -978,9 +1007,7 @@ impl BashTool {
         audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
         use crate::git_mutation_projector::project_mutation;
-        use crate::git_mutations::{
-            resolve_repo_root, GitEnvPolicy, GitMutationError, GitMutationExecutor,
-        };
+        use crate::git_mutations::{resolve_repo_root, GitMutationError};
 
         // Resolve the working directory. Precedence:
         //   1. `canonical_workdir` (BashTool-resolved via allowed_paths).
@@ -1026,9 +1053,7 @@ impl BashTool {
             }
         };
 
-        let exec = GitMutationExecutor::new()
-            .with_env_policy(GitEnvPolicy::default())
-            .with_timeout(timeout);
+        let exec = self.git_mutation_executor(timeout);
         let exec = match audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()) {
             Some(authorization) => exec.with_execution_authorization(authorization),
             None => exec,
@@ -1180,6 +1205,8 @@ impl BashTool {
         timeout: Duration,
         kind: codegg_core::jobs::JobKind,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<DispatchOutcome, ToolError> {
         if command.executable.is_empty() {
             return Err(ToolError::Execution("empty executable".to_string()));
@@ -1211,6 +1238,8 @@ impl BashTool {
                     payload: codegg_core::jobs::JobPayload::ManagedArgv {
                         argv: argv_owned.clone(),
                         cwd: Some(cwd_owned.to_string_lossy().into_owned()),
+                        sandbox_profile,
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
                     timeout: Some(timeout),
@@ -1273,6 +1302,8 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests, // generic
@@ -1306,6 +1337,8 @@ impl BashTool {
                         command: command.to_string(),
                         argv: Some(argv.clone()),
                         cwd: Some(cwd.to_string_lossy().into_owned()),
+                        sandbox_profile,
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Shell,
@@ -1364,13 +1397,23 @@ impl BashTool {
         timeout: Duration,
         audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
-        if !active_route_matches_authorization(audit_ctx) {
-            return Err(ToolError::Permission(
-                "active command route cannot prove the accepted constrained sandbox; route refused"
-                    .into(),
-            ));
+        if let Err(reason) = crate::tool::authorization::admit_full_host_specialized_route(
+            audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref()),
+            crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+        ) {
+            return Err(specialized_route_error(reason));
         }
         let session_id = audit_ctx.and_then(|ctx| ctx.session_id.clone());
+        let authorization = audit_ctx.and_then(|context| context.execution_authorization.as_ref());
+        let network_intent = authorization
+            .map(|authorization| authorization.snapshot.network_intent())
+            .unwrap_or_default();
+        // The accepted filesystem profile travels with the network intent: a
+        // durable route has to rebuild the same containment the direct route
+        // would have used, and the owner refuses an offline request it
+        // cannot honor.
+        let sandbox_profile =
+            authorization.map(|authorization| authorization.snapshot.sandbox_profile());
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
                 argv,
@@ -1383,6 +1426,7 @@ impl BashTool {
                     validated_command.as_deref(),
                     timeout,
                     session_id.clone(),
+                    network_intent,
                 )
                 .await
             }
@@ -1403,6 +1447,7 @@ impl BashTool {
                     canonical_workdir,
                     timeout,
                     session_id.clone(),
+                    network_intent,
                 )
                 .await
             }
@@ -1419,6 +1464,8 @@ impl BashTool {
                     timeout,
                     kind,
                     session_id.clone(),
+                    network_intent,
+                    sandbox_profile,
                 )
                 .await
             }
@@ -1439,8 +1486,15 @@ impl BashTool {
                 .await
             }
             CommandDispatchTarget::RouteToShell { command, .. } => {
-                self.dispatch_to_shell(command, canonical_workdir, timeout, session_id)
-                    .await
+                self.dispatch_to_shell(
+                    command,
+                    canonical_workdir,
+                    timeout,
+                    session_id,
+                    network_intent,
+                    sandbox_profile,
+                )
+                .await
             }
             CommandDispatchTarget::Rejected { reason } => Err(ToolError::Execution(format!(
                 "command rejected: {}",
@@ -1472,12 +1526,26 @@ impl BashTool {
                 .clone()
                 .or_else(|| c.principal_identity.clone())
         });
+        let sandbox_profile = audit_ctx
+            .and_then(|c| c.sandbox_profile.as_deref())
+            .map(|raw| {
+                codegg_core::approval::SandboxProfile::parse(raw).ok_or_else(|| {
+                    ToolError::Permission("invalid accepted sandbox profile in tool context".into())
+                })
+            })
+            .transpose()?;
+        let network_intent = audit_ctx
+            .and_then(|context| context.execution_authorization.as_ref())
+            .map(|authorization| authorization.snapshot.network_intent())
+            .unwrap_or_default();
         Ok(BashBackgroundCtx {
             session_id,
             turn_id,
             invocation_key,
             disposition: crate::scheduler::job_notifications::JobCompletionDisposition::NotifyOnly,
             owner_principal,
+            sandbox_profile,
+            network_intent,
         })
     }
 
@@ -1595,6 +1663,8 @@ impl BashTool {
             command: command.to_string(),
             argv: Some(argv),
             cwd: Some(cwd.to_string_lossy().into_owned()),
+            sandbox_profile: bg.sandbox_profile,
+            network_intent: bg.network_intent,
         };
         let cwd_ref = canonical_workdir.unwrap_or(Path::new("."));
         // Re-resolve the workspace root the same way the foreground path
@@ -1643,6 +1713,8 @@ impl BashTool {
                     cwd: Some(cwd.to_string_lossy().into_owned()),
                     scope: Some("bash-dispatch".into()),
                     parent_run_id: None,
+                        sandbox_profile: bg.sandbox_profile,
+                        network_intent: bg.network_intent,
                 };
                 self.submit_bash_background(
                     codegg_core::jobs::JobKind::Test,
@@ -1667,6 +1739,8 @@ impl BashTool {
                 let payload = codegg_core::jobs::JobPayload::ManagedArgv {
                     argv: command.full_argv(),
                     cwd: Some(cwd_owned.to_string_lossy().into_owned()),
+                    sandbox_profile: bg.sandbox_profile,
+                    network_intent: bg.network_intent,
                 };
                 let cwd_path = cwd_owned.clone();
                 self.submit_bash_background(
@@ -1711,6 +1785,8 @@ impl BashTool {
                     ),
                     cwd: Some(cwd.to_string_lossy().into_owned()),
                     timeout_secs: Some(timeout.as_secs()),
+                    sandbox_profile: bg.sandbox_profile,
+                    network_intent: bg.network_intent,
                 };
                 self.submit_bash_background(
                     codegg_core::jobs::JobKind::Python,
@@ -1747,14 +1823,22 @@ pub(crate) struct BashBackgroundCtx {
     pub invocation_key: String,
     pub disposition: crate::scheduler::job_notifications::JobCompletionDisposition,
     pub owner_principal: Option<String>,
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    pub network_intent: codegg_core::approval::NetworkIntent,
 }
 
-fn active_route_matches_authorization(
-    audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
-) -> bool {
-    audit_ctx
-        .and_then(|ctx| ctx.execution_authorization.as_ref())
-        .is_none_or(|authorization| authorization.snapshot.sandbox_profile().is_full_host())
+fn specialized_route_error(
+    reason: crate::tool::authorization::SpecializedRouteUnavailable,
+) -> ToolError {
+    match reason {
+        crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable {
+            ..
+        } => ToolError::BackendUnavailable(reason.to_string()),
+        crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
+        | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
+            ToolError::Permission(reason.to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1762,7 +1846,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_routes_require_an_explicit_full_host_snapshot() {
+    fn active_routes_require_valid_explicit_full_host_authorization() {
         let mut context = crate::tool::backend::ToolExecutionContext::with_backend(
             crate::tool::backend::ToolBackendKind::Native,
         );
@@ -1781,7 +1865,13 @@ mod tests {
                 command_preflight: None,
                 scratch_scope: None,
             });
-        assert!(!active_route_matches_authorization(Some(&context)));
+        assert!(matches!(
+            crate::tool::authorization::admit_full_host_specialized_route(
+                context.execution_authorization.as_ref(),
+                crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+            ),
+            Err(crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. })
+        ));
 
         let mut full_host = context.clone();
         if let Some(authorization) = full_host.execution_authorization.as_mut() {
@@ -1795,8 +1885,20 @@ mod tests {
                 None,
             );
         }
-        assert!(active_route_matches_authorization(Some(&full_host)));
-        assert!(active_route_matches_authorization(None));
+        assert!(
+            crate::tool::authorization::admit_full_host_specialized_route(
+                full_host.execution_authorization.as_ref(),
+                crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            crate::tool::authorization::admit_full_host_specialized_route(
+                None,
+                crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+            ),
+            Err(crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization)
+        ));
     }
 
     #[test]

@@ -136,6 +136,8 @@ mod tests {
                 command: "echo hi".to_string(),
                 argv: None,
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: codegg_core::jobs::ResourceRequest::default(),
             timeout: None,

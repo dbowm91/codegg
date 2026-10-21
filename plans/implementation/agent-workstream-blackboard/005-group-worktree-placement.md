@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — M001/M004 and ADR-0032 gates are satisfied; project-root writer sink inventory and the currently available native process lifecycle evidence are recorded. Q1–Q5 and shared mutation remain unqualified; unresolved writer containment and platform gaps keep the capability unavailable.
+Status: active — M001/M004 and ADR-0032 gates are satisfied; project-root writer sink inventory and the native process lifecycle evidence are recorded. The corrective line closed C001–C005 and closed C006 **conditionally**: Q1–Q5 ran on Linux and macOS, and the shared checkout is a real **opt-in** production path, platform-gated (Linux and macOS qualified; Windows disabled because it has no filesystem-enforcement backend). The WorkOrder `shared`/`serialized` **mutation policy** still fails closed, so no WorkOrder agent is placed on a shared checkout — the profile is reached only through the explicit opt-in.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
@@ -16,7 +16,7 @@ have separate corrective handoffs in
 plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md
 (C001–C006), with executable plans under
 plans/implementation/agent-workstream-m005-writer-containment-corrective/.
-ADR-0044 option B was **accepted on 2026-10-19**, which unblocked C002
+ADR-0047 option B was **accepted on 2026-10-19**, which unblocked C002
 only and enabled no shared mutation; C001 is closed with the restricted
 CodeGG-mediated writer profile and denial matrix, and C002 is closed with
 the durable generation-fenced checkout writer permit. C003 is

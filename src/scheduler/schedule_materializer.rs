@@ -208,6 +208,7 @@ fn submission_error_code(error: &JobSubmissionError) -> String {
         JobSubmissionError::InvalidSubmissionKey => "invalid_submission_key".to_owned(),
         JobSubmissionError::SubmissionKeyConflict => "submission_key_conflict".to_owned(),
         JobSubmissionError::PayloadTooLarge => "payload_too_large".to_owned(),
+        JobSubmissionError::LabelsTooLarge => "labels_too_large".to_owned(),
         JobSubmissionError::InvalidPayload(_) => "invalid_payload".to_owned(),
         JobSubmissionError::Goal(_) => "goal_lookup_failed".to_owned(),
         // M005 corrective C005: a process-class job was refused because the
@@ -216,5 +217,54 @@ fn submission_error_code(error: &JobSubmissionError) -> String {
         // carried — and like every other refusal it is not recorded, so the
         // occurrence stays retryable once the group finishes.
         JobSubmissionError::ProcessDenied(_) => "process_denied".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{submission_error_code, JobSubmissionError};
+
+    /// The reason code is an operational identifier: operators and dashboards
+    /// match on it, so a slug that changes silently is a breaking change even
+    /// though no type says so. Every variant is pinned here.
+    ///
+    /// The `LabelsTooLarge` arm was added when this branch's bounded label
+    /// limits met `main`'s materializer, which matched over a variant set
+    /// that did not yet contain it. The compiler enforces the *coverage*; this
+    /// test pins the *slug*.
+    #[test]
+    fn submission_error_codes_are_stable_slugs() {
+        let cases: Vec<(JobSubmissionError, &str)> = vec![
+            (JobSubmissionError::SchedulerDisabled, "scheduler_disabled"),
+            (
+                JobSubmissionError::Workspace(String::new()),
+                "workspace_unavailable",
+            ),
+            (
+                JobSubmissionError::InvalidSubmissionKey,
+                "invalid_submission_key",
+            ),
+            (
+                JobSubmissionError::SubmissionKeyConflict,
+                "submission_key_conflict",
+            ),
+            (JobSubmissionError::PayloadTooLarge, "payload_too_large"),
+            (JobSubmissionError::LabelsTooLarge, "labels_too_large"),
+            (
+                JobSubmissionError::InvalidPayload(String::new()),
+                "invalid_payload",
+            ),
+            (
+                JobSubmissionError::Goal(String::new()),
+                "goal_lookup_failed",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                submission_error_code(&error),
+                expected,
+                "slug for {error:?}"
+            );
+        }
     }
 }

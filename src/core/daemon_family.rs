@@ -267,6 +267,7 @@ impl DaemonRequestFamily {
             CoreRequest::ApprovalPreferenceGet => Self::Ops,
             CoreRequest::ApprovalModeSet { .. } => Self::Ops,
             CoreRequest::SandboxProfileSet { .. } => Self::Ops,
+            CoreRequest::NetworkIntentSet { .. } => Self::Ops,
             CoreRequest::RuntimePolicySet { .. } => Self::Ops,
             CoreRequest::TaskModelPreferenceSet { .. } => Self::Ops,
             CoreRequest::ExecutionPolicyGet { .. } => Self::Ops,

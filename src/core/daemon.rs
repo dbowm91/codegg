@@ -4364,6 +4364,7 @@ impl CoreDaemon {
         if Self::is_interactive_process_request(&request.payload) {
             let protocol = self.interactive_processes.clone();
             let workspaces = self.workspaces.clone();
+            let pool = self.pool.clone();
             let event_log = self.event_log.clone();
             let authority = self.interactive_authority_for(trusted_client_id);
             let owned_client = trusted_client_id.to_string();
@@ -4375,6 +4376,7 @@ impl CoreDaemon {
                 let out = Self::run_interactive_request(
                     protocol,
                     workspaces,
+                    pool,
                     event_log,
                     authority,
                     owned_client,
@@ -4556,6 +4558,7 @@ impl CoreDaemon {
     async fn run_interactive_request(
         protocol: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
         workspaces: Arc<codegg_core::workspace::WorkspaceRegistry>,
+        pool: Option<sqlx::SqlitePool>,
         event_log: Arc<super::event_log::EventLog>,
         authority: crate::interactive_process_attach::InteractiveAuthority,
         client_id: String,
@@ -4570,6 +4573,55 @@ impl CoreDaemon {
                 Ok(protocol.capabilities(&current))
             }
             CoreRequest::InteractiveProcessCreate { request } => {
+                // PTY creation is a production execution owner. Resolve the
+                // requested profile from daemon-owned principal preferences;
+                // the request DTO cannot select FullHost or a constrained
+                // profile. The protocol transfers this decision to the M004
+                // owner, which fails closed if required setup is unavailable.
+                let principal_id = audit_hook
+                    .as_ref()
+                    .map(|hook| hook.context.principal().principal_id().as_str().to_owned());
+                let (profile, network_intent) = match (pool, principal_id) {
+                    (Some(pool), Some(principal_id)) => {
+                        match codegg_core::approval::RuntimePreferenceStore::new(pool)
+                            .get(&principal_id)
+                            .await
+                        {
+                            // An absent preference is not a request to
+                            // constrain an independent human PTY. Preserve
+                            // the legacy FullHost terminal path unless the
+                            // principal explicitly stored a profile.
+                            Ok(Some(preference)) => (
+                                preference
+                                    .sandbox_profile
+                                    .unwrap_or(codegg_core::approval::SandboxProfile::FullHost),
+                                preference.effective_network_intent(),
+                            ),
+                            Ok(None) => (
+                                codegg_core::approval::SandboxProfile::FullHost,
+                                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                            ),
+                            Err(error) => {
+                                return Ok(CoreResponse::Error {
+                                    code: "interactive_policy_unavailable".into(),
+                                    message: format!(
+                                        "cannot resolve PTY execution policy: {error}"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    (None, _) => (
+                        codegg_core::approval::SandboxProfile::FullHost,
+                        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                    ),
+                    (_, None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "interactive_policy_unavailable".into(),
+                            message: "cannot resolve PTY execution principal".into(),
+                        });
+                    }
+                };
                 let ctx =
                     match Self::interactive_execution_context(&workspaces, &request.workspace_id)
                         .await
@@ -4578,7 +4630,14 @@ impl CoreDaemon {
                         Err(response) => return Ok(*response),
                     };
                 Ok(protocol
-                    .create(trusted_client_id, &ctx, &request, audit_hook)
+                    .create_with_network_intent(
+                        trusted_client_id,
+                        &ctx,
+                        profile,
+                        network_intent,
+                        &request,
+                        audit_hook,
+                    )
                     .await)
             }
             CoreRequest::InteractiveProcessList {
@@ -6413,7 +6472,7 @@ mod tests {
         use codegg_core::identity::PrincipalId;
         use codegg_core::provider_connections::{
             Endpoint, NewProviderConnection, ProviderConnectionStore, ProviderKind, ProviderScope,
-            SecretBindingLocator, SecretRef, TlsPolicy,
+            TlsPolicy,
         };
         let pool = daemon.pool.clone().expect("test daemon pool");
         let conn_store = ProviderConnectionStore::new(pool.clone());
@@ -6426,10 +6485,12 @@ mod tests {
                     .unwrap(),
                 tls_policy: TlsPolicy::Disabled,
                 scope: ProviderScope::personal(PrincipalId::parse("test-user").unwrap()),
-                secret_binding: Some(
-                    SecretBindingLocator::new(SecretRef::new(), "test-provider", "acct-ps")
-                        .unwrap(),
-                ),
+                // The test supplies OPENAI_API_KEY and verifies durable
+                // session selection/admission only. A connection-bound
+                // secret locator would require mutating the real credential
+                // store, which makes this otherwise isolated fixture fail on
+                // hosted runners.
+                secret_binding: None,
             })
             .await
             .expect("create connection")

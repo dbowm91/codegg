@@ -20,7 +20,27 @@ use std::path::PathBuf;
 
 use codegg::tool::broker::ToolBroker;
 use codegg::tool::contract::ToolEffectClass;
-use codegg::tool::{ToolCategory, ToolRegistry};
+use codegg::tool::{ToolCategory, ToolRegistry, ToolRegistryOptions};
+
+/// The catalog the read-only palette is reviewed against.
+///
+/// The palette is a set of **tool types** that may declare a read-only effect
+/// class, so it has to be read from a catalog where those tools are *live*.
+/// A profile that requires filesystem containment attaches a disabled stub for
+/// the LSP tools unless the daemon supplies an M004-scoped service, and a
+/// disabled stub carries no contract of its own — its effect class is the
+/// conservative legacy default, not `ReadOnly`. Reading the palette from a
+/// constrained registry would make the reviewed set flip with the profile,
+/// and `lsp_read` would read as "no longer read-only" when it is exactly as
+/// read-only as it was.
+fn reviewed_catalog() -> (ToolRegistry, ToolBroker) {
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
+        ..Default::default()
+    });
+    let broker = ToolBroker::new(&registry);
+    (registry, broker)
+}
 
 /// The C001-reviewed set of tools that may declare a read-only effect class
 /// and therefore become program-callable inside a Tool Program.
@@ -113,8 +133,7 @@ fn is_read_only_effect(effect: &ToolEffectClass) -> bool {
 /// The declaration is not trusted, and the combination is refused.
 #[test]
 fn writer_category_tools_may_not_declare_a_read_only_effect_class() {
-    let registry = ToolRegistry::with_defaults();
-    let broker = ToolBroker::new(&registry);
+    let (registry, broker) = reviewed_catalog();
 
     let mut offenders = Vec::new();
     for tool in registry.list() {
@@ -146,8 +165,7 @@ fn writer_category_tools_may_not_declare_a_read_only_effect_class() {
 /// trusted, so the reviewed set is asserted exactly.
 #[test]
 fn only_reviewed_tools_declare_a_read_only_effect_class() {
-    let registry = ToolRegistry::with_defaults();
-    let broker = ToolBroker::new(&registry);
+    let (registry, broker) = reviewed_catalog();
 
     let mut declared = BTreeSet::new();
     for tool in registry.list() {

@@ -338,6 +338,10 @@ impl ExecMode {
             AppError::Tool(ToolError::Disabled(_)) => {
                 ("TOOL_DISABLED".to_string(), "Tool disabled".to_string())
             }
+            AppError::Tool(ToolError::BackendUnavailable(_)) => (
+                "TOOL_BACKEND_UNAVAILABLE".to_string(),
+                "Tool execution backend unavailable".to_string(),
+            ),
             AppError::Tool(_) => ("TOOL_ERROR".to_string(), "Tool execution error".to_string()),
             AppError::Mcp(_) => ("MCP_ERROR".to_string(), "MCP error".to_string()),
             AppError::Lsp(_) => ("LSP_ERROR".to_string(), "LSP error".to_string()),

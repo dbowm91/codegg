@@ -677,8 +677,8 @@ impl CoreDaemon {
                 // Interactive/WorkspaceWrite defaults. The snapshot is
                 // captured by the loop at the batch boundary so concurrent
                 // mode changes apply on the next turn, never retroactively.
-                let (approval_mode, sandbox_profile) = match self.pool.clone() {
-                    None => (None, None),
+                let (approval_mode, sandbox_profile, network_intent) = match self.pool.clone() {
+                    None => (None, None, None),
                     Some(pool) => {
                         let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
                         let principal = authority.principal_id().as_str().to_owned();
@@ -686,14 +686,15 @@ impl CoreDaemon {
                             Ok(Some(pref)) => (
                                 Some(pref.effective_approval_mode()),
                                 Some(pref.effective_sandbox_profile()),
+                                Some(pref.effective_network_intent()),
                             ),
-                            Ok(None) => (None, None),
+                            Ok(None) => (None, None, None),
                             Err(error) => {
                                 tracing::warn!(
                                     error = %error,
                                     "approval preference read failed; using defaults"
                                 );
-                                (None, None)
+                                (None, None, None)
                             }
                         }
                     }
@@ -743,6 +744,7 @@ impl CoreDaemon {
                     asset_pin,
                     approval_mode,
                     sandbox_profile,
+                    network_intent,
                     credential_observer,
                     // C001 daemon singletons: every turn shares one notifier
                     // + one watcher; closing a turn leaves watchers live.

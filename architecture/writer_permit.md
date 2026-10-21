@@ -21,7 +21,7 @@ selector exists.
 Roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C002).
 Implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/002-durable-writer-permit-and-quarantine.md`.
 Closure: `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md`.
-Decision: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19**, option B — restricted CodeGG-managed coordination).
+Decision: `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19**, option B — restricted CodeGG-managed coordination).
 Contract: `plans/implementation/agent-workstream-m005-writer-containment-corrective/c001-restricted-profile-contract.md`.
 Writer inventory: `docs/writer-disposition.toml`, guarded by `scripts/check_writer_disposition.py`.
 
@@ -293,18 +293,20 @@ the delegated-run worker, `codegg exec` and the CLI — builds a
 tool execution context, so a native writer whose target resolves outside that
 scope is refused before the effect.
 
-The **permit-backed shared profile** is not live yet: `DaemonWriterFence` has
-no production caller, because nothing in production places two runs on one
-checkout. That is the milestone's boundary rather than an oversight — C006 is
-what creates the shared placement, and wiring the profile in earlier would
-enable shared mutation before C004 and C005 have qualified it.
+The **permit-backed shared profile** was not live when C003 landed:
+`DaemonWriterFence` had no production caller, because nothing in production
+placed two runs on one checkout. That was the milestone's boundary rather than
+an oversight — C006 is what creates the shared placement, and wiring the
+profile in earlier would have enabled shared mutation before C004 and C005 had
+qualified it.
 
-So the shared profile is a **capability**, not a product path. Nothing in
-production places two runs on one checkout: the work-order `shared`/`serialized`
-placement is still refused, and the scheduler still gives every delegated run
-its own isolated worktree. C004 (non-broker sinks) and C005 (process denial)
-must complete the profile, and C006 must produce the real production path and
-the native Q1–Q5 evidence, before any shared mutation exists.
+**That boundary has since moved.** The shared profile is a real, **opt-in**
+production path — see
+[The shared checkout profile (C006)](#the-shared-checkout-profile-c006). It
+is still opt-in and platform-gated, and the WorkOrder `shared`/`serialized`
+placement is still refused: no WorkOrder agent is placed on a shared checkout,
+and the scheduler still gives every delegated run its own isolated worktree
+unless the placement explicitly asks otherwise.
 
 ## The checkout reservation gate (C004)
 

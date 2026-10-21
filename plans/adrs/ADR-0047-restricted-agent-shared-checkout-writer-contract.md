@@ -1,4 +1,4 @@
-# ADR-0044: Restricted CodeGG-Managed Shared-Checkout Writer Contract
+# ADR-0047: Restricted CodeGG-Managed Shared-Checkout Writer Contract
 
 Status: accepted — option B selected 2026-10-19; does not by itself authorize shared-checkout mutation
 
@@ -108,10 +108,10 @@ A small safe initial surface is plausible and testable but intentionally exclude
 
 ## Compatibility and migration
 
-Accepted clarification of the qualified operating boundary under accepted ADR-0032; it does not revise accepted ADRs or enable execution on its own. Additive versioned schema/protocol changes, opt-in only, legacy isolated behavior unchanged. If ADR-0044 is rejected, C002–C006 remain blocked and M005 shared mutation stays unavailable.
+Accepted clarification of the qualified operating boundary under accepted ADR-0032; it does not revise accepted ADRs or enable execution on its own. Additive versioned schema/protocol changes, opt-in only, legacy isolated behavior unchanged. If ADR-0047 is rejected, C002–C006 remain blocked and M005 shared mutation stays unavailable.
 
 *Superseded clause (historical).* This section was written while the decision
-was proposed and read "Proposed clarification … If ADR-0044 is rejected, C002–C006
+was proposed and read "Proposed clarification … If ADR-0047 is rejected, C002–C006
 remain blocked". Option B was accepted on 2026-10-19, so the rejection branch is
 now counterfactual; the "Accepted clarification" and "does not … enable execution
 on its own" clauses are the operative ones. Had it been rejected, C002–C006

@@ -4,7 +4,7 @@ Status: closed
 Source implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/004-nonbroker-writer-sink-mediation.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C004)
 Repository baseline reviewed: `1eeecb00` (post-merge-reconciliation of `work/agent-workstream-m005-writer-audit` with `origin/main` `a9f70375`)
-Decision: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
+Decision: `plans/adrs/ADR-0047-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
 Predecessor closure: `plans/closure/agent-workstream-m005-writer-containment-corrective/003-status.md`
 
 ## 1. Executive finding
