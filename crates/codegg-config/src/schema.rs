@@ -1429,7 +1429,6 @@ pub struct ProviderConfig {
     pub enterprise_url: Option<String>,
     pub set_cache_key: Option<bool>,
     pub timeout: Option<ProviderTimeout>,
-    pub chunk_timeout: Option<u64>,
     pub whitelist: Option<Vec<String>>,
     pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
@@ -1480,9 +1479,6 @@ impl ProviderConfig {
         }
         if other.timeout.is_some() {
             self.timeout.clone_from(&other.timeout);
-        }
-        if other.chunk_timeout.is_some() {
-            self.chunk_timeout.clone_from(&other.chunk_timeout);
         }
         if other.whitelist.is_some() {
             self.whitelist.clone_from(&other.whitelist);

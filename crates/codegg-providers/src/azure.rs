@@ -88,7 +88,6 @@ impl Provider for AzureProvider {
         Ok(crate::wire::openai_chat_stream(
             stream,
             req.context.wire_policy.clone(),
-            None,
         ))
     }
 

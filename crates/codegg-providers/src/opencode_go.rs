@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use eggpool_wire::profile::WireSurface;
 use http::header::{HeaderName, HeaderValue};
 
+#[cfg(test)]
 use std::time::Duration;
 
 /// Transport-owned deadline applied identically on every surface.
@@ -46,6 +47,11 @@ use std::time::Duration;
 /// means the deadline is applied identically on Chat, Responses and Messages:
 /// it is not applied at all, and the agent layer's liveness policy governs
 /// all three.
+///
+/// The shared stream bridge no longer carries a chunk-deadline parameter, so
+/// this provider cannot impose one at all. The constant is retained under
+/// `cfg(test)` so the test below keeps pinning the posture.
+#[cfg(test)]
 const CHUNK_TIMEOUT: Option<Duration> = None;
 
 /// Provider-owned session-affinity header established by M008/M009.
@@ -389,12 +395,7 @@ impl Provider for OpenCodeGoProvider {
             .clone()
             .or_else(|| Some(std::sync::Arc::new(crate::ProviderWirePolicy::default())));
         let bytes = response.bytes_stream().map_err(ProviderError::from)?;
-        Ok(crate::wire::shared_stream(
-            bytes,
-            adapter,
-            CHUNK_TIMEOUT,
-            policy,
-        ))
+        Ok(crate::wire::shared_stream(bytes, adapter, policy))
     }
 
     /// Discover models, then keep only wire-resolved ones selectable.

@@ -250,7 +250,6 @@ pub struct ProviderConfig {
     pub enterprise_url: Option<String>,
     pub set_cache_key: Option<bool>,
     pub timeout: Option<ProviderTimeout>,
-    pub chunk_timeout: Option<u64>,
     pub whitelist: Option<Vec<String>>,
     pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
@@ -270,6 +269,14 @@ authority" in `architecture/provider.md`.
 
 `api_key(&self, prefix)` checks `{PREFIX}_API_KEY` env var first, then
 inline `api_key` field.
+
+**There is no per-provider chunk deadline, and none is configurable.**
+Per-chunk stream deadlines are owned by the agent layer, which already bounds
+a long stream (`STREAM_SETUP_TIMEOUT` of 120 s for the first event and
+`STREAM_IDLE_TIMEOUT` of 90 s between events). A provider-level deadline
+below the agent's own idle timeout fires first and reports a slow but valid
+stream as a provider error, so no provider sets one — and there is no
+configuration key that could reintroduce one.
 
 ### AuthConfig (`schema.rs:16`)
 

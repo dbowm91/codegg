@@ -1052,7 +1052,9 @@ routes native OpenAI, Azure OpenAI, OpenRouter, CodeGG Zen, and the shared
 OpenAI-compatible transport through `encode_openai_chat` and
 `openai_chat_stream`. Compatible presets and wrappers use the same transport
 core. Provider modules still own endpoint construction, credentials, headers,
-discovery, HTTP status handling, chunk-idle deadlines, and cancellation.
+discovery, HTTP status handling, and cancellation. They do **not** own stream
+liveness: no provider surface imposes a per-chunk deadline, and the agent layer
+bounds a long stream instead (see Stream liveness above).
 OpenAI Chat's current `max_tokens` field is preserved by a closed CodeGG
 bridge transform because the shared canonical codec emits
 `max_completion_tokens` by default. `scripts/check_provider_wire_cutover.py`
