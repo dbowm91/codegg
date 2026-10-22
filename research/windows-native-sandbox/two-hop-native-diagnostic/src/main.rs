@@ -107,13 +107,17 @@ fn main() {
 mod tests {
     use super::*;
 
-            let dir = Path::new("/tmp").join("c044-stage");
+    #[test]
+    fn manifest_rejects_short_or_nonportable_nonce() {
+        let dir = Path::new("/tmp").join("c044-stage");
         assert!(StageManifest::new("short", dir.clone()).is_err());
         assert!(StageManifest::new("nonce with spaces!!!!", dir.clone()).is_err());
         assert!(StageManifest::new("0123456789abcdef", PathBuf::from("relative")).is_err());
     }
 
-            let dir = PathBuf::from(if cfg!(windows) {
+    #[test]
+    fn manifest_paths_stay_nonce_bound_inside_the_stage() {
+        let dir = PathBuf::from(if cfg!(windows) {
             "C:\\c044-stage"
         } else {
             "/tmp/c044-stage"
@@ -126,7 +130,9 @@ mod tests {
         assert_ne!(manifest.entry_path(), manifest.proof_path());
     }
 
-            // `/tmp` is not absolute on Windows (no drive prefix); use a
+    #[test]
+    fn manifest_rejects_traversal_probe_names() {
+        // `/tmp` is not absolute on Windows (no drive prefix); use a
         // platform-absolute stage dir like the neighboring test.
         let dir = PathBuf::from(if cfg!(windows) {
             "C:\\c044-stage"
@@ -139,7 +145,9 @@ mod tests {
         assert!(manifest.verify().is_err());
     }
 
-            assert!(
+    #[test]
+    fn missing_entry_is_never_a_read_denial() {
+        assert!(
             classify_missing_entry(None).contains("not a read denial"),
             "a child that never reaches entry proves nothing about reads"
         );

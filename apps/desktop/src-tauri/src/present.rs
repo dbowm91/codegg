@@ -494,7 +494,9 @@ mod tests {
         snapshot
     }
 
-            let states = [
+    #[test]
+    fn driver_states_cover_the_renderer_contract() {
+        let states = [
             (DriverState::Connecting, "connecting"),
             (DriverState::Subscribing, "subscribing"),
             (DriverState::Attached, "attached"),
@@ -507,7 +509,9 @@ mod tests {
         }
     }
 
-            let view = DriverSnapshotView {
+    #[test]
+    fn skeleton_view_marks_no_snapshot_yet() {
+        let view = DriverSnapshotView {
             state: DriverState::Subscribing,
             session_id: "session-9".into(),
             generation: 1,
@@ -524,7 +528,9 @@ mod tests {
         assert!(!presented.cursor.subscription_known);
     }
 
-            let mut active = turn("turn-1");
+    #[test]
+    fn reasoning_system_and_non_public_messages_never_render() {
+        let mut active = turn("turn-1");
         active.messages.extend([
             message(
                 "m-user",
@@ -584,7 +590,9 @@ mod tests {
         assert_eq!(presented.turn.as_ref().expect("turn").status, "active");
     }
 
-            let secret_args = "SECRET-ARGS-abc123";
+    #[test]
+    fn raw_tool_values_never_serialize_and_handles_surface() {
+        let secret_args = "SECRET-ARGS-abc123";
         let secret_output = "SECRET-OUTPUT-def456";
         let mut active = turn("turn-1");
         active.tools.extend([
@@ -626,7 +634,9 @@ mod tests {
         assert!(json.contains("handle-1"), "handle missing");
     }
 
-            let mut snapshot = base_snapshot();
+    #[test]
+    fn run_log_dirs_never_serialize() {
+        let mut snapshot = base_snapshot();
         snapshot.runs.push_back(RunProjection {
             run_id: "run-1".into(),
             kind: "shell".into(),
@@ -651,7 +661,9 @@ mod tests {
         );
     }
 
-            let mut active = turn("turn-1");
+    #[test]
+    fn collections_are_tail_capped_with_overflow_reported() {
+        let mut active = turn("turn-1");
         for index in 0..(MAX_VISIBLE_MESSAGES + 25) {
             active.messages.push_back(message(
                 &format!("m-{index}"),
@@ -746,7 +758,9 @@ mod tests {
         );
     }
 
-            use codegg_protocol::projection::dto::{PermissionProjection, QuestionProjection};
+    #[test]
+    fn pending_items_deduplicate_across_turns_and_cap() {
+        use codegg_protocol::projection::dto::{PermissionProjection, QuestionProjection};
         let mut active = turn("turn-active");
         active.pending_permissions.push_back(PermissionProjection {
             permission_id: "perm-1".into(),
@@ -789,7 +803,9 @@ mod tests {
         );
     }
 
-            let mut completed = turn("turn-old");
+    #[test]
+    fn most_recent_completed_turn_supplies_messages_when_idle() {
+        let mut completed = turn("turn-old");
         completed.status = TurnStatus::Completed;
         completed.messages.push_back(message(
             "m-done",
@@ -810,7 +826,9 @@ mod tests {
             .any(|recent| recent.turn_id == "turn-old"));
     }
 
-            let mut before = turn("turn-1");
+    #[test]
+    fn resync_publishes_an_independent_replacement_view() {
+        let mut before = turn("turn-1");
         before.messages.push_back(message(
             "m-before",
             MessageRole::Assistant,
@@ -852,7 +870,9 @@ mod tests {
             .all(|message| message.message_id != "m-after"));
     }
 
-            let mut active = turn("turn-1");
+    #[test]
+    fn presentation_shape_is_camel_case_and_bounded() {
+        let mut active = turn("turn-1");
         active.messages.push_back(message(
             "m-1",
             MessageRole::User,
@@ -892,7 +912,9 @@ mod tests {
         assert_eq!(json["messages"][0]["messageId"], "m-1");
     }
 
-            let mut active = turn("turn-1");
+    #[test]
+    fn visible_message_tail_is_capped_with_overflow_count() {
+        let mut active = turn("turn-1");
         for index in 0..150 {
             active.messages.push_back(message(
                 &format!("m-{index}"),
@@ -919,7 +941,9 @@ mod tests {
         assert_eq!(presented.turn.expect("turn").message_count, 150);
     }
 
-            let mut active = turn("turn-1");
+    #[test]
+    fn golden_snapshot_fixture_parity() {
+        let mut active = turn("turn-1");
         active.messages.push_back(message(
             "m-u",
             MessageRole::User,

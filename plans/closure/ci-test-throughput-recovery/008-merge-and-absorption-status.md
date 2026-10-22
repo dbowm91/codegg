@@ -86,6 +86,61 @@ commit `54715a41e` reports **eight**. `main`'s CI does not run this guard,
 because the guard is the branch's, so `main`'s new tests were never triaged
 against it.
 
+### 2.4 Two more defects the hosted runs exposed
+
+The hosted runs are the only place these two appear: neither is reachable
+from the local gate, and neither is reachable from `main`.
+
+**The branch had stripped the test functions out of ten files it does not own.**
+Commit `4f89b4b05` — the workstream's own 468-file commit — removed **every**
+`#[test]` / `#[tokio::test]` attribute from ten files while leaving their
+bodies in place, so the files no longer parse:
+
+| File | Test functions stripped |
+|---|---:|
+| `apps/desktop/src-tauri/src/lib.rs` | 19 |
+| `apps/desktop/src-tauri/src/route.rs` | 24 |
+| `apps/desktop/src-tauri/src/present.rs` | 12 |
+| `apps/desktop/src-tauri/src/projection.rs` | 11 |
+| `apps/desktop/src-tauri/src/lifecycle.rs` | 8 |
+| `examples/plugins/sdk-rust/tests/sdk_smoke.rs` | 12 |
+| `research/windows-native-sandbox/mxc-c035-harness/src/bin/c036.rs` | 6 |
+| `research/windows-native-sandbox/two-hop-native-diagnostic/src/main.rs` | 4 |
+| `research/windows-native-sandbox/mxc-c035-harness/src/bin/c037.rs` | 1 |
+| `research/windows-native-sandbox/mxc-c035-harness/src/main.rs` | 1 |
+
+**98 test functions** were affected. The root workspace was not touched —
+`cargo check --workspace --all-targets` compiles every one of those files and
+passes — because the ten files are all **outside** it: the desktop crate and
+the research crates are excluded workspaces, and the plugin SDK example is a
+separate crate. Nothing in the repository's local gate compiles them, which
+is why the corruption survived three local verification runs and a hosted
+measurement.
+
+The hosted `Desktop E2E` run is what found it, at
+`tests/security_permission/../../apps/desktop/src-tauri/src/lib.rs`: `error:
+unexpected closing delimiter: }` in the desktop crate's own lib test. The
+repair is to restore the ten files from the merge base `2c1953347`, which is
+**byte-identical to `origin/main`** for all ten — `main` never changed them.
+The 98 test functions are back, and the ten files now differ from `main` by
+nothing.
+
+**The `security_permission` family did not compile on Windows.** M004 moved
+`sandbox_containment.rs` into the `security_permission` family. On `main` that
+file was its own cargo target, which the Windows lane never built; as a
+family member it is built by `windows-process-launcher.yml`, and it uses
+Unix-only APIs — `Command::pre_exec`, `libc::fcntl`, `libc::dup2`,
+`std::os::unix::fs::symlink` — so the hosted Windows lane failed with eight
+compile errors before it could run a single test.
+
+The repair is `#![cfg(unix)]` on the member, which is the pattern the same
+family already uses for its Linux-only members
+(`linux_bubblewrap_first_hop.inc`, `linux_native_scratch_containment.inc`,
+`sandbox_landlock.inc`). **No coverage is lost**: on Unix the member is
+compiled exactly as before — the family still carries 325 tests on macOS,
+16 of them in `sandbox_containment::` — and on Windows the member is excluded,
+which is what happened before the families existed.
+
 ## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
@@ -99,6 +154,8 @@ against it.
 | The Windows test-support guard names live targets | `scripts/check_windows_test_support_release.py` and `--self-test` | pass |
 | No test body reports pass after skipping | `scripts/check_test_assertion_quality.py` and `--self-test` | pass |
 | No duplicated test body | `scripts/check_test_duplication.py` and `--self-test` | pass |
+| The 98 test functions the workstream commit stripped are restored | the ten files are byte-identical to `origin/main`; the SDK example compiles (`cargo check --tests` in `examples/plugins/sdk-rust`); the desktop and research files parse (`rustfmt --check`) | pass |
+| The `security_permission` family compiles on Windows | `sandbox_containment.inc` carries `#![cfg(unix)]`; on Unix the family still carries 325 tests, 16 of them in `sandbox_containment::` | pass locally; the hosted Windows lane is the authority |
 | The recorded counts are true on the merged tree | `architecture/overview.md`'s Verified-counts table, re-measured against each row's own `Source` | pass |
 
 ## 4. The counts, re-measured
@@ -155,6 +212,9 @@ python3 scripts/check_test_filter_execution.py [--self-test]
 python3 scripts/check_windows_test_support_release.py [--self-test]
 python3 scripts/check_test_assertion_quality.py [--self-test]
 python3 scripts/check_test_duplication.py [--self-test]
+cargo test -p codegg --test command_git git_fixture_isolation -- --test-threads=1
+cargo test -p codegg --test security_permission
+(cd examples/plugins/sdk-rust && cargo check --tests)
 bash scripts/verify.sh quick
 ```
 
@@ -167,6 +227,13 @@ bash scripts/verify.sh quick
   compiles. `main`'s own last green CI run executes "Workspace Clippy" to
   **success** on `ubuntu`. The merge introduces no new clippy finding. These
   eight are recorded as a **pre-existing `main` defect**, not as this line's.
+- `cargo test -p codegg --test command_git git_fixture_isolation`: **2
+  passed, 1 ignored** — the parent test re-executes the child with `--exact`
+  and the qualified path selects it, which is the repair of §2.3.
+- `cargo test -p codegg --test security_permission`: **325 passed, 0 failed**
+  — the family still carries every member on Unix after the `#[cfg(unix)]`
+  gate of §2.4.
+- `examples/plugins/sdk-rust`: `cargo check --tests` **passes**.
 - The guard tier: every guard named above passes, and every `--self-test`
   still rejects the failure class it exists to reject.
 - `bash scripts/verify.sh quick`: see §7.
@@ -203,9 +270,27 @@ bash scripts/verify.sh quick
 **Closed.** The branch is merged with `origin/main`, the integration tests
 `main` carries are absorbed into the recovery families, the hosted workflow
 references that the consolidation broke are repaired, the guards that the
-merge exposed are repaired, and the recorded counts are re-measured against
-their own sources. The tree compiles, the guard tier is green, and the
-recorded counts are true on the merged tree.
+merge exposed are repaired, the 98 test functions the workstream commit
+stripped out of ten out-of-workspace files are restored, the `security_permission`
+family compiles on Windows again, and the recorded counts are re-measured
+against their own sources. The tree compiles, the guard tier is green, and
+the recorded counts are true on the merged tree.
+
+Two findings are worth carrying forward beyond this line, because both are
+about **what the local gate does not cover**:
+
+- **The root workspace's gate compiles the root workspace.** The ten files
+  the workstream commit damaged are all outside it — the desktop crate, the
+  research crates, the plugin SDK example — so `cargo check --workspace
+  --all-targets`, `cargo clippy --workspace --all-targets`, every
+  `verify.sh` tier, and the hosted `CI` job all passed on a tree whose
+  desktop crate did not parse. A guard that compiles every Rust workspace
+  in the repository, not just the root one, would have caught it.
+- **A file-level `#[cfg]` gate is a coverage decision, not a portability
+  detail.** M004's consolidation moved `sandbox_containment.rs` into a
+  family that a Windows lane builds, and the member's Unix-only APIs broke
+  that lane's build. The Windows lane is the authority on Windows
+  compilation, and it is the only place this could be seen.
 
 This record opens no milestone and rewrites no earlier record. The eight
 macOS-only clippy findings are recorded as a pre-existing `origin/main`

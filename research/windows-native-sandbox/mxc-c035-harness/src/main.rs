@@ -406,7 +406,9 @@ fn report(value: Value) {
 mod tests {
     use serde_json::json;
 
-            assert!(!super::evidence_matches(None, "n", None, "phase", "entry"));
+    #[test]
+    fn child_evidence_requires_entry_nonce_and_pid_correlation() {
+        assert!(!super::evidence_matches(None, "n", None, "phase", "entry"));
         assert!(!super::evidence_matches(
             Some(&json!({"nonce":"wrong","pid":1,"phase":"entry"})),
             "n",

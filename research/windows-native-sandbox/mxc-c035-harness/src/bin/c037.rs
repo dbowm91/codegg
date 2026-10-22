@@ -372,7 +372,9 @@ fn run() {
 mod tests {
     use super::*;
 
-            let report = json!({"explicit_transfer_supported":false,"explicit_transfer_observed":false,"unavailable_dimensions":["DuplicateHandle"]});
+    #[test]
+    fn unavailable_transfer_is_not_relabelled_as_a_denial() {
+        let report = json!({"explicit_transfer_supported":false,"explicit_transfer_observed":false,"unavailable_dimensions":["DuplicateHandle"]});
         assert_eq!(report["explicit_transfer_supported"], false);
         assert_eq!(report["unavailable_dimensions"][0], "DuplicateHandle");
     }

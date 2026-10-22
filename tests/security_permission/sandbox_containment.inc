@@ -11,6 +11,16 @@
 //! the workspace always denied, denied paths never readable — is asserted
 //! against whichever backend the host provides, so a new backend inherits
 //! the whole matrix for free.
+//!
+//! The *harness* is Unix-only, not the contract: it launches the helper with
+//! a Unix-only status-descriptor setup (`Command::pre_exec`, `libc::fcntl`,
+//! `std::os::unix::fs::symlink`). The Windows backend is qualified by the
+//! Windows lane's own targets instead. Before the families existed this file
+//! was its own cargo target, which the Windows lane never built, so gating
+//! the member `#[cfg(unix)]` loses no coverage — it only stops the Windows
+//! build of the `security_permission` family from failing on Unix-only APIs.
+
+#![cfg(unix)]
 
 use codegg::security::sandbox::{
     decode_sandbox_status, platform_sandbox_capability, BackendId, SandboxCapability,

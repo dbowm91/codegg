@@ -599,7 +599,9 @@ mod tests {
         (format!("unix://{}", socket.display()), listener)
     }
 
-            let canonical = session_dto("s", "proj-a", "ws-1", "t");
+    #[test]
+    fn binding_matches_canonical_and_legacy_forms() {
+        let canonical = session_dto("s", "proj-a", "ws-1", "t");
         assert!(session_binding_matches(&canonical, "proj-a", "ws-1"));
         assert!(!session_binding_matches(&canonical, "proj-b", "ws-1"));
         assert!(!session_binding_matches(&canonical, "proj-a", "ws-2"));
@@ -612,7 +614,9 @@ mod tests {
         assert!(!session_binding_matches(&unbound, "proj-a", "ws-1"));
     }
 
-            let token = RouteTokenView {
+    #[test]
+    fn route_token_uses_camel_case_bridge_fields() {
+        let token = RouteTokenView {
             connection_generation: 2,
             route_generation: 3,
             project_id: "p".into(),
@@ -628,7 +632,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn detail_installs_workspaces_and_hides_roots() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, payload) = daemon.next_request().await;
@@ -665,7 +671,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn project_switch_drops_stale_detail() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             // Read both selections before answering either: the second
@@ -710,7 +718,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn workspace_switch_drops_stale_session_list() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, payload) = daemon.next_request().await;
@@ -768,7 +778,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn session_open_binding_mismatch_fails_closed() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -810,7 +822,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn session_create_uses_explicit_identity_and_resolved_root() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -865,7 +879,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn stale_session_create_result_cannot_bind() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -928,7 +944,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn connection_change_invalidates_route() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -966,7 +984,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn session_list_is_bounded() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1035,7 +1055,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn prompt_submit_existing_session_accepted() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1088,7 +1110,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn prompt_double_submit_coalesced() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1144,7 +1168,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn prompt_create_then_submit_exactly_once() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1199,7 +1225,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn prompt_create_failure_marks_failed_and_sends_no_submit() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1248,7 +1276,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn prompt_route_switch_after_create_prevents_submit() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1368,7 +1398,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn control_refresh_installs_controller() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1396,7 +1428,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn control_refresh_idle_clears_controller() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1425,7 +1459,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn permission_respond_sends_opaque_id_and_refreshes() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1467,7 +1503,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn permission_double_respond_coalesced() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1506,7 +1544,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn permission_cross_session_id_rejected_without_request() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1545,7 +1585,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn permission_denied_releases_id_for_retry() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1592,7 +1634,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn question_oversize_answers_rejected_locally() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1614,7 +1658,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn control_loss_between_render_and_click_refreshes() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             control_prelude(&mut daemon).await;
@@ -1669,7 +1715,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-            let (endpoint, listener) = short_endpoint();
+    #[tokio::test]
+    async fn prompt_disconnect_during_submit_discards_result() {
+        let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(listener).await;
             let (id, _) = daemon.next_request().await;
