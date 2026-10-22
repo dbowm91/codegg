@@ -18,6 +18,17 @@ impl SocketCoreClient {
         Self { inner }
     }
 
+    /// Subscribe to daemon events with **loss awareness**.
+    ///
+    /// Unlike [`CoreClient::subscribe`], a dropped event is delivered as a
+    /// typed condition instead of being skipped. The daemon's event log is a
+    /// bounded broadcast, so a connection that falls behind loses events; a
+    /// consumer that cannot tell it lost events will pair a tool call with a
+    /// completion it never saw.
+    pub fn subscribe_events(&self) -> mpsc::Receiver<codegg_client::ClientEvent> {
+        self.inner.subscribe_events()
+    }
+
     pub async fn connect(endpoint: &str) -> Result<Self, AppError> {
         Self::connect_with_descriptor(
             endpoint,

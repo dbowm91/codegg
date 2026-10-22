@@ -13,6 +13,7 @@ use crate::protocol::dto::{ContentPart, ProjectRegisterRequestDto, ProviderMessa
 use crate::protocol::projection::dto::ToolArgumentProjection;
 use crate::protocol::projection::event::ProjectionEvent;
 use crate::protocol::projection::replay::{ProjectionStreamKind, ProjectionSubscriptionRequest};
+use codegg_client::ClientEvent;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -31,6 +32,18 @@ const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// native turn itself failed, `-32011` means the headless turn reached a
 /// permission request nobody answered.
 const ACP_TURN_FAILED_CODE: i64 = -32010;
+
+/// The namespaced session-update kind that reports a hole in the event stream.
+///
+/// The daemon's event log is a bounded broadcast, so a connection can fall
+/// behind it and lose events. When that happens the adapter says so, on an
+/// **optional** update kind that a consumer that does not know about ignores:
+/// no ACP v1 field became required, and an existing consumer keeps working.
+///
+/// A consumer that does read it must treat the affected span as unmeasured.
+/// The alternative — carrying on as though the stream were complete — is what
+/// let a dropped tool completion be read as a tool that never finished.
+const EVENT_GAP_SESSION_UPDATE: &str = "codegg_event_gap";
 
 #[derive(Debug, serde::Deserialize)]
 struct RpcRequest {
@@ -55,6 +68,13 @@ struct ActivePrompt {
     cancel_requested: bool,
     close_requested: bool,
     cancel_sent: bool,
+    /// The number of events this turn's observation is missing.
+    ///
+    /// A non-zero value means the turn's event stream had a hole. The turn's
+    /// outcome is still reported, but the consumer is told, because a
+    /// tool call whose completion was dropped must not be read as a tool
+    /// that never finished.
+    gap_dropped: u64,
 }
 
 impl ActivePrompt {
@@ -96,7 +116,7 @@ pub async fn run(
     let mut policy_applied = false;
     let mut policy_lease: Option<AcpPolicyLease> = None;
     let mut policy_snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto> = None;
-    let (_event_sink, mut events) = mpsc::channel::<EventEnvelope<CoreEvent>>(256);
+    let (_event_sink, mut events) = mpsc::channel::<ClientEvent>(256);
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
@@ -283,6 +303,7 @@ pub async fn run(
                                 cancel_requested: false,
                                 close_requested: false,
                                 cancel_sent: false,
+                                gap_dropped: 0,
                             }),
                             CoreResponse::TurnAdmissionReceipt { receipt }
                                 if receipt.status == "accepted" =>
@@ -297,6 +318,7 @@ pub async fn run(
                                     cancel_requested: false,
                                     close_requested: false,
                                     cancel_sent: false,
+                                    gap_dropped: 0,
                                 })
                             }
                             CoreResponse::TurnAdmissionReceipt { receipt } => {
@@ -355,7 +377,33 @@ pub async fn run(
                 }
             }
             event = events.recv() => {
-                let Some(event) = event else { break };
+                let Some(received) = event else { break };
+                let event = match received {
+                    ClientEvent::Event(envelope) => *envelope,
+                    ClientEvent::Lagged { dropped } => {
+                        // This consumer fell behind the shared broadcast. The
+                        // events it is missing are not recoverable from here,
+                        // so the fact is reported rather than absorbed.
+                        report_event_gap(&stdout, active.as_mut(), dropped, "client_broadcast_lag")
+                            .await?;
+                        continue;
+                    }
+                    ClientEvent::Gap { dropped } => {
+                        // The daemon dropped events from the stream it sends
+                        // us. The consumer must know: a tool call whose
+                        // completion was dropped is not a tool that never
+                        // finished.
+                        report_event_gap(
+                            &stdout,
+                            active.as_mut(),
+                            dropped,
+                            "daemon_event_stream_gap",
+                        )
+                        .await?;
+                        continue;
+                    }
+                    ClientEvent::Closed => break,
+                };
                 if let Some(prompt) = active.as_mut() {
                     let accepted = handle_event(&stdout, prompt, &event).await?;
                     if accepted {
@@ -380,8 +428,19 @@ pub async fn run(
                         let prompt = active.take().unwrap();
                         match terminal_stop_reason(&event) {
                             Some(completed_reason) => {
-                                write_result(&stdout, prompt.request_id, json!({"stopReason": completed_reason,
-                                    "codeggUsage": terminal_usage(&event)})).await?;
+                                // The turn's outcome is reported as it is, and
+                                // the gap is reported alongside it when the
+                                // observation had a hole in it. The consumer
+                                // decides what an incomplete observation means;
+                                // the adapter's job is to say that it is
+                                // incomplete.
+                                let mut result = json!({"stopReason": completed_reason,
+                                    "codeggUsage": terminal_usage(&event)});
+                                if prompt.gap_dropped > 0 {
+                                    result["codeggEventGap"] =
+                                        json!({"dropped": prompt.gap_dropped});
+                                }
+                                write_result(&stdout, prompt.request_id, result).await?;
                             }
                             None => {
                                 let failure_data = terminal_failure_data(&prompt, &event);
@@ -418,10 +477,12 @@ pub async fn run(
     Ok(())
 }
 
-fn drain_event_floor(events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>) -> u64 {
+fn drain_event_floor(events: &mut mpsc::Receiver<ClientEvent>) -> u64 {
     let mut floor = 0;
     while let Ok(event) = events.try_recv() {
-        floor = floor.max(event.event_seq);
+        if let ClientEvent::Event(envelope) = event {
+            floor = floor.max(envelope.event_seq);
+        }
     }
     floor
 }
@@ -448,7 +509,7 @@ async fn cancel_if_ready(client: Option<&Arc<SocketCoreClient>>, prompt: &mut Ac
 
 async fn ensure_client(
     client: &mut Option<Arc<SocketCoreClient>>,
-    events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>,
+    events: &mut mpsc::Receiver<ClientEvent>,
     policy: Option<crate::policy_surface::CliPolicyOverride>,
     policy_applied: &mut bool,
     policy_lease: &mut Option<AcpPolicyLease>,
@@ -464,7 +525,9 @@ async fn ensure_client(
         .await
         .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!(e.to_string())))?;
     let connected = Arc::new(outcome.client);
-    *events = connected.subscribe();
+    // The loss-aware subscription: a dropped event must reach the adapter as
+    // a fact, so the adapter can tell the consumer its stream had a hole.
+    *events = connected.subscribe_events();
     if let Some(policy) = policy {
         if !*policy_applied {
             *policy_snapshot = Some(apply_and_verify_policy(&connected, policy).await?);
@@ -749,6 +812,36 @@ async fn replay_snapshot(
         }
     }
     write_result(stdout, id, json!({"sessionId": sid})).await
+}
+
+/// Report a hole in the event stream to the consumer.
+///
+/// The report rides an **optional**, namespaced session-update kind. A
+/// consumer that does not know the kind ignores it and keeps working; a
+/// consumer that does know it marks the affected span unmeasured. The turn
+/// that was running, if any, also records the gap so the turn's own result
+/// carries the fact.
+async fn report_event_gap(
+    stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    prompt: Option<&mut ActivePrompt>,
+    dropped: u64,
+    source: &str,
+) -> Result<(), crate::error::AppError> {
+    tracing::warn!(dropped, source, "ACP event stream gap");
+    if let Some(prompt) = prompt {
+        prompt.gap_dropped = prompt.gap_dropped.saturating_add(dropped);
+        update(
+            stdout,
+            &prompt.session_id,
+            json!({
+                "sessionUpdate": EVENT_GAP_SESSION_UPDATE,
+                "dropped": dropped,
+                "source": source,
+            }),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn handle_event(
@@ -1098,6 +1191,7 @@ mod tests {
             cancel_requested: false,
             close_requested: false,
             cancel_sent: false,
+            gap_dropped: 0,
         }
     }
 

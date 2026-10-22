@@ -15,6 +15,13 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit,
 use crate::{ClientError, FrontendDescriptor};
 
 const EVENT_CAPACITY: usize = 256;
+/// The capacity of the dropped-event report channel.
+///
+/// A gap is rare and must not be lost, so the channel is generous relative to
+/// its traffic. A consumer that still manages to fall behind it is told so
+/// through the channel's own lag signal rather than silently losing the
+/// report.
+const GAP_CAPACITY: usize = 64;
 const REQUEST_CAPACITY: usize = 1024;
 trait LocalIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> LocalIo for T {}
@@ -42,6 +49,15 @@ pub enum ClientEvent {
     Event(Box<EventEnvelope<CoreEvent>>),
     /// The subscriber lagged the shared broadcast by `dropped` events.
     Lagged { dropped: u64 },
+    /// The daemon reported that it dropped `dropped` events from this
+    /// connection's event stream.
+    ///
+    /// The daemon's event log is a bounded broadcast: a connection that falls
+    /// behind it loses events, and the daemon says so rather than letting the
+    /// consumer believe its stream was complete. A consumer that pairs a tool
+    /// call with its completion must treat this as a reason to mark the
+    /// affected span unmeasured.
+    Gap { dropped: u64 },
     /// The transport closed; no further events will arrive.
     Closed,
 }
@@ -62,6 +78,14 @@ pub struct LocalSocketClient {
     pending: Arc<DashMap<String, PendingRequest>>,
     request_slots: Arc<Semaphore>,
     events: broadcast::Sender<EventEnvelope<CoreEvent>>,
+    /// Dropped-event reports the daemon sent on this connection.
+    ///
+    /// The daemon's event log is a bounded broadcast, so a connection that
+    /// falls behind loses events. The daemon reports that loss on the same
+    /// stream it carries events on; this channel is where the client picks
+    /// it up, so a consumer can mark the affected span unmeasured instead of
+    /// pairing a tool call with a completion it never saw.
+    gaps: broadcast::Sender<u64>,
     client_id: Arc<Mutex<Option<String>>>,
     daemon_id: Arc<Mutex<Option<String>>>,
     handshake_error: Arc<Mutex<Option<String>>>,
@@ -80,6 +104,7 @@ impl LocalSocketClient {
         let stream = open_local(&endpoint).await?;
         let (read, write) = tokio::io::split(stream);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let (gaps, _) = broadcast::channel(GAP_CAPACITY);
         let pending = Arc::new(DashMap::<String, PendingRequest>::new());
         let client = Self {
             endpoint,
@@ -88,6 +113,7 @@ impl LocalSocketClient {
             pending: Arc::clone(&pending),
             request_slots: Arc::new(Semaphore::new(REQUEST_CAPACITY)),
             events: events.clone(),
+            gaps: gaps.clone(),
             client_id: Arc::new(Mutex::new(None)),
             daemon_id: Arc::new(Mutex::new(None)),
             handshake_error: Arc::new(Mutex::new(None)),
@@ -96,7 +122,7 @@ impl LocalSocketClient {
             reader_task: Arc::new(StdMutex::new(None)),
             connection_generation: Arc::new(AtomicU64::new(0)),
         };
-        client.spawn_reader(BufReader::new(read), pending, events);
+        client.spawn_reader(BufReader::new(read), pending, events, gaps);
         client.send_hello().await?;
         client.daemon_id().await?;
         Ok(client)
@@ -118,6 +144,7 @@ impl LocalSocketClient {
             BufReader::new(read),
             Arc::clone(&self.pending),
             self.events.clone(),
+            self.gaps.clone(),
         );
         self.send_hello().await?;
         self.daemon_id().await?;
@@ -212,27 +239,62 @@ impl LocalSocketClient {
     /// [`ClientEvent::Closed`] instead of being silently skipped. A
     /// projection driver must treat `Lagged` as authoritative
     /// resume/resync — never as lossless delivery.
+    ///
+    /// The daemon's own dropped-event report arrives as
+    /// [`ClientEvent::Gap`]. The two conditions are different facts and both
+    /// are carried: `Lagged` is this consumer's read side falling behind the
+    /// shared broadcast, `Gap` is the daemon telling us it dropped events
+    /// from the stream it sends us.
     pub fn subscribe_events(&self) -> mpsc::Receiver<ClientEvent> {
         let (tx, rx) = mpsc::channel(EVENT_CAPACITY);
         let mut events = self.events.subscribe();
+        let mut gaps = self.gaps.subscribe();
         tokio::spawn(async move {
             loop {
-                match events.recv().await {
-                    Ok(event) => {
+                enum Next {
+                    Event(EventEnvelope<CoreEvent>),
+                    Closed,
+                    Lagged(u64),
+                    Gap(u64),
+                    /// The daemon's gap-report channel closed. The event
+                    /// stream is still authoritative for the events it
+                    /// carries, so the subscription continues on it.
+                    GapChannelClosed,
+                }
+                let next = tokio::select! {
+                    received = events.recv() => match received {
+                        Ok(event) => Next::Event(event),
+                        Err(broadcast::error::RecvError::Closed) => Next::Closed,
+                        Err(broadcast::error::RecvError::Lagged(dropped)) => Next::Lagged(dropped),
+                    },
+                    received = gaps.recv() => match received {
+                        Ok(dropped) => Next::Gap(dropped),
+                        Err(broadcast::error::RecvError::Closed) => Next::GapChannelClosed,
+                        Err(broadcast::error::RecvError::Lagged(dropped)) => Next::Gap(dropped),
+                    },
+                };
+                match next {
+                    Next::Event(event) => {
                         if tx.send(ClientEvent::Event(Box::new(event))).await.is_err() {
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Next::Closed => {
                         let _ = tx.send(ClientEvent::Closed).await;
                         break;
                     }
-                    Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                    Next::Lagged(dropped) => {
                         tracing::warn!(dropped, "native client event subscriber lagged");
                         if tx.send(ClientEvent::Lagged { dropped }).await.is_err() {
                             break;
                         }
                     }
+                    Next::Gap(dropped) => {
+                        if tx.send(ClientEvent::Gap { dropped }).await.is_err() {
+                            break;
+                        }
+                    }
+                    Next::GapChannelClosed => {}
                 }
             }
         });
@@ -286,6 +348,7 @@ impl LocalSocketClient {
         mut reader: BufReader<ReadHalf<BoxLocalIo>>,
         pending: Arc<DashMap<String, PendingRequest>>,
         events: broadcast::Sender<EventEnvelope<CoreEvent>>,
+        gaps: broadcast::Sender<u64>,
     ) {
         let writer = Arc::clone(&self.writer);
         let client_id = Arc::clone(&self.client_id);
@@ -313,6 +376,18 @@ impl LocalSocketClient {
                         }
                         Ok(CoreFrame::Event(event)) => {
                             let _ = events.send(event);
+                        }
+                        Ok(CoreFrame::Error { code, message, .. })
+                            if code == codegg_protocol::frames::EVENT_STREAM_GAP_CODE =>
+                        {
+                            // The daemon dropped events from this connection's
+                            // stream. The count is the fact a consumer needs;
+                            // a message that carries no count is still a gap,
+                            // and is reported as one rather than as zero.
+                            let dropped =
+                                codegg_protocol::frames::event_stream_gap_dropped(&message)
+                                    .unwrap_or(0);
+                            let _ = gaps.send(dropped);
                         }
                         Ok(CoreFrame::ServerHello(hello)) => {
                             if hello.protocol_version != codegg_protocol::core::PROTOCOL_VERSION {

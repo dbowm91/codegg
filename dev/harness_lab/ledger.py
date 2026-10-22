@@ -473,6 +473,69 @@ def load_runs(root: Path) -> list[dict[str, Any]]:
     return runs
 
 
+def resumed_candidate_elapsed_seconds(root: Path, candidate: str) -> float:
+    """Return the wallclock a candidate's recorded trials already consumed.
+
+    The figure is derived from the ledger's own trial rows: the measured
+    duration of every trial already recorded for the candidate. It is the
+    recorded evidence of the work that was really done, never a value the
+    caller asserts.
+
+    A trial whose duration was not measured contributes nothing. An
+    unmeasured duration is **unknown**, and folding it into the total as zero
+    would understate the consumed budget; folding it as any other number
+    would invent one.
+    """
+    total = 0.0
+    for row in load_runs(root):
+        if row.get("candidate") != candidate:
+            continue
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        value = metrics.get("wall_time_ms")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        total += float(value) / 1000.0
+    return total
+
+
+def measurement_failures_by_pair(root: Path, candidate: str) -> dict[tuple[str, int], int]:
+    """Return how many measurement failures each pair has already cost.
+
+    A measurement failure — the harness, the daemon or the transport failed
+    before the trial could produce an observation — carries no information
+    about the candidate, so the pair is re-run. That is correct, and it is
+    also a way to spend the admitted budget without the operator seeing it,
+    so the count has to be visible.
+
+    The count comes from the ledger's own rows, so it survives a resume: a
+    resumed qualification continues the same count rather than starting a new
+    one. A row whose terminal is not an unmeasured terminal is a measurement,
+    not a measurement failure, and is not counted.
+    """
+    failures: dict[tuple[str, int], int] = {}
+    for row in load_runs(root):
+        if row.get("candidate") != candidate:
+            continue
+        if row.get("terminal") not in UNMEASURED_TERMINALS:
+            continue
+        key = (row.get("task_id"), row.get("repeat", 0))
+        failures[key] = failures.get(key, 0) + 1
+    return failures
+
+
+def attempts_by_pair(root: Path, candidate: str) -> dict[tuple[str, int], int]:
+    """Return how many attempts each pair has consumed, measured or not."""
+    attempts: dict[tuple[str, int], int] = {}
+    for row in load_runs(root):
+        if row.get("candidate") != candidate:
+            continue
+        key = (row.get("task_id"), row.get("repeat", 0))
+        attempts[key] = attempts.get(key, 0) + 1
+    return attempts
+
+
 def validate_candidate_resume_rows(root: Path, candidate: str, cases: list[dict[str, Any]],
                                   suite_sha256: str, default_group_id: str) -> dict[tuple[str, int], dict[str, Any]]:
     """Return immutable completed task/repeat rows after validating the frozen suite."""

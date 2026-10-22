@@ -80,6 +80,7 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
                            plans: list[TrialPlan], profile: str = "workspace-write",
                            root: Optional[Path] = None, repository: Optional[Path] = None,
                            per_trial_wallclock: float = 900.0,
+                           scenario_wallclock: float | None = None,
                            max_provider_requests: Optional[int] = None,
                            credential: Optional[str] = None) -> dict[str, Any]:
     """Run an unattended sequence of live trials and return one scenario receipt.
@@ -135,10 +136,21 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
         # socket inside it and the platform's ``sun_path`` limit is 104 bytes.
         trial_root = lane_root / f"t{index:02d}"
         trial_started = time.monotonic()
+        remaining_cumulative = None
+        if scenario_wallclock is not None:
+            remaining_cumulative = scenario_wallclock - (time.monotonic() - started)
+            if remaining_cumulative <= 0:
+                stopped_reason = ("the scenario's cumulative wallclock budget is "
+                                  f"exhausted: limit={scenario_wallclock}s")
+                unattempted += len(plans) - index
+                break
+        trial_timeout = per_trial_wallclock
+        if remaining_cumulative is not None:
+            trial_timeout = min(trial_timeout, remaining_cumulative)
         try:
             receipt = pilot.run_live_task(
                 binary, plan.task, model, budget_policy=budget_policy, profile=profile,
-                root=trial_root, repository=repository, timeout=per_trial_wallclock,
+                root=trial_root, repository=repository, timeout=trial_timeout,
                 credential=credential, fault=plan.fault)
         except HarnessError as error:
             receipt = {"trial_id": plan.trial_id, "task_id": plan.task, "fault": plan.fault,
@@ -162,6 +174,8 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
         "profile": profile,
         "policy": admission.as_dict(),
         "scenario_request_ceiling": ceiling,
+        "scenario_wallclock_seconds": scenario_wallclock,
+        "cumulative_wallclock_ms": elapsed_ms,
         "attempted_trials": attempted,
         "unattempted_trials": unattempted,
         "stopped_reason": stopped_reason,

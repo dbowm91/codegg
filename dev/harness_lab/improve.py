@@ -179,6 +179,20 @@ class Checkpoint:
         self.base_revision = base_revision
         self.suite_digest = suite_digest
         self.attempt_id = 0
+        # The cumulative wallclock this qualification has already consumed.
+        #
+        # The accounting is **monotonic** and it lives in the checkpoint's own
+        # append-only event log, so a resume restores the budget that was
+        # really spent instead of restarting it at its full declared length.
+        # The total one candidate qualification may consume is therefore
+        # bounded by its declared budget however many times it is resumed.
+        self.elapsed_seconds = 0.0
+        self._segment_started = time.monotonic()
+        # The number of this candidate's trials already recorded in the
+        # ledger at the time of the last transition. The trials that ran
+        # after it are the ones the checkpoint's own elapsed time does not
+        # cover, and their measured durations are added back on a resume.
+        self.trials_covered = 0
         self._save("BASELINED", {"base_revision": base_revision, "suite_digest": suite_digest})
 
     @classmethod
@@ -217,12 +231,26 @@ class Checkpoint:
                                            f"{INTERRUPTED_UNKNOWN_OUTCOME}")
         if state not in STATES or state in TERMINAL:
             raise ValueError("checkpoint is terminal or has an unknown state")
+        # The cumulative wallclock is restored from the checkpoint's own
+        # record. A checkpoint that carries no elapsed-time accounting is a
+        # **refusal**, not a fresh budget: handing out a new full-length
+        # budget to a resumed qualification is exactly the unboundedness the
+        # cumulative deadline exists to remove.
+        elapsed = last.get("evidence", {}).get("elapsed_seconds")
+        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or elapsed < 0:
+            raise ValueError(
+                "checkpoint carries no elapsed-time accounting; refusing to resume "
+                "with a fresh wallclock budget")
         checkpoint = cls.__new__(cls)
         checkpoint.path, checkpoint.events_path = path, events_path
         checkpoint.state = state
         checkpoint.base_revision = base_revision
         checkpoint.suite_digest = suite_digest
         checkpoint.attempt_id = int(last.get("attempt_id", 0))
+        checkpoint.elapsed_seconds = float(elapsed)
+        checkpoint._segment_started = time.monotonic()
+        covered = last.get("evidence", {}).get("trials_covered")
+        checkpoint.trials_covered = int(covered) if isinstance(covered, int) and covered >= 0 else 0
         return checkpoint
 
     @classmethod
@@ -249,6 +277,9 @@ class Checkpoint:
         checkpoint.base_revision = events[-1].get("base_revision")
         checkpoint.suite_digest = events[-1].get("suite_digest")
         checkpoint.attempt_id = int(events[-1].get("attempt_id", 0))
+        checkpoint.elapsed_seconds = 0.0
+        checkpoint._segment_started = time.monotonic()
+        checkpoint.trials_covered = 0
         if events[-1].get("state") == "INTERRUPTED_UNKNOWN":
             # A repeated resume is idempotent: the interruption is already
             # recorded, so no second event is appended for the same tail.
@@ -272,6 +303,15 @@ class Checkpoint:
         self._save(state, evidence)
 
     def _save(self, state: str, evidence: dict[str, Any]) -> None:
+        # Fold this segment's elapsed time into the cumulative accounting
+        # before the event is written, so the event that is on disk is the
+        # record of how much wallclock the qualification had consumed when it
+        # reached this state.
+        self.elapsed_seconds += max(0.0, time.monotonic() - self._segment_started)
+        self._segment_started = time.monotonic()
+        recorded = dict(evidence)
+        recorded["elapsed_seconds"] = round(self.elapsed_seconds, 6)
+        recorded["trials_covered"] = self.trials_covered
         if self.events_path.exists():
             with self.events_path.open(encoding="utf-8") as prior:
                 sequence = sum(1 for _ in prior) + 1
@@ -279,7 +319,7 @@ class Checkpoint:
             sequence = 1
         event = {"schema_version": 1, "seq": sequence,
                  "state": state, "attempt_id": self.attempt_id, "base_revision": self.base_revision,
-                 "suite_digest": self.suite_digest, "evidence": evidence}
+                 "suite_digest": self.suite_digest, "evidence": recorded}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as output:
             output.write(json.dumps(event, sort_keys=True) + "\n")
@@ -1027,6 +1067,38 @@ CANDIDATE_GATE_SEQUENCE: tuple[tuple[str, ...], ...] = (
 )
 
 
+def restored_elapsed_seconds(checkpoint: Checkpoint | None, ledger_root: Path | None,
+                             candidate: str | None) -> float:
+    """Return the wallclock a resumed qualification has already consumed.
+
+    The figure is derived from **recorded evidence** and never from a value
+    the caller asserts:
+
+    * the checkpoint's own accumulated elapsed time, which is the wallclock
+      the previous invocation consumed up to its last recorded transition;
+    * plus the measured durations of the candidate's trials that ran **after**
+      that transition — the ones the checkpoint's own elapsed time does not
+      cover. Their durations are in the ledger's trial rows.
+
+    A trial whose duration was not measured contributes nothing: an
+    unmeasured duration is unknown, and it is never read as zero seconds of
+    spend by folding it into the total.
+    """
+    if checkpoint is None:
+        return 0.0
+    consumed = float(checkpoint.elapsed_seconds)
+    if ledger_root is None or not candidate:
+        return consumed
+    from . import ledger
+    rows = [row for row in ledger.load_runs(ledger_root) if row.get("candidate") == candidate]
+    for row in rows[max(0, checkpoint.trials_covered):]:
+        duration = _observed_duration_ms(row)
+        if duration is None:
+            continue
+        consumed += duration / 1000.0
+    return consumed
+
+
 def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baseline_candidate: str,
                       candidate: str, target_dir: Path, allowed_prefixes: tuple[str, ...],
                       timeout: float = 900.0, max_wallclock: float = 3600.0,
@@ -1131,6 +1203,14 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
         checkpoint.transition("BUILDING", {"changed_paths": paths, "patch_sha256": patch_digest,
                                             "suite_sha256": suite_digest,
                                             "resumed_from": checkpoint.state if resume else None})
+    # The wallclock budget is **cumulative**: it is measured from the start of
+    # the first attempt, across every resume. The restored figure is derived
+    # from the checkpoint's own record and the ledger's trial rows, never
+    # from a value the caller asserts. Shifting the local clock back by the
+    # restored amount makes every remaining-budget computation below
+    # cumulative, so the total one candidate qualification may consume is
+    # bounded by its declared budget however many times it is resumed.
+    started = time.monotonic() - restored_elapsed_seconds(checkpoint, ledger_root, candidate)
     remaining = max_wallclock - (time.monotonic() - started)
     if remaining <= 0:
         raise TimeoutError("candidate qualification wallclock budget exhausted before build")
@@ -1173,6 +1253,12 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     if checkpoint is not None:
         authorize_binary_fingerprint(checkpoint, binary_digest)
+        # The trials that run after this transition are the ones the
+        # checkpoint's own elapsed time does not cover. Their measured
+        # durations are in the ledger's rows, and a resume adds them back to
+        # the consumed wallclock.
+        checkpoint.trials_covered = len([row for row in ledger.load_runs(ledger_root)
+                                         if row.get("candidate") == candidate])
         checkpoint.transition("QUALIFYING", {"gates": gates, "binary_sha256": binary_digest})
         checkpoint.transition("EVALUATING", {"candidate": candidate, "binary_sha256": binary_digest})
     # Any recorded attempt of this candidate - including a reconciled orphan

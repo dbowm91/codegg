@@ -205,6 +205,47 @@ config keys exist. The `model` parameter in `session/prompt` defaults to
 - **Daemon failure is typed**: If the daemon is unavailable or rejects a
   request, the adapter returns a JSON-RPC error (code -32001 or from
   `write_core_error`). No standalone ACP runtime is created.
+- **An incomplete observation is not a completed one**: the daemon's event
+  log is a bounded broadcast, so a connection that falls behind it loses
+  events. The daemon reports that loss, the adapter surfaces it, and the
+  consumer is told. The adapter subscribes **loss-aware**: a dropped event
+  arrives as a typed condition, never as silence. See "Reporting a hole in
+  the event stream" below.
+
+## Reporting a hole in the event stream
+
+A consumer that pairs a tool call with its completion must be able to tell
+"the tool never finished" from "the completion notification was dropped".
+The adapter therefore reports a gap in the daemon's event stream on an
+**optional**, namespaced session-update kind:
+
+```json
+{"sessionUpdate": "codegg_event_gap", "dropped": 12, "source": "daemon_event_stream_gap"}
+```
+
+and, when the gap happened during a turn, the turn's own result carries the
+count:
+
+```json
+{"stopReason": "end_turn", "codeggUsage": {...}, "codeggEventGap": {"dropped": 12}}
+```
+
+Both are **additive and optional**:
+
+- no ACP v1 field became **required**;
+- a consumer that does not know the `codegg_event_gap` kind ignores it;
+- a consumer that does not read `codeggEventGap` sees the same result it saw
+  before.
+
+The rule a consumer must follow: **a trial whose observation had a hole in it
+is unmeasured.** It is never scored as a completed trial and never scored as a
+failure of the subject — it is re-run, under a bounded number of re-runs.
+The harness implements that rule in `dev/harness_lab/`.
+
+The two gap sources are different facts and both are carried: a **daemon**
+gap is the daemon telling the consumer it dropped events from the stream it
+sends, and a **client broadcast** lag is the consumer itself falling behind
+the shared broadcast.
 
 ## Testing
 

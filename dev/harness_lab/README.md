@@ -373,3 +373,166 @@ Every rule in the seam is a **refusal**, not a repair:
 
 The receipt records the fault, what the transcript shows about it, and
 whether the declared bound stopped the trial.
+
+## Unmeasured trials, bounded re-runs and cumulative budgets
+
+A trial that produced **no observation** says nothing about the candidate.
+Two cases produce none: the harness, the daemon or the transport failed
+before the trial could produce an observation (`infrastructure_error`), and
+the event stream reported a **gap** — the daemon's event log is a bounded
+broadcast, so a connection that falls behind it loses events, and the product
+now says so (`codegg_event_gap`).
+
+An unmeasured trial is **not** a candidate failure. It is excluded from the
+reliability denominator and the pair is re-run — under a bound:
+
+- `--max-measurement-retries` caps how many times one pair may be re-run
+  after a measurement failure, **across every resume**. The count comes from
+  the ledger's own rows, so it survives a resume.
+- the cap is also enforced against the provider-request budget: every attempt
+  is admitted through the spend guard, which refuses before the ceiling is
+  crossed.
+- the receipt reports, per pair, the number of attempts, the number of
+  measurement failures and the terminal of the measured row.
+- a pair that exhausts the cap is recorded as **unmeasured and unresolved**:
+  never as a pass, never as a zero, and never as a silently dropped trial.
+
+The wallclock a qualification may consume is **cumulative**: it is measured
+from the start of the first attempt, across every resume. The consumed figure
+is derived from recorded evidence — the candidate checkpoint's own
+accumulated elapsed time, plus the measured durations of the trials the
+checkpoint does not cover — never from a value the caller asserts. A
+checkpoint that carries **no** elapsed-time accounting is a **refusal**, not a
+fresh budget: handing a resumed qualification a new full-length budget is
+exactly the unboundedness the cumulative deadline exists to remove.
+
+The `sustained` command has an optional `--scenario-wallclock`: the scenario
+stops before it crosses the cumulative limit and caps each trial's timeout by
+what is left.
+
+The comparison reports the **measured values** next to the verdict, so a
+reader can see what moved and what did not. A verdict without its numbers is
+an assertion.
+
+Re-deciding a recorded pair after a score-contract correction does not re-run
+the provider:
+
+```bash
+python3 -m dev.harness_lab autonomy-rescore \
+  --baseline-runs recorded-baseline.json --candidate-runs recorded-candidate.json
+```
+
+The recorded trials are the evidence; the decision is a derivation from them,
+so a derivation that changes when the contract changes is expected, while a
+*trial* that changes is not. The re-score never runs anything.
+
+## Budget admission before a live trial
+
+A trial that reaches a live provider must present a budget policy whose hard
+cap the controller verified. The gate is fail-closed and runs before any
+provider request, daemon spawn, or subprocess launch:
+
+```bash
+python3 -m dev.harness_lab budget-check --budget /path/to/budget.json
+python3 -m dev.harness_lab tool-trial --binary target/debug/codegg \
+  --profile workspace-write --live-provider --budget /path/to/budget.json
+```
+
+`budget-check` is provider-free: it performs no I/O, makes no request, and
+spawns nothing. It prints the admission decision and exits `0` when admitted
+and `2` when refused.
+
+A budget policy is a JSON object with at least one enforceable hard cap:
+
+| Key | Meaning |
+|---|---|
+| `token_limit` | Maximum provider tokens for the trial. |
+| `cost_limit_usd` | Maximum spend. Requires `cost_enforcement`. |
+| `cost_enforcement` | `controller_enforced` or `provider_enforced`. Never inferred. |
+| `cost_observable` | Whether the route reports a cost at all. A `controller_enforced` cost cap requires this to be `true`. |
+| `max_provider_requests` | Maximum provider requests. `1` is valid. |
+| `max_wallclock_seconds` | Maximum wall-clock seconds. |
+| `provider_quota` | A provider-authoritative ceiling: `source`, `enforceable`, `retry_safe`, `scope`. |
+
+Refusal reports `status: "budget_unverifiable"` and a `missing_source` naming
+what could not be verified: `token_limit`, `cost_limit_usd`,
+`max_provider_requests`, `max_wallclock_seconds`, `provider_quota`, or
+`provider_quota_retry_safety`.
+
+Three rules are strict on purpose:
+
+- **A cost cap with no stated enforcement is refused.** A guessed or locally
+  estimated price is never treated as an enforceable spend limit, and a
+  requested-but-unenforceable cap refuses the trial rather than being silently
+  ignored.
+- **A controller-enforced cost cap needs an observable cost.** The controller
+  can only hold a dollar ceiling it can measure, so `cost_observable` must be
+  `true`. A route that reports no cost cannot be enforced against one.
+- **A provider quota must be retry-safe.** A ceiling that resets on a provider
+  retry does not bound the trial, so it is refused with
+  `provider_quota_retry_safety`.
+
+### What "enforceable" means at run time
+
+The gate and the run agree. `max_provider_requests` is enforced **before** a
+trial starts: a trial that would cross the ceiling is refused, and the
+projected requests are reserved so a trial that fails before its usage is
+observed still counts. `token_limit` and `cost_limit_usd` are observed after
+the fact, so they bound the run to within one trial's overshoot — the trial
+that crosses the ceiling finishes and no further trial starts. The observed
+spend is reported in the run receipt under `budget`.
+
+## Failed-turn evidence
+
+A native turn failure reaches the client as the ACP JSON-RPC error `-32010`.
+Its `data` payload carries the redacted failure class and the usage
+provenance:
+
+| Field | Meaning |
+|---|---|
+| `codeggFailureCategory` | One allowlisted category, or `native_failure_unspecified`. |
+| `codeggUsage` | Token counts observed before the failure, or `null`. |
+| `codeggUsageReason` | `reported`, `not_observed`, `not_provided`, `lost_at_projection`, or `unspecified`. |
+
+`codeggUsage` is `null` whenever no count was available, and the reason says
+which of the distinguishable facts it was. A missing measurement is never
+recorded as zero usage: the ledger stores a named `usage_unavailable` reason
+instead.
+
+The payload never carries the provider's error text. The category is derived
+from the typed native error and the usage aggregate covers every provider
+response in the failed run.
+
+## Mutable path inventory
+
+Each lane receives unique values for:
+
+| State | Lane setting/path |
+|---|---|
+| Daemon lock, metadata, socket and log | `CODEGG_DAEMON_HOME=<lane>/daemon` |
+| SQLite catalog and session/provider state | `CODEGG_DATA_HOME=<lane>/data`, resolved below `data/codegg` |
+| Global config, agents and file credentials | `HOME`, `XDG_CONFIG_HOME`, `CODEGG_TUI_CONFIG` |
+| XDG runtime/data/cache/state | `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` |
+| Tool scratch and Cargo cache | `TMPDIR`/`TMP`/`TEMP`, `CARGO_HOME` |
+| Workspace-local state | private temporary workspace fixture |
+| Child output | lane-local bounded ACP stderr file |
+| Taxonomy fixture (the agent's editable tree) | `<lane>/case/fixture` |
+| Taxonomy verifier and transcript | `<lane>/private/verifier`, `<lane>/private/TRANSCRIPT.json` |
+
+The lane's daemon control socket lives at `<lane>/daemon/core.sock`, and the
+platform's `sun_path` limit is short. The runner refuses a lane whose socket
+path would not fit, with the reason, rather than letting the daemon fail with
+a message that names the socket instead of the cause.
+
+The smoke makes no provider call, so no credentials are needed. It does not
+copy a developer's keychain or provider credentials into the lane. `RUSTUP_HOME`
+and the executable runtime itself may be read from the installed toolchain;
+the smoke does not write them. `CODEGG_CORE_ENDPOINT` is removed so ACP uses
+the endpoint resolved from its unique daemon root. Linux and macOS are the
+qualified host targets; other platforms fail before starting children.
+
+This is state separation on a trusted workstation, not OS security isolation.
+Full-host execution remains the OS user's authority. Do not run untrusted
+candidate code in this harness. The controller owns only the subprocesses and
+temporary roots it creates, and it refuses to infer daemon identity from PID
+or stale metadata alone.

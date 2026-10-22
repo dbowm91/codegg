@@ -85,10 +85,12 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--suite", type=Path, help="versioned JSONL case manifest (one task per line)")
     evaluate.add_argument("--timeout", type=float, default=60.0)
     evaluate.add_argument("--max-wallclock", type=float, default=600.0)
+    evaluate.add_argument("--max-measurement-retries", type=int, default=2,
+                          help="how many times one pair may be re-run after a "
+                               "measurement failure, across every resume")
     evaluate.add_argument("--max-trials", type=int, default=100)
     evaluate.add_argument("--deny-bash", action="store_true")
-    evaluate.add_argument("--resume-candidate", action="store_true",
-                          help="resume missing task/repeat pairs for an interrupted candidate")
+    evaluate.add_argument("--resume-candidate", action="store_true",                          help="resume missing task/repeat pairs for an interrupted candidate")
     _add_budget_arguments(evaluate)
     report = commands.add_parser("report", help="summarize a frozen ledger without provider calls")
     report.add_argument("--ledger", type=Path, required=True)
@@ -187,6 +189,9 @@ def _parser() -> argparse.ArgumentParser:
     sustained.add_argument("--trials", type=int, default=24,
                            help="number of live trials in the scenario")
     sustained.add_argument("--per-trial-wallclock", type=float, default=600.0)
+    sustained.add_argument("--scenario-wallclock", type=float, default=None,
+                           help="the cumulative wallclock the whole scenario may "
+                                "consume; the scenario stops before it crosses it")
     sustained.add_argument("--max-provider-requests", type=int, default=None,
                            help="scenario-level provider-request ceiling, independent of the policy")
     sustained.add_argument("--output", type=Path, default=None)
@@ -280,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
                 _binary(args.binary), args.model, budget_policy=policy, plans=plans,
                 profile=args.profile, root=args.lane_root,
                 per_trial_wallclock=args.per_trial_wallclock,
+                scenario_wallclock=args.scenario_wallclock,
                 max_provider_requests=args.max_provider_requests)
             rendered = json.dumps(receipt, indent=2, sort_keys=True)
             if args.output is not None:
@@ -551,10 +557,46 @@ def main(argv: list[str] | None = None) -> int:
                 started = time.monotonic()
                 exhausted = False
                 existing = {}
+                # The measurement-failure re-run bound.
+                #
+                # A measurement failure carries no information about the
+                # candidate, so the pair is re-run. That is correct, and it is
+                # also a way to spend the admitted budget without the operator
+                # seeing it, so the number of re-runs is capped per pair,
+                # across every resume. The count comes from the ledger's own
+                # rows — the recorded evidence — and not from a value the
+                # caller asserts. The cap is also enforced against the
+                # provider-request budget: every attempt is admitted through
+                # the spend guard, which refuses before the ceiling is
+                # crossed, so a re-run can never spend past it.
+                #
+                # A pair that exhausts the cap is recorded as **unmeasured and
+                # unresolved**: never as a pass, never as a zero, and never as
+                # a silently dropped trial.
+                try:
+                    ledger_root = args.ledger.expanduser().resolve(strict=True)
+                    measurement_failures = ledger.measurement_failures_by_pair(
+                        ledger_root, args.candidate)
+                    prior_attempts = ledger.attempts_by_pair(ledger_root, args.candidate)
+                except (OSError, ValueError):
+                    measurement_failures = {}
+                    prior_attempts = {}
                 if args.resume_candidate:
                     existing = ledger.validate_candidate_resume_rows(
                         args.ledger.expanduser().resolve(strict=True), args.candidate,
                         cases, suite_sha256, args.group_id)
+                    # The wallclock budget is **cumulative**: a resumed
+                    # evaluation continues with the budget that was really
+                    # left, not with a fresh full-length one. The consumed
+                    # figure is derived from the ledger's own trial rows —
+                    # the recorded evidence of the trials that already ran —
+                    # and never from a value the caller asserts. A trial whose
+                    # duration was not measured contributes nothing: an
+                    # unmeasured duration is unknown, not zero.
+                    resumed = ledger.resumed_candidate_elapsed_seconds(
+                        args.ledger.expanduser().resolve(strict=True), args.candidate)
+                    started = time.monotonic() - resumed
+                    result["restored_elapsed_seconds"] = round(resumed, 6)
                     for case in cases:
                         for repeat in range(case.get("repeats", 1)):
                             row = existing.get((case["task_id"], repeat))
@@ -562,9 +604,14 @@ def main(argv: list[str] | None = None) -> int:
                                 continue
                             expected_terminal = case.get("expected_terminal", "passed")
                             matched = row["terminal"] == expected_terminal
+                            pair = (case["task_id"], repeat)
                             result["trials"].append({"task_id": case["task_id"], "repeat": repeat,
                                                      "ledger_manifest": row,
                                                      "expected_terminal_matched": matched,
+                                                     "measured_terminal": row["terminal"],
+                                                     "attempts": prior_attempts.get(pair, 0),
+                                                     "measurement_failures":
+                                                         measurement_failures.get(pair, 0),
                                                      "resumed": True})
                             if not matched or row["terminal"] != "passed":
                                 result["ok"] = False
@@ -572,6 +619,17 @@ def main(argv: list[str] | None = None) -> int:
                     case_sha256 = ledger.canonical_digest(case)
                     for repeat in range(case.get("repeats", 1)):
                         if (case["task_id"], repeat) in existing:
+                            continue
+                        pair = (case["task_id"], repeat)
+                        failures = measurement_failures.get(pair, 0)
+                        if failures >= args.max_measurement_retries:
+                            result.setdefault("unresolved", []).append({
+                                "task_id": case["task_id"], "repeat": repeat,
+                                "measurement_failures": failures,
+                                "attempts": prior_attempts.get(pair, 0),
+                                "reason": "the measurement retry cap is exhausted; the "
+                                          "pair is unmeasured and unresolved"})
+                            result["ok"] = False
                             continue
                         remaining = args.max_wallclock - (time.monotonic() - started)
                         if remaining <= 0:
@@ -631,6 +689,9 @@ def main(argv: list[str] | None = None) -> int:
                         except HarnessError as error:
                             trial = {"ok": False, "task_id": case["task_id"], "repeat": repeat,
                                      "failure_type": type(error).__name__}
+                        trial["attempts"] = prior_attempts.get(pair, 0) + 1
+                        trial["measurement_failures_before"] = failures
+                        trial["measured_terminal"] = trial.get("terminal")
                         result["trials"].append(trial)
                         if spend_guard is not None:
                             usage = trial.get("codegg_usage") or {}
