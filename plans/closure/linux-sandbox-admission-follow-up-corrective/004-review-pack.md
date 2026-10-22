@@ -219,9 +219,15 @@ three rows above are the ones that qualify the line as merged.
 
 Recorded in `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
 §5, with the run links and the executed counts. The sweep ran on successive
-heads of the branch, because the sweep itself found three of the five defects
-the milestone introduced — two of them in §3.5 and the fifth in §3.6; the
+heads of the branch, because the sweep itself found three of the **four**
+defects the milestone introduced — two of them in §3.5 and the fifth in §3.6;
+the other one was caught locally before a hosted run ever executed it. The
 intermediate heads and their failures are recorded there rather than hidden.
+
+A reviewer should also read that record's §10.5 before reviewing chunk 8: the
+registry listed three of this line's milestones twice with contradictory
+statuses, and that contradiction has been fixed. It is a documentation
+finding, not a code one, and it changes no chunk.
 
 ### 5.3 Which boundaries need which hosted job
 
