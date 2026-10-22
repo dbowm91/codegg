@@ -3995,6 +3995,20 @@ mod tests {
             format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
         }
 
+        /// Wait until `path` exists, so a test can act on an observed
+        /// precondition instead of a wall-clock guess.
+        async fn wait_for_marker(path: &Path, timeout: Duration) {
+            let start = std::time::Instant::now();
+            while !path.exists() {
+                assert!(
+                    start.elapsed() < timeout,
+                    "timed out waiting for the managed child to start: {} was never created",
+                    path.display()
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
         fn git_command() -> std::process::Command {
             std::process::Command::new(std::ffi::OsString::from("git"))
         }
@@ -4285,7 +4299,12 @@ mod tests {
         );
 
         let cancel_marker = workspace.path().join("cancel-must-not-run");
-        let cancel_script = format!("sleep 5; touch {}", shell_quote(&cancel_marker));
+        let cancel_started_marker = workspace.path().join("cancel-started");
+        let cancel_script = format!(
+            "touch {}; sleep 15; touch {}",
+            shell_quote(&cancel_started_marker),
+            shell_quote(&cancel_marker)
+        );
         let cancel_spec = timeout_config
             .launch_spec(
                 "/bin/sh",
@@ -4304,7 +4323,24 @@ mod tests {
         cancel_request.sandbox = SandboxRequest::Required(cancel_spec);
         cancel_request.cancellation = cancellation.clone();
         let task = tokio::spawn(ManagedProcessService::run(cancel_request));
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait until the child proves it is running before cancelling it.
+        //
+        // A fixed sleep is not a synchronisation point. The launch's sandbox
+        // setup and spawn are not bounded, and this test runs concurrently
+        // with the other `protected_mount_` regressions, so a cancellation
+        // issued on a wall-clock deadline can land *inside* the launch
+        // sequence. The launch then fails with a launch error instead of
+        // reaping a cancelled child, and this test fails at the reaping
+        // assertion without ever exercising the cancellation path it
+        // exists to prove.
+        //
+        // Observing the child's own start marker makes the precondition
+        // explicit instead of hopeful, and it strengthens what the
+        // assertions mean: the marker proves the child really was running
+        // when the cancellation landed, so the reaped result proves the
+        // cancellation stopped a live child rather than merely that nothing
+        // was started.
+        wait_for_marker(&cancel_started_marker, Duration::from_secs(60)).await;
         cancellation.cancel();
         let cancelled = task
             .await

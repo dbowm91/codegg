@@ -253,13 +253,25 @@ and each is independently reviewable. The C004 head adds one chunk of its own.
 | 6 | LSP and egglsp | `crates/egglsp/**`, `src/lsp/**` | 2 boundaries, 8 files | **medium** | Is the LSP read surface still workspace-authoritative, with no ambient fallback? |
 | 7 | CI, scripts and skills | `.github/**`, `scripts/**`, `.opencode/**`, `docs/**`, `AGENTS.md`, `Cargo.toml`, `Cargo.lock` | 8 boundaries, ~17 files | **low** | Do the guards still fail on an injected defect, and do the workflow paths still cover what the guards watch? |
 | 8 | Plans and research | `plans/**`, `research/**` | 2 boundaries, 102 files | **low** (highest churn) | Do the closure records claim only what their evidence supports? |
-| 9 | **C004 head only** | `src/security/workflow/report.rs`, `src/tool/bash.rs`, `src/tool/bash/tests/git_fixture.rs`, `src/tool/lsp.rs`, `src/interactive_process.rs`, `tests/command_routing_execution_ownership.rs`, `tests/git_fixture_isolation.rs`, `tests/interactive_process_attach_resume.rs`, `scripts/check_test_filter_execution.py`, `docs/security-test-filters.toml`, `scripts/verify.sh`, 5 workflow files | 16 files | **low** (no production behaviour) | Do the new controls fail on an injected defect, and did any assertion or timeout get weakened? |
+| 9 | **C004 head only** | `src/security/workflow/report.rs`, `src/tool/bash.rs`, `src/tool/bash/tests/git_fixture.rs`, `src/tool/lsp.rs`, `src/interactive_process.rs`, `src/managed_process.rs` (test module only), `tests/command_routing_execution_ownership.rs`, `tests/git_fixture_isolation.rs`, `tests/interactive_process_attach_resume.rs`, `scripts/check_test_filter_execution.py`, `docs/security-test-filters.toml`, `scripts/verify.sh`, 5 workflow files | 17 files | **low** (no production behaviour) | Do the new controls fail on an injected defect, and did any assertion or timeout get weakened? |
 
 **The recommended order is 1 → 9 → 7 → the rest.** Chunk 1 carries the real
 risk. Chunk 9 is the C004 head itself and is the cheapest to review, because
 it changes no production behaviour and every claim in it is backed by a
 non-vacuity proof. Chunk 7 gates everything else, because the guards in it are
 what make the other chunks' claims checkable.
+
+**One note on chunk 9's seventeenth file.** `src/managed_process.rs` is
+touched **only inside its `#[cfg(test)]` module**, and only in the
+cancellation scenario of
+`managed_process::tests::protected_mount_view_real_managed_process_handoff`.
+The milestone's own §3.6 gate fix is what made that test execute in the M004
+job for the first time, and it carried a pre-existing cancel/spawn race that
+made the hosted M004 run fail. The fix replaces a fixed 200 ms wait with an
+observed precondition — the child's own start marker — and keeps every
+assertion. It is a test-module change with no production effect, and the
+closure record's §3.7 carries the deterministic reproduction, the
+non-vacuity proof, and the local verification.
 
 ---
 

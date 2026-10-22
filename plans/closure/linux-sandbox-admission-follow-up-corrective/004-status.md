@@ -41,10 +41,19 @@ source, not by relaxing a check:
 The remaining three findings (the review pack, the hosted evidence, and the
 pre-existing Desktop E2E failure) are discharged or recorded.
 
-**Five defects this milestone introduced were caught by the repository's
-existing guards and by the hosted sweep, and all five are fixed.** They are
-recorded in §3.5 rather than hidden. **Three of them were found by the hosted
-sweep** — two in §3.5 and the fifth in §3.6 — which is the sweep doing its job.
+**Four defects this milestone introduced were caught by the repository's
+existing guards, and all four are fixed.** They are recorded in §3.5 rather
+than hidden.
+
+**Two further findings are pre-existing defects that this milestone's own work
+exposed.** §3.6 is a false green in the M004 tier that qualified 9 of the 11
+regressions it named. §3.7 is a cancel/spawn race in one of those
+regressions, which §3.6's own gate fix is what made run in that job for the
+first time. Both are fixed, and both are recorded with the evidence that
+proves the diagnosis rather than a plausible story about it.
+
+**Three of the six findings were found by the hosted sweep** — two in §3.5
+and the fifth in §3.6 — which is the sweep doing its job.
 
 **And the control found a false green that was already there.** The M004
 native tier's "Protected mount and Git regressions" step was reporting a
@@ -69,7 +78,7 @@ default is set, and no ADR is accepted.
 | WP2: if the cause stays unknown, record **conditional** — do not lower the timeout and do not widen the exclusion | The cause did **not** stay unknown, so the conditional path was not needed. §3.3.3 records the diagnosed cause. No timeout was lowered; no test was excluded | met |
 | WP3: for each security filter, assert the executed count is non-zero, assert no self-skip marker was emitted, and provide a positive and a negative control | §3.4 — `docs/security-test-filters.toml` registers all 20 filters; `scripts/check_test_filter_execution.py` is both the static guard and the runtime wrapper. The positive/negative control pair is §3.4.3: the runtime counter was shown able to say "zero", to reject a self-skipping run, to reject a run that did not execute the named test, and to accept a healthy one | met |
 | WP4: produce a per-boundary changed-file/commit ledger, the exact `main` merge baseline, the migration and ADR integrity result, the CI qualification matrix, and a proposed review chunking | §4 — the review pack. 44 boundaries over 322 commits and 302 files, with a per-boundary owner map and a 9-chunk risk-ordered proposal | met |
-| WP5: run the branch-wide hosted sweep on the corrective head and record the run link; await the native and macOS jobs only for the boundaries the ledger marks as needing them | §5 — the hosted run links and executed counts for the corrective head. The `CI` sweep, the C006 and Git CoW native tiers and the Windows job all ran and passed. The **macOS** target compile was **not run**, per the user's instruction to keep testing scoped, and is recorded as *not run*, not as a pass | met, with the platform scope stated |
+| WP5: run the branch-wide hosted sweep on the corrective head and record the run link; await the native and macOS jobs only for the boundaries the ledger marks as needing them | §5 — the hosted run links and executed counts for the corrective head. The `CI` sweep, the C006 and Git CoW native tiers and the Windows job all ran and passed. The M004 native tier ran and **failed once on a pre-existing cancel/spawn race that this milestone's own gate fix exposed**; §3.7 records the diagnosis, the deterministic reproduction and the fix. The **macOS** target compile was **not run**, per the user's instruction to keep testing scoped, and is recorded as *not run*, not as a pass | met, with the platform scope stated |
 | Invariant: no Git subcommand authorization may be widened to make a test pass | §6.1 — no Git authorization code was touched. The typed refusal is asserted by the rebound tests | met |
 | Invariant: no timeout may be lowered, and no test may be disabled or silently excluded to obtain a green run | §6.1 — no timeout was lowered; the LSP tests keep their 120 s bound and their functional assertions; no test was excluded. The only `#[ignore]` added is the *child half* of the new cross-process reproduction, which the parent invokes by name | met |
 | Invariant: a filter that matches zero tests is not a pass, and a self-skip marker is not a skip-free run | §3.4 — the runtime wrapper rejects a zero count and any `skipped: `/`skipping ` marker. **Five** silent self-skips that no marker scan could see now emit markers, and a whole-tree sweep confirms none is left. §3.6 — the static guard additionally requires every gate behind a self-skipping selected test to be enabled by the step's job | met |
@@ -291,11 +300,16 @@ not as skipped. Those four now emit `skipped: ` markers:
 `src/interactive_process.rs` (1) and
 `tests/interactive_process_attach_resume.rs` (3).
 
-### 3.5 Five defects this milestone introduced, caught by the existing guards
+### 3.5 Four defects this milestone introduced, caught by the existing guards
 
 They are recorded because a reviewer should not have to find them by hand,
 and because two of them are exactly the class of defect this milestone was
 supposed to prevent.
+
+All four are defects **this milestone introduced** — they are in the code this
+milestone wrote. The two further findings in §3.6 and §3.7 are of a different
+kind: they are **pre-existing** defects that this milestone's own controls
+*exposed*, and they are counted separately for exactly that reason.
 
 **The Windows workflow folded seven steps onto one shell line.** The wrapper
 invocation was written as a multi-line *plain* YAML scalar:
@@ -401,9 +415,10 @@ any marker-bearing file still counts.
 
 ### 3.6 The M004 native job was qualifying 9 of its 11 protected-mount regressions
 
-This one was caught by the hosted M004 run `39722365986`, and it is the most
-interesting of the five, because the milestone's own control exposed a
-**pre-existing** false green rather than one of its own making.
+This one was caught by the hosted M004 run `39722365986`, and it is the
+fifth of this milestone's findings, because the milestone's own control
+exposed a **pre-existing** false green rather than one of its own making.
+§3.7 is the sixth, and is pre-existing for the same reason.
 
 The M004 `process-ipc` job's "Protected mount and Git regressions" step runs
 the `protected_mount_` filter, which selects **11** tests. Two of them — the
@@ -469,7 +484,101 @@ selected, and nothing in the repository could see it. That is precisely the
 failure C001 §10.3 named, and it was still live in the M004 tier when this
 milestone started.
 
-### 3.7 What the wrapper refuses on a host without native qualification
+### 3.7 A pre-existing cancel/spawn race, exposed by this milestone's gate fix
+
+This is the second pre-existing defect this milestone's own work exposed, and
+like §3.6 it is a **false green** class finding: the test the M004 job now
+runs could fail for a reason that has nothing to do with the behaviour it
+claims to prove.
+
+**How it surfaced.** The hosted M004 run `39753981468` on head `5b7ab4887`
+failed with:
+
+```
+thread 'managed_process::tests::protected_mount_view_real_managed_process_handoff'
+panicked at src/managed_process.rs:4312:14:
+cancelled child is reaped: CancelledBeforeSpawn
+test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 7355 filtered out
+```
+
+The other ten `protected_mount_` regressions passed, and the step failed —
+which is the filter-execution control working: it refused to report a green
+run over a failed test.
+
+**Why C004 surfaced it.** §3.6's fix added `CODEGG_RUN_C006_BWRAP_NATIVE: '1'`
+to the M004 job. That gate is what had been keeping
+`protected_mount_view_real_managed_process_handoff` from running in this job
+at all — before §3.6's fix it skipped there. So the milestone that made the
+M004 tier qualify **all eleven** of its regressions also made this one run for
+the first time, and its race became visible.
+
+**The race.** The test's cancellation scenario spawned the managed child and
+then slept a fixed **200 ms** before cancelling:
+
+```rust
+let task = tokio::spawn(ManagedProcessService::run(cancel_request));
+tokio::time::sleep(Duration::from_millis(200)).await;
+cancellation.cancel();
+```
+
+A wall-clock deadline is not a synchronisation point. The launch's sandbox
+setup and spawn are **not bounded**, and this test runs concurrently with the
+other `protected_mount_` regressions — eleven multi-threaded runtimes on a
+four-CPU runner. A cancellation that lands *inside* the launch sequence makes
+the launch fail with a launch error instead of reaping a cancelled child, so
+the test fails at `.expect("cancelled child is reaped")` **without ever
+exercising the cancellation-cleanup path it exists to prove**. Depending on
+where the cancel landed, the launch reported `CancelledBeforeSpawn` (before
+the launch's own cancellation check) or a sandbox failure (after it).
+
+**The fix removes the deadline rather than widening it.** The child script now
+creates a `cancel-started` marker before it sleeps, and the test waits for that
+marker before cancelling:
+
+```rust
+wait_for_marker(&cancel_started_marker, Duration::from_secs(60)).await;
+cancellation.cancel();
+```
+
+The precondition is now **observed** rather than assumed. No timeout was
+lowered, no assertion was removed, and the production behaviour is untouched:
+`ManagedProcessError::CancelledBeforeSpawn` still means exactly what it
+means, and the whole change is inside the `#[cfg(test)]` module.
+
+It also **strengthens** what the assertions mean. The `cancel-started` marker
+proves the child really was running and could write to the workspace when the
+cancellation landed, so the reaped result proves the cancellation stopped a
+**live** child rather than merely that nothing was started. The old
+`assert!(!cancel_marker.exists())` could pass vacuously if the workspace had
+been unwritable; it can no longer.
+
+**The diagnosis was proved, not assumed.**
+
+* **The failure mode is reproducible deterministically.** With the pre-fix
+  code and the sleep shortened from 200 ms to 0 ms — so the cancellation
+  provably lands before the spawn — the test fails at **the same panic site**,
+  `src/managed_process.rs:4312:14: cancelled child is reaped: …`. The error
+  variant differs only in how far into the launch the cancellation landed.
+  That is the hosted failure, reproduced on purpose.
+* **The new wait is load-bearing.** With the `cancel-started` marker removed
+  from the child's script, the fixed test fails with
+  `timed out waiting for the managed child to start: …/cancel-started was never
+  created`. The fixed test cannot pass unless the child actually ran.
+* **The fix holds.** With the fix in place the whole filter passes locally
+  under the native gate — 11 passed, 0 failed, in 0.82 s, faster than the
+  pre-fix 0.98–1.02 s because the cancellation now lands as soon as the child
+  starts rather than after a fixed wait.
+
+The race could not be reproduced by looping the hosted filter condition
+locally — 15 runs at full CPU and 12 more pinned to two CPUs all passed — so
+the deterministic reproduction above, rather than a local flake hunt, is the
+evidence for the diagnosis.
+
+**Scope.** This is the one source file outside the milestone's original
+boundary, and it is touched **only inside its test module**. No production
+behaviour changed. The review pack's chunk 9 is updated to include it.
+
+### 3.8 What the wrapper refuses on a host without native qualification
 
 Two of the registered filters — `protected_mount_` and the M004 native
 filters — are **native qualification** filters: their tests self-skip unless
@@ -523,6 +632,15 @@ filters with its self-test rejecting all 10 injected defects.
 | `cargo test --locked --test command_routing_execution_ownership` | **21 passed**, 0 failed (9.62 s) |
 | `cargo test --locked --test git_fixture_isolation` | **2 passed**, 0 failed, 1 ignored (the child half) |
 | `cargo test -p codegg --locked --features lsp-real-server-tests --lib tool::lsp::` | **38 passed**, 0 failed (34.47 s) |
+| `CODEGG_RUN_C006_BWRAP_NATIVE=1 cargo test --locked --lib protected_mount_ -- --nocapture` | **11 passed**, 0 failed (0.82 s) — the native qualification filter, under the gate §3.6 enabled |
+
+The last row runs the **native** qualification filter on a host with
+Bubblewrap and unprivileged user namespaces available, which is what §3.7's
+fix needed to be verified against. Its two companion runs are the
+deterministic reproduction and the non-vacuity proof recorded in §3.7: the
+pre-fix code with a 0 ms wait fails at the same panic site, and the fixed
+code with the child's start marker removed fails with
+`timed out waiting for the managed child to start`.
 
 The one `#[ignore]` is the *child half* of the new cross-process
 reproduction. It is invoked by name by its parent test, so it is a harness
@@ -568,7 +686,10 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Code-bearing head:** `259794bb9` — the merge of this branch with `main`@`47f5572b1`.
+**Code-bearing head:** the branch head carrying §3.7's fix. The merge commit
+`259794bb9` (this branch merged with `main`@`47f5572b1`) is the code-bearing
+head before that fix; the fix's own head and its hosted sweep are named in
+the attribution commit that follows it.
 **Branch:** `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
 
@@ -581,10 +702,13 @@ commit is needed when a documentation-only commit lands on top. This is the
 same property the C001 line's baseline claims, and it is verified by
 `git diff --name-only` rather than asserted.
 
-Concretely: the branch tip when this record was written is `d85c402a9` —
-`259794bb9` plus one documentation-only commit — and its own sweep is green
-on all five workflows (`39748205888`, `39748205822`, `39748205948`,
-`39748205831`, `39748205884`).
+Concretely: the head `d85c402a9` is `259794bb9` plus one documentation-only
+commit, and its own sweep is green on all five workflows (`39748205888`,
+`39748205822`, `39748205948`, `39748205831`, `39748205884`). The head
+`5b7ab4887` is that plus two more documentation-only commits; four of its
+five workflows were green and the M004 native job failed on §3.7's race,
+which its re-run then passed — a pre-fix tree, so the race is intermittent
+and load-dependent rather than deterministic on that runner.
 
 ### 5.0 The base moved under this branch
 
@@ -648,12 +772,17 @@ the evidence that the sweep is doing work.
 | `39748205948` | `d85c402a9` | Linux C006 protected mount qualification | **success** |
 | `39748205831` | `d85c402a9` | Linux Git object snapshot CoW qualification | **success** |
 | `39748205884` | `d85c402a9` | Windows process launcher | **success** |
+| `39753981468` | `5b7ab4887` | Linux M004 process and IPC qualification | **failure** — the `protected_mount_` step failed on a cancel/spawn race in one of its own regressions; §3.7 |
+| `39753981468` (attempt 2) | `5b7ab4887` | Linux M004 process and IPC qualification | **success** — the same tree, re-run; the race is intermittent and load-dependent; §3.7 |
 
 **All five workflows are green on the closing head.** The failures above are
 the earlier heads, and each one found a defect that is now fixed and guarded —
 they are recorded here rather than hidden, because they are the evidence that
-the sweep is doing work. The one exception is the CI failure on `f82c1f980`,
-which found no defect at all; §5.1.1 records it.
+the sweep is doing work. Two of them are of a different kind and are recorded
+separately: the CI failure on `f82c1f980` found no defect at all (§5.1.1), and
+the M004 failure on `5b7ab4887` found a **pre-existing** race that this
+milestone's own gate fix had exposed (§3.7) — not a defect this milestone
+introduced.
 
 ### 5.1.1 The CI failure on `f82c1f980` was a runner termination, not a test result
 
@@ -732,6 +861,9 @@ estimate, and not a count the guard assumed.
 | `39748205948` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39748205831` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39748205884` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39753981468` (attempt 2) | M004 | 4 single-test filter steps | **1 each** | **1 each** | none |
+| `39753981468` (attempt 2) | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39753981468` (attempt 2) | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
 
 **Every security-filter count is identical on all four green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
@@ -770,9 +902,9 @@ requires. The registry's list is the *required* set, not the exhaustive one.
   boundaries the ledger marks as needing them". The C004 head changes
   `src/interactive_process.rs`, which the M004 native tier's trigger list
   names, so the **M004 native tier is awaited and its result is recorded** —
-  including the failure that found §3.6. The C006 protected-mount tier and
-  the Git CoW tier are awaited for the same reason: the head changes the
-  workflow files that own them.
+  including the failure that found §3.6 and the failure that found §3.7. The
+  C006 protected-mount tier and the Git CoW tier are awaited for the same
+  reason: the head changes the workflow files that own them.
 
 **No platform behaviour is inferred from a job that was not run.**
 
@@ -783,9 +915,9 @@ requires. The registry's list is the *required* set, not the exhaustive one.
 | Invariant | How it was held |
 |---|---|
 | No Git subcommand authorization may be widened | No Git authorization code was touched. The rebound tests still assert the typed `BackendUnavailable[RepositoryAlias]` refusal |
-| No timeout may be lowered, and no test may be disabled or silently excluded | No timeout was lowered — the 120 s nextest bound, the 30 s LSP request timeout and the 30 s readiness timeout are unchanged. No test was excluded; the only `#[ignore]` is the harness half of the new reproduction, invoked by name |
+| No timeout may be lowered, and no test may be disabled or silently excluded | No timeout was lowered — the 120 s nextest bound, the 30 s LSP request timeout and the 30 s readiness timeout are unchanged. No test was excluded; the only `#[ignore]` is the harness half of the new reproduction, invoked by name. §3.7 replaces a fixed 200 ms *sleep* with a bounded 60 s *wait on an observed precondition* — that is not a lowered timeout but the removal of a timing assumption, and it removes no assertion |
 | A filter that matches zero tests is not a pass, and a self-skip marker is not a skip-free run | The runtime wrapper rejects a zero count and any self-skip marker. **Five** silent self-skips that no marker scan could see now emit markers, and a whole-tree sweep confirms none is left. The static guard additionally requires every gate behind a self-skipping selected test to be enabled by the step's job — which is what the M004 tier was missing |
-| A closure may not claim more than the evidence supports | §5.3 records the macOS scope as *not run* and the Windows result as it was observed. §10 lists what is still open with its owner |
+| A closure may not claim more than the evidence supports | §5.3 records the macOS scope as *not run* and the Windows result as it was observed. §10 lists what is still open with its owner. §3.7 records the hosted M004 failure that this milestone's own gate fix exposed, and the evidence for the diagnosis rather than a plausible story about it |
 
 ### 6.2 The plan's four stop conditions
 
@@ -823,6 +955,11 @@ first now catches it.
 * **The LSP fixture that produces no diagnostic** now costs the full 30 s
   readiness budget rather than the whole-checkout index. The failure mode is
   understood, so a future regression is a slow cold call, not a mystery.
+* **A cancellation issued on a wall-clock deadline** now waits for an
+  observed precondition instead. §3.7's fix replaces the assumption with a
+  marker the child itself creates, so the cancellation path is reached
+  deterministically rather than whenever the launch happens to be fast
+  enough.
 
 ## 8. Migration and compatibility review
 
