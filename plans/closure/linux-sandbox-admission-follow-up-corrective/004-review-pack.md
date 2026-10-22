@@ -21,7 +21,9 @@ nothing here reopens them.
 | Head whose hosted evidence was captured | `4c08f2cc56a0e8ba227706dce70dee2e736475fa` |
 | C001 line → `main` | PR #149, merge commit `2c1953347896848c2f52c2dfbd9f04029d1c2cc2` |
 | C002 line → `main` | PR #158, merge commit `95bb9c5ae` |
-| C004 line base | `95bb9c5ae` |
+| C004 line base at branch creation | `95bb9c5ae` |
+| `main` at the C004 merge | `47f5572b1` (PR #161, M008 hosted evidence) |
+| C004 merge commit | `259794bb9` — tree `d4ae08f6` |
 | Commits on the C001 line | **322** (`239f06e7f..4c08f2cc5`) |
 | Changed files on the C001 line | **302** |
 
@@ -39,6 +41,27 @@ still wrong — `main` had changed a domain type and its DTO without touching
 the mapping site that joined them — so it was closed by a compile-level proof
 rather than by a textual diff. The reconciliations are recorded in
 `plans/closure/branch-and-ci-stabilization/001-status.md` §§3.12–§3.21.
+
+**The C004 line was reconciled with `main` once, for the same reason.** `main`
+advanced from `95bb9c5ae` to `47f5572b1` — the M008 blackboard work and a TUI
+change set — while this milestone was in flight. The reconciliation is a
+merge, not a rebase, so the milestone's own commit history stays intact and
+its evidence stays attributable.
+
+Two properties of that merge are worth a reviewer's attention, because
+`main` and this branch both touched `scripts/verify.sh` and
+`.github/workflows/ci.yml`:
+
+* The merge is **textually clean**, and after it this milestone's
+  filter-execution control and `main`'s new blackboard contract-matrix guard
+  are **both** still wired into **both** files, and both guards and both
+  self-tests pass on the merged tree. A clean merge is not the same as a
+  correct merge, so this is checked rather than assumed.
+* The merge commit's tree `d4ae08f6` is **byte-identical** to the tree of
+  GitHub's merge commit `22630735a`, which is the exact tree the green CI
+  run `39740206655` (attempt 2) executed. The hosted evidence qualifies the
+  merged tree's code file for file — the same property the C001 line's
+  baseline claims, established here for the C004 line.
 
 ---
 

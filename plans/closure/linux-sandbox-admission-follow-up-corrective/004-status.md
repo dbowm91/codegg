@@ -560,16 +560,37 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Corrective head:** `fa8dbf413ff3b6911073046be3a9a2c5a6f958a8` on
-`plans/linux-sandbox-c004-evidence-and-review-pack`.
+**Corrective head:** `259794bb9` — the merge of this branch with `main`@`47f5572b1`.
+**Branch:** `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
 
-The evidence head `fa8dbf413` changes **only this record** — no source, no
-test, no workflow, no guard — so the sweep on it qualifies the merged tree's
-code exactly. The commit that adds this attribution is documentation-only as
-well: it touches this record and the sibling review pack, and moves no code
-under test. `git diff --name-only` against the evidence head shows those two
-files alone.
+### 5.0 The base moved under this branch
+
+`main` advanced from `95bb9c5ae` (the C002 merge, PR #158) to `47f5572b1`
+while this milestone was in flight, bringing the M008 blackboard work and a
+TUI change set with it. A `pull_request` run builds the **merge** commit —
+this branch's head merged into the current `main` — so the sweep on a head
+does not measure that head alone; it measures the head *plus whatever `main`
+has become*.
+
+That is why the CI count moves from **16,031** to **16,061** between the runs
+below. The 30 extra tests are M008's, not this milestone's: 18 in
+`blackboard_trajectory_m008`, 9 in `blackboard_economics_m008`, and 3
+`m008_peer_observation_contract` tests in `agent_loop_harness`. Diffing the
+two runs' per-binary test sets confirms it exactly — the `codegg` binary's own
+7,362 test names are identical in both, and the delta is precisely those 30.
+
+The branch therefore merges `main` explicitly, and the merge is **textually
+clean**. `main` and this branch both touched `scripts/verify.sh` and
+`.github/workflows/ci.yml`, so the merge is *verified* rather than assumed:
+after it, this milestone's filter-execution control and `main`'s new
+blackboard contract-matrix guard are both still wired into both files, and
+both guards and both self-tests pass on the merged tree.
+
+The merge commit `259794bb9` has tree `d4ae08f6`, which is **byte-identical**
+to the tree of GitHub's merge commit `22630735a` — the exact tree the green
+CI run `39740206655` (attempt 2) executed. The hosted evidence qualifies the
+merged tree's code exactly, file for file.
 
 ### 5.1 The hosted runs
 
@@ -594,12 +615,54 @@ the evidence that the sweep is doing work.
 | `39735856175` | `fa8dbf413` | Linux C006 protected mount qualification | **success** |
 | `39735856194` | `fa8dbf413` | Linux Git object snapshot CoW qualification | **success** |
 | `39735856171` | `fa8dbf413` | Windows process launcher | **success** |
+| `39740206655` | `f82c1f980` | `CI` — the default sweep | **failure** — the hosted runner was terminated mid-sweep; §5.1.1 |
+| `39740206800` | `f82c1f980` | Linux M004 process and IPC qualification | **success** |
+| `39740206612` | `f82c1f980` | Linux C006 protected mount qualification | **success** |
+| `39740206639` | `f82c1f980` | Linux Git object snapshot CoW qualification | **success** |
+| `39740206635` | `f82c1f980` | Windows process launcher | **success** |
+| `39740206655` (attempt 2) | `f82c1f980` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
 
-**All five workflows are green on the final head, and green again on its
-documentation-only successor.** The three failures above are the earlier heads,
-and each one found a defect that is now fixed and guarded — they are recorded
-here rather than hidden, because they are the evidence that the sweep is doing
-work.
+**All five workflows are green on the closing head.** The failures above are
+the earlier heads, and each one found a defect that is now fixed and guarded —
+they are recorded here rather than hidden, because they are the evidence that
+the sweep is doing work. The one exception is the CI failure on `f82c1f980`,
+which found no defect at all; §5.1.1 records it.
+
+### 5.1.1 The CI failure on `f82c1f980` was a runner termination, not a test result
+
+This is recorded because a reader of the PR will see a red CI check, and
+because "the sweep found a defect" is a claim that must not be made about
+every red run.
+
+The run's own log ends with:
+
+```
+##[error]The runner has received a shutdown signal. This can happen when the
+runner service is stopped, or a manually started runner is canceled.
+##[error]Process completed with exit code 143.
+```
+
+Exit code 143 is `SIGTERM` from the runner service, not a test exit. The
+evidence that no test failed:
+
+* **No `FAIL`, no panic, no assertion failure anywhere in the log.** The
+  16,061-test sweep never reported a result; the runner was killed mid-run.
+* All **50 preceding steps succeeded** — every guard, `Formatting`, and
+  `Workspace Clippy`.
+* The sweep step began at 07:31:43 and the runner was killed at 07:42:45,
+  about 11 minutes in. The previous green CI run's test phase took 539 s, so
+  the run died as the sweep was finishing.
+* The four native workflows on the same commit all succeeded.
+* The commit differed from the last green CI head by **two markdown files**.
+
+The remedy was to re-run the failed job on the same head
+(`gh run rerun --failed`, attempt 2), which passed 16,061 tests. That re-run
+is the result for this head, and it is what the merge commit's tree identity
+above is measured against.
+
+The four native workflows, the CoW tier, and the Windows job were **not**
+re-run: they had already succeeded on that commit, and re-running them would
+have measured nothing new.
 
 The macOS target compile was **not run** on this head; see §5.3.
 
@@ -626,10 +689,24 @@ estimate, and not a count the guard assumed.
 | `39735856175` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39735856194` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39735856171` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39740206655` (attempt 2) | `CI` | `Workspace tests` | **16,061 tests run, 16,061 passed**, 9 skipped | — | none |
+| `39740206800` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39740206800` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39740206800` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39740206612` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39740206612` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39740206639` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39740206635` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
 
-The counts are **identical** on the two green heads. That is the reproducibility
-claim made concrete: the same tree yields the same executed count, the same
-witness set and the same absence of self-skip markers on every job.
+**Every security-filter count is identical on all three green heads**: the same
+executed count, the same witness set, and the same absence of self-skip markers
+on every job. That is the reproducibility claim made concrete, and it holds
+exactly where it is claimed — on the filter steps, which are this milestone's
+own surface.
+
+The **CI** count is the one that moves, from 16,031 to 16,061, and §5.0
+explains why: the base moved, not the code. The 30 added tests are M008's.
+The count is not a property of this milestone and is not claimed as one.
 
 The M004 protected-mount step's **11 executed, 11 witnessed, no marker** is
 the fix in §3.6 working: before it, the step reported `11 passed` while
@@ -649,9 +726,9 @@ requires. The registry's list is the *required* set, not the exhaustive one.
 ### 5.3 The platform scope, stated honestly
 
 * The **Windows** process-launcher job was run and **passed** on the
-  corrective head (`39735856171`, and again on the preceding head
-  `39731707127`). The final result is recorded from the run rather than
-  inferred.
+  corrective head (`39740206635`, and again on the two preceding heads
+  `39735856171` and `39731707127`). The final result is recorded from the run
+  rather than inferred.
 * The **macOS** target compile was **not run** on this head. It is recorded
   as *not run*, not as a pass.
 * The plan's WP5 asks to "await the native and macOS jobs only for the
