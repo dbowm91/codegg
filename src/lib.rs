@@ -44,6 +44,7 @@ pub mod error;
 pub mod exec;
 pub mod execution_subject_capture;
 pub mod executor_audit_hooks;
+pub mod git_contained_worktree;
 pub mod git_mutation_projector;
 pub mod git_mutations;
 pub mod git_mutations_ops;

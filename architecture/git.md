@@ -112,6 +112,87 @@ snapshots remain above the accepted M003 latency budget. C010 remains the
 governing no-production-admission decision until the complete performance and
 compatibility gates pass.
 
+### Contained managed-worktree creation
+
+`WorktreeService::create_reserved` reaches `git worktree add`, which
+`classify_git_request` classifies as requiring `CleanSmudgeFilter`
+containment: a linked worktree writes the branch's files through the
+repository's smudge filter, and a smudge filter is arbitrary code. The
+capability is not satisfiable by neutralizing configuration, because a filter
+*command* lives under a name the caller cannot enumerate, so a `-c` override
+cannot disable an unknown filter. Containment, not policy, is what keeps
+repository-controlled code from the host.
+
+`src/git_contained_worktree.rs` is the contained route, authorized by
+ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`).
+It grants **exactly one operation**, carried out in two steps:
+
+```text
+git --git-dir=<gitdir> worktree add --detach <checkout> <commit>
+git --git-dir=<administration-dir> symbolic-ref HEAD refs/heads/<branch>
+```
+
+The attached form of `worktree add` is deliberately **not** used. Measured on
+Git 2.43.0 and 2.55.0: `git worktree add <path> <existing-branch>` locks and
+rewrites `refs/heads/<branch>` even though the value is unchanged, so it fails
+closed against this grant with `cannot lock ref 'HEAD'`. The detached form
+writes **no ref at all**, and attaching the branch afterwards is a write to the
+administration directory the grant already names. Both steps run inside the
+same grant and the same containment.
+
+Three properties carry the contract:
+
+- **The branch is the daemon's.** The daemon creates it first through the
+  existing typed, policy-allowed `git branch` path, so the child attaches to a
+  branch that already exists and writes **no ref**. The grant is what
+  enforces this: `refs` is read-only to the child, so a child that tried to
+  create a branch would fail closed rather than write one.
+- **The attach step runs last, with the daemon's target.** The administration
+  directory is inside the child's grant, so repository-controlled code could
+  write that directory's `HEAD` and point the worktree at a branch of its
+  choosing. The attach is the child's final step and its target is fixed by
+  the daemon's argv, so such a write is overwritten rather than trusted. The
+  registration check then reads the end state back through Git itself.
+- **The grant is the administration directory and nothing else.** The child may
+  write the new checkout, the daemon scratch, and
+  `<common-gitdir>/worktrees/` — the linked worktree's own administration
+  directory, which Git always places inside the common Git directory
+  (`git worktree add` has no separate-git-dir option). Every other path under
+  the Git directory — `refs`, `objects`, `index`, `config`, `hooks`,
+  `packed-refs` — is read-only to the child. The child runs with the Git
+  directory as its working directory and never sees the source working tree.
+- **Containment is asserted, not requested.** The launch's *obtained*
+  enforcement is read after the launch; a request is a hope. The grant itself
+  is asserted against the built launch description, not against the
+  configuration that was requested.
+
+Two mechanisms make that grant expressible:
+
+- `SandboxConfig::with_read_only_paths` grants a path for reading without
+  granting it for writing, so a directory that is immutable except for one
+  writable subdirectory can be described.
+- `SandboxConfig::with_expected_created_git_pointers` exempts exactly one
+  path from the protected mount view's "hide a `.git` that does not exist yet"
+  rule. The child has to write the checkout's `.git` **pointer file**, because
+  Git refuses to create a worktree in a non-empty directory. The exemption
+  names only the top-level `.git` of a granted write root; a nested path is
+  refused when the launch description is built. Afterwards the daemon
+  verifies that the result is a pointer file naming the expected
+  administration directory — a nested repository is a failure, not a success.
+
+The child is still **untrusted code**. The repository's own configuration may
+define filters, hooks, merge drivers, fsmonitor hooks and credential helpers;
+the sandbox, not the absence of that configuration, is what keeps them from
+the host. The checkout's *contents* are untrusted content, and no claim is
+made about them.
+
+No other Git operation is affected. `git add`, `git merge`, `git rebase`,
+`git stash`, `git am`, `git bisect` and remote transport keep their existing
+classification, and `git worktree add` keeps its classification too — the
+contained route is a separate, explicitly named path, not a change to what
+the ordinary process boundary allows. ADR-0044 remains proposed and owns the
+mutable object-read and metadata-promotion classes; neither is granted here.
+
 ### Mutation path
 
 `GitMutationExecutor::execute` runs the full 8-step pipeline:

@@ -388,6 +388,28 @@ pub struct SandboxConfig {
     pub enabled: bool,
     pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
+    /// Paths granted to the child for **reading only**.
+    ///
+    /// A read-only grant is not a weaker write grant: the path is visible to
+    /// the child and immutable to it. It exists because some operations need
+    /// a directory that is mostly immutable but contains one writable
+    /// subdirectory — a linked worktree's administration directory lives
+    /// inside the repository's Git directory, and the repository's Git
+    /// directory must stay read-only except for that one path.
+    pub read_only_paths: Vec<String>,
+    /// Pointer files the child is expected to **create** inside a write root.
+    ///
+    /// A linked worktree's `.git` is a *pointer file* naming the parent
+    /// repository's `worktrees/` administration directory — it is not
+    /// repository metadata the child controls. The protected mount view
+    /// hides a `.git` entry that does not exist yet, because a child that
+    /// creates one inside a write root would be planting repository metadata
+    /// of its own. This list names the exact pointer paths that are expected,
+    /// so that rule can be exempted for them and for nothing else.
+    ///
+    /// Every entry must be the top-level `.git` of a granted write root; a
+    /// nested path is refused.
+    pub expected_created_git_pointers: Vec<String>,
     pub deny_paths: Vec<String>,
     /// Internal opt-in for native qualification. No persisted config or
     /// default profile enables it yet.
@@ -407,6 +429,8 @@ impl SandboxConfig {
             enabled: false,
             mode: SandboxMode::default(),
             allowed_paths: Vec::new(),
+            read_only_paths: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
             deny_paths: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
@@ -426,6 +450,27 @@ impl SandboxConfig {
 
     pub fn with_allowed_paths(mut self, paths: Vec<String>) -> Self {
         self.allowed_paths = paths;
+        self
+    }
+
+    /// Grant paths for reading only.
+    ///
+    /// The child sees these paths and cannot change them. This is how a
+    /// directory that must stay immutable except for one writable
+    /// subdirectory is expressed: the parent is granted here and the child
+    /// is granted in `with_allowed_paths`.
+    pub fn with_read_only_paths(mut self, paths: Vec<String>) -> Self {
+        self.read_only_paths = paths;
+        self
+    }
+
+    /// Name the `.git` pointer files the child is expected to create.
+    ///
+    /// Each path must be the top-level `.git` of a path in
+    /// `with_allowed_paths`. Anything else is refused when the launch
+    /// description is built, not silently ignored.
+    pub fn with_expected_created_git_pointers(mut self, paths: Vec<String>) -> Self {
+        self.expected_created_git_pointers = paths;
         self
     }
 
@@ -523,7 +568,45 @@ impl SandboxConfig {
         };
         let write_roots = roots.clone();
         let mut read_paths = roots;
+        // Read-only grants join the read set and never the write set.
+        for raw in &self.read_only_paths {
+            let resolved = policy::resolve_policy_path(Path::new(raw)).map_err(|e| {
+                ToolError::Permission(format!("sandbox read-only path '{raw}' is invalid: {e}"))
+            })?;
+            read_paths.push(resolved);
+        }
         read_paths.push(target.clone());
+        // A pointer the child is expected to create is exempt from the mount
+        // view's "hide a `.git` that does not exist yet" rule. The exemption
+        // is narrow by construction: the path must be the top-level `.git`
+        // of a **granted write root**, so the child can only write the
+        // pointer of a checkout it was already given, and never a `.git`
+        // inside a nested directory it happens to control.
+        let mut expected_created_git_pointers = Vec::new();
+        for raw in &self.expected_created_git_pointers {
+            let candidate = Path::new(raw);
+            let file_name = candidate.file_name().and_then(|name| name.to_str());
+            if file_name != Some(".git") {
+                return Err(ToolError::Permission(
+                    "an expected Git pointer must be a '.git' entry".to_string(),
+                ));
+            }
+            let parent = candidate.parent().ok_or_else(|| {
+                ToolError::Permission("an expected Git pointer has no parent directory".to_string())
+            })?;
+            let canonical_parent = policy::resolve_policy_path(parent).map_err(|e| {
+                ToolError::Permission(format!(
+                    "sandbox expected Git pointer '{raw}' is invalid: {e}"
+                ))
+            })?;
+            if !write_roots.contains(&canonical_parent) {
+                return Err(ToolError::Permission(
+                    "an expected Git pointer is not the top level of a granted write root"
+                        .to_string(),
+                ));
+            }
+            expected_created_git_pointers.push(canonical_parent.join(".git"));
+        }
         // Curated system/runtime and read-only toolchain inputs. Shared user
         // configuration and cache ancestors are deliberately excluded. Only
         // existing paths are kept: the curated sets name locations for both
@@ -618,6 +701,7 @@ impl SandboxConfig {
             linux_offline_network: self.linux_offline_network,
             protected_readonly_paths,
             path_identities,
+            expected_created_git_pointers,
             target,
             args: args.to_vec(),
             env: Vec::new(),
@@ -668,6 +752,21 @@ pub struct SandboxLaunchSpec {
     /// between authorization and namespace construction.
     #[serde(default)]
     pub path_identities: Vec<SandboxPathIdentity>,
+    /// Pointer files the child is expected to create inside a write root.
+    ///
+    /// The protected mount view hides a `.git` entry that does not exist yet,
+    /// because a child that creates one inside a write root would be planting
+    /// repository metadata it controls. A linked worktree's `.git` is
+    /// different: it is a pointer file naming the parent repository's
+    /// `worktrees/` administration directory, and the child has to write it
+    /// because Git refuses to create a worktree in a non-empty directory.
+    ///
+    /// Every entry is the top-level `.git` of a granted write root, and the
+    /// grant is checked when the launch description is built. The caller
+    /// still verifies afterwards that the result is a pointer file naming the
+    /// expected administration directory.
+    #[serde(default)]
+    pub expected_created_git_pointers: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

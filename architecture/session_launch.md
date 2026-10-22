@@ -209,20 +209,35 @@ means something went wrong. Both are for an operator, not for a session.
 
 `git worktree` is classified as requiring **contained** execution
 (`egggit::process::classify_git_request` → `CleanSmudgeFilter`: a
-checkout can run a smudge filter, which is arbitrary code). This
-revision has **no contained Git backend**:
+checkout can run a smudge filter, which is arbitrary code). On the ordinary
+process boundary there is still **no contained Git backend**:
 `GitEnvPolicy::apply` and `apply_sync` both turn a contained request into
-`GitExecutionPolicyOutcome::BackendUnavailable`, and
-`WorktreeService::create_reserved` — the only path that creates a
-checkout — goes through the sync boundary.
+`GitExecutionPolicyOutcome::BackendUnavailable`.
 
-So on this host the product's own checkout creation **always fails
-closed**, and that is the plan's own anticipated condition:
+C008 added the contained route that the classification demands.
+`WorktreeService::create_reserved` now has a **contained creation path**:
+ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
+authorizes exactly one operation, in two steps — `git worktree add --detach
+<path> <commit>` and then `git symbolic-ref HEAD refs/heads/<branch>` — inside
+an OS-contained child whose writable grant is the linked worktree's own
+administration directory and nothing else. The attached form of `worktree add`
+is not used: it rewrites the branch ref, which the grant forbids. See
+`architecture/git.md` §"Contained managed-worktree creation".
+
+So the answer is now **host-dependent**, and that is the honest shape:
+
+- On a host that can obtain the M004 process/IPC tier and the M005 offline
+  network, the daemon creates the checkout through the contained child.
+- On a host that cannot, the creation still **fails closed**, and that is the
+  plan's own anticipated condition:
 
 > If the available Git backend cannot safely create a managed checkout on
 > a platform, the request must fail closed and retain recoverable state.
 
-What that means in practice:
+There is no uncontained fallback. A creation that cannot be contained is
+refused, never downgraded.
+
+What failing closed means in practice:
 
 - the launch refuses with the backend's own error, so the user learns
   *why* rather than seeing a generic failure;
@@ -235,9 +250,11 @@ What that means in practice:
   list rather than through the unfinished set;
 - the **checkout record is left behind**, marked `orphaned` with a
   `git_error` health. That is the state the TUI's `⚠` marker reads, and
-  the state the worktree service's own reconcile surfaces. The directory
-  was never created — the `git worktree add` never ran — and the record
-  is **not** cleaned up, because it is the evidence of what happened.
+  the state the worktree service's own reconcile surfaces. When the
+  failure happened before the child ran, the directory was never created;
+  when it happened after, a half-made checkout is left behind. Either way
+  the record is **not** cleaned up, because it is the evidence of what
+  happened.
 
 Nothing is cleaned up. A reserved-but-never-created checkout and a
 half-made session are the evidence an operator needs.
@@ -246,7 +263,9 @@ half-made session are the evidence an operator needs.
 path, and the placement semantics against a **real** linked worktree
 that the fixture creates with a plain `git worktree add` and records in
 the state `create_reserved` would have set. The product's checkout
-*creation* on a host with the contained backend is **not** claimed here.
+*creation* on a host with the contained backend is proved by
+`tests/contained_worktree_c008.rs`, whose native arm requires a qualified
+Linux host.
 
 ## The base ref and the target branch
 

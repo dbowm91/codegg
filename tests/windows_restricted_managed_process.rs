@@ -47,6 +47,7 @@ fn restricted_request(args: Vec<OsString>) -> ManagedProcessRequest {
         linux_offline_network: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
+        expected_created_git_pointers: Vec::new(),
         target: executable,
         args: args
             .iter()

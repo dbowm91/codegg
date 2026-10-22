@@ -446,6 +446,28 @@ impl CoreRuntimeDeps {
         .with_owner_resolver(Arc::new(DurableWorktreeOwnerResolver {
             runs: agent_run_store.clone(),
         }));
+        // C008: the daemon owns the contained managed-worktree creation path.
+        //
+        // Without it, `WorktreeService::create_reserved` reaches `git worktree
+        // add`, which is classified as requiring `CleanSmudgeFilter`
+        // containment, and the Git execution policy refuses it — so managed
+        // worktree creation always fails closed and a delegated
+        // mutation-capable child in a Git repository cannot obtain its
+        // isolated checkout.
+        //
+        // The creator is installed only when a Git executable can be pinned.
+        // When it is absent the creation keeps failing closed, exactly as
+        // before: there is no uncontained fallback, because an uncontained
+        // creation would be a weaker guarantee presented as a stronger one.
+        let worktree_service = match crate::git_contained_worktree::resolve_git_binary() {
+            Some(git_binary) => worktree_service.with_contained_creator(Arc::new(
+                crate::git_contained_worktree::ContainedGitWorktreeCreator::new(
+                    git_binary,
+                    crate::git_contained_worktree::default_worktree_scratch_root(),
+                ),
+            )),
+            None => worktree_service,
+        };
         // M005 corrective C002: the permit service is the daemon's authority
         // for who may write to a managed checkout. It shares the daemon's pool
         // and the daemon's worktree service, so the scope it resolves is read

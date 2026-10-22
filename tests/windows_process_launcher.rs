@@ -354,6 +354,7 @@ async fn required_filesystem_sandbox_fails_before_launch_on_windows() {
             linux_offline_network: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
             target: powershell(),
             args: vec![],
             read_paths: vec![],
