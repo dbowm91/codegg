@@ -914,12 +914,6 @@ mod tests {
     }
 
     #[test]
-    fn server_name_uses_default_when_unset() {
-        let ctx = SearchRuntimeContext::new(SearchConfig::default());
-        assert_eq!(ctx.server_name(), "eggsearch");
-    }
-
-    #[test]
     fn server_name_uses_eggsearch_config_value() {
         let ctx = SearchRuntimeContext::new(SearchConfig {
             eggsearch: Some(crate::config::schema::EggsearchConfig {

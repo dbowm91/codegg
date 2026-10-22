@@ -209,7 +209,20 @@ mod tests {
         }
         s.push('🦀');
         s.push_str("rest");
-        let _ = truncate_doc(&s, SIGNATURE_DOC_MAX_CHARS);
+        let out = truncate_doc(&s, SIGNATURE_DOC_MAX_CHARS);
+        // The property under test is the boundary: the multi-byte
+        // character must not be split. A split character would surface
+        // as a replacement character, and the result must still respect
+        // the cap.
+        assert!(
+            !out.contains('\u{FFFD}'),
+            "truncation split a multi-byte character: {out:?}"
+        );
+        assert!(
+            out.chars().count() <= SIGNATURE_DOC_MAX_CHARS,
+            "truncation exceeded the cap: {} chars",
+            out.chars().count()
+        );
     }
 
     // ---- SignatureHelpSummary ----

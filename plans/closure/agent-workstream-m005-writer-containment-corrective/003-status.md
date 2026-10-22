@@ -97,7 +97,7 @@ permit-backed profile reachable from a product path.
 | D — unsupported network / ref mutators never fall back to raw shell or a compatibility Git path | The raw fallback is classified `Unknown` and routed through the fence; there is no untyped write path left in the `git` tool | `an_unclassified_effect_is_refused_on_a_shared_checkout` |
 | D — maintain the previous isolated-worktree behaviour without new expensive acquisition by default | An isolated checkout takes **no** permit: no durable write, no wait, no lock | `an_isolated_checkout_takes_no_permit` |
 | E — typed audit / journal entries and bounded status for acquire / effect / release / deny, with exact run / attempt attribution and redaction | Acquire and release are journalled durably by C002's `writer_permit` store, which carries the owner token, revision, lease generation, operation, run id and attempt id, and projects a redacted operator view. The fence's decisions additionally emit bounded `tracing` events carrying the worktree id, run id, effect class and reason — never a path, a file body or a model string | §10 finding 1 (the deny side has no durable *event* row) |
-| E — daemon restart reconciles uncertain in-flight effects to quarantine rather than replay | C002's `WriterPermitStore::reconcile_after_restart`, run by the daemon at startup; an unsettled permit is parked, never replayed | `tests/writer_permit_service.rs::startup_reconciliation_parks_a_permit_left_live` |
+| E — daemon restart reconciles uncertain in-flight effects to quarantine rather than replay | C002's `WriterPermitStore::reconcile_after_restart`, run by the daemon at startup; an unsettled permit is parked, never replayed | `tests/core_daemon/writer_permit_service.inc::startup_reconciliation_parks_a_permit_left_live` |
 | E — `codegg-core` holds the typed IDs, store and state machine; the root daemon adapter supplies authorization | `crates/codegg-core/src/writer_permit.rs`; `src/core/writer_permit.rs`; the new `src/core/writer_fence.rs` sits on the daemon side and `src/tool/writer_fence.rs` never imports `crate::core` | `scripts/check-core-boundary.sh`; `grep -rn "crate::core" src/tool/` (no hits) |
 | Stop condition — no effect can occur before the permit or without group scope | The acquire precedes the first mutation in every fenced tool; an out-of-scope target is refused *before* the permit is taken, so a refused write never holds the checkout | `an_out_of_scope_write_is_refused_before_the_permit_is_taken` |
 | Stop condition — no broad opt-in enablement | Nothing in production places two runs on one checkout; the work-order `shared`/`serialized` policy is still refused at the coordinator and the scheduler still isolates every delegated run | §3.3 |
@@ -106,11 +106,11 @@ permit-backed profile reachable from a product path.
 
 | Required | Run | Result |
 |---|---|---|
-| Two real AgentRun contexts on one checkout; barrier overlap; one active writer, second waits / typed-denied, readers proceed | `tests/writer_fence_c003.rs` | **Partially.** The two-run case is proved: the second writer is refused with a typed `Held` while the first holds the checkout, and takes it only after the first settles. The *readers proceed* half is not proved against a shared checkout: the shared profile is a capability with no production path, and the qualification constructs it directly rather than through a product route. |
+| Two real AgentRun contexts on one checkout; barrier overlap; one active writer, second waits / typed-denied, readers proceed | `tests/core_daemon/writer_fence_c003.inc` | **Partially.** The two-run case is proved: the second writer is refused with a typed `Held` while the first holds the checkout, and takes it only after the first settles. The *readers proceed* half is not proved against a shared checkout: the shared profile is a capability with no production path, and the qualification constructs it directly rather than through a product route. |
 | Native file vs native file; native file vs Git stage / commit; Git vs Git recovery | — | **Not run.** The qualification drives the fence directly, not the tools end-to-end against a shared checkout. This is a real gap; see §10 finding 2. |
 | Cancellation before the first effect; during rename / rollback; after commit before release; stale lease / restart; invalid group membership | — | **Partially.** The fence's own cancellation and invalid-membership behaviour is typed and refused (`Cancelled`, `GroupReservationInactive`), but no test injects cancellation into a held permit. See §10 finding 3. |
-| Distinct worktrees in parallel | `tests/writer_permit_service.rs::distinct_worktrees_acquire_in_parallel` | Passed (C002). |
-| A production-shaped temporary Git repository, not mocks alone | `tests/writer_fence_c003.rs` | **Partially.** The checkout is a real directory and the worktree row is a real leased row in a real SQLite database, but the qualification does not drive a real `git` command. See §10 finding 2. |
+| Distinct worktrees in parallel | `tests/core_daemon/writer_permit_service.inc::distinct_worktrees_acquire_in_parallel` | Passed (C002). |
+| A production-shaped temporary Git repository, not mocks alone | `tests/core_daemon/writer_fence_c003.inc` | **Partially.** The checkout is a real directory and the worktree row is a real leased row in a real SQLite database, but the qualification does not drive a real `git` command. See §10 finding 2. |
 
 ## 3. Production implementation evidence
 
@@ -256,7 +256,7 @@ See §4.4 for the environment note that applies to the workspace-wide sweep.
 
 ### 4.1 The C003 qualification suite
 
-`tests/writer_fence_c003.rs` (10 tests):
+`tests/core_daemon/writer_fence_c003.inc` (10 tests):
 
 - `a_write_outside_the_run_checkout_is_refused_before_any_effect`
 - `a_write_inside_the_run_checkout_is_allowed`
@@ -287,8 +287,8 @@ The scoped suites that cover the changed surfaces:
 
 | Suite | Result |
 |---|---|
-| `tests/writer_fence_c003.rs` (new) | 10 passed, 0 failed |
-| `tests/writer_permit_service.rs` (C002, unchanged in behaviour) | 12 passed, 0 failed — including `a_run_without_the_lease_is_refused`, which is the cross-tenant denial and would have broken if the group-sharing rule had widened it |
+| `tests/core_daemon/writer_fence_c003.inc` (new) | 10 passed, 0 failed |
+| `tests/core_daemon/writer_permit_service.inc` (C002, unchanged in behaviour) | 12 passed, 0 failed — including `a_run_without_the_lease_is_refused`, which is the cross-tenant denial and would have broken if the group-sharing rule had widened it |
 | `tests/tool_broker_integration.rs` | 25 passed, 0 failed |
 | `cargo test -p codegg --lib -- tool::write tool::edit tool::replace tool::apply_patch tool::git tool::lsp_preview_apply` | 36 passed, 0 failed |
 | `python3 scripts/check_writer_disposition.py` | `writer-disposition check ok: 49 declared roots, 17 writer tools, 30 writer modules` |

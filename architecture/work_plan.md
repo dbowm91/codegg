@@ -30,7 +30,7 @@ evidence correlation, and the host-owned completion arbiter.
 | Completion arbiter + turn/Goal gates | `src/work_plan_arbiter.rs` |
 | Todo one-way sync | `src/work_plan_todo_sync.rs` |
 | DB schema | `crates/codegg-core/src/session/schema.rs` migration v59 (plan tables); v68 adds the repository-binding tables. Current layout `storage::STORAGE_LAYOUT_VERSION = 68` |
-| Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `crates/codegg-core/tests/work_plan_projection_arbiter.rs`, `tests/work_plan_projection_arbiter.rs` + in-module unit tests |
+| Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `crates/codegg-core/tests/agent_loop/work_plan_projection_arbiter.inc`, `tests/agent_loop/work_plan_projection_arbiter.inc` + in-module unit tests |
 
 ## How It Works
 
@@ -267,7 +267,7 @@ production graph (static pin/boundary guard in-module).
   engine selection with resolved session workspace roots. The legacy
   core assessor remains the compatibility API and the explicit legacy
   engines; a source guard test forbids new direct production calls.
-- Differential parity: `tests/work_plan_eggplan_differential.rs`
+- Differential parity: `tests/agent_loop/work_plan_eggplan_differential.inc`
   (21 `differential_*` test cases incl. the S1/S2 race); no permissive
   delta is accepted.
 
@@ -346,7 +346,7 @@ ownership/migration guard:
 - Storage v68 adds `work_plan_eggplan_binding`,
   `work_plan_eggplan_item_binding`, and `work_order_eggplan_binding`
   (append/replace only, no destructive path).
-- Tests: `tests/work_plan_repository_binding.rs` (37 cases incl. the C001
+- Tests: `tests/agent_loop/work_plan_repository_binding.inc` (37 cases incl. the C001
   dirty stable/drift/legacy matrix) plus the
   core binding-persistence suite.
 
@@ -394,7 +394,7 @@ ownership/migration guard:
 ## M005 trajectory and recovery qualification
 
 M005 qualified the M001–M004 contracts with no production delta. The
-representative harness is `tests/long_horizon_trajectory_qualification.rs`
+representative harness is `tests/agent_loop/long_horizon_trajectory_qualification.inc`
 (22 scenarios): a 9-item/3-phase plan with dependency chains, a delegated
 child (`owner_run_id` + `DelegatedRun` evidence), live-then-completing
 Test/Subagent jobs, and user steering after an early phase is driven across
@@ -463,7 +463,7 @@ Verified 2026-10-06 against source. Corrected: the DB-schema row claimed
 (`crates/codegg-core/src/storage/mod.rs:39`) — the row now separates "plan
 tables are v59" from "binding tables are v68" from the current layout version;
 the differential parity claim of "28 cases" is 21 `differential_*` test
-functions in `tests/work_plan_eggplan_differential.rs`. Verified accurate:
+functions in `tests/agent_loop/work_plan_eggplan_differential.inc`. Verified accurate:
 the 10 files in `crates/codegg-core/src/work_plan/` (including
 `repository_binding.rs`, which the module table already listed), every row of
 the validation-bound table (`MAX_ITEMS_PER_PLAN` 64, objective 4000, origin

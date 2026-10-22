@@ -173,8 +173,8 @@ as-of-close and are intentionally **not** rewritten. Current values verified
 | "402 egggit tests" (line 124) | **78 `egggit`** + **358 `codegg-git`** = 436 | `#[test]`/`#[tokio::test]` across `crates/egggit/src/*.rs` and `crates/codegg-git/src/*.rs` |
 | `cargo test -p egggit` "71 tests" (line 112) | 78 | same |
 | `cargo test -p codegg-git` "331 tests" (line 113) | 358 | same |
-| `git_closure_matrix` "32 tests" (line 118) | 34 | `tests/git_closure_matrix.rs` |
-| `git_recovery_integration` "19 tests" (line 117) | 19 (unchanged) | `tests/git_recovery_integration.rs` |
+| `git_closure_matrix` "32 tests" (line 118) | 34 | `tests/command_git/git_closure_matrix.inc` |
+| `git_recovery_integration` "19 tests" (line 117) | 19 (unchanged) | `tests/command_git/git_recovery_integration.inc` |
 | "27 command-bearing vars" stripped (line 20) | **28** | `ALWAYS_STRIPPED_ENV_VARS` in `crates/egggit/src/process.rs:42` |
 | "9 golden fixture files" (line 124) | **12** | `tests/fixtures/git_mutation_projection/*.toml` |
 | `git_mutation_projector` "10 tests" (line 114) | 14 | `src/git_mutation_projector.rs` |

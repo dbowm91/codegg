@@ -83,6 +83,6 @@ explicit `codegg upgrade` invocation.
 ## Testing and verification
 
 Focused tests cover checksum selection, archive allowlist and negative cases,
-and target drift. `tests/upgrade.rs` covers version disposition and pins the
+and target drift. `tests/config_provider/upgrade.inc` covers version disposition and pins the
 fresh-installer variable to `CODEGG_VERSION`. Run the normal project checks
 from `AGENTS.md`; release/install scripts must remain green.

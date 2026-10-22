@@ -85,7 +85,7 @@ default is set, and no ADR is accepted.
 | Plan requirement | Evidence | Status |
 |---|---|---|
 | WP1: for each named Git-routing and security-review test, either own a temp Git worktree or bind a scoped repository cwd; record the per-test disposition | §3.1 — all 14 named tests rebound to a per-test temporary repository. `src/security/workflow/report.rs` has no `std::env::current_dir()` left; `src/tool/bash.rs` has 6 rebound tests and 29 unchanged ones; `tests/command_routing_execution_ownership.rs` has 2 rebound. The per-test disposition table is §3.1.3 | met |
-| WP1: reproduce with two concurrent processes running the same fixture and show they do not interfere | §3.2 — `tests/git_fixture_isolation.rs`. Eight concurrent fixtures get distinct paths **and** distinct repository state; two child *processes* derive different process-unique paths and never see each other's repository. Proved non-vacuous against an injected shared fixed path | met |
+| WP1: reproduce with two concurrent processes running the same fixture and show they do not interfere | §3.2 — `tests/command_git/git_fixture_isolation.inc`. Eight concurrent fixtures get distinct paths **and** distinct repository state; two child *processes* derive different process-unique paths and never see each other's repository. Proved non-vacuous against an injected shared fixed path | met |
 | WP2: add per-test service/workspace fixtures for the three live-language-server tests and record the elapsed phase under contention | §3.3 — `src/tool/lsp.rs`: a per-test temporary Cargo workspace, `lsp_phase()` instrumentation on every `execute` call. Measured serial and concurrent; the table is §3.3.2 | met |
 | WP2: if the cause stays unknown, record **conditional** — do not lower the timeout and do not widen the exclusion | The cause did **not** stay unknown, so the conditional path was not needed. §3.3.3 records the diagnosed cause. No timeout was lowered; no test was excluded | met |
 | WP3: for each security filter, assert the executed count is non-zero, assert no self-skip marker was emitted, and provide a positive and a negative control | §3.4 — `docs/security-test-filters.toml` registers all 20 filters; `scripts/check_test_filter_execution.py` is both the static guard and the runtime wrapper. The positive/negative control pair is §3.4.3: the runtime counter was shown able to say "zero", to reject a self-skipping run, to reject a run that did not execute the named test, and to accept a healthy one | met |
@@ -159,7 +159,7 @@ production file was changed to accommodate a test.
 
 ### 3.2 The concurrency reproduction (WP1)
 
-`tests/git_fixture_isolation.rs` is the reproduction C001's plan asked for.
+`tests/command_git/git_fixture_isolation.inc` is the reproduction C001's plan asked for.
 
 * **Eight concurrent fixtures, in one process.** Each gets a distinct path
   and a distinct repository state: `git show HEAD:marker.txt` returns only
@@ -1222,7 +1222,7 @@ first now catches it.
   why the five silent self-skips were converted, and why a whole-tree
   sweep now confirms that none is left.
 * **A fixture that falls back to a shared path** is caught by
-  `tests/git_fixture_isolation.rs`, proved against the pre-fix behaviour.
+  `tests/command_git/git_fixture_isolation.inc`, proved against the pre-fix behaviour.
 * **A workflow step that no longer runs the registered command** is caught
   by the static guard's command check and, for the folded-scalar class, by
   the new folded-scalar check.

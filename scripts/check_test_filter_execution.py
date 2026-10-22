@@ -9,8 +9,8 @@ nothing. The same is true one level down of a filter that selects only
 `ok`, so a filter that picks only self-skipping tests is also green and also
 qualified nothing.
 
-This repository has already paid for that lesson once. `tests/linux_m004_process_ipc.rs`
-carries the note:
+This repository has already paid for that lesson once.
+`tests/linux_git_test_support/linux_m004_process_ipc.inc` carries the note:
 
     The hosted job that runs this probe used to filter on this test name
     before the test existed, so the step matched zero tests and stayed
@@ -27,6 +27,14 @@ and this control closes both classes:
 * **at runtime** (`--run`) — the wrapper asserts the executed count is
   non-zero, that every registered test name actually reported `ok`, and that
   no self-skip marker was emitted.
+
+The root package's integration tests are **families**: one cargo test target
+declared in the root `Cargo.toml` as `[[test]] name = "NAME" path =
+"tests/NAME/mod.rs"`, whose members live at `tests/NAME/<member>.inc` and are
+bound with `#[path = "<member>.inc"] pub mod <member>;`. Cargo does not
+auto-discover `.inc`, so a member is not a cargo target of its own — and the
+guard has to resolve the family *directory* to see the members at all, or it
+would report every family filter as selecting zero tests.
 
 Modes:
     python3 scripts/check_test_filter_execution.py             # static guard
@@ -242,37 +250,69 @@ def parse_manifest(path: Path) -> tuple[list[FilterEntry], list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def source_roots_for(command: str) -> list[str]:
+def source_roots_for(command: str, root: Path | None = None) -> list[str]:
     """The source files whose test names a command can select.
 
     Derived from the command rather than declared per entry, so the registry
     cannot point at the wrong file:
 
-    * `--test NAME`  -> the integration test file `tests/NAME.rs`;
+    * `--test NAME`  -> the integration test file `tests/NAME.rs`, or the
+      family directory `tests/NAME` when the target is a family;
     * `-p PKG`       -> that package's `src` tree;
     * otherwise      -> the root package's `src` tree.
 
     `cargo test -p PKG <filter>` runs the package's library target, so a
     package-scoped command needs no `--lib` to resolve.
+
+    A **family** target is one cargo test target declared in the root
+    `Cargo.toml` as `[[test]] name = "NAME" path = "tests/NAME/mod.rs"`,
+    whose members live at `tests/NAME/<member>.inc`. Cargo does not
+    auto-discover `.inc`, so a member is not a cargo target of its own and
+    the standalone `tests/NAME.rs` file does not exist. Resolving to the
+    directory is what lets the guard see the members at all.
+
+    `root` is the tree the command is checked against: the guard runs
+    against copies of itself in the self-test, and a resolution that only
+    ever looked at the repository it lives in would certify a tree it did
+    not read.
     """
+    base = root if root is not None else ROOT
     match = re.search(r"--test\s+([A-Za-z0-9_]+)", command)
     if match:
-        return [f"tests/{match.group(1)}.rs"]
+        name = match.group(1)
+        standalone = f"tests/{name}.rs"
+        if (base / standalone).is_file():
+            return [standalone]
+        family = f"tests/{name}"
+        if (base / family / "mod.rs").is_file():
+            return [family]
+        # Neither layout: keep the standalone path so the guard reports the
+        # filter as selecting nothing rather than resolving to nothing.
+        return [standalone]
     package = re.search(r"-p\s+([A-Za-z0-9_]+)", command)
     if package:
         candidate = f"crates/{package.group(1)}/src"
-        if (ROOT / candidate).is_dir():
+        if (base / candidate).is_dir():
             return [candidate]
     return ["src"]
 
 
 def iter_source_files(root: Path, source_root: str) -> list[Path]:
+    """The source files a source root contributes.
+
+    A directory root yields both its `*.rs` files and its `*.inc` files: a
+    family's members are `tests/<family>/<member>.inc` beside the family's
+    `mod.rs`, and `.inc` is exactly the extension Cargo does *not*
+    auto-discover, so the guard has to look for it explicitly or the family
+    would look empty.
+    """
     base = root / source_root
     if base.is_file():
         return [base]
     if not base.is_dir():
         return []
-    return sorted(p for p in base.rglob("*.rs") if "target" not in p.parts)
+    candidates = list(base.rglob("*.rs")) + list(base.rglob("*.inc"))
+    return sorted(p for p in candidates if "target" not in p.parts)
 
 
 def module_path_for(root: Path, path: Path, source_root: str) -> str:
@@ -282,6 +322,14 @@ def module_path_for(root: Path, path: Path, source_root: str) -> str:
     `src/lib.rs` is the crate root. Cargo matches a filter against the *full*
     test path, so `lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope`
     has to be reconstructible from the file plus its inline modules.
+
+    A family member is the same rule with a different extension:
+    `tests/<family>/<member>.inc` is `<member>`, and the family's own
+    `mod.rs` contributes no module segment at all, because it is the crate
+    root of that test target. Cargo's real path for a member is
+    `<family>::<member>::<test>`, so the reconstruction here is the same path
+    without the family prefix. Every registered family filter is a bare test
+    name, and a bare name matches either form.
     """
     try:
         relative = path.relative_to(root / source_root)
@@ -292,6 +340,8 @@ def module_path_for(root: Path, path: Path, source_root: str) -> str:
         parts = parts[:-1]
     elif parts and parts[-1].endswith(".rs"):
         parts[-1] = parts[-1][:-3]
+    elif parts and parts[-1].endswith(".inc"):
+        parts[-1] = parts[-1][:-4]
     return "::".join(parts)
 
 
@@ -433,7 +483,7 @@ def filter_matches(filter_text: str, full_path: str, function_name: str) -> bool
 
 def selected_tests(root: Path, entry: FilterEntry) -> dict[str, str]:
     selected: dict[str, str] = {}
-    for source_root in source_roots_for(entry.command):
+    for source_root in source_roots_for(entry.command, root):
         for full_path, function_name in declared_tests(root, source_root).items():
             if filter_matches(entry.filter, full_path, function_name):
                 selected[full_path] = function_name
@@ -475,7 +525,7 @@ def marker_file_names(root: Path, source_root: str) -> set[str]:
 def self_skipping_tests(root: Path, entry: FilterEntry) -> list[str]:
     """The selected tests whose own source contains a self-skip marker."""
     skipping: list[str] = []
-    for source_root in source_roots_for(entry.command):
+    for source_root in source_roots_for(entry.command, root):
         names = marker_file_names(root, source_root)
         for full_path, function_name in declared_tests(root, source_root).items():
             if function_name not in names:
@@ -619,7 +669,7 @@ def check_registry(root: Path) -> list[str]:
                     f"{entry.label}: the registry declares the gate {gate}, but the workflow does not set "
                     "it, so the step could not run what it claims to qualify"
                 )
-        for source_root in source_roots_for(entry.command):
+        for source_root in source_roots_for(entry.command, root):
             gates_by_test = declared_test_gates(root, source_root)
             for full_path in skipping:
                 for gate in gates_by_test.get(full_path, ()):  # a test with no gate cannot skip
@@ -1103,6 +1153,38 @@ def self_test() -> int:
                     )
                 shutil.rmtree(work, ignore_errors=True)
 
+        # A **family** target: one cargo test target whose members live in
+        # `tests/<family>/*.inc`, which Cargo does not auto-discover. The
+        # guard has to resolve the family directory to reach the members at
+        # all, so the resolution is proved here rather than assumed — a
+        # resolution that only ever looked for `tests/<family>.rs` would see
+        # an empty source tree and reject every family filter.
+        family_work = Path(tmp) / "family_layout"
+        family_command = _stage_family_tree(family_work, "demo_family_test_runs")
+        resolved = source_roots_for(family_command, family_work)
+        if resolved != ["tests/demo_family"]:
+            failures.append(
+                f"the guard resolved a family target to {resolved!r} instead of the family directory "
+                "'tests/demo_family', so it cannot see the family's `.inc` members at all"
+            )
+        reported = check_registry(family_work)
+        if reported:
+            failures.append(
+                "the guard rejected a family target whose member test the filter names: "
+                f"{reported}"
+            )
+
+        # The same family with its member's test renamed: the filter now
+        # selects nothing, and the guard has to say so instead of passing.
+        renamed_work = Path(tmp) / "family_layout_renamed"
+        _stage_family_tree(renamed_work, "demo_family_test_renamed")
+        reported = check_registry(renamed_work)
+        if not any("selects **zero** declared tests" in problem for problem in reported):
+            failures.append(
+                "the guard did not reject a family filter that selects no declared test: "
+                f"{reported}"
+            )
+
     # The runtime counter must be able to say "zero" and must be able to see a
     # self-skip. Without these two, a green step could mean a filter that
     # selected nothing.
@@ -1204,7 +1286,7 @@ def _copy_inputs(source: Path, destination: Path) -> None:
     wanted: set[Path] = {MANIFEST_PATH}
     for entry in entries:
         wanted.add(Path(entry.workflow))
-        for source_root in source_roots_for(entry.command):
+        for source_root in source_roots_for(entry.command, source):
             wanted.add(Path(source_root))
     for relative in wanted:
         origin = source / relative
@@ -1222,28 +1304,96 @@ def _copy_inputs(source: Path, destination: Path) -> None:
 
 
 def _rename_tests(work: Path, probe: FilterEntry) -> None:
-    """Rename every test function in the probe's source so the filter cannot match."""
-    source_root = source_roots_for(probe.command)
-    if not source_root:
+    """Rename every test function in the probe's source so the filter cannot match.
+
+    Every file of the probe's source root is renamed, not just the first
+    one: a family target spreads its members over several `.inc` files, so
+    renaming one of them would leave the probe's own test untouched and the
+    injected defect would go unreported.
+    """
+    source_roots = source_roots_for(probe.command, work)
+    if not source_roots:
         raise AssertionError("the probe command has no statically resolvable source")
-    files = iter_source_files(work, source_root[0])
+    files = iter_source_files(work, source_roots[0])
     if not files:
         raise AssertionError("the probe command's source tree is empty")
-    path = files[0]
-    text = path.read_text(encoding="utf-8")
-    # The replacement name must not *contain* the original: a filter such as
-    # `production_private_index_...` would still match a renamed
-    # `zz_renamed_production_private_index_...` and the defect would go
-    # unreported.
-    renamed = re.sub(
-        r"^(\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+)[A-Za-z_][A-Za-z0-9_]*",
-        r"\1zz_renamed_test",
-        text,
-        flags=re.MULTILINE,
-    )
-    if renamed == text:
+    renamed_any = False
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        # The replacement name must not *contain* the original: a filter such
+        # as `production_private_index_...` would still match a renamed
+        # `zz_renamed_production_private_index_...` and the defect would go
+        # unreported.
+        renamed = re.sub(
+            r"^(\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+)[A-Za-z_][A-Za-z0-9_]*",
+            r"\1zz_renamed_test",
+            text,
+            flags=re.MULTILINE,
+        )
+        if renamed != text:
+            path.write_text(renamed, encoding="utf-8")
+            renamed_any = True
+    if not renamed_any:
         raise AssertionError("no test function could be renamed")
-    path.write_text(renamed, encoding="utf-8")
+
+
+def _stage_family_tree(root: Path, test_name: str) -> str:
+    """Stage a synthetic family target with the registry that selects it.
+
+    A family target is one cargo test target declared in the root
+    `Cargo.toml` as `[[test]] name = "NAME" path = "tests/NAME/mod.rs"`,
+    whose members live at `tests/NAME/<member>.inc`. Cargo does not
+    auto-discover `.inc`, so a resolution that only ever looked for
+    `tests/NAME.rs` would see no declared test at all and would report
+    every family filter as selecting nothing.
+
+    Returns the registered command, so the caller can resolve the target
+    the way the guard does.
+    """
+    family = "demo_family"
+    member = "demo_member"
+    command = f"cargo test --locked --test {family} demo_family_test_runs -- --nocapture"
+
+    directory = root / "tests" / family
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "mod.rs").write_text(
+        f'#[path = "{member}.inc"]\npub mod {member};\n',
+        encoding="utf-8",
+    )
+    (directory / f"{member}.inc").write_text(
+        f"#[test]\nfn {test_name}() {{}}\n",
+        encoding="utf-8",
+    )
+
+    workflow = root / ".github" / "workflows" / "synthetic-family.yml"
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text(
+        "name: synthetic family qualification\n"
+        "on: [push]\n"
+        "jobs:\n"
+        "  family:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: family member filter\n"
+        "        run: |\n"
+        "          python3 scripts/check_test_filter_execution.py --run -- " + command + "\n",
+        encoding="utf-8",
+    )
+
+    registry = root / MANIFEST_PATH
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(
+        "[[filter]]\n"
+        'workflow = ".github/workflows/synthetic-family.yml"\n'
+        'job = "family"\n'
+        'step = "family member filter"\n'
+        f'command = "{command}"\n'
+        'filter = "demo_family_test_runs"\n'
+        'tests = ["demo_family_test_runs"]\n'
+        'security = "A synthetic family member must be selectable by its bare test name."\n',
+        encoding="utf-8",
+    )
+    return command
 
 
 def main() -> int:

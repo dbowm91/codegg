@@ -254,7 +254,7 @@ the last-resort placeholder.
   no theme author for anything — that is what keeps "any Halloy theme ingests
   unchanged" true. `UiColors::derive_selection_texts` does it, both importers
   call it *after* `base` and `ui` resolve (so a theme overriding `selection`
-  derives against its own value), and `tests/theme_selection_tokens.rs` asserts
+  derives against its own value), and `tests/tui_render/theme_selection_tokens.inc` asserts
   the 0-of-50 measurement so the "simplification" back to a dead read fails.
 - **A render path reads the theme it is handed; it does not cache one.** A box
   that stores an `Arc<Theme>` and refreshes it only when opened paints the old
@@ -264,7 +264,7 @@ the last-resort placeholder.
   render that reads it, and that is a bug waiting to happen. A `Widget` impl
   cannot receive a theme at all — that is why `DiffViewer` and the legacy
   `DiffDialog`/`PlanDialog` paths are inherent methods rather than trait impls.
-  Enforced behaviourally by `tests/tui_theme_source_of_truth.rs`.
+  Enforced behaviourally by `tests/tui_render/tui_theme_source_of_truth.inc`.
 - **The theme picker's column is allowed to paint other themes' colours.**
   `/theme` previews each candidate palette, so it deliberately shows colours
   that are not the active theme's. "Everything follows the live theme" would
@@ -345,7 +345,7 @@ Verified against `src/theme/` and `assets/themes/halloy/`:
   `src/tui/theme.rs` (the M003 plan recorded 32; verified 31 `ThemeData {`
   literals and 31 `THEMES[n]` accessors).
 
-Tests: `tests/theme_selection_tokens.rs` (9 tests, incl. the 50-theme sweep),
-`tests/tui_theme_source_of_truth.rs` (render-level staleness),
+Tests: `tests/tui_render/theme_selection_tokens.inc` (9 tests, incl. the 50-theme sweep),
+`tests/tui_render/tui_theme_source_of_truth.inc` (render-level staleness),
 `scripts/check_no_hardcoded_selection_colours.py` (source guard, wired into
 `verify.sh quick`).

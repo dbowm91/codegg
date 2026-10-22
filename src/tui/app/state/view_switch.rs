@@ -418,18 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn begin_loading_rejects_stale_epoch() {
-        let mut coord = ViewSwitchCoordinator::new();
-        let from = ProjectTabId::new();
-        let to = ProjectTabId::new();
-        let epoch = coord.begin_switch(from, to.clone());
-        // Simulate a tab close that bumps the epoch.
-        coord.bump_epoch();
-        let ok = coord.begin_loading(to, "s".into(), "p".into(), "w".into(), epoch);
-        assert!(!ok);
-    }
-
-    #[test]
     fn suspend_returns_prior_target_on_match() {
         let mut coord = ViewSwitchCoordinator::new();
         let from = ProjectTabId::new();

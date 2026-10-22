@@ -168,7 +168,7 @@ that fail validation execute via raw shell as if in observe mode.
 
 ### Polish-pass provenance parity
 
-The execution-origin matrix (`tests/git_execution_origin_matrix.rs`, 12 tests)
+The execution-origin matrix (`tests/command_git/git_execution_origin_matrix.inc`, 12 tests)
 verifies that the routing layer produces consistent decisions for every origin.
 The matrix covers:
 
@@ -281,8 +281,8 @@ only for the optional caller-side persistence attempt.
 ### Cross-references
 
 - Validation evidence: `docs/validation/command-routing-execution-ownership.md`
-- Execution ownership integration tests: `tests/command_routing_execution_ownership.rs`
-- Adversarial routing tests: `tests/command_routing_adversarial.rs`
+- Execution ownership integration tests: `tests/command_git/command_routing_execution_ownership.inc`
+- Adversarial routing tests: `tests/command_git/command_routing_adversarial.inc`
 
 ## Invariants & Gotchas
 

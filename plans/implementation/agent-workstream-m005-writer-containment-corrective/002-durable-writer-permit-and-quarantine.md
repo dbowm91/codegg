@@ -57,7 +57,7 @@ Q1 is closed only with proven generation-fenced *store and daemon consumer*, det
 - **Wiring:** `src/core/runtime_deps.rs` (the daemon owns exactly one permit
   service), `src/core/daemon_construct.rs` (startup reconciliation).
 - **Qualification:** `crates/codegg-core/tests/writer_permit.rs` (21 tests)
-  and `tests/writer_permit_service.rs` (12 tests).
+  and `tests/core_daemon/writer_permit_service.inc` (12 tests).
 - **Documentation:** `architecture/writer_permit.md`, `architecture/overview.md`,
   `.opencode/skills/scheduler/SKILL.md`.
 

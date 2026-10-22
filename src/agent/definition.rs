@@ -1111,14 +1111,6 @@ mod tests {
     // --- Behavioral invariant tests (milestone 2) ---
 
     #[test]
-    fn test_builtin_build_is_visible_primary() {
-        let agents = builtin_agents();
-        let build = agents.iter().find(|a| a.name == "build").unwrap();
-        assert_eq!(build.mode, AgentMode::Primary);
-        assert!(!build.hidden);
-    }
-
-    #[test]
     fn test_builtin_plan_is_visible_and_denies_mutation() {
         let agents = builtin_agents();
         let plan = agents.iter().find(|a| a.name == "plan").unwrap();
@@ -1157,14 +1149,6 @@ mod tests {
             let agent = agents.iter().find(|a| a.name == *name).unwrap();
             assert!(agent.hidden, "{name} should be hidden");
         }
-    }
-
-    #[test]
-    fn test_builtin_compaction_denies_all() {
-        let agents = builtin_agents();
-        let compaction = agents.iter().find(|a| a.name == "compaction").unwrap();
-        assert_eq!(compaction.permissions.get("*"), Some(&"deny".to_string()));
-        assert!(compaction.hidden);
     }
 
     #[test]

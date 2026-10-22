@@ -168,22 +168,47 @@ fn resolve_package(workdir: &Path, name: &str) -> Result<ResolvedTestCommand> {
     ))
 }
 
+/// The cargo test target that owns a consolidated family directory.
+///
+/// Cargo auto-discovers `tests/<name>.rs` as a target named `<name>`. A
+/// consolidated family — `tests/<dir>/mod.rs` plus its `.inc` members — is
+/// **not** auto-discovered: cargo ignores `tests/<dir>/mod.rs` entirely, so a
+/// family is only a target because the manifest declares it. The declared
+/// name is authoritative and is not necessarily the directory's name, so this
+/// reads the manifest rather than guessing.
+fn declared_family_target(workdir: &Path, family_dir: &str) -> Option<String> {
+    let manifest = std::fs::read_to_string(workdir.join("Cargo.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&manifest).ok()?;
+    for entry in value.get("test")?.as_array()? {
+        let path = entry.get("path")?.as_str()?;
+        let name = entry.get("name")?.as_str()?;
+        let rest = path.strip_prefix("tests/")?;
+        let dir = rest.strip_suffix("/mod.rs")?;
+        if dir == family_dir {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
 fn resolve_file(workdir: &Path, path: &Path) -> Result<ResolvedTestCommand> {
     if has_cargo_manifest(workdir) {
         let label = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
-        // Map integration test files (`tests/foo.rs`) to `cargo test --test foo`.
-        // Bare `cargo test` would silently broaden to the whole suite and discard
+        // Map an integration test file to its cargo test target. Bare
+        // `cargo test` would silently broaden to the whole suite and discard
         // the requested file's relationship to reported failures.
+        //
+        // A file directly under `tests/` is an auto-discovered target named
+        // after its stem. A file inside a family directory is a *member* of
+        // that family's executable, so the target is the family — which is
+        // what the manifest declares.
         let stem = path.file_stem().and_then(|s| s.to_str());
-        let parent_is_tests = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n == "tests")
-            .unwrap_or(false);
-        if let (Some(stem), true) = (stem, parent_is_tests) {
+        let parent = path.parent();
+        let parent_name = parent.and_then(|p| p.file_name()).and_then(|n| n.to_str());
+        if let (Some(stem), Some("tests")) = (stem, parent_name) {
             return Ok(ResolvedTestCommand {
                 language: TestLanguage::Rust,
                 argv: vec![
@@ -195,6 +220,21 @@ fn resolve_file(workdir: &Path, path: &Path) -> Result<ResolvedTestCommand> {
                 cwd: workdir.to_path_buf(),
                 scope_label: format!("file:{label}"),
             });
+        }
+        let grandparent_is_tests = parent
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            == Some("tests");
+        if let (Some(family), true) = (parent_name, grandparent_is_tests) {
+            if let Some(target) = declared_family_target(workdir, family) {
+                return Ok(ResolvedTestCommand {
+                    language: TestLanguage::Rust,
+                    argv: vec!["cargo".into(), "test".into(), "--test".into(), target],
+                    cwd: workdir.to_path_buf(),
+                    scope_label: format!("file:{family}/{label}"),
+                });
+            }
         }
         return Err(TestResolveError::UnsupportedScopeForEcosystem {
             scope: "File",
@@ -392,6 +432,29 @@ mod tests {
         assert_eq!(result.language, TestLanguage::Rust);
         assert_eq!(result.argv, vec!["cargo", "test", "--test", "foo"]);
         assert_eq!(result.scope_label, "file:foo.rs");
+    }
+
+    #[test]
+    fn resolves_consolidated_family_member_to_its_declared_target() {
+        // A consolidated family is one cargo executable whose members live
+        // beside it as `.inc` files. Cargo does not auto-discover
+        // `tests/<dir>/mod.rs`, so the family is only a target because the
+        // manifest declares it — and the declared name is authoritative.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[[test]]\nname = \"my_family\"\npath = \"tests/my_family/mod.rs\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("tests/my_family")).unwrap();
+        fs::write(dir.path().join("tests/my_family/mod.rs"), "").unwrap();
+        fs::write(dir.path().join("tests/my_family/member.inc"), "").unwrap();
+
+        let path = dir.path().join("tests/my_family/member.inc");
+        let result = resolve_test_command(&request(TestScope::File(path), dir.path())).unwrap();
+        assert_eq!(result.language, TestLanguage::Rust);
+        assert_eq!(result.argv, vec!["cargo", "test", "--test", "my_family"]);
+        assert_eq!(result.scope_label, "file:my_family/member.inc");
     }
 
     #[test]

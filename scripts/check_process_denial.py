@@ -31,7 +31,7 @@ WHAT THIS GUARD DELIBERATELY DOES NOT DO
 
     It also does not pretend that a declared marker proves the refusal is
     correct. The proof that a refusal actually happens is the fixture suite
-    (``tests/process_denial_c005.rs``); this guard proves the refusal is
+    (``tests/security_permission/process_denial_c005.inc``); this guard proves the refusal is
     still *wired*, which is the failure mode a static check can catch.
 
 USAGE

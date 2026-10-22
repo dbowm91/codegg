@@ -51,7 +51,7 @@ def main() -> int:
     unix = _read(ROOT / "src/core/transport/daemon_socket.rs")
     ws = _read(ROOT / "src/server/ws.rs")
     projection = _read(ROOT / "src/core/transport/projection.rs")
-    real_tests = _read(ROOT / "tests/projection_transport_real.rs")
+    real_tests = _read(ROOT / "tests/server_feature/projection_transport_real.inc")
     closure_008 = _read(ROOT / "plans/closure/session-projections/008-status.md")
     closure_009 = _read(ROOT / "plans/closure/session-projections/009-status.md")
     unix_production = _strip_test_modules(unix)

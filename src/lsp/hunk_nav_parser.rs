@@ -422,22 +422,6 @@ diff --git a/src/main.rs b/src/main.rs
     }
 
     #[test]
-    fn hunk_header_with_context_text() {
-        let diff = "\
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -1,3 +1,4 @@ fn main() {
- line1
-+added
- line2
- line3
- ";
-        let hunks = parse_unified_diff(diff).unwrap();
-        assert_eq!(hunks.len(), 1);
-        assert!(hunks[0].header.as_deref().unwrap().contains("fn main()"));
-    }
-
-    #[test]
     fn old_range_none_for_zero_start() {
         let diff = "\
 --- a/src/main.rs

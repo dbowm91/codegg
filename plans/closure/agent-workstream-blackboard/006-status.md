@@ -201,7 +201,7 @@ What that means, and what is proven:
   record is **not** cleaned up, because it is the evidence of what
   happened.
 
-`tests/session_launch_service.rs` proves the fail-closed path, and proves
+`tests/core_daemon/session_launch_service.inc` proves the fail-closed path, and proves
 the **placement** semantics against a **real** linked worktree that the
 fixture creates with a plain `git worktree add` and records in the state
 `create_reserved` would have set. The product's checkout *creation* on a
@@ -211,7 +211,7 @@ host with the contained backend is **not** claimed here.
 
 | Requirement | Evidence |
 |---|---|
-| A launch fails closed when the backend is unavailable | `tests/session_launch_service.rs::a_launch_fails_closed_when_the_managed_git_backend_is_unavailable` |
+| A launch fails closed when the backend is unavailable | `tests/core_daemon/session_launch_service.inc::a_launch_fails_closed_when_the_managed_git_backend_is_unavailable` |
 | The failure leaves no session and a visible record | the same test: the record is `needs_attention` / `checkout_failed` |
 | The failed checkout is marked for an operator, and nothing is cleaned up | the same test: the worktree record is `orphaned` / `git_error`, and the directory does not exist |
 | A session lands in a real linked checkout | `…::a_launch_places_a_session_in_an_existing_managed_checkout` |

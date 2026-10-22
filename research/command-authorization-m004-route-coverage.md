@@ -24,9 +24,9 @@ This matrix records current ownership, production admission, and evidence. The s
 
 `src/tool/authorization.rs` contains the production `admit_full_host_specialized_route` predicate used by Bash active routes and typed Test/Python entrypoints. It rejects missing or invalid authorization, policy-revision mismatch, and every constrained snapshot for routes without exact profile propagation. Constrained specialized calls return `ToolError::BackendUnavailable` before scheduler submission. FullHost passes only with a matching Allow receipt. Git filters/hooks/remotes retain their separate typed-unavailable gates.
 
-`tests/command_routing_adversarial.rs` retains `m004_test_only_route_admitted` as an effect-evidence oracle. It requires matching accepted/requested profiles and route-specific obtained evidence. A constrained raw route needs observed outside-root denial under Landlock; a specialized FullHost route requires explicit FullHost plus disabled containment. A status label by itself never counts as observed enforcement.
+`tests/command_git/command_routing_adversarial.inc` retains `m004_test_only_route_admitted` as an effect-evidence oracle. It requires matching accepted/requested profiles and route-specific obtained evidence. A constrained raw route needs observed outside-root denial under Landlock; a specialized FullHost route requires explicit FullHost plus disabled containment. A status label by itself never counts as observed enforcement.
 
-The production admission predicate is intentionally independent of command classifiers. The real-child fixtures in `tests/sandbox_containment.rs` establish Landlock filesystem behavior independently; they do not prove that the Test/Python/Git route transmits the same constrained policy. Instead, the constrained typed Test/Python routes do not launch.
+The production admission predicate is intentionally independent of command classifiers. The real-child fixtures in `tests/security_permission/sandbox_containment.inc` establish Landlock filesystem behavior independently; they do not prove that the Test/Python/Git route transmits the same constrained policy. Instead, the constrained typed Test/Python routes do not launch.
 
 ## Evidence and remaining gates
 

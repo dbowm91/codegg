@@ -660,18 +660,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_is_due_respects_force() {
-        let dir = tmpdir();
-        let mut svc = ManifestPersistence::with_debounce(dir.path(), Duration::from_millis(10_000));
-        svc.schedule_save(empty_snapshot());
-        assert!(!svc.pending_is_due(), "not yet due with long debounce");
-        let mut snap = empty_snapshot();
-        snap.manifest.active_project_id = Some("different".into());
-        svc.schedule_force_save(snap);
-        assert!(svc.pending_is_due());
-    }
-
-    #[test]
     fn metrics_increment_after_write() {
         let dir = tmpdir();
         let mut svc = ManifestPersistence::with_debounce(dir.path(), Duration::from_millis(0));

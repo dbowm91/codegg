@@ -154,7 +154,7 @@ and counted against one bucket, rather than escaping the bound.
 
 | Requirement | Evidence |
 |---|---|
-| Per-workspace build bound | `tests/build_quota_admission.rs::two_builds_in_one_workspace_obey_the_configured_limit` |
+| Per-workspace build bound | `tests/scheduler_jobs/build_quota_admission.inc::two_builds_in_one_workspace_obey_the_configured_limit` |
 | Unrelated workspaces stay concurrent | `…::unrelated_workspaces_build_concurrently` |
 | The limit is configuration-owned | `…::the_default_build_limit_is_one`, `…::a_zero_build_limit_is_refused_by_validation` |
 | A request may not widen its bound | `…::a_request_above_the_limit_is_impossible_not_merely_blocked` |
@@ -173,7 +173,7 @@ and counted against one bucket, rather than escaping the bound.
 
 ## 5. Tests
 
-`tests/build_quota_admission.rs` — 18 tests, all against a real admission
+`tests/scheduler_jobs/build_quota_admission.inc` — 18 tests, all against a real admission
 controller. The submission-boundary case is additionally covered by three
 unit tests in `src/scheduler/submission.rs` that call the boundary
 directly, including the case where a caller supplies its own resource

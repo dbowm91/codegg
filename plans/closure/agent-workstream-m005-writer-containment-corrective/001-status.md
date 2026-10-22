@@ -50,7 +50,7 @@ writer visible. It creates no permit, fences nothing, and enables nothing.
   disposition. It enumerates *code sites*, never the effects of dynamic
   command contents, and says so in its own docstring.
 - Wired the guard and its self-test into `scripts/verify.sh quick`.
-- Added `tests/writer_disposition_guards.rs` — the executable negative
+- Added `tests/tool_programs/writer_disposition_guards.inc` — the executable negative
   guards: a writer-category tool may not declare a read-only effect class;
   only reviewed tools may enter the read-only programme palette; every writer
   tool must carry a non-read disposition; and the manifest may not gain an
@@ -64,8 +64,8 @@ writer visible. It creates no permit, fences nothing, and enables nothing.
 | C001 acceptance criterion | Evidence | Status |
 |---|---|---|
 | One complete table per CodeGG writer root: final owner, checkout locator, authority path, lifetime, disposition, test/guard, OS status, adversarial bypass example | `c001-restricted-profile-contract.md` §4 — 48 rows, each backed by `c001-evidence/0{1..4}-*.md` with `file:line` citations | Pass |
-| Exercise failure for a prospective shared mutator without authority/profile | `tests/writer_disposition_guards.rs::writer_category_tools_may_not_declare_a_read_only_effect_class` and `::the_disposition_manifest_grants_no_authority` | Pass |
-| Legacy isolated mutator continues | `tests/writer_disposition_guards.rs::the_legacy_isolated_mutator_still_dispatches` — the default catalog still registers and resolves `write`, `edit`, `replace`, `apply_patch`, `bash`, `git`. C001 changed no runtime behaviour. | Pass |
+| Exercise failure for a prospective shared mutator without authority/profile | `tests/tool_programs/writer_disposition_guards.inc::writer_category_tools_may_not_declare_a_read_only_effect_class` and `::the_disposition_manifest_grants_no_authority` | Pass |
+| Legacy isolated mutator continues | `tests/tool_programs/writer_disposition_guards.inc::the_legacy_isolated_mutator_still_dispatches` — the default catalog still registers and resolves `write`, `edit`, `replace`, `apply_patch`, `bash`, `git`. C001 changed no runtime behaviour. | Pass |
 | Verify no hidden CodeGG API (editor save, HTTP POST, restore, init, run-local `.codegg`) omitted | `c001-evidence/03` covers editor save, HTTP write/delete, document create/save/delete, project init, edit-checkpoint restore; `c001-evidence/04` enumerates the 13 paths physically inside a checkout under `.codegg/`, including the legacy `sessions.db` and the run store. The guard then keeps the set from drifting. | Pass |
 | Verify policy denies arbitrary shell/Python/plugin/PTY/LSP/MCP until native proof; ordinary group read does not grant mutation | 15 `denied-process` roots in the matrix cover bash, terminal, python_script, test, verify, ci_watch, job, the local MCP child, the LSP server child, the process-backed plugin and the hook adapter. Read-only roots are `read-proven` and are not writers. | Pass |
 | Write an explicit decision outcome | **Still proposed.** ADR-0047 is unchanged and remains `proposed — NOT accepted`. This closure records that outcome explicitly. | Pass |

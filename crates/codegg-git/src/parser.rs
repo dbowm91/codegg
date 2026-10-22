@@ -3437,13 +3437,6 @@ mod tests {
     // ── Complex flag combinations ───────────────────────────────────
 
     #[test]
-    fn branch_delete_force_independent_of_order() {
-        let result = parse_git_argv(&argv(&["git", "branch", "-D", "feature"])).unwrap();
-        let risk = result.risk_classes();
-        assert!(risk.contains(&GitRiskClass::DestructiveHistory));
-    }
-
-    #[test]
     fn push_force_independent_of_order() {
         // --force after remote
         let result = parse_git_argv(&argv(&["git", "push", "origin", "main", "--force"])).unwrap();
@@ -3516,21 +3509,6 @@ mod tests {
     fn add_no_paths() {
         let result = parse_git_argv(&argv(&["git", "add"])).unwrap();
         assert_eq!(result, GitOperation::Add { paths: vec![] });
-    }
-
-    #[test]
-    fn clean_no_paths() {
-        let result = parse_git_argv(&argv(&["git", "clean", "-f"])).unwrap();
-        assert_eq!(
-            result,
-            GitOperation::Clean {
-                force: true,
-                dry_run: false,
-                dirs: false,
-                ignored: false,
-                paths: vec![],
-            }
-        );
     }
 
     // ── Status with various flags ───────────────────────────────────

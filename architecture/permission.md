@@ -762,7 +762,7 @@ of every nested syscall; see
     rows). A current effective Deny is evaluated before the cache so a
     legacy broad Allow cannot mask it. The TUI manifest model hint stays
     display-only (`reconcile_tab_model_with_daemon`).
-11. **M008 qualification (invariant/closure).** `tests/reliability_qualification_m008.rs`
+11. **M008 qualification (invariant/closure).** `tests/agent_loop/reliability_qualification_m008.inc`
     proves deterministic Deny across Interactive/Automatic/Yolo, reviewer
     Allow/Deny/Defer plus malformed/unavailable/injection never-Allow,
     reviewer-cannot-mutate-sandbox, captured-snapshot wins on mode races,

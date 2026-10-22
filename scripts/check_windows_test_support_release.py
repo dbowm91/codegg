@@ -59,21 +59,39 @@ def check_release_compile_error() -> list[str]:
     return errors
 
 
+def _windows_test_sources() -> list[Path]:
+    """Every root integration test source that may name the Windows feature.
+
+    The Windows sandbox tests are one family: `windows_sandbox_test_support`
+    is the cargo target, and its members are `.inc` files under
+    `tests/windows_sandbox_test_support/`. A `tests/windows_*.rs` glob alone
+    would not see them, so the directory is covered too.
+    """
+    sources = list((ROOT / "tests").glob("windows_*.rs"))
+    sources.extend((ROOT / "tests").glob("windows_*/*.inc"))
+    return sorted(sources)
+
+
 def check_test_targets_gated() -> list[str]:
     errors: list[str] = []
     cargo = _read(ROOT / "Cargo.toml")
-    for name in ("windows_acl_lease", "windows_restricted_managed_process"):
-        block = re.search(
-            r'\[\[test\]\]\s*\nname\s*=\s*"%s".*?required-features\s*=\s*\[(.*?)\]' % name,
-            cargo,
-            re.DOTALL,
+    # The Windows sandbox tests are ONE cargo target: the family
+    # `windows_sandbox_test_support` holds both members. The target must
+    # declare the feature, or a default build compiles the Windows sandbox
+    # code that is only allowed to compile under the feature.
+    block = re.search(
+        r'\[\[test\]\]\s*\nname\s*=\s*"windows_sandbox_test_support".*?required-features\s*=\s*\[(.*?)\]',
+        cargo,
+        re.DOTALL,
+    )
+    if not block:
+        errors.append("[[test]] windows_sandbox_test_support must declare required-features")
+    elif 'windows-sandbox-test-support' not in block.group(1):
+        errors.append(
+            "[[test]] windows_sandbox_test_support must require windows-sandbox-test-support"
         )
-        if not block:
-            errors.append(f"[[test]] {name} must declare required-features")
-        elif 'windows-sandbox-test-support' not in block.group(1):
-            errors.append(f"[[test]] {name} must require windows-sandbox-test-support")
     # Every test source using the feature must also be cfg-gated.
-    for test_file in sorted((ROOT / "tests").glob("windows_*.rs")):
+    for test_file in _windows_test_sources():
         content = _read(test_file)
         if 'windows-sandbox-test-support' in content and '#![cfg(' not in content:
             errors.append(f"{test_file.name} references the feature without a cfg gate")

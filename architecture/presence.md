@@ -37,7 +37,7 @@ src/core/daemon.rs                        # daemon-owned PresenceService, handle
                                           # disconnect expiry, restart clear
 src/core/transport/daemon_socket.rs       # disconnect expiry (Unix socket)
 src/server/ws.rs                          # disconnect expiry (WebSocket x3)
-tests/presence_m001_leases.rs             # service + daemon boundary tests
+tests/core_daemon/presence_m001_leases.inc             # service + daemon boundary tests
 ```
 
 ## How It Works
@@ -161,7 +161,7 @@ python3 scripts/check_authorization_matrix.py
 bash scripts/check-core-boundary.sh
 ```
 
-Key suites: `tests/presence_m001_leases.rs` (8 service + 7 daemon
+Key suites: `tests/core_daemon/presence_m001_leases.inc` (8 service + 7 daemon
 tests: heartbeat/expiry/idle, disconnect/reconnect, two-clients,
 several-sessions, aggregation, privacy negatives, churn bound,
 restart, stale generation, DTO authority negative, capabilities).
@@ -179,7 +179,7 @@ src/tui/components/dialogs/info.rs # InfoType::Collaborators (scrollable panel)
 src/tui/components/component.rs    # DialogType::Collaborators (focus slot)
 src/tui/command.rs                 # /collaborators (/presence) registry; /team is the separate durable admin surface
 src/tui/input.rs                   # help entries
-tests/presence_m002_collaborators.rs
+tests/tui_render/presence_m002_collaborators.inc
 ```
 
 - **Reducer** (`PresenceState`): per-project entries with
@@ -253,7 +253,7 @@ src/tui/app/mod.rs                                    # TuiCommand arms, /observ
                                                       # on_projection_reconnect resume
 src/tui/runtime/command_dispatch.rs                   # StartObserve/ObserveSubscribed/ObserveResumed/StopObserving arms
 src/tui/command.rs + src/tui/input.rs                 # /observe (/watch), /stop-observing (/unwatch) registry + help
-tests/presence_m003_observation.rs                    # allow/deny, negatives, lifecycle, bounds, redaction, TUI state
+tests/core_daemon/presence_m003_observation.inc                    # allow/deny, negatives, lifecycle, bounds, redaction, TUI state
 ```
 
 ### Daemon authorization
@@ -344,7 +344,7 @@ python3 scripts/check_authorization_matrix.py
 bash scripts/check-core-boundary.sh
 ```
 
-Key suite: `tests/presence_m003_observation.rs` (11 tests: allow/deny +
+Key suite: `tests/core_daemon/presence_m003_observation.inc` (11 tests: allow/deny +
 absent-indistinguishability, outsider non-enumeration, daemon
 steer/cancel/model/file negatives, observer-only teardown vs surviving
 observer, owner-disconnect control negative, revocation resume-denial +
@@ -376,8 +376,8 @@ protocol surface of exactly 3 `CoreRequest` Presence variants
 `MAX_PRESENCE_PROJECTS = 16` and `MAX_PRESENCE_DISPLAY_PRINCIPALS = 32`
 (`src/tui/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
 (`observe.rs:37`), and `MAX_PRESENCE_ERROR_LEN = 256`; and the test counts
-— `tests/presence_m001_leases.rs` 15 tests (matching the documented "8
-service + 7 daemon"), `tests/presence_m003_observation.rs` 11 tests, and 11
+— `tests/core_daemon/presence_m001_leases.inc` 15 tests (matching the documented "8
+service + 7 daemon"), `tests/core_daemon/presence_m003_observation.inc` 11 tests, and 11
 unit tests inside `crates/codegg-core/src/presence.rs`. Also confirmed the
 "no storage migration" claim holds: no presence tables exist in
 `session/schema.rs`.
