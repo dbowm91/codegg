@@ -147,13 +147,27 @@ that path is covered by existing tests and must not change.
 a hand-written row.
 
 The composed scenario builds the `WorktreeService` the way the daemon builds
-it — with the contained creator installed — and allocates the group's checkout
-through it. The C006 carrier's hand-written row stays as it is: C006's claim
-is about the placement, and changing it would put C006's evidence at risk.
+it and allocates the group's checkout through
+`create_reserved_contained`. That seam's acceptance is strict and is not
+relaxed here: `git worktree list` must report the checkout at the recorded
+path **on the recorded branch**, and `is_git_worktree` must accept it. So the
+checkout is a **real linked worktree**, produced by the real service path, and
+not a database row.
 
-This is where C008 earns its place. On a host that cannot obtain the M004/M005
-tiers the contained creation fails closed, and M011's scenario reports that
-rather than pretending. See §14.
+The creator is a fixture choice, and it is stated rather than blurred:
+
+- On a host that can obtain the M004/M005 tiers, the fixture installs the
+  **production** `ContainedGitWorktreeCreator`, and the allocation is the
+  contained one C008 built.
+- On a host that cannot, the fixture installs a creator that produces the same
+  **real linked worktree** without claiming containment. The *fence* claim — the
+  milestone's actual subject — does not depend on how the checkout was made,
+  and the containment claim remains C008's, proved separately.
+
+What M011 must **not** do is write the `managed_worktree` row by hand. C006's
+carrier does that, and C006's claim is about the *placement*; M011's is about
+the *write race*, and the difference between the two fixtures is the point of
+writing M011 at all.
 
 ### WP4 — two real mutating broker operations
 
@@ -227,11 +241,12 @@ cargo test -p codegg --test <the new composed-race test>
 CARGO_BUILD_JOBS=2 bash scripts/verify.sh quick
 ```
 
-The composed race needs a host that can obtain the M004 process/IPC and M005
-offline-network tiers, because the shared checkout is allocated through the
-contained Git route. Where the host cannot, the scenario reports the missing
-tier and the milestone stays **conditionally closed** — the same disposition
-C006 carries.
+The composed race needs the shared checkout to be a real linked worktree
+allocated through `WorktreeService::create`. Whether it is allocated by the
+**production contained** creator (which needs a host that can obtain the M004
+process/IPC and M005 offline-network tiers) or by a fixture creator that
+produces the same real worktree is recorded in the closure, not blurred. The
+fence claim itself is host-independent.
 
 ## 12. Documentation updates
 
@@ -261,9 +276,13 @@ The agent **reports rather than improvises** if any of these occur:
 
 - The composition cannot be built without weakening the fence, the placement
   rules, or the shared profile's tool denial. **Stop.**
-- The shared checkout cannot be allocated on this host. **Stop** and report
-  which tier was missing. Do not fall back to the hand-written row: that is
-  C006's fixture, and reusing it would make the milestone's claim vacuous.
+- The shared checkout cannot be allocated through the **production contained**
+  creator on this host. **Stop** and report which tier was missing — but the
+  milestone may still be composed with a fixture creator that produces the
+  same real linked worktree, provided the closure says plainly which creator
+  ran. What is never acceptable is the hand-written `managed_worktree` row:
+  that is C006's fixture, and reusing it would make the milestone's claim
+  vacuous.
 - The race turns out not to be schedulable — the two operations never
   actually overlap, so the serialization is not being tested. **Stop** and
   report it.
