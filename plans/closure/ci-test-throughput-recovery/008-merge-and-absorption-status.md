@@ -35,11 +35,12 @@ Implementation commits or pull requests:
 
 The branch is **merged with `origin/main` and absorbed**, and the merged tree
 compiles, passes the repository's guard tier, and lands with no loss of
-coverage. What the merge had to reconcile was not two *values* but two
-*shapes*: `origin/main` never received M004's family consolidation and still
-carries its root integration tests as top-level `tests/*.rs` files, so the
-merge landed **sixteen** new top-level cargo targets that no family owned and
-that the ownership manifest could not map.
+coverage. It **landed** on `main` as merge commit `49d68dab4` (§5). What the
+merge had to reconcile was not two *values* but two *shapes*: `origin/main`
+never received M004's family consolidation and still carries its root
+integration tests as top-level `tests/*.rs` files, so the merge landed
+**sixteen** new top-level cargo targets that no family owned and that the
+ownership manifest could not map.
 
 Thirteen of the sixteen were absorbed into the family that already owned their
 subject; three stayed top-level because a hosted qualification lane names
@@ -608,6 +609,12 @@ after 120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5`, the
 same file, the same line and the same timeout as `main`'s own run
 `39679968444` at `53d9fc9fd`. The two branch-side changes that make the lane
 run at all are a build flag and a doc comment (§7).
+
+**The landing.** PR #164 was merged into `main` as merge commit
+`49d68dab4`, and `main`'s tree at that commit is **identical** to the branch
+head the lanes were watched on — the merge added no content of its own. The
+post-merge lanes on `main` are the landing's own verification and are
+reported where they happen.
 - `examples/plugins/sdk-rust`: `cargo check --tests` **passes**.
 - The guard tier: every guard named above passes, and every `--self-test`
   still rejects the failure class it exists to reject.
