@@ -49,6 +49,7 @@ skip.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shutil
 import subprocess
@@ -279,8 +280,40 @@ def module_path_for(root: Path, path: Path, source_root: str) -> str:
 # The registry has many entries that share a source root, so the source scan
 # is memoised: without it the guard reads the whole `src/` tree once per
 # entry, which is slow enough to matter in the quick gate.
+#
+# The memo key is the source root's **content**, not the tree's path. The
+# self-test checks the same source under several directories, and keying by
+# path would make every copy pay for a full re-read and re-parse.
 _DECLARED_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 _SOURCE_TEXT_CACHE: dict[tuple[str, str], list[str]] = {}
+_MARKER_NAMES_CACHE: dict[tuple[str, str], set[str]] = {}
+_FINGERPRINT_CACHE: dict[tuple[str, str], str] = {}
+
+
+def source_fingerprint(root: Path, source_root: str) -> str:
+    """A content digest of a source root.
+
+    Two trees with the same digest hold the same source, so they can share a
+    parsed scan. The digest covers the file contents and their relative
+    paths, so a renamed test or an edited file produces a different digest.
+    """
+    cache_key = (str(root), source_root)
+    cached = _FINGERPRINT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    for path in iter_source_files(root, source_root):
+        try:
+            relative = path.relative_to(root / source_root)
+        except ValueError:
+            relative = path
+        digest.update(str(relative).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    cached = digest.hexdigest()
+    _FINGERPRINT_CACHE[cache_key] = cached
+    return cached
 
 
 def source_texts(root: Path, source_root: str) -> list[str]:
@@ -297,7 +330,7 @@ def source_texts(root: Path, source_root: str) -> list[str]:
 
 def declared_tests(root: Path, source_root: str) -> dict[str, str]:
     """Map every declared test function to its full module path."""
-    key = (str(root), source_root)
+    key = (source_root, source_fingerprint(root, source_root))
     cached = _DECLARED_CACHE.get(key)
     if cached is not None:
         return cached
@@ -352,25 +385,94 @@ def selected_tests(root: Path, entry: FilterEntry) -> dict[str, str]:
     return selected
 
 
+def marker_file_names(root: Path, source_root: str) -> set[str]:
+    """The declared test names that appear in a file carrying a self-skip marker.
+
+    The result is deliberately **conservative**: a name that merely appears in
+    some marker-bearing file counts, even when the file that declares the
+    test is a different one. Over-attributing here can only add a
+    `--nocapture` requirement, which is the safe direction; narrowing it to
+    the declaring file could drop a requirement the runtime counter depends
+    on.
+
+    The set is computed once per source root rather than once per registry
+    entry: the registry has twenty entries and most of them share the root
+    package's `src` tree, and scanning every name against every marker-bearing
+    file per entry made the quick gate take the better part of a minute.
+    """
+    key = (source_root, source_fingerprint(root, source_root))
+    cached = _MARKER_NAMES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    declared = declared_tests(root, source_root)
+    distinct = sorted(set(declared.values()))
+    names: set[str] = set()
+    for text in source_texts(root, source_root):
+        if not any(prefix in text for prefix in SELF_SKIP_PREFIXES):
+            continue
+        for name in distinct:
+            if name in text:
+                names.add(name)
+    _MARKER_NAMES_CACHE[key] = names
+    return names
+
+
 def self_skipping_tests(root: Path, entry: FilterEntry) -> list[str]:
     """The selected tests whose own source contains a self-skip marker."""
     skipping: list[str] = []
     for source_root in source_roots_for(entry.command):
-        texts = source_texts(root, source_root)
-        for text in texts:
-            if not any(prefix in text for prefix in SELF_SKIP_PREFIXES):
+        names = marker_file_names(root, source_root)
+        for full_path, function_name in declared_tests(root, source_root).items():
+            if function_name not in names:
                 continue
-            for full_path, function_name in declared_tests(root, source_root).items():
-                if function_name not in text:
-                    continue
-                if filter_matches(entry.filter, full_path, function_name):
-                    skipping.append(full_path)
+            if filter_matches(entry.filter, full_path, function_name):
+                skipping.append(full_path)
     return sorted(set(skipping))
 
 
 # ---------------------------------------------------------------------------
 # Static checks
 # ---------------------------------------------------------------------------
+
+
+def folded_wrapper_runs(workflow_text: str) -> list[tuple[int, str]]:
+    """Find `run:` plain scalars that YAML folds onto a single shell line.
+
+    A plain (non-block) `run:` scalar that continues on a more indented
+    following line is folded by YAML into one line. When the folded block
+    carries the wrapper, the wrapper invocation, the `--` separator and the
+    exit check are concatenated onto one shell line, so the step stops
+    being the step the registry registered — the guard would then certify a
+    command the runner never executes.
+    """
+    lines = workflow_text.split("\n")
+    found: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(\s*)run:\s*(\S.*?)\s*$", line)
+        if not match:
+            index += 1
+            continue
+        indent, value = match.group(1), match.group(2)
+        if value[:1] in ("|", ">"):
+            # A block scalar keeps its own line structure.
+            index += 1
+            continue
+        block = [line]
+        cursor = index + 1
+        while cursor < len(lines):
+            candidate = lines[cursor]
+            if candidate.strip() == "":
+                break
+            if len(candidate) - len(candidate.lstrip()) <= len(indent):
+                break
+            block.append(candidate)
+            cursor += 1
+        if len(block) > 1 and any("check_test_filter_execution.py" in item for item in block):
+            found.append((index + 1, "\n".join(block)))
+        index = max(cursor, index + 1)
+    return found
 
 
 def check_registry(root: Path) -> list[str]:
@@ -382,6 +484,7 @@ def check_registry(root: Path) -> list[str]:
         return problems
 
     seen: set[str] = set()
+    folded_reported: set[str] = set()
     for entry in entries:
         if entry.label in seen:
             problems.append(f"{entry.label}: the filter is registered more than once")
@@ -405,6 +508,16 @@ def check_registry(root: Path) -> list[str]:
                 f"{entry.workflow}: no step runs through `scripts/check_test_filter_execution.py --run`, "
                 "so a filter that matches zero tests would still be green"
             )
+
+        if entry.workflow not in folded_reported:
+            folded_reported.add(entry.workflow)
+            for line_number, block in folded_wrapper_runs(workflow_text):
+                problems.append(
+                    f"{entry.workflow}:{line_number}: the `run:` value is a plain scalar that YAML folds "
+                    "onto one shell line, so the wrapper invocation and the command it guards would be "
+                    "concatenated and the step would not run the registered command; use a block scalar "
+                    f"(`run: |`)\n{block}"
+                )
 
         selected = selected_tests(root, entry)
         if not selected:
@@ -575,9 +688,55 @@ def mutate_all(root: Path, relative: str, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
+def _fold_wrapper_run(work: Path, probe: FilterEntry) -> None:
+    """Re-introduce the folded plain scalar that YAML collapses onto one line.
+
+    This is the defect the guard's folded-scalar check exists for: a `run:`
+    value that continues on a more indented source line is folded by YAML, so
+    the wrapper invocation, the `--` separator and the exit check end up
+    concatenated on one shell line and the step never runs the registered
+    command.
+    """
+    path = work / probe.workflow
+    lines = path.read_text(encoding="utf-8").split("\n")
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("run:"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        value = stripped[len("run:") :].strip()
+        if "check_test_filter_execution.py --run --" in value:
+            head, _, tail = value.partition("--run -- ")
+            lines[index] = " " * indent + "run: " + head + "--run --"
+            lines.insert(index + 1, " " * (indent + 2) + tail)
+            break
+        if value in ("|", ">"):
+            block: list[str] = []
+            cursor = index + 1
+            while cursor < len(lines):
+                candidate = lines[cursor]
+                if candidate.strip() == "":
+                    break
+                if len(candidate) - len(candidate.lstrip()) <= indent:
+                    break
+                block.append(candidate)
+                cursor += 1
+            if not any("check_test_filter_execution.py" in item for item in block):
+                index += 1
+                continue
+            lines[index] = " " * indent + "run: " + block[0].strip()
+            for offset, item in enumerate(block[1:]):
+                lines[index + 1 + offset] = " " * (indent + 2) + item.strip()
+            break
+    else:
+        raise AssertionError(f"no wrapper step found in {probe.workflow}")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def self_test() -> int:
     """Prove the guard is not vacuous."""
     failures: list[str] = []
+    case_count = 0
 
     with tempfile.TemporaryDirectory() as tmp:
         pristine = Path(tmp) / "pristine"
@@ -594,6 +753,12 @@ def self_test() -> int:
             failures.append("the registry is empty, so there is nothing to self-test against")
         else:
             probe = entries[0]
+            # A second probe whose workflow keeps the wrapper in a block scalar,
+            # so the folded-scalar check is proved against both shapes.
+            block_probe = next(
+                (entry for entry in entries if "windows-process-launcher" in entry.workflow),
+                probe,
+            )
             cases = [
                 (
                     "the workflow step stops running through the counting wrapper",
@@ -630,9 +795,22 @@ def self_test() -> int:
                         'tests = ["no_such_registered_test_zzz"',
                     ),
                 ),
+                (
+                    "the wrapper step's run value is a plain scalar that YAML folds onto one line",
+                    lambda work: _fold_wrapper_run(work, probe),
+                    "plain scalar",
+                ),
+                (
+                    "a block-scalar wrapper step is folded back onto one shell line",
+                    lambda work: _fold_wrapper_run(work, block_probe),
+                    "plain scalar",
+                ),
             ]
 
-            for name, inject in cases:
+            for case in cases:
+                name, inject = case[0], case[1]
+                expected = case[2] if len(case) > 2 else ""
+                case_count += 1
                 work = Path(tmp) / name.replace(" ", "_").replace("/", "_")
                 _copy_inputs(pristine, work)
                 try:
@@ -640,8 +818,14 @@ def self_test() -> int:
                 except AssertionError as exc:
                     failures.append(f"{name}: fixture could not be injected: {exc}")
                     continue
-                if not check_registry(work):
+                reported = check_registry(work)
+                if not reported:
                     failures.append(f"{name}: the guard did not reject the injected defect")
+                elif expected and not any(expected in problem for problem in reported):
+                    failures.append(
+                        f"{name}: the guard rejected the injected defect, but not with the check that "
+                        f"owns it (no problem mentioned {expected!r}): {reported}"
+                    )
                 shutil.rmtree(work, ignore_errors=True)
 
     # The runtime counter must be able to say "zero" and must be able to see a
@@ -699,9 +883,9 @@ def self_test() -> int:
             print(f"self-test failed: {failure}", file=sys.stderr)
         return 1
     print(
-        "test-filter-execution self-test passed: 5 injected defects were each rejected by the guard, "
-        "and the runtime counter rejected a zero-test run, a self-skipping run and a run that did not "
-        "execute the named test, and accepted a healthy one"
+        f"test-filter-execution self-test passed: {case_count} injected defects were each rejected by "
+        "the guard, and the runtime counter rejected a zero-test run, a self-skipping run and a run that "
+        "did not execute the named test, and accepted a healthy one"
     )
     return 0
 

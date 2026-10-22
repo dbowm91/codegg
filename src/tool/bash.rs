@@ -29,6 +29,13 @@ pub mod output;
 pub mod policy;
 pub mod process;
 
+// The temporary-Git-repository fixture used by the routing tests below lives
+// in a `tests/` directory: `src/tool/bash.rs` is a canonical finite path, and
+// the execution-ownership guard forbids a direct process spawn anywhere in it.
+#[cfg(test)]
+#[path = "bash/tests/git_fixture.rs"]
+mod git_fixture;
+
 pub(crate) use policy::validate_child_workspace_command;
 pub use process::DispatchOutcome;
 
@@ -1076,28 +1083,9 @@ mod tests {
     /// The `TempDir` is returned alongside the tool so the repository stays
     /// alive for the whole test and is removed afterwards.
     fn rooted_bash_in_temp_git_repo() -> (tempfile::TempDir, BashTool) {
-        let dir = tempfile::tempdir().expect("create temp git repo");
-        let root = dir.path();
-        let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .expect("run git");
-            assert!(
-                output.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
-        git(&["init", "--initial-branch=main"]);
-        git(&["config", "user.email", "test@test.com"]);
-        git(&["config", "user.name", "Test"]);
-        std::fs::write(root.join("tracked.txt"), "tracked\n").expect("write fixture file");
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
+        let (dir, root) = super::git_fixture::temp_git_repo();
         let mut tool = BashTool::new();
-        tool.workspace_root = Some(root.to_path_buf());
+        tool.workspace_root = Some(root);
         (dir, tool)
     }
 
