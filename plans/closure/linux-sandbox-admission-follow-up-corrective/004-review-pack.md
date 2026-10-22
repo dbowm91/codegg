@@ -224,6 +224,15 @@ defects in §3.5 and §3.6 — two of them in §3.5 and the fifth in §3.6; the
 other two were caught locally, before a hosted run ever executed them. The
 intermediate heads and their failures are recorded there rather than hidden.
 
+**The line's Linux evidence was also re-run natively.** §3.9 of the closure
+record records five distinct Linux filters run on the author's workstation —
+through the **same wrapper and the same registered commands** the workflow
+steps use, with the same gate environment — producing the same executed and
+witnessed counts the hosted tier reports. The five registrations that host
+cannot qualify refuse with typed errors, and the reason for each is named
+there. A reviewer does not need a hosted runner to qualify this line's Linux
+boundaries.
+
 A reviewer should also read that record's §10.5 before reviewing chunk 8: the
 registry listed three of this line's milestones twice with contradictory
 statuses, and that contradiction has been fixed. It is a documentation
