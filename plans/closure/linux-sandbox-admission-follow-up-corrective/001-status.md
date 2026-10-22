@@ -1,6 +1,7 @@
 # Linux Sandbox Admission Follow-up Corrective — Milestone C001 — Closure Status
 
-Status: **corrective pass required**
+Status: **closed** (updated 2026-10-22; was **corrective pass required** until
+C004 discharged §10.1–§10.5 — see §11)
 Source implementation plan: `plans/implementation/linux-sandbox-admission-follow-up-corrective/001-branch-ci-evidence-stabilization.md`
 Source subsystem roadmap: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md` (C001)
 Repository baseline reviewed: `2c1953347896848c2f52c2dfbd9f04029d1c2cc2` (`main`, the merge of PR #149)

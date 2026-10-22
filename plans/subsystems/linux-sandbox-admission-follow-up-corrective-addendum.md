@@ -1,6 +1,6 @@
 # Linux Sandbox Admission — Post-Review Corrective Addendum
 
-Status: active planning; C001 **corrective pass required**, C002 **conditionally closed**, C003 **ready for non-promoting interface/review only**; no production promotion authorized
+Status: active planning; C001 **closed**, C002 **conditionally closed**, C003 **ready for non-promoting interface/review only**, C004 **closed**; no production promotion authorized
 Planning baseline: `main` `2c1953347896848c2f52c2dfbd9f04029d1c2cc2` (the merge of PR #149, 2026-10-21). The original baseline was `planning/linux-sandbox-next-admission-and-adr-cleanup` at `d251b11cd7fa5b89ca008e45d80a28a4ac3aea9f` (2026-10-20).
 Primary owner: Linux execution-isolation roadmap. This is a corrective **coordination addendum**, not a competing implementation of existing Linux M003/M004/M005 or trusted-Git C005.
 
