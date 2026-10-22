@@ -69,8 +69,11 @@ the diff:
    `looks_like_tool_error`); the coupling is **guarded**, not silent: a harness
    test asserts every marker is still the product's marker, so a change to the
    product's error envelope fails the harness suite instead of quietly leaving
-   the control unexercised. The product-level gap itself is **not** fixed here
-   — see §10.
+   the control unexercised. The reading is **the harness's own existing
+   convention**, not a new one: `dev/harness_lab/supervisor.py` has always
+   counted a failed tool by looking for `"Tool error:"` in the reported output,
+   for exactly the same reason. The product-level gap itself is **not** fixed
+   here — see §10.
 
 3. **The ring buffer cannot cover a broadcast lag.** The natural "re-deliver
    the dropped events" repair is impossible: the event log's ring buffer and
