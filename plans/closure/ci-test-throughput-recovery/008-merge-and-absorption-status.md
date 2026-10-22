@@ -457,6 +457,7 @@ coverage left the tree with it.
 | The `agent_loop` family passes under a plain `cargo test` | at `f8a9b6496` (before `main`'s advance): **530 passed, 0 failed, 1 ignored**; at the merged tip: **529 passed, 1 failed** — the harness drained the process-global bus with no session filter, and M004's consolidation had put it in a binary with thirty other members. The drain is now scoped to the test's own session, the idiom the file's own `EventCollector` already uses | pass (repeated runs); the hosted `CI` job cannot see this class, because the `ci` nextest profile runs one process per test |
 | The shared helper tree is bound publicly everywhere | `scripts/check_test_common_binding.py` and `--self-test`; the two standalone targets `main`'s PR #166 added now bind it `pub`, as the nine families already do. The mechanism was proved in isolation with rustc: a private binding reports `error: constant 'SENTINEL_PREFIX' is never used` under `-D warnings`, a public one exits 0 | pass locally; the hosted Linux clippy step is the authority |
 | The seventh reconciliation carries no code and loses no coverage | `origin/main` @ `726f3c645` changed four documentation files and nothing else; `git merge` auto-merged exactly those four. Both sides' edits to `plans/registry.md` and `architecture/blackboard_contract_matrix.md` were checked by md5 of the individual rows and of the file — the branch's row is byte-identical to its pre-merge copy, `main`'s row is byte-identical to `origin/main`'s, and the file both sides edited differs from both parents. The one fixture implementation the merge changed was checked by reading both implementations: the shared helper runs the same three Git operations in the same order, and nothing in the suite asserts on the two fields that differ | pass |
+| Every hosted lane on the landing tree | `c463c553c`: `CI` **success** (clippy and the workspace suite), `Linux C006` **success**, `Linux M004` **success**, `Windows native probe contract` **success**, `Windows process launcher` **success**, `Shared checkout macOS qualification` **success**, `Desktop E2E` **failure** — the identical assertion `main` fails | pass, with one lane attributable to `main` (§7) |
 
 ## 4. The counts, re-measured
 
@@ -574,6 +575,37 @@ bash scripts/verify.sh quick
   **0 errors**. `bash scripts/verify.sh quick` on the merged tree → **"Quick
   verification passed."** Both sides' documentation edits were checked by md5
   (§2.10's table).
+
+### The hosted lanes on the landing tree
+
+`c463c553c` is the tree PR #164 lands. Every lane the repository runs was
+watched to its conclusion on that exact tree:
+
+| Lane | Run | Result |
+|---|---|---|
+| `CI` (format, clippy, the 16k-test workspace suite, and the guard tier) | `39868589377` | **success** |
+| `Linux C006 protected mount qualification` | `39868589395` | **success** |
+| `Linux M004 process and IPC qualification` | `39868589372` | **success** |
+| `Windows native probe contract` | `39868589365` | **success** |
+| `Windows process launcher` | `39868589357` | **success** |
+| `Shared checkout macOS qualification` | `39868589426` | **success** |
+| `Desktop E2E` | `39868589379` | **failure** — the identical assertion `main` fails (§7) |
+
+**The hosted `CI` lane is the authority for the two classes the local gate
+cannot see.** Its "Workspace Clippy" step is green on the landing tree, which
+confirms §2.9's repair: the private binding of the shared helper tree is gone
+and the dead-code lint is quiet. Its "Workspace tests" step is green too, and
+that is where M011's composed-race test passes (§7 records its local flake).
+The `Linux M004` lane is green, which confirms §2.5's `--exact` repair: the
+interrupted-publication recovery scenario is now exercised, because the worker
+is named by a path that selects it.
+
+**The `Desktop E2E` lane is red, and it is red on `main` with the same
+assertion** — `element ("[data-testid="permission-list"]") still not existing
+after 120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5`, the
+same file, the same line and the same timeout as `main`'s own run
+`39679968444` at `53d9fc9fd`. The two branch-side changes that make the lane
+run at all are a build flag and a doc comment (§7).
 - `examples/plugins/sdk-rust`: `cargo check --tests` **passes**.
 - The guard tier: every guard named above passes, and every `--self-test`
   still rejects the failure class it exists to reject.
@@ -717,9 +749,10 @@ are repaired (§2.5), the sixth reconciliation's silent compile break is
 repaired (§2.7), the cross-test race the consolidation left latent is repaired
 (§2.8), the private shared-tree binding that only hosted clippy could see is
 repaired and guarded (§2.9), the seventh reconciliation carried no code and
-dropped no coverage (§2.10), and the recorded counts are re-measured against
-their own sources. The tree compiles, the guard tier is green, and the
-recorded counts are true on the merged tree.
+dropped no coverage (§2.10), and **every hosted lane on the landing tree
+`c463c553c` is green except the one `main` fails with the identical
+assertion** (§5). The tree compiles, the guard tier is green, and the recorded
+counts are true on the merged tree.
 
 Five findings are worth carrying forward beyond this line, because all five
 are about **what the local gate does not cover**:
