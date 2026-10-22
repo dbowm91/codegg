@@ -578,8 +578,10 @@ bash scripts/verify.sh quick
 
 ### The hosted lanes on the landing tree
 
-`c463c553c` is the tree PR #164 lands. Every lane the repository runs was
-watched to its conclusion on that exact tree:
+`c463c553c` is the tree these lanes were watched on. It differs from the
+landing tree by this record's own §5 table and nothing else — the tree the
+lanes exercised and the tree that lands carry the same code. Every lane the
+repository runs was watched to its conclusion on it:
 
 | Lane | Run | Result |
 |---|---|---|
