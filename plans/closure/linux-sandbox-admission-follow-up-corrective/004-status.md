@@ -597,28 +597,34 @@ filter that reported `10 passed; 1 failed` before the fix. Every other
 filter count on that head is identical to the earlier green heads, and the
 CI sweep passed 16,061 tests.
 
-### 3.8 What the wrapper refuses on a host without native qualification
+### 3.8 What the wrapper refuses, and what it accepts
 
-Two of the registered filters — `protected_mount_` and the M004 native
-filters — are **native qualification** filters: their tests self-skip unless
-the host is natively qualified. Run **through the wrapper**, this
-workstation's steps are **rejected**, and that is the control working as
-intended: a native qualification step that skipped is exactly the false green
-the control exists to prevent.
+The registered filters that are **native qualification** filters —
+`protected_mount_` and the M004 native ones — carry tests that self-skip
+unless the host is natively qualified. The wrapper has two answers for those,
+and both are wanted:
+
+* **The gate is unset, or the host cannot satisfy it.** The tests self-skip,
+  and the wrapper **rejects** the step. That is the control working as
+  intended: a native-qualification step that skipped is exactly the false
+  green the control exists to prevent.
+* **The gate is set and the host is qualified.** The tests run, and the
+  wrapper **accepts** the step with its own counts. On this workstation, with
+  `CODEGG_RUN_C006_BWRAP_NATIVE=1` and `CODEGG_RUN_C009_BWRAP_NATIVE=1`, the
+  `protected_mount_` step passes locally **through the wrapper itself**:
+  `11 test(s) executed, 11 registered test(s) witnessed, no self-skip marker
+  emitted`. With `CODEGG_RUN_M004_RESTRICTED_USERNS=1` the restricted-userns
+  PTY step passes the same way: `1 test(s) executed, 1 registered test(s)
+  witnessed, no self-skip marker emitted`.
 
 The qualified runners set the gates — `CODEGG_RUN_C009_BWRAP_NATIVE=1`,
 `CODEGG_RUN_M004_PTY_NATIVE=1`, `CODEGG_RUN_M004_RESTRICTED_USERNS=1` — so
-the tests run there and no marker is emitted. With
-`CODEGG_RUN_M004_RESTRICTED_USERNS=1` the restricted-userns PTY step passes
-locally: `1 test(s) executed, 1 registered test(s) witnessed, no self-skip
-marker emitted`.
+the tests run there and no marker is emitted.
 
-This is recorded rather than smoothed over: the local rejection is a
-property of this host, not a defect, and the hosted native tier is the
-evidence that the qualification actually happened. §3.9 records what the
-same filters do when they are run **directly** on this host with the gates
-set, which is a different question from what the wrapper does with a step it
-cannot qualify.
+The local refusals that remain are a property of this host, not a defect:
+§3.9 records each one with the exact capability that is missing, and the
+hosted native tier remains the evidence for the filters this host cannot
+qualify.
 
 ### 3.9 The Linux filters re-run natively on this workstation
 
@@ -626,8 +632,10 @@ The hosted native tier is the primary evidence for the Linux filters, but it
 is not the only way to run them. This workstation is a Linux host with
 **bubblewrap 0.9.0**, **kernel 6.8.0-147**, **unprivileged user namespaces
 enabled** (`user.max_user_namespaces=28633`) and an **ext4** workspace, so
-the filters that need only a native bwrap backend were run here directly,
-with the same gate environment their workflow step sets.
+the filters this host can qualify were run here **through the same wrapper
+and the same registered command** the workflow step runs, with the same gate
+environment the step sets. The counts below are therefore the wrapper's own
+line, not a hand transcription of a test run.
 
 **Five distinct Linux filters run and pass natively.** The twelve Linux filter
 registrations are nine in the M004 workflow, two in the C006 workflow and one
@@ -637,11 +645,17 @@ for **seven** of the twelve registrations.
 
 | Filter | Workflow / step | Gate set locally | Result |
 |---|---|---|---|
-| Protected mount and Git regressions — `protected_mount_` | M004 + C006 | `CODEGG_RUN_C006_BWRAP_NATIVE=1`, `CODEGG_RUN_C009_BWRAP_NATIVE=1` | **11 executed, 11 passed**, 0 failed, in 20.22 s |
-| Trusted Git repository-config qualification | M004 + C006 | `CODEGG_RUN_C006_BWRAP_NATIVE=1`, `CODEGG_RUN_C009_BWRAP_NATIVE=1` | **20 executed, 20 passed**, 0 failed, in 2.32 s |
-| Prove CoW snapshot isolation from source mutation | Git CoW | — | **1 executed, 1 passed**, 0 failed, in 0.02 s |
-| Constrained PTY route refuses before target under host userns policy | M004 restricted-userns | `CODEGG_RUN_M004_RESTRICTED_USERNS=1` | **1 executed, 1 passed**, 0 failed, in 0.23 s |
-| Constrained LSP launch fails before target when userns are restricted | M004 restricted-userns | `CODEGG_RUN_M004_RESTRICTED_USERNS=1` | **1 executed, 1 passed**, 0 failed, in 0.00 s |
+| Protected mount and Git regressions — `protected_mount_` | M004 + C006 | `CODEGG_RUN_C006_BWRAP_NATIVE=1`, `CODEGG_RUN_C009_BWRAP_NATIVE=1` | **11 executed, 11 witnessed**, no self-skip marker |
+| Trusted Git repository-config qualification | M004 + C006 | `CODEGG_RUN_C006_BWRAP_NATIVE=1`, `CODEGG_RUN_C009_BWRAP_NATIVE=1` | **20 executed, 17 witnessed**, no self-skip marker |
+| Prove CoW snapshot isolation from source mutation | Git CoW | — | **1 executed, 1 witnessed**, no self-skip marker |
+| Constrained PTY route refuses before target under host userns policy | M004 restricted-userns | `CODEGG_RUN_M004_RESTRICTED_USERNS=1` | **1 executed, 1 witnessed**, no self-skip marker |
+| Constrained LSP launch fails before target when userns are restricted | M004 restricted-userns | `CODEGG_RUN_M004_RESTRICTED_USERNS=1` | **1 executed, 1 witnessed**, no self-skip marker |
+
+Each of those is the wrapper's own summary line, and each is the **same
+count the hosted step reports** for the same filter. The wrapper's witness
+count is the number of **registered** test names it saw report `ok`, which is
+why `trusted_git` is 20 executed and 17 witnessed: the filter selects 20
+tests and the registry names 17 of them.
 
 The `protected_mount_` result is the one that matters most for this
 milestone: it is the filter §3.6 and §3.7 are about, and it ran against
@@ -652,9 +666,10 @@ milestone: it is the filter §3.6 and §3.7 are about, and it ran against
 measured a **107.8 ms cold** and **39.4 ms warm** launch on real native
 containment.
 
-**The executed counts match the hosted tier exactly.** 11 and 20 and 1 and 1
-and 1 are the same numbers the hosted runs report for the same filters, so
-the local run is the same evidence, not a weaker substitute.
+**The counts match the hosted tier exactly.** 11 and 20 and 1 and 1 and 1
+executed, 11 and 17 and 1 and 1 and 1 witnessed — the same numbers the hosted
+runs report for the same filters, so the local run is the same evidence, not a
+weaker substitute.
 
 **One of those five carries an assertion this host cannot satisfy.** The
 `CODEGG_REQUIRE_OBJECT_VIEW_FICLONE` assertion inside the CoW filter
@@ -687,6 +702,14 @@ tier's qualification must come from a host with ABI 6. The
 probe additionally asserts its own precondition — `user.max_user_namespaces=0`
 — which this host does not satisfy; disabling user namespaces is a global
 host change, so it was not made here.
+
+**The control is live here too, not just in CI.** The first local attempt at
+the CoW filter used `cargo test -p egggit trusted_git_read_view_is_immutable_after_admission
+-- --nocapture` — the same tests, but not the **registered** command, which
+carries `--locked` and a different token order. The wrapper refused it:
+`the command is not a registered security filter, so nothing can be asserted
+about what it executed`. The filter was then run with the registered command
+and the counts above.
 
 **Nothing was weakened to make a local run pass.** No gate was removed from
 a test, no timeout was lowered, no test was excluded, and no assertion was
@@ -728,10 +751,11 @@ filters with its self-test rejecting all 10 injected defects.
 | `cargo test --locked --test git_fixture_isolation` | **2 passed**, 0 failed, 1 ignored (the child half) |
 | `cargo test -p codegg --locked --features lsp-real-server-tests --lib tool::lsp::` | **38 passed**, 0 failed (34.47 s) |
 | `CODEGG_RUN_C006_BWRAP_NATIVE=1 cargo test --locked --lib protected_mount_ -- --nocapture` | **11 passed**, 0 failed (0.82 s) — the native qualification filter, under the gate §3.6 enabled |
-| `CODEGG_RUN_C006_BWRAP_NATIVE=1 CODEGG_RUN_C009_BWRAP_NATIVE=1 cargo test --locked --lib protected_mount_ -- --nocapture` | **11 passed**, 0 failed (20.22 s) — re-run on the final tree; §3.9 |
-| `CODEGG_RUN_C006_BWRAP_NATIVE=1 CODEGG_RUN_C009_BWRAP_NATIVE=1 cargo test -p egggit --locked trusted_git -- --test-threads=1` | **20 passed**, 0 failed (2.32 s) — §3.9 |
-| `cargo test --locked -p egggit trusted_git_read_view_is_immutable_after_admission -- --nocapture` | **1 passed**, 0 failed (0.02 s) — §3.9 |
-| `CODEGG_RUN_M004_RESTRICTED_USERNS=1 cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture` | **1 passed**, 0 failed (0.23 s) — §3.9 |
+| `scripts/check_test_filter_execution.py --run -- cargo test --locked --lib protected_mount_ -- --nocapture` (with `CODEGG_RUN_C006_BWRAP_NATIVE=1`, `CODEGG_RUN_C009_BWRAP_NATIVE=1`) | **11 executed, 11 witnessed, no self-skip marker** — the wrapper's own line; §3.9 |
+| `scripts/check_test_filter_execution.py --run -- cargo test -p egggit --locked trusted_git -- --test-threads=1` (with the two gates) | **20 executed, 17 witnessed, no self-skip marker** — §3.9 |
+| `scripts/check_test_filter_execution.py --run -- cargo test --locked -p egggit trusted_git_read_view_is_immutable_after_admission -- --nocapture` | **1 executed, 1 witnessed, no self-skip marker** — §3.9 |
+| `scripts/check_test_filter_execution.py --run -- cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture` (with `CODEGG_RUN_M004_RESTRICTED_USERNS=1`) | **1 executed, 1 witnessed, no self-skip marker** — §3.9 |
+| `scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture` (with `CODEGG_RUN_M004_RESTRICTED_USERNS=1`) | **1 executed, 1 witnessed, no self-skip marker** — §3.9 |
 
 The last row runs the **native** qualification filter on a host with
 Bubblewrap and unprivileged user namespaces available, which is what §3.7's
@@ -1067,11 +1091,11 @@ estimate, and not a count the guard assumed.
 | `39798010491` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39798010512` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39798010549` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
-| **local** | **native re-run** | **`protected_mount_` (bwrap 0.9.0, kernel 6.8)** | **11 executed, 11 passed**, 0 failed, 20.22 s | **11** | none |
-| **local** | **native re-run** | **`trusted_git`** | **20 executed, 20 passed**, 0 failed, 2.32 s | 20 | none |
-| **local** | **native re-run** | **CoW immutability** | **1 executed, 1 passed**, 0 failed, 0.02 s | 1 | none |
-| **local** | **native re-run** | **restricted-userns PTY refusal** | **1 executed, 1 passed**, 0 failed, 0.23 s | 1 | none |
-| **local** | **native re-run** | **restricted-userns LSP refusal** | **1 executed, 1 passed**, 0 failed, 0.00 s | 1 | none |
+| **local** | **native re-run through the wrapper** | **`protected_mount_`** (bwrap 0.9.0, kernel 6.8) | **11 executed** | **11** | none |
+| **local** | **native re-run through the wrapper** | **`trusted_git`** | **20 executed** | **17** | none |
+| **local** | **native re-run through the wrapper** | **CoW immutability** | **1 executed** | **1** | none |
+| **local** | **native re-run through the wrapper** | **restricted-userns PTY refusal** | **1 executed** | **1** | none |
+| **local** | **native re-run through the wrapper** | **restricted-userns LSP refusal** | **1 executed** | **1** | none |
 
 **Every security-filter count is identical on all nine green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
@@ -1445,15 +1469,16 @@ feature, every named static guard with its self-test, and the
 Linux-capable registered filters run through the wrapper itself — including
 the two that need the `CODEGG_RUN_M004_RESTRICTED_USERNS` gate.
 
-**The Linux filters were then run directly on this host as well** (§3.9),
-with their gate environment set, so the line's Linux evidence does not rest
-on the hosted tier alone: `protected_mount_` 11/11 against this host's real
-bwrap backend, `trusted_git` 20/20, the CoW immutability filter 1/1, and the
-two restricted-userns refusal filters 1/1 each. The five that this host
-cannot run refuse with typed errors, and the reasons are named — Landlock
-ABI 4 where the code requires ABI 6, and an ext4 workspace where the CoW
-filter's FICLONE assertion needs Btrfs. Nothing was weakened to turn a
-refusal into a pass.
+**The Linux filters were then run on this host as well** (§3.9), through the
+same wrapper and the same registered commands the workflow steps run, with
+their gate environment set, so the line's Linux evidence does not rest on the
+hosted tier alone: `protected_mount_` 11 executed / 11 witnessed against this
+host's real bwrap backend, `trusted_git` 20 executed / 17 witnessed, the CoW
+immutability filter 1/1, and the two restricted-userns refusal filters 1/1
+each. The five registrations this host cannot run refuse with typed errors,
+and the reasons are named — Landlock ABI 4 where the code requires ABI 6, and
+an ext4 workspace where the CoW filter's FICLONE assertion needs Btrfs.
+Nothing was weakened to turn a refusal into a pass.
 
 **Windows evidence is not required for this line** (§5.3). This is a Linux
 sandbox admission milestone and its boundaries are Linux-only; the Windows
