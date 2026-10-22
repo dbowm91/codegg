@@ -169,6 +169,42 @@ class ObserveFaultTests(unittest.TestCase):
         self.assertEqual(observation["observed_failures"], 0)
         self.assertFalse(observation["exercised"])
 
+    def test_a_single_failed_attempt_is_an_observed_failure(self) -> None:
+        """One failure is an observed failure even when the agent never repeats.
+
+        The receipt must not report zero failures for a fault the tool
+        actually met: the repeat is a separate measurement.
+        """
+        spec = faults.FaultSpec.parse(_spec())
+        observation = faults.observe_fault(self._calls("failed"), spec)
+        self.assertEqual(observation["observed_failures"], 1)
+        self.assertEqual(observation["longest_consecutive_run"], 1)
+        self.assertFalse(observation["exercised"])
+
+    def test_a_success_between_two_failures_is_not_a_repeat(self) -> None:
+        spec = faults.FaultSpec.parse(_spec())
+        observation = faults.observe_fault(self._calls("failed", "completed", "failed"), spec)
+        self.assertEqual(observation["observed_failures"], 2)
+        self.assertEqual(observation["longest_consecutive_run"], 1)
+        self.assertFalse(observation["exercised"])
+
+    def test_the_bound_is_reached_on_the_total_failures(self) -> None:
+        """The watcher's bound is the total failures of the faulted call.
+
+        The watcher must bound a faulted trial even when the agent
+        interleaves other calls, so the bound is counted on the total.
+        """
+        spec = faults.FaultSpec.parse(_spec())
+        calls = [{"index": 0, "tool": "read", "arguments_sha256": "a" * 64, "status": "failed"},
+                 {"index": 1, "tool": "bash", "arguments_sha256": "b" * 64, "status": "completed"},
+                 {"index": 2, "tool": "read", "arguments_sha256": "a" * 64, "status": "failed"},
+                 {"index": 3, "tool": "bash", "arguments_sha256": "c" * 64, "status": "completed"},
+                 {"index": 4, "tool": "read", "arguments_sha256": "a" * 64, "status": "failed"}]
+        observation = faults.observe_fault(calls, spec)
+        self.assertEqual(observation["observed_failures"], 3)
+        self.assertTrue(observation["bound_reached"])
+        self.assertFalse(observation["exercised"])
+
 
 class ManifestTests(unittest.TestCase):
     def test_the_manifest_carries_the_induced_repeat_case(self) -> None:
@@ -224,6 +260,93 @@ class ControlExerciseTests(unittest.TestCase):
         self.assertEqual(counts["exercised"], 1)
         self.assertEqual(counts["held"], 1)
         self.assertEqual(counts["never_exercised"], ["control-b"])
+
+
+class ToolErrorEnvelopeTests(unittest.TestCase):
+    """The product reports a failed tool as a *successful* call.
+
+    The broker wraps a tool's own error in an error-marked value, so the ACP
+    wire carries ``status: "completed"`` for a call that in fact failed. The
+    harness reads the product's error envelope out of the reported output so
+    that a faulted tool is observable at all. These tests cover the reading,
+    and the guard that keeps the reading tied to the product.
+    """
+
+    def test_the_product_error_envelope_is_recognised(self) -> None:
+        self.assertTrue(faults.looks_like_tool_error(
+            'Inline { output: "Tool error: tool execution failed: Permission denied (os error 13)" }'))
+
+    def test_a_successful_output_is_not_a_failure(self) -> None:
+        self.assertFalse(faults.looks_like_tool_error('Inline { output: "the report\\n" }'))
+
+    def test_the_envelope_must_start_the_reported_output(self) -> None:
+        # A tool that succeeded and whose own content mentions the envelope
+        # later is not a failure.
+        self.assertFalse(faults.looks_like_tool_error(
+            'Inline { output: "the report mentions Tool error: sometimes" }'))
+
+    def test_every_envelope_is_still_the_product_marker(self) -> None:
+        """The coupling to the product's error envelope is guarded, not silent.
+
+        If the product changes how it reports a failed tool, this fails
+        instead of quietly leaving the control unexercised.
+        """
+        root = Path(__file__).resolve().parents[3]
+        source = "\n".join(
+            (root / path).read_text(encoding="utf-8")
+            for path in ("src/tool/broker.rs", "src/tool/contract.rs")
+        )
+        for envelope in faults.TOOL_ERROR_ENVELOPES:
+            self.assertIn(envelope, source,
+                          f"the product no longer reports {envelope!r}; the harness's "
+                          f"reading of a failed tool must be revisited")
+
+    def test_a_projected_call_reports_the_failure_the_envelope_shows(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "read",
+            "codeggArgumentsSha256": "abc"}}})
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+            "rawOutput": 'Inline { output: "Tool error: tool execution failed: '
+                         'Permission denied (os error 13)" }'}}})
+        calls = projector.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["status"], "completed")
+        self.assertTrue(calls[0]["failed"])
+
+    def test_a_projected_success_is_not_a_failure(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "read",
+            "codeggArgumentsSha256": "abc"}}})
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+            "rawOutput": 'Inline { output: "the report" }'}}})
+        self.assertFalse(projector.calls()[0]["failed"])
+
+    def test_the_receipt_never_carries_the_reported_output(self) -> None:
+        projector = autonomy_run._ToolCallProjector()
+        projector.absorb({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+            "rawOutput": 'Inline { output: "secret file content" }'}}})
+        self.assertNotIn("secret file content", repr(projector.calls()))
+
+
+class ObserveFaultFailureFlagTests(unittest.TestCase):
+    def test_a_call_the_envelope_marked_is_counted_as_a_failure(self) -> None:
+        spec = faults.FaultSpec.parse(_spec())
+        calls = [{"tool": "read", "arguments_sha256": "a", "status": "completed", "failed": True},
+                 {"tool": "read", "arguments_sha256": "a", "status": "completed", "failed": True}]
+        observed = faults.observe_fault(calls, spec)
+        self.assertEqual(observed["observed_failures"], 2)
+        self.assertTrue(observed["exercised"])
+
+    def test_a_call_without_the_flag_falls_back_to_the_status(self) -> None:
+        spec = faults.FaultSpec.parse(_spec())
+        calls = [{"tool": "read", "arguments_sha256": "a", "status": "failed"},
+                 {"tool": "read", "arguments_sha256": "a", "status": "failed"}]
+        self.assertEqual(faults.observe_fault(calls, spec)["observed_failures"], 2)
 
 
 if __name__ == "__main__":

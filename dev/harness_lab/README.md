@@ -374,6 +374,36 @@ Every rule in the seam is a **refusal**, not a repair:
 The receipt records the fault, what the transcript shows about it, and
 whether the declared bound stopped the trial.
 
+### How a failed tool is observed
+
+The product publishes a **failed** tool as a *successful* call whose output
+carries the error: the broker wraps the tool's error in an error-marked value,
+so the ACP wire reports `status: "completed"` for a call that in fact failed,
+and the projection's `ToolFailed` variant has no producer. The ACP status
+alone therefore cannot tell a failed tool from a successful one, and a fault
+would be invisible to the harness.
+
+The harness reads the product's error envelope out of the reported output and
+carries the answer as a boolean, so the reported output itself never reaches a
+receipt. The coupling to the product is **guarded**: `tests/test_autonomy_faults.py`
+asserts that every envelope the harness recognises is still the product's
+envelope, so a change to the product's error reporting fails the harness suite
+instead of quietly leaving every control unexercised.
+
+Two different counts are reported, and they mean different things:
+
+- `observed_failures` — how many times the faulted tool failed at all. A tool
+  that failed once and was not repeated produced **one** observed failure.
+- `longest_consecutive_run` — the longest run of *identical* failures with
+  nothing in between. This is the measurement: a repeat is a repeat only when
+  the identical failing call followed itself. A success between two failures
+  ends the run.
+
+`exercised` is keyed on the consecutive run, so a control the agent never
+reached is **never exercised** and is excluded from the control rate. The
+fault watcher's bound is keyed on the total, because the watcher's job is to
+bound a faulted trial even when the agent interleaves other calls.
+
 ## Unmeasured trials, bounded re-runs and cumulative budgets
 
 A trial that produced **no observation** says nothing about the candidate.

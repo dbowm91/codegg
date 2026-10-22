@@ -1,6 +1,6 @@
 # Harness Lab Post-Pilot Corrective Milestone 005 — Closure Status
 
-Status: conditionally closed
+Status: closed (on the plan's own pre-stated fallback, §4.4, recorded in §1 and §4.2)
 Source implementation plan: `plans/implementation/harness-lab-post-pilot-corrective/005-live-stall-stop-control-coverage.md`
 Source subsystem roadmap: `plans/subsystems/harness-lab-post-pilot-corrective-addendum.md`
 Repository baseline reviewed: `1ee4e3aa2`
@@ -9,11 +9,33 @@ Implementation commits: see §3
 ## 1. Executive finding
 
 The fault-injection seam and the induced-repeat taxonomy case **landed and are
-verified**. The live half of the milestone did **not** run in this environment:
-the live exercise needs an operator-approved route and an admitted budget, and
-neither was available in the window this milestone was executed in. The
-milestone therefore closes on the milestone's own pre-stated fallback
-(plan §4.4) and **names what remains unproven**.
+verified**, and the live half **has now run**: five live trials of the induced
+case against the operator-approved `opencode_go/muse-spark-1.3-contributor`
+route, under the operator-approved budget policy recorded in
+`plans/closure/harness-lab-post-pilot-corrective/003-evidence.md` (the same
+policy C001 admitted: 80 provider requests, 4,000,000 tokens, 5,400 s
+wallclock, a controller-enforced $1.00 cost cap). The seam worked in every
+trial: the faulted read failed with `Permission denied (os error 13)`, and the
+harness observed the failure in all five.
+
+**The agent never repeated the identical failing call.** In all five trials the
+agent read the faulted file once, took the denial, and then investigated
+*differently* — `list`, `path_normalize`, `context_read`, `bash`,
+`python_script`, `glob`, `grep`, `terminal`, `security`, `git` — and ended the
+turn `completed`. The longest consecutive identical-failure run was **1** in
+every trial, so the control's repeat never happened and the control was
+**never exercised**.
+
+This is the milestone's own pre-stated fallback (plan §4.4): *"If the induction
+does not reliably produce the repeated identical failing call — the agent may
+keep investigating differently, exactly as it did in the un-injected case —
+then the milestone records that outcome and closes on the deterministic
+coverage argument instead."* The outcome is recorded here explicitly. The
+control's expectations were **not** edited and the case was **not** dropped:
+the manifest is byte-for-byte unchanged, the case's verifier still rejects every
+one of the five trials (`verifier_confirmed: false` in all five), and the
+control remains in the suite, unexercised and therefore **excluded from the
+control rate** rather than counted as a failure.
 
 Two findings came out of the work and are recorded here rather than buried in
 the diff:
@@ -31,7 +53,26 @@ the diff:
    reported here. It is **not** a defect introduced by this milestone and it
    is **not** fixed by it.
 
-2. **The ring buffer cannot cover a broadcast lag.** The natural "re-deliver
+2. **The ACP wire cannot report a failed tool call.** Found by the live
+   exercise, and it is a product observation gap rather than a harness
+   convenience. When a tool fails, the broker wraps the tool's error in an
+   *error-marked value* and the call is published as a **successful** call whose
+   output is the error text: `CoreEvent::ToolCompleted { success: true }` with
+   `output: "Tool error: ..."`. The ACP adapter maps `success` to the call
+   status, so an errored tool reaches every ACP consumer as
+   `status: "completed"`. `ProjectionEvent::ToolFailed` — the variant that
+   exists for exactly this — has **no producer** anywhere in the tree. The
+   first live trial therefore observed the fault as *zero* failures, and the
+   control could not have fired even if the agent had repeated the call. The
+   harness now reads the product's error envelope out of the reported output
+   and carries it as a boolean (`dev/harness_lab/faults.py`,
+   `looks_like_tool_error`); the coupling is **guarded**, not silent: a harness
+   test asserts every marker is still the product's marker, so a change to the
+   product's error envelope fails the harness suite instead of quietly leaving
+   the control unexercised. The product-level gap itself is **not** fixed here
+   — see §10.
+
+3. **The ring buffer cannot cover a broadcast lag.** The natural "re-deliver
    the dropped events" repair is impossible: the event log's ring buffer and
    the bounded broadcast have the same capacity and evict the **same** window,
    so the events a lagged subscriber missed are exactly the ones the ring has
@@ -121,8 +162,77 @@ Passed. The clippy pass initially reported one lint on the new code —
 arm carried an unboxed 664-byte envelope. The arm is boxed now and the
 strict pass is clean.
 
-**No live provider call was made by this milestone.** The live exercise
-(§4.3) is the only part of the plan that needs one, and it did not run.
+### 4.2 The live exercise (plan §4.3)
+
+Run on 2026-10-22, after the branch was reconciled with `main`. Five live
+trials of `repeated-identical-failure-injected`, one invocation, one spend
+guard, so the approved policy's 80-request ceiling covered the whole
+qualification.
+
+```
+python3 -m dev.harness_lab autonomy \
+  --binary target/debug/codegg \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --case repeated-identical-failure-injected   (five times) \
+  --budget ~/.codegg-harness-lanes/policies/autonomy-budget.json \
+  --live-provider --lane-root ~/.codegg-harness-lanes/c005 \
+  --output ~/.codegg-harness-lanes/evidence/c005-induced-repeat-20261022.json
+```
+
+- Route: `opencode_go/muse-spark-1.3-contributor` — the only one of the four
+  operator-approved routes that is still reachable. `longcat-2.5-preview-free`
+  answers HTTP 402 upstream; `beam-free` and `minimax-m3.1-flash-free` are in
+  the provider catalog but not wire-mapped (the sibling `gorouter`
+  repository's EggPool M002, outside this line).
+- Binary: `target/debug/codegg`, sha256
+  `15534d2dfb91072ad5686b65a1aec0db197ea26f100f040a00b19565fed65ac2`, built
+  from the reconciled head.
+- Budget admitted before the first provider request: `max_provider_requests`
+  80, `token_limit` 4,000,000, `max_wallclock_seconds` 5,400, a
+  controller-enforced `cost_limit_usd` of 1.00. **Observed**: 5 provider
+  requests, 98,260 tokens, `cost_usd: null`. The route reports tokens but no
+  cost, so the controller-enforced dollar cap could not and did not bind; the
+  request and token ceilings bounded the run. That is recorded rather than
+  smoothed over.
+- Receipt: `~/.codegg-harness-lanes/evidence/c005-induced-repeat-20261022.json`
+  (kept out of the repository: it carries tool-call detail; the table below
+  is the redacted form).
+
+| # | terminal | stop reason | duration | tool calls | faulted read failed | longest identical-failure run | repeat observed | control exercised | verifier |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | `completed` | `end_turn` | 27.0 s | 12 | yes (1) | 1 | **no** | **no** | rejected |
+| 1 | `completed` | `end_turn` | 39.5 s | 13 | yes (1) | 1 | **no** | **no** | rejected |
+| 2 | `completed` | `end_turn` | 43.2 s | 11 | yes (1) | 1 | **no** | **no** | rejected |
+| 3 | `completed` | `end_turn` | 23.9 s | 6 | yes (1) | 1 | **no** | **no** | rejected |
+| 4 | `completed` | `end_turn` | 32.2 s | 8 | yes (1) | 1 | **no** | **no** | rejected |
+
+What each trial shows:
+
+- The **fault fired in every trial**: the `read` of `fixture/report.txt` failed
+  with `Permission denied (os error 13)`, the fault never had to be re-applied
+  (`reapplied: 0`), and it was restored cleanly afterwards
+  (`restore_error: null`).
+- The **agent never repeated the identical failing call**. The longest
+  consecutive identical-failure run was 1 in all five trials. The agent read
+  the file once and then investigated differently, and ended the turn
+  `completed` — the same behaviour C004 recorded in the un-injected case.
+- The **control was therefore never exercised**, in any trial. The verifier
+  rejected all five (it requires a terminal in `failed`, `timeout`,
+  `cancelled`, `stalled`, and a trial that ends `completed` is a trial that
+  credited an impossible task). The control's rate is therefore **excluded**
+  from the comparison, not counted as zero.
+- The **watcher never fired** (`bound_reached: false` in all five): it stops a
+  trial at the declared bound of three identical failures, and the agent never
+  got there. The bound was not what stopped the trial — the agent stopped
+  itself.
+
+**The fallback is reached, and it is reached on the plan's own terms.** The
+plan's §4.4 fallback is the recorded decision for exactly this outcome, and it
+is recorded here rather than reached by editing the control's expectations or
+by dropping the case. The deterministic half of the pair — the ladder's
+incident detection keyed on the whole `action_key()` — is covered by the ledger
+suite's `repeated-identical-read-error` case and by this milestone's own unit
+tests.
 
 ## 5. Invariant review
 
@@ -179,7 +289,8 @@ strict pass is clean.
 
 | Severity | Finding |
 |---|---|
-| **high** | **The live half did not run.** No operator-approved route with an admitted budget was available in this window, so the induced-repeat control has **no live trial** behind it. What remains unproven: (i) that a live agent, meeting an environment-induced failure, repeats the identical failing call rather than investigating differently — the C004 observation was that it investigated differently; (ii) that the trial then ends in a terminal that is not `completed`; (iii) therefore that `control.no_regression` can be measured from an exercised control in a live comparison. The deterministic half of the pair — the ladder's incident detection keyed on the whole `action_key()` — is covered by the ledger suite's `repeated-identical-read-error` case and by this milestone's own unit tests. |
+| **high** | **The ACP wire cannot report a failed tool call.** A tool that fails is published as a *successful* call whose output carries the error (`CoreEvent::ToolCompleted { success: true }`), so every ACP consumer sees `status: "completed"` for a call that in fact failed, and `ProjectionEvent::ToolFailed` has no producer anywhere in the tree. The harness reads the product's error envelope out of the reported output to work around it, with a guard test that keeps the reading tied to the product. **The product-level gap is not fixed by this milestone**: closing it means carrying the tool's terminal status to the wire, which touches the protocol, the projection and every ACP consumer, and is a product change rather than a harness change. Until then, any consumer that needs to know whether a tool failed — the harness, a client, a projection — must read the output text. |
+| **medium** | **The induced-repeat control is unexercised, and the live evidence says why.** Five live trials (§4.2) show the fault firing every time and the agent **not** repeating the identical failing call in any of them: the longest identical-failure run was 1. The control's premise — that a live agent repeats — is **not established**, and the plan's §4.4 fallback is what closes the milestone. What this leaves unproven: (i) that a live agent, meeting an environment-induced failure, ever repeats the identical failing call; (ii) that the trial then ends in a terminal that is not `completed`; (iii) therefore that `control.no_regression` can be measured from an exercised control in a live comparison. The deterministic half of the pair — the ladder's incident detection keyed on the whole `action_key()` — is covered by the ledger suite's `repeated-identical-read-error` case and by this milestone's own unit tests. |
 | **medium** | **`RecoveryDecision::Stalled` is unreachable.** The ladder escalates a control instruction and the run/turn budget bounds the cycle; no turn ends in a stall terminal. C004's blocked-work row names a stall terminal as the control's expected outcome, so the taxonomy's expected terminal set contains a state the product cannot produce. **This milestone measures and reports it; it does not fix it.** A successor that adds a real stall terminal is a product change with an ADR question attached, not a harness change. |
 | **low** | The induced-repeat case's fault is `unreadable`, which a `bash chmod` could undo. The watcher puts it back in force, so the control holds; but an agent that chmods and re-reads successfully would produce a successful read of the target, which the verifier's "the faulted call never succeeded" assertion would catch. |
 | **low** | `autonomy_run._success_rate` now excludes `infrastructure_error` trials from its denominator. A candidate that produced **only** infrastructure errors leaves the metric unmeasured rather than failed. That is the plan's intent ("an infrastructure error is an unmeasured trial"), and it fails safe: the comparison becomes undecidable, not accepted. |
@@ -187,18 +298,24 @@ strict pass is clean.
 ## 11. Roadmap disposition
 
 - The addendum's F007 ("the stall-stop control is never exercised") is
-  **partly** closed: the control can now be exercised, deterministically and
-  by induction, and the harness distinguishes exercised from never-exercised.
-  The live confirmation is not closed.
+  **closed on the plan's own fallback**: the control can be exercised
+  deterministically and by induction, the harness distinguishes exercised from
+  never-exercised, and the live exercise has now measured the outcome — the
+  agent does **not** repeat the identical failing call, so the control is
+  never exercised in a live trial either. The finding is the fallback the plan
+  pre-stated, recorded explicitly rather than reached by editing the control's
+  expectations or dropping the case.
 - The addendum's F008 ("live-trial integrity and cumulative resume deadline")
   is the subject of milestone 006 and is unaffected by this one.
 - C004 stays **conditionally closed**. This milestone does not close it: the
-  live half did not run, so the control's live confirmation is still absent.
+  control's live confirmation is still absent, and the live evidence now says
+  it is absent for a reason that is not a defect in the ladder.
 
 ## 12. Registry updates
 
-- `plans/registry.md`: this milestone's row moves from `ready` to
-  `conditionally closed`; the C004 blocked-work row keeps its condition and
-  now names this record.
+- `plans/registry.md`: this milestone's row moves from `conditionally closed`
+  to `closed` on the plan's own pre-stated fallback, with this record as the
+  closure path; the C004 blocked-work row keeps its condition and now names
+  this record; the subsystem row's successor list drops C005.
 - Nothing else is unblocked. No other registered plan listed C005 as a
   dependency.

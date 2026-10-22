@@ -68,6 +68,50 @@ FAULT_KEYS = frozenset({
 #: never counts towards a repeated failure.
 STATUS_FAILED = "failed"
 
+#: The envelopes the product puts around a tool's own error text.
+#:
+#: A tool that fails does **not** report a failed call on the ACP wire: the
+#: broker wraps the tool's error in an *error-marked value* and the call is
+#: published as a successful call whose output is the error text. The ACP
+#: ``tool_call_update`` therefore carries ``status: "completed"`` for a call
+#: that in fact failed, and the ACP status alone cannot tell a failed tool
+#: from a successful one.
+#:
+#: These are the product's error envelopes, taken from
+#: ``src/tool/broker.rs`` (the ``ToolValue::infrastructure_error`` arms) and
+#: ``src/tool/contract.rs`` (the ``ToolValue::denied`` / timeout arms). The
+#: harness reads them out of the reported output so that a faulted tool is
+#: observable at all.
+#:
+#: The coupling is guarded, not silent: ``tests/test_autonomy_faults.py``
+#: asserts that every marker here is still the product's marker, so a change
+#: to the product's error envelope fails the harness suite instead of quietly
+#: leaving the control unexercised.
+TOOL_ERROR_ENVELOPES = (
+    "Tool error: ",
+    "Tool not found: ",
+    "Tool is disabled: ",
+    "Execution backend unavailable: ",
+)
+
+
+def looks_like_tool_error(raw_output: str) -> bool:
+    """Return whether a reported tool output carries the product's error envelope.
+
+    The envelope is only recognised at the **start of the reported output**,
+    which is where the product puts it. A tool that succeeded and whose own
+    content happens to contain the same words later in its output is not a
+    failure.
+
+    The argument is the raw ``rawOutput`` the ACP notification carries: the
+    product reports the tool's output as a debug rendering, so the envelope
+    follows a quote rather than starting the string.
+    """
+    for envelope in TOOL_ERROR_ENVELOPES:
+        if ('"' + envelope) in raw_output:
+            return True
+    return False
+
 
 class FaultError(ValueError):
     """Raised when a fault declaration cannot be honoured.
@@ -274,6 +318,21 @@ def arguments_digest(arguments: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _call_failed(call: Mapping[str, Any]) -> bool:
+    """Return whether an observed tool call failed.
+
+    A call fails when the ACP wire said so, and also when the product's own
+    error envelope shows in the reported output: the product publishes a
+    failed tool as a *successful* call carrying an error-marked value, so the
+    ACP status alone would report the faulted tool as a success and the
+    control would never fire.
+    """
+    failed = call.get("failed")
+    if isinstance(failed, bool):
+        return failed
+    return call.get("status") == STATUS_FAILED
+
+
 def observe_fault(tool_calls: list[Mapping[str, Any]], spec: FaultSpec) -> dict[str, Any]:
     """Return what the transcript shows about the fault.
 
@@ -290,7 +349,7 @@ def observe_fault(tool_calls: list[Mapping[str, Any]], spec: FaultSpec) -> dict[
     for call in tool_calls:
         key = (call.get("tool"), call.get("arguments_sha256"))
         attempts[key] = attempts.get(key, 0) + 1
-        if call.get("status") == STATUS_FAILED:
+        if _call_failed(call):
             failures[key] = failures.get(key, 0) + 1
             if key == previous:
                 run += 1
@@ -298,7 +357,10 @@ def observe_fault(tool_calls: list[Mapping[str, Any]], spec: FaultSpec) -> dict[
                 run = 1
                 previous = key
             longest_run = max(longest_run, run)
-        elif key != previous:
+        else:
+            # Any call that did not fail ends the run of identical failures,
+            # including a *successful* call of the same tool with the same
+            # arguments: a success between two failures is not a repeat.
             previous = None
             run = 0
     repeated = [
@@ -307,13 +369,25 @@ def observe_fault(tool_calls: list[Mapping[str, Any]], spec: FaultSpec) -> dict[
         for key, count in attempts.items() if count >= 2
     ]
     repeated.sort(key=lambda entry: (-entry["failures"], -entry["attempts"]))
-    faulted = [entry for entry in repeated if entry["tool"] == spec.tool]
-    observed = faulted[0]["failures"] if faulted else 0
+    # The number of failures of the *faulted tool*, across every call to it.
+    # It is deliberately not read off the repeated calls only: an agent that
+    # fails once and then investigates differently produced one observed
+    # failure, and a receipt that reported zero would say the fault was never
+    # met. The repeat is reported separately, as the longest consecutive run.
+    observed = sum(count for key, count in failures.items() if key[0] == spec.tool)
     return {
         "observed_failures": observed,
         "longest_consecutive_run": longest_run,
+        # The bound the fault watcher enforces, on the *total* failures of the
+        # faulted call: the watcher's job is to bound the trial, and an agent
+        # that failed the same call three times with other calls in between has
+        # still failed it three times.
         "bound_reached": observed >= spec.max_consecutive_failures,
-        "exercised": observed >= spec.min_consecutive_failures,
+        # The measurement, on the *consecutive* run: a repeat is a repeat only
+        # when the identical failing call followed itself without a success in
+        # between. A control the agent never reached is not exercised, and an
+        # unexercised control is never a pass.
+        "exercised": longest_run >= spec.min_consecutive_failures,
         "repeated_calls": repeated,
     }
 
