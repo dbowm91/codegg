@@ -156,6 +156,10 @@ Medians are computed **within** a cache state and never across the mixed set, be
 
 Runs are dispatched **serially**, not concurrently: the milestone plan's §8 requires it so that the two sides do not compete for the same runner capacity, and a contended pair is a worse measurement than a sequential pair. One run is in flight at a time.
 
+**The order is interleaved (before, after, before, after, …), not all-before-then-all-after.** Eight runs span several hours, and the hosted fleet's load is not constant across that window. Interleaving pairs each before-run with an after-run in the same period, so a slow hour on the fleet lands on both sides rather than on one. Running all four before-runs and then all four after-runs would leave the after-side's numbers describing the fleet's state at a different time of day than the before-side's.
+
+The interleaving is fixed here, before any run is dispatched.
+
 ---
 
 ## 5. The number of runs per side
@@ -167,12 +171,12 @@ The distribution is fixed by the cache: `Swatinem/rust-cache@v2` keys its entry 
 | Run | Side | Expected cache state |
 |---|---|---|
 | 1 | before | cold |
-| 2 | before | warm |
+| 2 | after | cold |
 | 3 | before | warm |
-| 4 | before | warm |
-| 5 | after | cold |
+| 4 | after | warm |
+| 5 | before | warm |
 | 6 | after | warm |
-| 7 | after | warm |
+| 7 | before | warm |
 | 8 | after | warm |
 
 This yields **n = 3 warm** per side for the median and its dispersion, and **n = 1 cold** per side.
