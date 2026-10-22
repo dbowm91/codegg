@@ -427,6 +427,16 @@ top-level files became 19 families (plus the 2 pre-existing directory
 targets), and the 13 gated targets became 4 gated families. The target
 topology is described under "Root integration-test families" below.
 
+After the fifth merge (2026-10-22, at `f4019a410`), the root package has
+**24** test targets and the workspace has **52**: `main`'s sixteen new
+top-level files were absorbed into the families that owned their subject,
+thirteen of them, and the three that stay top-level are named by a hosted
+qualification lane. `codegg-core`'s two (`session_launch` and `writer_permit`)
+are counted in the workspace figure and are outside the root package's family
+mechanism. Method: `cargo metadata --no-deps --format-version 1`, counting
+targets of kind `test` per package — the same method as the two figures
+above.
+
 ### Known macOS-local failures
 
 On **macOS** the workspace suite has six failures that are **not** regressions.

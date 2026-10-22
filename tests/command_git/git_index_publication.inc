@@ -13,7 +13,7 @@
 //! crash recovery — is the production code in both cases.
 //!
 //! The contained staging step itself is proven by the hosted Linux runner in
-//! `tests/linux_m004_process_ipc.rs`.
+//! `tests/linux_git_test_support/linux_m004_process_ipc.inc`.
 
 use super::common;
 

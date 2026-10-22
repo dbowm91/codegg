@@ -191,7 +191,7 @@ only on the native runner):
   request-carried `LegacyUnrestricted` cannot widen an `OfflineRequired`
   authorization, because the snapshot is the ceiling.
 
-One native test in `tests/linux_m004_process_ipc.rs`:
+One native test in `tests/linux_git_test_support/linux_m004_process_ipc.inc`:
 
 - `required_process_tier_fails_closed_when_user_namespaces_are_restricted` —
   the test the hosted job has been filtering on. It asserts the host really has

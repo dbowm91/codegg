@@ -16,7 +16,7 @@
 # `ok`, so the step is green and the boundary was never exercised.
 #
 # This repository has already paid for that lesson once.
-# `tests/linux_m004_process_ipc.rs` carries the note:
+# `tests/linux_git_test_support/linux_m004_process_ipc.inc` carries the note:
 #
 #     The hosted job that runs this probe used to filter on this test name
 #     before the test existed, so the step matched zero tests and stayed
