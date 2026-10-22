@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -503,6 +504,19 @@ def check_registry(root: Path) -> list[str]:
             problems.append(
                 f"{entry.label}: the registered filter {entry.filter!r} does not appear in its own command"
             )
+
+        key = shell_invocation_key(entry.command)
+        if key != entry.command:
+            problems.append(
+                f"{entry.label}: the registered command does not survive the shell-to-argv path, so the "
+                f"runtime lookup would miss it and the step would be refused. The wrapper would look up "
+                f"{key!r}, but the registry holds {entry.command!r}"
+            )
+        elif not expectations_for(shlex.split(entry.command), root):
+            problems.append(
+                f"{entry.label}: the runtime lookup for the registered command resolves to no expected "
+                "test, so the step would be refused"
+            )
         if "scripts/check_test_filter_execution.py --run" not in workflow_text:
             problems.append(
                 f"{entry.workflow}: no step runs through `scripts/check_test_filter_execution.py --run`, "
@@ -619,6 +633,38 @@ def check_output(output: str, expected_tests: tuple[str, ...], observe_skips: bo
                 f"run: {markers[0][:160]}"
             )
     return problems
+
+
+def normalise_command_argv(raw: list[str]) -> list[str]:
+    """The command tokens the wrapper will look up, from the argv it received.
+
+    The shell passes the command as `-- <tokens>`. `argparse`'s REMAINDER
+    keeps that separator, so exactly one leading `--` is removed here.
+
+    Only the **leading** separator is removed. A cargo command also carries
+    an interior `--`, the one that separates cargo's own arguments from the
+    test binary's arguments:
+
+        cargo test --locked -p egggit some_test -- --nocapture
+
+    Stripping that one too changes the command, so the registry lookup — which
+    is by the joined command — would miss every entry, and the wrapper would
+    refuse a step whose command is perfectly correct.
+    """
+    if raw and raw[0] == "--":
+        return raw[1:]
+    return raw
+
+
+def shell_invocation_key(command: str) -> str:
+    """The registry key the wrapper computes for a command the shell passed.
+
+    This is the exact path a registered command travels at run time: the
+    shell splits it into tokens, hands them to the wrapper behind a `--`, and
+    the wrapper looks the joined remainder up in the registry. A registered
+    command whose key differs from itself can never be found.
+    """
+    return " ".join(normalise_command_argv(["--"] + shlex.split(command)))
 
 
 def expectations_for(command: list[str], root: Path) -> tuple[str, ...]:
@@ -805,6 +851,16 @@ def self_test() -> int:
                     lambda work: _fold_wrapper_run(work, block_probe),
                     "plain scalar",
                 ),
+                (
+                    "the registered command does not survive the shell-to-argv path",
+                    lambda work: mutate(
+                        work,
+                        str(MANIFEST_PATH),
+                        probe.command,
+                        probe.command.replace(" -- ", "  -- ", 1),
+                    ),
+                    "shell-to-argv path",
+                ),
             ]
 
             for case in cases:
@@ -970,7 +1026,7 @@ def main() -> int:
         return self_test()
 
     if args.run:
-        command = [part for part in args.command if part != "--"]
+        command = normalise_command_argv(list(args.command))
         if not command:
             print("filter-execution control failed: --run needs a command", file=sys.stderr)
             return 1

@@ -36,14 +36,14 @@ M003/C010 admission, an ADR, or a Git semantic.
 | WP1: record exact CI runner successes/failures and revision | `plans/closure/branch-and-ci-stabilization/001-status.md` §4; the hosted run identifiers and revisions are recorded there | met |
 | WP2: merge/rebase current `main` into an isolated worktree with no force push or loss of parallel work; inspect every conflict | Five reconciliations, all merges (not rebases), recorded in the branch-and-ci closure. The candidate was merged to `main` as PR #149 — merge commit `2c1953347` | met |
 | WP2: preserve accepted ceilings, C007 journal/migration, C014/C023 obtained facts, and current mainline features | Reconciliation #5 proved that a textually clean merge was **not** sufficient: `main` changed the scratch domain type and the scratch DTO without touching the mapping site in `src/core/daemon_scratch.rs`. The compile-level proof (`cargo check --workspace --all-targets --locked`, exit 0) is what closed it | met |
-| WP3: the four Git-routing and ten security-review tests must own a temp Git worktree or bind a scoped repository cwd per test; no reliance on mutable shared process cwd or host repo state | **Partially advanced in this pass.** The two fixtures that used a *fixed* shared path under `.codegg/test_tmp/` — `tests/git_execution_origin_matrix.rs` (`row_5c`) and `tests/identity_m002_live_audit_hooks.rs` (`m002-routed-git`) — now use a process-unique directory, so two concurrent test processes can no longer `remove_dir_all` each other's repository. The complete audit of the named test set is **not** done | **outstanding** (§10.1) |
-| WP3: reproduce with true concurrent tests and temporary repositories | Not done as a dedicated reproduction; the fix removes the shared-mutable precondition rather than demonstrating the race | **outstanding** (§10.1) |
+| WP3: the four Git-routing and ten security-review tests must own a temp Git worktree or bind a scoped repository cwd per test; no reliance on mutable shared process cwd or host repo state | **Partially advanced in this pass.** The two fixtures that used a *fixed* shared path under `.codegg/test_tmp/` — `tests/git_execution_origin_matrix.rs` (`row_5c`) and `tests/identity_m002_live_audit_hooks.rs` (`m002-routed-git`) — now use a process-unique directory, so two concurrent test processes can no longer `remove_dir_all` each other's repository. The complete audit of the named test set is **not** done | **discharged by C004** — `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md` §3.1 |
+| WP3: reproduce with true concurrent tests and temporary repositories | Not done as a dedicated reproduction; the fix removes the shared-mutable precondition rather than demonstrating the race | **discharged by C004** — C004 §3.2, `tests/git_fixture_isolation.rs` |
 | WP3: preserve legitimate typed `BackendUnavailable[RepositoryAlias]` refusals; no blanket widening of Git subcommand authorization | Preserved. No Git authorization was changed in this pass; the fixtures still assert the typed refusal | met |
-| WP4: instrument elapsed phase and contention for the three known load-sensitive LSP tests; retain normal functional assertions; prefer per-test fixtures or a bounded scheduling fix; if the cause remains unknown, mark **conditional** rather than lowering the timeout, disabling or silently excluding tests | The three live-language-server tests are **not** in the default sweep: `crates/egglsp/tests/real_server_smoke.rs` carries `required-features = ["lsp-real-server-tests"]`, and the timeout was not lowered — the 120-second bound and the functional assertions are retained in that file. The required per-test fixture work and the contention characterization are **not** done | **conditional** (§10.2) |
-| WP5: ensure security test filters actually execute named tests; assert count, no self-skip marker and positive/negative controls | **Not delivered.** No filter-execution control was added in this pass | **outstanding** (§10.3) |
+| WP4: instrument elapsed phase and contention for the three known load-sensitive LSP tests; retain normal functional assertions; prefer per-test fixtures or a bounded scheduling fix; if the cause remains unknown, mark **conditional** rather than lowering the timeout, disabling or silently excluding tests | The three live-language-server tests are **not** in the default sweep: they are the `#[cfg(feature = "lsp-real-server-tests")]` unit tests in `src/tool/lsp.rs`, and the timeout was not lowered — the 120-second bound and the functional assertions are retained | **discharged by C004** — the cause was diagnosed rather than marked conditional; see the factual correction below and C004 §3.3 |
+| WP5: ensure security test filters actually execute named tests; assert count, no self-skip marker and positive/negative controls | **Not delivered.** No filter-execution control was added in this pass | **discharged by C004** — C004 §3.4 |
 | WP5: identify workflow path-trigger omissions in `.github/workflows/linux-m004-native.yml` so Linux owner code changes trigger native qualification | **Delivered in this pass for the Tool Program / policy paths.** `src/tool/tool_program.rs` and `src/tool/tool_program_context.rs` were added to both the `pull_request` and `push` path lists; `src/scheduler/**` already covered the executor. The omission is now enforced mechanically by `scripts/check_network_intent_owner_wiring.py`, which checks the coverage in **both** blocks — a path that qualifies only a pull request would leave a direct push to `main` unqualified | met (for the paths in scope) |
-| WP5: record scope for `.github/workflows/linux-c006-native.yml` and macOS compile | Not delivered in this pass | **outstanding** (§10.3) |
-| WP6: provide a small per-boundary changed-file/commit ledger, exact `main` merge baseline, migration/ADR integrity result, CI qualification matrix and recommended smaller review chunks | The merge baseline and the CI qualification matrix exist in `plans/closure/branch-and-ci-stabilization/001-status.md`. The per-boundary ledger and the recommended review chunks are **not** produced | **outstanding** (§10.4) |
+| WP5: record scope for `.github/workflows/linux-c006-native.yml` and macOS compile | Not delivered in this pass | **discharged by C004** — C004 §5.3 records the C006 native tier's scope and states the macOS compile as **not run** on the corrective head, not as a pass |
+| WP6: provide a small per-boundary changed-file/commit ledger, exact `main` merge baseline, migration/ADR integrity result, CI qualification matrix and recommended smaller review chunks | The merge baseline and the CI qualification matrix exist in `plans/closure/branch-and-ci-stabilization/001-status.md`. The per-boundary ledger and the recommended review chunks are **not** produced | **discharged by C004** — C004 §4.4, `plans/closure/linux-sandbox-admission-follow-up-corrective/004-review-pack.md` |
 | Verification: `git diff --check`, `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `scripts/verify.sh quick`, and the named static guards | §4 | met for the local scope |
 | Verification: `cargo test --locked --test git_execution_origin_matrix`, `--test command_routing_execution_ownership`, `cargo test -p codegg --lib security::workflow` | §4.4 | met |
 | Verification: `cargo nextest run --workspace --locked --profile ci --no-fail-fast` at an unchanged revision, plus hosted native/macOS jobs | The branch-wide sweep was **not** re-run locally in this pass; the local scope was narrowed at the user's direction because the environment is contended. The branch-wide hosted evidence for the merged baseline is recorded in the branch-and-ci closure (hosted CI `39649501713`: 15,841 run, 15,841 passed, 8 skipped, on `4c08f2cc5`) | **outstanding** (§10.5) |
@@ -180,7 +180,18 @@ fixture paths are test-local.
 
 ## 10. Unresolved findings
 
+**Update — 2026-10-22: all five findings owned by this milestone are
+discharged.** C004 closed them; the closure record is
+`plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`.
+§10.1–§10.5 are kept below as the findings **as they were stated here**, so
+that the record of what was open stays intact, with a discharge line on each.
+§10.6 was already assigned to upstream and is unchanged.
+
 ### 10.1 The complete test-fixture isolation audit (severity: medium, owner: C001 corrective)
+
+> **Discharged by C004** (§3.1, §3.2). All 14 named tests own a per-test
+> temporary repository; the concurrency reproduction is a committed test,
+> proved non-vacuous against an injected shared fixed path.
 
 Two shared-path Git fixtures were fixed in this pass. The plan's named set —
 the four Git-routing and ten security-review tests — has **not** been
@@ -194,6 +205,22 @@ same fixture do not interfere.
 
 ### 10.2 The LSP load-sensitivity characterization (severity: medium, owner: C001 corrective)
 
+> **Discharged by C004** (§3.3). The cause was **diagnosed**, so the
+> conditional path was not needed: the cold call is bounded by the 30 s
+> readiness wait, which waits for a published
+> `textDocument/publishDiagnostics`, and a fixture whose opened file produces
+> no diagnostic never publishes one. A per-test workspace with a
+> diagnostic-bearing file cuts the cold call from >120 s to ~3.7–4.4 s. No
+> timeout was lowered and no test was excluded.
+>
+> **Factual correction.** This finding — and the §2 matrix row above —
+> cited `crates/egglsp/tests/real_server_smoke.rs` as the location of "the
+> three live-language-server tests". That file holds five *different* smoke
+> tests with its own `TEST_TIMEOUT = 120s`. The three tests are the
+> `#[cfg(feature = "lsp-real-server-tests")]` unit tests in
+> `src/tool/lsp.rs`. The correction does not change the finding or its
+> severity; it corrects where the tests are.
+
 The three live-language-server tests are behind `lsp-real-server-tests` and
 keep their functional assertions and their 120-second bound. What is missing
 is the elapsed-phase and contention instrumentation, and the per-test
@@ -205,6 +232,13 @@ decision on whether the cause is understood — marked conditional if it is
 not, rather than lowering the timeout or widening an exclusion.
 
 ### 10.3 Security-filter execution controls and the C006/macOS scope record (severity: medium, owner: C001 corrective)
+
+> **Discharged by C004** (§3.4, §5.3). All 20 security filters are
+> registered and wrapped; the runtime control proves a non-zero executed
+> count, the absence of a self-skip marker, and every named test's witness,
+> with a positive/negative control pair. The C006 native tier's scope and
+> the macOS compile are recorded — the macOS compile is recorded as **not
+> run** on the corrective head, not as a pass.
 
 No control asserts that a security test filter actually executed the named
 tests, and no count, self-skip-marker or positive/negative control check was
@@ -218,6 +252,13 @@ scope record for the C006 native workflow and the macOS compile.
 
 ### 10.4 The per-boundary review pack (severity: low, owner: C001 corrective)
 
+> **Discharged by C004** (§4.4). The pack is
+> `plans/closure/linux-sandbox-admission-follow-up-corrective/004-review-pack.md`:
+> a 44-boundary changed-file/commit ledger over the line's 322 commits and
+> 302 files, the exact merge baseline, the migration/ADR integrity result,
+> the CI qualification matrix, a per-boundary owner map, and a 9-chunk
+> risk-ordered review proposal.
+
 The per-boundary changed-file/commit ledger and the recommended smaller
 review chunks were not produced.
 
@@ -227,6 +268,11 @@ migration/ADR integrity result, the CI qualification matrix, and a proposed
 review chunking.
 
 ### 10.5 Branch-wide hosted evidence on the corrective head (severity: medium, owner: C001 corrective)
+
+> **Discharged by C004** (§5). The branch-wide hosted sweep was run on the
+> corrective head `a6e596642` and the run links and executed counts are
+> recorded there. The Windows and macOS platform behaviour of that head is
+> recorded as **not awaited / not run** — not as a pass.
 
 The branch-wide sweep was not re-run locally in this pass, and the hosted
 sweep was not run on the corrective head. The branch-wide hosted evidence for
@@ -245,21 +291,32 @@ is not attributable to this branch. It is recorded, not fixed here.
 
 ## 11. Roadmap disposition
 
-- **C001** — **corrective pass required**. The integration and evidence
-  objective is delivered and merged; the plan's exit condition is not fully
-  met because the filter-execution controls and the review pack are missing.
+- **C001** — **closed** (updated 2026-10-22). The integration and evidence
+  objective was delivered and merged; the remaining findings — the
+  fixture-isolation audit, the LSP characterization, the filter-execution
+  controls, the review pack and the hosted evidence — were discharged by
+  C004, whose closure record is
+  `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`.
+  §10.6 was already assigned to upstream and remains recorded, not fixed
+  here.
 - **C002** — closed conditionally; see
   `plans/closure/linux-sandbox-admission-follow-up-corrective/002-status.md`.
 - **C003** — untouched and still blocked behind ADR-0044 acceptance, the C004
-  production vertical and the M005 production owner qualification.
+  production vertical in the M005 writer-containment line and the M005
+  production owner qualification. C004 in *this* line is the evidence and
+  review-pack milestone and does not satisfy that dependency.
 
 ## 12. Registry updates
 
 - The subsystem row for "Linux sandbox admission post-review corrective" in
-  `plans/registry.md` records C001 as **corrective pass required** with this
-  record's path.
+  `plans/registry.md` records C001 as **closed** (updated 2026-10-22) with
+  this record's path.
 - A corrective plan is registered under this subsystem for the remaining
   C001 work: `plans/implementation/linux-sandbox-admission-follow-up-corrective/004-c001-remaining-evidence-and-review-pack.md`.
+  It is **closed**; its record is
+  `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
+  and its review pack is
+  `plans/closure/linux-sandbox-admission-follow-up-corrective/004-review-pack.md`.
 - **Unblock audit:** C003 was audited. Its hard dependencies (ADR-0044
   acceptance, the C004 production vertical, the M005 production owner
   qualification) are unchanged by this milestone, so C003 is **not**
