@@ -737,6 +737,12 @@ Its **own** sweep is green on all six workflows (`39771529333` attempt 2,
 its code-bearing ancestor. That tip's CI failed once first, on the
 jobs/scheduler flake §10.4 records; the re-run on the identical tree passed.
 
+The **closing head** is `afba68e7b`, one documentation-only commit further
+(`git diff --name-only 659e9324a..afba68e7b` names this record and the
+review pack). Its sweep is green on all six workflows (`39785865715`,
+`39785865762`, `39785865747`, `39785865810`, `39785865725`,
+`39785866318`), with the same filter counts as every other green head.
+
 ### 5.0 The base moved under this branch
 
 `main` advanced from `95bb9c5ae` (the C002 merge, PR #158) to `47f5572b1`
@@ -814,6 +820,12 @@ the evidence that the sweep is doing work.
 | `39771529385` | `659e9324a` | Linux Git object snapshot CoW qualification | **success** |
 | `39771529320` | `659e9324a` | Windows process launcher | **success** |
 | `39771529459` | `659e9324a` | Shared checkout macOS qualification | **success** — `main`'s M005 shared-checkout lane; see §5.3 |
+| `39785865715` | `afba68e7b` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
+| `39785865762` | `afba68e7b` | Linux M004 process and IPC qualification | **success** |
+| `39785865747` | `afba68e7b` | Linux C006 protected mount qualification | **success** |
+| `39785865810` | `afba68e7b` | Linux Git object snapshot CoW qualification | **success** |
+| `39785865725` | `afba68e7b` | Windows process launcher | **success** |
+| `39785866318` | `afba68e7b` | Shared checkout macOS qualification | **success** |
 
 **All five milestone workflows are green on the closing head `99f15e180`**, and
 so is the sixth, `main`'s macOS shared-checkout lane. The branch tip
@@ -925,8 +937,16 @@ estimate, and not a count the guard assumed.
 | `39771529325` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39771529385` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39771529320` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39785865715` | `CI` | `Workspace tests` | **16,061 tests run, 16,061 passed**, 9 skipped | — | none |
+| `39785865762` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39785865762` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39785865762` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39785865747` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39785865747` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39785865810` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39785865725` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
 
-**Every security-filter count is identical on all five green heads**: the same
+**Every security-filter count is identical on all six green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
 on every job. That is the reproducibility claim made concrete, and it holds
 exactly where it is claimed — on the filter steps, which are this milestone's
