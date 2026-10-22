@@ -10,8 +10,8 @@ Discharged findings: `plans/closure/linux-sandbox-admission-follow-up-corrective
 ## 1. Executive finding
 
 C001 merged its integration candidate and left six findings open. C004 was
-registered to discharge them, and it does: all six are closed, none of them by
-weakening anything.
+registered to discharge them, and it does: five of the six are closed and the
+sixth is recorded and carried forward, none of them by weakening anything.
 
 The three findings that carried engineering work were discharged at the
 source, not by relaxing a check:
@@ -43,8 +43,8 @@ pre-existing Desktop E2E failure) are discharged or recorded.
 
 **Five defects this milestone introduced were caught by the repository's
 existing guards and by the hosted sweep, and all five are fixed.** They are
-recorded in §3.5 rather than hidden. Two of them were found by the hosted
-sweep, which is the sweep doing its job.
+recorded in §3.5 rather than hidden. **Three of them were found by the hosted
+sweep** — two in §3.5 and the fifth in §3.6 — which is the sweep doing its job.
 
 **And the control found a false green that was already there.** The M004
 native tier's "Protected mount and Git regressions" step was reporting a
@@ -506,6 +506,14 @@ evidence that the qualification actually happened.
 | `python3 scripts/check_test_filter_execution.py` | 20 registered filters verified |
 | `python3 scripts/check_test_filter_execution.py --self-test` | 10 injected defects, each rejected |
 
+**The gate was re-run on the merged tree, not carried over.** `main` advanced
+under this branch (§5.0) and brought Rust source changes with it, so the
+quick gate was executed again on the tree that `259794bb9` produces, not on
+the pre-merge tree the gate first passed on. It reports **Quick verification
+passed** there: every guard green, `cargo check --workspace --all-targets
+--locked` clean, and the filter-execution control verifying all 20 registered
+filters with its self-test rejecting all 10 injected defects.
+
 ### 4.2 The focused test targets
 
 | Target | Result |
@@ -845,7 +853,8 @@ C004 adds no ADR and changes no ADR. The three ADRs the C001 line touched
 ### 10.1 The macOS target compile of this head (severity: low, owner: this milestone's reviewer)
 
 The **Windows** process-launcher job was run and **passed** on the corrective
-head (`39722365990`), so the seven block-scalar conversions and the interior
+head (`39748205884`, and again on `39740206635`, `39735856171` and
+`39731707127`), so the seven block-scalar conversions and the interior
 `--` fix are both proven on the platform that needed them.
 
 The **macOS** target compile was **not run** on this head. It is recorded as
