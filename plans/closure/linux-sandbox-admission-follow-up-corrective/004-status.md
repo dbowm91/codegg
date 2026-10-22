@@ -560,7 +560,7 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Corrective head:** `e3685b5680e63ace9e7adde0e69ee03c82e9c66b` on
+**Corrective head:** `18bffb33906b0896c7b17fe06767ee485bac28fe` on
 `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
 
@@ -575,11 +575,17 @@ doing work.
 |---|---|---|---|
 | `39720061964` | `a6e596642` | Linux Git object snapshot CoW qualification | **failure** — the wrapper refused the step; §3.5 defect 3 |
 | `39720934488` | `8aebb0b38` | Linux C006 protected mount qualification | **failure** — the wrapper could not see a witness; §3.5 defect 4 |
-| `39722366126` | `e3685b568` | `CI` — the default sweep | **success** — 16,031 tests run, 16,031 passed, 9 skipped |
 | `39722365986` | `e3685b568` | Linux M004 process and IPC qualification | **failure** — the wrapper caught a self-skip in the protected-mount step; §3.6 |
-| `39722366140` | `e3685b568` | Linux C006 protected mount qualification | **success** |
-| `39722366040` | `e3685b568` | Linux Git object snapshot CoW qualification | **success** |
-| `39722365990` | `e3685b568` | Windows process launcher | **success** |
+| `39731707246` | `18bffb339` | `CI` — the default sweep | **success** — 16,031 tests run, 16,031 passed, 9 skipped |
+| `39731707315` | `18bffb339` | Linux M004 process and IPC qualification | **success** — `restricted-userns-fails-closed` **success**, `process-ipc` **success**, `git-cost-pilot` skipped |
+| `39731707200` | `18bffb339` | Linux C006 protected mount qualification | **success** |
+| `39731707258` | `18bffb339` | Linux Git object snapshot CoW qualification | **success** |
+| `39731707127` | `18bffb339` | Windows process launcher | **success** |
+
+**All five workflows are green on the final head.** The three failures above
+are the earlier heads, and each one found a defect that is now fixed and
+guarded — they are recorded here rather than hidden, because they are the
+evidence that the sweep is doing work.
 
 The macOS target compile was **not run** on this head; see §5.3.
 
@@ -590,12 +596,19 @@ estimate, and not a count the guard assumed.
 
 | Run | Workflow | Step | Executed | Witnesses | Self-skip marker |
 |---|---|---|---|---|---|
-| `39722366126` | `CI` | `Workspace tests` | **16,031 tests run, 16,031 passed**, 9 skipped (1 slow) | — | none |
-| `39722366140` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
-| `39722366140` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
-| `39722366040` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
-| `39722365990` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
-| `39722365986` | M004 | 7 filter steps before the protected-mount step | **1 each** | **1 each** | none |
+| `39731707246` | `CI` | `Workspace tests` | **16,031 tests run, 16,031 passed**, 9 skipped (1 slow) | — | none |
+| `39731707315` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39731707315` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39731707315` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39731707200` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39731707200` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39731707258` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39731707127` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+
+The M004 protected-mount step's **11 executed, 11 witnessed, no marker** is
+the fix in §3.6 working: before it, the step reported `11 passed` while
+qualifying **9**, because two of the eleven sat behind a gate the job did not
+enable and one of them skipped silently.
 
 The Windows job's **8** registered filters run in **6** steps on a
 `pull_request`: the WRITE_RESTRICTED feasibility probe and the C044 token-flag
@@ -610,8 +623,8 @@ requires. The registry's list is the *required* set, not the exhaustive one.
 ### 5.3 The platform scope, stated honestly
 
 * The **Windows** process-launcher job was run and **passed** on the
-  corrective head (`39722365990`). It was not awaited on the intermediate
-  heads, and the final result is recorded from the run rather than inferred.
+  corrective head (`39731707127`). The final result is recorded from the run
+  rather than inferred.
 * The **macOS** target compile was **not run** on this head. It is recorded
   as *not run*, not as a pass.
 * The plan's WP5 asks to "await the native and macOS jobs only for the
