@@ -373,7 +373,13 @@ and are kept as written. Since then **M004 closed** on a live compile-correction
 trace (`plans/closure/harness-lab/004-status.md` §3.1) and **M005 closed** on a
 paired pilot that ran the frozen Task 2 fixture on one binary under one policy
 with three allowed routes (`plans/closure/harness-lab/005-status.md` §5.1), so
-the provider-pair condition is discharged. C004 remains conditional on the five
-unmaterialized verifier bodies and the paired baseline/candidate comparison over
-the stable groups against the autonomy taxonomy, which are the two conditions
-still named as open in its own record.
+the provider-pair condition is discharged. The five verifier bodies and the
+paired baseline/candidate comparison over the stable groups have since been
+discharged too — the comparison ran live and its verdict was **`rejected`**,
+because both binaries solved all five task cases and the taxonomy exercises
+the ACP path where C003's headless-adapter fix does not apply
+(`plans/closure/harness-lab-post-pilot-corrective/004-status.md` §5). C004
+remains conditional on the one condition that is still open in its own record:
+the taxonomy's protected stall-stop control was never exercised by a live
+trial, because the agent investigated the missing file instead of repeating
+the identical failing read.

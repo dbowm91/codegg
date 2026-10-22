@@ -49,10 +49,28 @@ OK
 | Changing the manifest bytes changes the digest | `DigestTests` |
 | The loader imports no network or subprocess module | `ModuleBoundaryTests` |
 
-## 3. The materialized reference case
+## 3. The materialized case bodies
 
 `read-search-patch-python` is written out end to end under
-`dev/autonomy_fixtures/read-search-patch-python/`.
+`dev/autonomy_fixtures/read-search-patch-python/`, and the five cases that
+were specified but not authored are now written out the same way:
+
+| Case | Family | The defect the agent is asked to find | The verifier |
+|---|---|---|---|
+| `read-search-patch-python` | `read_search_patch` | a record parser drops the record's trailing empty field | re-derives the contract in Python against the candidate's own module |
+| `read-search-patch-rust` | `read_search_patch` | a Rust record parser folds trailing empty fields away | compiles the candidate crate with `rustc` and runs a hidden Rust contract test |
+| `compile-debug-rust` | `compile_debug` | a compile error (`E0560`) plus three independent logic bugs | compiles with `rustc`, runs the provided test and a hidden contract test |
+| `background-job-wait` | `background_job` | a two-minute build that must be backgrounded, waited on, and reported | judges the **transcript**: a `job` call, other work while it ran, a completed trial, and the build's artifact |
+| `repeated-distinct-tool-calls` | `repeated_tool_calls` | nothing to fix — the task is to investigate with **distinct** calls | judges the transcript: five distinct calls, three tools, no identical repeat, trial completed |
+| `repeated-identical-failure-stall` | `repeated_tool_calls` | **protected control** — a file that does not exist | judges the transcript: the identical failing call really repeated, and the trial was stopped rather than credited |
+
+Every Rust case is a **dependency-free** crate compiled with `rustc` directly —
+no `cargo`, no registry, no target directory — so the taxonomy keeps its
+`network: "none"` promise and a verification run leaves no artifacts behind.
+
+The three properties below are proven by execution for **every** case, not for
+one reference case: the verifier fails while the task is unsolved, passes once
+the task is solved, and refuses an edited frozen file.
 
 ### The verifier fails while the task is unsolved
 
@@ -100,12 +118,27 @@ Weakening the provided test is not a way to pass.
 
 ### These are standing tests
 
+`dev/harness_lab/tests/test_autonomy_cases.py` proves all three properties
+for **every** materialized case, by running the case's own verifier in a
+throwaway copy:
+
 | Property | Test |
 |---|---|
 | The verifier fails while the task is unsolved | `test_the_verifier_fails_while_the_task_is_unsolved` |
-| The verifier passes once the defect is repaired | `test_the_verifier_passes_once_the_defect_is_repaired` |
+| The verifier passes once the defect is repaired | `test_the_verifier_passes_once_the_task_is_solved` |
 | The verifier refuses an edited frozen file | `test_the_verifier_refuses_an_edited_frozen_file` |
-| The verifier scope is outside the candidate-editable trees | `test_the_verifier_scope_is_outside_the_candidate_editable_trees` |
+| The verifier scope is outside the candidate-editable trees | `test_the_verifier_scope_is_outside_the_agent_editable_tree` |
+| The verifier finds the fixture in the **live lane layout** | `test_every_verifier_finds_the_fixture_in_the_lane_layout` |
+| Every manifest case has a materialized body | `test_every_manifest_case_has_a_materialized_body` |
+
+The lane-layout property is a regression guard for a defect the first live
+comparison exposed: in a lane the verifier is copied to a private directory
+**outside** the agent's workspace, so the case root is somewhere else. A
+verifier that resolves the case root only from its own location looks for a
+fixture that is not there, and every case fails with "the frozen file is
+missing" for a reason that has nothing to do with the agent. The reference
+case's loader did exactly that; it now honours `CODEGG_AUTONOMY_CASE_ROOT`
+like every other case's loader does.
 
 ## 4. The full harness suite
 
@@ -205,6 +238,31 @@ is documented and read by **no** provider, so the knob is dead.
 but `src/agent/provider_turn.rs:248-283` refuses to replay after visible
 output has been produced, so the stall is terminal.
 
+### 6.3.1 Why the 30 s deadline was wrong, and what replaced it
+
+The deadline was not merely inconvenient; it **preempted** the layer that owns
+stream liveness. `src/agent/provider_turn.rs` already bounds a long stream:
+`STREAM_SETUP_TIMEOUT = 120 s` covers the time to the first event and
+`STREAM_IDLE_TIMEOUT = 90 s` covers the gap between events. A provider chunk
+deadline of 30 s fires first, so the agent's own bound never gets a chance to
+apply, and a slow but valid stream is reported as a provider error.
+
+`crates/codegg-providers/src/opencode_go.rs` now imposes **no** per-chunk
+deadline, on any of its three surfaces, and a test pins it:
+
+```
+$ cargo test -p codegg-providers chunk_timeout
+running 1 test
+test opencode_go::chunk_timeout_tests::the_provider_imposes_no_per_chunk_deadline ... ok
+```
+
+The deadline stays surface-independent — it is simply not applied at the
+provider level, and the agent layer's policy governs Chat, Responses and
+Messages alike. `ProviderConfig.chunk_timeout` stays declared and unread; no
+provider imposes a per-chunk deadline, so the key is a dead knob rather than a
+contradiction. Removing a public config field is a schema change this closure
+did not make, and it is recorded as a remaining finding.
+
 ### 6.4 The daemon leak, and its fix
 
 The 31 surviving daemons were a harness defect, not a product one: the live
@@ -219,12 +277,94 @@ platform's `sun_path` limit, so the lane failed with `Failed to bind daemon
 socket: path must be shorter than SUN_LEN`. The lane root now lives under
 `~/.codegg-harness-lanes/<short>` and the limit is asserted at 96 bytes.
 
+### 6.5 The autonomy taxonomy, run live on two binaries
+
+`dev/harness_lab/autonomy_run.py` runs a taxonomy case as a live agent task.
+It copies the case's `fixture/` into a private lane workspace and keeps the
+verifier **outside** that workspace, so the agent under test can neither read
+the hidden contract nor edit the thing that judges it. It records a
+transcript of what the agent actually did — the tool sequence, each call's
+argument **digest** and each call's terminal status — and hands that
+transcript to the case's own verifier.
+
+```
+$ python3 -m dev.harness_lab autonomy-compare \
+  --baseline-binary  /private/tmp/c003-baseline-codegg \
+  --candidate-binary /private/tmp/c003-accepted-codegg \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --budget /path/to/budget.json --live-provider
+```
+
+Both sides ran the same six supported cases, in the same order, one private
+lane per case per side, on one approved route and one admitted budget. The
+baseline is the binary **before** C003's accepted candidate; the candidate is
+the binary **after** it (`23fceecb…` and `c9f8f9ae…`).
+
+The receipts are preserved at
+`plans/closure/harness-lab/evidence/autonomy-comparison-20261022.json`.
+
+### 6.6 What the comparison decided, and what it did not
+
+The score contract's verdict on this pair is **`rejected`**, with
+`no_criterion_improved` and no protected violation. The measured values are:
+
+| Criterion | Baseline | Candidate | Direction |
+|---|---|---|---|
+| `correctness.pass_rate` | 1.0 | 1.0 | equal — both binaries solved all five task cases |
+| `reliability.success_rate` | 1.0 | 1.0 | equal |
+| `efficiency.duration_ms` | 28 661.0 | 54 189.5 | the candidate was slower (advisory only) |
+| `control.no_regression` | 0.0 | 0.0 | equal — see below |
+
+**This is a real finding, not a harness failure.** Both binaries solved all
+five task cases, so the taxonomy had no headroom to show a difference.
+C003's accepted candidate fixed the *headless adapters'* workspace binding,
+and the autonomy taxonomy exercises the **ACP** path, where the workspace was
+already bound in both binaries — so the taxonomy does not discriminate on that
+defect. The instrument works — it ran six live cases on both sides and
+produced a decision from real measurements — and what it says is that the
+taxonomy is not sensitive to the defect this candidate fixed. Recording that
+is the point of running the comparison; claiming an improvement that the
+numbers do not show would not be.
+
+**The protected control was not exercised.** `control.no_regression` is 0.0
+on both sides because the control's own verifier did not confirm the trial,
+and the transcript says why: the agent read `fixture/absent-report.txt`, the
+read failed, and the agent then **investigated differently** — it listed the
+directory and read another file — and correctly reported that the file does
+not exist. The identical failing call was never repeated, so the stall-stop
+branch of the control was never entered. The control therefore demonstrated
+nothing, and it is reported as demonstrating nothing rather than as a pass.
+
+That is the honest reading of the taxonomy's control: it guards against a
+harness that lets an agent spin on an identical failing call and then credits
+the impossible task. This run did not put the harness in that situation.
+
+### 6.7 Two more harness defects the live run exposed
+
+1. **The lane's socket path.** The first comparison nested its lanes as
+   `<lane>/baseline/<case id>/…`, and a 31-character case id pushed the
+   daemon control socket past the platform's `sun_path` limit. The failure
+   surfaced as an opaque `daemon child exited` error. The runner now refuses
+   a lane whose socket path would not fit, with the reason, and the lane
+   directory is named by position rather than by case id.
+2. **The verifier's environment.** The lane deliberately overrides `HOME` and
+   `CARGO_HOME` so the subject under test cannot see the developer's
+   registry or credential store — but a rustup shim with an overridden `HOME`
+   resolves no default toolchain, and every Rust case failed with "rustup
+   could not choose a version of rustc". The **subject** is isolated; the
+   **verifier** is harness code and runs in the host environment. The runner
+   now builds the verifier's environment from the host's, with only the case
+   root and the transcript added.
+
 ## 7. What was NOT run, and why
 
 - **No complete provider pair.** `longcat-2.5-preview-free`'s upstream is
   unavailable (HTTP 400), so the Task 2 pair could not be run on two routes.
-- **No candidate qualification against the new taxonomy.** The C002 score
-  contract and hardened comparator are ready; a live candidate run against the
-  autonomy taxonomy is not.
-- **Five verifier bodies remain unmaterialized.** Their contracts are frozen;
-  their bodies are the next authoring step.
+- **The protected control's stall-stop branch was not exercised.** The agent
+  investigated the missing file instead of repeating the identical failing
+  read, so the taxonomy's stall-stop capability remains unproven by a live
+  trial. This is the one substantive condition C004 still carries.
+- **`ProviderConfig.chunk_timeout` is still a dead key.** No provider reads
+  it, and none imposes a per-chunk deadline, so it is consistent rather than
+  contradictory — but removing a public config field is a schema change this
+  closure did not make.
