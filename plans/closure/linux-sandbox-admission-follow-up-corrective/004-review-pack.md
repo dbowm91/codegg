@@ -24,6 +24,7 @@ nothing here reopens them.
 | C004 line base at branch creation | `95bb9c5ae` |
 | `main` at the C004 merge | `47f5572b1` (PR #161, M008 hosted evidence) |
 | C004 merge commit | `259794bb9` — tree `d4ae08f6` |
+| **C004 line → `main` (final landing)** | PR #159, **fast-forward** `47f5572b1..bef0c4f65` — 26 commits, no merge commit, every SHA preserved, `main`'s tree byte-identical to the branch tip's |
 | Commits on the C001 line | **322** (`239f06e7f..4c08f2cc5`) |
 | Changed files on the C001 line | **302** |
 
@@ -62,6 +63,18 @@ Two properties of that merge are worth a reviewer's attention, because
   run `39740206655` (attempt 2) executed. The hosted evidence qualifies the
   merged tree's code file for file — the same property the C001 line's
   baseline claims, established here for the C004 line.
+
+**The final landing into `main` was a fast-forward, and that was deliberate.**
+PR #159 landed `47f5572b1..bef0c4f65` — 26 commits, no merge commit, every
+SHA preserved, and `main`'s tree byte-identical to the branch tip's. A squash
+would have been shorter, and it would have destroyed the SHAs this line's
+evidence is keyed on: the code-bearing head `99f15e180`, the last swept head
+`011a63c0d`, and every head in the closure record's §5.1 table. The
+attribution rule those SHAs support — every commit above `99f15e180` that
+touches only `plans/**` inherits the sweep — is only checkable while the
+history survives. A reviewer can therefore run
+`git diff --name-only 99f15e180..bef0c4f65` against `main` and see the same
+empty source diff the branch produced.
 
 ---
 
