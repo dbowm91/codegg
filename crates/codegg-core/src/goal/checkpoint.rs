@@ -137,6 +137,14 @@ pub fn checkpoint_tail_of(content: &str, max_chars: usize) -> String {
     content.chars().skip(total - max_chars).collect()
 }
 
+/// Append one progress update to the append-only Markdown journal.
+///
+/// The appended bytes are flushed before this call returns. `tokio::fs::File`
+/// buffers writes and hands them to the operating system on flush, not on
+/// write, so an append that does not flush explicitly can still be in flight
+/// when the caller reads the journal back — the reader then observes a
+/// truncated journal and silently loses the newest update. The sibling
+/// index append in `run_store.rs` flushes for the same reason.
 pub async fn append_checkpoint_update(
     path: impl AsRef<Path>,
     update: &crate::goal::model::GoalProgressUpdate,
@@ -182,6 +190,9 @@ pub async fn append_checkpoint_update(
         .await?;
     use tokio::io::AsyncWriteExt;
     file.write_all(block.as_bytes()).await?;
+    // Flush explicitly: the bytes must be in the file when this returns,
+    // not when the handle is eventually dropped.
+    file.flush().await?;
     Ok(())
 }
 
@@ -287,6 +298,50 @@ mod tests {
         assert!(content.contains("Run tests"));
         assert!(content.contains("Setup"));
         assert!(content.contains("Testing"));
+    }
+
+    /// The appended update must be readable as soon as the append returns.
+    ///
+    /// `tokio::fs::File` buffers writes and hands them to the operating
+    /// system on flush, not on write. An append that does not flush
+    /// explicitly leaves the bytes in flight when the handle is dropped, so
+    /// a reader that runs immediately after the append observes a truncated
+    /// journal and silently loses the newest update. The check reads the
+    /// file synchronously and immediately: a read that yielded to the
+    /// runtime could race a pending drop-time flush and hide the defect.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_append_checkpoint_update_is_visible_when_it_returns() {
+        for _ in 0..16 {
+            let dir = tempfile::tempdir().unwrap();
+            let goal = test_goal();
+            let path = create_checkpoint_file(dir.path(), &goal, None)
+                .await
+                .unwrap();
+            let before = std::fs::metadata(&path).unwrap().len();
+            append_checkpoint_update(
+                &path,
+                &GoalProgressUpdate {
+                    current_phase: Some("Phase visible".to_string()),
+                    progress_summary: None,
+                    next_action: None,
+                    completed_items: vec![],
+                    remaining_items: vec![],
+                    open_questions: vec![],
+                },
+            )
+            .await
+            .unwrap();
+            let after = std::fs::metadata(&path).unwrap().len();
+            assert!(
+                after > before,
+                "the appended update must reach the file before the append returns"
+            );
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                content.contains("Phase visible"),
+                "the appended update must be readable as soon as the append returns"
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
