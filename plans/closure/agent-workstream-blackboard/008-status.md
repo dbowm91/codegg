@@ -3,6 +3,9 @@
 Status: closed — comparative trajectory and economics qualification, with the shared-checkout arm (S4) qualified on Linux and macOS and unrun on Windows
 
 Source plan: `plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md`
+Implementation commits: `4d327add9` (the qualification suites), `3477bc589` (the frozen matrix and the guard), `3549d9216` (the counts re-measured on the base this branch lands on)
+Pull request: [#160](https://github.com/dbowm91/codegg/pull/160) — merged to `main` as `e1b898cb8` on 2026-10-22
+Hosted CI on the PR head: [`39733201090`](https://github.com/dbowm91/codegg/actions/runs/39733201090) — success, **16,059 tests run: 16,059 passed, 8 skipped**, 0 failed (521.966s workspace-tests step)
 
 ## 1. Result
 
@@ -370,6 +373,13 @@ belongs to the harness's own ordering, not to this milestone.
 The guard reports `blackboard-contract-matrix check ok: 6 capabilities, 6
 matrix rows, every consumer present in production code`, and its self-test
 reports `blackboard-contract-matrix self-test ok`.
+
+On the hosted runner the two new CI steps — **"Blackboard contract matrix
+guard"** and **"Blackboard contract matrix guard self-test"** — both concluded
+success, alongside formatting, workspace Clippy and every pre-existing guard.
+The workspace-tests step concluded **16,059 tests run: 16,059 passed, 8
+skipped**, 0 failed. The eight skips are the repository's own `#[ignore]`
+declarations.
 
 ## 12. Source verification
 
