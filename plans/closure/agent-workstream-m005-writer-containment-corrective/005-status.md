@@ -404,6 +404,39 @@ host.
 * **The Windows and macOS legs of the per-OS matrix** were not run: this
   host is Linux. §10 records the matrix accordingly.
 
+### 9.3 The server-feature HTTP mapping was never taught this refusal
+
+`ToolError::ProcessDenied` is a new `AppError` variant, and the root crate's
+axum wrapper maps every `AppError` to a status code with an **exhaustive**
+match (`src/error.rs`). C005's own verification above never built the
+`server` feature — the scoped suites are all default-feature — and the hosted
+`CI` job builds the workspace without features, so the omission was invisible
+where it was made. When C005 landed on `main` (as `6767bb61e`), `main`
+inherited the variant **without** the matching arm, and the tree stopped
+compiling under `--features server`:
+
+```
+error[E0004]: non-exhaustive patterns:
+  `&codegg_core::error::AppError::Tool(codegg_core::error::ToolError::ProcessDenied { .. })` not covered
+  --> src/error.rs:59:28
+```
+
+That breaks the documented install path
+(`cargo install --locked --path . --features server,plugins`,
+`docs/install.md`) and the feature-gated tier of `scripts/verify.sh full`
+(`--features server,plugins,lsp-test-support`).
+
+The arm maps the refusal to **409 CONFLICT**, the same status the storage
+arm already uses for the same fact: a checkout reserved by a live agent-run
+group (`StorageError::Conflict` — "a conflict, not a server fault and not a
+missing resource"). The refusal is deliberately not a `ToolError::Permission`
+(§2.2), and `Permission` is 403, so mapping it to 403 would contradict the
+variant's own stated semantics.
+
+This is a `main`-side defect, not a merge artefact of any branch: the
+variant and the missing arm reached `main` together, and `src/error.rs` is
+byte-identical to `origin/main` in the tree that found it.
+
 ## 10. The per-OS matrix, and what is actually known
 
 C001's work package D asks for a capability/denial matrix based on **actual

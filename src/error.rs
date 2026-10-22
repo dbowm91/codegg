@@ -98,6 +98,12 @@ impl IntoResponse for AxumAppError {
             | AppError::Permission(PermissionError::Denied { .. }) => StatusCode::FORBIDDEN,
             AppError::Tool(ToolError::Timeout(_)) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Tool(ToolError::Disabled(_)) => StatusCode::FORBIDDEN,
+            // M005 C005: a shared checkout that admits no unqualified process
+            // is the same conflict the storage arm above maps to CONFLICT — a
+            // live agent-run group owns the checkout. It is a fact about the
+            // checkout, not a judgement about this caller, which is why the
+            // variant is deliberately distinct from `ToolError::Permission`.
+            AppError::Tool(ToolError::ProcessDenied { .. }) => StatusCode::CONFLICT,
             AppError::Tool(ToolError::BackendUnavailable(_)) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Tool(ToolError::Execution(_))
             | AppError::Tool(ToolError::Format(_))
