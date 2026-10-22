@@ -225,7 +225,7 @@ M006  test-suite assertion quality                   [no dependency]
   |
   +--> M007  remove provably duplicate test bodies    [hard dep: M006]
 
-M005  hosted verification and measurement closure     [blocked: owner decision]
+M005  hosted verification and measurement closure     [ready: owner push + before-run dispatch]
 ```
 
 | Dependency | Class | Why |
@@ -235,7 +235,7 @@ M005  hosted verification and measurement closure     [blocked: owner decision]
 | M004 → M003 | **interface** | M004 changes root test-target names. M003's ownership manifest names those targets. M004 must land with a matching manifest update or the manifest's target references become stale. |
 | M006 → — | none | M006 edits test bodies only and depends on no other milestone's output. It is gated on M004's *interface* (the family topology it works inside), not on M004's completion. |
 | M007 → M006 | **hard** | M006 delivers the Rust-aware scanner M007's duplicate detector is built on, and removes the drifted SSRF copy and the three empty test bodies that M007's detector would otherwise flag. Writing a second scanner would reproduce the four measured failure modes and produce a different answer. |
-| M005 → — | none in the graph | M005 is the workstream's closure milestone. It is blocked on an **owner decision** (commit and push the M001–M004 change set, and choose the hosted before-run baseline), not on another milestone. |
+| M005 → — | none in the graph | M005 is the workstream's closure milestone. It has no predecessor in the graph: M001–M004, M006 and M007 are implemented and committed. It is gated on **mechanical owner actions** — push the branch, dispatch the hosted before-run, and confirm the before-run baseline — not on another milestone and not on a design decision. |
 
 M004 is sequenced *after* M003 deliberately: M003 delivers the change-scoped capability the owner asked for, and M004 then makes that capability cheaper by shrinking the target set the manifest has to describe. The alternative order was considered and rejected — see §10, D3.
 
@@ -338,19 +338,23 @@ Exit conditions:
 
 Deferred work: consolidating inline unit tests. The root lib test harness is a single unit and already links once.
 
-### Milestone M005 — Hosted verification and measurement closure — **reserved, not opened**
+### Milestone M005 — Hosted verification and measurement closure — **ready**
 
 Class: infrastructure, with a polish obligation.
 
 Objective: produce the hosted evidence the workstream's closure definition requires, and close the workstream.
 
-**This milestone number is reserved and its plan is not written.** It is reserved so that the workstream's milestones are numbered in the order they are *executed*, and the closure milestone is last. The research that would author it is recorded here so the reservation is not a placeholder.
+**The milestone number was reserved so the workstream's milestones would be numbered in the order they are *executed*.** The plan is now written — `plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md` — and the reservation has discharged. The milestone changes **no product source, no test, no build configuration, and no CI job definition**; it produces measurements and records.
 
-Dependencies: **none in the graph.** It is blocked on an **owner decision**, not on another milestone:
+Dependencies: **none in the graph.** M001–M004, M006 and M007 are implemented, locally verified, and committed at `4f89b4b05`. What remains is mechanical owner action, not design:
 
-1. the M001–M004 change set is uncommitted (397 paths, zero commits ahead of `origin/main`), so no hosted run can execute the implemented tree at all;
-2. the hosted before-run baseline must be chosen — `2c1953347` is the clean before (the same tree, pre-change, already pushed) and `239f06e7` is 323 commits further back and would confound that much unrelated change;
-3. the branch must be rebased: `origin/main` has advanced and its advance adds twelve top-level `tests/*.rs` files that would auto-discover as twelve new root test targets, invalidating M004's family topology until they are absorbed.
+1. the change set is now **committed** — `4f89b4b05`, 468 files — so the hosted "after" run can exist as soon as the branch is **pushed** (outstanding; owner);
+2. the hosted before-run baseline must be confirmed — **`2c1953347`** is the clean before (the same tree, pre-change, already pushed) and `239f06e7` is 323 commits further back and would confound that much unrelated change;
+3. the rebase is **deferred past the measurement** — see §10, D9. The roadmap previously listed it here as a dependency; the deviation is recorded rather than hidden, and the rebase becomes an ordinary, separately-verified merge activity after the closure.
+
+The milestone's deliverable is a **measurement**, and a measurement that is not preregistered is an anecdote. Its plan therefore fixes the method before any run is dispatched: the primary claim is a **countable** one (the linked root-test-executable count: 288 → 21), the hosted wall-clock is the **secondary** claim and is reported with dispersion and cache state rather than as a best-of, the method is written to `plans/validation/ci-test-throughput-recovery/measurement-preregistration.md` **before** the candidate run, and every reported number names the command, the SHA, and the date that produced it.
+
+It also discharges **M004's unmeasured ~41 % link-cost projection** and **M003's four argued-not-proven scoped-cost cases** — the two claims the workstream still carries as unsupported.
 
 Deliverable boundary: the hosted `CI / verify` runs, the measurement preregistration, the per-family link-cost measurement, M003's measured scoped cost, and the republication of `architecture/testing.md`.
 
@@ -456,6 +460,7 @@ This is the roadmap's whole subject. The governing metric is **compile unit-time
 | D6 | M001 could be implemented as a job-scoped environment override or as a manifest change. | **Decided 2026-10-21: manifest alignment.** `[profile.dev]` and `[profile.test]` now both set `strip = "debuginfo"`, so the two profiles resolve identically and every cargo invocation in every context — the hosted job, `scripts/verify.sh`, and a developer's own `cargo build` → `cargo test` loop — compiles the dependency graph once. The job-scoped override was rejected because it cannot cover the local loop, and a partial application is worse than none: it looks fixed and is not. The DX cost is bounded and recoverable — `strip = "debuginfo"` keeps the symbol table, so backtraces still name their frames, and `cargo build --config 'profile.dev.strip="none"'` restores full debuginfo for one invocation. The plan's suggested `RUSTFLAGS="-C debuginfo=2"` recovery was measured and **does not work**: the profile's `strip` still applies. |
 | D7 | The predecessor's recorded baseline is wrong by ~2.4× and its dispositions were taken against it. | **Mitigated by I4 and §4.4.** The dispositions themselves are re-tested rather than assumed: M001 and M002 are the two the wrong count most affected, and both require hosted evidence. |
 | D8 | P2 was one capability with no owning milestone. How is it split? | **Split by the kind of proof each removal needs: M006 removes what is false or vacuous, M007 removes what is repeated.** A single milestone would have had to carry two incompatible exit conditions — "this assertion is wrong" and "this assertion is already made elsewhere" — with different proofs, different survivors, and different risks of capability loss. The split also fixes the ordering hazard: M007 must not remove a copy of an assertion that is itself wrong, which is exactly the case the SSRF cluster presents, where one of the three copies asserts the opposite of production. M006 re-points that copy first; M007 then removes the genuine repetitions. Both milestones are independent of the throughput chain and neither advances the throughput objective. |
+| D9 | M005's measurement order: rebase onto the advanced `origin/main` **before** the hosted runs, or measure the tree that was actually verified? | **Measure first, rebase after — a deviation from the roadmap's own M005 dependency list, recorded here rather than hidden.** The hosted "after" run must measure *the tree that was verified*: `4f89b4b05` is that tree, and it ran 15,466 tests locally with only the six pre-existing platform failures M004 proved against baseline `2c1953347`. Rebasing first would produce a **different** tree that needs its own full local suite run and its own verification before it could be measured, and absorbing `origin/main`'s twelve new top-level `tests/*.rs` files would change the very target count the measurement is about (21 → 33). Measuring first turns the rebase into an ordinary, separately-verified merge activity instead of something entangled with the workstream's closing evidence. The rebase is therefore **deferred past the measurement** and carried into M005's closure record as an open item. The **before-run baseline** is `2c1953347` — the clean before, the same tree pre-change, already pushed — not `239f06e7`, which is 323 commits further back and would confound the delta with that much unrelated change. |
 
 ## 11. Completion definition
 
@@ -480,6 +485,6 @@ The third bullet governs M007's removals directly: a test function removed by M0
 | M002 | active (implemented; bounded invocation executed; hosted evidence outstanding) | `plans/implementation/ci-test-throughput-recovery/002-bounded-feature-enabled-test-pass.md` | `plans/closure/ci-test-throughput-recovery/002-status.md` | M001 (operational) |
 | M003 | active (implemented; locally verified; four defects found by the coverage comparison and fixed) | `plans/implementation/ci-test-throughput-recovery/003-change-scoped-verification-mode.md` | `plans/closure/ci-test-throughput-recovery/003-status.md` | M001 (hard) |
 | M004 | active (implemented; full suite run; one regression found and fixed; hosted evidence outstanding) | `plans/implementation/ci-test-throughput-recovery/004-root-test-target-family-consolidation.md` | `plans/closure/ci-test-throughput-recovery/004-status.md` | M003 (interface) |
-| M005 | **reserved — not opened** | (not written) | (not written) | owner decision: commit and push the M001–M004 change set; choose the hosted before-run baseline; rebase onto the advanced `origin/main` |
+| M005 | **ready** (plan written; the change set it measures is committed at `4f89b4b05`) | `plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md` | (not written — written at closure) | owner action: push the branch and dispatch the hosted before-run; confirm the before-run baseline (`2c1953347` recommended, §10 D9); the rebase is deferred past the measurement |
 | M006 | **closed** (implemented; three guards ship with `--self-test` coverage; the workspace compiles and its suite runs) | `plans/implementation/ci-test-throughput-recovery/006-test-suite-assertion-quality.md` | `plans/closure/ci-test-throughput-recovery/006-status.md` | none |
 | M007 | **closed** (implemented; 90 duplicate groups triaged, 85 removals applied and verified; the shared-helper fan-out discharged) | `plans/implementation/ci-test-throughput-recovery/007-test-suite-duplication.md` | `plans/closure/ci-test-throughput-recovery/007-status.md` | none |
