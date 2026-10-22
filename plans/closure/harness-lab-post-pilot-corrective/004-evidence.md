@@ -142,9 +142,9 @@ budget policies were admitted before any provider request.
 | Route | As a CodeGG subject | As an OpenCode proposer |
 |---|---|---|
 | `muse-spark-1.3-contributor` | **works** — live ACP turn completed | works |
-| `beam-free` | no wire mapping at any rev | proposal **failed mid-run** with a retryable `429` "Upstream request failed: Endpoint is unavailable." |
+| `beam-free` | no wire mapping at any rev | works — the upstream serves it and it costs nothing; the failure recorded here was a transient 429 |
 | `minimax-m3.1-flash-free` | no wire mapping at any rev | works |
-| `longcat-2.5-preview-free` | **upstream down** — HTTP 400 "Endpoint is unavailable." | — |
+| `longcat-2.5-preview-free` | **upstream down** — HTTP 402 "Endpoint is unavailable." and withdrawn from the provider's catalog | — |
 
 `codegg models --provider opencode_go` lists 27 bare ids. The shared
 `eggpool-provider-profile` carries 30 `model_wire` entries and maps
@@ -169,10 +169,19 @@ frozen fixture, whose digests match the M005 receipts (`worklog`
   request; **cost unobservable** on this route, so no dollar figure is claimed.
 
 The run was reproduced twice. `longcat-2.5-preview-free` could not serve the
-same task: the upstream answered HTTP 400 "Upstream request failed: Endpoint
-is unavailable." on two separate attempts. **The provider pair is therefore one
-route, not two.** That is a property of the upstream, not of the harness, and
-it is reported as measured.
+same task: it is withdrawn from the provider's own catalog and its upstream
+answered HTTP 402 "Upstream request failed: Endpoint is unavailable." on every
+attempt. **The provider pair is therefore one route, not two.** That is a
+property of the upstream, not of the harness, and it is reported as measured.
+
+Re-probed 2026-10-22: `beam-free` now answers normally and costs nothing, and
+`longcat-2.5-preview-free` still answers 402. The full route audit — provider
+catalog, reviewed wire map, and each route's answer — is preserved at
+`plans/closure/harness-lab/evidence/route-audit-20261022.json`. It shows that
+the CodeGG **subject** can be routed to exactly one of the four approved
+routes: the two other free routes are served by the upstream, and CodeGG
+refuses them at `wire_unresolved` because the shared provider profile's
+reviewed wire map has no entry for them.
 
 ### 6.3 The sustained scenario
 

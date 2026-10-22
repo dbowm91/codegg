@@ -24,10 +24,18 @@ declared caps.
 Two things did **not** close, and both are properties of the outside world
 rather than of the harness:
 
-- **The provider pair is one route, not two.** `longcat-2.5-preview-free`'s
-  upstream answers HTTP 400 "Upstream request failed: Endpoint is unavailable."
-  on every attempt, so the frozen Task 2 pair could not be run on two routes.
-  `muse-spark-1.3-contributor` served the task; `longcat` could not.
+- **The provider pair is one route, not two.** `longcat-2.5-preview-free` is
+  withdrawn from the provider's own catalog (`https://opencode.ai/zen/go/v1/models`
+  no longer lists it) and its upstream answers HTTP 402 "Upstream request
+  failed: Endpoint is unavailable." on every attempt, so the frozen Task 2
+  pair could not be run on two routes. `muse-spark-1.3-contributor` served the
+  task; `longcat` could not. The full route audit — provider catalog, reviewed
+  wire map, and what each approved route actually answers — is preserved at
+  `plans/closure/harness-lab/evidence/route-audit-20261022.json`: the CodeGG
+  **subject** can be routed to exactly one of the four approved routes, because
+  the two other free routes are served and free but absent from the shared
+  provider profile's reviewed wire map, and that map is owned outside this
+  repository.
 - **The autonomy claim still depends on C003's accepted-defect receipt.**
 
 Two genuine harness defects were found and fixed by the live run itself: the
@@ -55,7 +63,7 @@ path exceeded the platform's `sun_path` limit.
 | §6 offline: hidden verifier isolation | `verify_isolation()` plus segment-aware prefix matching | Met |
 | §6 offline: a fake success without a source change | The materialized verifier re-derives the contract and refuses an edited frozen file; it fails on the unsolved baseline | Met |
 | §6 offline: a wrong source SHA | The loader's manifest digest is the source identity; a changed manifest changes the digest | Met |
-| §4-B: Task 2 pair under an approved budget | Task 2 solved on `muse-spark-1.3-contributor`: terminal `completed`, 11 tool calls, verifier 11/11, 1 provider request, cost unobservable | **Partial** — one route served it; `longcat`'s upstream is down (HTTP 400), so the pair is not a pair |
+| §4-B: Task 2 pair under an approved budget | Task 2 solved on `muse-spark-1.3-contributor`: terminal `completed`, 11 tool calls, verifier 11/11, 1 provider request, cost unobservable | **Partial** — one route served it; `longcat` is withdrawn from the provider's catalog and its upstream is down (HTTP 402), and the other two approved free routes are not routable by the subject, so the pair is not a pair |
 | §4-C: a 30–60 minute sustained scenario | 24 live trials, 34.9 min (2 093 626 ms), 0 unattempted, 11 solved / 13 stopped, inside 24 requests / 256 999 tokens | Met |
 | §4-D: a paired baseline/candidate benchmark comparison | The C002 score contract and hardened comparator are in place; no live run | **Partial** — mechanics ready, no live run |
 | §7: the operator can run the documented commands | `dev/harness_lab/README.md` | Met |
@@ -176,9 +184,16 @@ measurements do not depend on the score contract.
 ## 5. Remaining conditions
 
 1. **A second serving route for the Task 2 pair.** `muse-spark-1.3-contributor`
-   serves Task 2; `longcat-2.5-preview-free`'s upstream answers HTTP 400
-   "Endpoint is unavailable." on every attempt, so the pair could not be run on
-   two routes. This is an upstream condition and is reported as measured.
+   serves Task 2; `longcat-2.5-preview-free` is withdrawn from the provider's
+   catalog and its upstream answers HTTP 402 "Endpoint is unavailable." on
+   every attempt, so the pair could not be run on two routes. The two other
+   approved free routes are served and cost nothing, but CodeGG's subject
+   cannot be routed to them: the shared provider profile's reviewed wire map
+   has no entry, so every request fails closed at `wire_unresolved` before a
+   request is built — the intended behaviour, and not operator-overridable by
+   config. The audit is preserved at
+   `plans/closure/harness-lab/evidence/route-audit-20261022.json`. This is an
+   upstream and shared-profile condition and is reported as measured.
 2. **C003's accepted-defect receipt.** C004's final autonomy claim needs it.
 3. **The five unmaterialized verifier bodies.** Their contracts are frozen;
    their bodies are the next authoring step.

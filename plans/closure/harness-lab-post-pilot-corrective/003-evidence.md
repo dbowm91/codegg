@@ -314,7 +314,10 @@ The full receipt is preserved as
   retryable `429` mid-proposal, and `longcat-2.5-preview-free`'s upstream
   answers HTTP 400 "Endpoint is unavailable." on every attempt. One approved
   route served the proposal; the others are recorded as measured failures, not
-  as successes.
+  as successes. Re-probed 2026-10-22: `beam-free` answers normally and costs
+  nothing, `longcat` still answers 402 and is withdrawn from the provider's
+  catalog. The route audit is preserved at
+  `plans/closure/harness-lab/evidence/route-audit-20261022.json`.
 - **No compile-correction retry was needed.** The candidate compiled on the
   first build, so the bounded correction loop was exercised by its labelled
   fault-injection tests only, as C002 recorded.
