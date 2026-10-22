@@ -82,7 +82,7 @@ default is set, and no ADR is accepted.
 ## 3. Production implementation evidence
 
 C004 changes **no production behaviour**. The three subsections below record
-the work that is not production code, plus the two defects this milestone
+the work that is not production code, plus the five defects this milestone
 introduced and fixed.
 
 ### 3.1 The per-test fixture disposition (WP1)
@@ -661,7 +661,8 @@ first now catches it.
   before the step runs, not after.
 * **A filter that selects tests but the test self-skips** is caught by the
   runtime wrapper's marker check — but only if the marker is emitted. That is
-  why the four silent self-skips were converted.
+  why the five silent self-skips were converted, and why a whole-tree
+  sweep now confirms that none is left.
 * **A fixture that falls back to a shared path** is caught by
   `tests/git_fixture_isolation.rs`, proved against the pre-fix behaviour.
 * **A workflow step that no longer runs the registered command** is caught
@@ -746,8 +747,10 @@ work on the Windows runner. What remains unverified on Windows is the two
   admission record and the residual cargo attribution. C004 changed nothing
   about it.
 * **C003** — untouched, and still blocked behind ADR-0044 acceptance, the
-  C004 production vertical and the M005 production owner qualification.
-  Nothing in this milestone changes those dependencies.
+  C004 production vertical *in the M005 writer-containment line* and the M005
+  production owner qualification. Nothing in this milestone changes those
+  dependencies: C004 in *this* line is the evidence and review-pack
+  milestone, and it is not the C004 those dependencies name.
 * **C004** — **closed** by this record.
 
 ## 12. Registry updates
@@ -766,10 +769,14 @@ work on the Windows runner. What remains unverified on Windows is the two
 The local scope was narrowed deliberately and is recorded here rather than
 hidden. The reasons were the contended host and the user's explicit
 instruction to keep testing scoped to what changed and to avoid awaiting the
-Windows jobs.
+Windows and macOS jobs. The Windows job was awaited in the end, because the
+head changed the Windows workflow itself and its result was needed to
+qualify the change; the macOS compile was not.
 
 What **was** run locally: the canonical quick gate in full, workspace clippy
 with `-D warnings`, the four focused test targets, the LSP trio under its
-feature, and every named static guard with its self-test. What **was not**
-run locally is named in §10 and in §5.3 with the exact evidence that would
-close it.
+feature, every named static guard with its self-test, and the
+Linux-capable registered filters run through the wrapper itself — including
+the two that need the `CODEGG_RUN_M004_RESTRICTED_USERNS` gate. What **was
+not** run locally is named in §10 and in §5.3 with the exact evidence that
+would close it, and the hosted sweep in §5 is what closed it.

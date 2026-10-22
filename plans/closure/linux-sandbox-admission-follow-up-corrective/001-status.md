@@ -272,7 +272,9 @@ review chunking.
 > **Discharged by C004** (§5). The branch-wide hosted sweep was run on the
 > corrective head `a6e596642` and the run links and executed counts are
 > recorded there. The Windows and macOS platform behaviour of that head is
-> recorded as **not awaited / not run** — not as a pass.
+> recorded as **not awaited / not run** — not as a pass. The Windows job was
+> subsequently awaited and passed; the macOS target compile was not run and
+> is still recorded as *not run*.
 
 The branch-wide sweep was not re-run locally in this pass, and the hosted
 sweep was not run on the corrective head. The branch-wide hosted evidence for

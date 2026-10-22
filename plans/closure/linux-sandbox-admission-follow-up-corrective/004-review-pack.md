@@ -195,10 +195,10 @@ three rows above are the ones that qualify the line as merged.
 ### 5.2 The C004 corrective head
 
 Recorded in `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
-§5, with the run links and the executed counts. The sweep ran on three
-successive heads of the branch, because the sweep itself found two of the
-five defects the milestone introduced; the intermediate heads and their
-failures are recorded there rather than hidden.
+§5, with the run links and the executed counts. The sweep ran on successive
+heads of the branch, because the sweep itself found two of the five defects
+the milestone introduced; the intermediate heads and their failures are
+recorded there rather than hidden.
 
 ### 5.3 Which boundaries need which hosted job
 
@@ -245,9 +245,10 @@ what make the other chunks' claims checkable.
 - It does not claim a host is admitted, a Linux security profile is a
   default, or any ADR is accepted. C002 remains **conditionally closed** on
   the maintainer-owned admission record and the residual cargo attribution.
-- It does not claim the Windows or macOS platform behaviour of the C004 head.
-  Those jobs were not awaited, and their results are recorded as *not run*,
-  not as passes.
+- It does not claim the macOS platform behaviour of the C004 head: that
+  compile was not run, and it is recorded as *not run*, not as a pass. The
+  Windows job **was** run and passed, and its result is recorded in the
+  closure record from the run log.
 - It does not claim the C001 line's 8 skipped tests are failures. They are the
   repository's own `#[ignore]`d tests, and the count is stable across every
   head on this line.
