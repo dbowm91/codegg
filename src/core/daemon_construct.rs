@@ -107,22 +107,39 @@ fn install_job_lifecycle_projection(
                     continue;
                 }
             };
+            // The job's scope travels with the lifecycle event. The record is
+            // the authority for it — the scheduler never mints a scope here,
+            // it reads the one the job was created with — so a projection can
+            // keep a job's kind and workspace across its lifecycle even when
+            // the creation event is not in the same stream.
+            let scope_session_id = record.session_id.clone();
+            let scope_workspace_id = Some(record.workspace_id.to_string());
+            let scope_kind = Some(record.kind.as_str().to_string());
             let payload = if started {
                 CoreEvent::JobStarted {
                     job_id: job_id.clone(),
                     attempt_id,
+                    session_id: scope_session_id.clone(),
+                    workspace_id: scope_workspace_id.clone(),
+                    kind: scope_kind.clone(),
                 }
             } else {
                 match terminal_state.unwrap_or(record.state) {
                     codegg_core::jobs::JobState::Completed => CoreEvent::JobCompleted {
                         job_id: job_id.clone(),
                         attempt_id,
+                        session_id: scope_session_id.clone(),
+                        workspace_id: scope_workspace_id.clone(),
+                        kind: scope_kind.clone(),
                     },
                     codegg_core::jobs::JobState::Failed => CoreEvent::JobFailed {
                         job_id: job_id.clone(),
                         attempt_id,
                         error_class: "failed".into(),
                         message: String::new(),
+                        session_id: scope_session_id.clone(),
+                        workspace_id: scope_workspace_id.clone(),
+                        kind: scope_kind.clone(),
                     },
                     codegg_core::jobs::JobState::Cancelled => CoreEvent::JobCancelled {
                         job_id: job_id.clone(),
@@ -366,6 +383,33 @@ impl CoreDaemon {
                 Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             )
         });
+        // M005 corrective C004: the daemon's mediation for non-broker
+        // checkout writers. The reservation authority needs the managed
+        // worktree service (to resolve a canonical checkout identity) and
+        // the run-group service (to learn whether a live group holds that
+        // checkout). A local-only daemon has neither a durable worktree
+        // nor a durable group, so it can never share a checkout and has
+        // nothing to refuse.
+        //
+        // M005 corrective C005 shares this one reservation authority with
+        // the process admission service: both must answer from the same
+        // durable state, or a checkout could be "unreserved" to the writer
+        // gate and "reserved" to the process gate.
+        let checkout_reservations =
+            codegg_core::checkout_reservation::CheckoutReservationService::new(
+                worktree_service.clone(),
+                Some(deps.run_group_service.clone()),
+            );
+        let checkout_mediator =
+            super::checkout_mediation::CheckoutMediator::new(Some(checkout_reservations.clone()));
+        // M005 corrective C005: the process admission authority. It reads
+        // the same reservation state and additionally tracks the live
+        // persistent processes, so a reservation can be refused while a
+        // process started under an older authority is still running.
+        let process_admission = codegg_core::process_admission::ProcessAdmissionService::new(
+            Some(checkout_reservations.clone()),
+            codegg_core::process_admission::PersistentProcessRegistry::new(),
+        );
         // Keep `deps.workspace_services` in sync so callers reading the
         // field observe the active registry.
         let mut deps = deps;
@@ -398,6 +442,24 @@ impl CoreDaemon {
         deps.daemon_generation =
             codegg_core::jobs::DaemonGeneration::new_unchecked(generation.clone());
         deps.workspace_services = Some(workspace_services.clone());
+
+        // M006: the session launch service. It shares the daemon's pool
+        // (for the durable launch record), the daemon's worktree service
+        // (for the checkout) and the daemon's workspace registry (for
+        // the checkout's own workspace).
+        deps.session_launch_service = deps.pool.clone().map(|pool| {
+            Arc::new(crate::core::session_launch::SessionLaunchService::new(
+                Arc::new(codegg_core::session_launch::SqliteSessionLaunchStore::new(
+                    pool.clone(),
+                )),
+                worktree_service.clone(),
+                Arc::new(codegg_core::session::SessionStore::new(pool.clone())),
+                Arc::new(codegg_core::project_storage::ProjectStorage::new(
+                    pool.clone(),
+                )),
+                workspaces.clone(),
+            ))
+        });
 
         let asset_builder = Arc::new(
             crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(Arc::new(
@@ -458,6 +520,36 @@ impl CoreDaemon {
                 scheduler_config.clone(),
                 deps.daemon_generation.clone(),
             );
+            // M005 corrective C006: the daemon-side authority a delegated
+            // run inherits.
+            //
+            // The shared-checkout coordinator resolves (and creates) the
+            // group's managed checkout, and refuses the placement while a
+            // persistent process is live in it — the C005 reservation
+            // preflight. The writer-fence factory resolves the child's fence
+            // from the child's own durable run record, which is what makes a
+            // shared checkout's writer permit authoritative.
+            let shared_checkout = codegg_core::shared_checkout::SharedCheckoutCoordinator::new(
+                Some(deps.run_group_service.clone()),
+                Some(deps.agent_run_store.clone()),
+                Some(worktree_service.clone()),
+                Some(process_admission.clone()),
+            );
+            let writer_fences: Option<Arc<dyn crate::tool::writer_fence::WriterFenceFactory>> =
+                deps.writer_permit_service.as_ref().map(|permit| {
+                    crate::core::writer_fence::DaemonWriterFenceFactory::new(
+                        permit.clone(),
+                        worktree_service.clone(),
+                        deps.agent_run_store.clone(),
+                        Some(deps.run_group_service.clone()),
+                        true,
+                    ) as Arc<dyn crate::tool::writer_fence::WriterFenceFactory>
+                });
+            let subagent_authority = crate::scheduler::executors::SubagentAuthority {
+                process_admission: Some(process_admission.clone()),
+                shared_checkout: Some(shared_checkout),
+                writer_fences,
+            };
             // Register the default executor set synchronously.
             if let Err(error) = scheduler_arc
                 .register_default_executors_sync_with_agent_runs_and_control_and_worktree(
@@ -465,6 +557,7 @@ impl CoreDaemon {
                     Some(deps.agent_run_store.clone()),
                     Some(deps.run_control.clone()),
                     Some(worktree_service.clone()),
+                    Some(subagent_authority),
                 )
             {
                 tracing::error!(
@@ -600,6 +693,12 @@ impl CoreDaemon {
                 deps.daemon_generation.clone(),
             ),
         };
+        // M005 corrective C005: install the process admission authority on
+        // the submission boundary and on the scheduler, so a process-class
+        // job is refused at submission *and* re-checked at the final
+        // executor.
+        submission.set_process_admission(process_admission.clone());
+        scheduler.set_process_admission(process_admission.clone());
         deps.submission = Some(submission.clone());
         install_job_lifecycle_projection(
             &scheduler,
@@ -768,6 +867,35 @@ impl CoreDaemon {
             None
         };
 
+        // M005 corrective C002: a permit that was live when the daemon went
+        // down is an orphan — the process that held it is gone — so it is
+        // quarantined rather than freed. The holder's operation is never
+        // replayed: repairing metadata by re-running a mutation would be a
+        // second effect, not a repair.
+        let writer_permit_reconcile_handle = if deps.pool.is_some() {
+            tokio::runtime::Handle::try_current()
+                .ok()
+                .zip(deps.writer_permit_service.clone())
+                .map(|(handle, service)| {
+                    handle.spawn(async move {
+                        match service.reconcile_after_restart().await {
+                            Ok(records) if !records.is_empty() => {
+                                tracing::warn!(
+                                    count = records.len(),
+                                    "quarantined checkout writer permits left live by a previous daemon"
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!(?error, "writer permit startup reconciliation failed");
+                            }
+                        }
+                    })
+                })
+        } else {
+            None
+        };
+
         Self {
             daemon_id,
             generation,
@@ -797,7 +925,10 @@ impl CoreDaemon {
             context_resolver,
             workspace_services,
             worktree_service,
+            checkout_mediator,
+            process_admission: process_admission.clone(),
             _worktree_reconcile_handle: worktree_reconcile_handle,
+            _writer_permit_reconcile_handle: writer_permit_reconcile_handle,
             eggpool_provisioner,
             selection_service,
             asset_refresh,
@@ -817,13 +948,23 @@ impl CoreDaemon {
             // interactive spawns draw from the same process-slot
             // accounting as durable work (M001 permit contract).
             interactive_processes: Arc::new(
+                // M005 corrective C005: a PTY is a persistent process, so
+                // its launch is refused under the restricted shared
+                // profile.
                 crate::interactive_process_attach::InteractiveProcessProtocol::new(
                     scheduler.admission().clone(),
-                ),
+                )
+                .with_process_admission(process_admission.clone()),
             ),
-            human_shell_runs: Arc::new(crate::shell::daemon::HumanShellRunService::new(
-                scheduler.admission().clone(),
-            )),
+            human_shell_runs: Arc::new({
+                // M005 corrective C005: a human-originated shell command is
+                // a process launch and is refused under the restricted
+                // shared profile.
+                let mut human_shell =
+                    crate::shell::daemon::HumanShellRunService::new(scheduler.admission().clone());
+                human_shell.set_process_admission(process_admission.clone());
+                human_shell
+            }),
             scratch_census,
             _scratch_census_handle: Some(scratch_census_handle),
             _scratch_sweep_handle: scratch_sweep_handle,

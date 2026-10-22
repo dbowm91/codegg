@@ -52,6 +52,9 @@ pub struct CoreDaemon {
     pub worktree_service: Arc<codegg_core::worktree_service::WorktreeService>,
     /// Bounded startup reconciliation against Git's actual worktree list.
     pub(crate) _worktree_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
+    /// M005 corrective C002: the startup reconciliation of checkout writer
+    /// permits. Held so the task is not detached.
+    pub(crate) _writer_permit_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
     /// Daemon-owned Eggpool provisioning service. It is present only for
     /// SQLite-backed daemons; legacy in-memory daemons retain compatibility.
     pub eggpool_provisioner: Option<Arc<crate::core::eggpool::EggpoolProvisioner>>,
@@ -181,6 +184,27 @@ pub struct CoreDaemon {
     /// broadcast receiver lagged behind publishers. Exposed for metrics
     /// and the request to manually resync after a sustained spike.
     pub dropped_event_bridge_events: std::sync::atomic::AtomicU64,
+    /// M005 corrective C004: the daemon's mediation for non-broker
+    /// checkout writers.
+    ///
+    /// The mediator asks the authoritative reservation service whether the
+    /// target checkout is reserved by a live agent-run group, and refuses
+    /// the write before its first effect when it is. It takes no lock and
+    /// holds no permit, so it cannot invert the document/repository/permit
+    /// lock order.
+    pub checkout_mediator: Arc<super::checkout_mediation::CheckoutMediator>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// The service answers whether an execution may start a process in its
+    /// checkout. It shares the reservation authority with
+    /// [`Self::checkout_mediator`], so both answer from the same durable
+    /// state: a checkout reserved by a live agent-run group admits no
+    /// unqualified process.
+    ///
+    /// The service also owns the live persistent process registry, which is
+    /// what lets a *reservation* be refused while a process that was
+    /// started under an older authority is still running.
+    pub process_admission: Arc<codegg_core::process_admission::ProcessAdmissionService>,
 }
 
 // M003: construction lives in `super::daemon_construct` (`with_deps`,
@@ -897,6 +921,351 @@ impl CoreDaemon {
         service.authorize(&authz_request).await
     }
 
+    /// M006: the checkout half of a launch is a separate effect with its
+    /// own capability.
+    ///
+    /// The `session_launch` descriptor carries `session.create`, because
+    /// the session is the primary effect. Allocating a *managed checkout*
+    /// is a distinct effect — it creates a branch and a working tree in
+    /// the repository — and a launch that performs it must not be
+    /// authorized on the session capability alone. A grant that carries
+    /// `session.create` but not `worktree.create` therefore fails closed
+    /// for a launch that allocates a checkout.
+    ///
+    /// A launch that places the session in an **existing** managed
+    /// checkout allocates nothing, so it does not ask for
+    /// `worktree.create`; the checkout it names is already owned by the
+    /// project, and the service refuses a checkout belonging to another
+    /// project.
+    ///
+    /// Returns `Ok(None)` when the request allocates no checkout, so the
+    /// caller can tell "no second check applies" from "the second check
+    /// passed" (`Ok(Some(decision))`).
+    async fn authorize_launch_checkout(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        request_id: &str,
+        request: &CoreRequest,
+    ) -> Result<
+        Option<codegg_core::authorization::AuthorizationDecision>,
+        codegg_core::authorization::AuthorizationError,
+    > {
+        use codegg_core::authorization::{
+            AuthorizationRequest, AuthorizationService, OperationDescriptor, ScopeKind,
+        };
+        use codegg_core::team::Capability;
+
+        let CoreRequest::SessionLaunch {
+            project_id,
+            placement,
+            ..
+        } = request
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            placement,
+            codegg_protocol::core::SessionLaunchPlacementDto::NewManagedCheckout { .. }
+        ) {
+            // No checkout is allocated; the session capability is the
+            // whole authority for this request.
+            return Ok(None);
+        }
+        let correlation = format!("{}:{request_id}", authority.correlation_id());
+        let descriptor = OperationDescriptor::new(
+            "worktree_create",
+            ScopeKind::DirectProject,
+            Some(Capability::WorktreeCreate),
+        );
+        let Some(pool) = self.pool.clone() else {
+            // No durable team store: the local-only daemon has no
+            // membership model to consult, exactly like the primary gate.
+            return Ok(Some(codegg_core::authorization::AuthorizationDecision {
+                principal_id: authority.principal_id().clone(),
+                operation: descriptor.operation.to_owned(),
+                capability: descriptor.capability.map(|cap| cap.as_str().to_owned()),
+                project_id: None,
+                membership_revision: None,
+                policy: codegg_core::authorization::PolicyKind::LocalOwnerBroad,
+                decision_id: uuid::Uuid::new_v4().to_string(),
+                correlation_id: correlation,
+                reason: "no durable team store; local-only daemon".to_owned(),
+                decided_at_ms: chrono::Utc::now().timestamp_millis(),
+            }));
+        };
+        let project = codegg_core::identity::ProjectId::parse(project_id).ok();
+        let service = AuthorizationService::new(codegg_core::team::TeamStore::new(pool));
+        let authz_request = AuthorizationRequest::new(
+            authority.principal().clone(),
+            descriptor,
+            project,
+            correlation,
+        );
+        service.authorize(&authz_request).await.map(Some)
+    }
+
+    /// M005 corrective C004: the canonical root of a named workspace.
+    ///
+    /// The mediation resolves the target checkout through the daemon's
+    /// workspace registry, never through a path in a request payload.
+    async fn workspace_root_for(&self, workspace_id: &str) -> Option<std::path::PathBuf> {
+        let id = codegg_core::workspace::WorkspaceId::parse(workspace_id).ok()?;
+        let workspace = self.workspaces.resolve(&id).await?;
+        Some(workspace.canonical_root.clone())
+    }
+
+    /// M005 corrective C004: the checkout a non-broker writer targets.
+    ///
+    /// The target is resolved from durable identities — the workspace the
+    /// request names, or the workspace that owns the document — never from
+    /// a path in the payload. A request that names no checkout writer
+    /// resolves to `None` and is not mediated at all.
+    async fn checkout_write_target(
+        &self,
+        request: &CoreRequest,
+    ) -> Option<(
+        super::checkout_mediation::CheckoutWriterSink,
+        super::checkout_mediation::CheckoutWriteTarget,
+    )> {
+        use super::checkout_mediation::{CheckoutWriteTarget, CheckoutWriterSink};
+        match request {
+            CoreRequest::DocumentCreate { workspace_id, .. } => Some((
+                CheckoutWriterSink::DocumentCreate,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::DocumentSave { document_id, .. } => {
+                let workspace_id = self.documents.workspace_id_for(document_id).await?;
+                Some((
+                    CheckoutWriterSink::DocumentSave,
+                    CheckoutWriteTarget::Root(self.workspace_root_for(&workspace_id).await?),
+                ))
+            }
+            CoreRequest::DocumentDelete { workspace_id, .. } => Some((
+                CheckoutWriterSink::DocumentDelete,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::ProjectInitPublish { workspace_id, .. } => Some((
+                CheckoutWriterSink::ProjectInitPublish,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::LspPreviewApply { request } => Some((
+                CheckoutWriterSink::LspPreviewApply,
+                CheckoutWriteTarget::Root(self.workspace_root_for(&request.workspace_id).await?),
+            )),
+            CoreRequest::EditCheckpointUndo { workspace_id, .. } => Some((
+                CheckoutWriterSink::EditCheckpointUndo,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::EditCheckpointUndoLatest { workspace_id, .. } => Some((
+                CheckoutWriterSink::EditCheckpointUndoLatest,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::EditCheckpointReapply { workspace_id, .. } => Some((
+                CheckoutWriterSink::EditCheckpointReapply,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::EditCheckpointReapplyLatest { workspace_id, .. } => Some((
+                CheckoutWriterSink::EditCheckpointReapplyLatest,
+                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
+            )),
+            CoreRequest::ManagedWorktreeCleanup { worktree_id, .. } => Some((
+                CheckoutWriterSink::ManagedWorktreeCleanup,
+                CheckoutWriteTarget::Worktree(
+                    codegg_core::identity::WorktreeId::parse(worktree_id).ok()?,
+                ),
+            )),
+            CoreRequest::ManagedWorktreeArchive { worktree_id, .. } => Some((
+                CheckoutWriterSink::ManagedWorktreeArchive,
+                CheckoutWriteTarget::Worktree(
+                    codegg_core::identity::WorktreeId::parse(worktree_id).ok()?,
+                ),
+            )),
+            _ => None,
+        }
+    }
+
+    /// M005 corrective C004: refuse a non-broker write into a reserved
+    /// checkout.
+    ///
+    /// The gate runs *after* authorization and *before* dispatch, so a
+    /// refused writer leaves no trace beyond the durable refusal event: no
+    /// file write, no document revision, no index, branch or metadata
+    /// change. It takes no lock and holds no permit, so it cannot invert
+    /// the order between the document revision lease, the repository lock
+    /// and the writer permit.
+    ///
+    /// The refusal is a **conflict**, not an authorization failure. The
+    /// caller's own authority is untouched; the checkout is simply held by
+    /// a live agent-run group, and the caller may retry once that group
+    /// finishes.
+    async fn mediate_checkout_write(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        request_id: &str,
+        request: &CoreRequest,
+    ) -> Result<(), super::checkout_mediation::CheckoutConflict> {
+        use super::checkout_mediation::CheckoutConflict;
+        use codegg_core::checkout_reservation::CheckoutReservation;
+
+        let Some((sink, target)) = self.checkout_write_target(request).await else {
+            return Ok(());
+        };
+        let reservation = match &target {
+            super::checkout_mediation::CheckoutWriteTarget::Root(root) => {
+                self.checkout_mediator.reservation_for_root(root).await
+            }
+            super::checkout_mediation::CheckoutWriteTarget::Worktree(worktree_id) => {
+                self.checkout_mediator
+                    .reservation_for_worktree(worktree_id)
+                    .await
+            }
+        };
+        let reservation = match reservation {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                // The authority could not answer. A writer is refused when
+                // the daemon cannot prove the checkout is unreserved.
+                let conflict = CheckoutConflict {
+                    sink,
+                    worktree_id: String::new(),
+                    group_id: String::new(),
+                    owner_run_id: String::new(),
+                    lookup_failure: Some(error.to_string()),
+                };
+                self.emit_checkout_refusal(
+                    authority, decision, request_id, request, sink, &conflict,
+                )
+                .await;
+                return Err(conflict);
+            }
+        };
+        let CheckoutReservation::Reserved(claim) = reservation else {
+            return Ok(());
+        };
+        let conflict = CheckoutConflict {
+            sink,
+            worktree_id: claim.worktree_id.to_string(),
+            group_id: claim.group_id.to_string(),
+            owner_run_id: claim.owner_run_id.to_string(),
+            lookup_failure: None,
+        };
+        self.emit_checkout_refusal(authority, decision, request_id, request, sink, &conflict)
+            .await;
+        Err(conflict)
+    }
+
+    /// M005 corrective C004: refuse an HTTP checkout write into a reserved
+    /// checkout.
+    ///
+    /// The HTTP file routes are a human surface: they carry a
+    /// transport-bound principal and never a run, so they are refused
+    /// whenever the target checkout is reserved by a live agent-run group.
+    /// A broader approval profile does not bypass the reservation — the
+    /// refusal is a conflict, and the caller's own authority is untouched.
+    pub async fn mediate_http_checkout_write(
+        &self,
+        principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
+        project_id: Option<codegg_core::identity::ProjectId>,
+        root: &std::path::Path,
+        sink: super::checkout_mediation::CheckoutWriterSink,
+    ) -> Result<(), super::checkout_mediation::CheckoutConflict> {
+        use super::checkout_mediation::CheckoutConflict;
+        use codegg_core::audit_instrumentation::AuditChainContext;
+        use codegg_core::checkout_reservation::CheckoutReservation;
+
+        let reservation = self.checkout_mediator.reservation_for_root(root).await;
+        let (conflict, group_id) = match reservation {
+            Ok(CheckoutReservation::Unreserved) => return Ok(()),
+            Ok(CheckoutReservation::Reserved(claim)) => (
+                CheckoutConflict {
+                    sink,
+                    worktree_id: claim.worktree_id.to_string(),
+                    group_id: claim.group_id.to_string(),
+                    owner_run_id: claim.owner_run_id.to_string(),
+                    lookup_failure: None,
+                },
+                claim.group_id.to_string(),
+            ),
+            Err(error) => (
+                CheckoutConflict {
+                    sink,
+                    worktree_id: String::new(),
+                    group_id: String::new(),
+                    owner_run_id: String::new(),
+                    lookup_failure: Some(error.to_string()),
+                },
+                String::new(),
+            ),
+        };
+        let correlation = format!("http:{}", principal.principal_id());
+        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+            uuid::Uuid::new_v4().to_string(),
+            correlation,
+            "denied",
+            project_id.clone(),
+        );
+        let mut chain = AuditChainContext::new();
+        chain.project = project_id;
+        if !conflict.worktree_id.is_empty() {
+            chain.worktree_id = Some(conflict.worktree_id.clone());
+        }
+        super::checkout_mediation::emit_checkout_writer_refusal(
+            &self.audit_emitter(),
+            principal,
+            &provenance,
+            &chain,
+            sink,
+            &group_id,
+            "denied",
+        )
+        .await;
+        Err(conflict)
+    }
+
+    /// M005 corrective C004: the durable refusal event for a refused
+    /// non-broker checkout writer.
+    ///
+    /// The event is attributed to the transport-bound principal and carries
+    /// the M003 decision provenance. It names the sink and the group; it
+    /// carries no path and no file content.
+    async fn emit_checkout_refusal(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        request_id: &str,
+        request: &CoreRequest,
+        sink: super::checkout_mediation::CheckoutWriterSink,
+        conflict: &super::checkout_mediation::CheckoutConflict,
+    ) {
+        use codegg_core::audit_instrumentation::AuditChainContext;
+        let correlation = format!("{}:{request_id}", authority.correlation_id());
+        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+            decision.decision_id.clone(),
+            correlation,
+            "denied",
+            decision.project_id.clone(),
+        );
+        let mut chain = AuditChainContext::new();
+        chain.project = decision.project_id.clone();
+        if let Some(session) = Self::session_id_for_request(request) {
+            chain.session_id = Some(session.to_owned());
+        }
+        if !conflict.worktree_id.is_empty() {
+            chain.worktree_id = Some(conflict.worktree_id.clone());
+        }
+        super::checkout_mediation::emit_checkout_writer_refusal(
+            &self.audit_emitter(),
+            authority.principal(),
+            &provenance,
+            &chain,
+            sink,
+            &conflict.group_id,
+            "denied",
+        )
+        .await;
+    }
+
     /// Team collaboration corrective M002: chat data gate.
     ///
     /// Returns `Some` when this request carries a chat data gate
@@ -1150,6 +1519,12 @@ impl CoreDaemon {
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
+            // M006: a launch names the project it places a session in.
+            // Without this arm the `session_launch` descriptor's
+            // `DirectProject` scope resolves to `None`, and a team
+            // principal is denied for a missing scope instead of for a
+            // missing grant.
+            CoreRequest::SessionLaunch { project_id, .. } => Some(project_id.as_str()),
             CoreRequest::SessionCreate {
                 project_id: Some(project_id),
                 ..
@@ -3791,6 +4166,7 @@ impl CoreDaemon {
                 codegg_core::identity::ProjectId::parse(request.project_id.as_str()).ok()
             }
             CoreRequest::SessionList { project_id, .. }
+            | CoreRequest::SessionLaunch { project_id, .. }
             | CoreRequest::ProjectGet { project_id }
             | CoreRequest::ProjectArchive { project_id }
             | CoreRequest::ProjectRestore { project_id }
@@ -3868,6 +4244,31 @@ impl CoreDaemon {
                 return Ok(Self::authorization_denial(&request.payload, &error));
             }
         };
+        // M006: a launch that allocates a managed checkout performs a
+        // second effect with its own capability. The check runs *before*
+        // the allow event is recorded and before dispatch, so a denied
+        // launch has no side effect at all — not even an accepted launch
+        // record — and the audit trail holds one decision, not an allow
+        // followed by a denial.
+        match Box::pin(self.authorize_launch_checkout(
+            &authority,
+            &request.request_id,
+            &request.payload,
+        ))
+        .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                Box::pin(self.emit_audit_for_denial(
+                    &authority,
+                    &request.request_id,
+                    &request.payload,
+                    &error,
+                ))
+                .await;
+                return Ok(Self::authorization_denial(&request.payload, &error));
+            }
+        }
         Box::pin(self.emit_audit_for_authorized(
             &authority,
             &authz_decision,
@@ -3875,6 +4276,27 @@ impl CoreDaemon {
             &request.payload,
         ))
         .await;
+        // M005 corrective C004: a CodeGG entry point that is not a model
+        // tool can still write into a checkout. The mediation runs after
+        // the authorization decision (the principal's own authority is
+        // unaffected) and before dispatch, so a refused writer has no
+        // side effect at all — no file write, no document revision, no
+        // index, branch or metadata change. The refusal is recorded as a
+        // durable `checkout_writer_refusal` event and answered with a
+        // typed conflict the caller can retry.
+        if let Err(conflict) = Box::pin(self.mediate_checkout_write(
+            &authority,
+            &authz_decision,
+            &request.request_id,
+            &request.payload,
+        ))
+        .await
+        {
+            return Ok(CoreResponse::Error {
+                code: conflict.code().to_string(),
+                message: conflict.to_string(),
+            });
+        }
         if Self::is_human_shell_request(&request.payload) {
             return Box::pin(self.handle_human_shell_request(
                 request,

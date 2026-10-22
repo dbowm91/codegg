@@ -1,12 +1,32 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — M001/M004 and ADR-0032 gates are satisfied; checkout-scoped writer-containment design, source audit, and qualification are in progress. Shared mutation remains unavailable until every enabled CodeGG writer is mediated or denied and the native lifecycle matrix passes.
+Status: active — M001/M004 and ADR-0032 gates are satisfied; project-root writer sink inventory and the native process lifecycle evidence are recorded. The corrective line closed C001–C005 and closed C006 **conditionally**: Q1–Q5 ran on Linux and macOS, and the shared checkout is a real **opt-in** production path, platform-gated (Linux and macOS qualified; Windows disabled because it has no filesystem-enforcement backend). The WorkOrder `shared`/`serialized` **mutation policy** still fails closed, so no WorkOrder agent is placed on a shared checkout — the profile is reached only through the explicit opt-in.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
 Decision gate: `plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was accepted on 2026-10-15. Its shared-write mode is not qualified or enabled; ADR-0002 isolation remains the effective mutation contract until M005 proves complete writer containment and passes its acceptance gates.
 Canonical: plans/000-long-term-specification.md §§9, 16–17, 27, 29; plans/001-terminology-and-domain-model.md §§5, 7–8.
 Primary class: capability / invariant. No work may enable shared mutation before the decision and safety gates close.
+
+## Corrective handoff registered 2026-10-19
+
+The source audit below remains authoritative evidence, not production
+qualification. Its unresolved product-boundary and writer-lifetime issues now
+have separate corrective handoffs in
+plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md
+(C001–C006), with executable plans under
+plans/implementation/agent-workstream-m005-writer-containment-corrective/.
+ADR-0047 option B was **accepted on 2026-10-19**, which unblocked C002
+only and enabled no shared mutation; C001 is closed with the restricted
+CodeGG-mediated writer profile and denial matrix, and C002 is closed with
+the durable generation-fenced checkout writer permit. C003 is
+dependency-ready; C004–C006 are blocked. **No writer is routed through the
+permit yet**, so nothing is fenced. Do **not** enable SerializedShared from this audit or treat
+current global scheduler keys, request-scoped guards, or process-group
+cleanup as the missing checkout writer permit. M005 remains active; parent
+strict closure requires positively qualified Q1–Q5 and the corrective gates.
+M006 isolated session/worktree launch and M007 per-workspace build
+admission remain independent.
 
 ## Objective
 
@@ -129,18 +149,34 @@ be qualified:
 | Plugins, hooks, and other direct process adapters | `src/plugin/runtime/process.rs`, `src/hooks/`, and `src/tool/formatter.rs` have distinct or deferred owners in `docs/execution-ownership.toml`. | Route each through the same final permit owner and supervised lifetime, otherwise deny it before process start. |
 | Unrelated same-user processes | Editors and shell processes outside the daemon do not participate in CodeGG admission or cancellation. | Do not claim these are serialized. If the product requirement includes them, ordinary daemon-owned locks cannot satisfy it; shared mode needs a separately qualified OS identity / filesystem boundary or must remain unavailable. |
 
-This inventory narrows the qualification claim: “universal” means every
-CodeGG-mediated writer that can touch a shared-placement checkout. It does not
-mean CodeGG can serialize arbitrary external programs running as the same OS
-user. External edits must still be detected as conflicts at guarded transaction
-boundaries; detection is not protection from a concurrent external writer.
+The source audit now classifies the production CodeGG write paths by their
+effective root and owner. This closes the earlier gap where the seam table was
+only a control-flow starting point. “Complete” here means CodeGG-mediated
+operations that can mutate a registered project/worktree; arbitrary command
+contents and external processes cannot be reduced to a finite path list.
 
-A broad source scan of direct filesystem write APIs finds additional candidates
-in client/config/storage/artifact code as well as workspace mutation code. A
-textual hit is not by itself a workspace writer: qualification must trace the
-effective project root and caller authority to the actual write sink. The
-inventory above is a control-flow starting point, not a claim that every
-workspace-rooted writer has already been enumerated or covered.
+#### Project-root writer sink inventory (source audit 2026-10-19)
+
+| Entry surface | Effective sink and authority | Existing coordination | Shared-placement disposition |
+|---|---|---|---|
+| Agent native file tools | `write`, `edit`, `replace`, `apply_patch`, and `lsp_preview_apply` resolve against the execution workspace or explicitly authorized scratch. `ToolBatchExecutor` is the model-facing dispatch owner. | Path validation, authorization, per-batch affected-path checkpoints and overlap handling. None spans another run or non-broker writer. | Carry the typed checkout generation and hold one permit for the full file transaction, or refuse these tools for shared members. Scratch roots stay under their separate owner/lease contract. |
+| Agent Git tools and recovery | `GitMutationService::execute`, Git network operations, recovery, commit/stage and worktree administration mutate the worktree, index, refs, or the shared repository Git directory. | Typed Git policy, operation audit, repository/worktree checks and existing Git locks; these do not serialize shell, file tools, or other APIs under one checkout identity. | Use the same permit across all Git/index/ref/integration mutations, including recovery; otherwise deny them. A worktree lease is checkout ownership, not a writer permit. |
+| Finite command and job surfaces | Bash/shell, Python, test/build/format, Tool Program child jobs, hooks, and process-backed plugins can write anywhere their effective process authority permits, including via subprocesses. Human `!` shell is a separate authenticated user-originated path. | Durable heavy work enters `JobSubmissionService`/`JobScheduler`; finite execution reaches `ManagedProcessService`. Admission/resource keys are global capacity controls, not checkout writer authority. Human shell also uses the finite-process owner. | Acquire only in the final executor and retain through verified writer-tree quiescence; bind nested-job handoff. Refuse any command/profile whose writer effects or descendants cannot be contained. Human-originated activity also needs explicit conflict policy. |
+| Persistent terminal | `src/interactive_process.rs` owns a PTY that can continue writing after its creation request returns. | Process-slot admission plus a live session handle; no worktree-scoped reservation. | Keep the checkout isolated or deny PTY creation/attachment for shared placement. Releasing a permit on tool return is unsafe; holding it for an indefinite PTY is not a usable shared mode. |
+| Editor documents and LSP preview | `CoreDaemon` document create/delete/save and reviewed LSP preview application write through `src/core/daemon_documents.rs` and `src/lsp/mutation.rs`. TUI editor commands submit these daemon requests. | Document writer/revision leases, clean-buffer checks and repository locks protect their own checked transaction. They do not cover AgentRuns, Git, shell, HTTP, or snapshot restore. | Route the final checked transaction through the common permit. LSP server process access remains separately denied unless its full lifetime is contained or read-only. |
+| HTTP workspace file API | `src/server/routes/file.rs` reads, writes, and deletes project-rooted files after route authorization. It is outside `ToolBroker`. | Root/path validation and route authorization; no common worktree writer gate. | Route mutations through the common permit or reject while a shared checkout is reserved. |
+| Project initialization and snapshot restore | `src/core/daemon_project_init.rs` publishes the root `AGENTS.md`; `codegg-core` snapshot restore applies checked file states into the project root. | Digest/identity validation, atomic replacement and restore rollback protect each operation, but do not coordinate all writer classes. Bootstrap analysis itself is read-only and returns a draft. | Include both at the final mutation boundary or refuse while a shared reservation is active. |
+| Project-local CodeGG state | Workspace service construction/run storage writes under `<workspace>/.codegg/runs`; legacy project-store migration can write `<project>/.codegg/sessions.db`. These are physically inside the checkout even when ignored by Git. | Run-store identity/atomic-write rules and migration locking are scoped to their own stores. | Either include these sinks in checkout conflict policy or move/resolve them outside the checkout before claiming all CodeGG writes are serialized. |
+| LSP, local MCP, plugin and hook lifetimes | LSP/MCP servers and some plugin adapters retain child processes or capabilities beyond one broker request; a tool response is not proof that an extension stopped writing. | Protocol-specific lifecycle, cancellation and direct-child cleanup; no shared worktree permit and no uniform descendant-quiescence attestation. | Deny in the initial shared profile unless a typed checkout scope and full supervised lifetime are proven. |
+| Non-writers and out-of-scope writers | File-tree requests are listing/read-only. `src/ide/mod.rs` writes temporary diff copies rather than the checkout. Agent bootstrap analysis and project-agent discovery read the checkout. User config, daemon/session databases, skill stores, scratch roots and test fixtures use managed data/cache/temp locations. Editors and shells outside CodeGG are external same-user writers. | Read-only operations need no permit. Managed private state uses its own storage/scratch owners. External same-user processes do not participate in daemon admission. | Keep read-only surfaces concurrent. Do not count temp/private-state writes as checkout mutations. External same-user writers are outside a CodeGG-only contract; if they must be excluded, shared placement is a no-go without a separately qualified OS identity/filesystem boundary. |
+
+No common checkout-scoped writer permit currently spans these sinks. Per-batch
+file coordination, document/repository locks, scheduler capacity keys, Git
+operation checks, and filesystem path validation solve different problems and
+cannot be composed into a checkout-wide reservation by assumption. In
+particular, path validation does not constrain arbitrary process effects, and
+detecting an external edit at a later checkpoint does not prevent a concurrent
+write.
 
 #### Qualification sequence
 
@@ -226,6 +262,43 @@ This review does not qualify shared mutation and does not change ADR-0032 or
 ADR-0002. It records why scheduler exclusivity keys and request-scoped locks
 are insufficient and why persistent process ownership must be resolved before
 broad implementation.
+
+#### Native process-lifecycle qualification record (2026-10-19)
+
+The production process owners were checked against their actual lifetime
+contracts, with focused native tests where available. The results qualify
+current cleanup behavior for the tested cases; they do not establish a
+checkout-scoped writer permit or prove that arbitrary descendants are
+quiescent.
+
+| Native owner | Evidence | Result and limit |
+|---|---|---|
+| ManagedProcessService on macOS | Rust 1.89, Apple Silicon; `cargo test -p codegg --lib managed_process --locked` passed 20/20 after building `codegg-sandbox-helper`. Includes sandbox temporary-directory cleanup and timeout/cancellation process-group termination. | Qualified for these tested child/process-group cases. Unix descendants that call `setsid` can escape; bounded output-join failure is not positive quiescence evidence. |
+| InteractiveProcessService on macOS | `cargo test -p codegg --lib interactive_process --locked` passed 22/22. Added `terminate_kills_session_descendant_before_releasing_process_slot`; the focused rerun passed 1/1. It terminates a shell with a background delayed writer, checks the process slot is released, then verifies the marker was never written. | Qualified for this ordinary same-session descendant case. A descendant that escapes the process group is not covered by this test. PTYs remain long-lived and therefore unavailable to a request-scoped shared-write permit. Non-Unix builds refuse PTY operation. |
+| Local MCP child on macOS | `cargo test -p codegg --lib mcp::local --locked` passed 5/5, including hung discovery/tool-call timeout and direct-child reap cases. | Direct child cleanup is tested; descendant quiescence and checkout-scoped authority are not. Keep local MCP unavailable in a shared profile. |
+| ManagedProcessService on Windows | Hosted Windows process-launcher workflow [39262822248](https://github.com/dbowm91/codegg/actions/runs/39262822248) passed on the integrated source head. Source starts suspended, assigns a kill-on-close Job Object, resumes, then closes the job for timeout/cancellation cleanup and reaps the direct child. | Confirms the hosted lifecycle suite on that head; Job Object supervision is not filesystem containment and does not qualify every writer route. |
+| ManagedProcessService on Linux | Hosted full CI [39262822255](https://github.com/dbowm91/codegg/actions/runs/39262822255) passed on the integrated source head. | Full-suite evidence only; no separate adversarial escaped-descendant qualification. Linux shared-write capability remains unavailable. |
+| LSP launch and persistent runtime | `crates/egglsp/src/launch.rs` configures `kill_on_drop`; termination kills the direct child. The runtime/restart tests exercise owned runtime teardown, but there is no native test proving descendant-tree quiescence or read-only filesystem access. | Not qualified for shared checkout writers. Keep LSP server use unavailable until its full lifetime is contained or its filesystem access is independently restricted. |
+
+The PTY test is committed only with this M005 audit branch; it is not part of
+the M004 PR. The source audit classifies project-root writes from native file
+tools, Git and recovery, finite commands/jobs, PTYs, editor/document/LSP
+preview, HTTP file routes, project initialization/snapshot restore, and
+project-local CodeGG state. It also identifies persistent LSP/MCP/plugin/hook
+capabilities and external same-user processes as containment gaps. The updated
+source inventory in `docs/execution-ownership.toml` has 58 process entries;
+`scripts/check_execution_ownership.py` passes. This makes the writer inventory
+complete as a classification of the checked-in CodeGG paths, while the
+unbounded effects of arbitrary commands and external processes remain explicit
+limitations rather than claimed coverage.
+
+**Disposition:** native cleanup is qualified only for the named tests and
+platform evidence above. Escaped Unix descendants, persistent process writers,
+independent file APIs, and external same-user writers prevent a universal
+checkout-scoped guarantee. Do not implement or enable SerializedShared from
+this evidence. Q1–Q5 remain unrun; M005 stays active pending an accepted
+product boundary and a restricted capability profile or a separate native
+containment design.
 
 #### Architecture options and recommendation
 

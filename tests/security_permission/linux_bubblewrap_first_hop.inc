@@ -105,6 +105,7 @@ fn opt_in_real_child_namespaces_and_fail_closed_setup() {
         linux_offline_network: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
+        expected_created_git_pointers: Vec::new(),
         target: PathBuf::from("/usr/bin/dash"),
         args: Vec::new(),
         read_paths: vec![PathBuf::from("/usr/bin"), PathBuf::from("/usr/lib")],

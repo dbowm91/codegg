@@ -403,6 +403,197 @@ impl ProjectStorage {
             .ok_or_else(|| ProjectStorageError::NotFound(format!("session {session_id}")))
     }
 
+    /// M006: resolve a project's primary repository and the workspace it
+    /// is bound to.
+    ///
+    /// The repository identity is not a field of the project record: it
+    /// lives on the *workspace* binding, because a repository is reached
+    /// through a checkout. A launch needs both — the repository to
+    /// create a checkout from, and the workspace the checkout descends
+    /// from.
+    ///
+    /// Returns `None` when the project has no resolved workspace with a
+    /// repository. That is a refusal, not a fallback: a launch without a
+    /// repository has nothing to fork from.
+    pub async fn project_repository(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<(WorkspaceId, RepositoryId, std::path::PathBuf)>, ProjectStorageError> {
+        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT workspace_id, repository_id, locator FROM workspace_project_binding \
+             WHERE project_id = ? AND status = 'resolved' AND repository_id IS NOT NULL \
+             ORDER BY time_created ASC, workspace_id ASC LIMIT 1",
+        )
+        .bind(project_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        let Some((workspace_id, repository_id, locator)) = row else {
+            return Ok(None);
+        };
+        let Some(repository_id) = repository_id else {
+            return Ok(None);
+        };
+        let Ok(workspace_id) = WorkspaceId::parse(&workspace_id) else {
+            return Ok(None);
+        };
+        let Ok(repository_id) = RepositoryId::parse(&repository_id) else {
+            return Ok(None);
+        };
+        let root = locator.map(std::path::PathBuf::from).unwrap_or_default();
+        Ok(Some((workspace_id, repository_id, root)))
+    }
+
+    /// M006: record which managed checkout a workspace belongs to.
+    ///
+    /// The `workspace_project_binding.worktree_id` column existed but was
+    /// never written: every binder stored `NULL`, and the upsert omitted
+    /// the column from its `DO UPDATE SET` list. A workspace that is a
+    /// managed checkout therefore could not be named, which is exactly
+    /// what a session launched into that checkout needs.
+    ///
+    /// The write is guarded: a workspace that is not already bound to a
+    /// project is left alone, so this can never attach a checkout to an
+    /// unresolved workspace.
+    pub async fn record_workspace_worktree(
+        &self,
+        workspace_id: &WorkspaceId,
+        worktree_id: &crate::identity::WorktreeId,
+    ) -> Result<(), ProjectStorageError> {
+        let now = Utc::now();
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let updated = sqlx::query(
+            "UPDATE workspace_project_binding SET worktree_id = ?, time_updated = ? \
+             WHERE workspace_id = ? AND status = 'resolved'",
+        )
+        .bind(worktree_id.as_str())
+        .bind(now.timestamp_millis())
+        .bind(workspace_id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(ProjectStorageError::NotFound(format!(
+                "workspace {workspace_id}"
+            )));
+        }
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
+    /// M006: bind a managed checkout's workspace to the project that owns
+    /// the checkout's repository.
+    ///
+    /// The catalog's auto-provisioning rule gives every previously unseen
+    /// workspace root **its own logical project**
+    /// ([`Self::reconcile_workspace_path`] → `resolve_project_and_repository`).
+    /// That rule is right for a directory the user opens and wrong for a
+    /// launch: a checkout is not a new project, it is a second working
+    /// directory of the project the caller already named. A launch that
+    /// auto-provisioned here would bind the session to a project nobody
+    /// asked for, and the session would not appear under the project the
+    /// user launched from.
+    ///
+    /// So the placement is explicit: the checkout's workspace joins the
+    /// launch's project, shares the launch's repository, and records the
+    /// managed checkout it belongs to.
+    ///
+    /// The binding is **refused** when the workspace is already bound to a
+    /// different project. A checkout that belongs to another project is not
+    /// adopted by a launch; the caller must name that project.
+    ///
+    /// The transaction is a read-then-write (the existing binding is read
+    /// before the row is written), so it opens with `BEGIN IMMEDIATE` — a
+    /// deferred transaction would take a shared read lock first and then
+    /// have to upgrade it, which SQLite refuses without waiting.
+    pub async fn bind_checkout_workspace(
+        &self,
+        workspace: &WorkspaceRecord,
+        project_id: &ProjectId,
+        repository_id: &RepositoryId,
+        worktree_id: &crate::identity::WorktreeId,
+        source: &str,
+    ) -> Result<WorkspaceBindingRecord, ProjectStorageError> {
+        if self.get_project(project_id).await?.is_none() {
+            return Err(ProjectStorageError::NotFound(format!(
+                "project {project_id}"
+            )));
+        }
+        if self.get_repository(repository_id).await?.is_none() {
+            return Err(ProjectStorageError::NotFound(format!(
+                "repository {repository_id}"
+            )));
+        }
+        let source = bounded_text(source, MAX_LINEAGE_VALUE_LENGTH, "binding source")?;
+        let now = Utc::now().timestamp_millis();
+        let mut tx = crate::storage::immediate::ImmediateWrite::begin(&self.pool)
+            .await
+            .map_err(db_error)?;
+
+        let existing: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT project_id, status, revision FROM workspace_project_binding WHERE workspace_id = ?",
+        )
+        .bind(workspace.id.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_error)?;
+        if let Some((bound_project, status, _)) = &existing {
+            if bound_project != project_id.as_str() {
+                return Err(ProjectStorageError::Conflict(format!(
+                    "workspace {} is bound to project {bound_project}",
+                    workspace.id
+                )));
+            }
+            if status != BindingStatus::Resolved.as_str() {
+                return Err(ProjectStorageError::Conflict(format!(
+                    "workspace {} is bound with status {status}",
+                    workspace.id
+                )));
+            }
+        }
+
+        // The workspace row itself is owned by the registry, but a launch
+        // may bind a workspace the registry has not persisted yet. Keep the
+        // row present so the binding is never an orphan.
+        sqlx::query(
+            "INSERT INTO workspace (id, canonical_root, display_name, time_created, time_last_opened, time_archived) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(workspace.id.as_str())
+        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+        .bind(&workspace.display_name)
+        .bind(workspace.created_at.timestamp_millis())
+        .bind(workspace.last_opened_at.timestamp_millis())
+        .bind(workspace.archived_at.map(|value| value.timestamp_millis()))
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
+
+        let revision = existing
+            .as_ref()
+            .map(|(_, _, revision)| revision + 1)
+            .unwrap_or(1);
+        sqlx::query(
+            "INSERT INTO workspace_project_binding (workspace_id, project_id, repository_id, worktree_id, node_id, locator, status, source, revision, time_created, time_updated) VALUES (?, ?, ?, ?, NULL, ?, 'resolved', ?, ?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET project_id = excluded.project_id, repository_id = excluded.repository_id, worktree_id = excluded.worktree_id, locator = excluded.locator, status = excluded.status, source = excluded.source, revision = excluded.revision, time_updated = excluded.time_updated",
+        )
+        .bind(workspace.id.as_str())
+        .bind(project_id.as_str())
+        .bind(repository_id.as_str())
+        .bind(worktree_id.as_str())
+        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+        .bind(&source)
+        .bind(revision)
+        .bind(now)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+
+        self.workspace_binding(&workspace.id)
+            .await?
+            .ok_or_else(|| ProjectStorageError::NotFound(format!("workspace {}", workspace.id)))
+    }
+
     /// Reconcile one explicitly registered workspace. Repository evidence must
     /// be gathered before this call so no SQLite write transaction is held
     /// while Git is probed.

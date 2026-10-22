@@ -118,9 +118,9 @@ impl ChatComposeSeed {
 pub enum ChatKeyAction {
     /// Swallowed. Navigation and toggles resolve here.
     Consumed,
-    /// The host's universal exit (`Esc`/`q`). The browser declines to decide
-    /// what it means: for the dialog it closes the window, for a panel it
-    /// returns focus to the composer.
+    /// The surface's own exit gesture (`Esc` and `q`). The browser declines to
+    /// decide what it means: for the dialog it closes the window, for a panel
+    /// it backs out of the armed compose context and never the focus.
     Exit,
     /// A daemon-bound mutation to route through `App::process_msg`.
     Intent(TuiMsg),

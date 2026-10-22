@@ -9,6 +9,10 @@ use crate::git_mutations::{GitEnvPolicy, GitMutationError, GitMutationExecutor};
 use crate::git_mutations_ops as gm_ops;
 use crate::git_service::{GitExecutionService, GitPayload};
 use crate::tool::backend::{StructuredToolResult, ToolExecutionContext};
+use crate::tool::writer_fence::{
+    acquire_writer_permit, settle_writer_fence, writer_fence_key, NativeEffectClass,
+    WriterFenceOutcome,
+};
 use crate::tool::{Tool, ToolCategory};
 use codegg_git::parse_git_argv;
 
@@ -465,21 +469,61 @@ impl GitTool {
                 return Err(ToolError::Execution(outcome.to_string()));
             }
         };
+
+        // The raw fallback is an untyped compatibility path: it has no typed
+        // effect class, so the fence is told `Unknown` and refuses it under
+        // a shared profile rather than let an unclassified effect write the
+        // checkout. The permit is taken after the env policy accepted the
+        // argv and before the command runs, and is held until the command
+        // settles. A read-only invocation never takes one.
+        let mutating = !Self::invocation_is_read_only(subcommand, &args);
+        let permit = if mutating {
+            let repo_root = resolve_repo_root_path(&workdir);
+            acquire_writer_permit(
+                audit_ctx,
+                NativeEffectClass::Unknown,
+                vec![repo_root.clone()],
+                writer_fence_key(
+                    &format!("raw:{subcommand}"),
+                    std::slice::from_ref(&repo_root),
+                    audit_ctx,
+                ),
+            )
+            .await?
+        } else {
+            None
+        };
+
         let output = match tokio::time::timeout(timeout, cmd.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => return Err(ToolError::Execution(e.to_string())),
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(e)) => Err(ToolError::Execution(e.to_string())),
             Err(_) => {
                 // M002: spawned then reaped by the deadline. Mutating
                 // subcommands describe the timeout once; read-only
                 // subcommands stay silent.
-                if !Self::invocation_is_read_only(subcommand, &args) {
+                if mutating {
                     emit_raw_git_audit(audit_ctx, subcommand, "timeout").await;
                 }
-                return Err(ToolError::Timeout(format!(
+                Err(ToolError::Timeout(format!(
                     "git command timed out after {timeout_secs}s"
-                )));
+                )))
             }
         };
+
+        // The raw path has no state delta to offer, so the exit status is
+        // the only evidence: a clean exit settles the permit, while a
+        // failed or reaped command leaves the checkout in an unknown state
+        // and parks the permit instead of releasing it.
+        let outcome = match &output {
+            Ok(output) if output.status.success() => WriterFenceOutcome::Settled,
+            Ok(output) => WriterFenceOutcome::Unproven(format!(
+                "git {subcommand} exited with code {}",
+                output.status.code().unwrap_or(-1)
+            )),
+            Err(error) => WriterFenceOutcome::Unproven(error.to_string()),
+        };
+        settle_writer_fence(permit, outcome, output.is_err()).await?;
+        let output = output?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -522,6 +566,12 @@ impl GitTool {
     /// state deltas, and applies env hardening. When `audit_ctx` carries
     /// the threaded audit pair, the executor emits the single
     /// `git_operation` event for the executed transition.
+    ///
+    /// M005 C003: a mutating action takes the checkout writer permit
+    /// immediately before the dispatch and holds it until the effect
+    /// settles, so a checkout this run does not own is refused *before* the
+    /// first index, worktree, ref or config effect. A read-only action
+    /// takes no permit at all and is never refused by the fence.
     async fn dispatch_mutation(
         &self,
         mutation: &str,
@@ -545,6 +595,73 @@ impl GitTool {
                 "isolated child Git policy denies mutation '{mutation}'"
             )));
         }
+
+        // One resolution of the repository root, shared by the fence
+        // target, the typed executor and the RunStore record, so the fence
+        // contains exactly the checkout the action writes.
+        let repo_root = resolve_repo_root_path(workdir);
+
+        if !typed_mutation_mutates(mutation) {
+            // A read-only action writes nothing: no permit, no refusal.
+            return self
+                .run_typed_mutation(
+                    mutation,
+                    input,
+                    workdir,
+                    timeout_secs,
+                    audit_ctx,
+                    &repo_root,
+                )
+                .await
+                .map(|report| report.output)
+                .map_err(GitDispatchError::into_tool_error);
+        }
+
+        let permit = acquire_writer_permit(
+            audit_ctx,
+            NativeEffectClass::GitMutation,
+            vec![repo_root.clone()],
+            writer_fence_key(mutation, std::slice::from_ref(&repo_root), audit_ctx),
+        )
+        .await?;
+
+        let result = self
+            .run_typed_mutation(
+                mutation,
+                input,
+                workdir,
+                timeout_secs,
+                audit_ctx,
+                &repo_root,
+            )
+            .await;
+
+        let outcome = match &result {
+            Ok(report) if report.changed => WriterFenceOutcome::Settled,
+            Ok(_) => WriterFenceOutcome::NoEffect,
+            Err(error) => error.fence_outcome(),
+        };
+        settle_writer_fence(permit, outcome, result.is_err()).await?;
+        result
+            .map(|report| report.output)
+            .map_err(GitDispatchError::into_tool_error)
+    }
+
+    /// The typed mutation dispatch itself.
+    ///
+    /// Split out of [`Self::dispatch_mutation`] so the writer permit can be
+    /// held *around* the whole effect: every exit path, including the
+    /// early refusals inside an action arm, returns here and is settled by
+    /// the caller.
+    async fn run_typed_mutation(
+        &self,
+        mutation: &str,
+        input: &serde_json::Value,
+        workdir: &std::path::Path,
+        timeout_secs: u64,
+        audit_ctx: Option<&ToolExecutionContext>,
+        repo_root: &std::path::Path,
+    ) -> Result<TypedMutationReport, GitDispatchError> {
         let exec = GitMutationExecutor::new()
             .with_env_policy(GitEnvPolicy::default())
             .with_timeout(Duration::from_secs(timeout_secs.max(1)));
@@ -627,7 +744,9 @@ impl GitTool {
                 };
                 let msg = message
                     .ok_or_else(|| {
-                        ToolError::Execution("commit requires 'message' parameter".to_string())
+                        GitDispatchError::BeforeEffect(ToolError::Execution(
+                            "commit requires 'message' parameter".to_string(),
+                        ))
                     })?
                     .to_string();
                 gm_ops::commit_with_selection(
@@ -655,23 +774,23 @@ impl GitTool {
                 .map(|o| o.mutation)
             }
             "branch_create" => {
-                let n = name.ok_or_else(|| branch_param("name"))?;
+                let n = require_mutation_param(name, "name")?;
                 gm_ops::branch_create(&exec, workdir, n, target, force).await
             }
             "branch_switch" => {
-                let n = name.ok_or_else(|| branch_param("name"))?;
+                let n = require_mutation_param(name, "name")?;
                 gm_ops::switch_branch(&exec, workdir, n, force).await
             }
             "branch_create_and_switch" => {
-                let n = name.ok_or_else(|| branch_param("name"))?;
+                let n = require_mutation_param(name, "name")?;
                 gm_ops::create_and_switch(&exec, workdir, n, target).await
             }
             "branch_delete" => {
-                let n = name.ok_or_else(|| branch_param("name"))?;
+                let n = require_mutation_param(name, "name")?;
                 gm_ops::branch_delete(&exec, workdir, n, force).await
             }
             "detach" => {
-                let t = target.ok_or_else(|| branch_param("target"))?;
+                let t = require_mutation_param(target, "target")?;
                 gm_ops::detach_at(&exec, workdir, t).await
             }
             "restore_worktree" => gm_ops::restore_worktree(&exec, workdir, paths(), target).await,
@@ -689,7 +808,7 @@ impl GitTool {
                 gm_ops::stash_pop(&exec, workdir, Some(n), keep_index).await
             }
             "stash_drop" => {
-                let n = name.ok_or_else(|| branch_param("name"))?;
+                let n = require_mutation_param(name, "name")?;
                 gm_ops::stash_drop(&exec, workdir, n).await
             }
             "merge" => {
@@ -738,8 +857,8 @@ impl GitTool {
                     Some("ff") => crate::git_network_ops::PullStrategy::FastForwardOnly,
                     None => crate::git_network_ops::PullStrategy::Merge,
                     Some(other) => {
-                        return Err(ToolError::Execution(format!(
-                            "unknown pull strategy: {other}"
+                        return Err(GitDispatchError::BeforeEffect(ToolError::Execution(
+                            format!("unknown pull strategy: {other}"),
                         )));
                     }
                 };
@@ -844,7 +963,10 @@ impl GitTool {
                         out.push_str(&format!("  - {} ({:?})\n", entry.path, entry.kind));
                     }
                 }
-                return Ok(out);
+                return Ok(TypedMutationReport {
+                    output: out,
+                    changed: false,
+                });
             }
             "clean" => {
                 let req = crate::git_network_ops::CleanRequest {
@@ -854,11 +976,11 @@ impl GitTool {
                     paths: paths(),
                 };
                 if req.is_broad() {
-                    return Err(ToolError::Execution(
+                    return Err(GitDispatchError::BeforeEffect(ToolError::Execution(
                         "broad ignored cleanup (clean --include-ignored at root) is rejected \
                          by policy; scope to specific paths or remove --ignored"
                             .to_string(),
-                    ));
+                    )));
                 }
                 if dry_run {
                     let preview =
@@ -877,27 +999,28 @@ impl GitTool {
                             out.push_str(&format!("  - {} ({:?})\n", entry.path, entry.kind));
                         }
                     }
-                    return Ok(out);
+                    return Ok(TypedMutationReport {
+                        output: out,
+                        changed: false,
+                    });
                 }
                 crate::git_network_ops::clean(&exec, workdir, req).await
             }
 
             other => {
-                return Err(ToolError::Execution(format!(
-                    "unknown mutation action: {other}"
+                return Err(GitDispatchError::BeforeEffect(ToolError::Execution(
+                    format!("unknown mutation action: {other}"),
                 )))
             }
         }
         .map_err(map_mutation_err)?;
-        // Best-effort persistence to RunStore.
-        let repo_root = crate::git_mutations::resolve_repo_root(workdir)
-            .map(|r| r.as_path().to_path_buf())
-            .unwrap_or_else(|_| workdir.to_path_buf());
+        // Best-effort persistence to RunStore. The repository root is the one
+        // the fence already contained, so the record and the write agree.
         let result_opt = crate::git_run_store::persist_mutation(
             &self.run_store,
             &result,
             workdir,
-            &repo_root,
+            repo_root,
             "git_native",
             Some(mutation.to_string()),
         )
@@ -905,7 +1028,10 @@ impl GitTool {
         if result_opt.is_none() {
             tracing::warn!("failed to persist git mutation to RunStore");
         }
-        Ok(project_mutation(&result))
+        Ok(TypedMutationReport {
+            output: project_mutation(&result),
+            changed: typed_mutation_mutates(mutation),
+        })
     }
 
     /// Inspect the active operation state via `egggit::detect_operation_state_for_root`.
@@ -1013,6 +1139,86 @@ impl GitTool {
 
 fn branch_param(label: &str) -> ToolError {
     ToolError::Execution(format!("mutation requires '{label}' parameter"))
+}
+
+/// A missing mutation parameter is refused *before* any effect, so it
+/// releases the checkout rather than parking it.
+fn require_mutation_param<T>(value: Option<T>, label: &str) -> Result<T, GitDispatchError> {
+    value.ok_or_else(|| GitDispatchError::BeforeEffect(branch_param(label)))
+}
+
+// ---------------------------------------------------------------------------
+// M005 C003 — the checkout writer fence
+// ---------------------------------------------------------------------------
+
+/// The outcome of one typed Git mutation.
+///
+/// `changed` records whether the action was one that writes to the checkout.
+/// A read-only action reports `false` and never takes a permit.
+#[derive(Debug, Clone)]
+struct TypedMutationReport {
+    output: String,
+    changed: bool,
+}
+
+/// Why a typed Git mutation did not complete.
+///
+/// The distinction is what the writer permit's release evidence depends on:
+/// a refusal *before* any effect proves the checkout is untouched, while a
+/// failure *during* the effect leaves the checkout in an unknown state and
+/// must park the permit rather than free it.
+#[derive(Debug)]
+enum GitDispatchError {
+    /// Refused before any index, worktree, ref or config effect.
+    BeforeEffect(ToolError),
+    /// The effect was attempted and failed; the checkout may be partly
+    /// changed.
+    AfterEffect(ToolError),
+}
+
+impl From<ToolError> for GitDispatchError {
+    /// The default is the *safe* reading: a Git command that failed may have
+    /// applied part of its effect, so the checkout is treated as changed.
+    /// Pre-effect refusals are marked explicitly.
+    fn from(error: ToolError) -> Self {
+        Self::AfterEffect(error)
+    }
+}
+
+impl GitDispatchError {
+    fn into_tool_error(self) -> ToolError {
+        match self {
+            Self::BeforeEffect(error) | Self::AfterEffect(error) => error,
+        }
+    }
+
+    /// The release evidence this failure supports.
+    fn fence_outcome(&self) -> WriterFenceOutcome {
+        match self {
+            Self::BeforeEffect(_) => WriterFenceOutcome::NoEffect,
+            Self::AfterEffect(error) => WriterFenceOutcome::Unproven(error.to_string()),
+        }
+    }
+}
+
+/// Whether a typed mutation writes to the checkout.
+///
+/// A read-only action takes no permit and is never refused by the fence:
+/// readers overlap freely, and a read is not a write.
+fn typed_mutation_mutates(mutation: &str) -> bool {
+    !matches!(mutation, "config_get" | "clean_preview")
+}
+
+/// The repository root a mutation operates on.
+///
+/// This is the same resolution the typed executor uses, so the fence
+/// contains exactly the checkout the action writes. When the path is not a
+/// repository the action cannot succeed either, so the path itself is the
+/// honest target.
+fn resolve_repo_root_path(workdir: &std::path::Path) -> std::path::PathBuf {
+    crate::git_mutations::resolve_repo_root(workdir)
+        .map(|root| root.as_path().to_path_buf())
+        .unwrap_or_else(|_| workdir.to_path_buf())
 }
 
 /// M002: emit one structural `git_operation` event for a raw-fallback

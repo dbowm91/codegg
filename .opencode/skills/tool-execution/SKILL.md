@@ -10,11 +10,32 @@ tags: [tools, scheduler, execution]
 Production model tool calls enter through `ToolBroker`. Do not add a second
 direct execution path for a tool that the broker already owns.
 
+A process-capable tool is refused **before** it runs, at two boundaries that
+must both hold: the tool's own `execute_structured` and the broker's final
+dispatch. The broker is the single production tool-call boundary, so a tool
+that forgets to consult the gate is still refused — but a new process-capable
+tool must consult it too, because the broker's classification is by
+**effective runtime effect** (`src/tool/process_capability.rs`), not by
+whatever the tool advertises. A plugin that describes itself as read-only and
+is process-backed is still a process surface, and the plugin adapter
+classifies it by its runtime kind. When you add a tool that starts a process,
+add it to the capability table and to `docs/writer-disposition.toml`; the
+`scripts/check_process_denial.py` guard fails when either is missing.
+
 Heavy work such as tests, managed processes, subagent dispatch, and tool
 programs is submitted through `JobSubmissionService` to `JobScheduler`.
 Preserve the typed job request, permission decision, cancellation, and durable
 result path when changing those capabilities. Human shell commands are a
 separate TUI feature and do not become model tools.
+
+A native writer on a checkout shared by more than one run is serialized by
+the checkout's durable writer permit. The fence that takes it resolves the
+run's scope from the run's **own durable record**, never from a
+model-supplied path, and a run that holds no managed checkout has no fence at
+all. When you change how a delegated run is placed on a checkout, keep that
+attachment: a run whose record does not name its checkout holds no authority
+to write it. See `architecture/writer_permit.md` §"The shared checkout profile
+(C006)" and `scripts/check_shared_checkout.py`.
 
 The broker derives every retry's `ToolExecutionContext` from the same
 `BrokerInvocationContext`. When an agent call includes

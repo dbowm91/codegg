@@ -95,7 +95,7 @@ jobs:
         env:
           TMPDIR: /mnt/codegg-object-cow/tmp
           CODEGG_REQUIRE_OBJECT_VIEW_FICLONE: '1'
-        run: cargo test --locked -p egggit trusted_git_read_view_is_immutable_after_admission -- --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked -p egggit trusted_git_read_view_is_immutable_after_admission -- --nocapture
 
       - name: Measure cold immutable snapshot and trusted Git operations
         env:

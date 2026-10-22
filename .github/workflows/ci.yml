@@ -229,6 +229,36 @@ jobs:
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py
 
+      - name: Security test-filter execution control (self-test)
+        run: python3 scripts/check_test_filter_execution.py --self-test
+
+      - name: Security test-filter execution control
+        run: python3 scripts/check_test_filter_execution.py
+
+      - name: Writer disposition guard
+        run: python3 scripts/check_writer_disposition.py
+
+      - name: Writer disposition guard self-test
+        run: python3 scripts/check_writer_disposition.py --self-test
+
+      - name: Process denial guard
+        run: python3 scripts/check_process_denial.py
+
+      - name: Process denial guard self-test
+        run: python3 scripts/check_process_denial.py --self-test
+
+      - name: Shared checkout guard
+        run: python3 scripts/check_shared_checkout.py
+
+      - name: Shared checkout guard self-test
+        run: python3 scripts/check_shared_checkout.py --self-test
+
+      - name: Blackboard contract matrix guard
+        run: python3 scripts/check_blackboard_contract_matrix.py
+
+      - name: Blackboard contract matrix guard self-test
+        run: python3 scripts/check_blackboard_contract_matrix.py --self-test
+
       - name: Formatting
         run: cargo fmt --check --all
 

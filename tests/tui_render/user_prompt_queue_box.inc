@@ -441,7 +441,8 @@ fn buffer_text(buf: &Buffer) -> String {
 /// Returned as a `y` coordinate so two renders can be compared for layout
 /// equality — which is how "the suffix adds no row" is asserted rather than
 /// assumed.
-fn working_strip_row(app: &mut App, needle: &str) -> u16 {
+/// The frame row that contains `needle`.
+fn row_containing(app: &mut App, needle: &str) -> u16 {
     let buf = render(app, 160, 40);
     (0..buf.area.height)
         .find(|y| {
@@ -452,7 +453,7 @@ fn working_strip_row(app: &mut App, needle: &str) -> u16 {
         })
         .unwrap_or_else(|| {
             panic!(
-                "no working-strip row contains {needle:?}; buffer was:\n{}",
+                "no row contains {needle:?}; buffer was:\n{}",
                 buffer_text(&buf)
             )
         })
@@ -1009,25 +1010,35 @@ fn user_prompt_queue_row_zero_suffix_never_replaces_a_latched_failure() {
     );
 }
 
-/// Row 0's single row is reserved unconditionally and its height is subtracted
-/// from the transcript. Gating the suffix on queue state would reflow the
+/// The suffix is text on the row above the composer, and that row is carved
+/// from the prompt chunk. Gating the suffix on queue state would reflow the
 /// transcript on every submit and completion.
 #[test]
 fn user_prompt_queue_suffix_adds_no_row_and_changes_no_geometry() {
     let mut empty = app_with_queue(Vec::new());
-    let empty_row = working_strip_row(&mut empty, "idle");
+    let _ = render(&mut empty, 160, 40);
+    let empty_prompt = empty.prompt_area.expect("prompt area recorded");
 
     let mut full = app_with_queue(vec![
         entry("a", 0, "alpha", "pending"),
         entry("b", 1, "bravo", "pending"),
         entry("c", 2, "charlie", "pending"),
     ]);
-    let full_row = working_strip_row(&mut full, "3 queued");
+    let _ = render(&mut full, 160, 40);
+    let full_prompt = full.prompt_area.expect("prompt area recorded");
 
     assert_eq!(
-        empty_row, full_row,
-        "the queue suffix must not move the status row: an empty queue put it at \
-         y={empty_row} and a three-entry queue at y={full_row}"
+        empty_prompt.y, full_prompt.y,
+        "the queue suffix must not move the composer: an empty queue put it at \
+         y={} and a three-entry queue at y={}",
+        empty_prompt.y, full_prompt.y
+    );
+    // And the count is on screen, on the row above the composer.
+    let row = row_containing(&mut full, "3 queued");
+    assert_eq!(
+        row,
+        full_prompt.y - 1,
+        "the queue count belongs on the row above the composer"
     );
 }
 

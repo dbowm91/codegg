@@ -87,10 +87,10 @@ attempt; it is not a second scheduler or job authority.
 ## Disposition of production process sites
 
 The machine-readable inventory in `docs/execution-ownership.toml` is the
-complete guard input; it currently declares **54 entries** (14 `scheduler`,
-12 `definition_or_adapter`, 10 `standalone_compat`, 9 `interactive`,
-8 `deferred_domain_executor`, 1 `test_only`). The table below summarizes its
-production dispositions and additionally lists the M003 TUI projection
+complete guard input; it currently declares **58 entries** (16 `scheduler`,
+13 `definition_or_adapter`, 10 `standalone_compat`, 9
+`deferred_domain_executor`, 8 `interactive`, 2 `test_only`). The table below
+summarizes its production dispositions and additionally lists the M003 TUI projection
 surfaces, which spawn nothing and so are deliberately not manifest entries:
 
 | Surface | Disposition | Boundary |

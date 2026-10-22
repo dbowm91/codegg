@@ -626,7 +626,7 @@ async fn recovery_preserves_permit_accounting() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     let _permit = match controller.try_admit_arc(&dims) {

@@ -905,6 +905,7 @@ mod tests {
             linux_offline_network: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
             target: PathBuf::from("/bin/sh"),
             args: vec!["-c".to_string(), "true".to_string()],
             read_paths: vec![dir.path().to_path_buf()],

@@ -38,10 +38,9 @@ enum Chrome {
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
 /// `Esc` is deliberately absent even though it answers one of two very
-/// different things here (revert a preview, otherwise close): a focused panel
-/// never sees it, because `SidePanelHost::handle_key` claims `Esc`/`q` as its
-/// universal exits before consulting the widget. Keeping it out also avoids
-/// promising a revert that a panel cannot perform.
+/// different things here (revert a preview, otherwise close): it is the mode
+/// switch, so it means one thing in the modal box and another in a column, and
+/// a hosted hint cannot promise a revert that a panel cannot perform.
 const HINT_SETTLED: &str = "j/k navigate · enter apply";
 
 /// The same verbs once a preview is live, with `Enter` meaning commit rather
@@ -225,10 +224,10 @@ impl ThemePickerDialog {
     /// The footer was the reason this could not stay one routine before. It
     /// spelled `j/k/↑/↓ … | Esc cancel` (or `revert`) in a modal, where `Esc`
     /// really does mean cancel, and was then repainted verbatim into a panel
-    /// column — where `↑/↓` are panel directions and `Esc` is the host's
-    /// universal exit, so a third of every footer taught keys that could not
-    /// fire. The words that describe the column's own verbs now live in
-    /// `keymap_hint`, and what is left here is a `Chrome::Owned` footer.
+    /// column — where `↑/↓` are panel directions and `Esc` is the mode
+    /// switch, meaning something else, so a third of every footer taught keys
+    /// that could not fire. The words that describe the column's own verbs now
+    /// live in `keymap_hint`, and what is left here is a `Chrome::Owned` footer.
     ///
     /// The viewport arithmetic below is deliberately the modal's, unchanged:
     /// both paths subtract the same chrome budget from the rect they are given
@@ -470,9 +469,8 @@ impl Component for ThemePickerDialog {
     /// The verbs this box owns, reworded once a navigation arms a live preview.
     ///
     /// `Esc` is the interesting omission: it means something different in the
-    /// two states (revert a preview, otherwise close) and neither of them is
-    /// reachable from a column, where `SidePanelHost::handle_key` claims it as a
-    /// universal exit before the widget is consulted. The two states also differ
+    /// two states (revert a preview, otherwise close) and in a column it is
+    /// the mode switch rather than either of those. The two states also differ
     /// in what `Enter` costs, so one fixed string would understate the second.
     fn keymap_hint(&self) -> Option<String> {
         Some(if self.is_previewing() {

@@ -1459,6 +1459,51 @@ mod tests {
     use crate::tool::lsp::LspTool;
     use std::sync::Arc;
 
+    /// A temporary Git repository owned by exactly one test.
+    ///
+    /// The security-review path performs a real `git diff HEAD`, so its root
+    /// has to be a working repository. Binding the process current directory
+    /// instead made every one of these tests depend on whatever repository
+    /// the test process happened to be started in — for a unit test, the host
+    /// checkout. That is the hidden shared state this fixture removes: two
+    /// tests running at once read the same repository, and the same test read
+    /// a different repository depending on where cargo was invoked.
+    ///
+    /// The repository is created, given one committed file, and then given
+    /// one uncommitted change, so `git diff HEAD` has something to report.
+    /// The `TempDir` is returned alongside the path so it stays alive for
+    /// the whole test and the repository is removed afterwards.
+    fn temp_git_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::new().expect("create temp repo dir");
+        let root = dir.path().to_path_buf();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@test.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::create_dir_all(root.join("src")).expect("create src dir");
+        std::fs::write(
+            root.join("src/main.rs"),
+            "api_key = \"sk-1234567890abcdef\";\n",
+        )
+        .expect("write fixture file");
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        std::fs::write(root.join("src/main.rs"), "api_key = \"sk-xyz789\";\n")
+            .expect("write fixture change");
+        (dir, root)
+    }
+
     #[tokio::test]
     async fn security_review_command_enrich_without_executor_notes_unavailable() {
         let args = SecurityReviewCommandArgs {
@@ -1466,7 +1511,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, None).await;
         // Should succeed (not error) even without executor
         assert!(result.is_ok());
@@ -1481,7 +1526,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, None).await;
         assert!(result.is_ok());
     }
@@ -1494,7 +1539,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
         // Should succeed (not error) even with fixture executor and git data
         assert!(result.is_ok());
@@ -1508,7 +1553,7 @@ mod tests {
             json: true,
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, None).await;
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -1536,7 +1581,7 @@ mod tests {
             prompts_only: true,
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
         // Should succeed with prompts_only + enrich
         assert!(result.is_ok());
@@ -1554,7 +1599,7 @@ mod tests {
             findings_only: true,
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
         assert!(result.is_ok());
     }
@@ -1566,7 +1611,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
         let receipt = result.unwrap();
@@ -1594,7 +1639,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_background(root, args, Some(tool)).await;
         // The fixture is provided to the underlying workflow; the call
         // must complete without erroring even if the executor is never
@@ -1623,7 +1668,7 @@ mod tests {
             json: true,
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
         let receipt = result.unwrap();
@@ -1646,7 +1691,7 @@ mod tests {
             prompts_only: true,
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
         let receipt = result.unwrap();
@@ -1665,7 +1710,7 @@ mod tests {
             findings_only: true,
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
         let receipt = result.unwrap();
@@ -1683,7 +1728,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         // lsp_tool is None — the background runner should still succeed
         // and should NOT add the unavailable-executor note because
         // enrichment was not requested.
@@ -2274,7 +2319,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executor(&root, &args, None).await;
         assert!(result.is_ok());
     }
@@ -2293,7 +2338,7 @@ mod tests {
             base: Some("HEAD".to_string()),
             ..Default::default()
         };
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (_repo, root) = temp_git_repo();
         let result = run_security_review_command_with_executors(&root, &args, executors).await;
         assert!(result.is_ok());
     }

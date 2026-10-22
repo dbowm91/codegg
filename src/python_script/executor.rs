@@ -342,6 +342,7 @@ pub async fn execute_python_script_with_profile_and_network(
                 linux_offline_network: false,
                 protected_readonly_paths: Vec::new(),
                 path_identities: Vec::new(),
+                expected_created_git_pointers: Vec::new(),
                 target,
                 args: vec![script_file.to_string_lossy().to_string()],
                 read_paths,

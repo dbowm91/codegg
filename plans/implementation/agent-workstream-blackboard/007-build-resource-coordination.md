@@ -1,6 +1,11 @@
 # Agent Workstream Blackboard M007 — Per-Workspace Build Admission
 
-Status: ready for handoff — per-workspace admission is independent of shared-write placement
+Status: closed — closure record `plans/closure/agent-workstream-blackboard/007-status.md`
+
+Delivered by: the typed keyed-quota contract in `codegg-core`, the counted
+per-workspace admission in the scheduler, the configuration-owned limit, the
+submission-boundary scope binding, and the coarse authorized group status.
+The legacy global `exclusive:workspace-mutation` key is gone.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M007

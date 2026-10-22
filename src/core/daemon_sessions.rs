@@ -650,6 +650,104 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::SessionLaunch {
+                project_id,
+                intent,
+                parent_session_id,
+                placement,
+                idempotency_key,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let Some(service) = self.deps.session_launch_service.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_launch_unavailable".to_string(),
+                        message: "daemon has no session launch service".to_string(),
+                    });
+                };
+                let project_id = match codegg_core::identity::ProjectId::parse(&project_id) {
+                    Ok(project_id) => project_id,
+                    Err(_) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_not_found".to_string(),
+                            message: "project not found".to_string(),
+                        })
+                    }
+                };
+                let storage = codegg_core::project_storage::ProjectStorage::new(pool.clone());
+                let resolved = match storage.project_repository(&project_id).await {
+                    Ok(Some(resolved)) => resolved,
+                    Ok(None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".to_string(),
+                            message: "project has no resolved repository to launch from"
+                                .to_string(),
+                        })
+                    }
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_launch_failed".to_string(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                let (source_workspace_id, repository_id, repository_root) = resolved;
+                let context = crate::core::session_launch::SessionLaunchContext {
+                    project_id: project_id.clone(),
+                    repository_id,
+                    repository_root,
+                    source_workspace_id,
+                };
+                let launch_intent = match intent {
+                    codegg_protocol::core::SessionLaunchIntentDto::New => {
+                        codegg_core::session_launch::SessionLaunchIntent::New
+                    }
+                    codegg_protocol::core::SessionLaunchIntentDto::Fork => {
+                        codegg_core::session_launch::SessionLaunchIntent::Fork
+                    }
+                };
+                let launch_placement = match placement {
+                    codegg_protocol::core::SessionLaunchPlacementDto::NewManagedCheckout {
+                        base_ref,
+                        target_branch,
+                    } => codegg_core::session_launch::SessionLaunchPlacement::NewManagedCheckout {
+                        base_ref,
+                        target_branch,
+                    },
+                    codegg_protocol::core::SessionLaunchPlacementDto::ExistingManagedWorktree {
+                        worktree_id,
+                    } => codegg_core::session_launch::SessionLaunchPlacement::ExistingManagedWorktree {
+                        worktree_id,
+                    },
+                };
+                let request = codegg_core::session_launch::SessionLaunchRequest {
+                    project_id: project_id.as_str().to_string(),
+                    intent: launch_intent,
+                    placement: launch_placement,
+                    parent_session_id,
+                    idempotency_key,
+                };
+                match service.launch(request, &context).await {
+                    Ok(outcome) => Ok(CoreResponse::SessionLaunch {
+                        launch_id: outcome.launch_id,
+                        session_id: outcome.session_id,
+                        workspace_id: outcome.workspace_id,
+                        worktree_id: outcome.worktree_id,
+                        branch: outcome.branch,
+                        checkout_path: outcome.checkout_path,
+                        stage: outcome.stage.as_str().to_string(),
+                        converged: outcome.converged,
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "session_launch_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
             CoreRequest::SessionDelete {
                 session_id,
                 permanent,

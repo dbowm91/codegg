@@ -385,7 +385,9 @@ async fn escape_cancels_the_reply_context_without_discarding_the_text() {
     app.on_key(plain('h'));
 
     // The Esc ladder is one rung per context, in the order the user is in:
-    // Insert -> Normal, panel -> composer, composer -> cancel the reply.
+    // Insert -> Normal, then the armed reply -> nothing. The panel is not
+    // on the ladder at all — `Esc` is the mode switch and never takes the
+    // keyboard away from a panel.
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         app.ui_state.input_mode,
@@ -396,24 +398,22 @@ async fn escape_cancels_the_reply_context_without_discarding_the_text() {
 
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
-        !app.panel_host.is_focused(),
-        "the second Esc releases the panel"
-    );
-    assert!(
-        app.prompt_state.chat_seed.is_some(),
-        "the reply survives the panel exit — the composer still points at chat"
-    );
-
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(
         app.prompt_state.chat_seed.is_none(),
-        "the third Esc is how a user backs out of an armed reply"
+        "the second Esc is how a user backs out of an armed reply"
+    );
+    assert!(
+        app.panel_host.is_focused(),
+        "cancelling a reply is not leaving the panel"
     );
     assert_eq!(
         app.prompt_state.prompt.get_text(),
         "@alice h",
         "cancelling must not throw away what the user typed"
     );
+
+    // Leaving the panel is `Shift+Q`, and it is the only thing that does.
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+    assert!(!app.panel_host.is_focused(), "Shift+Q releases the panel");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -430,10 +430,19 @@ async fn cancelling_retargets_the_composer_from_focus_again() {
         "precondition: cancelled"
     );
 
+    // The panel still has the keyboard — `Esc` cancelled the *reply*, not
+    // the focus — so the composer is still aimed at the chat panel.
+    assert_eq!(
+        app.input_target(),
+        InputTarget::Chat,
+        "the focused panel still owns the composer"
+    );
+
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
     assert_eq!(
         app.input_target(),
         InputTarget::Build,
-        "with no seed armed, the target is derived from focus as before"
+        "with no seed armed and no panel focused, the target is derived from focus as before"
     );
 }
 

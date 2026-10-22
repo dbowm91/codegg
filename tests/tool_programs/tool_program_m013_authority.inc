@@ -341,6 +341,7 @@ fn c06_session_mismatch_fails_scope() {
 
     // Context uses a different session
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "tp-session".into(),
         },
@@ -365,6 +366,7 @@ fn c06_session_mismatch_fails_scope() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let result = authority.verify_grant_scope("read", &contract, &ctx);
     assert!(
@@ -400,6 +402,7 @@ fn c06_permission_mode_mismatch_fails_scope() {
 
     // Context uses a different permission mode
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "tp-pm".into(),
         },
@@ -424,6 +427,7 @@ fn c06_permission_mode_mismatch_fails_scope() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let result = authority.verify_grant_scope("read", &contract, &ctx);
     assert!(

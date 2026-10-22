@@ -287,6 +287,7 @@ async fn a_subagent_job_without_allowed_paths_resolves_the_jobs_workspace_root()
         cancellation: CancellationToken::new(),
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),
+        process_admission: None,
     };
 
     // Bounded: an unanswered permission request parks a child forever, so an

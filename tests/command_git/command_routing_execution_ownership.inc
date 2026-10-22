@@ -30,7 +30,61 @@ use serde_json::json;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/// A temporary Git repository owned by exactly one test.
+///
+/// The routing tests below execute a real `git status`. Binding the process
+/// current directory — the shared, mutable one — made each of them read
+/// whatever repository the test process happened to be started in: two tests
+/// running at once read the same repository, and the same test read a
+/// different one depending on where cargo was invoked. A per-test repository
+/// removes that shared state.
+///
+/// The `TempDir` is returned alongside the path so the repository stays alive
+/// for the whole test and is removed afterwards.
+fn temp_git_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("create temp git repo");
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "--initial-branch=main"]);
+    git(&["config", "user.email", "test@test.com"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::create_dir_all(root.join("src")).expect("create src dir");
+    std::fs::write(root.join("src/lib.rs"), "pub fn fixture() {}\n").expect("write fixture file");
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    let canonical = root.canonicalize().expect("canonicalize temp repo");
+    (dir, canonical)
+}
+
 async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunStore>) -> BashTool {
+    let workspace_root = std::env::current_dir()
+        .expect("test working directory")
+        .canonicalize()
+        .expect("canonical test workspace");
+    make_bash_tool_at(config, store, workspace_root).await
+}
+
+/// The same tool, bound to an explicit workspace root.
+///
+/// The default `make_bash_tool` binds the process current directory. A test
+/// that executes a real `git` command must not share that mutable state, so
+/// it passes its own repository root here.
+async fn make_bash_tool_at(
+    config: Option<CommandIntentConfig>,
+    store: Arc<MemRunStore>,
+    workspace_root: std::path::PathBuf,
+) -> BashTool {
     // Ensure the env kill switch is NOT set. Tests must not inherit
     // `CODEGG_ROUTING_DISABLE=1` from sibling tests; each test that depends
     // on active routing must clear it before constructing the tool.
@@ -40,10 +94,6 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
     ))
     .await
     .expect("workspace registry");
-    let workspace_root = std::env::current_dir()
-        .expect("test working directory")
-        .canonicalize()
-        .expect("canonical test workspace");
     workspace_registry
         .get_or_register(&workspace_root)
         .await
@@ -234,7 +284,8 @@ async fn active_test_command_routes_to_test_runner_as_delegated() {
 #[tokio::test]
 async fn active_git_readonly_routes_to_git_caller_owned() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
+    let (_repo, root) = temp_git_repo();
+    let tool = make_bash_tool_at(Some(active_config()), store.clone(), root).await;
 
     let _ = execute_active(&tool, "git status").await.unwrap();
 
@@ -871,7 +922,8 @@ async fn observe_mode_test_persists_as_raw_shell() {
 #[tokio::test]
 async fn one_logical_execution_produces_exactly_one_record() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
+    let (_repo, root) = temp_git_repo();
+    let tool = make_bash_tool_at(Some(active_config()), store.clone(), root).await;
 
     // Run multiple commands back-to-back; each must produce exactly one record.
     for cmd in [

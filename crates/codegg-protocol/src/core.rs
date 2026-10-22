@@ -1126,6 +1126,23 @@ pub struct EventEnvelope<T> {
 #[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
+    /// M006: the result of a session launch.
+    ///
+    /// The launch returns the **concrete** identities it produced — the
+    /// session, the workspace and the checkout — rather than an `Ack`
+    /// that leaves the caller to find the session by listing them.
+    SessionLaunch {
+        launch_id: String,
+        session_id: String,
+        workspace_id: String,
+        worktree_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        checkout_path: String,
+        stage: String,
+        /// True when the request converged on an already-recorded launch.
+        converged: bool,
+    },
     DocumentCapabilities {
         capability: String,
         supported: bool,
@@ -2170,6 +2187,37 @@ pub struct ClientSnapshot {
     pub attached_sessions: Vec<String>,
 }
 
+/// M006: what a session launch is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionLaunchIntentDto {
+    /// A fresh session with no parent.
+    New,
+    /// A new session carrying the parent's conversation history.
+    Fork,
+}
+
+/// M006: where a launched session runs.
+///
+/// Only **managed** checkouts are addressable. An external checkout has
+/// no durable identity in the daemon, so there is nothing to bind a
+/// session to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SessionLaunchPlacementDto {
+    /// Allocate a fresh managed checkout for the launch.
+    NewManagedCheckout {
+        /// Optional base branch or tag the checkout is created from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_ref: Option<String>,
+        /// Optional target branch name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_branch: Option<String>,
+    },
+    /// Use an already-authorized managed checkout.
+    ExistingManagedWorktree { worktree_id: String },
+}
+
 // Request variants carry bounded request payloads by design: `JobSubmit`
 // embeds the job spec (which carries the explicit remote target), and
 // `WorkOrderCreate` embeds its request. The enum's largest variant is
@@ -2405,6 +2453,24 @@ pub enum CoreRequest {
     },
     SessionFork {
         session_id: String,
+    },
+    /// M006: launch a session into an isolated checkout.
+    ///
+    /// Distinct from [`CoreRequest::SessionFork`]: a fork *copies
+    /// history*, a launch *places* a session. Overloading `SessionFork`
+    /// with a placement would make "fork into the parent's workspace"
+    /// and "fork into a new checkout" indistinguishable on the wire.
+    SessionLaunch {
+        project_id: String,
+        intent: SessionLaunchIntentDto,
+        /// The parent session, required for a fork.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_session_id: Option<String>,
+        placement: SessionLaunchPlacementDto,
+        /// The idempotency key. A retry with the same key and the same
+        /// request converges on the original launch; a retry with the
+        /// same key and a different request is refused.
+        idempotency_key: String,
     },
     SessionDelete {
         session_id: String,
@@ -4374,9 +4440,21 @@ pub enum CoreEvent {
         daemon_generation: String,
     },
     /// An attempt started executing.
+    ///
+    /// M007: the scope fields carry the facts the job projection needs
+    /// to keep a job's kind and workspace across its lifecycle. They are
+    /// additive and defaulted, so an event published before M007 still
+    /// decodes, and a newer event still decodes against an older reader
+    /// that ignores unknown fields.
     JobStarted {
         job_id: String,
         attempt_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// Progress update for a running attempt.
     JobProgress {
@@ -4390,16 +4468,32 @@ pub enum CoreEvent {
         reason: String,
     },
     /// A job attempt completed successfully.
+    ///
+    /// M007: see [`CoreEvent::JobStarted`] for the scope fields.
     JobCompleted {
         job_id: String,
         attempt_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// A job attempt failed.
+    ///
+    /// M007: see [`CoreEvent::JobStarted`] for the scope fields.
     JobFailed {
         job_id: String,
         attempt_id: String,
         error_class: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// A job attempt was cancelled.
     JobCancelled {

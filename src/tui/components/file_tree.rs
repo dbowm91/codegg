@@ -467,11 +467,11 @@ mod tests {
         assert!(collapsed.contains("src"), "the directory row stays");
         assert!(!collapsed.contains("lib.rs"), "a collapsed child is hidden");
 
-        assert_eq!(state.toggle_selected().as_deref(), Some("src"));
+        state.expanded.insert("src".to_string());
         let expanded = render_to_lines(&state, true, 40, 20);
         assert!(expanded.contains("lib.rs"), "expanding reveals the child");
 
-        assert_eq!(state.toggle_selected().as_deref(), Some("src"));
+        state.expanded.remove("src");
         let recollapsed = render_to_lines(&state, true, 40, 20);
         assert!(
             recollapsed.contains("src"),

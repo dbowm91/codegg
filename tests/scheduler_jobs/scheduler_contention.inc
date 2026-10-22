@@ -527,7 +527,7 @@ fn impossible_request_fails_explicitly() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     match controller.try_admit(&dims) {
@@ -727,6 +727,16 @@ async fn same_exclusivity_key_blocks_concurrent() {
 async fn different_exclusivity_keys_run_in_parallel() {
     let mut config = ResolvedSchedulerConfig::default();
     config.resources.max_process_slots = 4;
+    // M007's build-class quota is a *different* admission dimension from the
+    // exclusivity keys this test measures, and its default is one build slot
+    // per canonical workspace. Two build jobs in one workspace are therefore
+    // serialized by the quota — not by their exclusivity keys — and this test
+    // would fail while asserting nothing about exclusivity at all. The bound
+    // is widened here so the test measures what its name says: that
+    // *different* exclusivity keys do not serialize. The quota's own contract
+    // (one build slot per workspace by default) is covered by the build
+    // admission suite, not here.
+    config.quota.max_concurrent_builds_per_workspace = 2;
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
         .await
         .unwrap();
@@ -815,7 +825,7 @@ fn cancel_releases_exclusivity_key() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:cargo-target:shared".into()],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
 
@@ -865,7 +875,7 @@ fn restart_does_not_preserve_stale_exclusivity() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:cargo-target:foo".into()],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     // First admission succeeds — no stale key from a prior process.

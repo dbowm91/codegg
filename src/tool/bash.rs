@@ -29,6 +29,13 @@ pub mod output;
 pub mod policy;
 pub mod process;
 
+// The temporary-Git-repository fixture used by the routing tests below lives
+// in a `tests/` directory: `src/tool/bash.rs` is a canonical finite path, and
+// the execution-ownership guard forbids a direct process spawn anywhere in it.
+#[cfg(test)]
+#[path = "bash/tests/git_fixture.rs"]
+mod git_fixture;
+
 pub(crate) use policy::validate_child_workspace_command;
 pub use process::DispatchOutcome;
 
@@ -511,6 +518,9 @@ impl Tool for BashTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        // M005 C005: refuse a process launch under the restricted shared
+        // profile, before the tool runs and before any process exists.
+        crate::tool::process_admission::admit_tool_process("bash", ctx.as_ref()).await?;
         let output = self.execute_inner(input, ctx.as_ref()).await?;
         Ok(StructuredToolResult::legacy("bash", output))
     }
@@ -1061,6 +1071,24 @@ mod tests {
         tool
     }
 
+    /// A `BashTool` whose workspace root is a temporary Git repository owned
+    /// by exactly one test.
+    ///
+    /// `rooted_bash()` points at the host checkout, so a test that runs a real
+    /// `git` command reads whatever repository the test process happened to
+    /// be started in. Two such tests running at once read the same
+    /// repository, and the same test reads a different one depending on where
+    /// cargo was invoked. A per-test repository removes that shared state.
+    ///
+    /// The `TempDir` is returned alongside the tool so the repository stays
+    /// alive for the whole test and is removed afterwards.
+    fn rooted_bash_in_temp_git_repo() -> (tempfile::TempDir, BashTool) {
+        let (dir, root) = super::git_fixture::temp_git_repo();
+        let mut tool = BashTool::new();
+        tool.workspace_root = Some(root);
+        (dir, tool)
+    }
+
     /// The audit's network field states the boundary the launch **obtained**.
     ///
     /// The anti-overclaim case is the third one: a launch that could not
@@ -1418,7 +1446,8 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Observe);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: git-readonly"));
@@ -1601,7 +1630,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(
@@ -1639,7 +1669,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("mode: observe"));
@@ -1653,7 +1684,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Off);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1670,7 +1702,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = rooted_bash()
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool
             .with_routing_disabled_env(true)
             .with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
@@ -1758,7 +1791,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(result.contains("[exit code:"));

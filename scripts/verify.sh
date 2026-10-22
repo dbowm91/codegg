@@ -80,6 +80,9 @@ run_guards() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    echo "==> python3 scripts/check_network_intent_owner_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_network_intent_owner_wiring.py)
+
     echo "==> python3 scripts/check_tui_project_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_project_authority.py)
 
@@ -122,6 +125,30 @@ run_guards() {
 
     echo "==> python3 scripts/check_http_route_disposition.py"
     (cd "$REPO_ROOT" && python3 scripts/check_http_route_disposition.py)
+
+    echo "==> python3 scripts/check_writer_disposition.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_writer_disposition.py --self-test)
+
+    echo "==> python3 scripts/check_writer_disposition.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_writer_disposition.py)
+
+    echo "==> python3 scripts/check_process_denial.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_process_denial.py --self-test)
+
+    echo "==> python3 scripts/check_process_denial.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_process_denial.py)
+
+    echo "==> python3 scripts/check_shared_checkout.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py --self-test)
+
+    echo "==> python3 scripts/check_shared_checkout.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py)
+
+    echo "==> python3 scripts/check_blackboard_contract_matrix.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_blackboard_contract_matrix.py --self-test)
+
+    echo "==> python3 scripts/check_blackboard_contract_matrix.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_blackboard_contract_matrix.py)
 
     echo "==> python3 scripts/check_audit_coverage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_audit_coverage.py)
@@ -230,6 +257,15 @@ run_guards() {
     (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py)
     echo "==> python3 scripts/check_tool_program_parse_only.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py --self-test)
+
+    # Every registered CI test filter must still name a command the workflow
+    # runs, and must select at least one test the source declares. A filter
+    # that names a renamed target qualifies nothing and still reports green.
+    echo "==> python3 scripts/check_test_filter_execution.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_filter_execution.py --self-test)
+
+    echo "==> python3 scripts/check_test_filter_execution.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_filter_execution.py)
 }
 
 # ── Quick tier ──────────────────────────────────────────────────────────────

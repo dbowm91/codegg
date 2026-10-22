@@ -7,6 +7,12 @@ use tokio_util::sync::CancellationToken;
 use super::types::{ShellCommandId, ShellEvent, ShellRequest, DEFAULT_TIMEOUT_SECS};
 
 pub struct ShellRuntime {
+    /// M005 corrective C005: the process admission policy for the shell's
+    /// execution scope.
+    ///
+    /// `None` means the runtime was built without a resolved scope, which
+    /// is the pre-C005 behavior.
+    process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
     shell: String,
     plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
     sandbox: Option<crate::security::sandbox::SandboxLaunchSpec>,
@@ -19,6 +25,7 @@ impl ShellRuntime {
             shell,
             plugin_service: None,
             sandbox: None,
+            process_admission: None,
         }
     }
 
@@ -29,12 +36,26 @@ impl ShellRuntime {
             shell,
             plugin_service: None,
             sandbox: None,
+            process_admission: None,
         }
     }
 
     /// Require the canonical managed-process sandbox launch specification.
     pub fn with_sandbox(mut self, spec: crate::security::sandbox::SandboxLaunchSpec) -> Self {
         self.sandbox = Some(spec);
+        self
+    }
+
+    /// M005 corrective C005: install the process admission policy.
+    ///
+    /// The policy is scoped to the execution's checkout, so a shell that
+    /// would run in a checkout reserved by a live agent-run group is
+    /// refused before the child exists.
+    pub fn with_process_admission(
+        mut self,
+        policy: crate::tool::process_admission::SharedProcessAdmission,
+    ) -> Self {
+        self.process_admission = Some(policy);
         self
     }
 
@@ -52,6 +73,7 @@ impl ShellRuntime {
     fn with_shell(shell: &str) -> Self {
         Self {
             shell: shell.to_string(),
+            process_admission: None,
             plugin_service: None,
             sandbox: None,
         }
@@ -123,12 +145,17 @@ impl ShellRuntime {
         }
 
         let cancellation = CancellationToken::new();
+        // c005-denial: shell-runtime
         let mut process_request = crate::managed_process::ManagedProcessRequest::new(
             vec![self.shell.clone().into(), "-lc".into(), command.into()],
             cwd,
             crate::managed_process::ProcessProvenance::default(),
         );
         process_request.environment_policy = environment_policy;
+        // M005 corrective C005: the shell's process is refused under the
+        // restricted shared profile before the child exists.
+        process_request.process_admission = self.process_admission.clone();
+        process_request.process_kind = codegg_core::process_admission::ProcessKind::Command;
         if let Some(spec) = self.sandbox.clone() {
             process_request.sandbox = crate::managed_process::SandboxRequest::Required(spec);
         }

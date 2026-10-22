@@ -477,6 +477,7 @@ async fn legacy_script_path_payload_rejected_without_source() {
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(codegg::scheduler::executors::NullProgressSink),
         resources: ResourcePermitGuard::new_orphan(PermitDimensions::default()),
+        process_admission: None,
     };
 
     let completion = executor.execute(ctx).await;
@@ -632,6 +633,7 @@ async fn python_executor_cancelled_before_launch() {
         cancellation,
         progress: Arc::new(codegg::scheduler::executors::NullProgressSink),
         resources: ResourcePermitGuard::new_orphan(PermitDimensions::default()),
+        process_admission: None,
     };
 
     let completion = executor.execute(ctx).await;
@@ -718,6 +720,7 @@ async fn python_executor_rejects_cwd_outside_workspace() {
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(codegg::scheduler::executors::NullProgressSink),
         resources: ResourcePermitGuard::new_orphan(PermitDimensions::default()),
+        process_admission: None,
     };
 
     let completion = executor.execute(ctx).await;

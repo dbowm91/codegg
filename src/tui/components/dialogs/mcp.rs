@@ -31,11 +31,14 @@ enum Chrome {
 /// states and only one of them can be right at a time. `handle_key` below is the
 /// implementation; this is the advertisement.
 ///
-/// `↑/↓` and `Esc` are absent even though `handle_key` answers them. A focused
-/// panel never sees them: `SidePanelHost::handle_key` resolves the arrow keys as
-/// panel directions and claims `Esc`/`q` as its universal exits before the widget
-/// is consulted. So the footer these two strings replaced — and it appeared
-/// twice, once per pane — was false in both panes the moment the box docked.
+/// `↑/↓` are absent even though `handle_key` answers them: a focused panel
+/// never sees them, because `SidePanelHost::handle_key` resolves the arrow keys
+/// as panel directions before the widget is consulted. `Esc` is absent for a
+/// different reason — it is the *mode* switch, and it means one thing in the
+/// modal box (close) and another in a column (leave the widget's own mode), so
+/// a hosted hint cannot promise it. So the footer these two strings replaced —
+/// and it appeared twice, once per pane — was false in both panes the moment the
+/// box docked.
 ///
 /// The consequence worth stating plainly: `Esc` is the *only* way out of action
 /// mode, so a docked `/mcp` can enter that mode and cannot leave it from inside

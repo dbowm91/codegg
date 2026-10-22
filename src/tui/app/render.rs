@@ -136,6 +136,17 @@ fn readable_on(
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        // Expire a lapsed confirmation rather than only on the next keypress:
+        // the pump runs on every animation tick, so a prompt the user walked
+        // away from clears itself instead of waiting to be overwritten by
+        // whatever they type next.
+        //
+        // Both arms live here now: the working strip used to own the stop
+        // arm's expiry because it drew the confirmation, and the strip is
+        // gone. The exit confirmation has the same lifetime, so it expires
+        // in the same place.
+        crate::tui::commands::turn_control::expire_pending_stop_armed(self);
+        crate::tui::commands::exit_control::expire_pending_exit_arm(self);
         // One rect per *occupied* edge, named rather than positional: the
         // transcript reads `regions.main` whatever the panels do, so adding a
         // second column cannot renumber the thing underneath it.
@@ -196,12 +207,6 @@ impl App {
         // strip is: carving it out afterwards would shrink the input every
         // time a panel took focus.
         let hint_rows = u16::from(self.composer_hint_text().is_some());
-        // The working strip sits closest to the transcript, so a turn in
-        // flight reads as part of the buffer rather than as chrome. It is
-        // reserved from the prompt allocation for the same reason the hint
-        // line and todo strip are: carving it afterwards would shrink the
-        // input every time the agent started working.
-        let working_rows = self.working_strip_rows();
         // The unified tasks overlay reserves from the prompt allocation for
         // the same reason the todo strip does: carving it out afterwards would
         // shrink the input box every time the overlay opened. It is added
@@ -227,13 +232,8 @@ impl App {
         // The bar is taken first because it is persistent while the overlay is
         // on-demand, and a missing bar is worse than a shorter overlay — tabs
         // the user opened would become invisible with no control that says so.
-        let spare_rows = self.tasks_overlay_allowance(
-            pane_area.height,
-            todo_rows,
-            hint_rows,
-            working_rows,
-            max_prompt_height,
-        );
+        let spare_rows =
+            self.tasks_overlay_allowance(pane_area.height, todo_rows, hint_rows, max_prompt_height);
         // The bar is one row carved off the top of the *viewport* chunk — see
         // the carve below. It is deliberately **not** added to
         // `prompt_height`: that sum is what reserves room for strips carved
@@ -252,27 +252,16 @@ impl App {
             .needed_height(max_prompt_height)
             .saturating_add(todo_rows)
             .saturating_add(tasks_rows)
-            .saturating_add(hint_rows)
-            .saturating_add(working_rows);
+            .saturating_add(hint_rows);
         let session_chunks = self
             .ui_state
             .layout
             .session_layout(pane_area, Some(prompt_height));
 
-        // Carve the hint line, then the todo strip, then the working strip,
-        // off the top of the prompt chunk. Order matters: hints belong closer
-        // to the input than the task strip does, and the working strip closer
-        // to the transcript than both.
+        // Carve the hint line, then the todo strip, off the top of the prompt
+        // chunk. Order matters: hints belong closer to the input than the
+        // task strip does.
         let mut available = session_chunks[2];
-        let mut working_chunk = None;
-        if working_rows > 0 && available.height > working_rows {
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(working_rows), Constraint::Min(1)])
-                .split(available);
-            working_chunk = Some(split[0]);
-            available = split[1];
-        }
         let mut hint_chunk = None;
         if hint_rows > 0 && available.height > hint_rows {
             let split = Layout::default()
@@ -384,7 +373,17 @@ impl App {
             self.render_subagent_tab_strip(frame, area);
         }
 
-        self.render_working_strip(frame, working_chunk);
+        // The subagent rows the `/subagent` addressee lookup reads are
+        // projected here rather than by a renderer: the working strip used to
+        // draw them and synced them on the way past, and it is gone.
+        //
+        // The position matters. It is *after* the subagent view is painted,
+        // exactly as the strip's own sync was: a tab whose subject has left
+        // the projection has to render its detached state for this frame, and
+        // a sync above the viewport would re-attach it before the body is
+        // drawn and leave the view claiming a run is live.
+        self.sync_subagent_rows_from_projection();
+
         self.render_composer_hints(frame, hint_chunk);
         self.render_todo_strip(frame, todo_chunk);
         self.render_tasks_strip(frame, tasks_chunk);
@@ -1355,7 +1354,6 @@ impl App {
         pane_height: u16,
         todo_rows: u16,
         hint_rows: u16,
-        working_rows: u16,
         max_prompt_height: u16,
     ) -> u16 {
         const MIN_TRANSCRIPT: u16 = 10;
@@ -1366,8 +1364,7 @@ impl App {
             .saturating_add(MIN_TRANSCRIPT)
             .saturating_add(max_prompt_height)
             .saturating_add(todo_rows)
-            .saturating_add(hint_rows)
-            .saturating_add(working_rows);
+            .saturating_add(hint_rows);
         pane_height.saturating_sub(claimed)
     }
 
@@ -1781,254 +1778,6 @@ impl App {
                 hints_area,
             );
         }
-    }
-
-    /// Rows the working strip needs.
-    ///
-    /// Row 0 is **unconditionally reserved**. It used to be gated on "there is
-    /// something to say", but this height is subtracted from the transcript
-    /// (`session_layout` splits `prompt_height` against `Min(10)` for the
-    /// buffer), so every row appearing or vanishing reflowed the transcript and
-    /// moved whatever the user was reading. Gating it on turn state meant the
-    /// buffer jumped on every submit and again on every completion.
-    ///
-    /// Reserving it permanently turns that off for good: the strip's *content*
-    /// can now change freely — idle, working, stopped, failed — without the
-    /// transcript viewport ever changing height.
-    ///
-    /// Subagent rows remain content-driven, because N subagents genuinely
-    /// need N rows. That variation is real information rather than a state
-    /// transition, and it only moves while a turn is in flight.
-    fn working_strip_rows(&self) -> u16 {
-        let total = self.ui_state.subagents.rows.len();
-        let shown = total.min(MAX_WORKING_STRIP_SUBAGENTS);
-        // Reserve a row for the overflow marker when the list is truncated.
-        // Without the reservation the marker has nowhere to draw — the rows
-        // exactly fill the strip — so a wide fan-out would silently drop
-        // subagents with no indication that any were hidden.
-        let overflow = u16::from(total > shown);
-        1 + shown as u16 + overflow
-    }
-
-    /// Draw the working strip: the single status surface for the turn.
-    ///
-    /// Row 0 is always present and always answers "is the model healthy, stuck,
-    /// or broken?" — the question a long pause raises and the strip used to be
-    /// silent about. It then draws one clickable row per advertised subagent.
-    ///
-    /// Hit rects are recorded as they are drawn so a click resolves to the
-    /// row the user actually saw rather than a recomputed layout.
-    fn render_working_strip(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
-        // Expire a lapsed stop confirmation here rather than only on the next
-        // keypress: the pump runs on every animation tick, so a prompt the
-        // user walked away from clears itself instead of waiting to be
-        // overwritten by whatever they type next.
-        crate::tui::commands::turn_control::expire_pending_stop_armed(self);
-        // The status row reads `ui_state.subagents`, which the sidebar render
-        // path also fills. Syncing here as well is what makes the row
-        // independent of the panel being drawn: a layout that hides the
-        // sidebar used to leave the count at zero and report a busy session
-        // as idle.
-        self.sync_subagent_rows_from_projection();
-        let Some(area) = chunk else {
-            self.ui_state.working_area = None;
-            self.ui_state.subagents.hits.clear();
-            return;
-        };
-        if area.width == 0 || area.height == 0 {
-            self.ui_state.working_area = None;
-            self.ui_state.subagents.hits.clear();
-            return;
-        }
-
-        self.ui_state.working_area = Some(area);
-        // Rebuilt from scratch each frame: a stale rect from a previous
-        // layout would let a click land on a row that has since moved.
-        self.ui_state.subagents.hits.clear();
-        let theme = self.ui_state.theme.clone();
-        let mut lines: Vec<Line> = Vec::new();
-
-        // Row 0 is the whole status surface. Its right-hand side is the reason a
-        // long pause reads as progress rather than as a disconnect: it names
-        // the one key that changes the situation. An indicator that only
-        // reports the current phase still leaves a user staring at a frozen
-        // screen with no way out.
-        let is_working = matches!(self.session_state.session_status, SessionStatus::Working);
-        let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
-        let stop_hint = if self.session_state.stopped_turn {
-            Some(format!("press {key} or /start"))
-        } else if is_working {
-            // A stop waits for a confirming second press, so while the arm is
-            // live the line must say exactly which press completes it —
-            // otherwise the confirmation is invisible and the key looks dead.
-            Some(if crate::tui::commands::turn_control::stop_armed(self) {
-                format!("press {key} again to stop agent")
-            } else {
-                format!("{key} to stop")
-            })
-        } else {
-            None
-        };
-
-        // Precedence is a debugging aid, not a prettiness ranking: a latched
-        // failure outranks every live phase because it is the one thing that
-        // explains why nothing is progressing, and by the time it is readable
-        // here the toast that also said so has expired.
-        let (body, color) = if let Some(error) = self.session_state.last_error.as_deref() {
-            // A static glyph: nothing is running, so an animated one would lie
-            // about it. The full text stays in the toast and in `/logs`; this
-            // row is the durable one-line reminder.
-            (format!("✗ {error}"), theme.error)
-        } else if self.session_state.stopped_turn {
-            // Stopped is not a phase of a running turn, so it does not get a
-            // spinner either.
-            ("■ stopped".to_string(), theme.warning)
-        } else if is_working {
-            let line = self
-                .messages_state
-                .messages
-                .activity
-                .as_ref()
-                .map(|activity| activity.line())
-                .unwrap_or_else(|| self.working_elapsed_fallback());
-            (line, theme.primary)
-        } else {
-            // The main agent blocked on delegated work is NOT idle, even though
-            // nothing is arriving on its own stream. Reading `idle` here is
-            // what made a long fan-out look like a dead session: the agent is
-            // waiting, and saying so is the difference between "this will
-            // finish" and "this hung". Derived from the projection rather than
-            // announced by a start event, because the wait is exactly the
-            // window in which a dropped or unwired event would go unnoticed.
-            // The per-kind counts are appended by the shared suffix below, so
-            // this body is only the headline.
-            let (awaiting_subs, awaiting_jobs) = self.awaiting_task_counts();
-            let awaiting = awaiting_subs + awaiting_jobs;
-            if awaiting > 0 {
-                let mut label = format!("awaiting {awaiting} task");
-                if awaiting != 1 {
-                    label.push('s');
-                }
-                (label, theme.primary)
-            } else {
-                // Idle is an answer, not an absence. Naming it is what lets row 0
-                // be reserved permanently without reading as a broken widget.
-                ("idle".to_string(), theme.muted)
-            }
-        };
-
-        let mut head = body;
-        if let Some(hint) = stop_hint {
-            head.push_str(" · ");
-            head.push_str(&hint);
-        }
-        let (running_subs, running_jobs) = self.awaiting_task_counts();
-        if !self.session_state.stopped_turn {
-            if running_subs > 0 {
-                head.push_str(&format!(" · {running_subs} subagent"));
-                if running_subs != 1 {
-                    head.push('s');
-                }
-            }
-            // Jobs get the same treatment as subagents: a durable job running
-            // under the main agent is exactly as much a reason the session is
-            // not idle, and it was the one kind of delegated work this row
-            // could not name at all.
-            if running_jobs > 0 {
-                head.push_str(&format!(" · {running_jobs} job"));
-                if running_jobs != 1 {
-                    head.push('s');
-                }
-            }
-            // M004: prompts waiting for the next turn. Appended in the same
-            // suffix chain as the counts above, so a queue that is not empty
-            // and no turn running still reads "idle · 2 queued" rather than
-            // looking like a session with nothing to do. Text only — row 0 is
-            // reserved unconditionally and this must never add a row or
-            // reflow the transcript.
-            //
-            // It sits *after* the phase selection on purpose: a latched
-            // `last_error` still outranks everything here, because the
-            // failure is the thing that explains why nothing is progressing.
-            let queued = self.session_state.user_prompt_queue.len();
-            if queued > 0 {
-                head.push_str(&format!(" · {queued} queued"));
-            }
-        }
-        lines.push(Line::from(Span::styled(
-            format!(" {head}"),
-            Style::default().fg(color),
-        )));
-
-        for (index, sub) in self
-            .ui_state
-            .subagents
-            .rows
-            .iter()
-            .take(MAX_WORKING_STRIP_SUBAGENTS)
-            .enumerate()
-        {
-            let summary = sub.summary_line(area.width as usize);
-            lines.push(Line::from(Span::styled(
-                summary,
-                Style::default().fg(if sub.is_running() {
-                    theme.foreground
-                } else {
-                    theme.muted
-                }),
-            )));
-            // Row 1 is the throbber, so subagent row `index` sits one line
-            // below the top of the strip.
-            let y = area.y + 1 + index as u16;
-            if y < area.y + area.height {
-                self.ui_state
-                    .subagents
-                    .hits
-                    .push((index, Rect::new(area.x, y, area.width, 1)));
-            }
-        }
-
-        // Rows that did not fit are summarized rather than silently dropped:
-        // a user who cannot see how many subagents are left has no way to
-        // tell the difference between "all done" and "off screen".
-        let hidden = self
-            .ui_state
-            .subagents
-            .rows
-            .len()
-            .saturating_sub(MAX_WORKING_STRIP_SUBAGENTS);
-        if hidden > 0 && lines.len() < area.height as usize {
-            lines.push(Line::from(Span::styled(
-                format!(" … +{hidden} more"),
-                Style::default().fg(theme.muted),
-            )));
-        }
-
-        let shown = (area.height as usize).min(lines.len());
-        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
-    }
-
-    /// A phase line for a working turn that has no `ActivityIndicator` yet.
-    ///
-    /// The strip must not blink out during the window between the turn being
-    /// marked `Working` and the first event that names a phase, so this
-    /// falls back to the turn's own elapsed time.
-    ///
-    /// It used to hardcode the first frame of the table, so the one interval
-    /// that most needs to read as alive — the long silence after a tool
-    /// returns, while the model decides what to do next — was the only one
-    /// that could not animate. It now animates on the shared clock like every
-    /// other phase.
-    fn working_elapsed_fallback(&self) -> String {
-        let since = self.session_state.working_since;
-        let secs = since.map(|s| s.elapsed().as_secs()).unwrap_or(0);
-        let glyph = match since {
-            Some(started) => crate::tui::components::spinner::spinner_frame_since(started),
-            None => {
-                crate::tui::components::spinner::spinner_frame(std::time::Duration::from_secs(0))
-            }
-        };
-        format!("{glyph} working {secs}s")
     }
 
     /// The contextual key line for whatever currently owns the keyboard.
