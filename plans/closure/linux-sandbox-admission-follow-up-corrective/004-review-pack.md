@@ -219,9 +219,9 @@ three rows above are the ones that qualify the line as merged.
 
 Recorded in `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
 §5, with the run links and the executed counts. The sweep ran on successive
-heads of the branch, because the sweep itself found three of the **four**
-defects the milestone introduced — two of them in §3.5 and the fifth in §3.6;
-the other one was caught locally before a hosted run ever executed it. The
+heads of the branch, because the sweep itself found three of the **five**
+defects in §3.5 and §3.6 — two of them in §3.5 and the fifth in §3.6; the
+other two were caught locally, before a hosted run ever executed them. The
 intermediate heads and their failures are recorded there rather than hidden.
 
 A reviewer should also read that record's §10.5 before reviewing chunk 8: the
@@ -239,7 +239,7 @@ whole matrix for every chunk.
 | `src/security/**`, `src/bin/**`, `crates/egggit/**` | Linux C006 protected mount qualification | the protected-mount and trusted-Git regressions live here |
 | `src/managed_process*`, `src/interactive_process*`, `src/lsp/**` | Linux M004 process and IPC qualification | the managed-process, PTY and LSP duplex probes live here |
 | `crates/egggit/src/process.rs` | Linux Git object snapshot CoW qualification | the CoW snapshot isolation proof lives here |
-| `src/security/sandbox/**`, `src/managed_process/**` | Windows process launcher | the Windows sandbox surface is only provable on Windows |
+| `src/security/sandbox/**`, `src/managed_process/**` | *(Windows is not required for this line)* | this is a Linux sandbox admission milestone and its boundaries are Linux-only. The Windows process launcher still runs in CI for the repository as a whole, and it is recorded in the closure record from the run log, but no chunk's qualification depends on it |
 | everything else | `CI` — the default sweep | the unit and integration suites are host-independent |
 
 ---
@@ -287,9 +287,15 @@ non-vacuity proof, and the local verification.
   default, or any ADR is accepted. C002 remains **conditionally closed** on
   the maintainer-owned admission record and the residual cargo attribution.
 - It does not claim the macOS platform behaviour of the C004 head: that
-  compile was not run, and it is recorded as *not run*, not as a pass. The
-  Windows job **was** run and passed, and its result is recorded in the
-  closure record from the run log.
+  compile was not run, and it is recorded as *not run*, not as a pass.
+- **It does not require Windows evidence for this line.** This is a Linux
+  sandbox admission milestone; its boundaries are Linux-only, and the
+  Windows process-launcher job is not part of this line's qualification. The
+  job ran and passed on the heads above, and its result is recorded in the
+  closure record from the run log — but no conclusion here rests on it, and a
+  reviewer on a Linux-only host can qualify this line without it. The
+  Windows job continues to run in CI for the repository as a whole; that is
+  the repository's own coverage, not this milestone's evidence.
 - It does not claim the C001 line's 8 skipped tests are failures. They are the
   repository's own `#[ignore]`d tests, and the count is stable across every
   head on this line.
