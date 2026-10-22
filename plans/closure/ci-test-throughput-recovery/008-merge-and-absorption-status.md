@@ -365,7 +365,7 @@ either side. Two rows moved; the rest did not.
 
 | Row | Before | After | Source |
 |---|---:|---:|---|
-| Integration test files | 302 | **319** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 3 top-level + 316 members |
+| Integration test files | 302 | **319** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 4 top-level + 315 members |
 | CI guard scripts | 68 | **75** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted, plus the 1 this line adds |
 
 The remaining rows were re-measured and did not move: `codegg-core` modules
@@ -389,7 +389,8 @@ the source they are measured from:
   moving the count: 16 + 302 = 318 before the absorption, 3 + 315 = 318 after
   it. The count on `origin/main` is 318 too, by the other route: 302 top-level
   files + 16 predecessor members. (The sixth reconciliation of §2.7 added one
-  more file, so the row now reads 319: 3 top-level + 316 members.)
+  more file, which **stays** top-level, so the row now reads 319: 4 top-level +
+  315 members.)
 - **The guard-script measure moved once more, for this line's own guard.**
   `scripts/check_test_self_reexec_paths.py` is the seventy-fifth
   `scripts/check_*` script, and it exists because the absorption changed the
@@ -421,6 +422,8 @@ python3 scripts/check_test_duplication.py [--self-test]
 python3 scripts/check_test_self_reexec_paths.py [--self-test]
 cargo test -p codegg --test command_git git_fixture_isolation -- --test-threads=1
 cargo test -p codegg --test security_permission
+cargo test -p codegg --test agent_loop
+cargo test -p codegg --test composed_two_agent_race_m011
 (cd examples/plugins/sdk-rust && cargo check --tests)
 bash scripts/verify.sh quick
 ```
@@ -446,6 +449,17 @@ bash scripts/verify.sh quick
   name in a family member, a sibling member's module name, a test that does
   not exist, a macro-computed argument, and a module-qualified name in a
   standalone target — while accepting the unmodified copy.
+- `cargo test -p codegg --test agent_loop`: **530 passed, 0 failed, 1
+  ignored** — four consecutive runs on the merged tree, after the §2.8
+  repair. At the branch tip before `main`'s advance the same command reported
+  the same totals, and at the merged tip *before* the repair it reported
+  **529 passed, 1 failed** with the identical total, which is how the
+  cross-test race was attributed rather than assumed.
+- `cargo test -p codegg --test composed_two_agent_race_m011`: **3 passed, 0
+  failed** — the sixth reconciliation's new target, kept standalone (§2.7).
+- `git merge-tree --write-tree origin/main HEAD`: a tree with **no** conflict
+  entries, and exit 0 — the sixth merge was textually clean, and the tree it
+  produced did not compile (§2.7).
 - `examples/plugins/sdk-rust`: `cargo check --tests` **passes**.
 - The guard tier: every guard named above passes, and every `--self-test`
   still rejects the failure class it exists to reject.
@@ -506,11 +520,13 @@ references that the consolidation broke are repaired, the guards that the
 merge exposed are repaired, the 98 test functions the workstream commit
 stripped out of ten out-of-workspace files are restored, the `security_permission`
 family compiles on Windows again, the three defects the Windows lane exposed
-are repaired (§2.5), and the recorded counts are re-measured against their own
-sources. The tree compiles, the guard tier is green, and the recorded counts
-are true on the merged tree.
+are repaired (§2.5), the sixth reconciliation's silent compile break is
+repaired (§2.7), the cross-test race the consolidation left latent is repaired
+(§2.8), and the recorded counts are re-measured against their own sources. The
+tree compiles, the guard tier is green, and the recorded counts are true on
+the merged tree.
 
-Three findings are worth carrying forward beyond this line, because all three
+Five findings are worth carrying forward beyond this line, because all five
 are about **what the local gate does not cover**:
 
 - **The root workspace's gate compiles the root workspace.** The ten files
@@ -543,6 +559,20 @@ are about **what the local gate does not cover**:
   never ran — the test was failing at step two while carrying no coverage of
   step three. A step that cannot succeed on a given host must *report* its
   outcome and let the rest of the test proceed, not abort the whole run.
+- **A clean merge is not a merged tree.** The sixth merge reported no conflict
+  and produced a tree that did not compile: `main`'s edit carried a
+  `#[path]` attribute that is relative to the file holding it, and the file had
+  moved directory. The two sides touched different paths, so git paired them
+  by rename and the break was silent (§2.7). **A merge must be audited by
+  compiling the merged tree, not by reading the conflict list** — and the
+  conflict list is not even the whole story.
+- **A family member that observes a process-global observes its siblings too.**
+  The consolidation put the agent-loop harness in a binary with thirty other
+  members, and one of its assertions read the *process-global* event bus
+  without a filter (§2.8). The hosted `CI` job runs one process per test, so
+  it cannot see that class; a plain `cargo test` can. **Consolidation changes
+  what a test shares, and a test that reads a global must be re-read in that
+  light.**
 
 This record opens no milestone and rewrites no earlier record. The eight
 macOS-only clippy findings are recorded as a pre-existing `origin/main`
