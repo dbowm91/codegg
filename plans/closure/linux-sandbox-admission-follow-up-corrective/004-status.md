@@ -629,7 +629,11 @@ enabled** (`user.max_user_namespaces=28633`) and an **ext4** workspace, so
 the filters that need only a native bwrap backend were run here directly,
 with the same gate environment their workflow step sets.
 
-**Five of the twelve Linux filters run and pass natively.**
+**Five distinct Linux filters run and pass natively.** The twelve Linux filter
+registrations are nine in the M004 workflow, two in the C006 workflow and one
+in the Git CoW workflow; `protected_mount_` and `trusted_git` are registered in
+both the M004 and the C006 workflow, so these five distinct filters account
+for **seven** of the twelve registrations.
 
 | Filter | Workflow / step | Gate set locally | Result |
 |---|---|---|---|
@@ -652,7 +656,7 @@ containment.
 and 1 are the same numbers the hosted runs report for the same filters, so
 the local run is the same evidence, not a weaker substitute.
 
-**Two of the twelve are provable locally only in their refusal form.** The
+**One of those five carries an assertion this host cannot satisfy.** The
 `CODEGG_REQUIRE_OBJECT_VIEW_FICLONE` assertion inside the CoW filter
 requires the qualification filesystem to provide a successful FICLONE. This
 host's workspace is ext4, which has no reflink support, so with that
@@ -663,8 +667,8 @@ registered command does not set the variable, and that command passes: the
 immutability property is proven here, and only the *CoW-efficiency* assertion
 needs Btrfs.
 
-**Five of the twelve cannot run natively on this host, and the reason is
-precise.** The M004 process tier requires **Landlock ABI 6** — the signal and
+**The other five of the twelve cannot run natively on this host, and the
+reason is precise.** The M004 process tier requires **Landlock ABI 6** — the signal and
 abstract-Unix-socket scopes — and this kernel provides **ABI 4**:
 
 ```
@@ -822,7 +826,7 @@ is green on all six workflows (`39798010473`,
 `39798010559`), with the same filter counts as every other green head and
 **16,061 tests run, 16,061 passed, 9 skipped** on the default sweep.
 
-**The branch tip may sit one documentation-only commit above that**, because
+**The branch tip may sit documentation-only commits above that**, because
 the attribution rule above is what makes the sweep travel with the branch:
 any commit above `99f15e180` that touches only `plans/**` leaves the swept
 code untouched, so the sweep already qualifies it. `git diff --name-only
