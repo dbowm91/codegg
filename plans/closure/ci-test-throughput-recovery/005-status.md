@@ -956,6 +956,21 @@ location is split, and this closure record names both halves.
   already `closed` and are unchanged. The M005 row now names its closure
   record.
 
+**The temporary remote refs are deleted.** The preregistration's §8
+hygiene clause requires both to be removed once their runs are complete,
+so that no branch in the repository points at a measurement artefact:
+
+```bash
+git push origin --delete ci-baseline/2c1953347 m005/candidate-3dfeb6e2f
+```
+
+Both were deleted **after** all thirteen of their runs were confirmed
+`completed` — four on the baseline ref and nine on the candidate ref, none
+in flight. The commits they pointed at remain reachable: the baseline is
+`2c1953347` (an ancestor of `origin/main`) and the candidate is
+`3dfeb6e2f`, which is on the feature branch's own history. The run URLs
+in §4.1 remain valid and continue to resolve after the refs are gone.
+
 **What was not changed.** No predecessor workstream's plan, closure record
 or roadmap was touched — verified by diff (§11, bullet 5). No milestone
 other than this workstream's own rows was edited in the registry.
