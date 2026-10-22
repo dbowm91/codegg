@@ -367,3 +367,13 @@ them directly.
   sustained scenario completed inside its admitted caps. C004 stays
   conditional on the two-route provider pair and on five unmaterialized
   verifier bodies, not on C003.
+
+Updated 2026-10-22: the two bullets above describe the state at C003's closure
+and are kept as written. Since then **M004 closed** on a live compile-correction
+trace (`plans/closure/harness-lab/004-status.md` §3.1) and **M005 closed** on a
+paired pilot that ran the frozen Task 2 fixture on one binary under one policy
+with three allowed routes (`plans/closure/harness-lab/005-status.md` §5.1), so
+the provider-pair condition is discharged. C004 remains conditional on the five
+unmaterialized verifier bodies and the paired baseline/candidate comparison over
+the stable groups against the autonomy taxonomy, which are the two conditions
+still named as open in its own record.

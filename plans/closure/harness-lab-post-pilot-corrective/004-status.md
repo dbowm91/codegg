@@ -1,7 +1,7 @@
 # Harness Lab Post-Pilot Corrective 004 — Closure Status
 
-Status: **conditionally closed — the live half ran; the provider pair and the
-autonomy-claim dependency did not**
+Status: **conditionally closed — the live half and the provider pair ran; the
+autonomy-claim dependencies did not**
 
 Source implementation plan:
 
@@ -21,22 +21,30 @@ admitted before any provider request, Task 2 was solved against the frozen
 fixture, and a 24-trial sustained scenario ran for 34.9 minutes inside its
 declared caps.
 
-Two things did **not** close, and both are properties of the outside world
-rather than of the harness:
+Two things about the closure changed since the live half ran, and they are now
+named precisely rather than folded into one another:
 
-- **The provider pair is one route, not two.** `longcat-2.5-preview-free` is
-  withdrawn from the provider's own catalog (`https://opencode.ai/zen/go/v1/models`
-  no longer lists it) and its upstream answers HTTP 402 "Upstream request
-  failed: Endpoint is unavailable." on every attempt, so the frozen Task 2
-  pair could not be run on two routes. `muse-spark-1.3-contributor` served the
-  task; `longcat` could not. The full route audit — provider catalog, reviewed
-  wire map, and what each approved route actually answers — is preserved at
-  `plans/closure/harness-lab/evidence/route-audit-20261022.json`: the CodeGG
-  **subject** can be routed to exactly one of the four approved routes, because
-  the two other free routes are served and free but absent from the shared
-  provider profile's reviewed wire map, and that map is owned outside this
-  repository.
-- **The autonomy claim still depends on C003's accepted-defect receipt.**
+- **The provider pair ran.** The frozen Task 2 fixture completed on one binary
+  (`102e9582…`, source `5dda961ce`) under one policy with three allowed routes,
+  each passing the fixture's independent verifier; the receipts are preserved at
+  `plans/closure/harness-lab/evidence/pilot-pair-ranges-20261022.json`. Getting
+  there took a diagnosis: the routes the operator originally named could not
+  all be used by the CodeGG **subject**, because `longcat-2.5-preview-free` is
+  withdrawn from the provider's own catalog and its upstream answers HTTP 402,
+  while `beam-free` and `minimax-m3.1-flash-free` are served and free but
+  absent from the shared provider profile's reviewed wire map, so CodeGG fails
+  them closed at `wire_unresolved`. That audit is preserved at
+  `plans/closure/harness-lab/evidence/route-audit-20261022.json` and the fix it
+  names — two entries in a map this repository does not own — is recorded as a
+  finding about the shared profile, not as a harness defect.
+- **The autonomy claim still needs the verifier bodies and a live paired
+  comparison.** C003's accepted-defect receipt, which was the third dependency,
+  is discharged: C003 closed with an accepted candidate and no regression
+  (`plans/closure/harness-lab-post-pilot-corrective/003-status.md` §1). What
+  remains inside this repository is authoring the five unmaterialized verifier
+  bodies and running the paired baseline/candidate comparison over the stable
+  groups against the autonomy taxonomy. Neither has been attempted, so the
+  autonomy claim is still conditional.
 
 Two genuine harness defects were found and fixed by the live run itself: the
 lane daemon leaked (31 survivors after 24 trials) and the macOS lane socket
@@ -63,7 +71,7 @@ path exceeded the platform's `sun_path` limit.
 | §6 offline: hidden verifier isolation | `verify_isolation()` plus segment-aware prefix matching | Met |
 | §6 offline: a fake success without a source change | The materialized verifier re-derives the contract and refuses an edited frozen file; it fails on the unsolved baseline | Met |
 | §6 offline: a wrong source SHA | The loader's manifest digest is the source identity; a changed manifest changes the digest | Met |
-| §4-B: Task 2 pair under an approved budget | Task 2 solved on `muse-spark-1.3-contributor`: terminal `completed`, 11 tool calls, verifier 11/11, 1 provider request, cost unobservable | **Partial** — one route served it; `longcat` is withdrawn from the provider's catalog and its upstream is down (HTTP 402), and the other two approved free routes are not routable by the subject, so the pair is not a pair |
+| §4-B: Task 2 pair under an approved budget | Task 2 solved on `muse-spark-1.3-contributor`: terminal `completed`, 11 tool calls, verifier 11/11, 1 provider request, cost unobservable; the pair was then completed on one binary with three allowed routes (`plans/closure/harness-lab/evidence/pilot-pair-ranges-20261022.json`) | **Met** |
 | §4-C: a 30–60 minute sustained scenario | 24 live trials, 34.9 min (2 093 626 ms), 0 unattempted, 11 solved / 13 stopped, inside 24 requests / 256 999 tokens | Met |
 | §4-D: a paired baseline/candidate benchmark comparison | The C002 score contract and hardened comparator are in place; no live run | **Partial** — mechanics ready, no live run |
 | §7: the operator can run the documented commands | `dev/harness_lab/README.md` | Met |
@@ -183,18 +191,24 @@ measurements do not depend on the score contract.
 
 ## 5. Remaining conditions
 
-1. **A second serving route for the Task 2 pair.** `muse-spark-1.3-contributor`
-   serves Task 2; `longcat-2.5-preview-free` is withdrawn from the provider's
-   catalog and its upstream answers HTTP 402 "Endpoint is unavailable." on
-   every attempt, so the pair could not be run on two routes. The two other
-   approved free routes are served and cost nothing, but CodeGG's subject
-   cannot be routed to them: the shared provider profile's reviewed wire map
-   has no entry, so every request fails closed at `wire_unresolved` before a
-   request is built — the intended behaviour, and not operator-overridable by
-   config. The audit is preserved at
-   `plans/closure/harness-lab/evidence/route-audit-20261022.json`. This is an
-   upstream and shared-profile condition and is reported as measured.
-2. **C003's accepted-defect receipt.** C004's final autonomy claim needs it.
+1. **A second serving route for the Task 2 pair — discharged.** The pair ran on
+   the frozen Task 2 fixture with one binary and one policy, and the receipts
+   are preserved at
+   `plans/closure/harness-lab/evidence/pilot-pair-ranges-20261022.json`:
+   `muse-spark-1.3-contributor` (35.3 s, 9 tool calls, verifier exit 0),
+   `mimo-v2.6-flash` (102.0 s, 10 tool calls, verifier exit 0) and
+   `deepseek-v4.1-flash` (71.8 s, 20 tool calls, verifier exit 0). The routes
+   the original approval named are still subject-routable only where the
+   provider's catalog and the shared wire map allow; the route audit
+   (`plans/closure/harness-lab/evidence/route-audit-20261022.json`) records
+   that, and the pair was completed with the routes the operator extended the
+   approval to.
+2. **C003's accepted-defect receipt — discharged.** C003 closed with an
+   accepted candidate: a genuine, reproducible defect was corrected by an
+   authenticated OpenCode proposer and the paired score accepted it with the
+   objective `correctness_fix` and no regression
+   (`plans/closure/harness-lab-post-pilot-corrective/003-status.md` §1). The
+   receipt C004's final autonomy claim depends on therefore exists.
 3. **The five unmaterialized verifier bodies.** Their contracts are frozen;
    their bodies are the next authoring step.
 4. **The paired baseline/candidate comparison** over stable groups, with the
@@ -218,8 +232,11 @@ measurements do not depend on the score contract.
 - The live routes were exercised inside admitted, controller-enforced budget
   caps. Where a route reported no cost, the cost is recorded as **null**, not
   zero; no dollar figure was invented for a route that does not report one.
-- The provider pair is reported as **one serving route**, because the second
-  route's upstream is unavailable. It is not recorded as a completed pair.
+- The provider pair is reported as **three serving routes** on the frozen
+  fixture, one binary, one policy, each in its own private lane, each passing
+  the fixture's independent verifier. It is recorded with its measurements, and
+  the routes the original approval named that the subject cannot reach are
+  recorded as a finding about the shared profile rather than as a pass.
 - The cleanup evidence is **observed**: the first sustained run reported
   `cleanup_complete: false` with 31 surviving daemons, and the harness defect
   behind it was fixed rather than the observation being dropped.
@@ -228,17 +245,21 @@ measurements do not depend on the score contract.
 
 ## 7. Status of M004 and M005
 
-Both stay **conditionally closed**.
+Both are now **closed**.
 
 - **M004** required a live interrupted qualification → restart → completion
   without duplicate receipts. The mechanism is proven with real SIGTERM/SIGKILL
   subprocesses in C002; C003's live qualification carries the interruption
-  proof itself.
+  proof itself, and C004's compile-correction trace closes M004's remaining
+  live-correction condition
+  (`plans/closure/harness-lab/004-status.md` §3.1).
 - **M005** required a sustained pilot with a two-route provider pair and an
-  accepted defect. The sustained pilot ran (24 trials, 34.9 min) and the
-  accepted-defect dependency is C003's; the **two-route pair did not** close,
-  because one upstream is unavailable.
+  accepted defect. The sustained pilot ran (24 trials, 34.9 min), the
+  accepted-defect dependency is C003's and is discharged, and the provider pair
+  closed on the frozen Task 2 fixture with three routes
+  (`plans/closure/harness-lab/005-status.md` §5.1).
 
-Neither has been weakened: the conditional dispositions are carried forward
-with the precise remaining conditions named above, and the parts that *did*
-run are recorded with their measurements.
+Neither has been weakened: the parts that ran are recorded with their
+measurements, the costs that no route reports stay `null`, and the routes the
+subject cannot reach are recorded as a finding about the shared provider
+profile rather than as a completed measurement.

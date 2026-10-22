@@ -1,6 +1,6 @@
 # Developer Harness Lab Milestone 004 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -19,7 +19,7 @@ Implementation commits or pull requests:
 
 ## 1. Executive finding
 
-M004 is conditionally closed. Manual and optional OpenCode proposal paths, version-pinned event parsing, candidate-only worktrees, immutable baseline checks, separate build targets, changelog/scope gates, paired ACP qualification, and fail-closed acceptance are implemented. The controlled candidate loop now has **both** candidate traces the plan asks for: an **accepted** trace, in which a genuine harness defect was remediated and the paired score accepted it, and a **rejected** trace, in which a well-formed candidate that changed no measured outcome was rejected on the score with every build gate green.
+M004 is closed. Manual and optional OpenCode proposal paths, version-pinned event parsing, candidate-only worktrees, immutable baseline checks, separate build targets, changelog/scope gates, paired ACP qualification, and fail-closed acceptance are implemented. The controlled candidate loop now has **both** candidate traces the plan asks for: an **accepted** trace, in which a genuine harness defect was remediated and the paired score accepted it, and a **rejected** trace, in which a well-formed candidate that changed no measured outcome was rejected on the score with every build gate green.
 
 The second trace is what exposed a defect in the score contract itself. The rejected candidate relabelled its failure instead of fixing it, and the first contract accepted it — with an empty correctness-improvement list. The contract was corrected (version 2): an acceptance now rests on a substantive improvement, and in the default contract that is a correctness improvement alone. The accepted candidate's verdict was re-verified from the same recorded trials under the corrected contract and is unchanged; the rejected candidate is now rejected with the primary reason `no_substantive_criterion_improved`. The controller therefore rejects candidates without a verified correctness improvement; it does not fabricate acceptance evidence, and it no longer accepts one that merely got faster.
 
@@ -142,7 +142,7 @@ OpenCode is constrained by a candidate worktree, changed-path allowlist, candida
 
 ## 9. Documentation and operations
 
-The harness README documents proposer modes, candidate worktrees, gates, checkpoints and limitations. The source plan and roadmap retain the conditional operational gates.
+The harness README documents proposer modes, candidate worktrees, gates, checkpoints and limitations. The source plan and roadmap retain the conditional operational gates, which are discharged as recorded in §1 and §12.
 
 ## 10. Unresolved findings
 
@@ -170,4 +170,4 @@ its candidate worktree, as the plan requires.
 
 ## 12. Registry updates
 
-M004 is removed from blocked work and recorded as conditionally closed. The roadmap status remains conditional; any future corrective plan must reference the medium findings above.
+M004 is removed from blocked work and recorded as closed. The roadmap status is closed; any future corrective plan must reference the medium findings above.
