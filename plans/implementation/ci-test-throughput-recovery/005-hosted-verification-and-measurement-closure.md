@@ -1,6 +1,6 @@
 # CI and Test Throughput Recovery Milestone M005 — Hosted Verification and Measurement Closure
 
-Status: ready for handoff
+Status: implemented (2026-10-22); closure `plans/closure/ci-test-throughput-recovery/005-status.md`
 
 Repository baseline: `4f89b4b05455f308076074e637e09affb97cbf93` — the committed change set this milestone measures ("the candidate")
 

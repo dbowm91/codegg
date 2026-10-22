@@ -422,6 +422,25 @@ The measure is now pinned in the row's `Source` column and is checked by
 `scripts/check_test_target_references.py`, so a later consolidation that
 moves or adds a module cannot leave the recorded count stale.
 
+The two rows the CI/test-throughput recovery **M005** milestone could affect
+were **remeasured again on 2026-10-22**, at the measured candidate
+`3dfeb6e2f`. Each was re-measured against its own listed `Source`, not
+carried over, and **neither moved**: integration test files stayed at
+**302** (`tests/*.rs` is 0 and `tests/*/*.inc` is 302, `tests/common/`
+excluded) and CI guard scripts stayed at **68** (`scripts/check_*`; M005
+added no guard script). The remaining rows were re-measured and did not
+move either — M005 changed no product source, no `codegg-core` module, no
+protocol enum, no table, and no migration.
+
+M005's own measurements — the linked root test-executable count (288 → 21),
+the measured per-family link cost, and the hosted two-phase wall-clock —
+are **not** rows of this table. They are owned by
+`architecture/testing.md`, which holds the method and the totals, and their
+sources are
+`plans/validation/ci-test-throughput-recovery/measurement-record.md`. This
+table stays the single source of truth for *counts*; the two documents do
+not copy a number from each other without naming where it came from.
+
 Two rows were **remeasured again on 2026-10-21**, after the CI/test-throughput
 recovery M006 and M007 milestones. Each was re-measured against its own
 listed `Source`, not carried over:

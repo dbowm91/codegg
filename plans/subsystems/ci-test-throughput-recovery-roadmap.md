@@ -1,6 +1,25 @@
 # CI and Test Throughput Recovery Roadmap
 
-Status: proposed
+Status: closed; M005 closure at `plans/closure/ci-test-throughput-recovery/005-status.md`
+
+Closure note: M001–M007 are closed. The hosted before/after evidence M005
+was opened to produce exists — **four** before-side runs, all successful,
+and **five** after-side runs of which **three** are successful (the other
+two failed on the documented pre-existing CI-only flake and contribute no
+measurement); every run warm-cache on `ubuntu-24.04` with `mold` present —
+and it is recorded in
+`plans/validation/ci-test-throughput-recovery/measurement-record.md`. The
+**countable** claim reproduces: the linked root test-executable count fell
+288 → 21 and the hosted nextest binary count fell 308 → 50, with the test
+set preserved (invariant I1 holds with zero unexplained losses, and every
+one of the 313 lost test executions is attributed to a recorded removal).
+The hosted **wall-clock** is reported with its dispersion and is **not**
+quoted as a precise effect size, because the hosted runners' host-speed
+difference is the same order as the effect being measured; that is
+recorded with its evidence in the closure record, not hidden. Two items
+remain **open** and are carried by the closure record, not by this
+roadmap's status: the **deferred rebase** (§10 D9) and the
+feature-gated coverage decision (§10 D1).
 
 Repository planning baseline: `239f06e7fc876eaa36156dbf4658bb56314c9673`
 
@@ -481,10 +500,10 @@ The third bullet governs M007's removals directly: a test function removed by M0
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | active (implemented; locally verified; hosted evidence outstanding) | `plans/implementation/ci-test-throughput-recovery/001-profile-alignment-single-dependency-graph.md` | `plans/closure/ci-test-throughput-recovery/001-status.md` | none |
-| M002 | active (implemented; bounded invocation executed; hosted evidence outstanding) | `plans/implementation/ci-test-throughput-recovery/002-bounded-feature-enabled-test-pass.md` | `plans/closure/ci-test-throughput-recovery/002-status.md` | M001 (operational) |
-| M003 | active (implemented; locally verified; four defects found by the coverage comparison and fixed) | `plans/implementation/ci-test-throughput-recovery/003-change-scoped-verification-mode.md` | `plans/closure/ci-test-throughput-recovery/003-status.md` | M001 (hard) |
-| M004 | active (implemented; full suite run; one regression found and fixed; hosted evidence outstanding) | `plans/implementation/ci-test-throughput-recovery/004-root-test-target-family-consolidation.md` | `plans/closure/ci-test-throughput-recovery/004-status.md` | M003 (interface) |
-| M005 | **ready** (plan written; the change set it measures is committed at `4f89b4b05`) | `plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md` | (not written — written at closure) | owner action: push the branch and dispatch the hosted before-run; confirm the before-run baseline (`2c1953347` recommended, §10 D9); the rebase is deferred past the measurement |
+| M001 | **closed** (implemented; hosted evidence supplied by M005 — the profile-alignment guard ships with `--self-test` coverage and the candidate's dependency graph is compiled once) | `plans/implementation/ci-test-throughput-recovery/001-profile-alignment-single-dependency-graph.md` | `plans/closure/ci-test-throughput-recovery/001-status.md` | none |
+| M002 | **closed** (implemented; the bounded feature-enabled pass executed; hosted evidence supplied by M005) | `plans/implementation/ci-test-throughput-recovery/002-bounded-feature-enabled-test-pass.md` | `plans/closure/ci-test-throughput-recovery/002-status.md` | none |
+| M003 | **closed** (implemented; four defects found by the coverage comparison and fixed; M005 measured the four remaining scoped-cost cases) | `plans/implementation/ci-test-throughput-recovery/003-change-scoped-verification-mode.md` | `plans/closure/ci-test-throughput-recovery/003-status.md` | none |
+| M004 | **closed** (implemented; the regression it introduced was found and fixed; hosted evidence supplied by M005 — the linked root test-executable count fell 288 → 21 and the hosted binary count 308 → 50) | `plans/implementation/ci-test-throughput-recovery/004-root-test-target-family-consolidation.md` | `plans/closure/ci-test-throughput-recovery/004-status.md` | none |
+| M005 | **closed** (the hosted before/after evidence exists — four successful before-side runs and three successful after-side runs plus two that failed on the documented pre-existing flake, all warm-cache, `ubuntu-24.04`, `mold` present; the primary countable claim reproduces; invariant I1 holds with zero unexplained losses and an exact 313-execution reconciliation; the link cost is measured; M003's four remaining scoped-cost cases are measured) | `plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md` | `plans/closure/ci-test-throughput-recovery/005-status.md` | none — the deferred rebase and D1 are carried as open items in the closure record, not as blockers |
 | M006 | **closed** (implemented; three guards ship with `--self-test` coverage; the workspace compiles and its suite runs) | `plans/implementation/ci-test-throughput-recovery/006-test-suite-assertion-quality.md` | `plans/closure/ci-test-throughput-recovery/006-status.md` | none |
-| M007 | **closed** (implemented; 90 duplicate groups triaged, 85 removals applied and verified; the shared-helper fan-out discharged) | `plans/implementation/ci-test-throughput-recovery/007-test-suite-duplication.md` | `plans/closure/ci-test-throughput-recovery/007-status.md` | none |
+| M007 | **closed** (implemented; 90 duplicate groups triaged, 85 removals applied and verified; the shared-helper fan-out discharged — measured hosted at 230 executions → 5) | `plans/implementation/ci-test-throughput-recovery/007-test-suite-duplication.md` | `plans/closure/ci-test-throughput-recovery/007-status.md` | none |

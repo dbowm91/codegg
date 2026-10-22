@@ -490,6 +490,136 @@ Consequences worth knowing:
   target that does not exist — a renamed target would otherwise make a
   filter silently stop reserving the runner for it.
 
+### The measured link cost (M005)
+
+The family consolidation was justified by a **projection** (M004's closure
+record: a ~41 % workspace-compile saving, computed from the baseline's
+median link time applied to the new target count). M005 **measured** it
+instead, on the same machine, in the same session, with the same command.
+
+**Method.** A *fresh* `CARGO_TARGET_DIR` — a warm tree reports the cost of
+*checking*, not of linking — and then:
+
+```bash
+CARGO_TARGET_DIR="$(mktemp -d)" cargo test --workspace --locked --no-run --timings
+```
+
+The emitted report is parsed from the `const UNIT_DATA = [...]` block with
+`re.S`. **`--timings=json` and `--timings-dir` are not usable here**: they
+are unstable on cargo 1.89. The parse command, the raw unit data and the
+per-family table are in
+`plans/validation/ci-test-throughput-recovery/measurement-record.md` §3.
+
+**Machine (recorded because unit-seconds are only comparable within a
+machine).** 14 cores / 24 GiB, aarch64-apple-darwin, cargo and rustc
+1.89.0, Apple clang 21.0.0, **no `mold`** — the hosted runner has `mold`
+and this machine does not, so the *hosted* numbers below are not
+comparable to these local ones, and are not mixed with them.
+
+**The result.**
+
+| | before (`2c1953347`) | after (`3dfeb6e2f`) | change |
+|---|---:|---:|---:|
+| Root integration-test executables linked | 275 | 17 | **−93.8 %** |
+| Linked test executables, whole workspace | 305 | 47 | **−84.6 %** |
+| Total compilation units | 988 | 730 | **−26.1 %** |
+| Aggregate unit-seconds, whole workspace | 4,300.8 | 2,618.9 | **−39.1 %** |
+| Aggregate unit-seconds, root integration bucket | 2,123.6 | 423.0 | **−80.1 %** |
+
+**M004's ~41 % projection reproduces within 1.9 percentage points**
+(−39.1 % measured). The candidate was repeated twice in the same session;
+the two runs agreed to within ±0.6 % on the aggregate and ±5.5 % on the
+17-unit root bucket.
+
+**What this measurement does not show.** The aggregate carries a
+contention-mediated component — the two sides' unrelated buckets disagree
+in opposite directions, and the baseline's build-script executions alone
+were 724.1 s against the candidate's ~115 s. M004's closure record's own
+§4.1 table (271 targets / 4,040.1 s / 9,155.6 s total) does **not**
+reproduce on this machine. The `pub mod` repair that M005's candidate
+carries makes the candidate's link work marginally *higher*, so the saving
+above is the conservative reading.
+
+**The per-family cost.** A family's cost is dominated by the size of the
+code it links, not by the number of test files it holds: `core_daemon` at
+51.7 s carries the daemon and its server wiring, while `command_git` at
+24.6 s carries the Git policy surface. The baseline's median was **13.9 s
+per *file*** across 271 separate executables; the candidate's is **24.7 s
+per *family*** across 17 — a family costs more than a file because it links
+more code into one binary, and 17 of them replace 275. The full 47-row
+table is in the measurement record §3.5; the root package's families are
+the 21 `codegg` rows of it.
+
+### The hosted two-phase wall-clock (M005)
+
+The link cost above is a **local** measurement. The hosted CI job is
+where the change was meant to pay off, so the same claim was measured
+there too, against a preregistered method.
+
+**Method.** Two refs, each pinned, each dispatched through the same
+`ci.yml`: `ci-baseline/2c1953347` (the before side) and
+`m005/candidate-3dfeb6e2f` (the after side). The job's two phases are
+recovered from the run log rather than from a new step — the last
+`Finished … in X` line of the `test` profile is the **build phase** and
+nextest's `Summary [ Xs]` line is the **execution phase** — because
+adding a build step would change the job being measured. The preregistration
+is `plans/validation/ci-test-throughput-recovery/measurement-preregistration.md`;
+the run-by-run record is the measurement record §4.
+
+**Machine and cache state.** Every run is `ubuntu-24.04` with `mold`
+present. **Every run on both sides is warm-cache** (a rust-cache hit),
+which is a property of the workflow rather than a choice: the cache key
+is shared across refs with an identical lockfile, so a cold sample is
+not obtainable unilaterally.
+
+| | before median (n = 4) | after median (n = 3) | ratio | threshold | verdict |
+|---|---:|---:|---:|---|---|
+| build phase (T2) | 683.000 s | 359.000 s | **52.6 %** | ≤ 60 % | **PASS** |
+| execution phase (T3) | 487.818 s | 377.692 s | **77.4 %** | ≥ 90 % | **FAIL** |
+
+**Raw values, both sides, all warm-cache.**
+
+| side | build phase (s) | execution phase (s) | `Workspace tests` step (s) | job total (s) |
+|---|---|---|---|---|
+| before | 615.0, 646.0, 720.0, 744.0 | 436.888, 470.185, 505.452, 527.888 | 1060, 1124, 1232, 1282 | 1495, 1542, 1705, 1775 |
+| after | 308.0, 359.0, 433.0 | 360.489, 377.692, 527.838 | 672, 740, 964 | 1125, 1215, 1594 |
+
+**The wall-clock is reported with its dispersion and is not quoted as a
+precise effect size.** The after side's execution phase spans 167 s
+(360.489 → 527.838), and its `after-4` is the slowest execution phase on
+either side — slower than three of the four before-side runs. The
+**host-speed term is the same order as the effect being measured**: one
+test whose source is **byte-identical** on both sides
+(`response_budget_trims_trailing_nodes_with_a_reason`) took 61.1 / 84.3 /
+82.6 / 81.8 s on the before side and **38.7 / 82.1 / 43.9 s** on the
+after side — a **2.13× spread within the after side alone**, on
+identical code. The after side's *internal* dispersion therefore exceeds
+the whole before-vs-after difference the execution phase reports (a
+1.29× ratio), and it also explains the after side's dispersion directly:
+`after-4`'s host ran that test as slowly as the before side's hosts did.
+A hosted wall-clock difference of that size cannot be separated from a
+difference in the runners' speed, and the number above is the
+measurement's *direction and magnitude class*, not a figure to quote to
+one decimal place.
+
+**Why T3 does not hold, and why that is not a defect.** T3 expected the
+execution phase to be roughly unchanged. It is materially **shorter**, for
+two reasons of very different kinds: 313 fewer test executions ran (real,
+intended, and exactly reconciled — every one attributed to a recorded
+removal), and the same executions ran faster on the after side. The
+threshold's *purpose* — that the workstream did not silently drop
+assertions — is discharged instead by **invariant I1**, which is a
+counting check rather than a timing one, and which holds with zero
+unexplained losses. The measurement record §4.4 carries the full
+argument.
+
+**The countable claim is the one that carries the milestone.** The
+hosted nextest binary count fell **308 → 50** (−83.8 %) — the
+preregistered prediction of 50, reconciled exactly against the observed
+308 — and the linked root test-executable count fell **288 → 21**. The
+wall-clock above is corroboration with its dispersion attached, not the
+claim.
+
 ### Change-scoped verification (`scripts/verify.sh scoped`)
 
 `scoped` is a **developer-local** affordance: it runs only the tests a change
