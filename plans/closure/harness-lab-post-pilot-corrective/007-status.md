@@ -477,9 +477,13 @@ The key survives in exactly two kinds of place, both deliberate:
 - `architecture/config.md` — the field is dropped from the `ProviderConfig`
   listing, and the module now states that there is no per-provider chunk
   deadline, that none is configurable, and where the bound actually lives.
-- `architecture/provider.md` — **unchanged**, as plan §9 directs. Its record
-  that `opencode_go` imposes no per-chunk deadline remains accurate and was
-  not weakened. See §11 for the one residual sentence it now carries.
+- `architecture/provider.md` — **edited**, because the plan's §9 statement that
+  it "requires no change" was itself wrong against the reconciled base. See
+  §11.2: the file claimed that provider modules own "chunk-idle deadlines"
+  after this change removed the last one, and it carried a "30-second chunk
+  timeout" sentence for the OpenAI-compatible transport that no longer
+  described the code. Its record that `opencode_go` imposes no per-chunk
+  deadline remains accurate and was not weakened.
 - `docs/configuration.md` — **unchanged**: it never listed the retired key.
 - `codegg.example.jsonc` — **unchanged**: it never mentioned the retired key,
   and it still validates.
@@ -527,19 +531,31 @@ aligned with the agent layer's ownership of stream liveness; it was not
 verified by a live provider run, because no live provider run is in scope for
 this milestone and none was performed.
 
-### 11.2 Residual documentation inconsistency — `architecture/provider.md` (not edited)
+### 11.2 The plan said `architecture/provider.md` needed no change; it did
 
-`architecture/provider.md:1055` still says that provider modules own
-"discovery, HTTP status handling, **chunk-idle deadlines**, and cancellation".
-After this change no provider module owns a chunk-idle deadline: the agent
-layer does. The file was **not** edited because it is outside this milestone's
-assigned file ownership and plan §9 states that it requires no change. It is
-recorded here so the owner can fold the one-phrase correction into the same
-commit if they wish.
+Plan §9 says "`architecture/provider.md` — **no change is required**". Against
+the reconciled base that is false, for two separate reasons, and the file was
+therefore edited in this milestone's commit:
 
-**Severity: low.** One clause in a historical M001/M002 narrative; the
+1. **A sentence the merge had already invalidated.** `main`'s wire cutover
+   (`dcea3ea72`) documented a "30-second chunk timeout" for the
+   OpenAI-compatible transport. The branch's own base predated that cutover,
+   so the branch's `architecture/provider.md` never carried the sentence, and
+   the merge left the branch's text in place while keeping `main`'s code — a
+   documentation/code disagreement that existed **before** this milestone.
+   Removing the deadline is what makes the branch's text true again.
+2. **A clause that contradicts the change.** `architecture/provider.md:1055`
+   said that provider modules own "discovery, HTTP status handling, **chunk-idle
+   deadlines**, and cancellation". After this change no provider module owns a
+   chunk-idle deadline: the agent layer does, and the file's own §"Stream
+   liveness" paragraph (added by C004) says so. The clause is now: provider
+   modules own endpoint construction, credentials, headers, discovery, HTTP
+   status handling and cancellation, and they **do not** own stream liveness.
+
+**Severity: low**, and now closed rather than recorded as residual. The
 authoritative statement of the ownership boundary — `architecture/provider.md`
-§"Stream liveness" and the new `architecture/config.md` paragraph — is correct.
+§"Stream liveness" and the new `architecture/config.md` paragraph — was already
+correct; this removes the one clause that contradicted it.
 
 ### 11.3 The plan's nested-struct count was sixteen; the measured count is seventeen
 
