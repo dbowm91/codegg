@@ -21,11 +21,12 @@ Roadmap: `plans/subsystems/ci-test-throughput-recovery-roadmap.md` §7 (M005), �
 | Side | SHA | Remote ref dispatched on | Why this SHA |
 |---|---|---|---|
 | **Before** | `2c1953347896848c2f52c2dfbd9f04029d1c2cc2` | `ci-baseline/2c1953347` | The clean pre-change tree: the merge commit immediately preceding this workstream's single change commit. It is **already an ancestor of `origin/main`**, so it is already hosted and needs no new history to be reachable. It is the *same tree* that this workstream changed, so the delta it measures is the delta this workstream produced. |
-| **After** | `8e3554ef4b93125cee685211872e77f254030d79` | `m005/candidate-8e3554ef4` | The change set this milestone measures, plus the one-commit defect repair recorded in §11. The repair exists because the candidate's own CI job could not complete on the hosted runner; it changes one guard script's self-test and nothing else. |
+| **After** | `3dfeb6e2f42faaff826991cec5d43c574554f66d` | `m005/candidate-3dfeb6e2f` | The change set this milestone measures, plus the two defect repairs recorded in §11. The repairs exist because the candidate's own CI job could not complete on the hosted runner; between them they touch one guard script's self-test and the **visibility** of the family test members. |
 
-**The candidate moved.** It was `4f89b4b05` when this document was first
-written. §11 records why it is now `8e3554ef4`, and the amendment was made
-before any after-side run completed.
+**The candidate moved twice**, from `4f89b4b05` to `8e3554ef4` to
+`3dfeb6e2f`. §11 records why, and both amendments were made before any
+after-side run completed, so the method is still fixed before the result
+it describes exists.
 
 ### 1.1 Why the before-run is `2c1953347` and not `239f06e7`
 
@@ -46,7 +47,7 @@ The pinned ref makes the candidate immutable for the duration of the measurement
 gh workflow run ci.yml --ref ci-baseline/2c1953347
 
 # After-side runs.
-gh workflow run ci.yml --ref m005/candidate-8e3554ef4
+gh workflow run ci.yml --ref m005/candidate-3dfeb6e2f
 ```
 
 The workflow is `.github/workflows/ci.yml`, job `verify` (`CI / verify`), runner `ubuntu-latest`. Both SHAs carry a `workflow_dispatch:` trigger and the identical `concurrency: group: ci-${{ github.ref }}` with `cancel-in-progress: true`.
@@ -145,7 +146,7 @@ executables nextest ran.
 nextest's binary count is not `cargo metadata`'s test-target count, and the
 difference is accounted for exactly:
 
-| | before (`2c1953347`) | after (`8e3554ef4`) |
+| | before (`2c1953347`) | after (`3dfeb6e2f`) |
 |---|---|---|
 | `cargo metadata` test-kind targets | 314 | 47 |
 | less feature-gated targets the job cannot build | −20 | −11 |
@@ -487,3 +488,59 @@ hypothesis:
 | tests run | 15,841 (all passed, 8 skipped) |
 | build phase | 615.0 s (`Finished \`test\` profile ... in 10m 15s`) |
 | execution phase | 436.888 s |
+
+### 11.6 The candidate moved again: `8e3554ef4` → `3dfeb6e2f`
+
+The after-side's **second** run, `39791127092`, also failed — this time at
+the **Workspace Clippy** step, after the scoped-selection fix had already
+carried it past every guard:
+
+```
+error: variants `Deterministic`, `Faulty`, and `Panicking` are never constructed
+  --> tests/tool_programs/tool_program_scenarios.inc:84:5
+error: fields `elapsed`, `call_count`, and `assertions_passed` are never read
+  --> tests/tool_programs/tool_program_scenarios.inc:102:9
+error: could not compile `codegg` (test "tool_programs") due to 5 previous errors
+```
+
+This one is **M004's** fault and it is structural rather than textual. A
+family member used to be its own test executable — `tests/<NAME>.rs` was
+the crate root of its own target — so its `pub` items were reachable and
+the dead-code lint never looked at them. M004's consolidation made each
+member a **private module** of a family target, and a private module's
+`pub` items are unreachable, so the lint began reporting latent dead code
+that had been there all along. The file's content is unchanged: the
+baseline's `tests/tool_program_scenarios.rs` and the family's
+`tests/tool_programs/tool_program_scenarios.inc` are byte-identical.
+
+The repair, commit `3dfeb6e2f`, declares each family's members `pub`
+instead of private — 310 declarations across 20 family `mod.rs` files. It
+restores exactly the reachability the standalone test executables had and
+suppresses nothing. It was chosen over per-item `allow(dead_code)`
+suppressions because a suppression silences the lint on a real class of
+future defects, and because the mechanism was settled first on a minimal
+reproduction:
+
+| shape | clippy's verdict |
+|---|---|
+| the file as a standalone test target (the baseline's shape) | clean |
+| the file as a **private** module (the consolidated shape) | "variants … are never constructed" |
+| the file as a **public** module | clean |
+
+The repair also removed the blanket `#![allow(dead_code)]` that M007 had to
+carry on `tests/common/secret_scan.rs`, because the same reachability
+argument makes it unnecessary — verified by removing it and re-linting, with
+no dead-code error left in any of the nineteen families.
+
+**Nothing else changed.** Module visibility only: no test body, assertion,
+test id, product source, build configuration or CI job definition is
+touched, and no test is added, removed or skipped. The measured quantities
+are unaffected — with one honest caveat, in the direction that *favours
+the claim*: making the items reachable means dead code is no longer
+eliminated, so the candidate's link work is, if anything, marginally
+**higher** than the measured figure.
+
+**What the method did not change.** Thresholds T1–T6, the statistic, the
+run count, the dispatch order, the extraction commands and the confounders
+are exactly as first written, except for the two corrections in §11.2 and
+§11.3, which were also made before any after-side run completed.
