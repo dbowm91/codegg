@@ -163,6 +163,17 @@ arguments plus `--resume`; the original wallclock deadline is retained. An
 ambiguous interrupted proposal is preserved and refused for manual inspection.
 Accepted code remains in its candidate worktree and is never merged or pushed.
 
+The candidate gates run in a fixed order: format, **build**, focused test. The
+build gate precedes the focused test gate on purpose. The focused test gate
+compiles the same crate, so a test-first order surfaces a compile failure as a
+*test* failure and the bounded compile-correction mechanic — whose whole
+purpose is to correct a compile failure — is never reached. When the build gate
+fails and the proposer is OpenCode, the compiler's own diagnostic is handed to
+the proposer, its correction is scope-checked and re-gated, and the retry count
+is bounded by `--max-candidate-retries`. The order is named in
+`CANDIDATE_GATE_SEQUENCE` and asserted by a test, so it cannot silently
+regress.
+
 An optional `--output-dir` must be empty and outside the candidate worktree.
 Without it, the supervisor creates an OS temporary experiment directory and
 removes it after cleanup. The output is a bounded JSON receipt on stdout;

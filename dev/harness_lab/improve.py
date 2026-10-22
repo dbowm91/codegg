@@ -1010,6 +1010,23 @@ def authorize_binary_fingerprint(checkpoint: Checkpoint, binary_digest: str) -> 
                            "refusing resume")
 
 
+#: The candidate gate sequence, in the order the gates run.
+#:
+#: The build gate precedes the focused test gate on purpose. A compile
+#: failure is what the bounded compile-correction mechanic exists to correct,
+#: and the focused test gate compiles the same crate, so a test-first order
+#: would surface a compile failure as a *test* failure and bypass the
+#: correction path entirely: the candidate would be rejected for a compiler
+#: error the proposer was never given the chance to fix. The build gate is
+#: the gate the mechanic wraps, and the focused test gate runs afterwards on
+#: the corrected source.
+CANDIDATE_GATE_SEQUENCE: tuple[tuple[str, ...], ...] = (
+    ("cargo", "fmt", "--all", "--", "--check"),
+    ("cargo", "build", "--bin", "codegg", "--bin", "codegg-sandbox-helper"),
+    ("cargo", "test", "-p", "codegg", "--test", "acp_stdio"),
+)
+
+
 def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baseline_candidate: str,
                       candidate: str, target_dir: Path, allowed_prefixes: tuple[str, ...],
                       timeout: float = 900.0, max_wallclock: float = 3600.0,
@@ -1121,14 +1138,13 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env.pop("CODEGG_DAEMON_HOME", None)
     gates = []
-    for argv in (["cargo", "fmt", "--all", "--", "--check"],
-                 ["cargo", "test", "-p", "codegg", "--test", "acp_stdio"]):
-        remaining = max_wallclock - (time.monotonic() - started)
-        if remaining <= 0:
-            raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
-        gates.append(_run_gate(argv, worktree, env, min(timeout, remaining)))
+    remaining = max_wallclock - (time.monotonic() - started)
+    if remaining <= 0:
+        raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
+    gates.append(_run_gate(list(CANDIDATE_GATE_SEQUENCE[0]), worktree, env,
+                            min(timeout, remaining)))
     retry_count = 0
-    build_argv = ["cargo", "build", "--bin", "codegg", "--bin", "codegg-sandbox-helper"]
+    build_argv = list(CANDIDATE_GATE_SEQUENCE[1])
     patch_digest, retry_count = _build_with_compile_correction(
         build=lambda: _run_gate(build_argv, worktree, env,
                                 min(timeout, max_wallclock - (time.monotonic() - started))),
@@ -1140,6 +1156,17 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
         checkpoint=checkpoint, correction_prompt=correction_prompt,
         allowed_prefixes=allowed_prefixes, changelog=changelog, worktree=worktree,
         patch_digest=patch_digest)
+    # The build gate runs before the focused test gate on purpose. A compile
+    # failure is what the bounded compile-correction mechanic exists to
+    # correct, and the focused test gate compiles the same crate, so running
+    # the test gate first would surface a compile failure as a *test*
+    # failure and bypass the correction path entirely. The test gate runs
+    # after the corrected build, on the corrected source.
+    remaining = max_wallclock - (time.monotonic() - started)
+    if remaining <= 0:
+        raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
+    gates.append(_run_gate(list(CANDIDATE_GATE_SEQUENCE[2]), worktree, env,
+                            min(timeout, remaining)))
     binary = target_dir / "debug" / ("codegg.exe" if os.name == "nt" else "codegg")
     if not binary.is_file():
         raise FileNotFoundError("candidate build did not produce the expected CodeGG executable")

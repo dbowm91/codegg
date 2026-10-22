@@ -15,12 +15,12 @@ from dev.harness_lab import improve
 from dev.harness_lab import scoring
 from dev.harness_lab.improve import (_build_with_compile_correction,
                                      authorize_binary_fingerprint, authorize_build_transition, Budget,
-                                     candidate_patch_sha256, check_scope, changed_paths,
-                                     Checkpoint, CheckpointInterrupted, create_candidate_worktree,
-                                     decision_reasons, evaluation_is_complete, expected_trial_keys,
-                                     guarded_propose, index_trials, manual_dry_run, OptimizationCheckpoint,
-                                     parse_opencode_events, protected_control_keys, run_opencode,
-                                     score_candidate_trials, SUPPORTED_OPENCODE_VERSION,
+                                     CANDIDATE_GATE_SEQUENCE, candidate_patch_sha256, check_scope,
+                                     changed_paths, Checkpoint, CheckpointInterrupted,
+                                     create_candidate_worktree, decision_reasons, evaluation_is_complete,
+                                     expected_trial_keys, guarded_propose, index_trials, manual_dry_run,
+                                     OptimizationCheckpoint, parse_opencode_events, protected_control_keys,
+                                     run_opencode, score_candidate_trials, SUPPORTED_OPENCODE_VERSION,
                                      USAGE_NOT_REPORTED, validate_proposer_model)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -1017,6 +1017,16 @@ class CompileCorrectionMechanicsTests(unittest.TestCase):
     requires the fault-injected branch to be labelled separately from a real
     compile correction.
     """
+
+    def test_the_build_gate_precedes_the_focused_test_gate(self) -> None:
+        # The compile-correction mechanic wraps the build gate. The focused
+        # test gate compiles the same crate, so a test-first order would
+        # surface a compile failure as a test failure and the proposer would
+        # never be given the compiler's diagnostic to correct.
+        verbs = [argv[1] for argv in CANDIDATE_GATE_SEQUENCE]
+        self.assertEqual(verbs, ["fmt", "build", "test"])
+        self.assertEqual(CANDIDATE_GATE_SEQUENCE[1][:2], ("cargo", "build"))
+        self.assertEqual(CANDIDATE_GATE_SEQUENCE[2][:2], ("cargo", "test"))
 
     def _worktree(self, root: Path) -> Path:
         worktree = root / "candidate"
