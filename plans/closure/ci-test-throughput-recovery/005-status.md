@@ -887,6 +887,18 @@ not describe it as mergeable.
 - **Owner:** the branch owner. The rebase is a merge into `main`, and it is
   an owner action, not a milestone action.
 
+**Superseded on 2026-10-22** — the deferral is discharged, and the figures
+above are **superseded by measurement**. The branch was reconciled with
+`origin/main` `f4019a410` by a fifth merge and the integration tests were
+absorbed into the families; the record is
+`plans/closure/ci-test-throughput-recovery/008-merge-and-absorption-status.md`.
+The counts it measured are **sixteen** new top-level root integration-test
+files (not twelve), and the root package's test-target count goes **21 → 37
+→ 24** and the workspace's **47 → 65 → 52** — not back down to 21, because
+three of the sixteen are named by a hosted qualification lane and keep their
+own target. The paragraph above is left as it was written; it records what
+the deferral looked like when this milestone closed.
+
 ### 12.2 D1 — the feature-gated coverage decision — still open
 
 Roadmap §10 **D1** — the 149 feature-gated test functions CI never
