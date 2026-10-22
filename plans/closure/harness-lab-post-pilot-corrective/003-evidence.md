@@ -2,7 +2,7 @@
 
 Branch: `plans/harness-lab-post-pilot-correctives`
 Baseline reviewed: `2a9fc376707ef14dab4a2f9a27f6aba8ac00dd59`
-Verified: 2026-10-21
+Verified: 2026-10-21, re-verified 2026-10-22 after the score-contract correction
 
 ## 1. The installed OpenCode CLI
 
@@ -88,9 +88,9 @@ OK
 
 ```
 $ python3 -m unittest discover -s dev/harness_lab/tests
-Ran 232 tests in 28.659s
+Ran 243 tests in 14.902s
 
-OK
+OK (skipped=3)
 
 $ python3 -m pyflakes dev/harness_lab/*.py dev/harness_lab/tests/*.py
 (no findings)
@@ -188,7 +188,7 @@ group, after at least one persisted scored trial:
 | Criterion | Baseline | Candidate |
 |---|---|---|
 | `correctness.pass_rate` | 0.889 | **1.000** |
-| `reliability.success_rate` | 0.846 | **0.923** |
+| `reliability.success_rate` | 0.917 | **1.000** |
 | `control.no_regression` | 1.000 | 1.000 |
 | `efficiency.duration_ms` (advisory) | 1225 | 1811 |
 
@@ -204,10 +204,19 @@ Protected controls: `cancel-after-read`, `repeated-identical-read-error`,
   1811 ms. The efficiency criterion is `regression_blocks=false`, so it is
   reported, not hidden.
 
-### 5.6 Four harness defects the live run exposed
+The reliability figures are the **corrected** ones: the baseline denominator is
+12 meaningful trials, not 13, because the `repeated-identical-read-error`
+control's declared `expected_terminal` is itself `execution_failed` — it is
+supposed to fail, so it is not an avoidable failure of the candidate and it
+sits outside the metric. The first contract counted it and reported
+`0.846 → 0.923`. The corrected metric reports `0.917 → 1.000`. The decision is
+the same under either contract, because the accepted candidate improved a
+*correctness* result, which is what carries an acceptance.
+
+### 5.6 Five harness defects the live run exposed
 
 The live qualification did not work the first time, and each failure was a
-harness defect, not a candidate defect. All four are fixed and covered by
+harness defect, not a candidate defect. All five are fixed and covered by
 tests.
 
 1. **The paired comparison read raw terminals.** A protected negative control
@@ -237,10 +246,67 @@ tests.
    measured row is the one that counts. Scoring it as a zero would have let a
    measurement flake decide the acceptance, which is exactly the wrong
    behaviour for the small, cheap models this harness exists to qualify.
+5. **The score contract accepted a candidate that fixed nothing.** The
+   improvement set contained every comparable criterion, including the
+   advisory latency one, so a candidate whose only movement was a marginally
+   faster median was accepted. The contract now declares per criterion
+   whether an improvement there may carry an acceptance, and the default
+   contract accepts on the correctness criterion alone. The reliability
+   metric was corrected in the same pass: a case whose declared expectation
+   is itself an avoidable failure sits outside the metric, and the
+   reliability criterion is reported but cannot carry an acceptance. The
+   contract version moved from 1 to 2; a version-1 contract is refused
+   rather than reinterpreted.
 
 Two more defects were found and fixed on the way: the live pilot leaked lane
 daemons (31 survivors after 24 trials), and the macOS lane socket path
 exceeded the platform's `sun_path` limit.
+
+### 5.7 The rejected candidate trace
+
+The plan asks for a rejected candidate trace as well as an accepted one. A
+second candidate was built to obtain it honestly: it binds the tool
+registry's workspace root but never binds the headless single-root workspace,
+so the defective case still fails — it fails as `assertion_failed` instead of
+`execution_failed`. It compiles, passes the focused test, and remediates
+nothing.
+
+| Item | Value |
+|---|---|
+| Branch | `harness-lab/c003-rejected-headless-binding` at `e10724b98` |
+| Patch digest | `4ac4214cffa2c4f0908ece7a897ddc77cc0b1af7ac708e6018409113eaf647b1` |
+| Candidate binary | `0debd8f6771e3ade6e69706fba959f21d98fd983d9435b8580f0ac52c60c32e3` |
+| Suite digest | `2b564ab0bc3f1119c49378fd3217ba863261f4676e51f0f663111523ec24725d` |
+| Gates | `cargo fmt --all -- --check` → 0, `cargo test -p codegg --test acp_stdio` → 0, `cargo build --bin codegg --bin codegg-sandbox-helper` → 0 |
+| Paired comparison | denominator 13, improvements `[]`, regressions `[]` |
+| Correctness improvements | `[]` |
+| Unmatched trials | `('headless-exec-workspace-write', 0)` |
+| Score contract | version 2 |
+
+**Decision: `rejected`, primary reason `no_substantive_criterion_improved`.**
+
+```
+status: REJECTED
+reason: no_substantive_criterion_improved
+reasons: ['no_substantive_criterion_improved', 'reliability_criterion_improved', 'secondary_criterion_regressed']
+objective: none
+correctness_improvements: []
+unmatched_trials: [('headless-exec-workspace-write', 0)]
+next_gate: propose a candidate with a verified correctness improvement
+```
+
+All three build gates passed, so the candidate was rejected **on the score**:
+it is a well-formed patch that does not do the task. The recorded ACP trials
+were reused verbatim through a ledger resume — the measurement did not change,
+only the decision rule did — and the receipt was produced by the real
+qualification path.
+
+Under the first contract the same candidate was **accepted**, with
+`correctness_improvements: []` and the objective `reliability`. That receipt is
+the defect: the candidate had relabelled its failure rather than fixing it.
+
+The full receipt is preserved as
+`plans/closure/harness-lab/evidence/rejected-candidate-20261022.json`.
 
 ## 6. What was NOT run, and why
 

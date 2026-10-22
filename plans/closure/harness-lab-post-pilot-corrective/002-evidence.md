@@ -2,23 +2,26 @@
 
 Branch: `plans/harness-lab-post-pilot-correctives`
 Baseline reviewed: `2a9fc376707ef14dab4a2f9a27f6aba8ac00dd59`
-Verified: 2026-10-21
+Verified: 2026-10-21, re-verified 2026-10-22 after the score contract correction
 
 ## 1. Python — the full harness suite
 
 ```
 $ python3 -m unittest discover -s dev/harness_lab/tests
-................................................................................
+................................................................................................................................................................................................
 ----------------------------------------------------------------------
-Ran 112 tests in 3.186s
+Ran 243 tests in 14.902s
 
-OK
+OK (skipped=3)
 ```
 
-The suite was `Ran 72 tests ... OK` before this line of work. It is now 112
+The suite was `Ran 72 tests ... OK` before this line of work. It is now 243
 because C001 added the budget preflight, the supervisor failure decoding and
-the fixture fault injection, and C002 added the score contract, the ledger
-hardening, the resume gates, and the crash matrix.
+the fixture fault injection, C002 added the score contract, the ledger
+hardening, the resume gates, and the crash matrix, and the live C003 trial
+added the ACP pilot, the exec-transport trial, the sustained scenario, the
+compile-correction loop, and the corrected contract's substantive-improvement
+and expectation-relative-reliability rules.
 
 ## 2. The crash matrix — real subprocesses and real signals
 
@@ -38,7 +41,7 @@ assert the observable end state.
 
 ```
 $ python3 -m unittest dev.harness_lab.tests.test_scoring
-Ran 39 tests in 0.001s
+Ran 47 tests in 0.002s
 
 OK
 ```
@@ -46,11 +49,19 @@ OK
 | Requirement | Test |
 |---|---|
 | A correctness fix is accepted with a `correctness_fix` objective | `test_correctness_fix_is_accepted_with_a_correctness_objective` |
-| A reliability-only improvement is accepted with a `reliability` objective | `test_reliability_only_improvement_is_accepted_with_a_reliability_objective` |
+| A reliability-only improvement is rejected by the default contract and still reported | `test_a_reliability_only_improvement_is_rejected_but_still_reported` |
+| A predeclared reliability contract accepts a reliability improvement | `test_a_predeclared_reliability_contract_can_accept_a_reliability_improvement` |
 | A protected-control regression is rejected even with other improvements | `test_protected_control_regression_is_rejected_even_with_other_improvements` |
 | An unmeasured required criterion yields `insufficient_evidence` with no score | `test_unmeasured_required_criterion_yields_insufficient_evidence_without_a_score` |
 | A partially evaluated candidate is `insufficient_evidence` | `test_partially_evaluated_candidate_is_insufficient_evidence` |
 | A fully matched candidate is not accepted | `test_fully_matched_candidate_is_not_accepted` |
+| A candidate that only changed the duration is not accepted | `test_a_candidate_that_only_changed_the_duration_is_not_accepted` |
+| An advisory-only improvement is rejected with `no_substantive_criterion_improved` | `test_an_advisory_only_improvement_is_rejected` |
+| An advisory improvement does not hide a substantive one | `test_an_advisory_improvement_does_not_hide_a_substantive_one` |
+| A predeclared latency campaign can still accept | `test_a_predeclared_latency_campaign_can_still_accept` |
+| Only a correctness criterion accepts in the default contract | `test_the_default_contract_never_accepts_on_an_advisory_criterion` |
+| The previous contract version is refused, not reinterpreted | `test_the_previous_contract_version_is_refused_not_reinterpreted` |
+| A negative control that must fail is not a reliability failure | `test_a_negative_control_that_must_fail_is_not_a_reliability_failure` |
 | An unmeasured trial never maps to zero | `test_unmeasured_trial_never_maps_to_zero` |
 | The control set is derived without touching the suite schema | `test_protected_controls_are_derived_without_touching_the_suite_schema` |
 | A correctness fix is not rejected for being slower | `test_a_correctness_fix_is_not_rejected_for_being_slower` |

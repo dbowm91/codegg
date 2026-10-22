@@ -1,0 +1,409 @@
+{
+  "accepted": false,
+  "baseline_candidate": "baseline-e10724b98",
+  "baseline_manifests_unchanged": true,
+  "binary_sha256": "0debd8f6771e3ade6e69706fba959f21d98fd983d9435b8580f0ac52c60c32e3",
+  "branch": "harness-lab/c003-rejected-headless-binding",
+  "budget_guard": {
+    "cost_usd": null,
+    "exhausted_cap": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "provider_requests": 0,
+    "total_tokens": 0
+  },
+  "candidate": "c003-rejected-headless-binding",
+  "compile_correction_retries": 0,
+  "correctness_improvements": [],
+  "evaluation_exit": 2,
+  "evidence_pairs": 13,
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "returncode": 0,
+      "stderr_bytes": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codegg",
+        "--test",
+        "acp_stdio"
+      ],
+      "returncode": 0,
+      "stderr_bytes": 170,
+      "stdout_sha256": "da4200f3a8d9494ae559a2e2e748d946506f4b870ac3ac34d0f858523cd4e565"
+    },
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--bin",
+        "codegg",
+        "--bin",
+        "codegg-sandbox-helper"
+      ],
+      "returncode": 0,
+      "stderr_bytes": 72,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "interrupted_trials": {
+    "left": [],
+    "right": []
+  },
+  "next_gate": "propose a candidate with a verified correctness improvement",
+  "objective": "none",
+  "paired_comparison": {
+    "cost_usd": null,
+    "denominator": 13,
+    "improvements": [],
+    "interrupted_trials": {
+      "left": [],
+      "right": []
+    },
+    "left": "baseline-e10724b98",
+    "left_passed": 8,
+    "measured_token_usage": {
+      "left": {
+        "cached_tokens": 30,
+        "input_tokens": 170,
+        "measured_runs": 10,
+        "output_tokens": 90,
+        "reasoning_tokens": 20
+      },
+      "right": {
+        "cached_tokens": 30,
+        "input_tokens": 170,
+        "measured_runs": 10,
+        "output_tokens": 90,
+        "reasoning_tokens": 20
+      }
+    },
+    "paired_task_ids": [
+      "cancel-after-read",
+      "distinct-read-calls",
+      "edit-existing",
+      "explicit-bash-denial",
+      "failed-shell-then-recovered",
+      "full-host-write",
+      "grep-existing",
+      "headless-exec-workspace-write",
+      "projected-output-context-recovery",
+      "repeated-identical-read-error",
+      "shell-process-write",
+      "timeout-after-read",
+      "verifier-negative"
+    ],
+    "paired_trials": [
+      {
+        "repeat": 0,
+        "task_id": "cancel-after-read"
+      },
+      {
+        "repeat": 0,
+        "task_id": "distinct-read-calls"
+      },
+      {
+        "repeat": 0,
+        "task_id": "edit-existing"
+      },
+      {
+        "repeat": 0,
+        "task_id": "explicit-bash-denial"
+      },
+      {
+        "repeat": 0,
+        "task_id": "failed-shell-then-recovered"
+      },
+      {
+        "repeat": 0,
+        "task_id": "full-host-write"
+      },
+      {
+        "repeat": 0,
+        "task_id": "grep-existing"
+      },
+      {
+        "repeat": 0,
+        "task_id": "headless-exec-workspace-write"
+      },
+      {
+        "repeat": 0,
+        "task_id": "projected-output-context-recovery"
+      },
+      {
+        "repeat": 0,
+        "task_id": "repeated-identical-read-error"
+      },
+      {
+        "repeat": 0,
+        "task_id": "shell-process-write"
+      },
+      {
+        "repeat": 0,
+        "task_id": "timeout-after-read"
+      },
+      {
+        "repeat": 0,
+        "task_id": "verifier-negative"
+      }
+    ],
+    "regressions": [],
+    "right": "c003-rejected-headless-binding",
+    "right_passed": 8,
+    "subject_identity": {
+      "left": {
+        "agent": [
+          "\"build\""
+        ],
+        "model": [
+          "\"openai/harness-fixture\""
+        ],
+        "policy": [
+          "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"full_host\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"full_host\"}}",
+          "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"workspace_write\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"workspace_write\"}}"
+        ],
+        "revision": "e10724b9890f7963890daa07e14de5c9ef454916",
+        "subject binary fingerprint": "b5e3a4b8afa69943962750d0bd2c68a929a0ff873f8fb71f553c45dc77959006",
+        "suite digest": "2b564ab0bc3f1119c49378fd3217ba863261f4676e51f0f663111523ec24725d",
+        "tool surface digest": [
+          "\"4e9a70a2c14efe9ff08fb545e99b7c5546d4de42d7ce739cb1136548a4134a87\""
+        ]
+      },
+      "right": {
+        "agent": [
+          "\"build\""
+        ],
+        "model": [
+          "\"openai/harness-fixture\""
+        ],
+        "policy": [
+          "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"full_host\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"full_host\"}}",
+          "{\"effective\":{\"approvalMode\":\"yolo\",\"revision\":\"1\",\"sandbox\":\"workspace_write\"},\"requested\":{\"approvalMode\":\"yolo\",\"sandbox\":\"workspace_write\"}}"
+        ],
+        "revision": "e10724b9890f7963890daa07e14de5c9ef454916",
+        "subject binary fingerprint": "0debd8f6771e3ade6e69706fba959f21d98fd983d9435b8580f0ac52c60c32e3",
+        "suite digest": "2b564ab0bc3f1119c49378fd3217ba863261f4676e51f0f663111523ec24725d",
+        "tool surface digest": [
+          "\"4e9a70a2c14efe9ff08fb545e99b7c5546d4de42d7ce739cb1136548a4134a87\""
+        ]
+      }
+    },
+    "terminal_pairs": [
+      {
+        "expected_terminal": "cancelled",
+        "left_matched": true,
+        "left_terminal": "cancelled",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "cancelled",
+        "task_id": "cancel-after-read"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "distinct-read-calls"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "edit-existing"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "explicit-bash-denial"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "failed-shell-then-recovered"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "full-host-write"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "grep-existing"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": false,
+        "left_terminal": "execution_failed",
+        "repeat": 0,
+        "right_matched": false,
+        "right_terminal": "assertion_failed",
+        "task_id": "headless-exec-workspace-write"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "projected-output-context-recovery"
+      },
+      {
+        "expected_terminal": "execution_failed",
+        "left_matched": true,
+        "left_terminal": "execution_failed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "execution_failed",
+        "task_id": "repeated-identical-read-error"
+      },
+      {
+        "expected_terminal": "passed",
+        "left_matched": true,
+        "left_terminal": "passed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "passed",
+        "task_id": "shell-process-write"
+      },
+      {
+        "expected_terminal": "timeout",
+        "left_matched": true,
+        "left_terminal": "timeout",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "timeout",
+        "task_id": "timeout-after-read"
+      },
+      {
+        "expected_terminal": "assertion_failed",
+        "left_matched": true,
+        "left_terminal": "assertion_failed",
+        "repeat": 0,
+        "right_matched": true,
+        "right_terminal": "assertion_failed",
+        "task_id": "verifier-negative"
+      }
+    ],
+    "tokens": null,
+    "unmet_expectations": [
+      {
+        "expected_terminal": "passed",
+        "left_terminal": "execution_failed",
+        "repeat": 0,
+        "right_terminal": "assertion_failed",
+        "task_id": "headless-exec-workspace-write"
+      }
+    ],
+    "unpaired_left": [],
+    "unpaired_right": []
+  },
+  "patch_sha256": "4ac4214cffa2c4f0908ece7a897ddc77cc0b1af7ac708e6018409113eaf647b1",
+  "protected_violations": [],
+  "reason": "no_substantive_criterion_improved",
+  "reasons": [
+    "no_substantive_criterion_improved",
+    "reliability_criterion_improved",
+    "secondary_criterion_regressed"
+  ],
+  "score": 0.32278305291798537,
+  "score_contract": {
+    "criteria": [
+      {
+        "direction": "higher_is_better",
+        "id": "correctness.pass_rate",
+        "improvement_accepts": true,
+        "kind": "correctness",
+        "protected": false,
+        "regression_blocks": true,
+        "required": true,
+        "weight": 1.0
+      },
+      {
+        "direction": "higher_is_better",
+        "id": "reliability.success_rate",
+        "improvement_accepts": false,
+        "kind": "reliability",
+        "protected": false,
+        "regression_blocks": true,
+        "required": true,
+        "weight": 1.0
+      },
+      {
+        "direction": "lower_is_better",
+        "id": "efficiency.duration_ms",
+        "improvement_accepts": false,
+        "kind": "efficiency",
+        "protected": false,
+        "regression_blocks": false,
+        "required": true,
+        "weight": 0.001
+      },
+      {
+        "direction": "higher_is_better",
+        "id": "control.no_regression",
+        "improvement_accepts": true,
+        "kind": "correctness",
+        "protected": true,
+        "regression_blocks": true,
+        "required": true,
+        "weight": 1.0
+      }
+    ],
+    "minimum_evidence_pairs": 1,
+    "version": 2
+  },
+  "score_outcome": {
+    "decision": "rejected",
+    "objective": "none",
+    "protected_violations": [],
+    "reasons": [
+      "reliability_criterion_improved",
+      "no_substantive_criterion_improved",
+      "secondary_criterion_regressed"
+    ],
+    "score": 0.32278305291798537
+  },
+  "status": "REJECTED",
+  "suite_sha256": "2b564ab0bc3f1119c49378fd3217ba863261f4676e51f0f663111523ec24725d",
+  "unmatched_trials": [
+    [
+      "headless-exec-workspace-write",
+      0
+    ]
+  ],
+  "wall_time_seconds": 12.042712332913652
+}

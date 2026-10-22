@@ -45,15 +45,30 @@ safety regression that rejects the candidate outright, a correctness fix is
 reported as `correctness_fix`, and an evidence gap is reported as
 `insufficient_evidence` rather than being coerced into a verdict.
 
+The contract was later **corrected** after a live candidate trial exposed a
+gap in it, and this record describes the corrected contract (`version 2`).
+The first version put every comparable criterion in the improvement set, so an
+advisory latency delta alone could accept a candidate that had changed no
+measured outcome at all — and a candidate that merely *relabelled* a failure
+could bank a reliability improvement on a task it never completed. Version 2
+makes the acceptance rule explicit: only a criterion that declares
+`improvement_accepts` may carry an acceptance, and in the default contract
+that is the correctness criterion alone. A reliability or latency movement is
+still measured and reported; it can no longer *be* the acceptance. The
+corrected rule is what the C003 live trial needed and what the plan's
+"acceptance only for measured defect remediation" requires.
+
 ## 2. Requirement-to-evidence matrix
 
 | Plan requirement | Evidence | Status |
 |---|---|---|
-| §4 contract: versioned score contract outside candidate worktrees | `dev/harness_lab/scoring.py`, `SCORE_CONTRACT_VERSION = 1`; `check_scope` already forbids candidate patches from touching `dev/harness_lab/` | Met |
+| §4 contract: versioned score contract outside candidate worktrees | `dev/harness_lab/scoring.py`, `SCORE_CONTRACT_VERSION = 2`; `check_scope` already forbids candidate patches from touching `dev/harness_lab/` | Met |
 | §4 contract: correctness fix vs reliability/efficiency distinguished | `objective` is `correctness_fix` / `reliability` / `efficiency` / `none`; `improve.py` maps trial rows into `scoring.Observation`s | Met |
 | §4 contract: protected negative controls | `control.no_regression`, `protected=True`; excluded from the improvement set, the objective, and the weighted aggregate | Met |
 | §4 contract: explicit insufficient-evidence outcome | `DECISION_INSUFFICIENT_EVIDENCE` with `score is None` | Met |
 | §4 contract: predeclared regression floors | `Criterion.regression_blocks`; efficiency is advisory, correctness and reliability block | Met |
+| §4 contract: an acceptance rests on a substantive improvement | `Criterion.improvement_accepts`; only `correctness.pass_rate` accepts in the default contract; an advisory-only improvement is rejected with `no_substantive_criterion_improved` | Met |
+| §4 contract: a negative control's expected failure is not a performance signal | the reliability rate's denominator excludes every case whose declared `expected_terminal` is itself an avoidable failure | Met |
 | §4 compare: complete paired repeats required | `compare` refuses a partial pairing, a self-comparison, and a zero denominator | Met |
 | §4 compare: digests and identities validated | group/case/suite digests, revision, agent, policy, subject binary fingerprint, model, tool surface | Met |
 | §4 compare: null usage/cost never equals zero | `report()` and `compare()` keep unmeasured aggregates `None`; `usage_unavailable` carries a named reason | Met |
@@ -85,8 +100,8 @@ The decision order is:
 3. A required criterion unmeasured on either side → **insufficient_evidence**,
    `score` is `None`.
 4. Otherwise a weighted comparison over the criteria measured on both sides →
-   **accepted** when at least one criterion improved and no *blocking* floor
-   regressed.
+   **accepted** when at least one *substantive* criterion improved and no
+   *blocking* floor regressed.
 
 A `None` measurement is never coerced to `0`, anywhere. A `score` is `None`
 whenever the decision is `insufficient_evidence`, so a missing measurement
@@ -101,6 +116,40 @@ slower run disqualifying — while a candidate that trades correctness or
 reliability for speed must still be rejected. A candidate that fixes a real
 defect and is slower is accepted, and the latency regression is recorded in
 the receipt as `secondary_criterion_regressed`.
+
+**Improvement floors.** `Criterion.improvement_accepts` is the contract's
+"substantive improvement" rule, and it is the correction that version 1
+needed. In version 1 every comparable criterion counted toward the
+improvement set, so the advisory latency criterion could carry an acceptance
+by itself: a candidate that changed no measured outcome and merely ran
+slightly faster was **accepted**. That is the plan's forbidden "success by
+narration", and it is what the live C003 trial exposed.
+
+In version 2 only a criterion that declares `improvement_accepts` can carry
+an acceptance, and in the default contract that is `correctness.pass_rate`
+alone. A candidate is therefore accepted for a **verified correctness
+improvement** — a non-control task that failed at baseline now meets its
+expected terminal — which is the milestone's acceptance rule and the plan's
+"acceptance only for measured defect remediation". `reliability.success_rate`
+and `efficiency.duration_ms` are still measured and still reported in the
+receipt's reasons; they simply cannot *be* the acceptance. A contract that
+genuinely runs a reliability or latency campaign declares that intent by
+setting `improvement_accepts` on the criterion it optimizes, which is the
+plan's "predeclared threshold" requirement made executable.
+
+A candidate that improves nothing substantive is **rejected** with the
+primary reason `no_substantive_criterion_improved`, and its objective is
+`none`: a movement that cannot carry an acceptance cannot name one either.
+
+**A negative control's expected failure is not a performance signal.** The
+reliability rate's denominator excludes every case whose declared
+`expected_terminal` is itself an avoidable failure — the
+`repeated-identical-read-error` control, which must fail. It failed exactly
+as the suite requires, so counting it as an avoidable failure of the
+candidate would have let a candidate that stopped the control from failing
+buy a reliability improvement. The plan forbids that directly: "do not turn a
+negative-control `execution_failed` into a false performance improvement". The
+protected-control check still catches a candidate that breaks the control.
 
 ### 3.2 Protected negative controls
 

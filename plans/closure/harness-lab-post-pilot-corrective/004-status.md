@@ -169,6 +169,10 @@ Ran 178 tests in 6.043s
 OK
 ```
 
+That count is the one observed at this closure. The suite has since grown with
+the C003 score-contract correction, so a re-run reports more tests; C004's
+measurements do not depend on the score contract.
+
 ## 5. Remaining conditions
 
 1. **A second serving route for the Task 2 pair.** `muse-spark-1.3-contributor`

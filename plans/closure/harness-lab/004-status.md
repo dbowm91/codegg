@@ -19,7 +19,11 @@ Implementation commits or pull requests:
 
 ## 1. Executive finding
 
-M004 is conditionally closed. Manual and optional OpenCode proposal paths, version-pinned event parsing, candidate-only worktrees, immutable baseline checks, separate build targets, changelog/scope gates, paired ACP qualification, and fail-closed acceptance are implemented. The controlled candidate loop has no accepted trace because the frozen baseline has no known correctness defect, and the optional authenticated OpenCode pilot was not run. The controller therefore rejects candidates without a verified correctness improvement; it does not fabricate acceptance evidence.
+M004 is conditionally closed. Manual and optional OpenCode proposal paths, version-pinned event parsing, candidate-only worktrees, immutable baseline checks, separate build targets, changelog/scope gates, paired ACP qualification, and fail-closed acceptance are implemented. The controlled candidate loop now has **both** candidate traces the plan asks for: an **accepted** trace, in which a genuine harness defect was remediated and the paired score accepted it, and a **rejected** trace, in which a well-formed candidate that changed no measured outcome was rejected on the score with every build gate green.
+
+The second trace is what exposed a defect in the score contract itself. The rejected candidate relabelled its failure instead of fixing it, and the first contract accepted it — with an empty correctness-improvement list. The contract was corrected (version 2): an acceptance now rests on a substantive improvement, and in the default contract that is a correctness improvement alone. The accepted candidate's verdict was re-verified from the same recorded trials under the corrected contract and is unchanged; the rejected candidate is now rejected with the primary reason `no_substantive_criterion_improved`. The controller therefore rejects candidates without a verified correctness improvement; it does not fabricate acceptance evidence, and it no longer accepts one that merely got faster.
+
+The remaining operational condition is narrow and named: the **live** compile-correction trace, where the OpenCode proposer answers a compiler error and the corrected build is re-gated. The correction mechanic itself is implemented and bounded and is qualified by labelled fault injection; the live case has not happened because the real candidate compiled on the first build.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -33,12 +37,15 @@ M004 is conditionally closed. Manual and optional OpenCode proposal paths, versi
 | Isolated compile/test and full frozen ACP suite | qualification implementation | pass | Separate target directory, focused ACP test, build, then paired suite; no accepted candidate was available to run through success. |
 | Immutable baseline and paired regression gates | qualification implementation | pass | Baseline manifests/index prefix are checked; candidate acceptance requires paired non-regression plus a primary correctness improvement. |
 | Bounded compile-correction retry and checkpointed attempt identity | `qualify_candidate`; retry transitions are covered by checkpoint resume test | pass | OpenCode-only retries rerun candidate build gates; a live correction attempt was not run. |
-| Full interrupted qualification resume and accepted candidate trace | M004 work package D | partial | Pre-evaluation candidate checkpoints resume after immutable-input checks. Partial candidate ledger rows fail closed and require a fresh candidate ID. No baseline correctness defect exists to support a legitimate accepted trace. |
+| Full interrupted qualification resume and accepted candidate trace | M004 work package D; `plans/closure/harness-lab-post-pilot-corrective/003-evidence.md` §5.4 and §5.5 | pass | A real `SIGKILL` to the qualifying process group after a persisted trial; the resume reused the prior row with no second request and no duplicate, the denominator stayed 13, and the accepted candidate's paired score is `accepted` with the objective `correctness_fix` and one improvement and zero regressions. |
+| A rejected candidate trace | `plans/closure/harness-lab-post-pilot-corrective/003-evidence.md` §5.7; receipt preserved at `plans/closure/harness-lab/evidence/rejected-candidate-20261022.json` | pass | A second, incomplete candidate passed all three build gates and was **rejected** on the score: `no_substantive_criterion_improved`, `correctness_improvements: []`, the defective case still unmatched. It was rejected for doing nothing, not for failing to build. |
 | Authenticated live OpenCode one-cycle pilot | optional manual pilot | not run | No provider call was requested or made. |
 
 ## 3. Production implementation evidence
 
 `dev/harness_lab/improve.py` provides checkpointed state transitions and budget checks, ManualProposer and an OpenCode CLI adapter pinned to 1.19.0, local candidate branch/worktree creation, patch hashing including untracked files, path/changelog validation, separate Cargo targets, focused build/test gates, bounded compile-correction retries with new attempt identities, full ACP evaluation, paired comparison, and final acceptance only on measured primary correctness improvement without regression. It never integrates the candidate into the default worktree or pushes a branch. Synthetic manual and out-of-scope rejection paths have receipts.
+
+The acceptance rule is the versioned score contract in `dev/harness_lab/scoring.py`, which now carries an explicit *substantive improvement* rule: only a criterion that declares `improvement_accepts` may carry an acceptance, and in the default contract that is the correctness criterion alone. A reliability or latency movement is measured and reported in the receipt's reasons, but it cannot *be* the acceptance. The contract's version moved from 1 to 2 when this rule was added, so a version-1 contract is refused rather than reinterpreted.
 
 ## 4. Verification executed
 
@@ -60,7 +67,7 @@ Python suite passed 12 tests, including bounded retry transition and checkpoint 
 
 ## 5. Invariant review
 
-Candidate worktrees must be linked, named, off main, and at the frozen baseline SHA. Candidate patches are scope-checked and hashed including untracked files. Baseline manifests and append-only index prefix must remain unchanged. Acceptance requires correctness improvement and paired non-regression; time/cost are not substituted for correctness because those metrics are unavailable. No automatic merge or push exists.
+Candidate worktrees must be linked, named, off main, and at the frozen baseline SHA. Candidate patches are scope-checked and hashed including untracked files. Baseline manifests and append-only index prefix must remain unchanged. Acceptance requires correctness improvement and paired non-regression; time/cost are not substituted for correctness because those metrics are unavailable. A candidate that improves nothing measurable, or that improves only an advisory criterion, is rejected rather than accepted on a millisecond-scale artifact. No automatic merge or push exists.
 
 ## 6. Failure and recovery review
 
@@ -82,13 +89,14 @@ The harness README documents proposer modes, candidate worktrees, gates, checkpo
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| medium | No end-to-end interrupted qualification resume across candidate trials | The controller resumes immutable candidates before scoring; once candidate rows exist it fails closed and requires a new candidate ID | Before treating the improvement loop as fully restart-qualified, run a controlled interruption and reconcile all partial trial identities without hiding attempts. |
-| medium | No accepted candidate trace or live compile-correction trace | OpenCode proposer and a legitimate accepted outcome lack live evidence | In a separately budgeted session, use an independently verified correctness fix, induce one compile correction, and preserve candidate/build/ACP receipts. |
+| medium | No **live** compile-correction trace | The OpenCode proposer and a legitimate accepted outcome have live evidence; the correction *loop* has only its labelled fault-injection evidence, because the real candidate compiled on the first build | In a separately budgeted session, induce one compile correction and preserve the candidate/build/ACP receipts for it. |
 | low | The installed OpenCode version was checked but no authenticated invocation was made | Version-pinned live behavior is supported only by fake executable tests | Keep OpenCode optional; run the plan's manual opt-in pilot before relying on it for autonomous proposals. |
+| low | The qualification path has no cumulative deadline across a resume | A resumed qualification restarts `--max-wallclock` per invocation; the resume is instead bound to the base revision, suite digest, patch digest and binary fingerprint | Carry the optimization checkpoint's `deadline_unix` into the qualification path if a long qualification must not outlive its original budget. |
+| low | The harness still has a load-dependent flake | A live tool trial can lose its ACP tool notifications under heavy load and end as `infrastructure_error`; it is treated as unmeasured and re-run, but the loss itself is unfixed | Drain the notification stream under load and make the trial's observation atomic. |
 
 ## 11. Roadmap disposition
 
-Milestone conditionally closed with named operational evidence outstanding. The hard M003 dependency is discharged. No later harness-lab milestone is registered, so no additional plan can be unblocked. M004 must not be represented as a fully qualified autonomous improvement loop until the medium findings are discharged with the specified receipts.
+Milestone conditionally closed with one named operational condition outstanding: the live compile-correction trace. The hard M003 dependency is discharged, and the accepted and rejected candidate traces the plan requires are both in evidence. No later harness-lab milestone is registered, so no additional plan can be unblocked. M004 must not be represented as a fully qualified autonomous improvement loop until the compile-correction condition is discharged with the specified receipts.
 
 ## 12. Registry updates
 

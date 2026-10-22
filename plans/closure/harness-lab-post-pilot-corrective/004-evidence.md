@@ -118,7 +118,11 @@ Ran 232 tests in 28.659s
 OK
 ```
 
-The suite was `Ran 72 tests ... OK` before this line of work.
+The suite was `Ran 72 tests ... OK` before this line of work. The count above
+is the one observed at this closure; the suite has since grown with the C003
+score-contract correction, so a re-run reports more tests. Nothing in C004's
+measurements depends on the score contract — it measures agent behaviour over
+the sustained scenario and does not score candidates.
 
 ## 5. Workspace guards
 

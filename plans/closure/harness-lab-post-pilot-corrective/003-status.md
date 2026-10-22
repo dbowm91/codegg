@@ -30,7 +30,7 @@ and no regression.
 
 The interesting part is not the acceptance: it is that **the harness did not
 work, and each failure was a harness defect rather than a candidate defect**.
-Four of them are fixed and covered by tests:
+Five of them are fixed and covered by tests:
 
 1. the paired comparison read raw terminals, so a candidate that reproduced a
    protected negative control correctly was reported as a regression for being
@@ -40,13 +40,31 @@ Four of them are fixed and covered by tests:
 3. the arm identity demanded one policy across a suite that deliberately mixes
    profiles, which made the frozen suite impossible to compare at all;
 4. an `infrastructure_error` — a *measurement* failure — was scored as a
-   candidate failure, so a measurement flake could decide the acceptance.
+   candidate failure, so a measurement flake could decide the acceptance;
+5. **the score contract put every comparable criterion in the improvement
+   set**, so an advisory latency delta could accept a candidate that had
+   changed no measured outcome — and a candidate that merely *relabelled* a
+   failure could bank a reliability improvement on a task it never completed.
 
 The fourth is the one that matters for the operator's direction. Scoring a
 harness flake as a subject failure is precisely what makes a harness
 unusable for the small, cheap models it exists to qualify: those routes are
 slower and noisier, so their trials flake more often, and every flake would
 read as a regression.
+
+The fifth was found by deliberately running a **second, incomplete candidate**
+through the same qualification path. Its patch bound the tool registry's
+workspace root but never bound the headless single-root workspace, so the
+task still failed — it failed as `assertion_failed` instead of
+`execution_failed`. Under the first contract that candidate was **accepted**,
+with `correctness_improvements: []`: it fixed nothing and won anyway. The
+contract now accepts only a substantive improvement, and a correctness
+improvement is the only thing that can carry an acceptance. That candidate is
+now **rejected** with the primary reason `no_substantive_criterion_improved`,
+and it is the rejected candidate trace M004 asks for. The accepted candidate's
+verdict is unchanged: it was re-scored from the same recorded trials under the
+corrected contract and is still **accepted** with the objective
+`correctness_fix`.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -58,7 +76,8 @@ read as a regression.
 | §5-B: pin the actual installed OpenCode CLI version and `run --auto --format json` semantics from the documented version | `SUPPORTED_OPENCODE_VERSION = "1.19.3"`; verified against the installed `opencode run --help` and a live `--version` read | **Met** (CLI surface); the JSON *event payload* shape still needs one authenticated invocation |
 | §5-B: one authenticated bounded proposal in a dedicated worktree and private config | OpenCode `1.19.3`, `opencode run --auto --format json --model opencode-go/muse-spark-1.3-contributor`, 296 events, 5 changed paths all inside the frozen allowlist, patch digest `3dba2210…` | **Met** |
 | §5-C: bounded real compile correction, separately counted and gated, with a compile/test re-run | `_build_with_compile_correction`; four labelled fault-injection tests | **Met** for the mechanic, **labelled** — not a real OpenCode-generated correction |
-| §5-C: a genuine source candidate: fmt/clippy/focused tests, isolated build, original failing verifier, protected regressions, holdout, paired complete score | gates `cargo fmt --all -- --check` → 0, `cargo test -p codegg --test acp_stdio` → 0, `cargo build --bin codegg --bin codegg-sandbox-helper` → 0; binary `c9f8f9ae…`; score **accepted**, objective `correctness_fix`, 13/13 pairs, one improvement, zero regressions, all four protected controls held | **Met** |
+| §5-C: a genuine source candidate: fmt/clippy/focused tests, isolated build, original failing verifier, protected regressions, holdout, paired complete score | gates `cargo fmt --all -- --check` → 0, `cargo test -p codegg --test acp_stdio` → 0, `cargo build --bin codegg --bin codegg-sandbox-helper` → 0; binary `c9f8f9ae…`; score **accepted**, objective `correctness_fix`, 13/13 pairs, one improvement, zero regressions, all four protected controls held; correctness `0.889 → 1.000`, reliability `0.917 → 1.000`, control `1.0 → 1.0` | **Met** |
+| §5-C: a candidate that does **not** remediate the defect is rejected, not narrated as an improvement | a second, incomplete candidate (patch `4ac4214c…`, binary `0debd8f6…`) was **accepted** under the first contract with `correctness_improvements: []` — it fixed nothing and won on an advisory latency delta; the contract was corrected to version 2 and the same candidate is now **rejected** with `no_substantive_criterion_improved` | **Met** — the defect was found by running it, and fixed |
 | §5-D: kill a supervised process after ≥1 persisted scored trial, resume with identical immutable inputs, prove prior row reused | real `SIGKILL` to the qualifying process group after 1 persisted trial (`full-host-write`); the resume reused run id `d230278f…` with `resumed: true`, no second request and no duplicate; denominator stayed 13; the immutable inputs and the binary fingerprint are refused if they change | **Met** |
 | §6: a missing OpenCode binary must leave manual proposer mode working | `run_opencode` raises `FileNotFoundError`; `manual_dry_run` is the manual path | **Met** |
 | §6: an unsupported version must yield a distinct failed/blocked receipt | The version refusal now names the expected and observed versions | **Met** |
@@ -139,16 +158,97 @@ The extraction preserved the original deadline semantics: the build and the
 proposer call each recompute the remaining wallclock at call time, so a retry
 cannot outlive the cumulative budget.
 
+### 3.3 The score contract correction — a candidate that fixed nothing was accepted
+
+The plan asks for a **rejected** candidate trace as well as an accepted one
+(M004 §12). To obtain it honestly, a second candidate was built: it binds the
+tool registry's workspace root but never binds the headless single-root
+workspace, so the defective case still fails — it fails as `assertion_failed`
+instead of `execution_failed`. It compiles, passes the focused test, and
+changes nothing that the suite measures as an improvement.
+
+Under the first contract that candidate was **accepted**:
+
+```
+status: ACCEPTED
+objective: reliability
+correctness_improvements: []
+evidence_pairs: 13
+reasons: ['reliability_criterion_improved', 'secondary_criterion_regressed']
+```
+
+That is the plan's forbidden "success by narration", and it has two parts.
+
+**First**, the contract's improvement set contained *every* comparable
+criterion, including the advisory latency one. A candidate whose only movement
+was a marginally faster median could therefore be accepted on its own. The
+contract now declares, per criterion, whether an improvement there may carry an
+acceptance (`Criterion.improvement_accepts`), and the default contract accepts
+on the correctness criterion alone. Acceptance is a **defect remediation**: a
+non-control task that failed at baseline now meets its expected terminal.
+
+**Second**, the reliability metric credited the candidate for *changing how a
+failure was labelled*. The defective case failed at baseline as
+`execution_failed` — an avoidable tool failure — and failed in the candidate as
+`assertion_failed`, which the metric does not count as avoidable. So a
+candidate that never completed the task banked a reliability improvement. Two
+changes fix that: the reliability rate's denominator now excludes every case
+whose declared `expected_terminal` is itself an avoidable failure (the
+`repeated-identical-read-error` control must fail, and a candidate that stopped
+it from failing must not buy an improvement with it), and the reliability
+criterion is reported but no longer carries an acceptance.
+
+The same recorded trials, re-scored under the corrected contract:
+
+| Arm | Decision | Objective | correctness.pass_rate | reliability.success_rate | control.no_regression |
+|---|---|---|---|---|---|
+| `c003-headless-binding` (the fix) | **accepted** | `correctness_fix` | `0.889 → 1.000` | `0.917 → 1.000` | `1.0 → 1.0` |
+| `c003-rejected-headless-binding` (the no-op) | **rejected** | `none` | `0.889 → 0.889` | `0.917 → 1.000` | `1.0 → 1.0` |
+
+The accepted candidate's verdict does not depend on the correction: it improved
+a correctness result, which is what carries an acceptance under either
+contract. The reliability figures move from `0.846 → 0.923` to
+`0.917 → 1.000` because the negative control's expected `execution_failed` is
+no longer counted as an avoidable failure of the candidate — the baseline
+denominator is 12 meaningful trials, not 13.
+
+The rejected candidate was re-run through the **real qualification path** — the
+same gates, the same paired comparison, the same receipt shape — with the
+recorded ACP trials reused verbatim (a ledger resume, not a re-measurement),
+because the measurement did not change; only the decision rule did:
+
+```
+status: REJECTED
+reason: no_substantive_criterion_improved
+reasons: ['no_substantive_criterion_improved', 'reliability_criterion_improved', 'secondary_criterion_regressed']
+objective: none
+correctness_improvements: []
+unmatched_trials: [('headless-exec-workspace-write', 0)]
+paired_comparison: denominator 13, improvements [], regressions []
+gates: fmt 0, acp_stdio 0, build 0
+next_gate: propose a candidate with a verified correctness improvement
+```
+
+All three build gates passed, so the candidate was rejected **on the score**,
+not on the build: it is a well-formed patch that does not do the task. That is
+the trace M004 §12 asks for — a rejected candidate that was rejected for the
+right reason.
+
+The contract's version moved from 1 to 2 for the same reason the ledger's
+schema version did: the decision semantics changed, so a version-1 contract is
+refused rather than reinterpreted as a version-2 contract with different
+rules.
+
 ## 4. Verification executed
 
 ```
 $ python3 -m unittest discover -s dev/harness_lab/tests
-Ran 117 tests in 4.544s
+Ran 243 tests in 14.902s
 
-OK
+OK (skipped=3)
 
 $ python3 -m unittest dev.harness_lab.tests.test_improve
-Ran 26 tests in 2.840s
+Ran 39 tests in 4.311s
 
 OK
 ```
@@ -162,6 +262,17 @@ New in this plan:
 | `test_a_non_opencode_proposer_never_retries` | A manual proposer gets one build attempt and no correction request. |
 | `test_a_correction_that_drops_the_changelog_is_refused` | A correction that removes the required changelog is refused. |
 | `test_an_unsupported_opencode_version_is_a_named_refusal` | The version refusal names the expected version, the observed version, and its nature. |
+
+New with the score-contract correction (§3.3):
+
+| Test | Assertion |
+|---|---|
+| `test_a_candidate_that_only_changed_the_duration_is_not_accepted` | A candidate whose only movement is a faster median is rejected with `no_substantive_criterion_improved`; the advisory movement is still reported. |
+| `test_a_reliability_only_improvement_is_rejected_but_still_reported` | A candidate that removed one avoidable tool failure but left the task failing is rejected, and the reliability movement is still reported. |
+| `test_a_negative_control_that_must_fail_is_not_a_reliability_failure` | The negative control's expected `execution_failed` sits outside the reliability metric; making the control stop failing does not move the rate. |
+| `test_an_advisory_only_improvement_is_rejected` | The contract rejects an advisory-only improvement with `no_substantive_criterion_improved` and reports `objective` as `none`. |
+| `test_a_predeclared_latency_campaign_can_still_accept` | A contract that sets `improvement_accepts` on the latency criterion still accepts a latency campaign. |
+| `test_the_previous_contract_version_is_refused_not_reinterpreted` | A version-1 contract is refused rather than read as a version-2 contract with different decision semantics. |
 
 See `plans/closure/harness-lab-post-pilot-corrective/003-evidence.md`.
 
@@ -198,6 +309,14 @@ them directly.
    `infrastructure_error`. That is now an *unmeasured* trial that is re-run
    rather than scored, which is the right treatment, but the flake itself is
    a harness defect that is not yet fixed.
+6. **The contract predeclares an accepting criterion, not a numeric
+   threshold.** C002 §37 asks a reliability or efficiency objective to clear a
+   *predeclared threshold* under a stated uncertainty rule. The corrected
+   contract implements the predeclared **criterion** (`improvement_accepts`)
+   but not a numeric threshold or a confidence bound, so a contract that opts
+   into a reliability campaign still accepts on any movement of that
+   criterion. The default contract is unaffected: it accepts only a
+   correctness improvement, which is discrete by construction.
 
 ## 6. Planning audit
 
@@ -215,9 +334,17 @@ them directly.
   trial with the hard step budget instead of asserting a terminal stall that
   ADR-0040 Option B deliberately removed — and the declared
   `expected_terminal` was left untouched.
-- The four harness defects the live run exposed are fixed and covered by
+- The five harness defects the live run exposed are fixed and covered by
   tests; they are recorded in `003-evidence.md` §5.6 rather than quietly
   absorbed.
+- **The score contract was corrected rather than quietly kept.** The live run
+  exposed that a candidate which fixed nothing could be accepted; the
+  contract's version moved from 1 to 2, the accepted candidate's verdict was
+  re-verified from the same recorded trials under the corrected contract, and
+  the second candidate was built specifically to obtain the rejected trace
+  M004 asks for. No rule was chosen to make a candidate fail: the rule is the
+  plan's own acceptance rule — a candidate is accepted for a verified
+  correctness improvement — and the same rule accepts the real fix.
 - The harness-lab Python suite remains wired into `scripts/verify.sh quick`
   and the CI workflow, and `scripts/verify.sh quick` passes on this branch.
 
@@ -229,9 +356,12 @@ them directly.
   paired score. What M004 additionally asks for — a live candidate
   qualification whose **interrupted** attempt is resumed to completion
   without duplicate receipts — C003 also produced, on the same candidate arm.
-  M004 is therefore ready to close on a registry pass that names C003's
-  receipt; it is not closed here because this closure does not edit M004's
-  own record.
+  Its other requirement, an **accepted and a rejected candidate trace**, is now
+  met on both sides: the accepted trace is C003's real fix, and the rejected
+  trace is the incomplete second candidate, rejected on the score with all
+  build gates green (§3.3). M004 is therefore ready to close on a registry
+  pass that names C003's receipt; it is not closed here because this closure
+  does not edit M004's own record.
 - **C004** is **unblocked** by C003's accepted-defect receipt. Its live half
   has now run: Task 2 was solved on one route and a 24-trial, 34.9-minute
   sustained scenario completed inside its admitted caps. C004 stays
