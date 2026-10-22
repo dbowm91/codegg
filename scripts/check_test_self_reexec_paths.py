@@ -51,6 +51,11 @@ requires every `--exact` argument to be the full path of a test function
 including a name that exists in a *different* file, which is the copy-paste
 trap.
 
+The scope is every integration-test source in the repository: the root
+package's `tests/` tree (families and standalone targets alike) and each
+workspace crate's `tests/*.rs`, which are standalone targets because those
+packages have no families.
+
 The scan is Rust-aware: it uses `scripts/rust_test_scan.py`, which knows about
 raw strings, byte strings, character literals and comments. A regex scan would
 misread a lifetime as a character literal and miss the very literals it is
@@ -182,6 +187,23 @@ def _test_files(root: Path) -> list[TestFile]:
                 prefix="",
                 target=path.stem,
             )
+    # The workspace crates carry their own integration tests. Those packages
+    # have no families, so each of their `tests/*.rs` files is a standalone
+    # target whose test paths carry no module prefix.
+    for crate_dir in sorted((root / "crates").glob("*/tests")):
+        if not crate_dir.is_dir():
+            continue
+        for path in sorted(crate_dir.glob("*.rs")):
+            resolved = path.resolve()
+            if resolved in files:
+                continue
+            files[resolved] = TestFile(
+                path=resolved,
+                rel=resolved.relative_to(root).as_posix(),
+                kind="standalone",
+                prefix="",
+                target=path.stem,
+            )
     return sorted(files.values(), key=lambda item: item.rel)
 
 
@@ -260,6 +282,12 @@ def _copy_tree(root: Path, destination: Path) -> Path:
     """Copy the parts of the tree the guard reads into a scratch directory."""
     shutil.copy2(root / "Cargo.toml", destination / "Cargo.toml")
     shutil.copytree(root / "tests", destination / "tests")
+    for crate_dir in sorted((root / "crates").glob("*/tests")):
+        if not crate_dir.is_dir():
+            continue
+        target = destination / "crates" / crate_dir.parent.name / "tests"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(crate_dir, target)
     return destination
 
 
