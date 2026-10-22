@@ -620,9 +620,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn artifact_read_round_trip_returns_bounded_excerpt() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -732,9 +730,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn artifact_read_stale_handle_sends_no_read() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -811,9 +807,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn detach_leaves_daemon_session_intact_for_reattach() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             // First attach: fresh subscribe.
@@ -895,9 +889,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn socket_death_renders_disconnected_without_route_teardown() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -954,9 +946,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn start_attaches_and_current_returns_view() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1009,9 +999,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn start_rejects_non_selected_session_without_network() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1047,9 +1035,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn stale_start_releases_fresh_subscription() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1135,9 +1121,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn watcher_coalesces_rapid_diagnostics_to_latest() {
-        use codegg_protocol::core::CoreEvent;
+            use codegg_protocol::core::CoreEvent;
         use codegg_protocol::core::EventEnvelope;
         use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};
         use std::sync::Mutex;
@@ -1281,9 +1265,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn watcher_pushes_latest_only_views_and_joins_on_stop() {
-        use codegg_protocol::core::CoreEvent;
+            use codegg_protocol::core::CoreEvent;
         use codegg_protocol::core::EventEnvelope;
         use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};
         use std::sync::Mutex;
@@ -1409,9 +1391,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn disconnect_stops_owner_retains_cursor_and_releases() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             let mut daemon = FakeDaemon::accept(&listener).await;
             let (id, _) = daemon.next_request().await;
@@ -1457,9 +1437,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn reconnect_resumes_cursor_with_fresh_subscription() {
-        let (endpoint, listener) = short_endpoint();
+            let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
             // First connection: full attach on sub-A.
             let mut daemon = FakeDaemon::accept(&listener).await;

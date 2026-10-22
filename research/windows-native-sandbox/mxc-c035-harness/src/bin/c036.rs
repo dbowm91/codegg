@@ -779,9 +779,7 @@ fn run() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pinned_v1_output_metadata_contract_deserializes() {
-        let metadata: mxc_sdk::v1::ExecutionMetadata = serde_json::from_value(json!({
+            let metadata: mxc_sdk::v1::ExecutionMetadata = serde_json::from_value(json!({
             "captureDenials":{"type":"captureDenials","outputPath":"C:/owned/denials.123_0123456789abcdef0123456789abcdef.json","exitCode":0,"totalDenials":1,"deniedResourcesTruncated":false}
         })).expect("pinned v1 metadata shape");
         let output = metadata.capture_denials.expect("capture output");
@@ -796,9 +794,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn stamped_name_rejects_literal_stale_and_malformed_names() {
-        assert!(stamped_capture_name(
+            assert!(stamped_capture_name(
             "denials.123_0123456789abcdef0123456789abcdef.json"
         ));
         assert!(!stamped_capture_name("denials.json"));
@@ -812,26 +808,20 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn document_schema_requires_bounded_denials_and_consistent_summary() {
-        let valid = br#"{"denials":[],"summary":{"exitCode":0,"totalDenials":0,"deniedResourcesTruncated":false}}"#;
+            let valid = br#"{"denials":[],"summary":{"exitCode":0,"totalDenials":0,"deniedResourcesTruncated":false}}"#;
         assert!(parse_capture_document(valid).is_some());
         let mismatch = br#"{"denials":[],"summary":{"exitCode":0,"totalDenials":1,"deniedResourcesTruncated":false}}"#;
         assert!(parse_capture_document(mismatch).is_none());
         assert!(parse_capture_document(br#"{"denials":[],"summary":{}}"#).is_none());
     }
 
-    #[test]
-    fn child_entry_and_path_denial_without_a_correlated_event_is_not_a_denial_claim() {
-        assert!(!denial_claim_valid(false, false, false));
+            assert!(!denial_claim_valid(false, false, false));
         assert!(!denial_claim_valid(true, false, false));
         assert!(!denial_claim_valid(true, true, false));
         assert!(denial_claim_valid(true, true, true));
     }
 
-    #[test]
-    fn metadata_path_cannot_escape_owned_capture_directory() {
-        let root = std::env::temp_dir().join(format!("c036-path-test-{}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("c036-path-test-{}", std::process::id()));
         let outside = root.with_extension("outside.json");
         let _ = fs::create_dir_all(&root);
         let _ = fs::write(&outside, b"{}");
@@ -840,9 +830,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn stale_stamped_document_is_rejected_even_when_well_formed() {
-        let root = std::env::temp_dir().join(format!("c036-stale-test-{}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("c036-stale-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let name = format!(

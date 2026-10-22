@@ -519,7 +519,7 @@ for the whole remote lifetime. On restart a persisted handle is
 observed/reconciled, never resubmitted: terminal snapshots map to
 completions, still-live executions are cancelled and reported
 interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
-Live mTLS qualification: `tests/eggwork_remote_execution_live.rs`
+Live mTLS qualification: `tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc`
 (Linux).
 
 #### Typed remote outcomes and the bounded wait (M003, worker telemetry and targeting)
@@ -836,30 +836,30 @@ comprehensive runtime test suite:
 ### Runtime proof
 
 - **Resource admission**: permits are conserved across admit/drop
-  (`tests/scheduler_permit_lifecycle.rs`)
+  (`tests/scheduler_jobs/scheduler_permit_lifecycle.inc`)
 - **Submission atomicity + idempotency**: one submission key produces
   one job; duplicate keys coalesce
-  (`tests/scheduler_submission_idempotency.rs`)
+  (`tests/scheduler_jobs/scheduler_submission_idempotency.inc`)
 - **Authority matrix**: one job produces one attempt and one executor
-  entry (`tests/scheduler_authority_matrix.rs`)
+  entry (`tests/scheduler_jobs/scheduler_authority_matrix.inc`)
 - **Cancellation chain**: cancel signals propagate through process
   trees, terminal states are never overwritten
-  (`tests/scheduler_cancellation.rs`)
+  (`tests/scheduler_cancellation/scheduler_cancellation.inc`)
 - **Restart recovery**: fault injection at each durability boundary,
   stale attempts are interrupted, eligible jobs are requeued
-  (`tests/scheduler_restart_recovery.rs`)
+  (`tests/scheduler_jobs/scheduler_restart_recovery.inc`)
 - **Multi-workspace contention**: fairness, exclusivity keys,
-  starvation prevention (`tests/scheduler_contention.rs`)
+  starvation prevention (`tests/scheduler_jobs/scheduler_contention.inc`)
 - **Process-tree isolation**: SIGTERM → SIGKILL escalation,
-  descendant cleanup (`tests/managed_process_descendants.rs`)
+  descendant cleanup (`tests/scheduler_jobs/managed_process_descendants.inc`)
 - **Resource profiles**: budget audit for all job kinds
-  (`tests/scheduler_resource_profiles.rs`)
+  (`tests/scheduler_jobs/scheduler_resource_profiles.inc`)
 - **Protocol consistency**: snapshot, JobWait, JobList, error taxonomy
-  (`tests/scheduler_protocol_consistency.rs`)
+  (`tests/scheduler_jobs/scheduler_protocol_consistency.inc`)
 - **Existing coverage**: unit behaviour, two-workspace fairness,
   disabled-scheduler behaviour, managed-process timeout, bounded output,
-  durable recovery (`tests/scheduler_phase5.rs`,
-  `tests/durable_jobs_phase4.rs`)
+  durable recovery (`tests/scheduler_jobs/scheduler_phase5.inc`,
+  `tests/scheduler_jobs/durable_jobs_phase4.inc`)
 
 ### Startup recovery
 
@@ -883,15 +883,15 @@ durable state before admitting new work.
 | Invariant | Enforcement |
 |-----------|-------------|
 | Heavy work routes through `JobSubmissionService` | `check_execution_ownership.py` + `check_scheduler_bypass.py` |
-| One job → one attempt → one executor entry | `tests/scheduler_authority_matrix.rs` |
-| Permit conservation across admit/drop | `tests/scheduler_permit_lifecycle.rs` |
-| Terminal states never regress | `tests/scheduler_cancellation.rs` + `tests/scheduler_restart_recovery.rs` |
-| Cancellation kills process trees | `tests/managed_process_descendants.rs` |
-| Submission idempotency within daemon generation | `tests/scheduler_submission_idempotency.rs` |
-| Multi-workspace fairness and starvation prevention | `tests/scheduler_contention.rs` |
-| Resource budgets match declared profiles | `tests/scheduler_resource_profiles.rs` |
-| Protocol snapshots consistent with queue state | `tests/scheduler_protocol_consistency.rs` |
-| Stale attempts interrupted on restart | `tests/scheduler_restart_recovery.rs` |
+| One job → one attempt → one executor entry | `tests/scheduler_jobs/scheduler_authority_matrix.inc` |
+| Permit conservation across admit/drop | `tests/scheduler_jobs/scheduler_permit_lifecycle.inc` |
+| Terminal states never regress | `tests/scheduler_cancellation/scheduler_cancellation.inc` + `tests/scheduler_jobs/scheduler_restart_recovery.inc` |
+| Cancellation kills process trees | `tests/scheduler_jobs/managed_process_descendants.inc` |
+| Submission idempotency within daemon generation | `tests/scheduler_jobs/scheduler_submission_idempotency.inc` |
+| Multi-workspace fairness and starvation prevention | `tests/scheduler_jobs/scheduler_contention.inc` |
+| Resource budgets match declared profiles | `tests/scheduler_jobs/scheduler_resource_profiles.inc` |
+| Protocol snapshots consistent with queue state | `tests/scheduler_jobs/scheduler_protocol_consistency.inc` |
+| Stale attempts interrupted on restart | `tests/scheduler_jobs/scheduler_restart_recovery.inc` |
 | All process-spawn sites classified | `docs/execution-ownership.toml` |
 
 ### Narrowest run commands

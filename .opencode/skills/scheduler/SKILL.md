@@ -47,7 +47,7 @@ Load this skill when working on:
 | `src/scheduler/scheduler.rs` | `JobScheduler`, main loop, `wake`, `reconcile`, `admit_and_dispatch_batch` |
 | `src/scheduler/tool_program_executor.rs` | `ToolProgramExecutor`, `BrokerAdapter`, `ProgramCallCache` |
 | `src/scheduler/tool_program_notifications.rs` | `ToolProgramNotificationService`, projection events |
-| `tests/scheduler_phase5.rs` | integration tests (two-workspace fairness, admission budget, exclusivity keys, executor wiring) |
+| `tests/scheduler_jobs/scheduler_phase5.inc` | integration tests (two-workspace fairness, admission budget, exclusivity keys, executor wiring) |
 | `scripts/check_scheduler_bypass.py` | static lint guarding direct TestRunner, subagent, and legacy background dispatch bypasses |
 
 ## Quick Reference
@@ -203,15 +203,15 @@ staged labels that also do not restore bypass.
   version. Both now agree that the `stale` parameter is the *new*
   generation and attempts whose stored generation differs are interrupted.
 - **New integration tests** (closure pass):
-  - `tests/scheduler_submission_idempotency.rs` (11 tests)
-  - `tests/scheduler_permit_lifecycle.rs` (19 tests)
-  - `tests/scheduler_cancellation.rs` (10 tests)
-  - `tests/scheduler_restart_recovery.rs` (15 tests)
-  - `tests/scheduler_contention.rs` (14 tests)
-  - `tests/scheduler_authority_matrix.rs` (13 tests)
-  - `tests/managed_process_descendants.rs` (5 tests)
-  - `tests/scheduler_resource_profiles.rs` (8 tests)
-  - `tests/scheduler_protocol_consistency.rs` (13 tests)
+  - `tests/scheduler_jobs/scheduler_submission_idempotency.inc` (11 tests)
+  - `tests/scheduler_jobs/scheduler_permit_lifecycle.inc` (19 tests)
+  - `tests/scheduler_cancellation/scheduler_cancellation.inc` (10 tests)
+  - `tests/scheduler_jobs/scheduler_restart_recovery.inc` (15 tests)
+  - `tests/scheduler_jobs/scheduler_contention.inc` (14 tests)
+  - `tests/scheduler_jobs/scheduler_authority_matrix.inc` (13 tests)
+  - `tests/scheduler_jobs/managed_process_descendants.inc` (5 tests)
+  - `tests/scheduler_jobs/scheduler_resource_profiles.inc` (8 tests)
+  - `tests/scheduler_jobs/scheduler_protocol_consistency.inc` (13 tests)
 - **Static guard changes**:
   - `check_scheduler_bypass.py` now supports inline
     `// scheduler-audit: <reason>` annotations and has removed the

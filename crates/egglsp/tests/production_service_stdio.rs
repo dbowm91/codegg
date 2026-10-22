@@ -14,9 +14,10 @@ use tokio::sync::Barrier;
 use tokio::time::sleep;
 use url::Url;
 
-mod common;
+#[path = "common/harness.rs"]
+mod harness;
 
-use common::FakeLspHarness;
+use harness::FakeLspHarness;
 
 const INITIAL_SOURCE_TEXT: &str = "pub fn harness_marker() {}\n";
 const UPDATED_SOURCE_TEXT: &str = "pub fn harness_marker() { let _x = 1; }\n";

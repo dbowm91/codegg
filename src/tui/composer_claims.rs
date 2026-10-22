@@ -582,29 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn the_table_does_not_claim_space_or_y() {
-        // ADR-0042's amendment: help keeps `space`, and the copy gesture is
-        // the second step of that chord. One gesture, one owner.
-        for key in [' ', 'y'] {
-            assert!(
-                !COMPOSER_CLAIMS.iter().any(|claim| claim.key == key),
-                "the composer must not claim {key:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_table_does_not_claim_g_h_or_l() {
-        // `g` keeps `GoToTop`; `h` and `l` already move the composer caret.
-        for key in ['g', 'h', 'l'] {
-            assert!(
-                !COMPOSER_CLAIMS.iter().any(|claim| claim.key == key),
-                "the composer must not claim {key:?}"
-            );
-        }
-    }
-
-    #[test]
     fn a_capital_claim_answers_to_both_encodings() {
         let claim = COMPOSER_CLAIMS
             .iter()

@@ -288,7 +288,7 @@ permission/question routes are now session-scoped and use
 `"tool:delta"` → `"tool_call:started"` and noted `ReasoningDelta.delta`
 stays `String`. Removed the Testing command `cargo test --test server`,
 which targets a nonexistent binary: the permission/question HTTP routes
-are covered by `tests/team_collaboration_m001_http_auth.rs` (gated on
+are covered by `tests/server_feature/team_collaboration_m001_http_auth.inc` (gated on
 the `server` feature), and there is no `tests/server.rs`. All other refs
 (broadcast 4096, TTL 310 s, throttle 30 s, registry/mod.rs line numbers,
 the 300 s agent-loop wait in `src/permission/approval.rs:297` and

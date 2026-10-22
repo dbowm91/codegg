@@ -567,7 +567,7 @@ Production turn/session construction (`build_session_tool_registry`,
 registries narrow it via `resolve_child_sandbox()`. Workspace cwd
 validation alone is not OS containment. Guard:
 `scripts/check_sandbox_policy_wiring.py`; integration:
-`tests/sandbox_policy_wiring.rs`.
+`tests/security_permission/sandbox_policy_wiring.inc`.
 
 **Workspace root vs. child worktree ceiling:** `BashTool` keeps two
 independent roots. `workspace_root` is the ordinary session workspace —
@@ -838,7 +838,7 @@ cargo test --test tool_structured_execution              # execute_capture contr
 cargo test --test agent_loop_harness::test_live_dispatcher  # dispatcher integration
 ```
 
-M008 qualification (`tests/reliability_qualification_m008.rs`) proves
+M008 qualification (`tests/agent_loop/reliability_qualification_m008.inc`) proves
 idempotent recovery with stable keys, exactly-once uncertain surfacing for
 non-idempotent ack loss (secret-safe diagnostics), fake-mutation-backend
 reconciliation without replay, and cancellation during backoff.

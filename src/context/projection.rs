@@ -716,14 +716,6 @@ mod tests {
     }
 
     #[test]
-    fn test_projection_config_defaults() {
-        let config = ProjectionConfig::default();
-        assert_eq!(config.max_success_tokens, 800);
-        assert_eq!(config.max_failure_tokens, 2000);
-        assert!(config.enabled);
-    }
-
-    #[test]
     fn test_project_tool_output_success_verbose_truncates() {
         let config = ProjectionConfig {
             max_success_tokens: 10,

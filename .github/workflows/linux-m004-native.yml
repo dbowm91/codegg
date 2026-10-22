@@ -35,8 +35,8 @@ on:
       - 'crates/egglsp/src/service.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
-      - 'tests/linux_m004_process_ipc.rs'
-      - 'tests/interactive_process_attach_resume.rs'
+      - 'tests/linux_git_test_support/linux_m004_process_ipc.inc'
+      - 'tests/interactive_process_attach_resume/interactive_process_attach_resume.inc'
       # C007 publisher surface: the private-index staging, the durable
       # journal, the compare-and-swap publication, and the startup
       # reconciler. A change to any of these must be able to trigger this
@@ -48,7 +48,7 @@ on:
       - 'src/tool/factory.rs'
       - 'src/tool/git.rs'
       - 'src/tool/commit.rs'
-      - 'tests/git_index_publication.rs'
+      - 'tests/command_git/git_index_publication.inc'
   push:
     paths:
       - '.github/workflows/linux-m004-native.yml'
@@ -82,8 +82,8 @@ on:
       - 'crates/egglsp/src/service.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
-      - 'tests/linux_m004_process_ipc.rs'
-      - 'tests/interactive_process_attach_resume.rs'
+      - 'tests/linux_git_test_support/linux_m004_process_ipc.inc'
+      - 'tests/interactive_process_attach_resume/interactive_process_attach_resume.inc'
       # C007 publisher surface: the private-index staging, the durable
       # journal, the compare-and-swap publication, and the startup
       # reconciler. A change to any of these must be able to trigger this
@@ -95,7 +95,7 @@ on:
       - 'src/tool/factory.rs'
       - 'src/tool/git.rs'
       - 'src/tool/commit.rs'
-      - 'tests/git_index_publication.rs'
+      - 'tests/command_git/git_index_publication.inc'
 
 permissions:
   contents: read
@@ -166,10 +166,10 @@ jobs:
         # must not be able to hide this result, and a hang here must fail
         # this step rather than cancel the whole job.
         timeout-minutes: 10
-        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1
+        run: cargo test --locked --test linux_git_test_support --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1
 
       - name: M004 managed-process host PID and IPC denial probes
-        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support -- --nocapture
+        run: cargo test --locked --test linux_git_test_support --features linux-git-test-support -- --nocapture
 
       - name: M004 constrained PTY live-owner qualification
         run: cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture
@@ -220,7 +220,7 @@ jobs:
         run: cargo build --locked --bin codegg-sandbox-helper
 
       - name: Required M004 launch refuses before target under host userns policy
-        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
+        run: cargo test --locked --test linux_git_test_support --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
 
       - name: Constrained PTY route refuses before target under host userns policy
         run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture
@@ -265,7 +265,7 @@ jobs:
       - name: Measure packed and fragmented cold/warm Git reads
         run: |
           CODEGG_GIT_COST_FILESYSTEM="$(stat -f -c %T "$GITHUB_WORKSPACE")" \
-            cargo test --locked --test linux_git_c002_performance --features linux-git-test-support -- --nocapture
+            cargo test --locked --test linux_git_test_support --features linux-git-test-support -- --nocapture
 
       - name: Upload C002 performance report
         if: always()

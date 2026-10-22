@@ -288,7 +288,7 @@ cargo test -p codegg --lib -- tui::app::state::work_orders
 cargo test -p codegg --lib -- tui::components::dialogs::task
 ```
 
-Integration (`tests/work_orders_m001_foundation.rs`): daemon-level
+Integration (`tests/core_daemon/work_orders_m001_foundation.inc`): daemon-level
 create/list/get/update/cancel, project-filtered pagination, concurrent
 reorder writers, duplicate submission keys, file-backed reopen,
 migration from a pre-M001 database, and authorization/privacy
@@ -574,7 +574,7 @@ cargo test -p codegg --lib -- tool::work_order
 cargo test --test work_orders_m006_agent_tool
 ```
 
-Integration (`tests/work_orders_m006_agent_tool.rs`): factory separation,
+Integration (`tests/core_daemon/work_orders_m006_agent_tool.inc`): factory separation,
 single lineage, session-model default, ordered batch + lane + gate
 shape, coordinator first-only release, abort/no-partial, lane-conflict
 abort, exact bounds, invocation retry/conflict/distinct, ceiling and
@@ -584,7 +584,7 @@ chain, plan-file queue trajectory, bounded list/get.
 ## End-to-end trajectory, recovery, and contention qualification (M007)
 
 Harness-only closure milestone: no production delta, no migration, no
-protocol change. `tests/work_orders_m007_trajectory.rs` (14 tests)
+protocol change. `tests/core_daemon/work_orders_m007_trajectory.inc` (14 tests)
 composes the landed M001-M006 substrate and proves the qualification
 matrix from
 `plans/implementation/project-work-orders-task-view/007-work-order-trajectory-and-recovery-qualification.md`:

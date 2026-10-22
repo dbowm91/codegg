@@ -380,7 +380,7 @@ projection interpretation. Two independent consumers are exercised by the
 test corpus:
 
 1. In-crate reducer tests in `projection::reducer::tests`.
-2. Root integration test `tests/headless_projection_consumer.rs` drives
+2. Root integration test `tests/core_daemon/headless_projection_consumer.inc` drives
    `HeadlessProjectionConsumer` with typed capability, subscribe, replay,
    resume, terminal-state, and artifact responses.
 

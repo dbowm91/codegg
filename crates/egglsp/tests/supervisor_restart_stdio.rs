@@ -42,9 +42,10 @@ use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
-mod common;
+#[path = "common/harness.rs"]
+mod harness;
 
-use common::FakeLspHarness;
+use harness::FakeLspHarness;
 
 const SOURCE_TEXT: &str = "pub fn harness_marker() {}\n";
 const UPDATED_SOURCE_TEXT: &str = "pub fn harness_marker() { let _x = 1; }\n";

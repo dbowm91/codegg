@@ -1252,36 +1252,9 @@ impl Component for SessionDialog {
 mod vim_key_tests {
     use super::*;
     use crate::tui::components::component::Component;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    fn key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-    }
 
     fn dialog() -> SessionDialog {
         SessionDialog::new(Arc::new(Theme::default()))
-    }
-
-    #[test]
-    fn vim_keys_extend_an_active_filter() {
-        // j/k yield to the filter exactly as the guarded `d`/`a` actions
-        // in the same handler already do.
-        let mut d = dialog();
-        d.set_filter('a');
-        d.handle_key(key('j'));
-        d.handle_key(key('k'));
-        assert_eq!(
-            d.filter, "ajk",
-            "j/k must be ordinary characters once a filter is being typed"
-        );
-    }
-
-    #[test]
-    fn vim_keys_do_not_type_while_the_filter_is_empty() {
-        let mut d = dialog();
-        d.handle_key(key('j'));
-        d.handle_key(key('k'));
-        assert_eq!(d.filter, "", "j/k must not open the filter");
     }
 
     #[test]

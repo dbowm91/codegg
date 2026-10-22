@@ -1,0 +1,648 @@
+# Test assertion quality manifest
+#
+# This manifest is the machine-readable record of the triage that milestone
+# M006 performed over the repository's test suite, and the input to
+# `scripts/check_test_assertion_quality.py`.
+#
+# The guard's job is to keep the property true as the suite changes. It
+# does that by *failing* on anything it does not recognise, which is why
+# this file is an explicit enumeration rather than a heuristic.
+#
+# A test body that reaches a skip marker and returns before any assertion
+# reports *passed* having done nothing: the runner cannot see a runtime
+# skip. A test body with no panic-capable construct at all asserts
+# nothing, and can never fail. Both shapes are invisible to a reader and
+# overstate what the suite proves.
+#
+# ---------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------
+#
+# schema-version = 1
+#     The manifest's schema version. A consumer MUST refuse a version it
+#     does not understand rather than guess.
+#
+# repository-writer-opt-in
+#     The environment variable that opts a repository-writing generator
+#     into rewriting a checked-in asset. An `#[ignore]`d test that writes
+#     inside the repository tree MUST check this variable before the
+#     write; a routine `cargo test -- --ignored` cannot satisfy it.
+#
+# [[no-assertion-exceptions]]
+#     One entry per test body the guard reports as having no
+#     panic-capable construct. Every entry MUST name either a `helper`
+#     or a `construct`. An entry that names neither is a failure, not an
+#     exemption: "this test is fine" is not a reason.
+#
+#   file / line / name
+#     The site. `line` is the line of the `fn` keyword.
+#
+#   category
+#     named-helper          — the body delegates to a named helper that
+#                             carries the assertion. The helper is named
+#                             in `helper`.
+#     compile-time-construct — the property under test is checked by the
+#                             compiler, not at run time: a trait bound, a
+#                             type's existence, a variant's existence. The
+#                             construct is named in `construct`.
+#     no-panic-property    — the property under test is that a named
+#                             production call does not panic on a given
+#                             input. The call is named in `helper`.
+#
+# [[skip-exceptions]]
+#     One entry per test body that reaches a skip marker and returns
+#     before any assertion. Every entry MUST name a `satisfied-by`.
+#
+#   class
+#     opt-in-gated      — an environment variable a qualification
+#                         workflow sets. `condition` names the variable.
+#     environment-absent — a tool, a kernel feature, or a helper process
+#                         that this machine may not have. `condition`
+#                         names what is absent.
+#
+#   satisfied-by
+#     The workflow, script, or feature that satisfies the condition, or
+#     the explicit statement that nothing in this repository satisfies
+#     it automatically. "Manual probe" is an acceptable value; silence
+#     is not.
+#
+# ---------------------------------------------------------------------
+# Measured baseline
+# ---------------------------------------------------------------------
+#
+# Measured on the implementation baseline with `scripts/rust_test_scan.py`
+# (the shared Rust-aware scanner):
+#
+#   test functions                    16,004
+#   no-assertion bodies                  141
+#   resolved by a local helper          118  (resolved transitively
+#                                               through the file's own
+#                                               call graph)
+#   listed below                         23
+#   skip-before-assertion bodies          33
+#   listed below                         33
+#
+# The 118 resolved bodies need no entry: the guard finds the helper in
+# the same file, follows the call graph, and names the helper it found.
+# A body that stops delegating to an asserting helper becomes a hit and
+# must be triaged again.
+#
+# Post-M007 recount (the tree this manifest is enforced on):
+#
+#   test functions                    15,919  (16,004 - 84 duplicate
+#                                               removals + 1 relocated
+#                                               self-test - 1 removed
+#                                               stale exception site)
+#
+#   no-assertion exceptions listed        23  (22 + the relocated
+#                                               `secret_scan` self-test,
+#                                               whose helper no longer
+#                                               lives in its own file)
+#   skip-before-assertion bodies          33
+#
+# The removals are M007's; the two count changes M007 made to this
+# manifest's own entries are recorded in the M007 closure record.
+
+schema-version = 1
+
+repository-writer-opt-in = "CODEGG_REGENERATE_ASSETS"
+
+# ---------------------------------------------------------------------
+# no-assertion exceptions
+# ---------------------------------------------------------------------
+
+[[no-assertion-exceptions]]
+file = "tests/command_git/secret_scan_self_tests.inc"
+line = 33
+name = "assert_no_credentials_passes_when_clean"
+category = "named-helper"
+helper = "assert_no_credentials_in"
+detail = """
+The body delegates to `assert_no_credentials_in`, which asserts that none of
+the supplied surfaces carries the sentinel. The helper lives in
+`tests/common/secret_scan.rs` — it moved out of this file in M007 work
+package D, when the five `secret_scan` self-tests were relocated from the
+shared helper into the one family that uses it, so the guard can no longer
+resolve the delegation through this file's own call graph.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/codegg-core/src/identity.rs"
+line = 467
+name = "every_identity_round_trips_as_a_string"
+category = "named-helper"
+helper = "identity_round_trip_tests!"
+detail = """
+The body is a macro invocation. `identity_round_trip_tests!` expands to one
+`assert_eq!` per identity type, so the assertion lives one expansion away
+rather than in the body.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/codegg-core/src/project_catalog.rs"
+line = 2370
+name = "catalog_error_is_send_sync_static"
+category = "compile-time-construct"
+construct = "CatalogError: Send + Sync + 'static"
+detail = """
+A local `fn _assert<T: Send + Sync + 'static>()` is instantiated with
+`CatalogError`. The property is checked by the compiler; the test fails to
+compile if the bound is ever dropped.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/codegg-core/src/work_plan/checkpoint.rs"
+line = 446
+name = "unused_new_types_stay_importable"
+category = "compile-time-construct"
+construct = "NewWorkPlan and NewWorkItem struct literals"
+detail = """
+The property is that the two types stay constructible with their public
+fields. A struct literal is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/codegg-protocol/src/tui.rs"
+line = 558
+name = "panel_spec_supports_used_in_envelope"
+category = "compile-time-construct"
+construct = "PanelSpec and StatusItemSpec struct literals"
+detail = """
+The property is that both spec types stay constructible. A struct literal
+is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/egglsp/src/edit.rs"
+line = 780
+name = "workspace_edit_preview_type_is_reexported"
+category = "compile-time-construct"
+construct = "std::any::type_name::<WorkspaceEditPreview/FileEditPreview/TextEditPreview>"
+detail = """
+The property is that the three preview types stay reachable through the
+crate root. `type_name` is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/eggsentry/src/command.rs"
+line = 1099
+name = "all_static_regexes_compile"
+category = "compile-time-construct"
+construct = "LazyLock::force(&super::CRITICAL_RM_RE) and its sibling patterns"
+detail = """
+`LazyLock::force` initialises the pattern, and an invalid pattern panics.
+The property is that every static regex compiles, and the panic is the
+assertion.
+"""
+
+[[no-assertion-exceptions]]
+file = "crates/eggsentry/src/scanner.rs"
+line = 859
+name = "all_static_regexes_compile"
+category = "compile-time-construct"
+construct = "LazyLock::force(&super::AWS_KEY_RE) and its sibling patterns"
+detail = """
+`LazyLock::force` initialises the pattern, and an invalid pattern panics.
+The property is that every static regex compiles, and the panic is the
+assertion.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/context/mod.rs"
+line = 63
+name = "test_reexports_available"
+category = "compile-time-construct"
+construct = "std::mem::size_of::<ArtifactKind/ProjectionStatus/ProjectionConfig/ToolOutputProjection>"
+detail = """
+The property is that the four re-exported types stay nameable from the
+module. `size_of` is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/lsp/semantic_context.rs"
+line = 1183
+name = "test_collector_new"
+category = "no-panic-property"
+helper = "SemanticContextCollector::new"
+detail = """
+The property is that a collector can be constructed over a live service
+and operations handle without panicking.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/scheduler/job_notifications.rs"
+line = 1975
+name = "unused_newjob_import_guard"
+category = "compile-time-construct"
+construct = "std::mem::size_of::<NewJob>"
+detail = """
+The property is that `NewJob` stays nameable from this module. `size_of`
+is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/search_backend/framing.rs"
+line = 258
+name = "truncate_utf8_boundary_never_panics_on_emoji"
+category = "no-panic-property"
+helper = "truncate_utf8_boundary"
+detail = """
+The property under test is that truncating at every byte offset of a
+string containing a multi-byte character does not panic.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/shell/mod.rs"
+line = 109
+name = "re_exports_compile"
+category = "compile-time-construct"
+construct = "std::mem::size_of::<ShellCommandId/ShellEvent/ShellStatus/ShellOrigin/ShellCapturePolicy>"
+detail = """
+The property is that the five re-exported types stay nameable from the
+module. `size_of` is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/shell/redactor.rs"
+line = 700
+name = "redactor_is_send_sync"
+category = "compile-time-construct"
+construct = "Redactor: Send + Sync"
+detail = """
+A local `fn assert_send_sync<T: Send + Sync>()` is instantiated with
+`Redactor`. The property is checked by the compiler; the test fails to
+compile if the bound is ever dropped.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/tool/bash.rs"
+line = 1808
+name = "unused_intent_import_stays_available_for_future_routing"
+category = "compile-time-construct"
+construct = "CommandIntentKind::RawShell variant"
+detail = """
+The property is that the variant stays reachable. A variant reference is
+checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/tui/app/state/routing.rs"
+line = 910
+name = "global_token_is_used_for_global_op_routes"
+category = "compile-time-construct"
+construct = "UiRouteToken::global constructor"
+detail = """
+The property is that the constructor stays reachable. A constructor call
+is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/tui/async_cmd.rs"
+line = 157
+name = "spawn_helper_drops_when_receiver_gone"
+category = "no-panic-property"
+helper = "spawn_tui_task"
+detail = """
+The property is that spawning a TUI task whose receiver has been dropped
+does not panic.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/tui/async_cmd.rs"
+line = 169
+name = "spawn_helper_no_sender_does_not_panic"
+category = "no-panic-property"
+helper = "spawn_tui_task"
+detail = """
+The property is that spawning a TUI task with no sender does not panic.
+"""
+
+[[no-assertion-exceptions]]
+file = "src/tui/chat_browser.rs"
+line = 1176
+name = "a_narrow_panel_does_not_panic"
+category = "no-panic-property"
+helper = "rows"
+detail = """
+The property is that laying the chat browser out in a one-column viewport
+does not panic.
+"""
+
+[[no-assertion-exceptions]]
+file = "tests/ide_protocols/lsp.inc"
+line = 721
+name = "stale_launch_read_helpers_removed"
+category = "compile-time-construct"
+construct = "std::any::type_name::<codegg::lsp::launch::LspProcess>"
+detail = """
+The property is that `LspProcess` stays reachable while the removed read
+helpers stay unreachable. `type_name` is checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "tests/tool_programs/tool_program_m012_broker_failures.inc"
+line = 78
+name = "c06_programmatic_outcome_enum_is_exhaustive"
+category = "compile-time-construct"
+construct = "ProgrammaticOutcome variants"
+detail = """
+The property is that every variant stays reachable. A variant reference is
+checked by the compiler.
+"""
+
+[[no-assertion-exceptions]]
+file = "tests/tool_programs/tool_program_property.inc"
+line = 212
+name = "property_parser_never_panics_on_arbitrary_bytes"
+category = "no-panic-property"
+helper = "parse"
+detail = """
+The property is that parsing arbitrary byte sequences never panics.
+"""
+
+[[no-assertion-exceptions]]
+file = "tests/tui_render/tui_project_picker.inc"
+line = 252
+name = "input_action_new_variants_exist"
+category = "compile-time-construct"
+construct = "InputAction variants"
+detail = """
+The property is that every variant stays reachable. A variant reference is
+checked by the compiler.
+"""
+
+# ---------------------------------------------------------------------
+# skip-before-assertion exceptions
+#
+# A body that reaches a skip marker and returns before any assertion
+# reports *passed*. Rust's harness has exactly one skip mechanism and it
+# is static (`#[ignore]`); a runtime `return` is not a skip. Converting
+# the opt-in-gated bodies to `#[ignore]` would require `--include-ignored`
+# in every qualification workflow and would change which tests run, so
+# they are enumerated here instead, each with the workflow that satisfies
+# it named.
+# ---------------------------------------------------------------------
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6521
+name = "rust_analyzer_smoke"
+class = "environment-absent"
+condition = "the rust-analyzer binary is not on PATH and CODEGG_RA_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature (the target's required-features), with rust-analyzer installed"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6558
+name = "basedpyright_smoke"
+class = "environment-absent"
+condition = "neither pyright nor basedpyright is on PATH and CODEGG_PYRIGHT_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, with basedpyright installed"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6614
+name = "gopls_smoke"
+class = "environment-absent"
+condition = "the gopls binary is not on PATH and CODEGG_GOPLS_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, with gopls installed"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6649
+name = "typescript_smoke"
+class = "environment-absent"
+condition = "the typescript-language-server binary is not on PATH and CODEGG_TS_LS_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, with typescript-language-server installed"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6686
+name = "clangd_smoke"
+class = "environment-absent"
+condition = "the clangd binary is not on PATH and CODEGG_CLANGD_BIN is unset"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, with clangd installed"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6818
+name = "smoke_harness_captures_stderr"
+class = "environment-absent"
+condition = "the helper process could not be spawned"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, on a host with a spawnable shell"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6906
+name = "smoke_harness_force_kills_hung_server"
+class = "environment-absent"
+condition = "the helper process could not be spawned"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, on a host with a spawnable shell"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 6986
+name = "smoke_harness_force_kills_process_that_ignores_stdin_close"
+class = "environment-absent"
+condition = "the helper process could not be spawned"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, on a host with a spawnable shell"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 7080
+name = "progress_readiness_failure_is_reported"
+class = "environment-absent"
+condition = "the helper process could not be spawned"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, on a host with a spawnable shell"
+
+[[skip-exceptions]]
+file = "crates/egglsp/tests/real_server_smoke.rs"
+line = 7146
+name = "missing_diagnostics_readiness_times_out"
+class = "environment-absent"
+condition = "the helper process could not be spawned"
+satisfied-by = "the `lsp-real-server-tests` cargo feature, on a host with a spawnable shell"
+
+[[skip-exceptions]]
+file = "src/managed_process.rs"
+line = 3429
+name = "protected_mount_view_linked_worktree_common_dir_is_read_only"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_C009_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-c006-native.yml and .github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "src/managed_process.rs"
+line = 3703
+name = "protected_mount_rejects_deny_alias_into_writable_grant"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_C009_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-c006-native.yml and .github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "src/managed_process.rs"
+line = 3814
+name = "protected_mount_concurrent_launches_keep_workspaces_separate"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_C009_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-c006-native.yml and .github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "src/managed_process.rs"
+line = 3884
+name = "protected_mount_records_bounded_cold_and_warm_launch_latency"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_C009_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-c006-native.yml and .github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "src/managed_process.rs"
+line = 3936
+name = "protected_mount_view_real_managed_process_handoff"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_C006_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-c006-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_git_c002_performance.inc"
+line = 712
+name = "c002_packed_and_fragmented_cold_warm_git_cost_qualification"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_LINUX_GIT_COST_PERF=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml (git-cost-pilot job)"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 132
+name = "managed_process_owner_applies_authenticated_offline_network_intent"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 215
+name = "required_process_tier_fails_closed_when_user_namespaces_are_restricted"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_RESTRICTED_USERNS=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 265
+name = "offline_network_blocks_host_network_and_inherited_socket_access"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 551
+name = "test_only_contained_git_reads_live_objects_and_contains_configured_command"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 783
+name = "test_only_contained_git_reads_match_typed_snapshot_payloads"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 2061
+name = "test_only_contained_git_staging_cancellation_kills_filter_and_preserves_source"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 2377
+name = "offline_network_runs_cargo_metadata_and_check_without_network"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 2481
+name = "process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 2711
+name = "process_tier_cancellation_kills_namespace_descendants"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 2780
+name = "concurrent_process_tiers_receive_distinct_pid_and_ipc_namespaces"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 2882
+name = "process_tier_runs_workspace_check_and_managed_process_tests"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_CARGO_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 3051
+name = "production_private_index_publisher_stages_and_publishes_under_containment"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml"
+
+[[skip-exceptions]]
+file = "tests/security_permission/linux_bubblewrap_first_hop.inc"
+line = 92
+name = "opt_in_real_child_namespaces_and_fail_closed_setup"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_LINUX_BWRAP_FIRST_HOP=1"
+satisfied-by = "manual probe only: no workflow in this repository sets this variable"
+
+[[skip-exceptions]]
+file = "tests/security_permission/linux_cgroup_v2_feasibility.inc"
+line = 45
+name = "opt_in_read_only_cgroup_v2_delegation_inventory"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_LINUX_CGROUP_V2_PROBE=1"
+satisfied-by = "manual probe only: no workflow in this repository sets this variable"
+
+[[skip-exceptions]]
+file = "tests/security_permission/sandbox_landlock.inc"
+line = 114
+name = "supported_kernel_enforces_read_only_write_and_outside_root_contract"
+class = "environment-absent"
+condition = "the running kernel does not support Landlock"
+satisfied-by = "a Landlock-capable Linux kernel; the probe is codegg::security::sandbox::probe_landlock"
+
+[[skip-exceptions]]
+file = "tests/security_permission/sandbox_landlock.inc"
+line = 194
+name = "required_rule_failure_stops_before_target_execution"
+class = "environment-absent"
+condition = "the running kernel does not support Landlock"
+satisfied-by = "a Landlock-capable Linux kernel; the probe is codegg::security::sandbox::probe_landlock"
+
+[[skip-exceptions]]
+file = "tests/security_permission/sandbox_landlock.inc"
+line = 219
+name = "target_cannot_write_private_status_endpoint_after_exec"
+class = "environment-absent"
+condition = "the running kernel does not support Landlock"
+satisfied-by = "a Landlock-capable Linux kernel; the probe is codegg::security::sandbox::probe_landlock"

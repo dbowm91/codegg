@@ -1189,7 +1189,7 @@ Two wiring facts that are easy to get wrong:
 
 `/queue` is **blocked for observers** by omission in the fail-closed
 `is_observer_allowed_command` allowlist. No code registers it there, and
-`tests/user_prompt_queue_box.rs` proves it by executing the predicate against
+`tests/tui_render/user_prompt_queue_box.inc` proves it by executing the predicate against
 `/queue` and the M005 subcommand names, with `/stats` asserted allowed so the
 suite cannot pass against an always-false stub.
 
@@ -1909,7 +1909,7 @@ load-bearing beyond the action: `/` is the gesture that **enters command
 mode**, and command mode is what makes the rest of a typed slash command land
 as text. Removing it took away "type `/panels` from Normal mode and press
 Enter" — the only way back into the panel manager from a focused panel, which
-owns every key by contract (`tests/tui_side_panels.rs`).
+owns every key by contract (`tests/tui_render/tui_side_panels.inc`).
 
 Two consequences of the move are recorded rather than hidden. `ToggleAgentRun`
 left `is_normal_only`, because its only spelling is now a chord, and a chord
@@ -3279,7 +3279,7 @@ is the defect. They render byte-identically to the impls they replaced.
 The picker is the deliberate exception: `/theme` previews each candidate
 palette, so its column deliberately paints colours that are not the active
 theme's. "Everything follows the live theme" would destroy the feature.
-`tests/tui_theme_source_of_truth.rs` encodes both rules — each box must follow a
+`tests/tui_render/tui_theme_source_of_truth.inc` encodes both rules — each box must follow a
 theme change, and the picker must keep showing candidates.
 
 **A chrome-free body must still compute one viewport.** `InfoDialog` overrides
@@ -3310,7 +3310,7 @@ The general rule for a viewport, since the widgets do not agree on who owns it:
   the rect they are filling on every pass, so the modal and the column are both
   correct by construction.
 - **Externally-owned.** `/tree` and `/theme` carry a `visible_height` field that
-  **no production code ever sets** — only `tests/tui.rs` calls
+  **no production code ever sets** — only `tests/tui_render/tui.inc` calls
   `set_visible_height`, so it stays at its `new()` default of 10 however tall the
   box is. A 12-row `/tree` modal therefore offers 10 rows into 6 usable ones and
   ratatui clips the tail. That mismatch predates this work and was deliberately
@@ -3374,7 +3374,7 @@ Each letter is bound twice, with and without the `SHIFT` modifier, because
 terminals disagree about how to encode a shifted letter. Binding both is safe
 (uppercase `H`/`L` are otherwise unbound in Normal mode) and is the same
 legacy-encoding hazard that made every `Ctrl+Shift+X` chord undecodable — see
-`tests/modifier_chords.rs`.
+`tests/tui_render/modifier_chords.inc`.
 
 **A built-in `Shift+<capital>` is composed text in Insert mode.** Every mnemonic
 in this file is a single capital letter, which is exactly what makes it
@@ -3647,7 +3647,7 @@ unreachable, and the key silently falls through to whichever action owns the
 bare-Ctrl twin — the panel switcher fired `CloseSession`. `Ctrl+Alt+<letter>`
 has no such collision: legacy encoding sends `ESC` plus one control byte, so
 crossterm reports CONTROL|ALT and the pair is unambiguous against both bare
-`Ctrl+W` and bare `Alt+W`. `tests/modifier_chords.rs` asserts the whole set
+`Ctrl+W` and bare `Alt+W`. `tests/tui_render/modifier_chords.inc` asserts the whole set
 stays disjoint from their unshifted twins.
 
 This affects every multi-modifier chord, not just the panel switcher: sidebar
@@ -4223,7 +4223,7 @@ on screen that will not run.
 the daemon's durable selection converging on the display.
 
 Pinned by `scripts/check_model_select_convergence.py` and
-`tests/tui_model_selection_persist.rs`.
+`tests/tui_render/tui_model_selection_persist.inc`.
 
 Async commands sent via channel — 205 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
@@ -6086,7 +6086,7 @@ action.
   binding an inert key advertises a capability the UI does not have. They are
   bound now because they are no longer inert: with a two-pane layout `↑`/`↓`
   cycle the loaded panel type. `the_vertical_pair_is_now_bound_rather_than_reserved`
-  in `tests/modifier_chords.rs` is the test that says so.
+  in `tests/tui_render/modifier_chords.inc` is the test that says so.
 - **Uppercase letters only; bare lowercase is never the directional.** A
   terminal reports `Shift+L` as `Char('L')` with or without SHIFT, but never as
   `Char('l')`. Binding lowercase would claim the plain within-surface vim verbs
@@ -6219,7 +6219,7 @@ action.
   `src/tui/commands/sessions.rs`. The C002 subagent/job sections obey the
   same rule on open *and* on every live refresh
   (`App::refresh_sessions_dialog_pending_rows`), and
-  `tests/tui_sessions_pending_sections.rs::both_instances_receive_the_sections`
+  `tests/tui_render/tui_sessions_pending_sections.inc::both_instances_receive_the_sections`
   reads the painted clone rather than the App-owned field.
 - **The terminal's own text selection is unavailable**: `EnableMouseCapture`
   (`src/tui/terminal.rs`) makes the terminal stop offering drag-select, so
@@ -6272,7 +6272,7 @@ cargo test --test tui_render      # 99 render regression tests
 cargo test --test tui              # integration tests
 ```
 
-### Render Regression Tests (`tests/tui_render.rs`)
+### Render Regression Tests (`tests/tui_render/tui_render.inc`)
 
 Uses `ratatui::backend::TestBackend` across terminal sizes:
 tiny (40×12), small (60×20), normal (100×32), wide (160×40),
@@ -6314,13 +6314,13 @@ Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
 `ComposerMode` (`work_orders.rs:25`), `Route` (`route.rs:2`), and the
 five `.await` points in `dispatch_tui_command`
 (`runtime/command_dispatch.rs:84`). Render-regression test count (99
-`#[test]` in `tests/tui_render.rs`) confirmed.
+`#[test]` in `tests/tui_render/tui_render.inc`) confirmed.
 
 Re-verified during the subagent/job visibility roadmap against `src/tui/`:
 `app/mod.rs` line count (18,815), the **31** `app/state/` modules (32 `.rs`
 files incl. `mod.rs`), `TuiMsg` (149 variants) at `app/types.rs:123`,
 `InputAction` (62) at `input.rs`, and the render-regression test count (111
-`#[test]` in `tests/tui_render.rs`). The Directory Structure counts below were
+`#[test]` in `tests/tui_render/tui_render.inc`). The Directory Structure counts below were
 corrected in the same pass: `commands/` (37 submodules), `components/dialogs/`
 (40 dialogs), `command.rs` (167 built-ins), and `app/state/` — which had been
 missing `panel_hotkeys.rs`, `subagents.rs`, `subagent_tabs.rs`, and `tasks.rs`

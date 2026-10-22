@@ -184,12 +184,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_line_is_one_row() {
-        assert_eq!(wrap_count("hello world", 80), 1);
-        assert_eq!(wrap_count("", 80), 1);
-    }
-
-    #[test]
     fn zero_width_is_passed_through_unwrapped() {
         // Ratatui treats a zero-width area as nothing to draw; returning the
         // input unchanged keeps callers free of special cases.

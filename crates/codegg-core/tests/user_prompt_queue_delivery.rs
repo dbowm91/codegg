@@ -11,7 +11,7 @@
 //!
 //! What this file deliberately does **not** cover is the daemon half: who the
 //! delivery principal is, and that the submission ran under that principal. Those
-//! live in `tests/identity_m003_daemon_authorization.rs` and in the callsite
+//! live in `tests/core_daemon/identity_m003_daemon_authorization.inc` and in the callsite
 //! guard, because a store test cannot observe them.
 
 use codegg_core::session::user_prompt_queue::{

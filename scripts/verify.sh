@@ -5,6 +5,9 @@
 # Usage:
 #   scripts/verify.sh quick    — cheap repository sanity for ordinary iteration
 #   scripts/verify.sh full     — broad maintainer/developer verification before handoff or release
+#   scripts/verify.sh scoped [base-ref]
+#                              — developer-local verification of only the tests a
+#                                change can affect (default base: origin/main)
 #   scripts/verify.sh help     — print usage
 #
 # Resource policy:
@@ -34,6 +37,9 @@ Modes:
   quick   Cheap repository sanity for ordinary iteration.
           Developers run focused tests for changed code separately.
   full    Broad maintainer verification before handoff or release.
+  scoped  Developer-local verification of only the tests a change can
+          affect. Takes an optional base ref (default: origin/main).
+          The hosted CI job's scope is unchanged.
   help    Print this message.
 
 Resource policy:
@@ -47,9 +53,7 @@ EOF
 }
 
 # ── Quick tier ──────────────────────────────────────────────────────────────
-run_quick() {
-    echo "==> Quick verification"
-
+run_guards() {
     echo "==> cargo fmt --check --all"
     (cd "$REPO_ROOT" && cargo fmt --check --all)
 
@@ -176,6 +180,64 @@ run_quick() {
     echo "==> python3 scripts/test_shell_policy_test_safety.py"
     (cd "$REPO_ROOT" && python3 scripts/test_shell_policy_test_safety.py)
 
+    # A difference between the dev and test cargo profiles makes the same crate
+    # compile twice, so this runs before the expensive compile rather than
+    # after it.
+    echo "==> python3 scripts/check_cargo_profile_alignment.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_cargo_profile_alignment.py)
+    echo "==> python3 scripts/check_cargo_profile_alignment.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_cargo_profile_alignment.py --self-test)
+
+    # The ownership manifest is the scoped mode's input. It must agree with
+    # the tree, or the scoped mode would select a scope that does not exist.
+    echo "==> python3 scripts/check_test_ownership.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_ownership.py)
+    echo "==> python3 scripts/check_test_ownership.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_ownership.py --self-test)
+
+    # The scoped mode's selection algorithm and its `members` output format.
+    # The caller reads that format with `IFS=$'\t' read -r name targets
+    # features`, so a column that moves is a scope that silently changes.
+    echo "==> python3 scripts/scoped_selection.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/scoped_selection.py --self-test)
+
+    # Every nextest/CI filter that names a test target must name one that
+    # exists, and the recorded integration-test count must be true. A filter
+    # that names a renamed target silently stops reserving the runner for it.
+    echo "==> python3 scripts/check_test_target_references.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_target_references.py)
+    echo "==> python3 scripts/check_test_target_references.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_target_references.py --self-test)
+
+    # Every test body must assert something checkable, and no two test bodies
+    # may assert the same thing twice unless the decision table records the
+    # survivor. A test that asserts nothing costs a compile-and-run cycle to
+    # prove nothing; a duplicated body costs it twice.
+    echo "==> python3 scripts/check_test_assertion_quality.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_assertion_quality.py)
+    echo "==> python3 scripts/check_test_assertion_quality.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_assertion_quality.py --self-test)
+
+    echo "==> python3 scripts/check_test_duplication.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_duplication.py)
+    echo "==> python3 scripts/check_test_duplication.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_duplication.py --self-test)
+
+    # The Tool Program pipeline is parse-only. The invariant used to be
+    # "enforced" by three test functions that could not fail; the guard
+    # replaced them with a check that can.
+    echo "==> python3 scripts/check_tool_program_parse_only.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py)
+    echo "==> python3 scripts/check_tool_program_parse_only.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py --self-test)
+}
+
+# ── Quick tier ──────────────────────────────────────────────────────────────
+run_quick() {
+    echo "==> Quick verification"
+
+    run_guards
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 
@@ -212,10 +274,121 @@ run_full() {
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
     (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)
 
-    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci"
-    (cd "$REPO_ROOT" && cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci)
+    # M002: the feature-enabled pass is BOUNDED. It builds and runs only the
+    # test targets the extra feature set actually unlocks, instead of
+    # re-linking every root integration target under the new feature set.
+    #
+    # `--lib` is the root package's library test target, and it is NOT
+    # optional: the feature-gated inline tests live there (43 gated on
+    # `server` and 8 on `plugins`, measured on 2c1953347), so a bounded pass
+    # that omits it silently drops 51 test functions.
+    #
+    # The two `--test` entries are the feature-gated families. Since the M004
+    # consolidation, the nine gated integration targets are two families:
+    # `lsp_test_support` (the four `lsp-test-support` targets) and
+    # `server_feature` (the five `server` targets). The
+    # `windows-sandbox-test-support` and `linux-git-test-support` families
+    # are gated on features this pass does not enable; they are qualified by
+    # the platform-specific workflows, not here.
+    #
+    # The `subset` profile mirrors the `ci` profile's slot bound and keeps the
+    # one per-test reservation the `ci` profile carries — that test is an
+    # inline library test, so it IS in this bounded set. The `ci` profile's
+    # whole-binary exclusions are not carried over: none of those binaries is
+    # in the bounded set.
+    #
+    # A gated target whose feature is not enabled is a configuration error,
+    # and cargo fails loudly on an unknown `--test` name. That is the
+    # intended behaviour: a silently dropped target is the failure mode this
+    # milestone exists to remove.
+    feature_pass_targets=(
+        --lib
+        --test lsp_test_support
+        --test server_feature
+    )
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile subset ${feature_pass_targets[*]}"
+    (cd "$REPO_ROOT" && cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile subset "${feature_pass_targets[@]}")
 
     echo "==> Full verification passed."
+}
+
+# ── Scoped tier ─────────────────────────────────────────────────────────────
+#
+# Developer-local only. The hosted CI job's scope is unchanged and stays
+# unchanged: `quick`, `full`, and the hosted job all run the whole suite.
+#
+# The scope is computed from `docs/test-ownership.toml` by
+# `scripts/scoped_selection.py`. It is a *selector*: it never decides that a
+# test does not need to run. A changed file with no mapping widens the
+# affected member to its full surface, and a changed file outside every
+# member widens the scope to the whole workspace. It never silently skips.
+run_scoped() {
+    local base="${1:-origin/main}"
+
+    echo "==> Scoped verification (base: $base)"
+
+    if ! command -v cargo-nextest >/dev/null 2>&1; then
+        echo "Error: scoped mode requires cargo-nextest (cargo install cargo-nextest --locked)" >&2
+        exit 1
+    fi
+
+    # The guards still run exactly as they do in `quick` (plan invariant I9).
+    # Scoping composes with the change-trigger routing; it does not replace
+    # or reorder it.
+    run_guards
+
+    local selection
+    if ! selection="$(python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format json)"; then
+        echo "Error: the scoped selection could not be determined. Refusing to run." >&2
+        exit 1
+    fi
+
+    echo "==> Scope"
+    printf '%s\n' "$selection" | python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format text
+
+    # The workspace-wide widening case: run the ordinary workspace test pass.
+    if printf '%s' "$selection" | grep -q '"widen_workspace": true'; then
+        echo "==> Scope widened to the whole workspace; running the workspace-wide pass"
+        echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
+        (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)
+        echo "==> Scoped verification passed."
+        return 0
+    fi
+
+    # Otherwise: one Nextest invocation per affected member, so that a
+    # `--test` name is only ever resolved against the package that owns it.
+    # The member's library test target is always included — an affected
+    # member contributes it even when no integration target matched.
+    #
+    # A target gated behind `required-features` cannot be built without its
+    # features, so the features the selected targets are gated on are
+    # enabled for that member's invocation. Naming a gated target without
+    # enabling its feature is a cargo error, not a silent skip.
+    local member_line name targets features
+    while IFS=$'\t' read -r name targets features; do
+        [ -n "$name" ] || continue
+        local -a args=(--lib)
+        local -a feature_args=()
+        local target
+        for target in $targets; do
+            args+=(--test "$target")
+        done
+        if [ -n "$features" ]; then
+            feature_args=(--features "$features")
+        fi
+
+        # `${arr[@]+"${arr[@]}"}"` is the portable-safe expansion of a possibly
+        # empty array. Under `set -u`, plain `"${arr[@]}"` on an empty array is
+        # an "unbound variable" error in bash 3.2 — which is the shell macOS
+        # ships, and which this script runs under. `feature_args` is empty
+        # whenever the selected targets need no cargo feature, which is the
+        # common case, so the plain expansion would break the scoped mode on
+        # every unfeatured selection.
+        echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p $name --locked --profile ci ${feature_args[*]+"${feature_args[*]}"} ${args[*]}"
+        (cd "$REPO_ROOT" && cargo nextest run -p "$name" --locked --profile ci "${feature_args[@]+"${feature_args[@]}"}" "${args[@]}")
+    done < <(python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format members)
+
+    echo "==> Scoped verification passed."
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -225,6 +398,10 @@ case "${1:-}" in
         ;;
     full)
         run_full
+        ;;
+    scoped)
+        shift
+        run_scoped "${1:-origin/main}"
         ;;
     help|--help|-h)
         usage

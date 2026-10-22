@@ -6,6 +6,22 @@
 //! These helpers centralize the check so future tests can opt into
 //! the same gate by calling `assert_no_credentials_in(...)` with a
 //! sentinel value and any number of surfaces.
+//!
+//! This module carries **no assertions of its own**. It used to: five
+//! `#[test]` functions lived here, and because `tests/common/` is
+//! declared by eight root test families, they were compiled into all
+//! eight and ran forty times — of which only one family had any use
+//! for the helper. They now live in that one family, as
+//! `tests/command_git/secret_scan_self_tests.inc` (M007, work package
+//! D), and the assertions are unchanged.
+
+// `tests/common/` is declared by eight root test families, and only one of
+// them — `command_git` — uses this helper. The other seven compile it and
+// use none of it, so every item below would be reported as dead code in
+// those seven binaries. This is the standard idiom for a shared helper
+// whose consumers use disjoint parts of it; it silences the lint, not a
+// real defect.
+#![allow(dead_code)]
 
 /// A unique sentinel value to embed in test inputs and assert
 /// against. The prefix `CODEGG_TEST_SECRET_` is intentionally
@@ -87,60 +103,5 @@ fn collect_bytes_inner(dir: &std::path::Path, out: &mut Vec<Vec<u8>>) {
                 out.push(bytes);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sentinel_format_starts_with_prefix() {
-        let s = unique_sentinel("foo");
-        assert!(s.starts_with(SENTINEL_PREFIX), "got {s}");
-        assert!(s.contains("foo"), "missing label: {s}");
-    }
-
-    #[test]
-    fn sentinel_unique_per_call() {
-        let a = unique_sentinel("a");
-        let b = unique_sentinel("a");
-        assert_ne!(a, b, "two sentinels with same label collided");
-    }
-
-    #[test]
-    fn assert_no_credentials_passes_when_clean() {
-        let sentinel = "CODEGG_TEST_SECRET_x";
-        let surfaces: Vec<(&str, Vec<&str>)> = vec![
-            ("stdout", vec!["clean output", "more text"]),
-            ("stderr", vec![""]),
-            (
-                "argv",
-                vec!["git", "remote", "add", "origin", "https://example.com/x"],
-            ),
-        ];
-        assert_no_credentials_in(sentinel, surfaces);
-    }
-
-    #[test]
-    #[should_panic(expected = "credential leak detected")]
-    fn assert_no_credentials_fails_on_leak() {
-        let sentinel = "CODEGG_TEST_SECRET_y";
-        let surfaces: Vec<(&str, Vec<&str>)> =
-            vec![("stdout", vec!["hello CODEGG_TEST_SECRET_y world"])];
-        assert_no_credentials_in(sentinel, surfaces);
-    }
-
-    #[test]
-    fn collect_bytes_finds_file_contents() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("a.txt"), b"hello world").expect("write");
-        std::fs::create_dir(dir.path().join("nested")).expect("mkdir");
-        std::fs::write(dir.path().join("nested/b.txt"), b"goodbye").expect("write");
-        let all = collect_bytes_recursive(dir.path());
-        let flat: Vec<u8> = all.iter().flatten().copied().collect();
-        let s = String::from_utf8_lossy(&flat);
-        assert!(s.contains("hello world"));
-        assert!(s.contains("goodbye"));
     }
 }

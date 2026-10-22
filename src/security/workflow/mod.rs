@@ -1846,8 +1846,23 @@ diff --git a/src/lib.rs b/src/lib.rs
             structured_evidence: Vec::new(),
             notes: vec!["test".to_string()],
         }];
-        let (_findings, _prompts) =
+        let (findings, _prompts) =
             synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        // The group still produces a finding from the target and prompt
+        // evidence, but the legacy *string* preflight — which carries no
+        // structured evidence — must not support it. This used to assert
+        // nothing at all.
+        assert!(
+            !findings.is_empty(),
+            "the group must produce a finding from the target and prompt evidence"
+        );
+        assert!(
+            findings.iter().all(|finding| !finding
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == SecurityEvidenceKind::Preflight)),
+            "a legacy string preflight must not support a group finding: {findings:?}"
+        );
     }
 
     #[test]

@@ -100,7 +100,12 @@ jobs:
         run: ./scripts/check-desktop-boundary.sh
 
       - name: Build root daemon binary
-        run: cargo build --locked
+        # The root workspace strips debuginfo in BOTH the dev and test cargo
+        # profiles so the two resolve identically and the dependency graph is
+        # compiled once (scripts/check_cargo_profile_alignment.py). This binary
+        # is bundled into the desktop app, so keep its debug info for crash
+        # symbolication: override the profile for this one invocation.
+        run: cargo build --locked --config 'profile.dev.strip="none"'
 
       - name: Desktop renderer checks
         working-directory: apps/desktop

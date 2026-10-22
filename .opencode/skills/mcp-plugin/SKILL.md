@@ -103,5 +103,5 @@ hook handlers for copilot/gitlab/codex/poe live in `src/plugin/builtin/`,
 not `runtime/builtin.rs`, which holds `BuiltinRuntime`/
 `BuiltinHandlerRegistry`), and removed the `cargo test --test
 mcp_no_hanging_promises` command, which no longer exists in `tests/`
-(`tests/mcp.rs` and `tests/mcp_reconnect.rs` do). Claims without a
+(`tests/config_provider/mcp.inc` and `tests/config_provider/mcp_reconnect.inc` do). Claims without a
 traceable source were removed rather than guessed.

@@ -642,10 +642,10 @@ grep undercounts, because a test attribute can share a line with others.
 | `egggit/operation_state.rs` | 8 |
 | `egggit` (all `src/*.rs`) | 109 |
 | `egggit/conflict.rs` | 7 |
-| `tests/git_mutations_integration.rs` | 12 (tokio::test) |
-| `tests/git_network_integration.rs` | 29 |
-| `tests/git_recovery_integration.rs` | 19 |
-| `tests/git_index_publication.rs` | 22 (C007 private-index publication; 17 C007 + 5 shared secret-scan) |
+| `tests/command_git/git_mutations_integration.inc` | 12 (tokio::test) |
+| `tests/command_git/git_network_integration.inc` | 29 |
+| `tests/command_git/git_recovery_integration.inc` | 19 |
+| `tests/command_git/git_index_publication.inc` | 22 (C007 private-index publication; 17 C007 + 5 shared secret-scan) |
 
 ### Key test categories
 
@@ -674,7 +674,7 @@ grep undercounts, because a test attribute can share a line with others.
   the staged object. The **contained** staging step additionally needs a
   qualified host — it is exercised by the hosted
   `production_private_index_publisher_stages_and_publishes_under_containment`
-  test in `tests/linux_m004_process_ipc.rs`.
+  test in `tests/linux_git_test_support/linux_m004_process_ipc.inc`.
 - **policy_drift_tests** (root): Ensures canonical lists match Phase F
   entries. `root_and_core_share_canonical_lists` verifies root and
   codegg-core read from same source.

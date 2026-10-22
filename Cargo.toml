@@ -372,78 +372,117 @@ lsp-test-support = ["egglsp/lsp-test-support"]
 lsp-real-server-tests = ["egglsp/lsp-real-server-tests"]
 decision-runtime-sdm = ["dep:sdm-core", "dep:sdm-runtime"]
 
+# ── M004: root integration-test families ────────────────────────────────────
+#
+# Every root integration test file now lives in a *family*: a directory under
+# `tests/` whose `mod.rs` is one Cargo test executable and whose members are
+# `.inc` files included with `#[path]`.
+#
+# Two mechanisms, and both are required:
+#
+#   - Cargo does not auto-discover `tests/<dir>/mod.rs`, so every family is
+#     declared explicitly here.
+#   - Cargo DOES auto-discover `tests/<dir>/*.rs` as separate test targets, so
+#     the members carry a `.inc` extension and are never auto-discovered.
+#
+# This is the pattern the M003 `projection_replay` pilot used; M004 applies it
+# across the whole root package. The root package's test-target count falls
+# from 288 to 21.
+#
+# A family holds one subject area, so its members share one
+# `required-features` gate or none. A family that mixed gated and ungated
+# members could not be gated as a whole, which is why the gated families are
+# separate targets rather than one family with a gate and without.
+#
+# The six binaries that `.config/nextest.toml` reserves the test runner for
+# keep their exact target names — each is a family of one — so the
+# `binary(...)` filters that give them exclusive access still resolve.
+# Their rationale comments stay attached to the binary that flaked.
+
+# Gated families: every member is gated on the same feature.
 [[test]]
-name = "lsp_composite_stdio"
-path = "tests/lsp_composite_stdio.rs"
+name = "lsp_test_support"
+path = "tests/lsp_test_support/mod.rs"
 required-features = ["lsp-test-support"]
 
 [[test]]
-name = "document_lsp_integration"
-path = "tests/document_lsp_integration.rs"
-required-features = ["lsp-test-support"]
+name = "server_feature"
+path = "tests/server_feature/mod.rs"
+required-features = ["server"]
 
 [[test]]
-name = "lsp_completion_trajectory"
-path = "tests/lsp_completion_trajectory.rs"
-required-features = ["lsp-test-support"]
-
-# M013's LSP read-delivery trajectory spawns the same fake stdio server as
-# the three above, so it carries the same `required-features` gate. Without
-# it the target is built by a feature-less `cargo nextest run --workspace`
-# while the `codegg-lsp-test-server` binary — which `required-features`
-# leaves unbuilt — is absent, and the suite fails on a spawn rather than on
-# a behaviour. The gate is what puts the test in `verify.sh full`'s
-# `--features server,plugins,lsp-test-support` pass, where the binary
-# exists.
-[[test]]
-name = "lsp_read_delivery_m013"
-path = "tests/lsp_read_delivery_m013.rs"
-required-features = ["lsp-test-support"]
-
-[[test]]
-name = "windows_acl_lease"
-path = "tests/windows_acl_lease.rs"
+name = "windows_sandbox_test_support"
+path = "tests/windows_sandbox_test_support/mod.rs"
 required-features = ["windows-sandbox-test-support"]
 
 [[test]]
-name = "projection_transport_real"
-path = "tests/projection_transport_real.rs"
-required-features = ["server"]
-
-[[test]]
-name = "identity_m002_transport_auth"
-path = "tests/identity_m002_transport_auth.rs"
-required-features = ["server"]
-
-[[test]]
-name = "team_collaboration_m001_http_auth"
-path = "tests/team_collaboration_m001_http_auth.rs"
-required-features = ["server"]
-
-[[test]]
-name = "team_collaboration_m006_trajectory"
-path = "tests/team_collaboration_m006_trajectory.rs"
-required-features = ["server"]
-
-[[test]]
-name = "team_collaboration_postclosure_m001_registration_auth"
-path = "tests/team_collaboration_postclosure_m001_registration_auth.rs"
-required-features = ["server"]
-
-[[test]]
-name = "windows_restricted_managed_process"
-path = "tests/windows_restricted_managed_process.rs"
-required-features = ["windows-sandbox-test-support"]
-
-[[test]]
-name = "linux_m004_process_ipc"
-path = "tests/linux_m004_process_ipc.rs"
+name = "linux_git_test_support"
+path = "tests/linux_git_test_support/mod.rs"
 required-features = ["linux-git-test-support"]
 
+# Ungated families.
 [[test]]
-name = "linux_git_c002_performance"
-path = "tests/linux_git_c002_performance.rs"
-required-features = ["linux-git-test-support"]
+name = "tool_programs"
+path = "tests/tool_programs/mod.rs"
+
+[[test]]
+name = "tui_render"
+path = "tests/tui_render/mod.rs"
+
+[[test]]
+name = "agent_loop"
+path = "tests/agent_loop/mod.rs"
+
+[[test]]
+name = "scheduler_jobs"
+path = "tests/scheduler_jobs/mod.rs"
+
+[[test]]
+name = "core_daemon"
+path = "tests/core_daemon/mod.rs"
+
+[[test]]
+name = "command_git"
+path = "tests/command_git/mod.rs"
+
+[[test]]
+name = "security_permission"
+path = "tests/security_permission/mod.rs"
+
+[[test]]
+name = "config_provider"
+path = "tests/config_provider/mod.rs"
+
+[[test]]
+name = "ide_protocols"
+path = "tests/ide_protocols/mod.rs"
+
+# The six whole-binary exclusion binaries. Each is a family of one, and each
+# keeps its original target name so that `.config/nextest.toml`'s
+# `binary(...)` filters — and the CI job's `-E` filter — still resolve.
+[[test]]
+name = "eggwork_remote_execution_live"
+path = "tests/eggwork_remote_execution_live/mod.rs"
+
+[[test]]
+name = "interactive_process_attach_resume"
+path = "tests/interactive_process_attach_resume/mod.rs"
+
+[[test]]
+name = "interactive_process_sessions"
+path = "tests/interactive_process_sessions/mod.rs"
+
+[[test]]
+name = "interactive_terminal_tui"
+path = "tests/interactive_terminal_tui/mod.rs"
+
+[[test]]
+name = "scheduler_cancellation"
+path = "tests/scheduler_cancellation/mod.rs"
+
+[[test]]
+name = "causal_observe_replay"
+path = "tests/causal_observe_replay/mod.rs"
 
 # M003 pilot: consolidate the 11 `projection_replay_*` integration
 # targets into one. Cargo does not auto-discover `tests/<dir>/mod.rs`
@@ -468,12 +507,40 @@ lto = "thin"
 strip = true
 codegen-units = 1
 
+# The `dev` and `test` profiles MUST resolve to the same values.
+#
+# Cargo hashes the resolved profile into every compilation unit's identity, so
+# a difference between the two profiles makes the same crate compile twice —
+# once for `cargo build` (dev) and once for `cargo test` (test). `strip` was
+# the only differing field, and it cost a full second compile of the
+# third-party dependency graph *and* of the root library rlib in every
+# verification invocation: the CI job's `cargo build` step, and the local
+# `cargo build` → `cargo test` loop.
+#
+# `strip = "debuginfo"` is therefore set on BOTH profiles. It keeps the
+# artifacts small — the root library rlib is 855 MB and each root integration
+# test executable is 135-208 MB — and it collapses the two profiles onto one
+# unit, so each dependency crate is compiled exactly once.
+#
+# Backtraces stay usable: `strip = "debuginfo"` removes DWARF but keeps the
+# symbol table, so a panic backtrace still names its frames. To get full
+# debuginfo back for a single invocation, override the profile on the command
+# line:
+#
+#   cargo build --config 'profile.dev.strip="none"'
+#   cargo test  --config 'profile.test.strip="none"'
+#
+# `RUSTFLAGS="-C debuginfo=2"` does NOT do this: the profile's `strip` still
+# applies, so the debuginfo is removed again. The `--config` override replaces
+# the profile setting itself.
+#
+# Guarded by scripts/check_cargo_profile_alignment.py — a difference between
+# these two tables is a regression, not a cleanup.
 [profile.dev]
 codegen-units = 16
+strip = "debuginfo"
 
 [profile.test]
 opt-level = 0
 codegen-units = 16
-# Intentionally strips debuginfo for size; when triaging a test failure
-# locally, restore backtraces with: RUSTFLAGS=-C debuginfo=2 cargo test ...
 strip = "debuginfo"

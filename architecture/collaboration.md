@@ -57,10 +57,10 @@ crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 19 Chat CoreRequests,
                                           # (CHAT_CAPABILITY, CHAT_PROTOCOL_VERSION)
 src/core/daemon.rs                        # daemon-owned CollaborationService, channel->project
                                           # resolver, privacy denials, dedicated chat handler
-tests/collaboration_m001_chat.rs          # 12 daemon boundary tests
+tests/core_daemon/collaboration_m001_chat.inc          # 12 daemon boundary tests
 src/tui/app/state/chat.rs                 # M002: bounded per-project chat reducer (ChatState)
 src/tui/commands/chat.rs                  # M002: async chat commands + observer insert routing
-tests/collaboration_m002_chat_tui.rs      # M002: 11 TUI boundary tests
+tests/tui_render/collaboration_m002_chat_tui.inc      # M002: 11 TUI boundary tests
 ```
 
 ## How It Works

@@ -448,7 +448,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or executes `install.sh`. Eggup is pinned to immutable revision
   `66813b3b94de3a9b2f270e0000dc339ef6f0b478`.
 - `upgrade()`: retire the network-fetched installer-script execution path (M005 hardening). `upgrade()` no longer spawns external `curl`, never fetches or executes a shell script, acquires no candidate bytes, and attempts no executable replacement; a valid newer tag now fails closed with manual fresh-install guidance (`CODEGG_VERSION=v{latest}` + `install.sh` URL) via the pure `describe_upgrade()` disposition. `check_for_updates()` (Eggfetch, 10s timeout, bounded redirects) and `installer_invocation()` fresh-install pin contract are unchanged.
-- `upgrade()`: export the installer version pin as `CODEGG_VERSION` (the name `install.sh` honors) instead of `INSTALL_VERSION`, which the installer ignored — the pin was silently dropped and latest installed. Point the installer at the GitHub-hosted script (`raw.githubusercontent.com/dbowm91/codegg/main/install.sh`; there is no `codegg.ai` domain) and print the full `curl ... | sh` upgrade command. Pin construction lives in the pure `installer_invocation()` helper with a regression test (`tests/upgrade.rs`). `upgrade()` itself remains unwired from `codegg upgrade` (check-only CLI).
+- `upgrade()`: export the installer version pin as `CODEGG_VERSION` (the name `install.sh` honors) instead of `INSTALL_VERSION`, which the installer ignored — the pin was silently dropped and latest installed. Point the installer at the GitHub-hosted script (`raw.githubusercontent.com/dbowm91/codegg/main/install.sh`; there is no `codegg.ai` domain) and print the full `curl ... | sh` upgrade command. Pin construction lives in the pure `installer_invocation()` helper with a regression test (`tests/config_provider/upgrade.inc`). `upgrade()` itself remains unwired from `codegg upgrade` (check-only CLI).
 
 ### Documented
 
@@ -504,7 +504,7 @@ Docs/roadmap reconciliation plus test hardening for the Phase 13-17 surface. No 
 - `crates/egglsp/src/context_policy.rs` (8): `LspContextDiagnostics` from empty/truncated/cache-hit packets; `StaleEvidencePolicy` and `LspUnavailablePolicy` behavior tests.
 - `crates/egglsp/src/context_renderer.rs` (4): renderer feature-flag propagation (`include_cross_file` / `include_hierarchy` from policy); render-compact output stability.
 - `src/tui/app/mod.rs` (6): dispatch tests for `/lsp-doctor` (missing-arg-shows-usage, with-path-produces-toast, without-tool-shows-unavailable) and `/lsp-context-diagnostics` (same three).
-- `tests/lsp.rs` (15): tool-level integration tests covering Phase 13-15 surface end-to-end.
+- `tests/ide_protocols/lsp.inc` (15): tool-level integration tests covering Phase 13-15 surface end-to-end.
 
 ### Fixed
 

@@ -20,11 +20,11 @@ on:
       - 'crates/codegg-config/src/paths.rs'
       - 'crates/egggit/Cargo.toml'
       - 'crates/egggit/src/**'
-      - 'tests/windows_process_launcher.rs'
-      - 'tests/windows_restricted_managed_process.rs'
-      - 'tests/windows_projection_feasibility.rs'
-      - 'tests/windows_acl_lease.rs'
-      - 'tests/windows_sandbox_adversarial.rs'
+      - 'tests/security_permission/windows_process_launcher.inc'
+      - 'tests/windows_sandbox_test_support/windows_restricted_managed_process.inc'
+      - 'tests/security_permission/windows_projection_feasibility.inc'
+      - 'tests/windows_sandbox_test_support/windows_acl_lease.inc'
+      - 'tests/security_permission/windows_sandbox_adversarial.inc'
       - 'research/windows-native-sandbox/**'
   pull_request:
     paths:
@@ -44,11 +44,11 @@ on:
       - 'crates/codegg-config/src/paths.rs'
       - 'crates/egggit/Cargo.toml'
       - 'crates/egggit/src/**'
-      - 'tests/windows_process_launcher.rs'
-      - 'tests/windows_restricted_managed_process.rs'
-      - 'tests/windows_projection_feasibility.rs'
-      - 'tests/windows_acl_lease.rs'
-      - 'tests/windows_sandbox_adversarial.rs'
+      - 'tests/security_permission/windows_process_launcher.inc'
+      - 'tests/windows_sandbox_test_support/windows_restricted_managed_process.inc'
+      - 'tests/security_permission/windows_projection_feasibility.inc'
+      - 'tests/windows_sandbox_test_support/windows_acl_lease.inc'
+      - 'tests/security_permission/windows_sandbox_adversarial.inc'
       - 'research/windows-native-sandbox/**'
   workflow_dispatch:
     inputs:
@@ -152,7 +152,7 @@ jobs:
 
       - name: Windows managed process launcher tests
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
-        run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1
+        run: cargo test --locked -p codegg --test security_permission -- --nocapture --test-threads=1
 
       - name: Windows suspended-target failure injection
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
@@ -184,15 +184,15 @@ jobs:
 
       - name: Test-only restricted managed process integration
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_restricted_managed_process -- --nocapture --test-threads=1
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_test_support -- --nocapture --test-threads=1
 
       - name: Journaled Windows ACL lease and recovery tests
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_acl_lease -- --nocapture --test-threads=1
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_test_support -- --nocapture --test-threads=1
 
       - name: Windows sandbox existing-root adversarial qualification
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_adversarial -- --nocapture --test-threads=1
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test security_permission -- --nocapture --test-threads=1
 
       - name: Windows ACL lease failure and recovery unit tests
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
@@ -248,5 +248,5 @@ jobs:
       - name: Reproduce closed-negative C014 projection experiment
         env:
           CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c014-daemon
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_projection_feasibility -- --nocapture --test-threads=1
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test security_permission -- --nocapture --test-threads=1
 

@@ -11,7 +11,7 @@
 #   2. the pinned `eggwork-sandbox-helper` from the same immutable Eggwork
 #      revision, with `--target-dir` pointed at the helper workspace
 #      target dir (mirrors `ensure_helper_built` in
-#      `tests/eggwork_remote_execution_live.rs`).
+#      `tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc`).
 #
 # CI calls this once before live execution and exports
 # `CODEGG_EGGWORK_TEST_NODE` plus `CODEGG_EGGWORK_FIXTURES_PREBUILT=1`,

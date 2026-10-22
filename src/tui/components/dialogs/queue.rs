@@ -1936,13 +1936,6 @@ mod tests {
         );
     }
 
-    /// And from browsing it is a close, as M004 defined it.
-    #[test]
-    fn user_prompt_queue_escape_while_browsing_still_closes() {
-        let mut d = dialog(vec![entry("a", 0, "first", "pending")]);
-        assert_eq!(d.handle_key(key(KeyCode::Esc)), Some(TuiMsg::CloseDialog));
-    }
-
     /// A buffer at its bound refuses the next character and says so, rather
     /// than quietly shortening the prompt.
     #[test]

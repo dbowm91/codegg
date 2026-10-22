@@ -33,7 +33,7 @@ provides lazy, security-bounded resource access for skill assets.
 | Resources | `src/skills/resource.rs` — `ResourceHandle`, `ResourceReadLimits`, bounded reads |
 | Diagnostics | `src/skills/diagnostic.rs` — `Diagnostic`, `Severity` |
 | Compat adapter | `src/skills/compat.rs` — `SkillIndexCompat` wrapping `AssetRegistry` |
-| Tests | `tests/skills.rs`, `tests/skills_registry.rs` |
+| Tests | `tests/agent_loop/skills.inc`, `tests/agent_loop/skills_registry.inc` |
 
 ## How It Works
 
@@ -351,7 +351,7 @@ cargo test --test skills_registry          # AssetRegistry integration tests
 cargo test --test skill_publication        # approved publication safety/precedence tests
 ```
 
-`tests/skills_registry.rs` covers: empty project, all 4 project source
+`tests/agent_loop/skills_registry.inc` covers: empty project, all 4 project source
 kinds, global skills, precedence (project over global), native compat
 direct .md, invalid fallback, disabled sources, get/list/find_matching,
 build_system_prompt, activate, symlink escape rejection, oversized

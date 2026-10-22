@@ -1091,25 +1091,19 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn desktop_advertises_only_implemented_capabilities() {
-        let d = descriptor();
+            let d = descriptor();
         assert!(matches!(d.client_kind(), ClientKind::Gui));
         assert!(d.capabilities().project_catalog);
         assert!(d.capabilities().session_projection);
         assert!(!d.capabilities().multi_session_view);
     }
-    #[test]
-    fn bridge_snapshot_has_stable_state_shape() {
-        let json = serde_json::to_value(ConnectionSnapshot::disconnected(None, 3)).unwrap();
+            let json = serde_json::to_value(ConnectionSnapshot::disconnected(None, 3)).unwrap();
         assert_eq!(json["state"], "disconnected");
         assert!(json.get("daemonId").is_some());
         assert_eq!(json["connectionGeneration"], 3);
     }
 
-    #[test]
-    fn project_bridge_response_is_bounded() {
-        let projects = (0..MAX_PROJECTS + 5).map(|index| ProjectSummary {
+            let projects = (0..MAX_PROJECTS + 5).map(|index| ProjectSummary {
             project_id: format!("project-{index}"),
             display_name: format!("Project {index}"),
             lifecycle: "active".into(),
@@ -1118,9 +1112,7 @@ mod tests {
         assert_eq!(projects.len(), MAX_PROJECTS);
     }
 
-    #[test]
-    fn subscription_info_uses_camel_case_bridge_fields() {
-        let info = SubscriptionInfo {
+            let info = SubscriptionInfo {
             subscription_id: "desktop-sub-1".into(),
             connection_generation: 2,
         };
@@ -1129,16 +1121,12 @@ mod tests {
         assert_eq!(json["connectionGeneration"], 2);
     }
 
-    #[tokio::test]
-    async fn subscribe_without_connection_installs_no_owner() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         assert_eq!(state.subscriptions.active_count().await, 0);
         assert_eq!(state.current_generation(), 0);
     }
 
-    #[tokio::test]
-    async fn disconnect_invalidates_generation_and_releases_subscription() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         let id = state.subscriptions.install(1, tokio::spawn(async {})).await;
         // Simulate a connected generation without a real daemon client.
         state.connection_generation.store(1, Ordering::Release);
@@ -1151,9 +1139,7 @@ mod tests {
         assert!(state.client.lock().await.is_none());
     }
 
-    #[tokio::test]
-    async fn generations_are_monotonic_across_disconnects() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.disconnect_host().await;
         let first = state.current_generation();
         state.disconnect_host().await;
@@ -1250,9 +1236,7 @@ mod tests {
             .expect("barrier entered timeout");
     }
 
-    #[tokio::test]
-    async fn subscription_is_armed_only_after_owner_publication() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
         let sink = RecordingSink::new();
         let (tx, rx) = fake_stream(8);
@@ -1289,9 +1273,7 @@ mod tests {
         assert_eq!(snapshot.1, 1);
     }
 
-    #[tokio::test]
-    async fn event_before_install_does_not_leave_finished_owner() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.mark_fake_connected(3);
         let sink = RecordingSink::new();
         let (tx, rx) = fake_stream(8);
@@ -1319,9 +1301,7 @@ mod tests {
         drop(tx);
     }
 
-    #[tokio::test]
-    async fn subscribe_racing_disconnect_is_linearizable() {
-        // Ordering 1: transition wins first — disconnect completes before
+            // Ordering 1: transition wins first — disconnect completes before
         // subscribe linearizes, so subscribe must fail with no owner.
         let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
@@ -1372,9 +1352,7 @@ mod tests {
         assert_eq!(state.subscriptions.active_count().await, 0);
     }
 
-    #[tokio::test]
-    async fn subscribe_racing_reconnect_binds_one_generation_only() {
-        // Ordering 1: reconnect wins first — subscribe binds the new generation.
+            // Ordering 1: reconnect wins first — subscribe binds the new generation.
         let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
         let pre_gate = TestBarrier::fresh();
@@ -1439,9 +1417,7 @@ mod tests {
         assert_ne!(info.subscription_id, info2.subscription_id);
     }
 
-    #[tokio::test]
-    async fn disconnect_supersedes_inflight_connect() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
         let attempt = state.allocate_connect_attempt();
         let pre_commit = TestBarrier::fresh();
@@ -1469,9 +1445,7 @@ mod tests {
         assert!(!state.is_fake_connected());
     }
 
-    #[tokio::test]
-    async fn newer_connect_attempt_prevents_older_commit() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
         let attempt_a = state.allocate_connect_attempt();
         let attempt_b = state.allocate_connect_attempt();
@@ -1497,9 +1471,7 @@ mod tests {
         assert!(state.is_fake_connected());
     }
 
-    #[tokio::test]
-    async fn failed_newer_connect_does_not_allow_stale_commit() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.mark_fake_connected(5);
         let attempt_a = state.allocate_connect_attempt();
         // Newer attempt B is allocated (epoch advances) but fails during slow
@@ -1526,9 +1498,7 @@ mod tests {
         assert!(state.is_fake_connected());
     }
 
-    #[tokio::test]
-    async fn native_close_tears_down_subscription_and_connection() {
-        // Close wins first: subscribe paused pre-gate, close completes, then
+            // Close wins first: subscribe paused pre-gate, close completes, then
         // subscribe must fail.
         let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
@@ -1569,9 +1539,7 @@ mod tests {
         let _ = info;
     }
 
-    #[tokio::test]
-    async fn native_close_supersedes_inflight_connect() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         state.mark_fake_connected(1);
         let attempt = state.allocate_connect_attempt();
         let pre_commit = TestBarrier::fresh();
@@ -1595,9 +1563,7 @@ mod tests {
         assert!(!state.is_fake_connected());
     }
 
-    #[tokio::test]
-    async fn mixed_lifecycle_stress_returns_to_baseline() {
-        let state = Arc::new(HostState::default());
+            let state = Arc::new(HostState::default());
         let mut last_generation = 0;
         for cycle in 0..100u64 {
             let attempt = state.allocate_connect_attempt();
@@ -1650,9 +1616,7 @@ mod tests {
         assert!(state.current_generation() >= 100);
     }
 
-    #[test]
-    fn native_window_teardown_is_wired_in_run() {
-        // Build-level proof that the Tauri event callback is wired: `run`
+            // Build-level proof that the Tauri event callback is wired: `run`
         // must translate native window/app lifecycle into the Rust-host
         // teardown (Finding E) rather than relying on renderer cleanup.
         let source = include_str!("lib.rs");
@@ -1744,9 +1708,7 @@ mod tests {
     ///     -- --ignored live_daemon_lifecycle_against_real_daemon
     /// ```
     #[cfg(unix)]
-    #[tokio::test]
-    #[ignore = "needs CODEGG_DAEMON_EXECUTABLE plus an isolated daemon home; see doc comment"]
-    async fn live_daemon_lifecycle_against_real_daemon() {
+        async fn live_daemon_lifecycle_against_real_daemon() {
         use codegg_protocol::dto::ProjectRegisterRequestDto;
 
         let executable = std::env::var("CODEGG_DAEMON_EXECUTABLE").unwrap_or_else(|_| {

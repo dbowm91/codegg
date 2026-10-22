@@ -296,7 +296,7 @@ def check_storage_layout_tracks_wired_migrations() -> bool:
     `crates/codegg-core/src/storage/mod.rs`) must equal the highest schema
     migration actually wired into the canonical migration path in
     `crates/codegg-core/src/session/schema.rs`. The executable contract for
-    this relationship also lives in `tests/storage_migrations.rs`, which
+    this relationship also lives in `tests/core_daemon/storage_migrations.inc`, which
     asserts a fully migrated database reports exactly
     `STORAGE_LAYOUT_VERSION`.
 

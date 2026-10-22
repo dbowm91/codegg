@@ -206,7 +206,7 @@ projections untouched. Its `--fixture` mode verifies the negative case.
 
 ## Tests
 
-- `tests/workspace_isolation.rs` — two-workspace isolation, path policy,
+- `tests/agent_loop/workspace_isolation.inc` — two-workspace isolation, path policy,
   registry dedup, serde roundtrip, pool persistence, and unbound session
   rejection.
 - `crates/codegg-core/src/workspace.rs` inline tests — `get_or_register`

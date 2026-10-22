@@ -323,8 +323,8 @@ Live executors (M004 qualification current):
   retry-request event, not a surrogate completion. Guard:
   `check_m003_scheduler_job_complete_present` plus the M004
   executor-table checks; matrix:
-  `tests/identity_m003_scheduler_job_complete.rs` plus the M004
-  trajectory `tests/identity_live_execution_audit.rs`.
+  `tests/core_daemon/identity_m003_scheduler_job_complete.inc` plus the M004
+  trajectory `tests/core_daemon/identity_live_execution_audit.inc`.
 
 Interactive-process create treatment: the `interactive_process_*`
 daemon operations stay explicitly uninstrumented (`Global` execution
@@ -444,7 +444,7 @@ canonical execution owners through the M001 seam
   (`unknown` for non-token input) and the empty ref digest.
 - `scripts/check_audit_coverage.py` pins every hook site
   (`check_m002_live_execution_hooks_present`); the regression matrix
-  lives in `tests/identity_m002_live_audit_hooks.rs`. Full
+  lives in `tests/core_daemon/identity_m002_live_audit_hooks.inc`. Full
   live-vs-builder guard tightening (event samples,
   duplicate/secret negatives across trajectories) is closed in M004
   (see below).
@@ -496,7 +496,7 @@ attempt transition through the M001 seam
   counters with a warn and never fail terminalization.
 - `scripts/check_audit_coverage.py` pins the hook
   (`check_m003_scheduler_job_complete_present`); the regression matrix
-  lives in `tests/identity_m003_scheduler_job_complete.rs`.
+  lives in `tests/core_daemon/identity_m003_scheduler_job_complete.inc`.
 
 ## Live execution qualification and coverage guard (M004)
 
@@ -519,7 +519,7 @@ three corrected actions are live with executable evidence; distributed
   core executor table. Guard:
   `check_executor_hook_table_is_authoritative` +
   `check_m004_executor_owner_pins_present` (plus `--self-test`);
-  matrix: `tests/identity_live_execution_audit.rs`
+  matrix: `tests/core_daemon/identity_live_execution_audit.inc`
   (`executor_hook_table_is_authoritative_and_fail_closed`).
 - Deterministic single-host trajectory
   (`single_host_trajectory_is_ordered_correlated_and_secret_free`):

@@ -80,17 +80,18 @@ run_stage format cargo fmt --all -- --check
 run_stage provider_contract_tests cargo test -p codegg --lib search_backend::eggsearch -- --test-threads=1
 run_stage bootstrap_tests cargo test -p codegg --lib search_backend::bootstrap -- --test-threads=1
 run_stage research_adapter_tests cargo test -p codegg --lib research::sources::eggsearch -- --test-threads=1
-run_stage search_backend_tests cargo test -p codegg --test search_backend_eggsearch -- --test-threads=1
-run_stage provider_mapping_tests cargo test -p codegg --test search_backend_arg_mapping -- --test-threads=1
-run_stage fake_mcp_tests cargo test -p codegg --test fake_eggsearch_mcp -- --test-threads=1
+# M004: the search-backend, provider-mapping, and fake-MCP integration tests
+# are one family now (`config_provider`), so they run as one target.
+run_stage config_provider_family_tests cargo test -p codegg --test config_provider -- --test-threads=1
 run_stage mcp_child_lifecycle_tests cargo test -p codegg --lib mcp::local::tests -- --test-threads=1
 printf 'stage=real_wrapper_request child_environment structured_fidelity teardown\n'
 export BRAVE_API_KEY=parent-only-test-sentinel
 export HTTP_PROXY=http://127.0.0.1:9
 export http_proxy=http://127.0.0.1:9
 export CODEGG_PAIR_PARENT_SECRET_SENTINEL=parent-only-test-sentinel
-cargo test -p codegg --test eggsearch_pair_compat -- --ignored --exact pinned_eggsearch_process_pair_is_compatible_offline --nocapture
-run_stage agent_loop_scoped_test cargo test -p codegg --test agent_loop_harness -- --ignored --exact pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root --nocapture
+# `--exact` matches the FULL test path, so the family prefix is required.
+cargo test -p codegg --test config_provider -- --ignored --exact config_provider::eggsearch_pair_compat::pinned_eggsearch_process_pair_is_compatible_offline --nocapture
+run_stage agent_loop_scoped_test cargo test -p codegg --test agent_loop -- --ignored --exact agent_loop::agent_loop_harness::pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root --nocapture
 unset BRAVE_API_KEY HTTP_PROXY http_proxy CODEGG_PAIR_PARENT_SECRET_SENTINEL
 run_stage verify_quick scripts/verify.sh quick
 

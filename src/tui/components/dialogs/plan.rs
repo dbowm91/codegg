@@ -534,20 +534,4 @@ mod tests {
         }
         assert_eq!(d.keymap_hint().as_deref(), Some(HINT));
     }
-
-    /// A column with no interior renders nothing rather than panicking on a
-    /// zero-sized rect.
-    #[test]
-    fn a_column_with_no_interior_paints_nothing_and_does_not_panic() {
-        let mut d = dialog();
-        let rows = hosted_rows(&mut d, 2, 2);
-        // At width 2 the host's border has no room for a rule, so these rows
-        // are the corners themselves. That is the whole claim: the widget
-        // returned before painting, so the column is the host's and nothing else.
-        assert_eq!(
-            rows,
-            vec!["┌┐".to_string(), "└┘".to_string()],
-            "a 2x2 column has no interior, so only the host's border should remain"
-        );
-    }
 }

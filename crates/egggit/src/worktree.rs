@@ -172,13 +172,19 @@ mod tests {
     #[test]
     fn find_git_root_returns_none_for_nonexistent_path() {
         // Walking up from a non-existent path can still find a real git
-        // ancestor. The function should not crash and should return
-        // *some* result. We only assert it doesn't panic and returns
-        // the codegg workspace git root (since the test runs from there).
+        // ancestor, so the result depends on the machine. The invariant
+        // that always holds is the one the implementation promises: a
+        // returned root always carries a git marker. This used to assert
+        // nothing at all.
         let fake = std::path::PathBuf::from("/this/path/does/not/exist/xyz");
-        // The result is non-deterministic depending on whether the test is
-        // running inside the codegg workspace. We only assert no panic.
-        let _ = find_git_root(&fake);
+        let root = find_git_root(&fake);
+        if let Some(root) = root.as_ref() {
+            let marker = root.join(".git");
+            assert!(
+                marker.exists() || is_git_file(&marker),
+                "find_git_root returned {root:?}, which carries no git marker"
+            );
+        }
     }
 
     #[test]

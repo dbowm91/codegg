@@ -11,7 +11,7 @@ on:
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'crates/egggit/src/**'
-      - 'tests/linux_bubblewrap_first_hop.rs'
+      - 'tests/security_permission/linux_bubblewrap_first_hop.inc'
   push:
     paths:
       - '.github/workflows/linux-c006-native.yml'
@@ -21,7 +21,7 @@ on:
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'crates/egggit/src/**'
-      - 'tests/linux_bubblewrap_first_hop.rs'
+      - 'tests/security_permission/linux_bubblewrap_first_hop.inc'
 
 permissions:
   contents: read

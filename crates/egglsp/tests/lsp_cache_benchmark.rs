@@ -155,6 +155,7 @@ fn make_key_with_files(n_files: usize) -> LspCacheKey {
 #[test]
 fn test_cache_key_hash_performance() {
     let iterations = 10_000;
+    let mut per_file_hash = Vec::new();
 
     for &n_files in &[1usize, 5, 10, 16] {
         let key = make_key_with_files(n_files);
@@ -171,10 +172,35 @@ fn test_cache_key_hash_performance() {
         let elapsed = start.elapsed();
         let per_op = elapsed / iterations;
 
+        // The key must hash stably: the same key must produce the same
+        // digest, and a key built over a different file count must
+        // produce a different one. Without this the benchmark measured a
+        // value it never checked.
+        let mut first = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&key, &mut first);
+        let mut second = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&key, &mut second);
+        assert_eq!(
+            first.finish(),
+            second.finish(),
+            "the cache key must hash stably for {n_files} files"
+        );
+        per_file_hash.push((n_files, first.finish()));
+
         eprintln!(
             "[cache_key_hash] files={n_files:2}  iterations={iterations}  total={elapsed:?}  per_op={per_op:?}"
         );
     }
+
+    let mut digests: Vec<u64> = per_file_hash.iter().map(|(_, digest)| *digest).collect();
+    let before = digests.len();
+    digests.sort_unstable();
+    digests.dedup();
+    assert_eq!(
+        digests.len(),
+        before,
+        "a cache key must differ per file count: {per_file_hash:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

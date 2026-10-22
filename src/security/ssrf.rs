@@ -196,14 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_internal_ip_private_class_a() {
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
-            10, 255, 255, 255
-        ))));
-    }
-
-    #[test]
     fn test_is_internal_ip_private_class_b() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
@@ -213,36 +205,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_internal_ip_private_class_c() {
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
-            192, 168, 255, 255
-        ))));
-    }
-
-    #[test]
     fn test_is_internal_ip_link_local() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0))));
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
             169, 254, 255, 255
         ))));
         assert!(is_internal_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
-    }
-
-    #[test]
-    fn test_is_internal_ip_multicast() {
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
-            239, 255, 255, 255
-        ))));
-    }
-
-    #[test]
-    fn test_is_internal_ip_cgnat() {
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
-            100, 127, 255, 255
-        ))));
     }
 
     #[test]

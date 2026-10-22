@@ -779,7 +779,7 @@ cargo test -p codegg-core --lib session::continuation
 cargo test -p codegg-core --test continuation_checkpoint
 ```
 
-M008 qualification (`tests/reliability_qualification_m008.rs`) proves stale
+M008 qualification (`tests/agent_loop/reliability_qualification_m008.inc`) proves stale
 catalog/disabled-connection never silently reroute, explicit selection wins,
 and preference/model/sandbox state restores through restart with
 re-resolved enforcement.

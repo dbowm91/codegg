@@ -1334,7 +1334,7 @@ The collector handles:
 
 Overlay resolution stays handler-local because patch/content expansion is tool-specific; the shared semantic read model carries the resulting overlay summary when the handler chooses to attach one.
 
-Unit tests use fake/static inputs and do not require live LSP servers. Hierarchy flag wiring tests (`semantic_context_request_sets_call_hierarchy_flag`, etc.) are unit-level: they verify request construction and `SemanticContextPacket::from_semantic_response` adapter behavior with static `SemanticContextResponse` fixtures. Root composite tests in `tests/lsp_composite_stdio.rs` exercise the real `SemanticContextCollector` against a fake LSP server end-to-end, covering the full workflow, capability gating, and failure degradation paths. Production preview conversion (rename, format, source-action) is tested through the same composite harness, confirming that `WorkspaceEditPreview` and `FileEditPreview` round-trip correctly through the production `LspClient`/`LspOperations`/`LspService` stack.
+Unit tests use fake/static inputs and do not require live LSP servers. Hierarchy flag wiring tests (`semantic_context_request_sets_call_hierarchy_flag`, etc.) are unit-level: they verify request construction and `SemanticContextPacket::from_semantic_response` adapter behavior with static `SemanticContextResponse` fixtures. Root composite tests in `tests/lsp_test_support/lsp_composite_stdio.inc` exercise the real `SemanticContextCollector` against a fake LSP server end-to-end, covering the full workflow, capability gating, and failure degradation paths. Production preview conversion (rename, format, source-action) is tested through the same composite harness, confirming that `WorkspaceEditPreview` and `FileEditPreview` round-trip correctly through the production `LspClient`/`LspOperations`/`LspService` stack.
 
 ### workflow_recipes.rs - Named Workflow Recipes (Phase 7)
 
@@ -2173,7 +2173,7 @@ This pass closes the gap between "implemented by commit message" and "verified b
 | `crates/egglsp/src/context_policy.rs` | 8 | `LspContextDiagnostics` from empty/truncated/cache-hit packets; stale-policy and unavailable-policy behavior |
 | `crates/egglsp/src/context_renderer.rs` | 4 | Renderer feature-flag propagation; render-compact output stability |
 | `src/tui/app/mod.rs` | 6 | `/lsp-doctor` and `/lsp-context-diagnostics` dispatch tests (missing arg, with path, no tool) |
-| `tests/lsp.rs` | 15 | Tool-level integration tests for Phase 13-15 surface |
+| `tests/ide_protocols/lsp.inc` | 15 | Tool-level integration tests for Phase 13-15 surface |
 
 ### Bug Fixes
 
@@ -3396,7 +3396,7 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 
 ## Phase 2: Scripted Stdio Integration Testing (Complete)
 
-The `egglsp` package carries production-harness integration tests under `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, and `tests/production_service_stdio.rs`, plus `tests/scenario_engine.rs` containing the inlined fake-server self-tests (no longer `include!` from outside the package). The root crate carries composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The fake LSP server binary is named `codegg-lsp-test-server` for root tests (via `CARGO_BIN_EXE_codegg-lsp-test-server`); the `egglsp` package uses `egglsp-test-server` via `CARGO_BIN_EXE_egglsp-test-server`. Both are built as `[[bin]]` targets from the `egglsp` package; they read Content-Length framed JSON-RPC from stdin, execute scripted scenarios, and write machine-readable transcripts. The fake server supports captured-ID mode for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use bounded condition waits (polling loops) instead of fixed sleeps. The scenario engine lives within the `egglsp` crate as the `test_support` module (feature-gated behind `lsp-test-support`, `#[doc(hidden)]`); both binary wrappers are thin `main()` functions that call `egglsp::test_support::run_or_exit()`. `base64` and `libc` are optional dependencies gated on `lsp-test-support`.
+The `egglsp` package carries production-harness integration tests under `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, and `tests/production_service_stdio.rs`, plus `tests/scenario_engine.rs` containing the inlined fake-server self-tests (no longer `include!` from outside the package). The root crate carries composite tests in `tests/lsp_test_support/lsp_composite_stdio.inc` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The fake LSP server binary is named `codegg-lsp-test-server` for root tests (via `CARGO_BIN_EXE_codegg-lsp-test-server`); the `egglsp` package uses `egglsp-test-server` via `CARGO_BIN_EXE_egglsp-test-server`. Both are built as `[[bin]]` targets from the `egglsp` package; they read Content-Length framed JSON-RPC from stdin, execute scripted scenarios, and write machine-readable transcripts. The fake server supports captured-ID mode for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use bounded condition waits (polling loops) instead of fixed sleeps. The scenario engine lives within the `egglsp` crate as the `test_support` module (feature-gated behind `lsp-test-support`, `#[doc(hidden)]`); both binary wrappers are thin `main()` functions that call `egglsp::test_support::run_or_exit()`. `base64` and `libc` are optional dependencies gated on `lsp-test-support`.
 
 ### Architecture
 
@@ -3429,7 +3429,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - **11 production protocol tests** in `tests/production_protocol_stdio.rs` — all passing ✅
 - **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
 - **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
-- **26 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
+- **26 root composite tests** in `tests/lsp_test_support/lsp_composite_stdio.inc` — all passing ✅
 - **474 unit tests** in the `egglsp` crate (with `lsp-test-support` feature); Phase 4 added capability-normalization tests (bool/options provider forms, absent providers, rename + prepare-rename, code-action kinds, formatting vs range formatting, push vs pull diagnostics, type-hierarchy override, all-new-operations advertised, absent providers default to false), tier-2 profile tests (`gopls_profile_shape`, `typescript_language_server_profile_shape`, `clangd_profile_shape`, plus focused root-marker / `--stdio` / `WarmupDelay` regression guards), and Phase 4 typed DTO tests (truncate_doc, normalize_goto_response, normalize_workspace_symbol_response, decode_semantic_tokens, CodeActionSummary::from_action, CompletionCandidate::from_completion_item, SignatureHelpSummary::from_signature_help, sha256_hex, bounded unified-diff helper). Supervisor/restart scripted scenarios live in the integration tests below.
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — inlined fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures
 - **14 supervisor/restart scripted tests** in `tests/supervisor_restart_stdio.rs` — 11 base + 2 Pass 9 race tests + 1 Pass 4 supersession revalidation test (covers generation-safe supervision, manual restart supersession, restart budget exhaustion, document replay, hung-process force-kill, two consecutive restarts, stale exit-event handling, generation parity between health and exit event, manual-issued-while-automatic-in-flight race, and back-to-back manual restart deadlock)
@@ -3439,7 +3439,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
 - `tests/production_semantic_stdio.rs` — Production-harness semantic and edit-preview coverage
 - `tests/production_service_stdio.rs` — Production-harness LspService lifecycle coverage
-- `tests/lsp_composite_stdio.rs` — 26 root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool tests (orchestration with risk markers, call expansion, cycle suppression, node-limit truncation, depth-limit enforcement, diagnostic evidence filtering, and graceful degradation on call hierarchy error), and hunk-source-context collector test (unified diff with real LSP operations). Hunk path normalization uses canonical containment with error propagation.
+- `tests/lsp_test_support/lsp_composite_stdio.inc` — 26 root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool tests (orchestration with risk markers, call expansion, cycle suppression, node-limit truncation, depth-limit enforcement, diagnostic evidence filtering, and graceful degradation on call hierarchy error), and hunk-source-context collector test (unified diff with real LSP operations). Hunk path normalization uses canonical containment with error propagation.
 - `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
 - `tests/common/production_harness.rs` — Real-project harness for production launcher-path coverage
 - `tests/scenario_engine.rs` — Inlined fake-server self-tests (strict allow-listing, raw bytes, grouped-frame fixtures)
@@ -4375,7 +4375,7 @@ no workspace/executeCommand is executed by Codegg automatically.
 
 ### Tests
 
-Phase 5 adds 33 composite integration tests in `tests/phase5_context_integration.rs` covering budget enforcement, dedup/ranking, security risk tags, agent rendering, preview non-mutation, degradation decisions, TUI summaries, security packet diagnostics/references/truncation/staleness, hunk context scoping, per-file range limits, section-level rendering, payload truncation, preview staleness, and initializing state notes. The `LspEvidenceProvider` trait covers all 9 planned operation kinds: diagnostics, document symbols, definitions, references, implementations, hover, signature help, completion, semantic tokens, and workspace symbols.
+Phase 5 adds 33 composite integration tests in `tests/ide_protocols/phase5_context_integration.inc` covering budget enforcement, dedup/ranking, security risk tags, agent rendering, preview non-mutation, degradation decisions, TUI summaries, security packet diagnostics/references/truncation/staleness, hunk context scoping, per-file range limits, section-level rendering, payload truncation, preview staleness, and initializing state notes. The `LspEvidenceProvider` trait covers all 9 planned operation kinds: diagnostics, document symbols, definitions, references, implementations, hover, signature help, completion, semantic tokens, and workspace symbols.
 
 ### Status
 
@@ -4419,7 +4419,7 @@ The legacy `SemanticContextPacket` (a tool-local presentation envelope) is no lo
 
 ### Pass 9 — Production-seam integration tests
 
-`tests/phase5_context_integration.rs` gains 7 production-seam tests under `production_seam_tests` module. The new tests use the existing `MockProvider` infrastructure (no real or fake LSP server required) to verify end-to-end behavior of:
+`tests/ide_protocols/phase5_context_integration.inc` gains 7 production-seam tests under `production_seam_tests` module. The new tests use the existing `MockProvider` infrastructure (no real or fake LSP server required) to verify end-to-end behavior of:
 
 - the production adapter's diagnostics collection
 - the production adapter's reference collection via review path
@@ -4453,11 +4453,11 @@ The Phase 5 hardening produced a complete, production-shaped pipeline but left a
 
 ### Pass 1 — Timing-flake stabilization
 
-`tests/agent_loop_harness.rs::test_no_follow_up_latency` was the lone known flake. Its 1-second wall-clock bound was a CI-coupled assumption: the agent loop completes in ~0.7s isolated but drifts to 5–10s under heavy parallel load from other tests in the binary. The fix replaces the timing-only assertion with a generous 15s wall-clock bound (still well under the 120s stream-idle timeout that a real blocking receive would hit) plus a deterministic behavioral check — the provider must be invoked exactly once when no follow-up is queued. Stable across 10/10 serial runs and 5/5 parallel runs after the fix.
+`tests/agent_loop/agent_loop_harness.inc::test_no_follow_up_latency` was the lone known flake. Its 1-second wall-clock bound was a CI-coupled assumption: the agent loop completes in ~0.7s isolated but drifts to 5–10s under heavy parallel load from other tests in the binary. The fix replaces the timing-only assertion with a generous 15s wall-clock bound (still well under the 120s stream-idle timeout that a real blocking receive would hit) plus a deterministic behavioral check — the provider must be invoked exactly once when no follow-up is queued. Stable across 10/10 serial runs and 5/5 parallel runs after the fix.
 
 ### Pass 2 — Live preview-ID propagation
 
-`LspToolOutput` gains a `preview_metadata: Option<PreviewMetadata>` field (skipped from serialization when absent) carrying `not_applied: bool`, `edit_count: usize`, `affected_files: Vec<String>`, and `stale_base: bool`. Every preview-producing operation — `renamePreview`, `formatPreview`, `sourceActionPreview`, `codeActionPreview` — registers the artifact in the per-tool `PreviewArtifactRegistry` and returns the new envelope alongside the existing result payload. The legacy `LspToolOutput.preview_id: Option<String>` field is also populated. 10 unit tests in `src/tool/lsp.rs` cover serialization, registry invariants, stale-base detection, affected-files propagation, and disk non-mutation; 4 live integration tests in `tests/lsp_composite_stdio.rs` drive the real `LspTool` stack against the fake server for all four operations.
+`LspToolOutput` gains a `preview_metadata: Option<PreviewMetadata>` field (skipped from serialization when absent) carrying `not_applied: bool`, `edit_count: usize`, `affected_files: Vec<String>`, and `stale_base: bool`. Every preview-producing operation — `renamePreview`, `formatPreview`, `sourceActionPreview`, `codeActionPreview` — registers the artifact in the per-tool `PreviewArtifactRegistry` and returns the new envelope alongside the existing result payload. The legacy `LspToolOutput.preview_id: Option<String>` field is also populated. 10 unit tests in `src/tool/lsp.rs` cover serialization, registry invariants, stale-base detection, affected-files propagation, and disk non-mutation; 4 live integration tests in `tests/lsp_test_support/lsp_composite_stdio.inc` drive the real `LspTool` stack against the fake server for all four operations.
 
 ### Pass 3 — Evidence-adapter provenance contract
 
@@ -4481,7 +4481,7 @@ The security and TUI bridges delegate to the existing `build_security_evidence_s
 
 ### Pass 6 — Hunk and security bridge production seams
 
-6 production-seam tests in `tests/lsp_composite_stdio.rs` exercise the real `LspTool` stack (not just mock transformations) against the fake server:
+6 production-seam tests in `tests/lsp_test_support/lsp_composite_stdio.inc` exercise the real `LspTool` stack (not just mock transformations) against the fake server:
 
 - `hunk_bridge_with_service_adapter_preserves_hunk_source_tag`
 - `hunk_bridge_with_service_adapter_records_truncation`
@@ -4496,7 +4496,7 @@ Scenario builder `scenario_security_multi_file_refs()` provides full call-order 
 
 Static audit of `executeCommand` / `workspace/executeCommand` / `applyEdit` / `workspace/applyEdit` / `apply_preview` / `apply_workspace_edit` / `apply_edit` / `applyEdits` across `src/` and `crates/egglsp/src/`: 19 matches, all classified OK (comments, capability advertisement, or rejection tests). No Phase 5 code path invokes mutation.
 
-4 hash-based tests in `tests/phase5_context_integration.rs::phase5_no_mutation_sweep` create real files in a `tempfile::TempDir`, hash them with `egglsp::operations::sha256_hex`, run the Phase 5 path under audit, and assert hash-equal:
+4 hash-based tests in `tests/ide_protocols/phase5_context_integration.inc::phase5_no_mutation_sweep` create real files in a `tempfile::TempDir`, hash them with `egglsp::operations::sha256_hex`, run the Phase 5 path under audit, and assert hash-equal:
 
 - `phase5_agent_context_collection_does_not_apply_rename`
 - `phase5_agent_context_collection_does_not_apply_formatting`

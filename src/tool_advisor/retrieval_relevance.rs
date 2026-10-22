@@ -1112,18 +1112,42 @@ mod tests {
         );
     }
 
-    /// Generate the repository-owned derived asset. Run explicitly:
-    /// `cargo test --locked -p codegg --lib --
-    ///  tool_advisor::retrieval_relevance::tests::generate_derived_asset --
-    ///  --ignored --nocapture`
+    /// Generate the repository-owned derived asset.
+    ///
+    /// The asset is a checked-in repository file, so a routine
+    /// `cargo test -- --ignored` must not rewrite it. The write path is
+    /// gated on an explicit opt-in:
+    ///
+    /// ```text
+    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
+    ///     tool_advisor::retrieval_relevance::tests::generate_derived_asset \
+    ///     --ignored --nocapture
+    /// ```
+    ///
+    /// Without the opt-in the test asserts that the checked-in asset is
+    /// still present and writes nothing. The sibling test
+    /// `committed_asset_matches_classifier` proves that the committed
+    /// asset still matches the classifier.
     #[test]
-    #[ignore]
+    #[ignore = "rewrites a checked-in asset; set CODEGG_REGENERATE_ASSETS=1"]
     fn generate_derived_asset() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = root.join(DERIVED_ASSET_PATH);
+        if std::env::var("CODEGG_REGENERATE_ASSETS").as_deref() != Ok("1") {
+            assert!(
+                path.is_file(),
+                "checked-in derived asset is missing: {}",
+                path.display()
+            );
+            eprintln!(
+                "skipped: set CODEGG_REGENERATE_ASSETS=1 to regenerate {}",
+                path.display()
+            );
+            return;
+        }
         let cases = load_cases(None).expect("builtin corpus");
         let view = build_derived_view(&cases).expect("view");
         validate_derived_view(&view, &cases).expect("validate");
-        let path = root.join(DERIVED_ASSET_PATH);
         write_derived_view_atomic(&path, &view).expect("write asset");
         eprintln!(
             "wrote {} entries={} fingerprint={} corpus={} dev={}",
@@ -1139,10 +1163,16 @@ mod tests {
     fn committed_asset_matches_classifier() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let path = root.join(DERIVED_ASSET_PATH);
-        let Ok(bytes) = std::fs::read(&path) else {
-            eprintln!("SKIP: derived asset not yet generated");
-            return;
-        };
+        // The derived asset is a **checked-in repository file**. A missing
+        // one is a repository defect, not an environment condition, so this
+        // fails instead of skipping: a skip would report *passed* having
+        // proved nothing.
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+            panic!(
+                "the checked-in derived asset is missing: {} ({err})",
+                path.display()
+            )
+        });
         let stored: RetrievalRelevanceView = serde_json::from_slice(&bytes).expect("parse asset");
         let cases = builtin_cases().expect("corpus");
         let fresh = build_derived_view(&cases).expect("view");

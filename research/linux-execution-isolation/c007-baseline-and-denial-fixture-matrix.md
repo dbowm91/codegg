@@ -13,7 +13,7 @@ Host: Ubuntu 24.04.5 LTS, x86_64, Linux `6.8.0-146-generic`. The active LSM
 list includes Landlock and Yama. AppArmor is enabled with the current profile
 `unconfined`; SELinux is absent. `/proc/self/status` reports `Seccomp: 0`.
 
-`tests/sandbox_containment.rs::legacy_landlock_leaves_host_process_tcp_and_abstract_uds_reachable`
+`tests/security_permission/sandbox_containment.inc::legacy_landlock_leaves_host_process_tcp_and_abstract_uds_reachable`
 uses only owned fixtures and the production sandbox helper. A same-UID child
 under Landlock can see and signal its controlled host PID, connect to a host
 loopback TCP listener, and connect to a host abstract Unix-domain socket.

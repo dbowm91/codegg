@@ -396,6 +396,52 @@ files)" becomes 286. The remaining rows were re-measured and did not move. The
 enum-variant measure was calibrated against the tree those values were
 published against before it was applied, as in the pass above.
 
+The row for integration test files was then **remeasured on 2026-10-21**,
+after the CI/test-throughput recovery M004 milestone consolidated the root
+package's integration-test executables into families. That milestone changed
+the row's **measure**, not only its value, so both were re-derived rather than
+carried over. The previous measure counted `tests/*.rs` — the top-level
+integration test files — and read **286**. The new measure counts the root
+integration test *modules*, which are now `tests/*.rs` plus the `.inc`
+members inside each family directory, with the `tests/common/` helper tree
+excluded because it holds no test: `tests/*.rs` (now **0** — every root
+integration test file moved into a family) plus `tests/*/*.inc` (**301**),
+which is **301**.
+
+The count moved from 286 to 301 for two reasons that cancel in opposite
+directions, and both are counted rather than estimated: one file was deleted
+(`tests/test_util.rs`, a helper with no test functions and no reference — it
+was an auto-discovered cargo target that compiled 63 lines of dead code into
+its own executable), while 16 files that the old measure could not see became
+visible — the 11 `tests/projection_replay/*.inc` members and the 5
+`tests/session_family/*.inc` members, which the M003 consolidation had
+already moved out of `tests/*.rs` but which the old measure therefore never
+counted. 286 − 1 + 16 = 301.
+
+The measure is now pinned in the row's `Source` column and is checked by
+`scripts/check_test_target_references.py`, so a later consolidation that
+moves or adds a module cannot leave the recorded count stale.
+
+Two rows were **remeasured again on 2026-10-21**, after the CI/test-throughput
+recovery M006 and M007 milestones. Each was re-measured against its own
+listed `Source`, not carried over:
+
+- **Integration test files** 301 → **302**. M007 removed 84 test *functions*
+  but no integration-test *module*; M007's work package D added one member,
+  `tests/command_git/secret_scan_self_tests.inc`, which now carries the five
+  `secret_scan` self-tests that used to live in the shared helper tree. The
+  measure is unchanged.
+- **CI guard scripts** 62 → **68**. The previous value predated this
+  workstream's guard work: M001 added `check_cargo_profile_alignment.py`,
+  M003 added `check_test_ownership.py`, M004 added
+  `check_test_target_references.py`, M006 added
+  `check_test_assertion_quality.py` and `check_tool_program_parse_only.py`,
+  and M007 added `check_test_duplication.py`. Six new scripts, 62 + 6 = 68.
+  (`scripts/rust_test_scan.py` and `scripts/scoped_selection.py` do not match
+  the row's `scripts/check_*` measure and are not counted.)
+
+The remaining rows were re-measured and did not move.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 87 | `architecture/*.md` |
@@ -420,8 +466,8 @@ published against before it was applied, as in the pass above.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 286 | `tests/*.rs` |
-| CI guard scripts | 62 | `scripts/check_*` |
+| Integration test files | 302 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| CI guard scripts | 68 | `scripts/check_*` |
 
 
 ## Feature gates
@@ -687,7 +733,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (286 files)
+├── tests/                      # Integration tests (301 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -720,13 +766,13 @@ Full `check_*` inventory lives in `scripts/` (62 guards) and additionally covers
 
 The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
 
-The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **268** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is four test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002, `tests/tui_composer_motions.rs` from M004, `tests/tui_composer_selection.rs` from M005) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
+The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **268** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is four test files (`tests/tui_render/tui_composer_cursor.inc` from M001, `tests/tui_render/tui_composer_claims.inc` from M002, `tests/tui_render/tui_composer_motions.inc` from M004, `tests/tui_render/tui_composer_selection.inc` from M005) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
 
-The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/managed_scratch_job_admission.rs` and `tests/linux_native_scratch_containment.rs`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
+The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/scheduler_jobs/managed_scratch_job_admission.inc` and `tests/security_permission/linux_native_scratch_containment.inc`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
 
 Every row was **remeasured on 2026-10-20** against its listed `Source` when the TUI editor Helix parity workstream (M001–M013, M015–M020) was reconciled with `main`. Sixteen rows had drifted: architecture docs **87**, tool registrations **65** (`registry.register` / `registry.register_boxed` inside `with_options()`), distinct production tool names **61**, tool source files **80**, `CoreRequest` variants **258** (234 struct + 24 unit), `CoreResponse` variants **168**, `CoreEvent` variants **92**, authorized operations **252** (distinct `OperationDescriptor::new` names), identity newtypes **19**, built-in slash commands **166** (the count `built_in_command_count_matches_release_docs` asserts), TUI state modules **32** (33 `.rs` files incl. `mod.rs`), database tables **92** (`CREATE TABLE` occurrences), storage-layout version **83**, integration test files **269**, and CI guard scripts **62**. Four methods were ambiguous and were pinned by re-running them at the commits that originally recorded each value — `541a1c84`, `3f8ecc48`, `ac4d5962` and `fc53d0af` — so the rows keep the counting method the table has always used rather than a new one. The tool-name row's exclusion note was corrected too: there are now **7** test-only `impl Tool for` mocks, not 5 — `disabled.rs` and `broker.rs` joined `program_manifest.rs`, `catalog.rs` and `tool_search.rs`. The counts on both sides of the `main` merge were individually correct for their own tree (58 guard scripts each, 268 test files on `main`, 244 on the branch); the merged tree is the union, so the two file-count rows moved again, and the sixteen code-count rows had been drifting on `main` and on this branch independently.
 
-The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_composer_motions.rs` (M004), `tests/tui_composer_selection.rs` (M005), `tests/tui_composer_undo.rs` and `tests/tui_composer_insert_transitions.rs` (M006), and `tests/tui_composer_keymap_consistency.rs` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
+The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_render/tui_composer_motions.inc` (M004), `tests/tui_render/tui_composer_selection.inc` (M005), `tests/tui_render/tui_composer_undo.inc` and `tests/tui_render/tui_composer_insert_transitions.inc` (M006), and `tests/tui_render/tui_composer_keymap_consistency.inc` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.

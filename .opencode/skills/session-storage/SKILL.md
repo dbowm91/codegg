@@ -147,7 +147,7 @@ Verified 2026-10-06 against `crates/codegg-core/src/session/{mod,store,models,me
 `src/run_rerun.rs`, `src/core/daemon_refresh.rs`, `tests/common/pool.rs`,
 `scripts/check-core-boundary.sh`,
 `scripts/check_project_catalog_invariants.py`, and
-`tests/checked_restore_integration.rs`. Corrected the schema row, which
+`tests/core_daemon/checked_restore_integration.inc`. Corrected the schema row, which
 claimed each migration runs in `BEGIN IMMEDIATE` (it runs in a plain
 `pool.begin()` transaction in `migrate_and_record`); the pool rule, which
 called deprecated `init()` tests-only when it has no in-tree callers at

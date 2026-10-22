@@ -1,0 +1,803 @@
+# Test ownership manifest
+#
+# This manifest maps source paths to the workspace members that own them and
+# to the test targets that cover them. It is the machine-readable input to the
+# change-scoped verification mode described in
+# `plans/implementation/ci-test-throughput-recovery/003-change-scoped-verification-mode.md`.
+#
+# Consumers:
+#
+#   scripts/check_test_ownership.py  — the static guard that keeps this file
+#                                       honest (a manifest entry that names a
+#                                       nonexistent target, a target no entry
+#                                       owns, an unknown member, or a path
+#                                       pattern that matches no file is a
+#                                       failure).
+#   the scoped verification mode     — reads this file to compute the affected
+#                                       members and the affected test targets
+#                                       for a change, and selects only those
+#                                       via repeated `--test` flags.
+#
+# THE HOSTED CI JOB'S SCOPE IS NOT AFFECTED BY THIS FILE. `scripts/verify.sh
+# quick` and `scripts/verify.sh full`, and the hosted `CI / verify` job, keep
+# running the whole workspace suite. This file describes coverage; it never
+# removes coverage from CI. Scoping is a developer-local affordance only.
+#
+# ---------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------
+#
+# schema-version = 1
+#     The manifest's schema version. A consumer MUST refuse a version it does
+#     not understand rather than guess.
+#
+# [[members]]
+#     One entry per workspace member. Exactly one entry per member; the
+#     guard fails on a missing or a duplicated member.
+#
+#   name = "<cargo package name>"
+#       The member's cargo package name, exactly as `cargo metadata` reports
+#       it. This is the key the scoped mode uses to select `-p <package>`.
+#
+#   root = "<member source directory, relative to the repo root>"
+#       The directory that holds the member's production sources. Every path
+#       under this directory belongs to the member. A member with no source
+#       directory of its own is not representable and does not exist.
+#
+#   lib-test-target = "<member's library test target name>"
+#       The name cargo gives the member's library unit-test harness (cargo
+#       names it after the crate, with underscores). An affected member
+#       ALWAYS contributes this target. A member with no integration test
+#       targets therefore needs no `[[groups]]` entry at all: its lib test
+#       target is owned by the member entry itself.
+#
+# [[groups]]
+#     One coverage group per subject. A group names the member it belongs to,
+#     the source paths its subject covers, and the test targets that cover
+#     those paths.
+#
+#   id = "<stable group id>"
+#       A stable, human-readable identifier for the group (kebab or snake
+#       case). It is a manifest-local key: it appears in the scoped mode's
+#       output and in guard diagnostics, and it must not be renamed casually.
+#
+#   member = "<cargo package name>"
+#       The member this group belongs to. Must name a member declared above.
+#       A group's `targets` are resolved within this member.
+#
+#   paths = ["<source-path glob>", ...]
+#       Source-path globs, relative to the repo root, that the group's
+#       subject covers. A changed file matching any of them selects the
+#       group's targets.
+#
+#   targets = ["<test target name or glob>", ...]
+#       The test targets that cover the group's subject. A bare name (a
+#       pattern with no metacharacters) is an exact target name; a pattern
+#       with metacharacters is matched against every test target name in the
+#       group's member.
+#
+#       A group's `targets` may also name its member's `lib-test-target` — the
+#       `root_catch_all` group does — so a member's target universe is its
+#       integration test targets PLUS its library test target. A library test
+#       target that no group names is still owned: its `[[members]]` entry
+#       owns it.
+#
+# ---------------------------------------------------------------------
+# Matching semantics
+# ---------------------------------------------------------------------
+#
+# Path and target patterns are fnmatch-style globs:
+#
+#   *        matches any run of characters EXCEPT `/`
+#   **       matches across directory separators
+#   ?        matches exactly one character
+#
+# A path glob is matched against the changed file's repo-root-relative path.
+# A target pattern is matched against each test target name in the group's own
+# member.
+#
+# ---------------------------------------------------------------------
+# How a path resolves to a member
+# ---------------------------------------------------------------------
+#
+# The LONGEST matching member root wins: a path under `crates/codegg-core/src`
+# resolves to `codegg-core`, not to the root package. A path under no member
+# root at all — a top-level script, a document, an asset, a file in the
+# repository's `tests/` directory — is "outside every member". The scoped
+# mode's documented action for a path outside every member is to WIDEN TO THE
+# WHOLE WORKSPACE. Widening is never a silent skip: the mode prints the
+# changed files it considered, the members it selected, and the reason.
+#
+# ---------------------------------------------------------------------
+# The catch-all rule
+# ---------------------------------------------------------------------
+#
+# A changed file that matches no group's `paths` widens the scope to its whole
+# member rather than being skipped. The `root_catch_all` group is the
+# documented catch-all for the root package: its `paths` name the root
+# package's remaining top-level source paths (`src/lib.rs`, `src/main.rs`,
+# `src/bin/**`), and its `targets` name the root package's library test
+# target. It exists so that the root package always contributes its lib test
+# target to a scoped run, and so that a change to a root source file that no
+# precise group claims is visibly attributed rather than silently dropped.
+#
+# ---------------------------------------------------------------------
+# How M004's family consolidation shrinks this file
+# ---------------------------------------------------------------------
+#
+# The schema did not change when M004 consolidated the root package's
+# integration targets into families. `targets` are GLOBS OVER TARGET NAMES,
+# not fixed target lists, so a group that listed forty-one `tui_*` targets
+# lists ONE family target after consolidation. The membership changed; the
+# schema, the field names, and the guard's rules did not.
+#
+# M004 has now been applied. Every root group names its family target (or,
+# for `core_daemon`, its family plus the two pre-existing directory
+# targets), and the manifest shrank accordingly: the root package went from
+# 288 test targets to 21, and the `targets` lists here went from 288 names
+# to 22. The guard's rule that a real test target must be owned by some
+# group is what proves the consolidation did not orphan one.
+#
+# The family target names are stable: a family is named after the subject it
+# covers, and the six binaries that `.config/nextest.toml` reserves the
+# runner for keep their original names so their `binary(...)` filters still
+# resolve.
+#
+# ---------------------------------------------------------------------
+# Notes on specific group placements
+# ---------------------------------------------------------------------
+#
+#   `project_activation` (tests/core_daemon/project_activation.inc) is owned by
+#   `core_daemon`, not by `tui_render`. It exercises project-catalog
+#   activation, lease coalescing, and restart hydration through
+#   `codegg::core::daemon::CoreDaemon` and
+#   `codegg::core::project_activation::HealthState`; it references no TUI
+#   module at all.
+#
+#   `projection_replay` (tests/projection_replay/) and `session_family`
+#   (tests/session_family/) are the two already-consolidated directory
+#   targets. Both are owned by `core_daemon`: the first is a daemon
+#   projection subject and the second is the daemon-owned session family.
+#
+#   The legacy shared test helper (`tests/test_util.rs`) was **removed** by
+#   M004: it held zero test functions and had zero references, and cargo was
+#   auto-discovering it as its own executable. Its former group is gone with
+#   it, so no group's `paths` point outside a member's source root any more.
+#
+# ---------------------------------------------------------------------
+# Group inventory
+# ---------------------------------------------------------------------
+#
+# The root package's test targets are grouped into 21 subject groups: twenty
+# precise subject groups and one documented catch-all. Before M004's
+# consolidation the root package had 288 test targets and a twenty-second
+# group for the legacy shared helper; that helper was dead and was removed,
+# and the 288 targets are now 21 family targets.
+#
+# The other four members that own integration test targets (`codegg-client`,
+# `codegg-core`, `codegg-document`, `egglsp`) have their own groups below. The
+# seven remaining members own no integration test targets; their lib test
+# target is owned by their `[[members]]` entry.
+#
+# Run the guard after every change:
+#
+#   python3 scripts/check_test_ownership.py
+#   python3 scripts/check_test_ownership.py --self-test
+
+schema-version = 1
+
+# ---------------------------------------------------------------------
+# Workspace members
+# ---------------------------------------------------------------------
+
+[[members]]
+name = "codegg"
+root = "src"
+lib-test-target = "codegg"
+
+[[members]]
+name = "codegg-client"
+root = "crates/codegg-client/src"
+lib-test-target = "codegg_client"
+
+[[members]]
+name = "codegg-config"
+root = "crates/codegg-config/src"
+lib-test-target = "codegg_config"
+
+[[members]]
+name = "codegg-core"
+root = "crates/codegg-core/src"
+lib-test-target = "codegg_core"
+
+[[members]]
+name = "codegg-document"
+root = "crates/codegg-document/src"
+lib-test-target = "codegg_document"
+
+[[members]]
+name = "codegg-git"
+root = "crates/codegg-git/src"
+lib-test-target = "codegg_git"
+
+[[members]]
+name = "codegg-protocol"
+root = "crates/codegg-protocol/src"
+lib-test-target = "codegg_protocol"
+
+[[members]]
+name = "codegg-providers"
+root = "crates/codegg-providers/src"
+lib-test-target = "codegg_providers"
+
+[[members]]
+name = "eggcontext"
+root = "crates/eggcontext/src"
+lib-test-target = "eggcontext"
+
+[[members]]
+name = "egggit"
+root = "crates/egggit/src"
+lib-test-target = "egggit"
+
+[[members]]
+name = "egglsp"
+root = "crates/egglsp/src"
+lib-test-target = "egglsp"
+
+[[members]]
+name = "eggsentry"
+root = "crates/eggsentry/src"
+lib-test-target = "eggsentry"
+
+# ---------------------------------------------------------------------
+# Root package (`codegg`) coverage groups
+# ---------------------------------------------------------------------
+
+# The scheduler-owned PTY engine that backs long-lived interactive sessions.
+[[groups]]
+id = "interactive_pty_engine"
+member = "codegg"
+paths = [
+  "src/interactive_process.rs",
+  "src/managed_process.rs",
+  "src/scheduler/admission.rs",
+]
+targets = ["interactive_process_sessions"]
+
+# The bounded attach/resume protocol layered over the PTY engine.
+[[groups]]
+id = "interactive_attach_protocol"
+member = "codegg"
+paths = [
+  "src/interactive_process_attach.rs",
+  "src/protocol_conversions.rs",
+]
+targets = ["interactive_process_attach_resume"]
+
+# The TUI-side controller that drives an attached interactive terminal.
+[[groups]]
+id = "interactive_terminal_controller"
+member = "codegg"
+paths = [
+  "src/tui/interactive_terminal.rs",
+  "src/tui/terminal.rs",
+]
+targets = ["interactive_terminal_tui"]
+
+# Live Eggwork remote execution against a real node.
+[[groups]]
+id = "eggwork_remote_live"
+member = "codegg"
+paths = [
+  "src/scheduler/eggwork.rs",
+  "src/scheduler/eggwork_limits.rs",
+  "src/scheduler/eggwork_telemetry.rs",
+  "src/core/node_telemetry.rs",
+]
+targets = ["eggwork_remote_execution_live"]
+
+# The cancellation chain from admission to job completion.
+[[groups]]
+id = "scheduler_cancellation_chain"
+member = "codegg"
+paths = ["src/scheduler/**"]
+targets = ["scheduler_cancellation"]
+
+# The tool-advisor causal observe/replay surface.
+[[groups]]
+id = "causal_observe_replay"
+member = "codegg"
+paths = ["src/tool_advisor/**"]
+targets = ["causal_observe_replay"]
+
+# The fake-LSP harness and the root package's LSP shim.
+[[groups]]
+id = "lsp_fake_server"
+member = "codegg"
+paths = [
+  "src/lsp/**",
+  "src/tool/lsp.rs",
+  "src/tool/lsp_preview_apply.rs",
+  "src/tool/lsp_read.rs",
+  "src/tool/lsp_security.rs",
+]
+targets = ["lsp_test_support"]
+
+# The server's HTTP and WebSocket surface.
+[[groups]]
+id = "server_http_surface"
+member = "codegg"
+paths = ["src/server/**"]
+targets = ["server_feature"]
+
+# Windows-restricted managed process and its ACL lease.
+[[groups]]
+id = "windows_sandbox_process"
+member = "codegg"
+paths = [
+  "src/managed_process/windows.rs",
+  "src/managed_process/windows_acl_lease.rs",
+  "src/security/sandbox/**",
+]
+targets = ["windows_sandbox_test_support"]
+
+# Linux process IPC and the typed git execution path it carries.
+[[groups]]
+id = "linux_git_process"
+member = "codegg"
+paths = [
+  "src/git_service.rs",
+  "src/managed_process.rs",
+  "src/security/sandbox.rs",
+  "src/git_publication/**",
+]
+targets = ["linux_git_test_support"]
+
+# The terminal UI: rendering, composer, panels, themes, and the TUI-only
+# surfaces that hang off them.
+[[groups]]
+id = "tui_render"
+member = "codegg"
+paths = [
+  "src/tui/**",
+  "src/theme/**",
+]
+targets = ["tui_render"]
+
+# The agent loop, its context ledger, skills, plugins, and work-plan surface.
+[[groups]]
+id = "agent_loop"
+member = "codegg"
+paths = [
+  "src/agent/**",
+  "src/context/**",
+  "src/skills/**",
+  "src/plugin/**",
+  "src/work_plan_*.rs",
+]
+targets = ["agent_loop"]
+
+# Durable jobs, admission, background execution, and scratch management.
+[[groups]]
+id = "scheduler_jobs"
+member = "codegg"
+paths = [
+  "src/scheduler/**",
+  "src/background_task_migration.rs",
+  "src/job_recovery.rs",
+  "src/job_dispatcher.rs",
+  "src/scratch.rs",
+]
+targets = ["scheduler_jobs"]
+
+# The tool registry, the tool broker, tool programs, and the python-script
+# and eggsact runtimes they drive.
+[[groups]]
+id = "tool_programs"
+member = "codegg"
+paths = [
+  "src/tool/**",
+  "src/python_script/**",
+  "src/eggsact/**",
+]
+targets = ["tool_programs"]
+
+# The daemon, its session/projection surfaces, identity and audit, team and
+# work-order coordination, and the two consolidated directory targets
+# (`projection_replay`, `session_family`).
+[[groups]]
+id = "core_daemon"
+member = "codegg"
+paths = [
+  "src/core/**",
+  "src/directory_listing.rs",
+  "src/executor_audit_hooks.rs",
+  "src/live_execution_audit.rs",
+  "src/execution_subject_capture.rs",
+  "src/decision.rs",
+]
+targets = ["core_daemon", "projection_replay", "session_family"]
+
+# Command routing, intent classification, and the typed git mutation and
+# network surfaces.
+[[groups]]
+id = "command_git"
+member = "codegg"
+paths = [
+  "src/git_*.rs",
+  "src/git_publication/**",
+  "src/command/**",
+  "src/command_intent/**",
+  "src/command_routing.rs",
+  "src/command_planner.rs",
+  "src/command_outcome.rs",
+  "src/policy_surface.rs",
+]
+targets = ["command_git"]
+
+# Sandbox containment, the permission model, and the approval reviewer.
+[[groups]]
+id = "security_permission"
+member = "codegg"
+paths = [
+  "src/security/**",
+  "src/permission/**",
+  "src/preflight/**",
+]
+targets = ["security_permission"]
+
+# Configuration, MCP, the eggsearch backend, and the self-upgrade path.
+[[groups]]
+id = "config_provider"
+member = "codegg"
+paths = [
+  "src/mcp/**",
+  "src/search_backend/**",
+  "src/upgrade/**",
+  "src/install.rs",
+]
+targets = ["config_provider"]
+
+# The IDE and document protocol surfaces: ACP, the document client, and the
+# LSP read surface.
+[[groups]]
+id = "ide_protocols"
+member = "codegg"
+paths = [
+  "src/ide/**",
+  "src/document_service.rs",
+  "src/acp.rs",
+  "src/client/**",
+]
+targets = ["ide_protocols"]
+
+# The root package's catch-all: the remaining top-level source paths, and the
+# root library test target. A change to a root source file that no precise
+# group claims is attributed here rather than dropped.
+[[groups]]
+id = "root_catch_all"
+member = "codegg"
+paths = [
+  "src/lib.rs",
+  "src/main.rs",
+  "src/bin/**",
+]
+targets = ["codegg"]
+
+# ---------------------------------------------------------------------
+# `codegg-client` coverage groups
+# ---------------------------------------------------------------------
+
+# The local-daemon connect path the GUI client uses.
+[[groups]]
+id = "client_gui_surface"
+member = "codegg-client"
+paths = [
+  "crates/codegg-client/src/connect.rs",
+  "crates/codegg-client/src/local.rs",
+  "crates/codegg-client/src/windows_pipe_security.rs",
+  "crates/codegg-client/src/windows_process.rs",
+]
+targets = ["gui_client"]
+
+# The frontend session-projection driver.
+[[groups]]
+id = "client_projection_driver"
+member = "codegg-client"
+paths = [
+  "crates/codegg-client/src/driver.rs",
+  "crates/codegg-client/src/paths.rs",
+]
+targets = ["session_projection_driver"]
+
+# ---------------------------------------------------------------------
+# `codegg-core` coverage groups
+# ---------------------------------------------------------------------
+
+# The durable user-prompt queue and its delivery and mutation paths.
+[[groups]]
+id = "core_session_prompt_queue"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/session/user_prompt_queue.rs",
+  "crates/codegg-core/src/session/import.rs",
+]
+targets = [
+  "user_prompt_queue",
+  "user_prompt_queue_delivery",
+  "user_prompt_queue_mutation",
+]
+
+# Session models, schema, store, checkpoints, and the storage layer.
+[[groups]]
+id = "core_session_store"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/session/**",
+  "crates/codegg-core/src/storage/**",
+]
+targets = [
+  "cached_models_composite_key",
+  "continuation_checkpoint",
+  "session_title_slug",
+]
+
+# The project catalog, its storage, and repository lineage.
+[[groups]]
+id = "core_project_catalog"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/project_catalog.rs",
+  "crates/codegg-core/src/project_storage.rs",
+  "crates/codegg-core/src/repository_lineage.rs",
+  "crates/codegg-core/src/project_discovery.rs",
+  "crates/codegg-core/src/project_discovery_service.rs",
+]
+targets = ["project_catalog"]
+
+# Identity, session control, and the authorization policy.
+[[groups]]
+id = "core_identity_authority"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/identity.rs",
+  "crates/codegg-core/src/session_control.rs",
+  "crates/codegg-core/src/authorization.rs",
+  "crates/codegg-core/src/authorization/**",
+]
+targets = [
+  "human_shell_promotion",
+  "identity",
+]
+
+# The work-plan model, its projection, and the goal and task-state models.
+[[groups]]
+id = "core_work_plan"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/work_plan/**",
+  "crates/codegg-core/src/goal/**",
+  "crates/codegg-core/src/task_state/**",
+]
+targets = [
+  "work_plan_foundation",
+  "work_plan_projection_arbiter",
+]
+
+# The context model, the decision runtime, and model routing.
+[[groups]]
+id = "core_context_decision"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/context.rs",
+  "crates/codegg-core/src/decision.rs",
+  "crates/codegg-core/src/model_routing.rs",
+  "crates/codegg-core/src/model_profile/**",
+]
+targets = [
+  "context",
+  "decision_runtime_fixtures",
+]
+
+# ---------------------------------------------------------------------
+# `codegg-document` coverage groups
+# ---------------------------------------------------------------------
+
+# The text-transaction core.
+[[groups]]
+id = "document_transactions"
+member = "codegg-document"
+paths = ["crates/codegg-document/src/**"]
+targets = ["transactions"]
+
+# ---------------------------------------------------------------------
+# `egglsp` coverage groups
+# ---------------------------------------------------------------------
+
+# The stdio server, service, supervisor, and runtime — the authoritative LSP
+# process surfaces.
+[[groups]]
+id = "egglsp_stdio_servers"
+member = "egglsp"
+paths = [
+  "crates/egglsp/src/server.rs",
+  "crates/egglsp/src/service.rs",
+  "crates/egglsp/src/supervisor.rs",
+  "crates/egglsp/src/runtime.rs",
+  "crates/egglsp/src/client.rs",
+]
+targets = [
+  "production_protocol_stdio",
+  "production_semantic_stdio",
+  "production_service_stdio",
+  "scenario_engine",
+  "supervisor_restart_stdio",
+]
+
+# The semantic context, preview, cache, and diagnostics surfaces.
+[[groups]]
+id = "egglsp_context_preview"
+member = "egglsp"
+paths = [
+  "crates/egglsp/src/context.rs",
+  "crates/egglsp/src/context_policy.rs",
+  "crates/egglsp/src/context_renderer.rs",
+  "crates/egglsp/src/preview_registry.rs",
+  "crates/egglsp/src/cache.rs",
+  "crates/egglsp/src/diagnostics.rs",
+  "crates/egglsp/src/tui_summary.rs",
+  "crates/egglsp/src/launch.rs",
+  "crates/egglsp/src/hunk_context.rs",
+]
+targets = [
+  "code_action_preview",
+  "empty_diagnostics_readiness",
+  "lsp_cache_benchmark",
+  "phase6_regression",
+  "real_server_smoke",
+]
+
+# ---------------------------------------------------------------------
+# Dependency edges — the direction the path rules do not capture
+# ---------------------------------------------------------------------
+#
+# A path rule answers "which tests cover this file?". It cannot answer
+# "which tests are affected by this file?" for a file that lives in a
+# crate another crate depends on.
+#
+# The mechanism is simple and unavoidable: the root package depends on
+# **all eleven** other workspace crates, and it re-exports several of
+# them (`codegg::security::*` is `eggsentry`, `codegg::lsp::*` is
+# `egglsp`, `codegg::scheduler::config::*` is `codegg-config`, and so
+# on). A change to `crates/eggsentry/src/command.rs` therefore changes
+# the behaviour of `codegg::security::scanner::inspect_text`, which the
+# root package's own security tool calls, which the root package's
+# integration tests call.
+#
+# The coupling runs **through the dependent's own source**, so a
+# path-to-target rule cannot see it: the test file that calls the root's
+# security tool does not name `eggsentry` anywhere. That is exactly the
+# case the plan's invariant I4 (a scoped run is a superset of the
+# change's coverage) exists to catch, and it is why the edge set below
+# is part of the manifest rather than left to the selector's judgement.
+#
+# `[[dependencies]]` declares the workspace's **dependency edges**: an
+# entry means "`dependent` depends on `member`". The scope rule is:
+#
+#   When `member` is affected, every member that transitively depends on
+#   it is affected too, and a member pulled in that way contributes its
+#   FULL test surface — its library test target and every integration
+#   target it owns — rather than only the targets a path rule would
+#   match.
+#
+# The full surface, and not a narrower set, is the honest answer: the
+# dependent's tests are black-box over the dependent's public API, and
+# that API re-exports the dependency, so **any** of the dependent's
+# tests can reach the changed code. A tighter answer would need a
+# call graph from every test to every crate, which the repository does
+# not have and which this workstream exists to avoid paying for.
+#
+# The cost is stated plainly: a change to any non-root crate widens the
+# scope to the root package's whole integration surface, because the root
+# package depends on every other crate. A change confined to the root
+# package's own `src/` — the common case — stays precise, because the
+# root package has no dependents.
+#
+# The edge set is **mechanically verifiable**: the guard compares it
+# against `cargo metadata`'s workspace-local dependency edges and fails
+# when an edge is missing or invented. A dependency added to the
+# workspace without a manifest entry is a guard failure, not a silent
+# under-selection.
+#
+# `member`    — the crate whose change can affect the dependent.
+# `dependent` — the crate that depends on it.
+
+[[dependencies]]
+member = "codegg-client"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-config"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-config"
+dependent = "codegg-core"
+
+[[dependencies]]
+member = "codegg-config"
+dependent = "codegg-providers"
+
+[[dependencies]]
+member = "codegg-core"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-document"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-document"
+dependent = "codegg-client"
+
+[[dependencies]]
+member = "codegg-git"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-git"
+dependent = "codegg-core"
+
+[[dependencies]]
+member = "codegg-protocol"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-protocol"
+dependent = "codegg-client"
+
+[[dependencies]]
+member = "codegg-protocol"
+dependent = "codegg-core"
+
+[[dependencies]]
+member = "codegg-providers"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-providers"
+dependent = "codegg-core"
+
+[[dependencies]]
+member = "eggcontext"
+dependent = "codegg"
+
+[[dependencies]]
+member = "egggit"
+dependent = "codegg"
+
+[[dependencies]]
+member = "egggit"
+dependent = "codegg-core"
+
+[[dependencies]]
+member = "egggit"
+dependent = "codegg-git"
+
+[[dependencies]]
+member = "egglsp"
+dependent = "codegg"
+
+[[dependencies]]
+member = "egglsp"
+dependent = "codegg-core"
+
+[[dependencies]]
+member = "eggsentry"
+dependent = "codegg"
+
+[[dependencies]]
+member = "eggsentry"
+dependent = "codegg-core"
+

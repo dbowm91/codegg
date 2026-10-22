@@ -202,7 +202,7 @@ All tests use `current_thread` Tokio runtime. In-memory stores for state-machine
 Third pass (2026-10-06), verifying against
 `crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store}.rs`,
 `src/{job_dispatcher,job_recovery,background_task_migration}.rs`, and
-`tests/durable_jobs_phase4.rs`. Corrected both state-machine diagrams against
+`tests/scheduler_jobs/durable_jobs_phase4.inc`. Corrected both state-machine diagrams against
 the transition tables in `store.rs`:86-100 and `:104-116`. The `JobState`
 diagram omitted `TimedOut → Queued`, and the attempt diagram collapsed
 `Created` and `Admitted` into one row — `Created` can also reach `Admitted` and

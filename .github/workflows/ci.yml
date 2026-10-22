@@ -171,6 +171,58 @@ jobs:
       - name: No hardcoded model catalog guard
         run: python3 scripts/check_no_hardcoded_models.py
 
+      # A difference between the dev and test cargo profiles makes the same
+      # crate compile twice — once for `cargo build`, once for `cargo test`.
+      - name: Cargo profile alignment guard
+        run: python3 scripts/check_cargo_profile_alignment.py
+
+      - name: Cargo profile alignment guard self-test
+        run: python3 scripts/check_cargo_profile_alignment.py --self-test
+
+      # The ownership manifest and the target-name filters must agree with
+      # the tree: a filter that names a renamed test target silently stops
+      # reserving the runner for it.
+      - name: Test ownership guard
+        run: python3 scripts/check_test_ownership.py
+
+      - name: Test ownership guard self-test
+        run: python3 scripts/check_test_ownership.py --self-test
+
+      # The scoped mode's selection algorithm and its `members` output format.
+      # The caller reads that format with a tab-separated read, so a column
+      # that moves is a scope that silently changes.
+      - name: Scoped selection self-test
+        run: python3 scripts/scoped_selection.py --self-test
+
+      - name: Test target reference guard
+        run: python3 scripts/check_test_target_references.py
+
+      - name: Test target reference guard self-test
+        run: python3 scripts/check_test_target_references.py --self-test
+
+      # Every test body must assert something checkable, and no two test
+      # bodies may assert the same thing twice unless the decision table
+      # records the survivor.
+      - name: Test assertion quality guard
+        run: python3 scripts/check_test_assertion_quality.py
+
+      - name: Test assertion quality guard self-test
+        run: python3 scripts/check_test_assertion_quality.py --self-test
+
+      - name: Test duplication guard
+        run: python3 scripts/check_test_duplication.py
+
+      - name: Test duplication guard self-test
+        run: python3 scripts/check_test_duplication.py --self-test
+
+      # The Tool Program pipeline is parse-only. Three test functions that
+      # could not fail used to "enforce" it; this guard replaces them.
+      - name: Tool Program parse-only guard
+        run: python3 scripts/check_tool_program_parse_only.py
+
+      - name: Tool Program parse-only guard self-test
+        run: python3 scripts/check_tool_program_parse_only.py --self-test
+
       - name: Shell policy test-safety guard
         run: python3 scripts/check_shell_policy_test_safety.py
 

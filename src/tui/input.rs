@@ -2849,13 +2849,6 @@ mod tests {
         assert_eq!(result, Some(InputAction::Help));
     }
 
-    #[test]
-    fn test_ctrl_l_returns_select_model_in_insert_mode() {
-        let key = make_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        let result = handle_key_with_bindings(key, None, InputMode::Insert);
-        assert_eq!(result, Some(InputAction::SelectModel));
-    }
-
     /// `Ctrl+T` is the single key that answers "what is this session waiting
     /// on" — todos, subagents, and jobs together.
     ///

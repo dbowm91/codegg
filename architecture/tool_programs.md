@@ -248,8 +248,8 @@ Programmatic admission is governed by an executable checklist, not by
 8. truthful replay/ledger behavior (only `Success` replays);
 9. no hidden mutable globals, network, or mutation surface.
 
-Enforced by `tests/tool_program_diff_palette.rs` (matrix, census, broker,
-manifest, cache, ledger tests) plus `tests/tool_contract_guards.rs`.
+Enforced by `tests/tool_programs/tool_program_diff_palette.inc` (matrix, census, broker,
+manifest, cache, ledger tests) plus `tests/tool_programs/tool_contract_guards.inc`.
 
 ### `diff` promotion
 
@@ -283,7 +283,7 @@ surfaces (`git`, `lsp` — covered since Expansion M003 by the hidden
 search/fetch wrappers, `websearch`, `webfetch` — still out of scope),
 `tool_program` itself (`DirectOnly`), and workflow/state surfaces (`skill`,
 `question`, `security`, `review`, `image`, `research`). The census is encoded
-in `tests/tool_program_diff_palette.rs::candidate_census_*` so future
+in `tests/tool_programs/tool_program_diff_palette.inc::candidate_census_*` so future
 promotions must satisfy the same matrix evidence.
 
 ## Expansion M002: External Repository-Search Programmatic Read Seam
@@ -326,11 +326,11 @@ cache/replay semantics. Admission requires all of:
    `credential`, or `env` field; provider credentials stay in the
    daemon-owned context), no mutation surface.
 
-Enforced by `tests/tool_program_search_palette.rs` (matrix, network
+Enforced by `tests/tool_programs/tool_program_search_palette.inc` (matrix, network
 census, manifest, runtime-threading, broker, bounds, provenance,
 cancellation, disabled-cache, ledger, rerun-vs-replay tests) plus the
 `src/tool/repo_search.rs` contract unit tests and the
-`tests/tool_contract_guards.rs` palette pin.
+`tests/tool_programs/tool_contract_guards.inc` palette pin.
 
 ### `repo_search` promotion
 
@@ -370,7 +370,7 @@ surface (`websearch`, `webfetch`, `repo_fetch`, `repo_map`,
 `codesearch` compat alias, `batch_fetch`, `security_search`,
 `research_search`, `evidence_bundle`, `research`), `tool_program` itself,
 and workflow/state surfaces. The census is encoded in
-`tests/tool_program_search_palette.rs::candidate_census_*`.
+`tests/tool_programs/tool_program_search_palette.inc::candidate_census_*`.
 
 ## Expansion M003: Operation-Scoped Git/LSP Read Adapters
 
@@ -445,7 +445,7 @@ declared exception for state-dependent reads:
 remains rejected everywhere. Contract-hash changes invalidate stale
 manifests by construction.
 
-Enforced by `tests/tool_program_git_lsp_palette.rs` (allow/deny
+Enforced by `tests/tool_programs/tool_program_git_lsp_palette.inc` (allow/deny
 table, delegation equivalence, broker matrix, mutation negatives,
 workspace isolation, bounds, rerun-vs-replay, disclosure invariance)
 plus the `src/tool/git_read.rs` / `src/tool/lsp_read.rs` contract

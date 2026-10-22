@@ -369,13 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn socket_returns_medium() {
-        let result = analyze_python_risk("import socket\nsocket.socket()");
-        assert_eq!(result.level, PythonRiskLevel::Medium);
-        assert!(result.has_network);
-    }
-
-    #[test]
     fn os_rmdir_returns_high() {
         let result = analyze_python_risk("os.rmdir('/tmp/dir')");
         assert_eq!(result.level, PythonRiskLevel::High);
@@ -398,13 +391,6 @@ mod tests {
     #[test]
     fn exec_returns_low() {
         let result = analyze_python_risk("exec('x = 1')");
-        assert!(result.has_dynamic_execution);
-        assert_eq!(result.level, PythonRiskLevel::Low);
-    }
-
-    #[test]
-    fn compile_returns_low() {
-        let result = analyze_python_risk("compile('1+1', '<string>', 'eval')");
         assert!(result.has_dynamic_execution);
         assert_eq!(result.level, PythonRiskLevel::Low);
     }

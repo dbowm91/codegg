@@ -9,11 +9,11 @@ textual hard stop: if the guard ever regressed, the test itself would dispatch
 `rm -rf /`, `mkfs`, `shutdown`, and friends on the machine running CI.
 
 What this guard checks (audited locations only):
-  - tests/tool_execution.rs (primary shell-policy contract)
-  - tests/agent_loop_harness.rs (approval-path marker tests)
-  - tests/permission.rs (bash permission matrix)
-  - tests/approval_router.rs (approval routing)
-  - tests/sandbox_containment.rs (sandbox enforcement)
+  - tests/tool_programs/tool_execution.inc (primary shell-policy contract)
+  - tests/agent_loop/agent_loop_harness.inc (approval-path marker tests)
+  - tests/security_permission/permission.inc (bash permission matrix)
+  - tests/core_daemon/approval_router.inc (approval routing)
+  - tests/security_permission/sandbox_containment.inc (sandbox enforcement)
 
 Rules:
   1. No function in an audited file may contain BOTH a host-global
@@ -58,11 +58,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 AUDITED_FILES = [
-    "tests/tool_execution.rs",
-    "tests/agent_loop_harness.rs",
-    "tests/permission.rs",
-    "tests/approval_router.rs",
-    "tests/sandbox_containment.rs",
+    "tests/tool_programs/tool_execution.inc",
+    "tests/agent_loop/agent_loop_harness.inc",
+    "tests/security_permission/permission.inc",
+    "tests/core_daemon/approval_router.inc",
+    "tests/security_permission/sandbox_containment.inc",
 ]
 
 # Host-global destructive spellings. Kept intentionally narrow: scoped

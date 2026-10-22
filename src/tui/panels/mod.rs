@@ -1993,7 +1993,7 @@ mod tests {
     }
 
     // The directional matcher itself is exercised end-to-end in
-    // `tests/tui_panel_docking.rs`; what matters *here* is that the registry
+    // `tests/tui_render/tui_panel_docking.inc`; what matters *here* is that the registry
     // stays internally consistent.
     #[test]
     fn the_registry_is_internally_consistent() {

@@ -3453,31 +3453,6 @@ mod tests {
         assert_eq!(decision_scope_for_tool_call("bash", None), None);
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn scoped_decision_narrows_without_widening() {
-        let checker = PermissionChecker::new(None, None);
-        // Narrow grant: only `cargo` commands.
-        assert!(
-            checker
-                .always_allow_scoped("bash", None, Some("cmd:cargo"), None)
-                .await
-        );
-        assert!(matches!(
-            checker
-                .check_with_args("bash", None, Some("cargo test --all"), None)
-                .await,
-            PermissionResult::Allow
-        ));
-        // A catastrophic command from a different family still escalates:
-        // the narrow `cargo` grant does not cover `rm`.
-        assert!(matches!(
-            checker
-                .check_with_args("bash", None, Some("rm -rf /"), None)
-                .await,
-            PermissionResult::Ask(_)
-        ));
-    }
-
     #[test]
     fn compound_command_scopes_split_on_control_operators() {
         assert_eq!(

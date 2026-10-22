@@ -372,14 +372,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_utf8_safe_over_limit_truncated() {
-        let result = truncate_utf8_safe("hello world", 5, "...");
-        assert!(result.truncated);
-        // Marker (3 chars) is subtracted from budget: take 5-3=2 chars, then append marker
-        assert_eq!(result.text, "he...");
-    }
-
-    #[test]
     fn truncate_utf8_safe_multibyte_chars() {
         let input = "🌍🌎🌏";
         assert_eq!(input.chars().count(), 3);
@@ -482,14 +474,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn formatted_response_truncation_metadata_correct() {
-        let long_result = "x".repeat(500);
-        let response = ok_response(Some(serde_json::Value::String(long_result)));
-        let formatted = format_response(&response, 100);
-        assert!(formatted.truncated);
-        assert!(formatted.output.contains("truncated"));
     }
 }

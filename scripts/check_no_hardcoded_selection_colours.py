@@ -17,8 +17,8 @@ This is deliberately a *source* guard rather than a render assertion, and that
 is a real limitation worth stating: it catches the literal, not the bug it
 caused. A token read from the wrong surface would pass here. The behavioural
 half of this contract is
-`tests/tui_theme_source_of_truth.rs` (a box must follow a theme change) and
-`tests/theme_selection_tokens.rs` (every derived token must clear its contrast
+`tests/tui_render/tui_theme_source_of_truth.inc` (a box must follow a theme change) and
+`tests/tui_render/theme_selection_tokens.inc` (every derived token must clear its contrast
 bar on all 50 bundled themes).
 
 What is forbidden:

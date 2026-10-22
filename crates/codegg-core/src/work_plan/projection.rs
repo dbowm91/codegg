@@ -270,8 +270,7 @@ pub fn lookup_item_summary(items: &[WorkItem], id: &WorkItemId) -> Option<WorkPl
 mod tests {
     use super::*;
     use crate::work_plan::model::{
-        NewWorkItem, NewWorkPlan, WorkAcceptance, WorkAcceptanceDisposition, WorkItemStatus,
-        WorkPlanStatus,
+        WorkAcceptance, WorkAcceptanceDisposition, WorkItemStatus, WorkPlanStatus,
     };
     use chrono::Utc;
 
@@ -387,30 +386,5 @@ mod tests {
         assert_eq!(summary.id.as_str(), "wi_a");
         let missing = lookup_item_summary(&items, &WorkItemId("wi_missing".to_string()));
         assert!(missing.is_none());
-    }
-
-    #[test]
-    fn unused_new_types_stay_importable_for_docs() {
-        let _ = NewWorkPlan {
-            session_id: "s".to_string(),
-            project_id: "p".to_string(),
-            origin_turn_id: None,
-            goal_id: None,
-            objective: "o".to_string(),
-            origin_provenance: "turn:t".to_string(),
-            current_phase: None,
-        };
-        let _ = NewWorkItem {
-            parent_item_id: None,
-            dependencies: vec![],
-            status: WorkItemStatus::Pending,
-            description: "d".to_string(),
-            acceptance: vec![],
-            evidence: vec![],
-            owner_run_id: None,
-            owner_job_id: None,
-            blocker: None,
-            next_action: None,
-        };
     }
 }

@@ -2579,7 +2579,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
 //
 // These tests cover Work Packages D, F, and G: peer-close/write/flush races,
 // interrupted replay retry, and fresh identity proof. They complement the
-// WebSocket-side fixtures in `tests/projection_transport_real.rs` by exercising
+// WebSocket-side fixtures in `tests/server_feature/projection_transport_real.inc` by exercising
 // the same daemon transport contract through the Unix-socket adapter.
 
 /// The Unix adapter must drop a connection cleanly even if the peer closes

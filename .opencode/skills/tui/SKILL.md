@@ -1279,7 +1279,7 @@ model to the wrong connection.
   reassign `UiState::theme` do not re-push into an open box. A box that
   reassigns the field from inside its own render is *also* wrong — it happens to
   work, and it is the shape a source grep ranks as the worst offender.
-  Enforced by `tests/tui_theme_source_of_truth.rs`: render with theme A, render
+  Enforced by `tests/tui_render/tui_theme_source_of_truth.inc`: render with theme A, render
   again with theme B, and no interior foreground may be a colour A defined.
   `Widget` cannot receive a theme, so a widget that must stay one has to be an
   inherent method instead — `DiffViewer::render_in`, `PlanDialog::render_legacy`,
@@ -1301,7 +1301,7 @@ model to the wrong connection.
   is unreachable and the key silently fires whatever owns the bare-Ctrl twin —
   that is how `Ctrl+Shift+W` ran `CloseSession` instead of opening the panel
   switcher. `Ctrl+Alt+<letter>` arrives as `ESC` + one control byte and is
-  unambiguous. `tests/modifier_chords.rs` asserts no map holds a
+  unambiguous. `tests/tui_render/modifier_chords.inc` asserts no map holds a
   CONTROL|SHIFT entry and that each chord stays disjoint from its twins.
 - **An input surface must make its mode observable, and must draw the whole
   buffer.** The `/chat` window reserves its composer row in both modes with a

@@ -275,9 +275,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn subscribe_then_unsubscribe_releases_owner() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         let live = Arc::new(AtomicUsize::new(0));
         let id = registry.install(1, spawn_tracked(Arc::clone(&live))).await;
         assert_eq!(registry.active_count().await, 1);
@@ -293,9 +291,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn subscribe_twice_cannot_accumulate_two_owners() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         let live = Arc::new(AtomicUsize::new(0));
         let first = registry.install(1, spawn_tracked(Arc::clone(&live))).await;
         let second = registry.install(1, spawn_tracked(Arc::clone(&live))).await;
@@ -313,9 +309,7 @@ mod tests {
         assert_eq!(live.load(Ordering::Acquire), 0);
     }
 
-    #[tokio::test]
-    async fn stale_unsubscribe_leaves_newer_subscription_alive() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         let live = Arc::new(AtomicUsize::new(0));
         let first = registry.install(1, spawn_tracked(Arc::clone(&live))).await;
         let second = registry.install(2, spawn_tracked(Arc::clone(&live))).await;
@@ -333,9 +327,7 @@ mod tests {
         assert_eq!(live.load(Ordering::Acquire), 0);
     }
 
-    #[tokio::test]
-    async fn old_terminal_cleanup_cannot_clear_newer_owner() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         // Terminal cleanup is invoked by an exiting forwarder just before it
         // returns, so model it with already-completed tasks: dropping the
         // stored handle releases ownership without needing a join.
@@ -367,9 +359,7 @@ mod tests {
         assert_eq!(live.load(Ordering::Acquire), 0);
     }
 
-    #[tokio::test]
-    async fn disconnect_tears_down_subscription() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         let live = Arc::new(AtomicUsize::new(0));
         let id = registry.install(7, spawn_tracked(Arc::clone(&live))).await;
         registry.shutdown().await;
@@ -382,9 +372,7 @@ mod tests {
         assert_eq!(live.load(Ordering::Acquire), 0);
     }
 
-    #[tokio::test]
-    async fn channel_failure_clears_matching_owner() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         let id = registry.install(4, spawn_immediate()).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(registry.clear_if_matching(&id).await);
@@ -395,9 +383,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn repeated_lifecycle_cycles_return_to_baseline() {
-        let registry = SubscriptionRegistry::new();
+            let registry = SubscriptionRegistry::new();
         let live = Arc::new(AtomicUsize::new(0));
         for cycle in 0..50u64 {
             let generation = (cycle % 5) + 1;
@@ -417,9 +403,7 @@ mod tests {
         assert_eq!(registry.active_count().await, 0);
     }
 
-    #[tokio::test]
-    async fn failed_reconnect_semantics_preserve_current_owner() {
-        // Models lib.rs reconnect: a failed attempt must not touch the registry.
+            // Models lib.rs reconnect: a failed attempt must not touch the registry.
         let registry = SubscriptionRegistry::new();
         let live = Arc::new(AtomicUsize::new(0));
         let id = registry.install(9, spawn_tracked(Arc::clone(&live))).await;

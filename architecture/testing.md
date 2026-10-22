@@ -52,16 +52,87 @@ Both modes set `CARGO_BUILD_JOBS=2` by default. Test execution runs
 under nextest profile `ci` (see below); plain `cargo test` broad runs
 keep `--test-threads=1`.
 
+## Test-suite totals
+
+The suite's size is **measured**, not estimated, and the measurement is
+reproducible:
+
+```bash
+python3 scripts/rust_test_scan.py --validate
+```
+
+That command parses every `.rs` and `.inc` file in `tests/`, `src/`, and
+`crates/` with a Rust-aware scanner — one that handles lifetimes, raw and
+byte strings, character literals, nested block comments, and `async fn` —
+and asserts that the number of parsed test functions equals the number of
+`#[test]` / `#[tokio::test]` attributes in every file, and that the
+scanner's comment-and-literal-stripped mask preserves the original's
+newline count exactly. A regex scan is **not** an acceptable substitute: on
+this tree it undercounts `tests/` by 76%, because `&'a T` reads as a
+character literal.
+
+As of **2026-10-21**, after the CI/test-throughput recovery M006 and M007
+milestones:
+
+| Tree | Test functions | Test attributes |
+|------|---------------|-----------------|
+| `tests/` | 4,946 | 4,946 |
+| `src/` | 7,387 | 7,388 (one `macro_rules!` test template) |
+| `crates/` | 3,586 | 3,586 |
+| **Total** | **15,919** | **15,920** |
+
+The M007 milestone's 84 removals reconcile exactly against its decision
+table, `docs/test-duplication.toml`:
+
+| Tree | Before | Removed | After |
+|------|--------|---------|-------|
+| `tests/` | 4,980 | 34 | 4,946 |
+| `src/` | 7,433 | 46 | 7,387 |
+| `crates/` | 3,590 | 4 | 3,586 |
+| **Total** | **16,003** | **84** | **15,919** |
+
+Two guards enforce the properties these numbers express, and both run in
+`verify.sh quick` and in CI:
+
+- `scripts/check_test_assertion_quality.py` — every test body either
+  asserts a checkable property, delegates to a named helper that does, or
+  is recorded in `docs/test-assertion-quality.toml` with the reason it
+  asserts nothing.
+- `scripts/check_test_duplication.py` — no two test bodies assert the same
+  thing twice, unless `docs/test-duplication.toml` records the survivor.
+
+### Pass and skip accounting
+
+A test that skips **before** any assertion reports *passed* having proved
+nothing. Every such body must be listed in
+`docs/test-assertion-quality.toml` with its class, the condition that
+triggers it, and the workflow that satisfies it — silence is not a reason.
+
+Measured on 2026-10-21 with `scripts/rust_test_scan.py`:
+
+| Class | Bodies | Meaning |
+|---|---|---|
+| `opt-in-gated` | 20 | The body runs only under an explicit environment opt-in (`CODEGG_REGENERATE_ASSETS`, `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP`, `CODEGG_RUN_LINUX_CGROUP_V2_PROBE`, and the Linux sandbox opt-ins) |
+| `environment-absent` | 13 | The body runs only when a tool or a kernel capability the machine may not have is present — LSP server binaries, a spawnable helper shell, Landlock |
+| `unconditional` | **0** | A skip that fires on every machine |
+
+The guard's `--self-test` rejects an entry that names no satisfying
+workflow, so the list cannot rot into a list of excuses.
+
+Two of the twenty opt-ins — `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP` and
+`CODEGG_RUN_LINUX_CGROUP_V2_PROBE` — are set by **no** workflow. They are
+manual probes, and their entries say so explicitly.
+
 ## Test Resource Classes
 
 | Class | Description | Parallelism | Examples |
 |-------|-------------|-------------|----------|
 | `fast` | Pure/unit, parsing, config | Safe | `egggit::diff`, `eggsentry::profile` |
 | `storage` | SQLite pool ops, CRUD | Serial or low | `tests/session_crud.rs` |
-| `process-heavy` | Fake LSP stdio, daemon | Serial | `tests/lsp_composite_stdio.rs` |
-| `plugin-heavy` | Wasmtime runtime | Serial | `tests/plugin.rs` |
-| `adversarial` | Routing, sandbox, projection | Serial | `tests/command_routing_adversarial.rs` |
-| `workspace` | Workspace isolation | Serial | `tests/workspace_isolation.rs` |
+| `process-heavy` | Fake LSP stdio, daemon | Serial | `tests/lsp_test_support/lsp_composite_stdio.inc` |
+| `plugin-heavy` | Wasmtime runtime | Serial | `tests/agent_loop/plugin.inc` |
+| `adversarial` | Routing, sandbox, projection | Serial | `tests/command_git/command_routing_adversarial.inc` |
+| `workspace` | Workspace isolation | Serial | `tests/agent_loop/workspace_isolation.inc` |
 | `real-lsp` | Actual server smoke | Manual | `crates/egglsp/tests/real_server_smoke.rs` |
 | `release-full` | Conservative full validation for main/tags | Serial | `scripts/verify.sh full` |
 
@@ -228,12 +299,12 @@ ACL or network enforcement.
 
 The same Windows workflow also builds the restricted service path with the
 release-disabled `windows-sandbox-test-support` feature and runs
-`tests/windows_restricted_managed_process.rs`. That target verifies owned
+`tests/windows_sandbox_test_support/windows_restricted_managed_process.inc`. That target verifies owned
 stdin/stdout/stderr, private status despite forged stdout markers, token and Job
 checks before resume, timeout cleanup, and a non-`Enforced` test-only result.
 The workflow also runs an AppContainer control launch with the service's
 profile-local environment block and the status-frame rejection tests. It does
-The same workflow runs `tests/windows_acl_lease.rs` and the ACL lease unit
+The same workflow runs `tests/windows_sandbox_test_support/windows_acl_lease.inc` and the ACL lease unit
 tests. They verify AppContainer read/write on a runner-owned disposable root,
 read-only grants, denial on an empty sibling root, exact descriptor restoration
 after normal exit and cancellation, simulated parent-crash recovery, and refusal
@@ -329,9 +400,179 @@ Historical post-tuning steady state was ~19 min green (2026-09-25:
 tests). Final M001-M005 state is 17m17s on main/live run
 `36196068239` attempt 3 (7m51s test build, 362.537s execution,
 11,726 passed / 1 skipped, live Eggwork included) with
-`CARGO_BUILD_JOBS=4` and 84 root integration-test binaries after
-M003/M004 consolidation (historical 100 pre-consolidation, 11,781
-pre-consolidation). Steps in order:
+`CARGO_BUILD_JOBS=4`. The **test-function** counts in that record
+(11,726 passed / 1 skipped; 11,781 pre-consolidation) stand. The
+**binary** counts in the same sentence do not: it reads "84 root
+integration-test binaries after M003/M004 consolidation (historical 100
+pre-consolidation)", but the tree at the revision that recorded them
+(`99117577f`) holds **208** top-level `tests/*.rs` files and 8 declared
+`[[test]]` entries — roughly 2.5x the recorded figure — so those counts
+are not reproducible from the tree and are treated here as unverified.
+The successor roadmap (`plans/subsystems/ci-test-throughput-recovery-roadmap.md`
+§4.4) records the drift; its M004 milestone arms a guard that keeps the
+recorded target count and the real one in agreement.
+
+Current root test-target count, measured 2026-10-21 at `2c1953347`:
+**288** root test targets — 286 top-level `tests/*.rs` files plus 2
+directory-based consolidated targets (`projection_replay`,
+`session_family`) — of which **13** are gated behind `required-features`:
+4 on `lsp-test-support`, 5 on `server`, 2 on `windows-sandbox-test-support`,
+2 on `linux-git-test-support`. Workspace-wide the count is **314**. Method:
+`cargo metadata --no-deps --format-version 1`, counting targets of kind
+`test` per package.
+
+After the M004 family consolidation (same day, same baseline), the root
+package has **21** test targets and the workspace has **47**: the 286
+top-level files became 19 families (plus the 2 pre-existing directory
+targets), and the 13 gated targets became 4 gated families. The target
+topology is described under "Root integration-test families" below.
+
+### Known macOS-local failures
+
+On **macOS** the workspace suite has six failures that are **not** regressions.
+Each was proved pre-existing by checking out the baseline commit `2c1953347`
+into a separate worktree and running the same tests there; the baseline probe
+is recorded in `plans/closure/ci-test-throughput-recovery/004-status.md` §8.1.
+
+| Test | Why it fails on macOS |
+|---|---|
+| `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs` | The test registers `/tmp` as a workspace root, and the workspace registry rejects a **symlinked** root. On macOS `/tmp` is a symlink to `/private/tmp`. |
+| `core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances` | Same cause. |
+| `managed_process::tests::offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn` | The `OfflineRequired` network intent needs a Linux sandbox, so the refusal arrives earlier than the test expects. |
+| `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace` | The standalone shell's output does not arrive within the test's own wait. |
+| `scratch_cache_root_contract::the_default_cache_root_is_the_home_directory_cache` | The test expects `$HOME/.cache`; macOS's cache directory is `$HOME/Library/Caches`. |
+| `scratch_cache_root_contract::an_explicit_cache_home_is_the_root_the_allocator_uses` | Same convention mismatch. |
+
+Do not "fix" these by editing the assertions — they are testing the Linux
+contract on a platform that does not provide it. When a *new* failure appears
+next to these, it is real: check it against the baseline before assuming the
+same class.
+
+### Root integration-test families
+The root package's integration tests are **families**: a directory under
+`tests/` whose `mod.rs` is one Cargo test executable and whose members are
+`.inc` files included with `#[path]`. Two cargo behaviours make this
+necessary:
+
+- cargo does **not** auto-discover `tests/<dir>/mod.rs`, so every family is
+  declared explicitly in the root `Cargo.toml`;
+- cargo **does** auto-discover `tests/<dir>/*.rs` as separate test targets,
+  so the members carry a `.inc` extension and are never auto-discovered.
+
+This is the pattern the M003 `projection_replay` pilot established; M004
+applied it across the root package. The root package's test-target count
+fell from **288 to 21**, and the number of root test executables linked per
+run fell from 288 to 21.
+
+Consequences worth knowing:
+
+- **A test's id changed** from `member::test_name` to
+  `family::member::test_name`. The test body and every assertion are
+  unchanged. Anything that filters by full test path — `cargo test -- --exact
+  <path>`, a libtest substring filter — must use the new path.
+- **`cargo test --test <member>` no longer selects a single member.** The
+  unit of selection is the family. `cargo test --test <family> -- <member>`
+  still narrows to one member, because libtest's filter is a substring match
+  on the full test path.
+- **The `ci` profile's whole-binary exclusions still resolve.** The six
+  binaries that reserve the runner for themselves
+  (`eggwork_remote_execution_live`, `interactive_process_attach_resume`,
+  `interactive_process_sessions`, `interactive_terminal_tui`,
+  `scheduler_cancellation`, `causal_observe_replay`) are each a family of
+  one and keep their exact target name. Their flake rationale stays attached
+  to the binary that flaked, not to the family.
+- **`tests/common/` is a helper tree, not a target.** It is bound once per
+  family that uses it, through `#[path = "../common/mod.rs"]`, and the
+  members reach it with `use super::common;`.
+- The manifest `docs/test-ownership.toml` and the filters in
+  `.config/nextest.toml` and `.github/workflows/ci.yml` name these targets,
+  and `scripts/check_test_target_references.py` fails if any of them names a
+  target that does not exist — a renamed target would otherwise make a
+  filter silently stop reserving the runner for it.
+
+### Change-scoped verification (`scripts/verify.sh scoped`)
+
+`scoped` is a **developer-local** affordance: it runs only the tests a change
+can affect. It is additive to the guard set — every `quick` guard still runs,
+in the same order — and it never changes what the hosted CI job runs.
+
+```bash
+scripts/verify.sh scoped              # base: origin/main
+scripts/verify.sh scoped HEAD~3       # any base ref
+```
+
+**How the scope is computed.** `scripts/scoped_selection.py` resolves the
+changed files against the base ref using **merge-base** semantics
+(`git merge-base <base> HEAD`), so a branch that has already been merged into
+the base is still compared against the commit it forked from. Uncommitted work
+— staged, unstaged, and untracked — is included: a developer asking "what
+does my change affect?" means everything in their tree. A changed file inside
+a member's source root marks that member affected; the longest matching member
+root wins. The affected member contributes its library test target **always**,
+plus the integration targets of every group in `docs/test-ownership.toml`
+whose source pattern matches.
+
+**Dependency pull-in.** A member that **depends on** an affected member is
+affected too, and it contributes its **full** surface — its library test target
+and every integration target it owns. The pull-in is transitive.
+
+This is not a refinement; it is the difference between a correct scope and a
+wrong one. The root package depends on all eleven other workspace crates and
+re-exports several of them (`codegg::security::*` is `eggsentry`,
+`codegg::lsp::*` is `egglsp`, `codegg::scheduler::config::*` is
+`codegg-config`). A change to `crates/eggsentry/src/command.rs` therefore
+changes the behaviour of `codegg::security::scanner::inspect_text`, which the
+root package's security tool calls, which the root package's integration tests
+call — across seven files in three families, plus the root's inline
+`src/tool/security.rs` tests. The coupling runs **through the dependent's own
+source**, so a path-to-target rule cannot see it: the test file that calls the
+security tool never names `eggsentry`.
+
+The dependency edges are declared in `docs/test-ownership.toml`'s
+`[[dependencies]]` section, and `scripts/check_test_ownership.py` compares
+that set against `cargo metadata`'s workspace-local edges. An edge the
+workspace has and the manifest does not is a **guard failure**, not a silent
+under-selection.
+
+The price is stated plainly: a change to any non-root crate widens the scope
+to the root package's whole integration surface, because the root package
+depends on every other crate. A change confined to the root package's own
+`src/` — the common case — stays precise, because the root package has no
+dependents.
+
+**Feature gates.** A selected target that is gated behind `required-features`
+cannot be built without its features, so the mode enables exactly the features
+its selected targets are gated on and prints them. Naming a gated target
+without enabling its feature is a cargo error, not a silent skip.
+
+**What it does when it cannot be precise.** It never silently skips.
+
+| Situation | Action |
+|---|---|
+| A changed file inside a member, matching a group | That group's targets, plus the member's library test target. |
+| A changed file inside a member, matching **no** group | The whole member is widened to its full surface: every integration target it owns, plus its library test target. |
+| A changed file in a crate another crate **depends on** | Every transitive dependent is affected, and each contributes its full surface. |
+| A changed file **outside** every member (a script, a doc, a workflow, an asset) | The scope widens to the **whole workspace**, and the mode says which file caused it. |
+| The diff cannot be computed (unknown base ref, shallow clone with no merge base) | The mode **fails loudly** and exits non-zero. It never falls back to "no tests". |
+
+The out-of-member rule is deliberately conservative. The repository's
+change-trigger routing classifies those files for the *guards* — and the
+guards still run in full — but no test target can be *ruled out* for them, so
+the safe scope is the entire workspace.
+
+**What it prints.** The changed files it considered, the files outside every
+member, the files inside a member that no group covers, the members and
+targets it selected, and the reason for each. A scope that is invisible is a
+scope that cannot be trusted.
+
+**Its limits.** It selects *tests*, not *coverage*: it is a superset of what
+the change actually affects, and it says so. It does not narrow Clippy or
+`cargo check` — those remain workspace-wide. It does not change the hosted
+job's scope in any way. `docs/test-ownership.toml` is its only input, and
+`scripts/check_test_ownership.py` is what keeps that input honest.
+
+The mode is **not** a way to skip work in CI, and it is not a substitute for
+`full` before a handoff. Steps in order:
 1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
@@ -358,7 +599,7 @@ example, LSP, and cross-platform checks remain local.
 
 ### Live Eggwork fixture trust
 
-The live qualification (`tests/eggwork_remote_execution_live.rs`) starts a
+The live qualification (`tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc`) starts a
 real Eggwork node as a bounded subprocess. The pinned node resolves its
 sandbox helper as a sibling of its own executable and **refuses a helper it
 cannot trust**: the helper must be executable, owned by the invoking user,
@@ -423,6 +664,58 @@ Do not generalize these: intra-binary `--test-threads` stays 1 — test
 code mutates process-global env vars (audited, not assumed) — and
 splitting CI into parallel jobs that each compile the workspace
 duplicates the dominant cost instead of removing it.
+
+### Cargo profile alignment — one compiled dependency graph
+
+Cargo hashes the **resolved** profile into every compilation unit's identity.
+The `dev` profile (used by `cargo build`, `cargo check`, `cargo clippy`) and
+the `test` profile (used by `cargo test` / `cargo nextest run`) are therefore
+two different builds of the same source — and any field that differs between
+them makes the same crate compile **twice**.
+
+`strip` was the only differing field: `[profile.dev]` kept debuginfo,
+`[profile.test]` stripped it. The cost was a full second compile of the
+third-party dependency graph *and* of the root library rlib in every
+verification invocation:
+
+- the hosted job's `cargo build --locked --bin codegg-sandbox-helper` step
+  built the whole graph under `dev`, and `cargo nextest run` then rebuilt it
+  under `test`;
+- the local `cargo build` → `cargo test` loop paid the same double compile.
+
+Both profiles now set `strip = "debuginfo"`, so they resolve identically and
+the graph is compiled once. The `strip = "debuginfo"` intent for test
+artifacts is preserved — it is what keeps the root integration-test
+executables at 135-208 MB each and the root library rlib at 855 MB, and
+unstripping them is not an option (the hosted runner does not have the disk).
+
+`scripts/check_cargo_profile_alignment.py` guards the property: it resolves
+both profiles the way cargo does (`test` inherits `dev`) and fails when any
+hashed field — or any per-package override — differs. Its `--self-test`
+injects each violation class and proves the guard rejects it. The guard is
+wired into `scripts/verify.sh quick` and into the `CI / verify` job.
+
+**Recovering full debuginfo.** `strip = "debuginfo"` removes DWARF but keeps
+the symbol table, so a panic backtrace still names its frames and shows the
+panic location. For full debuginfo in a single invocation, override the
+profile on the command line:
+
+```bash
+cargo build --config 'profile.dev.strip="none"'
+cargo test  --config 'profile.test.strip="none"'
+```
+
+`RUSTFLAGS="-C debuginfo=2"` does **not** do this: the profile's `strip`
+still applies, so the debuginfo is removed again. The `--config` override
+replaces the profile setting itself.
+
+The one place that needs the unstripped binary is the desktop bundle, which
+ships the root daemon: `.github/workflows/desktop-e2e.yml` builds it with
+`--config 'profile.dev.strip="none"'` so crash symbolication is preserved.
+That workflow runs no test suite, so it has no double compile to reclaim.
+
+Release artifacts are unaffected: `[profile.release]` already had
+`strip = true`, and it is a separate profile.
 
 ### Build/link vs execution diagnostics (M001 recipe)
 
@@ -497,7 +790,7 @@ workspace package and validated package features through typed fields;
 | Feature | Crate | Enabled by | Why |
 |---|---|---|---|
 | `lsp-test-support` | `egglsp` | root feature flags | Fake-LSP harness; real-server tests stay out of default sweeps. |
-| `capture-test-support` | `codegg-providers` | root `[dev-dependencies]` **only** | Origin override for `tests/opencode_go_connection_trajectory.rs`. |
+| `capture-test-support` | `codegg-providers` | root `[dev-dependencies]` **only** | Origin override for `tests/agent_loop/opencode_go_connection_trajectory.inc`. |
 
 `capture-test-support` is deliberately a **dev-dependency** feature rather than
 a root feature. Under resolver 2 that keeps it out of `cargo build`, out of the

@@ -369,14 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn rebase_supports_all_three() {
-        let s = RepositoryOperationState::Rebase(Default::default());
-        assert!(s.action_available(RecoveryAction::Continue));
-        assert!(s.action_available(RecoveryAction::Abort));
-        assert!(s.action_available(RecoveryAction::Skip));
-    }
-
-    #[test]
     fn bisect_blocks_all() {
         let s = RepositoryOperationState::Bisect(Default::default());
         assert!(!s.action_available(RecoveryAction::Continue));

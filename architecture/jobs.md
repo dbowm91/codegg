@@ -412,7 +412,7 @@ Consequences for CodeGG:
   `Interrupted`. Loss of the exact execution is a typed
   interruption/failure, never a local fallback.
 - The scripted `ScriptedClient` seam optionally enforces the same
-  fencing (`invalid_lease`); `tests/eggwork_remote_execution_live.rs`
+  fencing (`invalid_lease`); `tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc`
   qualifies the production `NodeClientFactory` path against a real
   loopback node with mTLS (Linux).
 - Execution policy is daemon-owned node configuration, not durable job
@@ -1028,7 +1028,7 @@ divergent context, source, authority, or call identity fails closed.
 | Fault-injection tests | Crash after job creation before attempt, after attempt creation before process start, after process completion before RunStore completion, after RunStore completion before JobStore completion; restart recovery at each state |
 | Integration tests | Synthetic executors with marker files: one dispatch per attempt, cancellation delivery, retry history preservation, non-idempotent job non-requeue, frontend disconnect does not cancel durable jobs |
 
-45 integration tests in `tests/durable_jobs_phase4.rs`.
+45 integration tests in `tests/scheduler_jobs/durable_jobs_phase4.inc`.
 
 ### Narrowest run commands
 
@@ -1096,13 +1096,13 @@ legacy NULLs, and unsupported remote boundaries remain unavailable.
 Verified 2026-10-06 against `crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store}.rs`,
 `src/scheduler/scheduler.rs`, `src/job_recovery.rs`,
 `crates/codegg-core/src/projection_replay/publication.rs`, and
-`tests/durable_jobs_phase4.rs`. Four residuals left by the first pass were
+`tests/scheduler_jobs/durable_jobs_phase4.inc`. Four residuals left by the first pass were
 corrected: the `claim_due` trait ref `schedule.rs:243` → `:262` (line 243 is
 the first *implementation* in `schedule_store.rs`, not the trait method, and a
 second impl sits at `:521`); the in-memory-scheduler ref
 `scheduler.rs:1071-1078` → `:1079` (the actual `mark_attempt_running` call,
 preceded by an explanatory comment at `:1074`); and the integration test count
-`42` → `45` `#[test]`/`#[tokio::test]` functions in `tests/durable_jobs_phase4.rs`.
+`42` → `45` `#[test]`/`#[tokio::test]` functions in `tests/scheduler_jobs/durable_jobs_phase4.inc`.
 The `scheduler.rs` refs in this file are correct and were **not** affected by
 the `JobScheduler` `:99` → `:135` drift seen in `scheduler.md` — this file
 cites `recover_at_startup` `:1764`, `cancel_descendants` `:1346` and `:1747`,

@@ -1048,8 +1048,8 @@ count; the result remains an explicit integration handoff and host goal
 verification remains authoritative.
 
 - Unit tests: `src/agent/mod.rs::tests`, `src/agent/registry.rs::tests`
-- Integration: `tests/agent_loop_harness.rs` (extensive harness)
-- Compaction: `tests/compaction.rs`
+- Integration: `tests/agent_loop/agent_loop_harness.inc` (extensive harness)
+- Compaction: `tests/agent_loop/compaction.inc`
 - Narrowest run:
   ```bash
   cargo test -p codegg --test compaction

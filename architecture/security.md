@@ -398,7 +398,7 @@ populated-root preflight and separate empty-root fixtures passed exact-SHA
 Windows workflow `38223080719`, but the path-based check is not qualified
 against replacement races. This fail-closed restriction is not a production
 capability or complete existing-tree policy. See
-`tests/windows_restricted_managed_process.rs`, `tests/windows_acl_lease.rs`, and
+`tests/windows_sandbox_test_support/windows_restricted_managed_process.inc`, `tests/windows_sandbox_test_support/windows_acl_lease.inc`, and
 `docs/windows-acl-leases.md`.
 - Any host with no registered backend: constrained requests report
   `FilesystemEnforcement::Unavailable` and are refused before launching
@@ -407,7 +407,7 @@ capability or complete existing-tree policy. See
 
 `SandboxLaunchOutcome::Enforced` carries `guarantees` and `limits` alongside
 the backend id. Those lists are the honest boundary of each mechanism and
-are asserted in `tests/sandbox_containment.rs`, so a backend can never be
+are asserted in `tests/security_permission/sandbox_containment.inc`, so a backend can never be
 read as stronger than it is. Capability-stratified successor negotiation
 (C042, ADR-0029 bounded test-only) lives in
 `src/security/sandbox/guarantee.rs`: the pure `negotiate()` function takes
@@ -484,7 +484,7 @@ durable run results, and managed Git worktrees are outside the scratch tree.
 
 **Native Linux scratch containment (qualified).** The delegated-grant path is
 qualified on a native Linux host with Landlock ABI >= 3 by
-`tests/linux_native_scratch_containment.rs`. The fixture admits a delegated
+`tests/security_permission/linux_native_scratch_containment.inc`. The fixture admits a delegated
 run through the real `TaskTool` → `JobSubmissionService` → `JobScheduler`
 path, rebuilds the effective scope from the durable `AgentRunRecord` exactly
 as the delegated worker does, and launches it through the real
@@ -842,7 +842,7 @@ fallback_to_native = true  # only for mcp backend
 7. **Backends report obtained facts, not claims.** `SandboxLaunchOutcome::
    Enforced` carries the backend id plus `guarantees`/`limits`. Seatbelt
    cannot claim Landlock's `no_new_privs` drop, and does not. A backend with
-   an empty `limits` list fails `tests/sandbox_containment.rs`.
+   an empty `limits` list fails `tests/security_permission/sandbox_containment.inc`.
 8. **Landlock ABI V3 minimum.** The helper hard-requires write/truncate
    rights from ABI 3 and refer rights from ABI 2, then requests newer rights
    best-effort. A partial status is accepted only when the effective ABI is
@@ -927,7 +927,7 @@ family; the scope is part of the HMAC-signed material so it cannot be
 tampered away, while pre-M007 signed broad rows still verify. See
 `permission.md` M007 item and `src/policy_surface.rs`.
 
-**M008 qualification:** `tests/reliability_qualification_m008.rs` proves
+**M008 qualification:** `tests/agent_loop/reliability_qualification_m008.inc` proves
 WorkspaceWrite failure reports `Unavailable` (never silent FullHost),
 FullHost stays explicit/auditable (Yolo+FullHost Strong/2 confirmations),
 sandbox-helper status frames fail closed, and diagnostics stay secret-safe.

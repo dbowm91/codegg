@@ -249,7 +249,7 @@ impl AsRef<[String]> for AuditSafeArgv {
 /// in-crate copy because `codegg-git` must not depend on the root
 /// crate. The two implementations MUST stay byte-for-byte equivalent
 /// (covered by `redact_url_credentials_cross_crate` below and the
-/// integration test in `tests/git_closure_matrix.rs`).
+/// integration test in `tests/command_git/git_closure_matrix.inc`).
 pub fn redact_url_credentials(url: &str) -> String {
     if url.is_empty() {
         return String::new();

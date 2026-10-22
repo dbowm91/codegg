@@ -5202,11 +5202,39 @@ mod tests {
         assert!(fresh.latency_p95_ms <= fresh.gates.pure_frontier_eval_p95_ms_max);
     }
 
-    /// Regenerate the checked-in M002 receipt. Ignored by default: run
-    /// explicitly after reviewing contract, benchmark, or palette changes.
+    /// Regenerate the checked-in M002 receipt.
+    ///
+    /// The receipt is a checked-in repository asset, so a routine
+    /// `cargo test -- --ignored` must not rewrite it — that invocation is
+    /// a natural thing to run, and it would otherwise rewrite a tracked
+    /// file with no further ceremony. The write path is gated on an
+    /// explicit opt-in:
+    ///
+    /// ```text
+    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
+    ///     tool_advisor::causal_frontier::tests::m002_regenerate_checked_in_receipt \
+    ///     --ignored --nocapture
+    /// ```
+    ///
+    /// Without the opt-in the test asserts that the checked-in receipt is
+    /// still present and writes nothing.
     #[test]
-    #[ignore]
+    #[ignore = "rewrites a checked-in receipt; set CODEGG_REGENERATE_ASSETS=1"]
     fn m002_regenerate_checked_in_receipt() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CAUSAL_M002_RESULT_ASSET);
+        if std::env::var("CODEGG_REGENERATE_ASSETS").as_deref() != Ok("1") {
+            assert!(
+                path.is_file(),
+                "checked-in M002 receipt is missing: {}",
+                path.display()
+            );
+            eprintln!(
+                "skipped: set CODEGG_REGENERATE_ASSETS=1 to regenerate {}",
+                path.display()
+            );
+            return;
+        }
         const RELEVANCE_JSON: &str =
             include_str!("../../assets/tool-advisor/retrieval-relevance-v1.json");
         let report = qualify_m002(
@@ -6345,11 +6373,37 @@ mod tests {
         assert!(fresh.latency_p95_ms <= fresh.gates.pure_effect_path_p95_ms_max);
     }
 
-    /// Regenerate the checked-in M003 receipt. Ignored by default: run
-    /// explicitly after reviewing the frozen benchmark or catalog inputs.
+    /// Regenerate the checked-in M003 receipt.
+    ///
+    /// The receipt is a checked-in repository asset, so a routine
+    /// `cargo test -- --ignored` must not rewrite it. The write path is
+    /// gated on an explicit opt-in:
+    ///
+    /// ```text
+    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
+    ///     tool_advisor::causal_frontier::tests::m003_regenerate_checked_in_receipt \
+    ///     --ignored --nocapture
+    /// ```
+    ///
+    /// Without the opt-in the test asserts that the checked-in receipt is
+    /// still present and writes nothing.
     #[test]
-    #[ignore]
+    #[ignore = "rewrites a checked-in receipt; set CODEGG_REGENERATE_ASSETS=1"]
     fn m003_regenerate_checked_in_receipt() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CAUSAL_M003_RESULT_ASSET);
+        if std::env::var("CODEGG_REGENERATE_ASSETS").as_deref() != Ok("1") {
+            assert!(
+                path.is_file(),
+                "checked-in M003 receipt is missing: {}",
+                path.display()
+            );
+            eprintln!(
+                "skipped: set CODEGG_REGENERATE_ASSETS=1 to regenerate {}",
+                path.display()
+            );
+            return;
+        }
         let report = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
             .expect("m003 qualifies for receipt regeneration");
         let path =
