@@ -72,10 +72,14 @@ Two facts constrain the design, both verified against Git 2.43.0:
    `--separate-git-dir` option — that option belongs to `git clone`. So the
    contained child must be able to write inside the source repository's own
    Git metadata.
-2. `git worktree add <path> <existing-branch>` writes **no ref**: it creates
+2. ~~`git worktree add <path> <existing-branch>` writes **no ref**: it creates
    only `<common-gitdir>/worktrees/<name>/` and the working-tree files, and
    leaves `refs/heads/<branch>` untouched. `git worktree add <path> <new-branch>`
-   *would* create the branch — and therefore *would* write a ref.
+   *would* create the branch — and therefore *would* write a ref.~~
+   **Corrected 2026-10-22 — see "Amendment: the attached form writes the
+   branch ref after all" below.** The branch ref's *value* is unchanged, but
+   Git **locks and rewrites** it when attaching, so the attached form cannot
+   run inside a grant that excludes `refs`. The detached form writes no ref.
 
 Fact 2 is what makes a narrow grant possible: if the daemon owns the branch, the
 child has nothing to write outside the administration directory.
@@ -143,6 +147,11 @@ result would be a false security claim.
    OS-contained child. It authorizes no other Git subcommand, no other
    capability class, and no change to any default policy. Every other
    containment-requiring Git request remains `BackendUnavailable`.
+   **Amended 2026-10-22 — see "Amendment: the attached form writes the branch
+   ref after all" below.** The operation is unchanged in kind and is now
+   carried out in two steps: the worktree is created **detached**, and the
+   daemon's branch is attached to it with `git symbolic-ref`. Both steps run
+   inside the same grant. The child still writes no ref.
 
 2. **The branch belongs to the daemon.** The daemon creates the branch through
    the existing typed, policy-allowed `git branch` path **before** the
@@ -315,3 +324,99 @@ Neutral:
 * A future decision that widens the contained Git operation set — a second
   subcommand, a second capability class, or a mutable read — is a new ADR, not
   an edit to this one.
+
+## Amendment: the attached form writes the branch ref after all
+
+Amended 2026-10-22, after the contained child was run against a real
+repository. This amendment corrects **Fact 2** and changes **clause 1**. It
+does not widen the grant, weaken a clause, or change the decision's option.
+
+### What was measured
+
+Fact 2 as written above says that `git worktree add <path> <existing-branch>`
+writes no ref. The measurement behind it checked the branch ref's **value**,
+and the value is indeed unchanged. That was the wrong thing to measure.
+
+With `refs/heads` made unwritable — which is what ADR-0048's grant produces —
+the attached form fails:
+
+```
+error: update_ref failed for ref 'HEAD': cannot lock ref 'HEAD':
+Unable to create '.../refs/heads/<branch>.lock': Read-only file system
+```
+
+Git locks and rewrites the branch ref when it attaches a worktree to it, even
+though the value it writes is the value the branch already had. Measured on Git
+2.43.0 and 2.55.0. The detached form, `git worktree add --detach <path>
+<commit>`, writes **no ref at all** and succeeds against the same read-only
+`refs/heads`.
+
+So Fact 2 is false as written, and the conclusion drawn from it — "if the
+daemon owns the branch, the child has nothing to write outside the
+administration directory" — does not hold for the attached form. The attached
+form needs the child to write inside `refs/heads/`, which the grant — and
+ADR-0048's decision drivers, which say "a child that can write refs can
+repoint `main`" — both refuse.
+
+### What changes
+
+**Clause 1** now grants one operation in **two steps**:
+
+1. `git --git-dir=<gitdir> worktree add --detach <checkout> <commit>` — the
+   child creates the linked worktree detached. It writes the administration
+   directory and the checkout's files, and no ref.
+2. `git --git-dir=<administration-dir> symbolic-ref HEAD refs/heads/<branch>` —
+   the child attaches the daemon's branch to the new worktree, writing only the
+   administration directory's own `HEAD`, which the grant already names.
+
+Both steps run inside the same grant and the same containment. The second step
+is not a second operation class: it is the same `symbolic-ref` plumbing Git
+itself uses to record a worktree's branch, and it writes nothing outside the
+administration directory the first step created.
+
+**Clause 2** is unchanged in force and stronger in fact: the child writes **no
+ref at all** — not the branch, not any other. The branch is created by the
+daemon before the child runs, through the typed `git branch` path that already
+exists. The child only points the new worktree's `HEAD` at it.
+
+**Clause 7** is unchanged: a created checkout is accepted only when `git
+worktree list` reports it at the recorded path **on the recorded branch**. The
+attachment is what makes that true, and the check reads the result back through
+Git itself. A detached worktree is still not an acceptable result — it is an
+intermediate state that the second step must complete.
+
+### What does not change
+
+* The writable set is still exactly `{checkout, scratch, <common-gitdir>/worktrees/}`.
+* The Git directory is still read-only to the child, `refs` included.
+* The sandbox is still the security property, and configuration neutralization
+  is still not one.
+* The launch still fails closed and never downgrades.
+* No change to `GitEnvPolicy`'s classification of any operation — `symbolic-ref`
+  is not run on the ordinary process boundary; it runs inside the containment,
+  where the daemon's argv is the authority.
+* No mutable object read, no metadata promotion, no remote transport, no
+  credential mediation. ADR-0044 remains proposed.
+
+### Why the attach step runs inside the containment, and not on the host
+
+The daemon could attach the branch itself, on the host, after the child exits.
+It does not, for one reason: the administration directory is inside the child's
+grant, so a hostile filter could write that directory's `HEAD` and point the
+worktree at a branch of its choosing. Running the attach as the child's **last**
+step, with a target fixed by the daemon's argv, means the worktree always ends
+on the daemon's branch — the hostile write is overwritten rather than trusted.
+The registration check in clause 7 then reads the end state back through Git.
+
+The cost is one additional contained launch on a path that is not hot: the
+branch creation, the worktree creation and the attach are three launches, not
+two.
+
+### Why the alternative was not taken
+
+Granting the child write access to its own branch — by binding
+`<common-gitdir>/refs/heads/codegg/worktree/` writable, for instance — would
+have kept a single launch. It was rejected: the child would then be able to
+repoint **any** managed worktree's branch, which is exactly the "a child that
+can write refs can repoint `main`" failure this ADR exists to prevent, and it
+would contradict clause 2 outright.

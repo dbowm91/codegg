@@ -187,6 +187,16 @@ plants a nested repository instead is a failure rather than a success. ADR-0048
 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
 is the authority for the one operation that uses it.
 
+One consequence is worth stating, because it is a silent narrowing rather than
+a refusal: the mount view **follows** an existing pointer, so once a linked
+worktree's `.git` pointer exists, the administration directory it names is
+discovered as Git metadata and mounted read-only. A launch that is *granted*
+that directory as a write root would therefore find it read-only under the
+child. The contained worktree route avoids the trap by granting the checkout
+only in the step that creates it, and by using a **narrower** grant in the step
+that attaches the branch — the attach does not need the checkout, and leaving
+it out keeps the mount view from narrowing the grant.
+
 **Linux launch contract (M002 interface slice):**
 `src/security/sandbox/linux_launch.rs` models requested filesystem, network,
 process/IPC, syscall, and resource dimensions under an immutable parent

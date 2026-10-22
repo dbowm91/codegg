@@ -69,9 +69,15 @@ tested surfaces.
 - `tests/shared_checkout_c006.rs:220-225` — the M005 carrier writes the
   worktree record straight into SQLite *because* managed worktree creation is
   unavailable in this tree.
-- Verified on this host against Git 2.43.0: `git worktree add <path>
-  <existing-branch>` writes only `<common-gitdir>/worktrees/<name>/` and the
-  working-tree files, and leaves `refs/heads/<branch>` untouched.
+- Verified on this host against Git 2.43.0 and 2.55.0: `git worktree add <path>
+  <existing-branch>` **locks and rewrites** `refs/heads/<branch>` even though
+  the value is unchanged, so the attached form cannot run inside a grant that
+  excludes `refs`. `git worktree add --detach <path> <commit>` writes **no ref
+  at all** and succeeds against the same read-only `refs/heads`. The branch is
+  attached afterwards with `git symbolic-ref HEAD refs/heads/<branch>`, which
+  writes only the new worktree's own administration directory. This is
+  **ADR-0048's amendment of 2026-10-22**; the original Fact 2 measured the
+  ref's *value* rather than whether Git writes it.
 - Verified on this host against Git 2.43.0: `git worktree add` has **no**
   `--separate-git-dir` option — a linked worktree's administration directory is
   always inside the common Git directory.
@@ -154,8 +160,11 @@ tested surfaces.
   enforcement asserted **after** the launch, and a sanitized environment with
   `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
   `GIT_ATTR_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`.
-- The argv is exactly one shape: `git worktree add <path> <existing-branch>`,
-  rendered through the typed renderer, with the branch already existing.
+- The argv is exactly one operation, in two steps:
+  `git --git-dir=<gitdir> worktree add --detach <path> <commit>`, then
+  `git --git-dir=<admin> symbolic-ref HEAD refs/heads/<branch>`. Both run
+  inside the same grant. The attached form of `worktree add` is **not** used:
+  it rewrites the branch ref, which the grant forbids.
 - The grant: the new worktree directory, the daemon scratch, and
   `<common-gitdir>/worktrees/`. Everything else under the Git metadata is
   read-only to the child.
@@ -303,34 +312,48 @@ Acceptance evidence: §15 of this plan.
 
 ## 10. Required tests
 
+The suite is `tests/contained_worktree_c008.rs`. It is deliberately small: one
+test per claim, and no test that restates a claim another test already
+carries.
+
 Focused:
 
-1. The seam: a service with a contained creator uses it; a service without one
-   fails closed with the existing typed error.
-2. The executor: the launch requests both tiers; the obtained outcome is
-   asserted; the argv is exactly one shape and never contains `-b`/`-B`.
-3. The grant: the write roots contain the administration directory and the new
-   checkout, and contain none of `refs`, `objects`, `index`, `config`,
-   `hooks`, `packed-refs`.
-4. The branch precondition: the branch exists before the child runs; a failed
-   branch creation launches no child.
+1. `the_grant_names_only_the_administration_directory` — the write roots are
+   exactly the checkout, the daemon scratch and the administration directory;
+   the repository's Git directory is readable and not writable; the source
+   working tree is not writable; nothing under the Git directory is writable
+   except the administration directory; the argv is exactly one shape and
+   never contains `-b`/`-B`; and the `.git` pointer exemption names only the
+   top-level `.git` of a granted write root (a pointer beyond a write root and
+   a nested `.git` are both refused).
+2. `the_seam_creates_a_real_checkout_and_fails_closed` — a configured creator
+   is authoritative and produces a real linked worktree on the recorded
+   branch; a refusing creator orphans the reservation with a Git-error health;
+   a creator that plants a nested repository is rejected by the post-create
+   verification; and a service without a creator fails closed with the Git
+   policy's own typed refusal.
+3. `the_creator_reaches_the_launch_instead_of_failing_on_its_own_paths` — the
+   creator resolves the paths it creates itself (the checkout leaf and the
+   administration directory, neither of which exists yet) and reaches the
+   launch. This is the regression for the defect the hosted lane caught.
 
 Integration:
 
-5. A managed worktree is created through the production path, is reported by
-   `git worktree list` on the recorded branch, is a real linked worktree, and
-   its files are Git-verified.
-6. The hostile-configuration fixture: the worktree is created and no hostile
-   hook's effect reaches the host.
-7. The refusal paths: each is typed and distinguishable; no half-made checkout
-   is reported as created.
+4. `the_contained_child_cannot_write_outside_its_grant` — the real contained
+   child creates a real managed worktree while the repository's own
+   configuration is hostile: a smudge filter and a `post-checkout` hook each
+   try to write a **ref** into the repository's Git directory, and each also
+   writes a positive control into the daemon scratch so that "the filter never
+   ran" is distinguishable from "the filter ran and was contained".
 
 Non-regression:
 
-8. `git add`, `git commit`, `git merge`, `git cherry-pick`, `git rebase`,
-   `git stash`, `git am`, `git bisect`, `git push` and `git pull` keep their
-   current classification. This milestone must not make any of them available.
-9. The existing `codegg-core` worktree and session-launch suites still pass.
+5. `the_git_execution_policy_is_unchanged` — `git add`, `git commit`, `git
+   merge`, `git cherry-pick`, `git rebase`, `git stash`, `git am`, `git
+   bisect`, `git push` and `git pull` keep their current classification, and
+   `git worktree add` keeps its own. This milestone must not make any of them
+   available.
+6. The existing `codegg-core` worktree and session-launch suites still pass.
 
 ## 11. Required verification commands
 
@@ -338,15 +361,23 @@ Non-regression:
 cargo fmt --all && cargo fmt --all -- --check
 CARGO_BUILD_JOBS=2 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test -p codegg-core worktree
-cargo test -p codegg --test <the new focused test target>
+cargo test -p codegg --test contained_worktree_c008
 CARGO_BUILD_JOBS=2 bash scripts/verify.sh quick
 ```
 
 The native Linux evidence (the hostile-configuration test and the obtained
-enforcement) requires a **qualified host** — Landlock with the M004 process/IPC
-tier and the M005 offline network. It must be run on the hosted Linux runner,
-not claimed from a developer machine. The closure record labels local and
-hosted evidence separately and truthfully.
+enforcement) is opt-in:
+
+```bash
+CODEGG_RUN_M005_OFFLINE_NATIVE=1 cargo test -p codegg --test contained_worktree_c008 -- --nocapture --test-threads=1
+```
+
+It needs **Bubblewrap** with unprivileged user namespaces. Where the host can
+also obtain the M004 process/IPC tier (Landlock ABI 6, Linux 6.12+) the test
+requests the **production** tiers and proves the whole production grant; where
+it cannot, the test says so on stderr and proves the **filesystem** grant
+alone — the dimension this milestone's grant is about. The closure record
+labels local and hosted evidence separately and truthfully.
 
 ## 12. Documentation updates
 
@@ -392,6 +423,15 @@ The agent **reports rather than improvises** if any of these occur:
   grant. **Stop.** That is a containment regression, not a test to relax.
 - `git worktree add` proves to write a ref under the grant on the pinned Git
   version. **Stop** and report the observed write set.
+  **This stop condition fired on 2026-10-22.** `git worktree add <path>
+  <existing-branch>` locks and rewrites `refs/heads/<branch>` even when the
+  value is unchanged, so the attached form fails closed against this
+  milestone's grant. The reported write set is
+  `<common-gitdir>/refs/heads/<branch>.lock` and `<common-gitdir>/refs/heads/<branch>`.
+  The resolution was an **ADR amendment**, not an implementation improvisation:
+  ADR-0048's amendment of 2026-10-22 splits the operation into a detached
+  creation and a `git symbolic-ref` attachment, both inside the same grant.
+  The writable set did not widen and no clause was weakened.
 - ADR-0048's clause 1 turns out to authorize something this implementation
   needs beyond the single operation shape. **Stop** and propose an ADR
   amendment rather than widening the implementation.
@@ -422,12 +462,15 @@ The agent **reports rather than improvises** if any of these occur:
   `ContainedGitIndexStaging`. Copy its *shape* — pinned binary, sanitized
   environment, tiers requested, obtained enforcement asserted after the
   launch — not its staging semantics.
-- Two Git facts, both verified on this host against Git 2.43.0 and both
-  load-bearing: a linked worktree's administration directory is always inside
-  the common Git directory, and `git worktree add <path> <existing-branch>`
-  writes no ref. If either stops holding on a different Git version, the
-  branch-precondition design must be revisited — and that is a stop, not an
-  improvisation.
+- Three Git facts, all verified on this host against Git 2.43.0 and 2.55.0, and
+  all load-bearing: a linked worktree's administration directory is always
+  inside the common Git directory; `git worktree add` has no
+  `--separate-git-dir` option; and `git worktree add <path> <existing-branch>`
+  **rewrites the branch ref** even though the value is unchanged, so the
+  attached form cannot run inside this grant. The operation is therefore
+  `worktree add --detach` followed by `git symbolic-ref HEAD`. If any of the
+  three stops holding on a different Git version, the two-step design must be
+  revisited — and that is a stop, not an improvisation.
 - The blackboard line's composed two-agent race is the **next** milestone, not
   this one. Its plan is written against this milestone's shipped API.
 - Windows produces no evidence here and claims none.

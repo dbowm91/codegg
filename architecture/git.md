@@ -125,11 +125,20 @@ repository-controlled code from the host.
 
 `src/git_contained_worktree.rs` is the contained route, authorized by
 ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`).
-It grants **exactly one operation shape**:
+It grants **exactly one operation**, carried out in two steps:
 
 ```text
-git --git-dir=<gitdir> worktree add <checkout> <existing-branch>
+git --git-dir=<gitdir> worktree add --detach <checkout> <commit>
+git --git-dir=<administration-dir> symbolic-ref HEAD refs/heads/<branch>
 ```
+
+The attached form of `worktree add` is deliberately **not** used. Measured on
+Git 2.43.0 and 2.55.0: `git worktree add <path> <existing-branch>` locks and
+rewrites `refs/heads/<branch>` even though the value is unchanged, so it fails
+closed against this grant with `cannot lock ref 'HEAD'`. The detached form
+writes **no ref at all**, and attaching the branch afterwards is a write to the
+administration directory the grant already names. Both steps run inside the
+same grant and the same containment.
 
 Three properties carry the contract:
 
@@ -138,6 +147,12 @@ Three properties carry the contract:
   branch that already exists and writes **no ref**. The grant is what
   enforces this: `refs` is read-only to the child, so a child that tried to
   create a branch would fail closed rather than write one.
+- **The attach step runs last, with the daemon's target.** The administration
+  directory is inside the child's grant, so repository-controlled code could
+  write that directory's `HEAD` and point the worktree at a branch of its
+  choosing. The attach is the child's final step and its target is fixed by
+  the daemon's argv, so such a write is overwritten rather than trusted. The
+  registration check then reads the end state back through Git itself.
 - **The grant is the administration directory and nothing else.** The child may
   write the new checkout, the daemon scratch, and
   `<common-gitdir>/worktrees/` — the linked worktree's own administration

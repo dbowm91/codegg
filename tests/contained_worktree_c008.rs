@@ -1,30 +1,29 @@
 //! C008 — contained managed-worktree creation.
 //!
-//! ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
-//! grants exactly one operation shape: `git worktree add <path>
-//! <existing-branch>` inside an OS-contained child whose writable grant is
-//! the linked worktree's own administration directory and nothing else.
+//! The milestone's claim is narrow and is asserted in four places:
 //!
-//! These tests cover three different things, deliberately kept apart:
-//!
-//! * **The grant** is asserted structurally, on any host. The composition is
-//!   the same whether or not this machine can enforce it.
-//! * **The seam** is exercised with a test double that produces a real
-//!   checkout, so the worktree service's own contract is tested without
-//!   needing a qualified host.
-//! * **The native proof** — the real contained child, a hostile repository
-//!   configuration, and the obtained enforcement — runs only on a qualified
-//!   Linux host, behind the established opt-in.
+//! 1. **The grant** names exactly the checkout, the daemon scratch and the
+//!    linked worktree's own administration directory — and the repository's Git
+//!    directory is readable and immutable to the child.
+//! 2. **The seam** turns a reserved worktree into a real linked worktree, and
+//!    every failure path fails closed.
+//! 3. **The contained child** cannot write outside its grant, even when the
+//!    repository's own configuration is hostile.
+//! 4. **Nothing else changed**: every other containment-requiring Git request
+//!    keeps its classification.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use codegg::security::sandbox::{SandboxConfig, SandboxMode};
+use codegg::git_contained_worktree::{
+    build_worktree_grant, compose_worktree_child_launch, ContainedGitWorktreeCreator,
+    WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
+};
 use codegg_core::worktree_service::{
     ContainedWorktreeCreator, ContainedWorktreeOutcome, ContainedWorktreeRequest,
-    CreateWorktreeRequest, ManagedWorktreeState, WorktreeHealth, WorktreeService,
-    WorktreeServiceError,
+    CreateWorktreeRequest, WorktreeService, WorktreeServiceError,
 };
+use codegg_core::worktree_service::{ManagedWorktreeState, WorktreeHealth};
 
 /// The established opt-in for the native Linux M004/M005 proofs.
 const NATIVE_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
@@ -48,7 +47,26 @@ fn run_git(cwd: &Path, args: &[&str]) {
     );
 }
 
-/// A repository with one commit, returning the base commit.
+fn run_git_output(cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new(git_binary())
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// A repository with one commit that contains a file the hostile smudge filter
+/// will match.
+///
+/// The `.txt` file and the `.gitattributes` that selects the filter are both
+/// **committed**: a filter only runs for a path the checkout actually writes,
+/// and the attributes that select it have to be in the tree being checked out.
 fn init_repository(root: &Path) -> String {
     std::fs::create_dir_all(root).expect("repository directory");
     run_git(root, &["init", "--quiet", "--initial-branch=main"]);
@@ -56,6 +74,9 @@ fn init_repository(root: &Path) -> String {
     run_git(root, &["config", "user.name", "Test"]);
     run_git(root, &["config", "commit.gpgsign", "false"]);
     std::fs::write(root.join("README.md"), "hello\n").expect("write README");
+    std::fs::write(root.join("notes.txt"), "filter me\n").expect("write notes");
+    std::fs::write(root.join(".gitattributes"), "*.txt filter=hostile\n")
+        .expect("write attributes");
     run_git(root, &["add", "."]);
     run_git(root, &["commit", "--quiet", "-m", "init"]);
     let head = std::process::Command::new(git_binary())
@@ -81,7 +102,48 @@ fn create_request(repository_root: &Path) -> CreateWorktreeRequest {
     }
 }
 
-// ── The grant ─────────────────────────────────────────────────────────────
+/// The paths one contained worktree creation names.
+///
+/// The administration root is created first — the grant names it, so it has to
+/// exist before the launch — and the checkout is created empty, because Git
+/// refuses to create a worktree in a non-empty directory.
+fn child_paths(
+    repository: &Path,
+    checkout: &Path,
+    scratch: &Path,
+    branch: &str,
+    base_commit: &str,
+) -> WorktreeChildPaths {
+    let gitdir = repository
+        .join(".git")
+        .canonicalize()
+        .expect("canonical gitdir");
+    let administration_root = gitdir.join("worktrees");
+    std::fs::create_dir_all(&administration_root).expect("administration directory");
+    let administration_root = administration_root
+        .canonicalize()
+        .expect("canonical administration root");
+    let administration_dir = administration_root.join(
+        checkout
+            .file_name()
+            .expect("worktree name")
+            .to_string_lossy()
+            .to_string(),
+    );
+    WorktreeChildPaths {
+        git_binary: git_binary(),
+        gitdir,
+        repository_root: repository.canonicalize().expect("canonical repository"),
+        checkout: checkout.canonicalize().expect("canonical checkout"),
+        scratch: scratch.canonicalize().expect("canonical scratch"),
+        administration_root,
+        administration_dir,
+        branch: branch.to_string(),
+        base_commit: base_commit.to_string(),
+    }
+}
+
+// ── 1. The grant ──────────────────────────────────────────────────────────
 
 /// The child's writable set is exactly the checkout, the daemon scratch and
 /// the linked worktree's own administration directory — and the repository's
@@ -91,32 +153,30 @@ fn the_grant_names_only_the_administration_directory() {
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
-    let gitdir = repository.join(".git");
     let checkout = workspace.path().join("checkout");
     std::fs::create_dir_all(&checkout).expect("checkout directory");
     let scratch = workspace.path().join("scratch");
     std::fs::create_dir_all(&scratch).expect("scratch directory");
-    let administration = gitdir.join("worktrees");
-    std::fs::create_dir_all(&administration).expect("administration directory");
+    let base = run_git_output(&repository, &["rev-parse", "HEAD"]);
 
-    let spec = codegg::git_contained_worktree::build_worktree_grant(
-        &git_binary(),
-        &gitdir,
+    let paths = child_paths(
         &repository,
         &checkout,
         &scratch,
-        &administration,
-        "feature",
+        "codegg/worktree/c008-grant",
+        &base,
+    );
+
+    let spec = build_worktree_grant(
+        &paths,
+        WorktreeChildStep::Create,
+        WorktreeLaunchTiers::PRODUCTION,
     )
     .expect("the contained worktree grant");
 
-    let gitdir = gitdir.canonicalize().expect("canonical gitdir");
-    let repository = repository.canonicalize().expect("canonical repository");
-    let checkout = checkout.canonicalize().expect("canonical checkout");
-    let scratch = scratch.canonicalize().expect("canonical scratch");
-    let administration = administration
-        .canonicalize()
-        .expect("canonical administration");
+    let gitdir = paths.gitdir.clone();
+    let repository_root = paths.repository_root.clone();
+    let administration_root = paths.administration_root.clone();
 
     // The device nodes are writable under every profile — they hold no
     // persistent state — so they are not part of the grant. Everything else
@@ -137,7 +197,7 @@ fn the_grant_names_only_the_administration_directory() {
         "the child was granted writable roots beyond the grant: {:?}",
         spec.write_paths
     );
-    for expected in [&checkout, &scratch, &administration] {
+    for expected in [&paths.checkout, &paths.scratch, &administration_root] {
         assert!(
             spec.write_paths.contains(expected),
             "the child was not granted {expected:?}",
@@ -156,7 +216,7 @@ fn the_grant_names_only_the_administration_directory() {
 
     // The source working tree is not the child's to write.
     assert!(
-        !spec.write_paths.contains(&repository),
+        !spec.write_paths.contains(&repository_root),
         "the source working tree was granted writable"
     );
 
@@ -166,7 +226,7 @@ fn the_grant_names_only_the_administration_directory() {
     for write in &spec.write_paths {
         if write.starts_with(&gitdir) {
             assert_eq!(
-                write, &administration,
+                write, &administration_root,
                 "the child was granted {write:?} inside the repository's Git directory"
             );
         }
@@ -175,7 +235,7 @@ fn the_grant_names_only_the_administration_directory() {
     // The only `.git` the child may create is the checkout's own pointer.
     assert_eq!(
         spec.expected_created_git_pointers,
-        vec![checkout.join(".git")],
+        vec![paths.checkout.join(".git")],
         "the child may create a Git pointer beyond the checkout's own"
     );
 
@@ -183,70 +243,55 @@ fn the_grant_names_only_the_administration_directory() {
     assert!(spec.linux_process_isolation);
     assert!(spec.linux_offline_network);
 
-    // The argv is exactly one shape, and it never creates a branch.
+    // The argv is exactly one shape, and it never names a ref.
+    assert!(spec.args.contains(&"worktree".to_string()));
+    assert!(spec.args.contains(&"add".to_string()));
+    assert!(spec.args.contains(&"--detach".to_string()));
     assert!(
-        spec.args.windows(2).all(|pair| pair != ["-b", "feature"]),
+        !spec.args.iter().any(|arg| arg == "-b" || arg == "-B"),
         "the argv creates a branch: {:?}",
         spec.args
     );
-    assert!(spec.args.contains(&"worktree".to_string()));
-    assert!(spec.args.contains(&"add".to_string()));
-    assert!(!spec.args.iter().any(|arg| arg == "-b" || arg == "-B"));
-}
-
-/// The exemption from the "hide a `.git` that does not exist yet" rule is
-/// narrow: it names the top-level `.git` of a granted write root and nothing
-/// else.
-#[test]
-fn a_git_pointer_beyond_a_write_root_is_refused() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let checkout = workspace.path().join("checkout");
-    std::fs::create_dir_all(&checkout).expect("checkout directory");
-    let elsewhere = workspace.path().join("elsewhere");
-    std::fs::create_dir_all(&elsewhere).expect("elsewhere directory");
-
-    // A pointer that is not a write root's own `.git` is refused.
-    let error = SandboxConfig::new()
-        .with_enabled(true)
-        .with_mode(SandboxMode::WorkspaceWrite)
-        .with_allowed_paths(vec![checkout.display().to_string()])
-        .with_expected_created_git_pointers(vec![elsewhere.join(".git").display().to_string()])
-        .launch_spec(git_binary(), &["--version".to_string()], Some(&checkout))
-        .expect_err("a pointer outside a write root must be refused");
     assert!(
-        error
-            .to_string()
-            .contains("not the top level of a granted write root"),
-        "unexpected refusal: {error}"
+        !spec.args.iter().any(|arg| arg.contains("refs/heads/")),
+        "the argv names a ref: {:?}",
+        spec.args
     );
 
-    // A nested `.git` is refused: the child may only write the pointer of a
-    // checkout it was granted, never one inside a directory it controls.
-    std::fs::create_dir_all(checkout.join("nested")).expect("nested directory");
-    let error = SandboxConfig::new()
-        .with_enabled(true)
-        .with_mode(SandboxMode::WorkspaceWrite)
-        .with_allowed_paths(vec![checkout.display().to_string()])
-        .with_expected_created_git_pointers(vec![checkout
-            .join("nested")
-            .join(".git")
-            .display()
-            .to_string()])
-        .launch_spec(git_binary(), &["--version".to_string()], Some(&checkout))
-        .expect_err("a nested Git pointer must be refused");
-    assert!(
-        error
-            .to_string()
-            .contains("not the top level of a granted write root"),
-        "unexpected refusal: {error}"
-    );
+    // The exemption from the "hide a `.git` that does not exist yet" rule is
+    // narrow: it names the top-level `.git` of a granted write root and
+    // nothing else. A pointer beyond a write root, and a nested `.git`, are
+    // both refused when the launch description is built.
+    let beyond = workspace.path().join("elsewhere");
+    std::fs::create_dir_all(&beyond).expect("beyond directory");
+    let nested = paths.checkout.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    for pointer in [beyond.join(".git"), nested.join(".git")] {
+        let error = codegg::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(codegg::security::sandbox::SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![paths.checkout.display().to_string()])
+            .with_expected_created_git_pointers(vec![pointer.display().to_string()])
+            .launch_spec(
+                git_binary(),
+                &["--version".to_string()],
+                Some(&paths.checkout),
+            )
+            .expect_err("a pointer outside a write root must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("not the top level of a granted write root"),
+            "unexpected refusal: {error}"
+        );
+    }
 }
 
-// ── The seam ──────────────────────────────────────────────────────────────
+// ── 2. The seam ───────────────────────────────────────────────────────────
 
 /// What the test double does when the worktree service asks it to create a
 /// checkout.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum FakeMode {
     /// Produce a real linked worktree, the way the contained child does.
     LinkedWorktree,
@@ -302,6 +347,16 @@ impl ContainedWorktreeCreator for FakeCreator {
                         request.base_commit.as_str(),
                     ],
                 );
+                // The production shape: the worktree is created detached and
+                // the branch is attached afterwards.
+                let administration_dir = request.repository_gitdir.join("worktrees").join(
+                    request
+                        .worktree_path
+                        .file_name()
+                        .expect("worktree name")
+                        .to_string_lossy()
+                        .to_string(),
+                );
                 run_git(
                     &request.repository_gitdir,
                     &[
@@ -309,19 +364,23 @@ impl ContainedWorktreeCreator for FakeCreator {
                         request.repository_gitdir.to_str().expect("gitdir"),
                         "worktree",
                         "add",
+                        "--detach",
                         request.worktree_path.to_str().expect("worktree path"),
-                        request.branch.as_str(),
+                        request.base_commit.as_str(),
+                    ],
+                );
+                run_git(
+                    &administration_dir,
+                    &[
+                        "--git-dir",
+                        administration_dir.to_str().expect("administration dir"),
+                        "symbolic-ref",
+                        "HEAD",
+                        &format!("refs/heads/{}", request.branch),
                     ],
                 );
                 Ok(ContainedWorktreeOutcome {
-                    administration_dir: request.repository_gitdir.join("worktrees").join(
-                        request
-                            .worktree_path
-                            .file_name()
-                            .expect("worktree name")
-                            .to_string_lossy()
-                            .to_string(),
-                    ),
+                    administration_dir,
                     backend: "test-double".into(),
                     abi: None,
                     network_enforced: true,
@@ -346,10 +405,17 @@ fn service_with_creator(
     }))
 }
 
-/// A configured creator is authoritative: the worktree service uses it, the
-/// checkout is real, and Git reports it on the recorded branch.
+/// The seam is authoritative, and every failure path fails closed.
+///
+/// A configured creator is used, the checkout is real, and Git reports it on
+/// the recorded branch. A creator that refuses orphans the reservation with a
+/// Git-error health. A creator that plants a nested repository is rejected by
+/// the post-create verification. Without a creator the service still fails
+/// closed with the Git policy's own typed refusal — there is no uncontained
+/// fallback.
 #[tokio::test]
-async fn the_configured_creator_produces_the_checkout() {
+async fn the_seam_creates_a_real_checkout_and_fails_closed() {
+    // ── The successful path ──────────────────────────────────────────────
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
@@ -371,7 +437,9 @@ async fn the_configured_creator_produces_the_checkout() {
     assert!(record.path.join("README.md").is_file());
     assert!(record.path.join(".git").is_file());
 
-    let calls = calls.lock().expect("creator calls");
+    // The recorded calls are copied out of the lock before the next
+    // `await`, so no guard is ever held across a suspension point.
+    let calls = calls.lock().expect("creator calls").clone();
     assert_eq!(calls.len(), 1, "the creator was not called exactly once");
     let call = &calls[0];
     assert_eq!(call.branch, record.branch.clone().unwrap_or_default());
@@ -383,12 +451,8 @@ async fn the_configured_creator_produces_the_checkout() {
             .canonicalize()
             .expect("canonical gitdir")
     );
-}
 
-/// A failing creator is final: the reservation is orphaned with a Git-error
-/// health and no checkout is reported as created.
-#[tokio::test]
-async fn a_failing_creator_orphans_the_reservation() {
+    // ── A refusing creator orphans the reservation ───────────────────────
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
@@ -404,7 +468,6 @@ async fn a_failing_creator_orphans_the_reservation() {
         error.to_string().contains("refused the creation"),
         "unexpected error: {error}"
     );
-
     let records = service
         .list(codegg_core::worktree_service::WorktreeQuery::default())
         .await
@@ -412,14 +475,8 @@ async fn a_failing_creator_orphans_the_reservation() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].state, ManagedWorktreeState::Orphaned);
     assert_eq!(records[0].health, WorktreeHealth::GitError);
-}
 
-/// A checkout whose `.git` is a **directory** rather than a pointer file is
-/// not accepted. This is the property that makes the grant's exemption safe
-/// to grant: the child may create the pointer, but it may not plant a
-/// repository of its own.
-#[tokio::test]
-async fn a_nested_repository_is_not_accepted_as_a_checkout() {
+    // ── A nested repository is not a checkout ─────────────────────────────
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
@@ -435,19 +492,14 @@ async fn a_nested_repository_is_not_accepted_as_a_checkout() {
         error.to_string().contains("post-create verification"),
         "unexpected error: {error}"
     );
-
     let records = service
         .list(codegg_core::worktree_service::WorktreeQuery::default())
         .await
         .expect("list worktrees");
     assert_eq!(records[0].state, ManagedWorktreeState::Orphaned);
     assert_eq!(records[0].health, WorktreeHealth::GitError);
-}
 
-/// Without a configured creator the service still fails closed with the Git
-/// policy's own typed refusal. There is no uncontained fallback.
-#[tokio::test]
-async fn a_service_without_a_creator_still_fails_closed() {
+    // ── Without a creator the service still fails closed ─────────────────
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
@@ -468,127 +520,202 @@ async fn a_service_without_a_creator_still_fails_closed() {
     assert!(error.to_string().contains("CleanSmudgeFilter"));
 }
 
-/// The compiled mount view is the actual enforcement, so the grant is
-/// checked against it rather than against the configuration that produced
-/// it.
-///
-/// This proof does not need a qualified host: it compiles the Bubblewrap
-/// argument list and reads the binds out of it. What it shows is the shape
-/// of the containment — the repository's Git directory bound read-only, the
-/// administration directory bound writable **after** it (so it overlays),
-/// and the checkout's `.git` pointer not hidden.
-#[cfg(target_os = "linux")]
-#[test]
-fn the_compiled_mount_view_grants_only_the_administration_directory() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let repository = workspace.path().join("repo");
-    init_repository(&repository);
-    let gitdir = repository.join(".git");
-    let checkout = workspace.path().join("checkout");
-    std::fs::create_dir_all(&checkout).expect("checkout directory");
-    let scratch = workspace.path().join("scratch");
-    std::fs::create_dir_all(&scratch).expect("scratch directory");
-    let administration = gitdir.join("worktrees");
-    std::fs::create_dir_all(&administration).expect("administration directory");
+// ── 3. The contained child ────────────────────────────────────────────────
 
-    let spec = codegg::git_contained_worktree::build_worktree_grant(
-        &git_binary(),
-        &gitdir,
-        &repository,
-        &checkout,
-        &scratch,
-        &administration,
-        "feature",
-    )
-    .expect("the contained worktree grant");
-
-    let (args, _fds) =
-        codegg::security::sandbox::linux_mount_view::compile(&spec, &gitdir, |_| Ok(256))
-            .expect("compile the protected mount view");
-
-    // The binds, in the order the child will apply them.
-    let binds: Vec<(bool, String)> = args
-        .windows(3)
-        .filter(|window| window[0] == "--bind-fd" || window[0] == "--ro-bind-fd")
-        .map(|window| (window[0] == "--bind-fd", window[2].clone()))
-        .collect();
-
-    let gitdir = gitdir
-        .canonicalize()
-        .expect("canonical gitdir")
-        .display()
-        .to_string();
-    let administration = administration
-        .canonicalize()
-        .expect("canonical administration")
-        .display()
-        .to_string();
-    let checkout = checkout
-        .canonicalize()
-        .expect("canonical checkout")
-        .display()
-        .to_string();
-
-    let gitdir_bind = binds
-        .iter()
-        .position(|(_, destination)| *destination == gitdir)
-        .expect("the Git directory is bound");
-    let administration_bind = binds
-        .iter()
-        .position(|(_, destination)| *destination == administration)
-        .expect("the administration directory is bound");
-
-    // The Git directory is read-only, and the administration directory is
-    // bound writable **after** it, so the writable bind overlays the
-    // read-only one.
-    assert!(
-        !binds[gitdir_bind].0,
-        "the repository's Git directory is bound writable"
-    );
-    assert!(
-        binds[administration_bind].0,
-        "the administration directory is bound read-only"
-    );
-    assert!(
-        administration_bind > gitdir_bind,
-        "the administration directory's writable bind must come after the Git directory's read-only bind"
-    );
-
-    // The checkout is writable, and its `.git` pointer is not hidden: the
-    // child has to create that pointer, because Git refuses to create a
-    // worktree in a non-empty directory.
-    assert!(
-        binds
-            .iter()
-            .any(|(writable, destination)| *writable && *destination == checkout),
-        "the checkout is not bound writable"
-    );
-    let pointer = format!("{checkout}/.git");
-    let hidden_pointer = args.windows(2).any(|window| {
-        (window[0] == "--tmpfs" || window[0] == "--remount-ro" || window[0] == "--ro-bind-data")
-            && window[1] == pointer
-    });
-    assert!(
-        !hidden_pointer,
-        "the checkout's '.git' pointer is hidden from the child: {args:?}"
-    );
-
-    // The mount view's own rule still holds everywhere else: a `.git` that
-    // does not exist yet inside a writable root is hidden, so the child
-    // cannot plant a repository of its own.
-    let scratch_git = format!("{}/.git", scratch.display());
-    let administration_git = format!("{administration}/.git");
-    for hidden_path in [&scratch_git, &administration_git] {
-        assert!(
-            args.windows(2).any(|window| {
-                (window[0] == "--tmpfs" || window[0] == "--remount-ro") && window[1] == *hidden_path
-            }),
-            "{hidden_path} should still be hidden from the child"
-        );
+/// Write an executable script the child will run.
+fn write_script(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("write script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("make the script executable");
     }
 }
 
-// ── The native proof ──────────────────────────────────────────────────────
+/// The child cannot write outside its grant, even when the repository's own
+/// configuration is hostile.
+///
+/// The repository declares a smudge filter and a `post-checkout` hook. Both
+/// are the child's own untrusted configuration, and both try to write a **ref**
+/// into the repository's Git directory — which is exactly what ADR-0048
+/// clause 2 forbids. The grant binds the Git directory read-only, so both
+/// attempts must fail on the host.
+///
+/// The negative assertions alone would prove nothing: they would also hold if
+/// the hostile surfaces never ran. So each surface also writes a **positive
+/// control** into the daemon scratch, which *is* in the grant. If the control
+/// is missing, the containment result is vacuous and the test fails.
+///
+/// The launch runs the **production** grant composition and the **production**
+/// process dispatch. Only the two enforcement dimensions this host cannot
+/// obtain are left out — the M004 process/IPC boundary needs Landlock ABI 6
+/// (Linux 6.12; this host is 6.8) — so the proof here is of the filesystem
+/// grant, which is the dimension this milestone is about. The production
+/// tiers are requested by the production creator and are proved on a host that
+/// can obtain them.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_contained_child_cannot_write_outside_its_grant() {
+    if std::env::var(NATIVE_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {NATIVE_OPT_IN}=1 to run the native contained-worktree proof");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let repository = workspace.path().join("repo");
+    init_repository(&repository);
+    let gitdir = repository
+        .join(".git")
+        .canonicalize()
+        .expect("canonical gitdir");
+    let scratch = workspace.path().join("scratch");
+    std::fs::create_dir_all(&scratch).expect("scratch directory");
+    let checkout = workspace.path().join("checkout");
+    std::fs::create_dir(&checkout).expect("checkout directory");
+    let administration_root = gitdir.join("worktrees");
+    std::fs::create_dir_all(&administration_root).expect("administration directory");
+
+    // The two hostile surfaces. Each writes its positive control into the
+    // scratch — inside the grant — and then tries to write a ref into the
+    // Git directory — outside the grant.
+    //
+    // The refused write is tolerated (`|| true`) so that the *operation*
+    // still completes: the claim under test is that the escape does not
+    // reach the host, not that the hostile code aborts the checkout. The
+    // marker is the evidence either way — it is absent from the host.
+    let filter_ran = scratch.join("filter-ran");
+    let hook_ran = scratch.join("hook-ran");
+    let filter_ref = gitdir.join("refs/heads/hostile-filter");
+    let hook_ref = gitdir.join("refs/heads/hostile-hook");
+
+    let filter_script = scratch.join("hostile-filter.sh");
+    write_script(
+        &filter_script,
+        &format!(
+            "#!/bin/sh\necho ran > {filter}\necho pwned > {ref} || true\ncat\n",
+            filter = filter_ran.display(),
+            ref = filter_ref.display()
+        ),
+    );
+    let hooks = scratch.join("hooks");
+    std::fs::create_dir_all(&hooks).expect("hooks directory");
+    write_script(
+        &hooks.join("post-checkout"),
+        &format!(
+            "#!/bin/sh\necho ran > {ran}\necho pwned > {ref} || true\n",
+            ran = hook_ran.display(),
+            ref = hook_ref.display()
+        ),
+    );
+
+    run_git(
+        &repository,
+        &[
+            "config",
+            "filter.hostile.smudge",
+            &filter_script.display().to_string(),
+        ],
+    );
+    run_git(&repository, &["config", "filter.hostile.required", "true"]);
+    run_git(
+        &repository,
+        &["config", "core.hooksPath", &hooks.display().to_string()],
+    );
+
+    // The branch is the daemon's, and it exists before the child runs.
+    let branch = "codegg/worktree/c008-native";
+    let base = run_git_output(&repository, &["rev-parse", "HEAD"]);
+    run_git(&repository, &["branch", branch, &base]);
+
+    let tiers = if codegg::security::sandbox::landlock::probe_process_scopes().is_ok() {
+        WorktreeLaunchTiers::PRODUCTION
+    } else {
+        eprintln!(
+            "note: this host cannot obtain the M004 process/IPC tier (Landlock ABI 6); \
+             proving the filesystem grant alone"
+        );
+        WorktreeLaunchTiers::FILESYSTEM_ONLY
+    };
+
+    let paths = child_paths(&repository, &checkout, &scratch, branch, &base);
+
+    // Both steps of the contained operation, through the production dispatch.
+    for step in [WorktreeChildStep::Create, WorktreeChildStep::AttachBranch] {
+        let launch = compose_worktree_child_launch(&paths, step, tiers)
+            .expect("compose the contained worktree launch");
+        let mut request = codegg::managed_process::ManagedProcessRequest::new(
+            launch.argv,
+            launch.cwd,
+            codegg::managed_process::ProcessProvenance::new("c008-native", branch),
+        );
+        request.timeout = Some(std::time::Duration::from_secs(60));
+        request.environment_policy = launch.environment;
+        request.sandbox = codegg::managed_process::SandboxRequest::Required(launch.spec);
+
+        let result = codegg::managed_process::ManagedProcessService::run(request)
+            .await
+            .expect("the contained child runs");
+        assert!(
+            result.exit_status.success(),
+            "the contained child failed at {step:?}: {}",
+            String::from_utf8_lossy(&result.stderr.head).trim()
+        );
+    }
+
+    // The checkout is real, and its `.git` is a pointer file.
+    assert!(checkout.join("README.md").is_file());
+    assert!(checkout.join("notes.txt").is_file());
+    let pointer = std::fs::read_to_string(checkout.join(".git")).expect("pointer");
+    assert!(
+        pointer.starts_with("gitdir: "),
+        "the checkout's '.git' is not a linked-worktree pointer: {pointer}"
+    );
+
+    // The positive controls: both hostile surfaces really ran.
+    assert!(
+        filter_ran.is_file(),
+        "the hostile filter never ran, so the containment result is vacuous"
+    );
+    assert!(
+        hook_ran.is_file(),
+        "the hostile hook never ran, so the containment result is vacuous"
+    );
+
+    // The negatives: neither surface wrote a ref.
+    assert!(
+        !filter_ref.exists(),
+        "the hostile filter wrote a ref into the repository's Git directory"
+    );
+    assert!(
+        !hook_ref.exists(),
+        "the hostile hook wrote a ref into the repository's Git directory"
+    );
+
+    // The worktree is on the daemon's branch, and the branch still points
+    // where the daemon put it. The child wrote no ref.
+    let listed = run_git_output(&gitdir, &["worktree", "list", "--porcelain"]);
+    assert!(
+        listed.contains(&format!("branch refs/heads/{branch}")),
+        "the worktree is not attached to the daemon's branch: {listed}"
+    );
+    assert_eq!(
+        run_git_output(&gitdir, &["rev-parse", &format!("refs/heads/{branch}")]),
+        base,
+        "the child moved the daemon's branch"
+    );
+    let refs = run_git_output(
+        &gitdir,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+    );
+    assert_eq!(
+        refs.lines().collect::<Vec<_>>(),
+        vec!["refs/heads/codegg/worktree/c008-native", "refs/heads/main"],
+        "the child created or moved a branch: {refs}"
+    );
+}
+
+// ── 4. The Git execution policy ───────────────────────────────────────────
 
 /// C008 adds a **contained route** for one operation. It does not relax the
 /// Git execution policy for anything.
@@ -638,98 +765,57 @@ fn the_git_execution_policy_is_unchanged() {
     }
 }
 
-/// The real contained child, on a qualified Linux host.
+/// The creator resolves the paths it names — including the two it creates
+/// itself — before it launches anything.
 ///
-/// The repository's own configuration defines a smudge filter and a
-/// `post-checkout` hook that each try to write **outside** the child's
-/// grant. The filter also writes a marker **inside** the grant, so the test
-/// can tell "the filter never ran" apart from "the filter ran and was
-/// contained".
+/// The checkout and the administration directory are both created *after* the
+/// grant is composed, so a resolution that demanded every component to exist
+/// would fail before the child ever ran. That is the defect the hosted lane
+/// caught, and this is its regression: the creator must reach the launch,
+/// whatever this host can or cannot enforce.
 ///
-/// The claim is narrow and the test states it: the host is unaffected. The
-/// checkout's *contents* are untrusted content, and this test does not claim
-/// otherwise.
-#[cfg(target_os = "linux")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_contained_worktree_is_created_and_a_hostile_configuration_is_contained() {
-    if std::env::var(NATIVE_OPT_IN).as_deref() != Ok("1") {
-        eprintln!("skipped: set {NATIVE_OPT_IN}=1 to run the native contained-worktree proof");
-        return;
-    }
-    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
-        panic!("the contained worktree proof requires qualified M004 process/IPC setup: {reason}");
-    }
-
+/// The test does not care whether the launch then succeeds. A host that cannot
+/// obtain the M004 tiers must fail at the **containment**, not at the path.
+#[tokio::test]
+async fn the_creator_reaches_the_launch_instead_of_failing_on_its_own_paths() {
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
+    let gitdir = repository
+        .join(".git")
+        .canonicalize()
+        .expect("canonical gitdir");
+    let scratch = workspace.path().join("scratch");
+    let managed_root = workspace.path().join("managed");
+    std::fs::create_dir_all(&managed_root).expect("managed root");
 
-    // The hostile configuration. Both surfaces try to write outside the
-    // grant; the filter also writes inside it as a positive control.
-    let escaped_marker = workspace.path().join("escaped-marker");
-    let filter_marker = repository.join("filter-ran");
-    let hook_marker = workspace.path().join("hook-escaped-marker");
-    let filter = format!(
-        "sh -c 'echo ran > {} ; echo pwned > {} ; cat'",
-        filter_marker.display(),
-        escaped_marker.display()
-    );
-    let hook = format!("sh -c 'echo pwned > {}'", hook_marker.display());
-    run_git(
-        &repository,
-        &["config", "filter.hostile.smudge", filter.as_str()],
-    );
-    run_git(&repository, &["config", "filter.hostile.required", "true"]);
-    run_git(&repository, &["config", "core.hooksPath", hook.as_str()]);
-    std::fs::write(repository.join(".gitattributes"), "*.txt filter=hostile\n")
-        .expect("write attributes");
+    // The shape the service hands the creator: the parent exists and the
+    // leaf does not, because the daemon creates the leaf.
+    let checkout = managed_root.join("wt-regression");
+    assert!(!checkout.exists());
 
-    let managed_root = tempfile::tempdir().expect("managed root");
-    let scratch = tempfile::tempdir().expect("scratch");
-    let service = WorktreeService::memory(
-        managed_root.path().to_path_buf(),
-        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
-    )
-    .with_contained_creator(Arc::new(
-        codegg::git_contained_worktree::ContainedGitWorktreeCreator::new(
-            git_binary(),
-            scratch.path().to_path_buf(),
-        ),
-    ));
+    let creator = ContainedGitWorktreeCreator::new(git_binary(), scratch);
+    let request = ContainedWorktreeRequest {
+        repository_root: repository.canonicalize().expect("canonical repository"),
+        repository_gitdir: gitdir.clone(),
+        worktree_path: checkout.clone(),
+        branch: "codegg/worktree/c008-regression".to_string(),
+        base_commit: run_git_output(&repository, &["rev-parse", "HEAD"]),
+        timeout: std::time::Duration::from_secs(60),
+    };
 
-    let (record, _lease) = service
-        .create(&create_request(&repository))
-        .await
-        .expect("the contained child creates the checkout");
-
-    assert_eq!(record.state, ManagedWorktreeState::Ready);
-    assert_eq!(record.health, WorktreeHealth::Clean);
-    assert!(record.path.join("README.md").is_file());
-    assert!(record.path.join(".git").is_file());
-
-    // The checkout's pointer names the administration directory the grant
-    // named — not a repository the child controls.
-    let pointer = std::fs::read_to_string(record.path.join(".git")).expect("pointer");
-    assert!(
-        pointer.starts_with("gitdir: "),
-        "the checkout's '.git' is not a linked-worktree pointer: {pointer}"
-    );
-
-    // Neither hostile surface reached the host.
-    assert!(
-        !escaped_marker.exists(),
-        "the hostile filter wrote outside the grant"
-    );
-    assert!(
-        !hook_marker.exists(),
-        "the hostile hook wrote outside the grant"
-    );
-
-    // The positive control: the filter ran inside the grant. If this is
-    // absent, the negative assertions above prove nothing about containment
-    // — they would only prove the filter never ran.
-    assert!(
-        filter_marker.is_file(),
-        "the hostile filter never ran, so the containment result is vacuous"
-    );
+    match creator.create(&request).await {
+        Ok(outcome) => {
+            // The host obtained the tiers: the worktree really exists.
+            assert!(checkout.join(".git").is_file());
+            assert!(outcome.administration_dir.starts_with(&gitdir));
+        }
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                !message.contains("could not be resolved"),
+                "the creator failed to resolve a path it creates itself: {message}"
+            );
+        }
+    }
 }
