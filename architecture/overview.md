@@ -506,8 +506,9 @@ values. `main`'s advance added sixteen top-level root integration-test files
 
 Two rows moved. The **integration test files** row keeps the M004 measure —
 `tests/*.rs` plus `tests/*/*.inc`, with the `tests/common/` helper tree
-excluded — and reads **318** on the merged tree: **3** top-level files plus
-**315** family members. Thirteen of `main`'s sixteen new top-level files were
+excluded — and read **318** on that merged tree: **3** top-level files plus
+**315** family members. (The sixth pass, below, re-measured it.) Thirteen of
+`main`'s sixteen new top-level files were
 absorbed into the families that already owned their subject, which moves a file
 without moving the count: 16 + 302 = 318 before the absorption, and 3 + 315 =
 318 after it. The three that stay top-level are named by a hosted qualification
@@ -566,7 +567,7 @@ workspace member crates **11 (+ root)**.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 318 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 319 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | CI guard scripts | 75 | `scripts/check_*` |
 
 ## Feature gates
@@ -836,7 +837,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (318 files)
+├── tests/                      # Integration tests (319 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -890,6 +891,12 @@ One row moved on **2026-10-22** when the Linux trusted Git cost corrective opene
 **Amended 2026-10-22 (same row, no count moved).** The contained operation was **measured** to be two steps rather than one: `git worktree add <path> <existing-branch>` locks and rewrites `refs/heads/<branch>` even when the value is unchanged, so it cannot run inside a grant that excludes `refs`. ADR-0048 was **amended** accordingly — the operation is `git worktree add --detach <path> <commit>` followed by `git symbolic-ref HEAD refs/heads/<branch>`, both inside the same containment. The writable set did not widen, no code-count row moved, and no new module, variant, tool or guard was added.
 
 One row moved on **2026-10-22** when the CI/test-throughput recovery line reconciled with `main` and absorbed `main`'s integration tests into the recovery families: CI guard scripts are **75** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_test_self_reexec_paths.py`). The **integration test files** row is unchanged at **318** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded): the absorption moved files between families without adding or removing one. The new guard exists because the absorption changed the path cargo knows a moved test by — a family member's path is `<member>::<test_fn>`, a standalone target's is `<test_fn>` — and a self-re-exec test that keeps the old bare path selects **zero** tests while still exiting **0**, so the child does no work and the parent reads that empty success as evidence. The hosted Windows and Linux M004 lanes showed both consequences: a fixture child that published no PID, and an interrupted-publication recovery scenario that was never exercised. Every code-count row was re-checked against its own listed `Source` and is unchanged.
+
+One row moved again on **2026-10-22** when the same line reconciled with `main` a **sixth** time, at `7d3c6ed09` (PR #166, the Linux trusted-Git C008 contained worktree): integration test files are **319** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved by one, the new `tests/composed_two_agent_race_m011.rs`). That file **stays top-level**: it drives two live agents, and the agent-loop harness suites drain the process-global event bus and assert that nothing was left pending on it, so sharing a binary with them turns that assertion into a cross-test race. The root package's test-target count is therefore **25** (21 families + 4) and the workspace's **53**.
+
+The same merge also produced a tree that **did not compile**, and no merge tool reported it: `main`'s edit to the agent-loop harness included a shared helper with `#[path = "common/scripted_provider.rs"]`, and a `#[path]` attribute is relative to **the file that carries it** — the harness had moved into `tests/agent_loop/`, so the path resolved to a directory that does not exist. The two sides touched different paths, git paired them by rename, and the break was silent; `cargo check --workspace --all-targets` on the merged tree is what found it. The merged family reaches the shared tree through the binding its root already declares, so the private include was both broken and redundant.
+
+CI guard scripts are unchanged at **75** (`ls scripts/check_*`): `main`'s advance added no guard. Every code-count row was re-checked against its own listed `Source` and is unchanged.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.

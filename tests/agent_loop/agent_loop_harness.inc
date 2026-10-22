@@ -23,13 +23,12 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 
 // The scripted provider lives in the shared test tree because the M011
-// composed race needs it too. It is included by path rather than through
-// `mod common;` so that this binary's test composition — and with it the
-// scheduling of tests that share the global event bus — does not change.
-#[path = "common/scripted_provider.rs"]
-mod scripted_provider;
-
-use scripted_provider::ScriptedProvider;
+// composed race needs it too. This family's root binds that tree as
+// `common`, so the harness reaches the provider through it. A private
+// `#[path]` include here would compile a second copy of the same file — and
+// its path is relative to *this file's* directory, so it breaks the moment
+// the family moves.
+use super::common::scripted_provider::ScriptedProvider;
 
 // =============================================================================
 // HARNESS DOCUMENTATION

@@ -541,7 +541,8 @@ applied to the branch's own six "family of one" targets:
 The root package's test-target count therefore falls from **37** to **24** (21
 families + 3), and the workspace's from **65** to **52** — the root's 13
 absorbed targets plus `codegg-core`'s two (`session_launch` and `writer_permit`,
-which M004 deliberately left outside the root package's family mechanism).
+which M004 deliberately left outside the root package's family mechanism). (At
+that merge; the sixth pass below re-measured both.)
 
 Three consequences follow from the move, and each is a change a reader has to
 know about:
@@ -563,6 +564,50 @@ know about:
   `git_fixture_isolation::child_prints_its_own_process_unique_fixture_path`. A
   bare test name selects nothing, and the parent reads the empty child report
   as a failure to derive a fixture path.
+
+### The families after the sixth merge (2026-10-22)
+
+`main` advanced again, to `7d3c6ed09` (PR #166, the Linux trusted-Git C008
+contained worktree), so this line reconciled with it a **sixth** time. The
+advance added **one** top-level root integration-test file,
+`tests/composed_two_agent_race_m011.rs`, and no family member.
+
+**That file stays top-level, and the reason is a shared global rather than a
+lane.** The composed two-agent race drives two live agents against one
+checkout, and the agent-loop harness suites **drain the process-global event
+bus** and assert that nothing was left pending on it
+(`agent_loop_harness::temp_root_write_following_the_offer_needs_no_human`
+counts `AppEvent::PermissionPending` on a global broadcast receiver). A second
+agent on that same bus turns that assertion into a cross-test race: absorbing
+the file into `agent_loop` made the harness fail with *"no attempt may reach
+the human when the model follows the offer"* — `left: 1, right: 0` — while the
+file passed in its own binary. **A test that observes a process-global cannot
+share a binary with the tests that observe it too.** So the file keeps its own
+target, the way `main` shipped it, and it gets its own ownership-manifest
+group.
+
+The root package's test-target count is therefore **25** (21 families + 4) and
+the workspace's **53**; the root integration-test *module* count rises
+318 → **319** (4 top-level + 315 members).
+
+Two consequences of this merge are worth naming, because neither is a textual
+conflict:
+
+- **A `#[path]` attribute is relative to the file that carries it.** `main`'s
+  edit to the agent-loop harness included a shared helper with
+  `#[path = "common/scripted_provider.rs"]`. The harness had moved into
+  `tests/agent_loop/`, so that path resolved to `tests/agent_loop/common/`,
+  which does not exist — the merged tree did not compile, and no merge tool
+  reported it, because the two sides touched different paths and git paired
+  them by rename. The family already binds the shared tree as `common`, so the
+  harness reaches the provider through `use super::common::scripted_provider::…`
+  and the private include is gone. **A move that changes a file's directory
+  can break a path inside it that nothing else mentions.**
+- **A standalone test file declares `mod common;`; a family member does not.**
+  `tests/common/` is a standalone file's sibling directory, so it declares the
+  tree itself. Inside a family the root already binds that tree, so a second
+  declaration would compile it twice; the member reaches it with
+  `use super::common::…` instead.
 
 ### The measured link cost (M005)
 

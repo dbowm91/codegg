@@ -380,6 +380,11 @@ paths = [
   # directly, so a change to those has to select this family too.
   "src/core/writer_fence.rs",
   "src/core/writer_permit.rs",
+  # The composed two-agent race is the sibling of those suites: it drives the
+  # run group and the durable permit store through two live agents, so a
+  # change to either has to select this family as well.
+  "crates/codegg-core/src/agent_run_group.rs",
+  "crates/codegg-core/src/writer_permit.rs",
 ]
 targets = ["agent_loop"]
 
@@ -533,6 +538,28 @@ paths = [
   "crates/codegg-core/src/worktree.rs",
 ]
 targets = ["contained_worktree_c008"]
+
+# The composed two-agent daemon race: two live agents sharing one checkout,
+# each issuing a real mutating broker operation, with the writer fence
+# resolved from the run's durable record.
+#
+# It stays a standalone target rather than joining the `agent_loop` family,
+# because it **shares a process-global event bus** with the agent-loop harness
+# suites. The harness drains that bus and asserts that nothing was left
+# pending, so a second agent on the same bus turns that assertion into a
+# cross-test race. A test that observes a process-global cannot share a
+# binary with the tests that observe it too.
+[[groups]]
+id = "root_composed_two_agent_race_m011"
+member = "codegg"
+paths = [
+  "src/core/writer_fence.rs",
+  "src/core/writer_permit.rs",
+  "src/tool/writer_fence.rs",
+  "crates/codegg-core/src/agent_run_group.rs",
+  "crates/codegg-core/src/writer_permit.rs",
+]
+targets = ["composed_two_agent_race_m011"]
 
 # The root package's catch-all: the remaining top-level source paths, and the
 # root library test target. A change to a root source file that no precise

@@ -1,4 +1,4 @@
-# CI and Test Throughput Recovery — Fifth Merge and Absorption Status
+# CI and Test Throughput Recovery — Merge and Absorption Status
 
 Status: closed
 
@@ -21,7 +21,8 @@ Historical closure records this record supplements and does **not** rewrite:
 - `plans/closure/ci-test-throughput-recovery/006-status.md` (M006, closed)
 - `plans/closure/ci-test-throughput-recovery/007-status.md` (M007, closed)
 
-Repository baseline reviewed: `f4019a410` (`origin/main`)
+Repository baselines reviewed: `f4019a410` (the fifth merge) and `7d3c6ed09`
+(the sixth, §2.7)
 
 Implementation commits or pull requests:
 
@@ -42,9 +43,19 @@ that the ownership manifest could not map.
 
 Thirteen of the sixteen were absorbed into the family that already owned their
 subject; three stayed top-level because a hosted qualification lane names
-them. The root package's test-target count falls from **37** to **24** and the
-workspace's from **65** to **52**. No test function was removed, no assertion
+them. At that merge the root package's test-target count fell from **37** to
+**24** and the workspace's from **65** to **52** (both re-measured by the
+sixth reconciliation, §2.7). No test function was removed, no assertion
 was weakened, and every guard the repository runs is green on the merged tree.
+
+`main` then advanced a second time (§2.7) and the line was reconciled with it
+again: one more top-level file arrived, and it **stays** top-level — not
+because a lane names it, but because it shares a process-global event bus with
+the agent-loop harness suites, which drain that bus and assert on what they
+find. The two test-target counts move to 25 and 53, and the merge produced a
+tree that **did not compile** — a `#[path]` attribute inside a file that had
+moved directory. No conflict reported it; `cargo check --workspace
+--all-targets` on the merged tree did.
 
 ## 2. What the merge changed
 
@@ -244,7 +255,53 @@ object's DACL, which is a Windows security-hardening change to the backend
 itself — not a test repair, and not something this merge should make silently.
 It is carried forward as an open item in §7.
 
+### 2.7 The sixth reconciliation, and a defect no conflict reports
 
+`origin/main` advanced again while this record was being written, to
+`7d3c6ed09` (PR #166, the Linux trusted-Git C008 contained worktree), so the
+line was reconciled with it a **sixth** time. The merge itself was clean —
+`git merge-tree --write-tree origin/main HEAD` produced a tree with no
+conflicts — and `main`'s advance added **one** top-level root integration-test
+file, `tests/composed_two_agent_race_m011.rs`, and no family member.
+
+The file **stays top-level**, and the reason is a shared global rather than a
+lane. The composed two-agent race drives two live agents against one checkout,
+and the agent-loop harness suites **drain the process-global event bus** and
+assert that nothing was left pending on it — `agent_loop_harness::
+temp_root_write_following_the_offer_needs_no_human` counts
+`AppEvent::PermissionPending` on a global broadcast receiver. Absorbing the
+file into `agent_loop` was tried first and **rejected on evidence**: the
+harness then failed with *"no attempt may reach the human when the model
+follows the offer"*, `left: 1, right: 0`, while the file passed in its own
+binary (`3 passed`). **A test that observes a process-global cannot share a
+binary with the tests that observe it too.** The file keeps its own target,
+the way `main` shipped it, and gets its own ownership-manifest group
+(`root_composed_two_agent_race_m011`).
+
+The root package's test-target count is therefore **25** (21 families + 4)
+and the workspace's **53**; the root integration-test *module* count rises
+318 → **319** (4 top-level + 315 members).
+
+**The merge produced a tree that did not compile, and no merge tool said so.**
+`main`'s edit to the agent-loop harness included a shared helper with
+`#[path = "common/scripted_provider.rs"]`. A `#[path]` attribute is relative
+to **the file that carries it**, and the harness had moved into
+`tests/agent_loop/` on this branch — so the path resolved to
+`tests/agent_loop/common/scripted_provider.rs`, which does not exist. The two
+sides touched different paths, git paired them by rename, and the result was a
+silent break rather than a conflict.
+
+The repair reaches the shared tree the way every other member of the family
+does. The family's root already binds it, so the private include was both
+broken and redundant — it compiled a second copy of a file the binary already
+had — and the harness now uses `use super::common::scripted_provider::…`.
+
+**The generalisable finding.** A move that changes a file's directory can
+break a path *inside* it that no other file mentions, and neither the merge
+nor the text of the diff points at it. The audit that caught it was
+`cargo check --workspace --all-targets` on the merged tree, not the merge.
+
+## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
 |---|---|---|
@@ -264,6 +321,8 @@ It is carried forward as an open item in §7.
 | `sandbox_policy_wiring`'s refusal assertion is reachable | the tool is given the workspace root it needs, so the refusal under test is the capability refusal and not `MissingWorkspaceRoot`; the assertion reports the actual error text | pass locally; the hosted Windows lane is the authority |
 | C014's host-denial probes run | the Git step reports its outcome instead of aborting the child; a Git failure must be the named null-device limitation | pass locally; the hosted Windows lane is the authority |
 | The recorded counts are true on the merged tree | `architecture/overview.md`'s Verified-counts table, re-measured against each row's own `Source` | pass |
+| The sixth reconciliation's merged tree compiles | `cargo check --workspace --all-targets` — 0 errors. The merge was clean (`git merge-tree --write-tree origin/main HEAD`), and the break it carried — a `#[path]` attribute relative to a file that had moved directory — was found by the compile, not by the merge | pass |
+| The sixth reconciliation's new file keeps its own target | `tests/composed_two_agent_race_m011.rs` stays top-level: it drives two live agents on the process-global event bus, and the agent-loop harness suites drain that bus and assert that nothing was left pending on it. Absorbing it into `agent_loop` was tried and **rejected on evidence** — the harness failed with "no attempt may reach the human when the model follows the offer" (`left: 1, right: 0`) while the file passed alone (`3 passed`). It gets its own `root_composed_two_agent_race_m011` ownership group | pass |
 
 ## 4. The counts, re-measured
 
@@ -273,7 +332,7 @@ either side. Two rows moved; the rest did not.
 
 | Row | Before | After | Source |
 |---|---:|---:|---|
-| Integration test files | 302 | **318** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 3 top-level + 315 members |
+| Integration test files | 302 | **319** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 3 top-level + 316 members |
 | CI guard scripts | 68 | **75** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted, plus the 1 this line adds |
 
 The remaining rows were re-measured and did not move: `codegg-core` modules
@@ -296,7 +355,8 @@ the source they are measured from:
   root integration test *modules* — and the absorption moved a file without
   moving the count: 16 + 302 = 318 before the absorption, 3 + 315 = 318 after
   it. The count on `origin/main` is 318 too, by the other route: 302 top-level
-  files + 16 predecessor members.
+  files + 16 predecessor members. (The sixth reconciliation of §2.7 added one
+  more file, so the row now reads 319: 3 top-level + 316 members.)
 - **The guard-script measure moved once more, for this line's own guard.**
   `scripts/check_test_self_reexec_paths.py` is the seventy-fifth
   `scripts/check_*` script, and it exists because the absorption changed the
