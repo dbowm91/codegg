@@ -10,6 +10,8 @@
 pub mod blackboard;
 pub mod checkout_reservation;
 pub mod eggwork_node;
+pub mod linked_worktree;
 pub mod pool;
 pub mod projection_replay;
+pub mod scripted_provider;
 pub mod secret_scan;
