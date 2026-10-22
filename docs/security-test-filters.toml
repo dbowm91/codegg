@@ -1,0 +1,336 @@
+# Security test-filter execution registry
+#
+# Every CI step that runs a **named subset** of security tests is registered
+# here. The registry is consumed by `scripts/check_test_filter_execution.py`,
+# which is both a static guard (run by `scripts/verify.sh quick` and by
+# `.github/workflows/ci.yml`) and the runtime wrapper the workflow steps
+# themselves invoke.
+#
+# WHY THE REGISTRY EXISTS
+#
+# A step that runs `cargo test --lib some_filter_` is **green when the filter
+# matches zero tests**: cargo prints `0 passed; 0 failed; ...; 42 filtered
+# out` and exits 0. The step looks like it qualified something and it
+# qualified nothing. The same holds for a filter that selects only
+# **self-skipping** tests — a test that returns early is reported by cargo as
+# `ok`, so the step is green and the boundary was never exercised.
+#
+# This repository has already paid for that lesson once.
+# `tests/linux_m004_process_ipc.rs` carries the note:
+#
+#     The hosted job that runs this probe used to filter on this test name
+#     before the test existed, so the step matched zero tests and stayed
+#     vacuously green.
+#
+# WHAT THE CONTROL ASSERTS
+#
+# * the registered command is still the command the workflow runs;
+# * the filter still selects at least one test *declared in the source*;
+# * the step runs through the counting wrapper, so a bypass is a static
+#   failure rather than a silent green step;
+# * at run time the executed count is non-zero, every registered test name is
+#   reported as executed, and no self-skip marker was emitted.
+#
+# The self-skip marker check needs `--nocapture`: cargo swallows a passing
+# test's output without it, so the marker would be invisible. The static guard
+# therefore requires `--nocapture` on any entry whose filter selects a
+# self-skipping test.
+#
+# ENTRY FIELDS
+#
+#   workflow — the workflow file, relative to the repository root.
+#   job      — the job in that workflow.
+#   step     — the step in that job.
+#   command  — the exact command the step runs. The static guard requires it
+#              to still appear in the workflow file.
+#   filter   — the substring cargo matches against the full test path.
+#   tests    — the test names the filter must have actually executed. Each
+#              must appear on a reported-as-executed line in the run's output.
+#   security — why this filter is security-relevant. An entry without one is
+#              rejected: a filter nobody can say what it protects is a filter
+#              nobody is watching.
+#
+# Add new entries to the bottom. Run the guard after every change:
+#
+#   python3 scripts/check_test_filter_execution.py
+#   python3 scripts/check_test_filter_execution.py --self-test
+
+# ---------------------------------------------------------------------
+# Linux M004 native qualification
+# ---------------------------------------------------------------------
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "C007 private-index publication under containment"
+command = "cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1"
+filter = "production_private_index_publisher_stages_and_publishes_under_containment"
+tests = ["production_private_index_publisher_stages_and_publishes_under_containment"]
+security = "The private-index publisher must stage and publish under containment; the step self-skips without its opt-in."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "M004 constrained PTY live-owner qualification"
+command = "cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture"
+filter = "interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view"
+tests = ["m004_live_owner_preserves_tty_and_private_process_view"]
+security = "The constrained PTY route must keep the owner's TTY and hide the private process view; the step self-skips without its opt-in."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "M004 daemon-authorized PTY routing and descendant cleanup"
+command = "cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant -- --nocapture"
+filter = "m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"
+tests = ["m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"]
+security = "The daemon-authorized PTY route must apply the principal's profile and cancel the descendant; the step self-skips without its opt-in."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "M004 daemon-owned constrained LSP duplex and procfs qualification"
+command = "cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope --features lsp-test-support -- --test-threads=1 --nocapture"
+filter = "lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope"
+tests = ["constrained_lsp_process_is_owned_by_m004_scope"]
+security = "The constrained language server must be owned by the M004 scope, not by the ambient process."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "Protected mount and Git regressions"
+command = "cargo test --locked --lib protected_mount_ -- --nocapture"
+filter = "protected_mount_"
+tests = [
+  "protected_mount_concurrent_launches_keep_workspaces_separate",
+  "protected_mount_pty_first_hop_preserves_terminal_and_workspace_write",
+  "protected_mount_records_bounded_cold_and_warm_launch_latency",
+  "protected_mount_rejects_denied_descendant_of_writable_root",
+  "protected_mount_rejects_deny_alias_into_writable_grant",
+  "protected_mount_rejects_git_metadata_replacement_after_lease",
+  "protected_mount_rejects_workspace_ancestor_replacement_before_target_start",
+  "protected_mount_rejects_workspace_replacement_before_target_start",
+  "protected_mount_view_linked_worktree_common_dir_is_read_only",
+  "protected_mount_view_real_managed_process_handoff",
+  "protected_mount_refuses_bare_repository_as_workspace",
+]
+security = "The protected-mount view must refuse a replaced workspace, a denied descendant and a writable-grant alias; the filter selects tests that self-skip when the host cannot run them."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "Protected mount and Git regressions"
+command = "cargo test -p egggit --locked trusted_git -- --test-threads=1"
+filter = "trusted_git"
+tests = [
+  "trusted_git_commit_does_not_run_repository_hooks",
+  "trusted_git_commit_uses_global_identity_without_loading_global_hooks",
+  "trusted_git_diff_does_not_run_repository_external_diff_or_textconv",
+  "trusted_git_executable_alias_requires_containment_before_helper_launch",
+  "trusted_git_filter_routes_require_contained_execution_before_helper_launch",
+  "trusted_git_object_read_routes_require_private_view",
+  "trusted_git_policy_denies_caller_config_and_repository_redirects",
+  "trusted_git_policy_overrides_execution_bearing_repository_config",
+  "trusted_git_read_view_ignores_alternates_created_after_admission",
+  "trusted_git_read_view_is_immutable_after_admission",
+  "trusted_git_refuses_common_dir_object_alternates",
+  "trusted_git_refuses_repository_object_alternates",
+  "trusted_git_status_cannot_be_redirected_by_local_core_worktree",
+  "trusted_git_status_does_not_run_repository_fsmonitor",
+  "trusted_git_status_ignores_new_nested_repository_configuration",
+  "trusted_git_status_neutralizes_included_repository_configuration",
+  "trusted_git_status_disables_repository_fsmonitor",
+]
+security = "The trusted-Git read view must refuse repository-owned hooks, diff drivers, alternates and configuration redirects."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "restricted-userns-fails-closed"
+step = "Required M004 launch refuses before target under host userns policy"
+command = "cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture"
+filter = "required_process_tier_fails_closed_when_user_namespaces_are_restricted"
+tests = ["required_process_tier_fails_closed_when_user_namespaces_are_restricted"]
+security = "A required process tier must refuse before the target starts when user namespaces are restricted; the step self-skips without its opt-in."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "restricted-userns-fails-closed"
+step = "Constrained PTY route refuses before target under host userns policy"
+command = "cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture"
+filter = "m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted"
+tests = ["m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted"]
+security = "The constrained PTY route must fail closed before the target when user namespaces are restricted; the step self-skips without its opt-in."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "restricted-userns-fails-closed"
+step = "Constrained LSP launch refuses before target under host userns policy"
+command = "cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture"
+filter = "lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted"
+tests = ["constrained_lsp_launch_fails_before_target_when_userns_are_restricted"]
+security = "The constrained language-server launch must refuse before the target when user namespaces are restricted."
+
+# ---------------------------------------------------------------------
+# Linux C006 protected mount qualification
+# ---------------------------------------------------------------------
+
+[[filter]]
+workflow = ".github/workflows/linux-c006-native.yml"
+job = "protected-mount"
+step = "ManagedProcessService protected-mount qualification"
+command = "cargo test --locked --lib protected_mount_ -- --nocapture"
+filter = "protected_mount_"
+tests = [
+  "protected_mount_concurrent_launches_keep_workspaces_separate",
+  "protected_mount_pty_first_hop_preserves_terminal_and_workspace_write",
+  "protected_mount_records_bounded_cold_and_warm_launch_latency",
+  "protected_mount_rejects_denied_descendant_of_writable_root",
+  "protected_mount_rejects_deny_alias_into_writable_grant",
+  "protected_mount_rejects_git_metadata_replacement_after_lease",
+  "protected_mount_rejects_workspace_ancestor_replacement_before_target_start",
+  "protected_mount_rejects_workspace_replacement_before_target_start",
+  "protected_mount_view_linked_worktree_common_dir_is_read_only",
+  "protected_mount_view_real_managed_process_handoff",
+  "protected_mount_refuses_bare_repository_as_workspace",
+]
+security = "The C006 protected-mount qualification is the same boundary as the M004 regression step; both must select the same refusal tests."
+
+[[filter]]
+workflow = ".github/workflows/linux-c006-native.yml"
+job = "protected-mount"
+step = "Trusted Git repository-config qualification"
+command = "cargo test -p egggit --locked trusted_git -- --test-threads=1"
+filter = "trusted_git"
+tests = [
+  "trusted_git_commit_does_not_run_repository_hooks",
+  "trusted_git_commit_uses_global_identity_without_loading_global_hooks",
+  "trusted_git_diff_does_not_run_repository_external_diff_or_textconv",
+  "trusted_git_executable_alias_requires_containment_before_helper_launch",
+  "trusted_git_filter_routes_require_contained_execution_before_helper_launch",
+  "trusted_git_object_read_routes_require_private_view",
+  "trusted_git_policy_denies_caller_config_and_repository_redirects",
+  "trusted_git_policy_overrides_execution_bearing_repository_config",
+  "trusted_git_read_view_ignores_alternates_created_after_admission",
+  "trusted_git_read_view_is_immutable_after_admission",
+  "trusted_git_refuses_common_dir_object_alternates",
+  "trusted_git_refuses_repository_object_alternates",
+  "trusted_git_status_cannot_be_redirected_by_local_core_worktree",
+  "trusted_git_status_does_not_run_repository_fsmonitor",
+  "trusted_git_status_ignores_new_nested_repository_configuration",
+  "trusted_git_status_neutralizes_included_repository_configuration",
+  "trusted_git_status_disables_repository_fsmonitor",
+]
+security = "The C006 trusted-Git qualification must refuse repository-owned hooks, diff drivers, alternates and configuration redirects."
+
+# ---------------------------------------------------------------------
+# Linux Git object CoW qualification
+# ---------------------------------------------------------------------
+
+[[filter]]
+workflow = ".github/workflows/linux-git-object-cow.yml"
+job = "btrfs-snapshot"
+step = "Prove CoW snapshot isolation from source mutation"
+command = "cargo test --locked -p egggit trusted_git_read_view_is_immutable_after_admission -- --nocapture"
+filter = "trusted_git_read_view_is_immutable_after_admission"
+tests = ["trusted_git_read_view_is_immutable_after_admission"]
+security = "The admitted read view must stay immutable after admission, which is the property the snapshot qualification exists to prove."
+
+# ---------------------------------------------------------------------
+# Windows process launcher qualification
+# ---------------------------------------------------------------------
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Windows suspended-target failure injection"
+command = "cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target -- --nocapture"
+filter = "managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target"
+tests = ["failed_job_assignment_never_runs_the_suspended_target"]
+security = "A failed job assignment must never run the suspended target."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Restricted stdio setup failure injection"
+command = "cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::restricted_ -- --nocapture --test-threads=1"
+filter = "managed_process::windows::tests::restricted_"
+tests = [
+  "restricted_attribute_list_contains_only_three_standard_handles",
+  "restricted_job_assignment_failure_never_runs_the_target",
+  "restricted_pipe_setup_failure_is_closed_before_process_creation",
+]
+security = "The restricted launch path must keep only the three standard handles and must not run the target when the pipe setup or the job assignment fails."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "WRITE_RESTRICTED synthetic-root feasibility probe"
+command = "cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::write_restricted_token_confines_new_synthetic_root_without_original_path_mutation -- --nocapture --test-threads=1"
+filter = "managed_process::windows::tests::write_restricted_token_confines_new_synthetic_root_without_original_path_mutation"
+tests = ["write_restricted_token_confines_new_synthetic_root_without_original_path_mutation"]
+security = "The WRITE_RESTRICTED token must confine the child to the synthetic root without mutating the original path."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "C044 WRITE_RESTRICTED token-flag differential"
+command = "cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::c052_restricted_token_flag_differential_is_bounded_and_job_owned -- --nocapture --test-threads=1"
+filter = "managed_process::windows::tests::c052_restricted_token_flag_differential_is_bounded_and_job_owned"
+tests = ["c052_restricted_token_flag_differential_is_bounded_and_job_owned"]
+security = "The WRITE_RESTRICTED token-flag differential must stay bounded and job-owned."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Sandbox status frame rejection tests"
+command = "cargo test --locked -p codegg --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture"
+filter = "status_decoder_rejects_malformed_duplicate_and_oversized_frames"
+tests = ["status_decoder_rejects_malformed_duplicate_and_oversized_frames"]
+security = "The sandbox status decoder must reject malformed, duplicate and oversized frames."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Windows ACL lease failure and recovery unit tests"
+command = "cargo test --locked -p codegg --features windows-sandbox-test-support --lib windows_acl_lease -- --nocapture --test-threads=1"
+filter = "windows_acl_lease"
+tests = [
+  "windows_acl_lease_recovers_after_simulated_parent_crash",
+  "windows_acl_lease_refuses_a_reused_path_identity",
+  "windows_acl_lease_refuses_descriptor_drift_and_keeps_journal",
+  "windows_acl_lease_restores_the_exact_before_image",
+  "windows_acl_lease_rolls_back_after_failure_following_acl_mutation",
+  "windows_acl_lease_serializes_same_path_leases_across_threads",
+]
+security = "The ACL lease must refuse a reused path identity and a drifted descriptor, and must restore the exact before-image."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Rust AppContainer launch ordering and cleanup proof"
+command = "cargo test --locked -p codegg --lib managed_process::windows::tests::appcontainer_ -- --nocapture"
+filter = "managed_process::windows::tests::appcontainer_"
+tests = [
+  "appcontainer_attribute_owns_abi_value_and_profile_sid",
+  "appcontainer_resume_failure_keeps_target_suspended",
+  "appcontainer_sid_mismatch_keeps_target_suspended",
+  "appcontainer_target_is_in_job_and_has_package_sid_before_resume",
+  "appcontainer_verification_failure_keeps_target_suspended",
+]
+security = "The AppContainer launch must keep the target suspended until the SID and job membership are verified."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Windows native shell and policy inputs"
+command = "cargo test --locked -p codegg --lib windows_policy_tests -- --nocapture"
+filter = "windows_policy_tests"
+tests = [
+  "windows_launch_spec_keeps_workspace_write_roots_distinct",
+  "windows_policy_path_normalizes_case_aliases",
+  "windows_policy_path_rejects_junction_components",
+  "windows_policy_path_rejects_unc_device_ads_and_traversal",
+  "windows_policy_roots_cannot_be_resolved_through_search_path",
+  "windows_roots_use_known_folders_and_retain_credential_denies",
+]
+security = "The Windows launch policy must refuse junction components, UNC device paths and search-path-resolved roots."

@@ -178,26 +178,26 @@ jobs:
         # must not be able to hide this result, and a hang here must fail
         # this step rather than cancel the whole job.
         timeout-minutes: 10
-        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1
 
       - name: M004 managed-process host PID and IPC denial probes
         run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support -- --nocapture
 
       - name: M004 constrained PTY live-owner qualification
-        run: cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture
 
       - name: M004 daemon-authorized PTY routing and descendant cleanup
         env:
           CODEGG_RUN_M004_PTY_NATIVE: '1'
-        run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant -- --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant -- --nocapture
 
       - name: M004 daemon-owned constrained LSP duplex and procfs qualification
-        run: cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope --features lsp-test-support -- --test-threads=1 --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope --features lsp-test-support -- --test-threads=1 --nocapture
 
       - name: Protected mount and Git regressions
         run: |
-          cargo test --locked --lib protected_mount_ -- --nocapture
-          cargo test -p egggit --locked trusted_git -- --test-threads=1
+          python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --lib protected_mount_ -- --nocapture
+          python3 scripts/check_test_filter_execution.py --run -- cargo test -p egggit --locked trusted_git -- --test-threads=1
 
   restricted-userns-fails-closed:
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref_name != 'planning/linux-sandbox-next-admission-and-adr-cleanup' }}
@@ -232,13 +232,13 @@ jobs:
         run: cargo build --locked --bin codegg-sandbox-helper
 
       - name: Required M004 launch refuses before target under host userns policy
-        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
 
       - name: Constrained PTY route refuses before target under host userns policy
-        run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture
 
       - name: Constrained LSP launch refuses before target under host userns policy
-        run: cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture
+        run: python3 scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture
 
   git-cost-pilot:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref_name == 'planning/linux-sandbox-next-admission-and-adr-cleanup' }}

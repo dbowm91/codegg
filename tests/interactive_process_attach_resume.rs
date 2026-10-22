@@ -997,6 +997,12 @@ async fn constrained_profile_refuses_before_pty_spawn() {
     if std::env::var_os("CODEGG_RUN_M004_PTY_NATIVE").as_deref() == Some(std::ffi::OsStr::new("1"))
         || codegg::security::sandbox::landlock::probe_process_scopes().is_ok()
     {
+        // The marker matters: a filter that selects only self-skipping tests
+        // qualifies nothing, and the run-store control has to be able to see
+        // that. A silent `return` is reported as a pass.
+        eprintln!(
+            "skipped: set CODEGG_RUN_M004_PTY_NATIVE=1 on a qualified Linux runner for the constrained-profile PTY probe"
+        );
         return;
     }
     let dir = tempfile::tempdir().expect("workspace");
@@ -1022,6 +1028,7 @@ async fn constrained_profile_refuses_before_pty_spawn() {
 fn m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant() {
     if std::env::var_os("CODEGG_RUN_M004_PTY_NATIVE").as_deref() != Some(std::ffi::OsStr::new("1"))
     {
+        eprintln!("skipped: set CODEGG_RUN_M004_PTY_NATIVE=1 to run the native M004 child probe");
         return;
     }
     if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
@@ -1169,6 +1176,9 @@ fn m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted() {
     if std::env::var_os("CODEGG_RUN_M004_RESTRICTED_USERNS").as_deref()
         != Some(std::ffi::OsStr::new("1"))
     {
+        eprintln!(
+            "skipped: set CODEGG_RUN_M004_RESTRICTED_USERNS=1 to run the native M004 child probe"
+        );
         return;
     }
 

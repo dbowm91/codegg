@@ -1064,6 +1064,43 @@ mod tests {
         tool
     }
 
+    /// A `BashTool` whose workspace root is a temporary Git repository owned
+    /// by exactly one test.
+    ///
+    /// `rooted_bash()` points at the host checkout, so a test that runs a real
+    /// `git` command reads whatever repository the test process happened to
+    /// be started in. Two such tests running at once read the same
+    /// repository, and the same test reads a different one depending on where
+    /// cargo was invoked. A per-test repository removes that shared state.
+    ///
+    /// The `TempDir` is returned alongside the tool so the repository stays
+    /// alive for the whole test and is removed afterwards.
+    fn rooted_bash_in_temp_git_repo() -> (tempfile::TempDir, BashTool) {
+        let dir = tempfile::tempdir().expect("create temp git repo");
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@test.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(root.join("tracked.txt"), "tracked\n").expect("write fixture file");
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        let mut tool = BashTool::new();
+        tool.workspace_root = Some(root.to_path_buf());
+        (dir, tool)
+    }
+
     /// The audit's network field states the boundary the launch **obtained**.
     ///
     /// The anti-overclaim case is the third one: a launch that could not
@@ -1421,7 +1458,8 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Observe);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: git-readonly"));
@@ -1604,7 +1642,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(
@@ -1642,7 +1681,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("mode: observe"));
@@ -1656,7 +1696,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Off);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1673,7 +1714,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = rooted_bash()
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool
             .with_routing_disabled_env(true)
             .with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
@@ -1761,7 +1803,8 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
-        let tool = rooted_bash().with_command_intent_config(cic);
+        let (_repo, tool) = rooted_bash_in_temp_git_repo();
+        let tool = tool.with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(result.contains("[exit code:"));
