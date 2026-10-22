@@ -15,13 +15,13 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "document_lsp_integration.inc"]
-mod document_lsp_integration;
+pub mod document_lsp_integration;
 
 #[path = "lsp_completion_trajectory.inc"]
-mod lsp_completion_trajectory;
+pub mod lsp_completion_trajectory;
 
 #[path = "lsp_composite_stdio.inc"]
-mod lsp_composite_stdio;
+pub mod lsp_composite_stdio;
 
 #[path = "lsp_read_delivery_m013.inc"]
-mod lsp_read_delivery_m013;
+pub mod lsp_read_delivery_m013;

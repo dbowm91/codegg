@@ -15,4 +15,4 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "causal_observe_replay.inc"]
-mod causal_observe_replay;
+pub mod causal_observe_replay;

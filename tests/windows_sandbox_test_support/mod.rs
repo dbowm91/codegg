@@ -15,7 +15,7 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "windows_acl_lease.inc"]
-mod windows_acl_lease;
+pub mod windows_acl_lease;
 
 #[path = "windows_restricted_managed_process.inc"]
-mod windows_restricted_managed_process;
+pub mod windows_restricted_managed_process;

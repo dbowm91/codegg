@@ -16,58 +16,58 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "approval_reviewer.inc"]
-mod approval_reviewer;
+pub mod approval_reviewer;
 
 #[path = "doom_loop.inc"]
-mod doom_loop;
+pub mod doom_loop;
 
 #[path = "linux_bubblewrap_first_hop.inc"]
-mod linux_bubblewrap_first_hop;
+pub mod linux_bubblewrap_first_hop;
 
 #[path = "linux_cgroup_v2_feasibility.inc"]
-mod linux_cgroup_v2_feasibility;
+pub mod linux_cgroup_v2_feasibility;
 
 #[path = "linux_native_scratch_containment.inc"]
-mod linux_native_scratch_containment;
+pub mod linux_native_scratch_containment;
 
 #[path = "path_traversal.inc"]
-mod path_traversal;
+pub mod path_traversal;
 
 #[path = "permission.inc"]
-mod permission;
+pub mod permission;
 
 #[path = "preflight_integration.inc"]
-mod preflight_integration;
+pub mod preflight_integration;
 
 #[path = "sandbox_containment.inc"]
-mod sandbox_containment;
+pub mod sandbox_containment;
 
 #[path = "sandbox_landlock.inc"]
-mod sandbox_landlock;
+pub mod sandbox_landlock;
 
 #[path = "sandbox_policy_wiring.inc"]
-mod sandbox_policy_wiring;
+pub mod sandbox_policy_wiring;
 
 #[path = "security_review_panel.inc"]
-mod security_review_panel;
+pub mod security_review_panel;
 
 #[path = "security_review_receipt.inc"]
-mod security_review_receipt;
+pub mod security_review_receipt;
 
 #[path = "security_review_runner.inc"]
-mod security_review_runner;
+pub mod security_review_runner;
 
 #[path = "ssrf.inc"]
-mod ssrf;
+pub mod ssrf;
 
 #[path = "windows_native_probe_contract.inc"]
-mod windows_native_probe_contract;
+pub mod windows_native_probe_contract;
 
 #[path = "windows_process_launcher.inc"]
-mod windows_process_launcher;
+pub mod windows_process_launcher;
 
 #[path = "windows_projection_feasibility.inc"]
-mod windows_projection_feasibility;
+pub mod windows_projection_feasibility;
 
 #[path = "windows_sandbox_adversarial.inc"]
-mod windows_sandbox_adversarial;
+pub mod windows_sandbox_adversarial;

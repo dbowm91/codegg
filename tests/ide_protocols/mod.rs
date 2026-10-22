@@ -15,16 +15,16 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "acp_stdio.inc"]
-mod acp_stdio;
+pub mod acp_stdio;
 
 #[path = "document_client_trajectory.inc"]
-mod document_client_trajectory;
+pub mod document_client_trajectory;
 
 #[path = "lsp.inc"]
-mod lsp;
+pub mod lsp;
 
 #[path = "lsp_read_surface_trajectory.inc"]
-mod lsp_read_surface_trajectory;
+pub mod lsp_read_surface_trajectory;
 
 #[path = "phase5_context_integration.inc"]
-mod phase5_context_integration;
+pub mod phase5_context_integration;

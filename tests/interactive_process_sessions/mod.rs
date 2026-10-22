@@ -15,4 +15,4 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "interactive_process_sessions.inc"]
-mod interactive_process_sessions;
+pub mod interactive_process_sessions;

@@ -17,11 +17,24 @@
 
 // `tests/common/` is declared by eight root test families, and only one of
 // them — `command_git` — uses this helper. The other seven compile it and
-// use none of it, so every item below would be reported as dead code in
-// those seven binaries. This is the standard idiom for a shared helper
-// whose consumers use disjoint parts of it; it silences the lint, not a
-// real defect.
-#![allow(dead_code)]
+// use none of it, which would report every item below as dead code in
+// those seven binaries.
+//
+// That is no longer the case, and it is worth saying why. Each family
+// declares `common` as a **public** module (`pub mod common;`), which is
+// what M004's family consolidation needed: a member that used to be its
+// own test executable was a crate root, where its `pub` items were
+// reachable, and a private module is not — so the consolidation exposed
+// latent dead code across every family and the hosted clippy step failed
+// on it. Declaring the family members public restores exactly the
+// reachability the standalone test executables had, so the items below
+// are reachable from each family's crate root and the lint stays quiet
+// without a suppression.
+//
+// A blanket `allow(dead_code)` was carried here while the only remedy
+// available was to silence the lint. It is not needed now, and removing
+// it keeps the lint's teeth in a file whose whole purpose is to be
+// checked.
 
 /// A unique sentinel value to embed in test inputs and assert
 /// against. The prefix `CODEGG_TEST_SECRET_` is intentionally

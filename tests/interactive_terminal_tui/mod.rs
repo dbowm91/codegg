@@ -15,4 +15,4 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "interactive_terminal_tui.inc"]
-mod interactive_terminal_tui;
+pub mod interactive_terminal_tui;

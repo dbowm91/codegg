@@ -20,55 +20,55 @@
 //! explicit `#[path]`; the members reach it with `use super::common;`.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "command_routing_adversarial.inc"]
-mod command_routing_adversarial;
+pub mod command_routing_adversarial;
 
 #[path = "command_routing_execution_ownership.inc"]
-mod command_routing_execution_ownership;
+pub mod command_routing_execution_ownership;
 
 #[path = "context_projection_adversarial.inc"]
-mod context_projection_adversarial;
+pub mod context_projection_adversarial;
 
 #[path = "git_closure_matrix.inc"]
-mod git_closure_matrix;
+pub mod git_closure_matrix;
 
 #[path = "git_credential_cross_path.inc"]
-mod git_credential_cross_path;
+pub mod git_credential_cross_path;
 
 #[path = "git_credential_runstore_sentinel.inc"]
-mod git_credential_runstore_sentinel;
+pub mod git_credential_runstore_sentinel;
 
 #[path = "git_env_attack.inc"]
-mod git_env_attack;
+pub mod git_env_attack;
 
 #[path = "git_execution_origin_matrix.inc"]
-mod git_execution_origin_matrix;
+pub mod git_execution_origin_matrix;
 
 #[path = "git_index_publication.inc"]
-mod git_index_publication;
+pub mod git_index_publication;
 
 #[path = "git_mutations_integration.inc"]
-mod git_mutations_integration;
+pub mod git_mutations_integration;
 
 #[path = "git_network_integration.inc"]
-mod git_network_integration;
+pub mod git_network_integration;
 
 #[path = "git_noninteractive.inc"]
-mod git_noninteractive;
+pub mod git_noninteractive;
 
 #[path = "git_recovery_integration.inc"]
-mod git_recovery_integration;
+pub mod git_recovery_integration;
 
 #[path = "git_tracing_capture.inc"]
-mod git_tracing_capture;
+pub mod git_tracing_capture;
 
 #[path = "policy_surface_m007.inc"]
-mod policy_surface_m007;
+pub mod policy_surface_m007;
 
 #[path = "secret_scan_self_tests.inc"]
-mod secret_scan_self_tests;
+pub mod secret_scan_self_tests;
 
 #[path = "worktree.inc"]
-mod worktree;
+pub mod worktree;

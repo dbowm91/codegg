@@ -19,19 +19,19 @@
 //! explicit `#[path]`; the members reach it with `use super::common;`.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "identity_m002_transport_auth.inc"]
-mod identity_m002_transport_auth;
+pub mod identity_m002_transport_auth;
 
 #[path = "projection_transport_real.inc"]
-mod projection_transport_real;
+pub mod projection_transport_real;
 
 #[path = "team_collaboration_m001_http_auth.inc"]
-mod team_collaboration_m001_http_auth;
+pub mod team_collaboration_m001_http_auth;
 
 #[path = "team_collaboration_m006_trajectory.inc"]
-mod team_collaboration_m006_trajectory;
+pub mod team_collaboration_m006_trajectory;
 
 #[path = "team_collaboration_postclosure_m001_registration_auth.inc"]
-mod team_collaboration_postclosure_m001_registration_auth;
+pub mod team_collaboration_postclosure_m001_registration_auth;

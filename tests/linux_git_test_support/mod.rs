@@ -15,7 +15,7 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "linux_git_c002_performance.inc"]
-mod linux_git_c002_performance;
+pub mod linux_git_c002_performance;
 
 #[path = "linux_m004_process_ipc.inc"]
-mod linux_m004_process_ipc;
+pub mod linux_m004_process_ipc;

@@ -19,220 +19,220 @@
 //! explicit `#[path]`; the members reach it with `use super::common;`.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "eggsact_adapter.inc"]
-mod eggsact_adapter;
+pub mod eggsact_adapter;
 
 #[path = "eggsact_deterministic_tools.inc"]
-mod eggsact_deterministic_tools;
+pub mod eggsact_deterministic_tools;
 
 #[path = "hosted_tool_program_adapter.inc"]
-mod hosted_tool_program_adapter;
+pub mod hosted_tool_program_adapter;
 
 #[path = "hosted_tool_program_contention.inc"]
-mod hosted_tool_program_contention;
+pub mod hosted_tool_program_contention;
 
 #[path = "hosted_tool_program_equivalence.inc"]
-mod hosted_tool_program_equivalence;
+pub mod hosted_tool_program_equivalence;
 
 #[path = "hosted_tool_program_recovery.inc"]
-mod hosted_tool_program_recovery;
+pub mod hosted_tool_program_recovery;
 
 #[path = "hosted_tool_program_security.inc"]
-mod hosted_tool_program_security;
+pub mod hosted_tool_program_security;
 
 #[path = "path_validation.inc"]
-mod path_validation;
+pub mod path_validation;
 
 #[path = "python_sandbox_adversarial.inc"]
-mod python_sandbox_adversarial;
+pub mod python_sandbox_adversarial;
 
 #[path = "python_scheduler_execution.inc"]
-mod python_scheduler_execution;
+pub mod python_scheduler_execution;
 
 #[path = "python_script_completion_wakeup.inc"]
-mod python_script_completion_wakeup;
+pub mod python_script_completion_wakeup;
 
 #[path = "tool_broker_integration.inc"]
-mod tool_broker_integration;
+pub mod tool_broker_integration;
 
 #[path = "tool_contract_guards.inc"]
-mod tool_contract_guards;
+pub mod tool_contract_guards;
 
 #[path = "tool_execution.inc"]
-mod tool_execution;
+pub mod tool_execution;
 
 #[path = "tool_program_background.inc"]
-mod tool_program_background;
+pub mod tool_program_background;
 
 #[path = "tool_program_build_test_matrix.inc"]
-mod tool_program_build_test_matrix;
+pub mod tool_program_build_test_matrix;
 
 #[path = "tool_program_cache.inc"]
-mod tool_program_cache;
+pub mod tool_program_cache;
 
 #[path = "tool_program_chaos.inc"]
-mod tool_program_chaos;
+pub mod tool_program_chaos;
 
 #[path = "tool_program_child_jobs.inc"]
-mod tool_program_child_jobs;
+pub mod tool_program_child_jobs;
 
 #[path = "tool_program_child_recovery.inc"]
-mod tool_program_child_recovery;
+pub mod tool_program_child_recovery;
 
 #[path = "tool_program_concurrent.inc"]
-mod tool_program_concurrent;
+pub mod tool_program_concurrent;
 
 #[path = "tool_program_context_artifacts.inc"]
-mod tool_program_context_artifacts;
+pub mod tool_program_context_artifacts;
 
 #[path = "tool_program_diff_palette.inc"]
-mod tool_program_diff_palette;
+pub mod tool_program_diff_palette;
 
 #[path = "tool_program_fault_injection.inc"]
-mod tool_program_fault_injection;
+pub mod tool_program_fault_injection;
 
 #[path = "tool_program_git_lsp_palette.inc"]
-mod tool_program_git_lsp_palette;
+pub mod tool_program_git_lsp_palette;
 
 #[path = "tool_program_ir.inc"]
-mod tool_program_ir;
+pub mod tool_program_ir;
 
 #[path = "tool_program_language.inc"]
-mod tool_program_language;
+pub mod tool_program_language;
 
 #[path = "tool_program_lifecycle.inc"]
-mod tool_program_lifecycle;
+pub mod tool_program_lifecycle;
 
 #[path = "tool_program_m011_correctness.inc"]
-mod tool_program_m011_correctness;
+pub mod tool_program_m011_correctness;
 
 #[path = "tool_program_m012_authority.inc"]
-mod tool_program_m012_authority;
+pub mod tool_program_m012_authority;
 
 #[path = "tool_program_m012_broker_failures.inc"]
-mod tool_program_m012_broker_failures;
+pub mod tool_program_m012_broker_failures;
 
 #[path = "tool_program_m012_child_ownership.inc"]
-mod tool_program_m012_child_ownership;
+pub mod tool_program_m012_child_ownership;
 
 #[path = "tool_program_m012_hosted_status.inc"]
-mod tool_program_m012_hosted_status;
+pub mod tool_program_m012_hosted_status;
 
 #[path = "tool_program_m012_notifications.inc"]
-mod tool_program_m012_notifications;
+pub mod tool_program_m012_notifications;
 
 #[path = "tool_program_m012_process_recovery.inc"]
-mod tool_program_m012_process_recovery;
+pub mod tool_program_m012_process_recovery;
 
 #[path = "tool_program_m012_recovery.inc"]
-mod tool_program_m012_recovery;
+pub mod tool_program_m012_recovery;
 
 #[path = "tool_program_m013_authority.inc"]
-mod tool_program_m013_authority;
+pub mod tool_program_m013_authority;
 
 #[path = "tool_program_m013_descendants.inc"]
-mod tool_program_m013_descendants;
+pub mod tool_program_m013_descendants;
 
 #[path = "tool_program_m013_ledger_integrity.inc"]
-mod tool_program_m013_ledger_integrity;
+pub mod tool_program_m013_ledger_integrity;
 
 #[path = "tool_program_m013_lineage.inc"]
-mod tool_program_m013_lineage;
+pub mod tool_program_m013_lineage;
 
 #[path = "tool_program_m013_notifications_sqlite.inc"]
-mod tool_program_m013_notifications_sqlite;
+pub mod tool_program_m013_notifications_sqlite;
 
 #[path = "tool_program_m013_process_recovery.inc"]
-mod tool_program_m013_process_recovery;
+pub mod tool_program_m013_process_recovery;
 
 #[path = "tool_program_m013_replay.inc"]
-mod tool_program_m013_replay;
+pub mod tool_program_m013_replay;
 
 #[path = "tool_program_m013_results.inc"]
-mod tool_program_m013_results;
+pub mod tool_program_m013_results;
 
 #[path = "tool_program_m014_artifacts.inc"]
-mod tool_program_m014_artifacts;
+pub mod tool_program_m014_artifacts;
 
 #[path = "tool_program_m014_authority_pipeline.inc"]
-mod tool_program_m014_authority_pipeline;
+pub mod tool_program_m014_authority_pipeline;
 
 #[path = "tool_program_m014_checkpoint_recovery.inc"]
-mod tool_program_m014_checkpoint_recovery;
+pub mod tool_program_m014_checkpoint_recovery;
 
 #[path = "tool_program_m014_daemon_recovery.inc"]
-mod tool_program_m014_daemon_recovery;
+pub mod tool_program_m014_daemon_recovery;
 
 #[path = "tool_program_m014_lineage_migration.inc"]
-mod tool_program_m014_lineage_migration;
+pub mod tool_program_m014_lineage_migration;
 
 #[path = "tool_program_m014_notification_delivery.inc"]
-mod tool_program_m014_notification_delivery;
+pub mod tool_program_m014_notification_delivery;
 
 #[path = "tool_program_m014_recursive_descendants.inc"]
-mod tool_program_m014_recursive_descendants;
+pub mod tool_program_m014_recursive_descendants;
 
 #[path = "tool_program_m015_artifact_pipeline.inc"]
-mod tool_program_m015_artifact_pipeline;
+pub mod tool_program_m015_artifact_pipeline;
 
 #[path = "tool_program_m015_authority_contract.inc"]
-mod tool_program_m015_authority_contract;
+pub mod tool_program_m015_authority_contract;
 
 #[path = "tool_program_m015_daemon_failpoints.inc"]
-mod tool_program_m015_daemon_failpoints;
+pub mod tool_program_m015_daemon_failpoints;
 
 #[path = "tool_program_m015_descendant_convergence.inc"]
-mod tool_program_m015_descendant_convergence;
+pub mod tool_program_m015_descendant_convergence;
 
 #[path = "tool_program_m015_notification_recovery.inc"]
-mod tool_program_m015_notification_recovery;
+pub mod tool_program_m015_notification_recovery;
 
 #[path = "tool_program_m015_recovery.inc"]
-mod tool_program_m015_recovery;
+pub mod tool_program_m015_recovery;
 
 #[path = "tool_program_m016_notification_replay.inc"]
-mod tool_program_m016_notification_replay;
+pub mod tool_program_m016_notification_replay;
 
 #[path = "tool_program_m017_notification_confirmation.inc"]
-mod tool_program_m017_notification_confirmation;
+pub mod tool_program_m017_notification_confirmation;
 
 #[path = "tool_program_model_behavior.inc"]
-mod tool_program_model_behavior;
+pub mod tool_program_model_behavior;
 
 #[path = "tool_program_notifications.inc"]
-mod tool_program_notifications;
+pub mod tool_program_notifications;
 
 #[path = "tool_program_projection.inc"]
-mod tool_program_projection;
+pub mod tool_program_projection;
 
 #[path = "tool_program_property.inc"]
-mod tool_program_property;
+pub mod tool_program_property;
 
 #[path = "tool_program_read_palette.inc"]
-mod tool_program_read_palette;
+pub mod tool_program_read_palette;
 
 #[path = "tool_program_recovery.inc"]
-mod tool_program_recovery;
+pub mod tool_program_recovery;
 
 #[path = "tool_program_resource_convergence.inc"]
-mod tool_program_resource_convergence;
+pub mod tool_program_resource_convergence;
 
 #[path = "tool_program_runtime.inc"]
-mod tool_program_runtime;
+pub mod tool_program_runtime;
 
 #[path = "tool_program_scenarios.inc"]
-mod tool_program_scenarios;
+pub mod tool_program_scenarios;
 
 #[path = "tool_program_search_palette.inc"]
-mod tool_program_search_palette;
+pub mod tool_program_search_palette;
 
 #[path = "tool_program_static_bounds.inc"]
-mod tool_program_static_bounds;
+pub mod tool_program_static_bounds;
 
 #[path = "tool_registry.inc"]
-mod tool_registry;
+pub mod tool_registry;
 
 #[path = "tool_structured_execution.inc"]
-mod tool_structured_execution;
+pub mod tool_structured_execution;

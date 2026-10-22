@@ -19,97 +19,97 @@
 //! explicit `#[path]`; the members reach it with `use super::common;`.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "agent_convergence.inc"]
-mod agent_convergence;
+pub mod agent_convergence;
 
 #[path = "agent_loop_harness.inc"]
-mod agent_loop_harness;
+pub mod agent_loop_harness;
 
 #[path = "asset_snapshot.inc"]
-mod asset_snapshot;
+pub mod asset_snapshot;
 
 #[path = "causal_active_m005.inc"]
-mod causal_active_m005;
+pub mod causal_active_m005;
 
 #[path = "compaction.inc"]
-mod compaction;
+pub mod compaction;
 
 #[path = "context_continuity_m004.inc"]
-mod context_continuity_m004;
+pub mod context_continuity_m004;
 
 #[path = "context_epoch_handoff.inc"]
-mod context_epoch_handoff;
+pub mod context_epoch_handoff;
 
 #[path = "context_plan_convergence.inc"]
-mod context_plan_convergence;
+pub mod context_plan_convergence;
 
 #[path = "event_processor.inc"]
-mod event_processor;
+pub mod event_processor;
 
 #[path = "goal_continuation_progress.inc"]
-mod goal_continuation_progress;
+pub mod goal_continuation_progress;
 
 #[path = "habit_skill_promotion.inc"]
-mod habit_skill_promotion;
+pub mod habit_skill_promotion;
 
 #[path = "long_horizon_trajectory_qualification.inc"]
-mod long_horizon_trajectory_qualification;
+pub mod long_horizon_trajectory_qualification;
 
 #[path = "memory.inc"]
-mod memory;
+pub mod memory;
 
 #[path = "opencode_go_connection_trajectory.inc"]
-mod opencode_go_connection_trajectory;
+pub mod opencode_go_connection_trajectory;
 
 #[path = "plugin.inc"]
-mod plugin;
+pub mod plugin;
 
 #[path = "plugin_contributions.inc"]
-mod plugin_contributions;
+pub mod plugin_contributions;
 
 #[path = "provider_transcripts.inc"]
-mod provider_transcripts;
+pub mod provider_transcripts;
 
 #[path = "reliability_qualification_m008.inc"]
-mod reliability_qualification_m008;
+pub mod reliability_qualification_m008;
 
 #[path = "retry_budget_reconciliation.inc"]
-mod retry_budget_reconciliation;
+pub mod retry_budget_reconciliation;
 
 #[path = "skill_publication.inc"]
-mod skill_publication;
+pub mod skill_publication;
 
 #[path = "skills.inc"]
-mod skills;
+pub mod skills;
 
 #[path = "skills_registry.inc"]
-mod skills_registry;
+pub mod skills_registry;
 
 #[path = "subagent.inc"]
-mod subagent;
+pub mod subagent;
 
 #[path = "tool_surface_minimization.inc"]
-mod tool_surface_minimization;
+pub mod tool_surface_minimization;
 
 #[path = "work_plan_eggplan_differential.inc"]
-mod work_plan_eggplan_differential;
+pub mod work_plan_eggplan_differential;
 
 #[path = "work_plan_projection_arbiter.inc"]
-mod work_plan_projection_arbiter;
+pub mod work_plan_projection_arbiter;
 
 #[path = "work_plan_repository_binding.inc"]
-mod work_plan_repository_binding;
+pub mod work_plan_repository_binding;
 
 #[path = "work_plan_resolved_evidence.inc"]
-mod work_plan_resolved_evidence;
+pub mod work_plan_resolved_evidence;
 
 #[path = "workspace_isolation.inc"]
-mod workspace_isolation;
+pub mod workspace_isolation;
 
 #[path = "workspace_root_execution_authority.inc"]
-mod workspace_root_execution_authority;
+pub mod workspace_root_execution_authority;
 
 #[path = "workspace_services_isolation.inc"]
-mod workspace_services_isolation;
+pub mod workspace_services_isolation;

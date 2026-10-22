@@ -15,4 +15,4 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "scheduler_cancellation.inc"]
-mod scheduler_cancellation;
+pub mod scheduler_cancellation;

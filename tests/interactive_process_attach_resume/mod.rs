@@ -15,4 +15,4 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "interactive_process_attach_resume.inc"]
-mod interactive_process_attach_resume;
+pub mod interactive_process_attach_resume;

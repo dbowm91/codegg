@@ -15,4 +15,4 @@
 //! is the test id, which becomes `<family>::<member>::<test>`.
 
 #[path = "eggwork_remote_execution_live.inc"]
-mod eggwork_remote_execution_live;
+pub mod eggwork_remote_execution_live;

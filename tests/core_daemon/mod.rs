@@ -19,118 +19,118 @@
 //! explicit `#[path]`; the members reach it with `use super::common;`.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "approval_router.inc"]
-mod approval_router;
+pub mod approval_router;
 
 #[path = "checked_restore_integration.inc"]
-mod checked_restore_integration;
+pub mod checked_restore_integration;
 
 #[path = "collaboration_m001_chat.inc"]
-mod collaboration_m001_chat;
+pub mod collaboration_m001_chat;
 
 #[path = "collaboration_m002_chat_policy.inc"]
-mod collaboration_m002_chat_policy;
+pub mod collaboration_m002_chat_policy;
 
 #[path = "collaboration_m003_chat_actions.inc"]
-mod collaboration_m003_chat_actions;
+pub mod collaboration_m003_chat_actions;
 
 #[path = "directory_listing_c005.inc"]
-mod directory_listing_c005;
+pub mod directory_listing_c005;
 
 #[path = "directory_listing_c006.inc"]
-mod directory_listing_c006;
+pub mod directory_listing_c006;
 
 #[path = "edit_checkpoint_integration.inc"]
-mod edit_checkpoint_integration;
+pub mod edit_checkpoint_integration;
 
 #[path = "headless_projection_consumer.inc"]
-mod headless_projection_consumer;
+pub mod headless_projection_consumer;
 
 #[path = "identity_live_execution_audit.inc"]
-mod identity_live_execution_audit;
+pub mod identity_live_execution_audit;
 
 #[path = "identity_m002_live_audit_hooks.inc"]
-mod identity_m002_live_audit_hooks;
+pub mod identity_m002_live_audit_hooks;
 
 #[path = "identity_m003_daemon_authorization.inc"]
-mod identity_m003_daemon_authorization;
+pub mod identity_m003_daemon_authorization;
 
 #[path = "identity_m003_scheduler_job_complete.inc"]
-mod identity_m003_scheduler_job_complete;
+pub mod identity_m003_scheduler_job_complete;
 
 #[path = "identity_m004_audit_foundation.inc"]
-mod identity_m004_audit_foundation;
+pub mod identity_m004_audit_foundation;
 
 #[path = "identity_m005_audit_instrumentation.inc"]
-mod identity_m005_audit_instrumentation;
+pub mod identity_m005_audit_instrumentation;
 
 #[path = "launch_directory_bootstrap.inc"]
-mod launch_directory_bootstrap;
+pub mod launch_directory_bootstrap;
 
 #[path = "model_preference_convergence.inc"]
-mod model_preference_convergence;
+pub mod model_preference_convergence;
 
 #[path = "presence_m001_leases.inc"]
-mod presence_m001_leases;
+pub mod presence_m001_leases;
 
 #[path = "presence_m003_observation.inc"]
-mod presence_m003_observation;
+pub mod presence_m003_observation;
 
 #[path = "project_activation.inc"]
-mod project_activation;
+pub mod project_activation;
 
 #[path = "projection_artifact_handles.inc"]
-mod projection_artifact_handles;
+pub mod projection_artifact_handles;
 
 #[path = "projection_disclosure_invariants.inc"]
-mod projection_disclosure_invariants;
+pub mod projection_disclosure_invariants;
 
 #[path = "provider_connections_lifecycle.inc"]
-mod provider_connections_lifecycle;
+pub mod provider_connections_lifecycle;
 
 #[path = "provider_reconnect_e2e.inc"]
-mod provider_reconnect_e2e;
+pub mod provider_reconnect_e2e;
 
 #[path = "shell_projection_harness.inc"]
-mod shell_projection_harness;
+pub mod shell_projection_harness;
 
 #[path = "shell_projection_phase10.inc"]
-mod shell_projection_phase10;
+pub mod shell_projection_phase10;
 
 #[path = "single_daemon_lifecycle.inc"]
-mod single_daemon_lifecycle;
+pub mod single_daemon_lifecycle;
 
 #[path = "snapshot.inc"]
-mod snapshot;
+pub mod snapshot;
 
 #[path = "storage_migrations.inc"]
-mod storage_migrations;
+pub mod storage_migrations;
 
 #[path = "team_m003_membership_admin.inc"]
-mod team_m003_membership_admin;
+pub mod team_m003_membership_admin;
 
 #[path = "work_orders_m001_foundation.inc"]
-mod work_orders_m001_foundation;
+pub mod work_orders_m001_foundation;
 
 #[path = "work_orders_m002_materialization.inc"]
-mod work_orders_m002_materialization;
+pub mod work_orders_m002_materialization;
 
 #[path = "work_orders_m004_dashboard.inc"]
-mod work_orders_m004_dashboard;
+pub mod work_orders_m004_dashboard;
 
 #[path = "work_orders_m005_trigger.inc"]
-mod work_orders_m005_trigger;
+pub mod work_orders_m005_trigger;
 
 #[path = "work_orders_m006_agent_tool.inc"]
-mod work_orders_m006_agent_tool;
+pub mod work_orders_m006_agent_tool;
 
 #[path = "work_orders_m007_trajectory.inc"]
-mod work_orders_m007_trajectory;
+pub mod work_orders_m007_trajectory;
 
 #[path = "workstream_claim_m003.inc"]
-mod workstream_claim_m003;
+pub mod workstream_claim_m003;
 
 #[path = "ws_rate_limit.inc"]
-mod ws_rate_limit;
+pub mod ws_rate_limit;
