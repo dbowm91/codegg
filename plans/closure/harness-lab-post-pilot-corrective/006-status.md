@@ -8,7 +8,8 @@ Implementation commits: see §3
 
 ## 1. Executive finding
 
-**The product half landed and is verified. The measurement half did not run.**
+**The product half landed and is verified. The live measurement has now run,
+and the flake rate is still not established.**
 
 The daemon's event loss is now a **fact the consumer can see**, and the
 harness now treats a trial whose observation had a hole in it as
@@ -18,11 +19,21 @@ wallclock budget is **cumulative** across resumes and derived from recorded
 evidence, and the sustained scenario has an optional cumulative wallclock
 cap.
 
-The **flake rate itself was not measured**: §4.2 asks for a rate with its
-denominator, and the live denominator — the number of live trials in which the
-event stream actually lost events — was not available in this window. The
-rate is therefore recorded as **not established**, with the attempts made, and
-never as zero.
+The **live measurement ran on 2026-10-22**: fourteen live trials of the full
+supported taxonomy against the operator-approved
+`opencode_go/muse-spark-1.3-contributor` route under the operator-approved
+budget policy, plus a three-trial sustained scenario under the same policy and
+the same route. **No trial reported an event-stream gap, and no trial ended in
+an unmeasured terminal.** Fourteen of fourteen trials ended in a terminal that
+carried an observation.
+
+**The flake rate is still recorded as not established, and now it is not
+established on evidence rather than on absence.** Zero observed losses in
+fourteen trials is a **count**, not a rate: with fourteen samples the 95%
+upper bound on the true rate is about 19%, so the honest statement is "no loss
+was observed in fourteen instrumented trials", never "the rate is zero". The
+rate needs a larger denominator or an observed loss to be established, and the
+denominator it would have needed is named below.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -167,6 +178,85 @@ Passed. The clippy pass initially reported one lint on the new code —
 arm carried an unboxed 664-byte envelope. The arm is boxed now and the
 strict pass is clean.
 
+### 4.3 The live measurement (plan §4.2)
+
+Run on 2026-10-22, after the branch was reconciled with `main`. Two live runs
+under the operator-approved route and the operator-approved budget policy
+(the same policy C001 admitted — 80 provider requests, 4,000,000 tokens,
+5,400 s wallclock, a controller-enforced $1.00 cost cap — recorded in
+`plans/closure/harness-lab-post-pilot-corrective/003-evidence.md`).
+
+**The instrumented suite — the denominator for event loss.** Fourteen live
+trials of the full supported taxonomy (seven cases, two passes), one
+invocation and one spend guard, so the approved policy's request ceiling
+covered the whole run:
+
+```
+python3 -m dev.harness_lab autonomy \
+  --binary target/debug/codegg \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --case <each of the seven supported cases, twice> \
+  --budget ~/.codegg-harness-lanes/policies/autonomy-budget.json \
+  --live-provider --lane-root ~/.codegg-harness-lanes/c006 \
+  --output ~/.codegg-harness-lanes/evidence/c006-suite-20261022.json
+```
+
+| Measure | Result |
+|---|---|
+| Trials | 14 |
+| Trials that reported an event-stream gap | **0** |
+| Trials that ended in an unmeasured terminal | **0** |
+| Terminals | `completed` (`end_turn`) in 14 of 14 |
+| Trials excluded from the measurement | 0 |
+| Task cases solved and verified | 10 of 10 |
+| Protected-control trials | 4, all rejected by their verifiers, as designed |
+| Observed spend | 14 provider requests, 305,141 tokens, `cost_usd: null` |
+
+The **observation condition** is the product's own gap report: the daemon's
+forwarder reports a `codegg_event_gap` session update when the connection
+falls behind the bounded broadcast, and the harness reads that notification
+from the turn's ACP stream. The instrument is therefore live in every trial —
+it is the same seam the deterministic reproduction in §4.1 drives past the
+broadcast's capacity.
+
+**The sustained scenario — the plan's named scenario.** Three live trials
+under the same route and policy, with a cumulative scenario cap:
+
+```
+python3 -m dev.harness_lab sustained \
+  --binary target/debug/codegg \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --profile workspace-write --trials 3 \
+  --per-trial-wallclock 300 --scenario-wallclock 1500 \
+  --max-provider-requests 20 \
+  --budget ~/.codegg-harness-lanes/policies/autonomy-budget.json \
+  --live-provider --lane-root ~/.codegg-harness-lanes/c006s \
+  --output ~/.codegg-harness-lanes/evidence/c006-sustained-20261022.json
+```
+
+| Measure | Result |
+|---|---|
+| Trials attempted / solved / stopped / unattempted | 3 / 3 / 0 / 0 |
+| Per-trial terminals | `completed` in 3 of 3 |
+| Cumulative wallclock | 121,097 ms against a 1,500,000 ms scenario cap |
+| `stopped_reason` | none — the scenario did not cross its cap |
+
+**What this establishes, and what it does not.**
+
+- It establishes that the integrity mechanism is **live and harmless** in
+  fourteen real trials: no trial lost an event, no trial ended unmeasured, and
+  no trial was excluded from the measurement. A gapped trial would have been
+  reported as unmeasured and re-run under the bounded cap; none was.
+- It does **not** establish the rate. Fourteen trials with no observed loss
+  **bound** the rate (the 95% upper bound is about 19%); they do not measure
+  it at zero. The rate stays **not established**, and the denominator it
+  would have needed is named: a run in which a loss is observed, which
+  establishes the rate and the attribution together.
+- The sustained scenario **cannot** contribute a denominator for event loss:
+  the gap observation is read only by the autonomy runner. The sustained path
+  contributes per-trial terminals and the cumulative wallclock, and that is
+  what it is cited for above.
+
 ## 5. Invariant review
 
 | Invariant | Status |
@@ -225,7 +315,8 @@ strict pass is clean.
 
 | Severity | Finding |
 |---|---|
-| **high** | **The flake rate was not established.** §4.2 asks for the rate at which a live trial's event stream loses events, with its denominator. The denominator is the number of live trials whose stream actually lost events, and that count was not available: no live comparison ran in this window, and the rate is therefore **not established** — **not zero**. The attempts made: the deterministic reproduction (the bus capacity and the lag threshold are known and asserted by the new tests), the product-side reporting that would make the next live run measurable, and the harness-side classification that turns a gapped trial into an unmeasured trial rather than a candidate failure. What remains unproven: the rate itself, and therefore whether the C003 flake was this loss. The next live comparison that observes a `codegg_event_gap` notification would establish both at once. |
+| **high** | **The flake rate is not established — now on evidence, not on absence.** §4.2 asks for the rate at which a live trial's event stream loses events, with its denominator. The live half ran (§4.3): fourteen instrumented live trials, and **zero** of them reported a `codegg_event_gap`. Zero observed in fourteen is a **count**, not a rate — the 95% upper bound on the true rate from fourteen samples is about 19% — so the rate is **not established** and is **not zero**. The denominator it would have needed: a run in which a loss is *observed*, which establishes the rate and the attribution at once, or a sample large enough for the bound to be tight on its own; fourteen trials are not that. What remains unproven: the rate itself, and therefore whether the C003 flake was this loss. The attempts made are listed in §4.3, and the deterministic reproduction (the bus capacity and the lag threshold) is asserted by the new tests. |
+| **medium** | **The sustained path does not carry the gap instrument.** The plan names the sustained scenario for the live measurement, and the sustained scenario ran (§4.3) — but the `codegg_event_gap` observation is read only by the autonomy runner (`dev/harness_lab/autonomy_run.py`), so the sustained path can report per-trial terminals and the cumulative wallclock, and **cannot** contribute a denominator for event loss. The denominator therefore comes from the instrumented autonomy suite. This is a seam boundary, not a defect in the product: the product reports the gap on the wire for every consumer, and the harness reads it on one path. |
 | **medium** | **The daemon-side gap is reported but the client's own broadcast lag is only reported to the adapter.** The ACP adapter reports both, but a consumer that uses the raw `subscribe()` — not the loss-aware `subscribe_events()` — still loses events silently. The projection drivers already used the loss-aware path. Any future consumer of the raw path must be migrated, and the plan did not require that migration. |
 | **medium** | **The cumulative accounting has a boundary.** The checkpoint's elapsed time covers every phase up to its last recorded transition. A hard kill *during* the trial phase leaves the completed trials' durations out of the restored figure; the ledger holds them, and a resume adds back the ones beyond the checkpoint's `trials_covered` count. A kill during the trials therefore still counts, but only through the ledger — the checkpoint alone would understate it. |
 | **low** | The re-run cap defaults to 2 and is per pair. A suite where most pairs fail on measurement would exhaust the cap on many pairs and leave many unresolved; the result says `ok: false` and names them, so it fails safe. |
@@ -235,14 +326,16 @@ strict pass is clean.
 
 - The addendum's F008 ("live-trial integrity and cumulative resume deadline")
   is **partly** closed: the integrity mechanism, the re-run bound and the
-  cumulative deadlines are implemented and tested; the flake rate is not
-  established.
+  cumulative deadlines are implemented and tested, and the live half has now
+  run; the flake rate is still **not established**, because fourteen trials
+  with no observed loss bound the rate rather than measure it.
 - C004 stays **conditionally closed**. This milestone does not close it: the
   control's live confirmation is still absent (milestone 005 records why).
 
 ## 12. Registry updates
 
 - `plans/registry.md`: this milestone's row moves from `ready` to
-  `conditionally closed`.
+  `conditionally closed`, and its narrative now records the live measurement
+  and the rate that is still not established.
 - Nothing else is unblocked. No other registered plan listed C006 as a
   dependency.
