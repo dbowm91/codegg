@@ -1,0 +1,10 @@
+# The reference result of a successful slowbuild run.
+#
+# The real artifact (fixture/build-output.txt) starts with these three
+# lines and then continues with the contents of fixture/src/, concatenated
+# in name order. Only the result line is guaranteed to be worth matching
+# against; the source blocks are copied verbatim from src/.
+
+build: ok
+result: BUILD_OK
+sources: 3

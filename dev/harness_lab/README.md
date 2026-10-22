@@ -267,6 +267,87 @@ evidence is **observed**, never asserted: the receipt reports how many lane
 daemons survived the scenario, and a non-zero survivor count is a reported
 fact, not a failure to hide.
 
+## The autonomy taxonomy
+
+`dev/harness_lab/fixtures/agent_autonomy/cases.jsonl` freezes the taxonomy: one
+line per case, with the prompt the agent receives, the tools it may use, the
+verifier's command and working directory, and the budget and abort criteria.
+The loader refuses an unknown family, a malformed case, or a case whose
+verifier scope overlaps the tree the agent may edit.
+
+Each supported case has a body under `dev/autonomy_fixtures/<case_id>/`:
+
+```
+fixture/      the agent's editable tree — the task's files
+verifier/     the independent verifier — never inside fixture/
+```
+
+The verifier re-derives the contract instead of trusting the fixture's own
+tests, and it is the **only** thing that decides whether a case was solved. A
+case body is not trusted on its own: `dev/harness_lab/tests/test_autonomy_cases.py`
+proves, by execution, that every shipped verifier fails on the unsolved case,
+passes on the repaired case, and refuses an edited frozen file.
+
+Running a case live:
+
+```bash
+python3 -m dev.harness_lab autonomy \
+  --binary target/debug/codegg \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --budget /path/to/budget.json --live-provider
+```
+
+The runner copies the case's `fixture/` into a private lane workspace and
+keeps the verifier **outside** that workspace, so the agent under test can
+neither read the hidden contract nor edit the thing that judges it. It records
+a transcript of what the agent actually did — the tool sequence, each call's
+argument **digest**, and each call's terminal status — and hands that
+transcript to the case's own verifier. The harness never projects raw tool
+arguments, so a verifier can tell "the same call again" from "a different
+call" without reading the call's payload.
+
+A case counts as solved only when the turn reached a terminal **and** the
+verifier confirmed it. A case the verifier never ran is not a solved case.
+
+The verifier runs in the host environment, not the subject's isolated lane
+environment: the lane deliberately overrides `HOME`, `CARGO_HOME` and the
+config roots so the subject under test cannot see the developer's registry or
+credential store, but a rustup shim with an overridden `HOME` resolves no
+default toolchain, and every Rust case would fail for a reason that has
+nothing to do with the agent.
+
+Comparing a baseline binary with a candidate binary over the taxonomy:
+
+```bash
+python3 -m dev.harness_lab autonomy-compare \
+  --baseline-binary /path/to/baseline \
+  --candidate-binary /path/to/candidate \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --budget /path/to/budget.json --live-provider
+```
+
+Both sides run the same cases in their own lanes and are judged by the shared
+score contract. The protected negative control is scored separately: its
+expected outcome is that the task is **not** solved, so a control that starts
+being credited as solved is a safety regression and rejects the candidate
+whatever else moved.
+
+The comparison reports the **measured values** next to the verdict, so a
+reader can see what moved and what did not. A verdict without its numbers is
+an assertion.
+
+Re-deciding a recorded pair after a score-contract correction does not re-run
+the provider:
+
+```bash
+python3 -m dev.harness_lab autonomy-rescore \
+  --baseline-runs recorded-baseline.json --candidate-runs recorded-candidate.json
+```
+
+The recorded trials are the evidence; the decision is a derivation from them,
+so a derivation that changes when the contract changes is expected, while a
+*trial* that changes is not. The re-score never runs anything.
+
 ## Budget admission before a live trial
 
 A trial that reaches a live provider must present a budget policy whose hard
@@ -357,6 +438,13 @@ Each lane receives unique values for:
 | Tool scratch and Cargo cache | `TMPDIR`/`TMP`/`TEMP`, `CARGO_HOME` |
 | Workspace-local state | private temporary workspace fixture |
 | Child output | lane-local bounded ACP stderr file |
+| Taxonomy fixture (the agent's editable tree) | `<lane>/case/fixture` |
+| Taxonomy verifier and transcript | `<lane>/private/verifier`, `<lane>/private/TRANSCRIPT.json` |
+
+The lane's daemon control socket lives at `<lane>/daemon/core.sock`, and the
+platform's `sun_path` limit is short. The runner refuses a lane whose socket
+path would not fit, with the reason, rather than letting the daemon fail with
+a message that names the socket instead of the cause.
 
 The smoke makes no provider call, so no credentials are needed. It does not
 copy a developer's keychain or provider credentials into the lane. `RUSTUP_HOME`

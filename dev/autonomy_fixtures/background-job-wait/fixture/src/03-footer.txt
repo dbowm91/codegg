@@ -1,0 +1,7 @@
+# slowbuild footer
+#
+# The footer closes every artifact. The build appends it last, after the
+# body, so a truncated artifact is easy to spot.
+
+sealed: true
+result-line: result: BUILD_OK

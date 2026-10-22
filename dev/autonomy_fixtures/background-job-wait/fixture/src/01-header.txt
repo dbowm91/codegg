@@ -1,0 +1,8 @@
+# slowbuild header
+#
+# The header is the first block of every artifact the build writes. It is
+# copied verbatim, so it names the project and the stage that produced it.
+
+project: slowbuild
+stage: package
+artifact: build-output.txt

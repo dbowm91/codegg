@@ -1,0 +1,8 @@
+[package]
+name = "candidate"
+version = "0.1.0"
+edition = "2021"
+
+# The crate is intentionally dependency-free: the harness compiles `src/lib.rs`
+# with `rustc` directly, so any dependency declared here would break the build.
+[dependencies]
