@@ -2,6 +2,10 @@
 
 Written: **2026-10-22T12:51:07Z**
 
+Amended: **2026-10-22T13:50Z** — see §11. The amendment was made **before any
+after-side run completed**, so the method was still fixed before the result
+it describes existed.
+
 Author: David Bowman (`dbowm91@proton.me`), M005 milestone implementation.
 
 Milestone plan: `plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md`
@@ -17,7 +21,11 @@ Roadmap: `plans/subsystems/ci-test-throughput-recovery-roadmap.md` §7 (M005), �
 | Side | SHA | Remote ref dispatched on | Why this SHA |
 |---|---|---|---|
 | **Before** | `2c1953347896848c2f52c2dfbd9f04029d1c2cc2` | `ci-baseline/2c1953347` | The clean pre-change tree: the merge commit immediately preceding this workstream's single change commit. It is **already an ancestor of `origin/main`**, so it is already hosted and needs no new history to be reachable. It is the *same tree* that this workstream changed, so the delta it measures is the delta this workstream produced. |
-| **After** | `4f89b4b05455f308076074e637e09affb97cbf93` | `m005/candidate-4f89b4b05` | The single commit carrying M001–M004, M006 and M007 (468 files). It is **the tree that was verified**: the full workspace suite ran on it (15,466 tests; 15,460 passed, 5 failed, 1 timed out, 8 skipped, all six non-passes proven pre-existing against this same baseline by M004's closure record), and `scripts/verify.sh quick` ran green on it. |
+| **After** | `8e3554ef4b93125cee685211872e77f254030d79` | `m005/candidate-8e3554ef4` | The change set this milestone measures, plus the one-commit defect repair recorded in §11. The repair exists because the candidate's own CI job could not complete on the hosted runner; it changes one guard script's self-test and nothing else. |
+
+**The candidate moved.** It was `4f89b4b05` when this document was first
+written. §11 records why it is now `8e3554ef4`, and the amendment was made
+before any after-side run completed.
 
 ### 1.1 Why the before-run is `2c1953347` and not `239f06e7`
 
@@ -34,11 +42,11 @@ The pinned ref makes the candidate immutable for the duration of the measurement
 ### 1.3 The dispatch commands, verbatim
 
 ```bash
-# Before-side runs (4 planned; see §5).
+# Before-side runs.
 gh workflow run ci.yml --ref ci-baseline/2c1953347
 
-# After-side runs (4 planned; see §5).
-gh workflow run ci.yml --ref m005/candidate-4f89b4b05
+# After-side runs.
+gh workflow run ci.yml --ref m005/candidate-8e3554ef4
 ```
 
 The workflow is `.github/workflows/ci.yml`, job `verify` (`CI / verify`), runner `ubuntu-latest`. Both SHAs carry a `workflow_dispatch:` trigger and the identical `concurrency: group: ci-${{ github.ref }}` with `cancel-in-progress: true`.
@@ -129,7 +137,37 @@ git worktree remove /tmp/m005_before && git worktree remove /tmp/m005_after
 
 ### 3.3 The hosted cross-check
 
-The same quantity is independently countable from each hosted run's log, via row 7 (`Starting N tests across M binaries`): M is the number of linked test executables nextest ran. The after-side's M must equal 47 (21 root + 26 from the other eleven crates) and the before-side's M must equal 314, to within the `codegg` root package's own lib-test target which nextest counts once. If the hosted M disagrees with the local `cargo metadata` count, that disagreement is reported, not reconciled by adjusting either number.
+The same quantity is independently countable from each hosted run's log, via
+row 7 (`Starting N tests across M binaries`): M is the number of test
+executables nextest ran.
+
+**The expected values are 308 (before) and 50 (after), not 314 and 47.**
+nextest's binary count is not `cargo metadata`'s test-target count, and the
+difference is accounted for exactly:
+
+| | before (`2c1953347`) | after (`8e3554ef4`) |
+|---|---|---|
+| `cargo metadata` test-kind targets | 314 | 47 |
+| less feature-gated targets the job cannot build | −20 | −11 |
+| buildable test-kind targets | 294 | 36 |
+| plus one lib test harness per package | +12 | +12 |
+| plus the root package's two bin test harnesses | +2 | +2 |
+| **= nextest's expected binary count** | **308** | **50** |
+
+Two things differ between the two columns and both are real. The 20 and 11
+gated targets are the ones whose `required-features` the CI job does not
+enable — the `server`, `lsp-test-support`, `lsp-real-server-tests`,
+`linux-git-test-support` and `windows-sandbox-test-support` gates — and they
+are **not built**, so they are in `cargo metadata`'s count but in no run's
+count. And the lib and bin test harnesses are counted by nextest but **not**
+by `cargo metadata`'s `kind == ["test"]` filter, because a package's lib
+appears there under `kind == ["lib"]`.
+
+The baseline's 308 was **observed** in the first hosted run, and the
+arithmetic above reproduces it exactly, which is what makes the predicted 50
+for the candidate credible rather than assumed. If the after-side's M
+disagrees with 50, that disagreement is reported, not reconciled by adjusting
+either number.
 
 ---
 
@@ -184,6 +222,29 @@ This yields **n = 3 warm** per side for the median and its dispersion, and **n =
 **The cold-cache pair is reported as a single observation per side, not as a distribution.** A cold-cache run rebuilds the whole dependency graph from scratch, so it is the closest analogue to a fresh contributor's first CI run — it is genuinely interesting, and it is genuinely a sample of one. It is reported with that label. If the run budget is cut and only three runs per side are obtainable, the cold sample stays n = 1 and the warm sample becomes n = 2, and the median over n = 2 is reported as such, with the weakness stated rather than papered over.
 
 **Cache state is read from the run log, not assumed.** If the rust-cache step's reported behaviour disagrees with the expectation above, the run is labelled with the state that was actually observed.
+
+### 5.1 The cold-cache expectation was wrong — recorded, and it does not change the comparison
+
+The **first** before-side run (`39782552982`) restored a cache and was
+therefore **warm**, not cold as §5 predicted. The reason is rust-cache's
+**shared key**: the cache is saved under a key that encodes the lockfile but
+not the ref, and restored under a matching prefix, so a cache saved by *any*
+branch with the same lockfile is restored by any other.
+
+`Cargo.lock` is **byte-identical** between the two sides (verified with
+`git diff 2c1953347 8e3554ef4 -- Cargo.lock`), so both sides restore the
+same shared cache and **both sides are warm**. That is symmetric, which is
+what the comparison needs, and it is also the measurement that isolates what
+M004 changed: with the dependency graph already compiled, the build phase is
+almost entirely the root package's **link** work — 288 executables on the
+before side against 21 on the after side.
+
+The consequence for the plan is concrete: **a cold-cache sample is not
+obtainable without deleting a cache entry that other branches share**, which
+is an owner action this milestone does not take unilaterally. The
+preregistered warm-cache comparison in §4.2 and threshold T2 are therefore
+the ones that apply, and the cold-cache rows of §5 are reported as *not
+obtained*, with this reason.
 
 ---
 
@@ -265,9 +326,37 @@ The workstream consolidated test *files* into families; it did not remove test f
 
 ### T4 — Invariant I1 — the coverage check
 
-> The after-run's test count must be **≥** the before-run's, and the set of test functions the after-run executes must be a **superset** of the before-run's.
-
-**This is checked, not assumed.** The check compares the executed test-function sets extracted from the runs' nextest output, not merely the counts.
+> **Corrected at the amendment (§11.2).** The original formulation — "the
+> after-run's test count is at least the before-run's, and the after-run
+> executes a superset of the before-run's test functions" — is
+> **unsatisfiable** for this workstream, and was wrong in this
+> preregistration rather than in the product. M007's recorded purpose is to
+> remove **85 duplicate test functions** and to stop the shared-helper
+> fan-out (**40 executions of 5 assertions** → 5). A duplicate is the same
+> assertion asserted twice; removing one copy removes a *function* without
+> removing *coverage*. A superset-of-functions rule would forbid M007's
+> entire deliverable, and the before-side's 15,841 executed tests are
+> therefore expected to fall to fewer, not to grow.
+>
+> The corrected rule is the roadmap's §11 third bullet, restated as a
+> checkable predicate, and it is **stronger** where it matters — every
+> removed function is tied to a survivor that the after-run actually
+> executes:
+>
+> - **I1a — no unexplained loss.** Every test function the before-run
+>   executed that is **not** a recorded removal in
+>   `docs/test-duplication.toml` must still be executed by the after-run.
+> - **I1b — every removal is covered.** For every test function the
+>   before-run executed that **is** a recorded removal, the removal's
+>   recorded **survivor** must be executed by the after-run.
+> - **I1c — no mass loss.** The number of before-only functions must not
+>   exceed the number of recorded removals (85).
+>
+> The comparison is made on the **test function path** nextest reports, not
+> on the binary id, because M004 moved functions between binaries: the
+> binary id changed and the function did not. The decision table's 85
+> removals and their survivors are read from
+> `docs/test-duplication.toml`, the table M007 shipped.
 
 ### T5 — Job total — **no threshold**
 
@@ -303,3 +392,98 @@ Reported as a single observation per side (§5). No threshold is set on n = 1.
 |---|---|
 | `plans/validation/ci-test-throughput-recovery/measurement-record.md` | the results, each with its source, plus an explicit **"not reproduced"** section |
 | `plans/closure/ci-test-throughput-recovery/005-status.md` | the workstream's closure, with a recommendation |
+
+---
+
+## 11. Amendment — 2026-10-22T13:50Z
+
+**This amendment was made before any after-side run completed.** The
+after-side's first run failed at a guard step and never reached the test
+suite, so no after-side result existed when the method was amended. The
+before-side's first run had completed, and everything below is derived from
+it or from the repository, not from an after-side outcome.
+
+### 11.1 The candidate SHA moved: `4f89b4b05` → `8e3554ef4`
+
+The after-side's first run, `39786287698`, **failed** at the **Scoped
+selection self-test** step, before it reached the test suite:
+
+```
+FAIL: the real selection failed: could not compute a merge base against
+'origin/main': git merge-base origin/main HEAD failed: fatal: Not a valid
+object name origin/main.
+```
+
+`actions/checkout@v4` fetches depth 1, so the runner's clone has no
+`origin/main`. The self-test called `select(DEFAULT_BASE, ...)`, and
+`select()` computes `git merge-base <base> HEAD` before replacing the
+computed diff with the explicit file list it was given. The failure was a
+property of the **checkout**, not of the selection algorithm — but it meant
+the committed CI job could never go green on the hosted runner, so the
+candidate tree could not be measured at all.
+
+The repair is commit `8e3554ef4`, one file, `scripts/scoped_selection.py`:
+the self-test now anchors its merge base on `origin/main` when that ref
+exists and on `HEAD` when it does not, and it additionally proves the
+changed-file computation against a temporary git repository it creates, so
+the path that needs a merge base has coverage in a shallow checkout too.
+
+Proven in a depth-1 clone with no `origin/main`: the unfixed script fails
+with exactly the hosted error, the fixed script passes. `scripts/verify.sh
+quick` passes on the repaired tree (59 steps, exit 0).
+
+**What the repair does not touch:** no product source, no test, no build
+configuration, no CI job definition, and no measured quantity. The linked
+test-executable count, the build phase and the execution phase are all
+unaffected by a Python guard script's exit status.
+
+The pinned ref was moved with it: `m005/candidate-4f89b4b05` was **deleted**
+and `m005/candidate-8e3554ef4` created. Leaving the old ref would have left
+a stale copy of a tree whose CI job is red, which is the hazard §8 of the
+milestone plan warns about.
+
+### 11.2 The I1 threshold was wrong and is corrected
+
+Corrected in **T4** above. The original formulation is unsatisfiable for
+this workstream because M007's recorded purpose is to remove duplicate test
+functions and duplicate executions; a superset-of-functions rule forbids
+that deliverable. The corrected rule is the roadmap's §11 third bullet
+restated as a predicate — no unexplained loss, every removal covered by a
+recorded survivor, no mass loss — and it is strictly stronger where it
+matters, because it ties each removed function to an assertion the
+after-run actually executes.
+
+**This is a correction to the preregistration, not a relaxation of a
+threshold to fit a result.** No after-side result existed when it was made.
+
+### 11.3 The hosted cross-check's expected values were wrong
+
+Corrected in **§3.3**: **308** (before) and **50** (after), not 314 and 47.
+nextest's binary count excludes the feature-gated targets the job cannot
+build and includes the lib and bin test harnesses that `cargo metadata`'s
+`kind == ["test"]` filter does not. The arithmetic reproduces the
+before-side's **observed** 308 exactly.
+
+### 11.4 The cold-cache expectation was wrong
+
+Recorded in **§5.1**. Both sides are warm, because rust-cache's shared key
+restores across refs with the same lockfile and `Cargo.lock` is identical
+on both sides. The preregistered warm-cache comparison applies; a
+cold-cache sample would require deleting a cache entry other branches share,
+which this milestone does not do unilaterally.
+
+### 11.5 The before-side's first run, observed
+
+Recorded here so the amendment is anchored to a fact rather than to a
+hypothesis:
+
+| | run `39782552982` |
+|---|---|
+| conclusion | success |
+| head SHA | `2c1953347` |
+| runner image | `ubuntu-24.04` |
+| cache state | **warm (hit)** |
+| nextest binaries | **308** |
+| tests run | 15,841 (all passed, 8 skipped) |
+| build phase | 615.0 s (`Finished \`test\` profile ... in 10m 15s`) |
+| execution phase | 436.888 s |
