@@ -34,10 +34,10 @@
 //!   CodeGG never performs on its own.
 
 // The shared helper tree is bound **publicly**. A private `mod common;`
-// makes its `pub` items unreachable from this crate root, and the shared
-// tree's items are `pub` — `tests/common/secret_scan.rs` carries no blanket
-// `allow(dead_code)` any more, so a private binding reports every one of
-// them as dead code under `-D warnings`. The families bind it the same way.
+// makes its `pub` items unreachable from this crate root — and
+// `tests/common/secret_scan.rs` carries no `allow(dead_code)` of its own,
+// so a private binding reports every one of its items as dead code under
+// `-D warnings`. The families bind it the same way.
 pub mod common;
 
 use std::collections::BTreeMap;

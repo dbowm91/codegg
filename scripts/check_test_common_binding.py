@@ -7,13 +7,15 @@ The root package's integration tests share one helper tree,
 with a `common` module.
 
 **The binding must be `pub mod common;`, not `mod common;`.** Everything in
-the tree is `pub`, and the tree carries no blanket `#[allow(dead_code)]`:
-that suppression was removed on purpose, so that the lint keeps its teeth in
-a file whose whole purpose is to be checked. A *private* `mod common;`
-makes those `pub` items unreachable from the binding crate root, and rustc
-reports every one of them as dead code — which is a **hosted clippy failure**
-under `-D warnings`, and one that only a Linux runner can see, because the
-macOS build of this tree fails earlier on unrelated findings.
+the tree is `pub`. Most files in the tree carry their own per-file
+`#[allow(dead_code)]`, but `tests/common/secret_scan.rs` deliberately
+carries none: that suppression was removed on purpose, so that the lint
+keeps its teeth in a file whose whole purpose is to be checked. A
+*private* `mod common;` makes those `pub` items unreachable from the
+binding crate root, and rustc reports every one of them as dead code —
+which is a **hosted clippy failure** under `-D warnings`, and one that
+only a Linux runner can see, because the macOS build of this tree fails
+earlier on unrelated findings.
 
 That is not a hypothetical. The root families bind the tree publicly for
 exactly this reason — `tests/common/secret_scan.rs` says so in its own
@@ -99,10 +101,11 @@ def check_tree(root: Path) -> list[str]:
                 break
         violations.append(
             f"{rel}:{line}: binds the shared helper tree with a private "
-            "`mod common;`. The tree's items are `pub` and it carries no "
-            "blanket `#[allow(dead_code)]`, so a private binding makes them "
-            "unreachable from this crate root and the dead-code lint reports "
-            "every one of them -- a hosted clippy failure under `-D warnings`. "
+            "`mod common;`. The tree's items are `pub`, and "
+            "`tests/common/secret_scan.rs` carries no `allow(dead_code)` of "
+            "its own, so a private binding makes its items unreachable from "
+            "this crate root and the dead-code lint reports every one of "
+            "them -- a hosted clippy failure under `-D warnings`. "
             "Bind it with `pub mod common;`."
         )
     return violations

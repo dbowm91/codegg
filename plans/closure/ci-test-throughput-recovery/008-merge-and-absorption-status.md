@@ -21,8 +21,8 @@ Historical closure records this record supplements and does **not** rewrite:
 - `plans/closure/ci-test-throughput-recovery/006-status.md` (M006, closed)
 - `plans/closure/ci-test-throughput-recovery/007-status.md` (M007, closed)
 
-Repository baselines reviewed: `f4019a410` (the fifth merge) and `7d3c6ed09`
-(the sixth, §2.7)
+Repository baselines reviewed: `f4019a410` (the fifth merge), `7d3c6ed09`
+(the sixth, §2.7) and `726f3c645` (the seventh, §2.10)
 
 Implementation commits or pull requests:
 
@@ -56,6 +56,16 @@ find. The two test-target counts move to 25 and 53, and the merge produced a
 tree that **did not compile** — a `#[path]` attribute inside a file that had
 moved directory. No conflict reported it; `cargo check --workspace
 --all-targets` on the merged tree did.
+
+`main` advanced a third time (§2.10) to `726f3c645`, and the line was
+reconciled with it a **seventh** time. That advance is documentation only, so
+the merge carried no code and no coverage: it changed four records, and both
+sides' edits to the two files they both touched were verified to survive. The
+seventh merge did surface one thing worth stating plainly, and it is a
+*non*-event: a test fixture's implementation changed during the **sixth**
+merge, the merge did it automatically, and reading the two implementations
+side by side shows the shared helper performs the same operations the inline
+copy did.
 
 ## 2. What the merge changed
 
@@ -371,6 +381,57 @@ runner is the only place this class is visible. That is the same shape as
 §2.4's Windows compile break: a platform-specific gate is the authority on
 that platform.
 
+### 2.10 The seventh reconciliation, and a fixture the merge changed for free
+
+`origin/main` advanced a seventh time, to `726f3c645` (PR #167, the Linux
+trusted-Git C008 contained worktree). **The advance is documentation only** —
+four files, all of them records: `architecture/blackboard_contract_matrix.md`,
+`plans/closure/agent-workstream-blackboard/011-status.md`, `plans/registry.md`
+and `plans/subsystems/agent-workstream-blackboard-roadmap.md`. The merge was
+clean, and `git merge` reported exactly those four files auto-merged. No code
+and no coverage came across, so the counts did not move: the root package's
+test-target count stays **25** and the workspace's **53**.
+
+Both sides' edits survived, and that was **measured** rather than assumed —
+a documentation merge is exactly where one side's row can be quietly
+overwritten, and the two sides edited the same file.
+
+| File | Side that edited it | How the merge was checked |
+|---|---|---|
+| `plans/registry.md` | the branch — the `CI and test throughput recovery` row | the merged row is byte-identical (md5) to the branch's pre-merge row |
+| `plans/registry.md` | `main` — the `Agent workstream blackboard, peer visibility and workspace placement` row | the merged row is byte-identical (md5) to `origin/main`'s row |
+| `architecture/blackboard_contract_matrix.md` | both | the merged file differs from **both** parents, which is what a file both sides edited looks like |
+
+**One merge-visible change to a test fixture, and it dropped no coverage.**
+`tests/contained_worktree_c008.rs`'s `FakeMode::LinkedWorktree` arm changed
+during the **sixth** merge: the inline copy of the linked-worktree creation
+was replaced by the shared helper's `common::linked_worktree::LinkedWorktreeCreator`.
+
+The sequence is reconstructable from the three-way merge. At the merge base
+(`f4019a410`) the arm carried an inline copy of three Git operations — create
+the branch, `worktree add --detach`, then `symbolic-ref HEAD refs/heads/<branch>`.
+The branch did not touch the file after that base. `main`'s PR #166
+**refactored** the inline copy into the shared helper. Only one side changed
+the region, so git took `main`'s change automatically —
+`git show --remerge-diff fd69d19d2 -- tests/contained_worktree_c008.rs` is
+empty, so no manual resolution is recorded and none was needed.
+
+The change is not a silent weakening, and the check that settles it is reading
+the two implementations side by side. `tests/common/linked_worktree.rs` runs
+the **same three operations in the same order**, and its own header states why
+that order matters: *"the checkout is created **detached** and the branch is
+attached afterwards with `git symbolic-ref`"*. Two fields differ —
+`backend` (`"fixture-linked-worktree"` against `"test-double"`) and
+`network_enforced` (`false` against `true`) — and **nothing in the suite
+asserts on either**: the C008 suite asserts on `outcome.administration_dir`
+alone, and `network_enforced` is not read by `codegg-core`'s worktree service.
+The helper's own header draws the boundary it is entitled to draw: *"it is
+not a containment proof … the containment contract is C008's, proved by its
+own suite."*
+
+So the merge replaced a duplicated implementation with the shared one, and no
+coverage left the tree with it.
+
 ## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
@@ -395,6 +456,7 @@ that platform.
 | The sixth reconciliation's new file keeps its own target | `tests/composed_two_agent_race_m011.rs` stays top-level: it drives two live agents on the process-global event bus, and the agent-loop harness suites drain that bus and assert that nothing was left pending on it. Absorbing it into `agent_loop` was tried and **rejected on evidence** — the harness failed with "no attempt may reach the human when the model follows the offer" (`left: 1, right: 0`) while the file passed alone (`3 passed`). It gets its own `root_composed_two_agent_race_m011` ownership group | pass |
 | The `agent_loop` family passes under a plain `cargo test` | at `f8a9b6496` (before `main`'s advance): **530 passed, 0 failed, 1 ignored**; at the merged tip: **529 passed, 1 failed** — the harness drained the process-global bus with no session filter, and M004's consolidation had put it in a binary with thirty other members. The drain is now scoped to the test's own session, the idiom the file's own `EventCollector` already uses | pass (repeated runs); the hosted `CI` job cannot see this class, because the `ci` nextest profile runs one process per test |
 | The shared helper tree is bound publicly everywhere | `scripts/check_test_common_binding.py` and `--self-test`; the two standalone targets `main`'s PR #166 added now bind it `pub`, as the nine families already do. The mechanism was proved in isolation with rustc: a private binding reports `error: constant 'SENTINEL_PREFIX' is never used` under `-D warnings`, a public one exits 0 | pass locally; the hosted Linux clippy step is the authority |
+| The seventh reconciliation carries no code and loses no coverage | `origin/main` @ `726f3c645` changed four documentation files and nothing else; `git merge` auto-merged exactly those four. Both sides' edits to `plans/registry.md` and `architecture/blackboard_contract_matrix.md` were checked by md5 of the individual rows and of the file — the branch's row is byte-identical to its pre-merge copy, `main`'s row is byte-identical to `origin/main`'s, and the file both sides edited differs from both parents. The one fixture implementation the merge changed was checked by reading both implementations: the shared helper runs the same three Git operations in the same order, and nothing in the suite asserts on the two fields that differ | pass |
 
 ## 4. The counts, re-measured
 
@@ -505,6 +567,13 @@ bash scripts/verify.sh quick
 - `git merge-tree --write-tree origin/main HEAD`: a tree with **no** conflict
   entries, and exit 0 — the sixth merge was textually clean, and the tree it
   produced did not compile (§2.7).
+- The **seventh** reconciliation (`726f3c645`): `git merge-tree --write-tree
+  --name-only origin/main HEAD` → exit 0 with no conflict entries, and the
+  merge itself auto-merged exactly the four documentation files `main` had
+  changed. `cargo check --workspace --all-targets` on the merged tree →
+  **0 errors**. `bash scripts/verify.sh quick` on the merged tree → **"Quick
+  verification passed."** Both sides' documentation edits were checked by md5
+  (§2.10's table).
 - `examples/plugins/sdk-rust`: `cargo check --tests` **passes**.
 - The guard tier: every guard named above passes, and every `--self-test`
   still rejects the failure class it exists to reject.
@@ -578,9 +647,11 @@ stripped out of ten out-of-workspace files are restored, the `security_permissio
 family compiles on Windows again, the three defects the Windows lane exposed
 are repaired (§2.5), the sixth reconciliation's silent compile break is
 repaired (§2.7), the cross-test race the consolidation left latent is repaired
-(§2.8), and the recorded counts are re-measured against their own sources. The
-tree compiles, the guard tier is green, and the recorded counts are true on
-the merged tree.
+(§2.8), the private shared-tree binding that only hosted clippy could see is
+repaired and guarded (§2.9), the seventh reconciliation carried no code and
+dropped no coverage (§2.10), and the recorded counts are re-measured against
+their own sources. The tree compiles, the guard tier is green, and the
+recorded counts are true on the merged tree.
 
 Five findings are worth carrying forward beyond this line, because all five
 are about **what the local gate does not cover**:

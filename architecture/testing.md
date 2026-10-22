@@ -609,16 +609,17 @@ conflict:
   declaration would compile it twice; the member reaches it with
   `use super::common::…` instead.
 - **Every binder of the shared helper tree binds it `pub`.** The tree's items
-  are `pub` and the tree carries **no** blanket `#[allow(dead_code)]` — that
-  suppression was removed on purpose, so the lint keeps its teeth in a file
-  whose whole purpose is to be checked. A *private* `mod common;` makes those
-  items unreachable from the binding crate root, and rustc reports every one
-  of them as dead code: a hosted clippy failure under `-D warnings`, and one
-  that only a **Linux** runner sees, because this tree's macOS build fails
-  earlier on unrelated findings. `origin/main` still carries the blanket
-  suppression, which is why a private binding is harmless there and fatal
-  here. `scripts/check_test_common_binding.py` enforces it for every binder
-  of the root package's tree.
+  are `pub`. Most files in the tree carry their own per-file
+  `#[allow(dead_code)]`, but `tests/common/secret_scan.rs` deliberately carries
+  **none** — that suppression was removed on purpose, so the lint keeps its
+  teeth in a file whose whole purpose is to be checked. A *private* `mod
+  common;` makes those items unreachable from the binding crate root, and
+  rustc reports every one of them as dead code: a hosted clippy failure under
+  `-D warnings`, and one that only a **Linux** runner sees, because this tree's
+  macOS build fails earlier on unrelated findings. `origin/main` still carries
+  the blanket suppression in that file, which is why a private binding is
+  harmless there and fatal here. `scripts/check_test_common_binding.py`
+  enforces it for every binder of the root package's tree.
 - **A member that observes a process-global must scope what it observes.** The
   consolidation puts a member in a binary — and a process — with its
   siblings. The agent-loop harness subscribes to the **process-global** event
@@ -630,6 +631,33 @@ conflict:
   **The hosted `CI` job cannot see this class:** the `ci` nextest profile runs
   **one process per test**, so two tests never share a process-global. A plain
   `cargo test`, which runs a binary's tests as threads in one process, does.
+
+### The families after the seventh merge (2026-10-22)
+
+`main` advanced a third time, to `726f3c645` (PR #167, the Linux trusted-Git
+C008 contained worktree), so this line reconciled with it a **seventh** time.
+**The advance is documentation only** — four records, and no code and no
+coverage — so the family topology is unchanged: the root package's test-target
+count stays **25** (21 families + 4), the workspace's **53**, and the root
+integration-test *module* count stays **319** (4 top-level + 315 members).
+
+Both sides edited `plans/registry.md`, which is exactly where a documentation
+merge can quietly overwrite one side's row, so the merge was checked rather
+than assumed: the row the branch owns is byte-identical to its pre-merge copy,
+the row `main` owns is byte-identical to `origin/main`'s, and the file both
+sides edited (`architecture/blackboard_contract_matrix.md`) differs from
+**both** parents.
+
+One fixture implementation changed during the **sixth** merge and is worth
+naming, because it is the kind of change a reviewer would look for: the C008
+suite's `FakeMode::LinkedWorktree` arm stopped carrying its own inline copy of
+the linked-worktree creation and now calls the shared helper
+`common::linked_worktree::LinkedWorktreeCreator`. Git took that change
+automatically — only `main` had edited the region since the merge base — and
+it is **not** a loss of coverage: the helper runs the same three Git operations
+in the same order (`branch`, `worktree add --detach`, `symbolic-ref HEAD`), and
+nothing in the suite asserts on the two fields that differ (`backend` and
+`network_enforced`).
 
 ### The measured link cost (M005)
 
