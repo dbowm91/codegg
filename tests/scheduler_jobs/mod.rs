@@ -36,6 +36,9 @@ pub mod async_background_c006_tool_to_idle_ci;
 #[path = "bash_background_m002_routes.inc"]
 pub mod bash_background_m002_routes;
 
+#[path = "build_quota_admission.inc"]
+pub mod build_quota_admission;
+
 #[path = "ci_watch_c001_idle_driver.inc"]
 pub mod ci_watch_c001_idle_driver;
 

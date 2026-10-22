@@ -33,8 +33,8 @@ comparison.
 ```
 architecture/blackboard_contract_matrix.md   # this document
 scripts/check_blackboard_contract_matrix.py   # the guard that keeps it frozen
-tests/blackboard_trajectory_m008.rs           # the S0–S4 trajectory suite
-tests/blackboard_economics_m008.rs            # the opt-in economics measurement
+tests/agent_loop/blackboard_trajectory_m008.inc           # the S0–S4 trajectory suite
+tests/agent_loop/blackboard_economics_m008.inc            # the opt-in economics measurement
 plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md
 plans/closure/agent-workstream-blackboard/008-status.md
 ```
@@ -59,9 +59,9 @@ belong.
 | group join | `crates/codegg-core/src/agent_run_group.rs` — `AgentRunGroupService` | `src/tool/task.rs` — `.create(NewAgentRunGroup {` | agent → `task` tool, `action=create_group` | `tests/workstream_claim_m003.rs`; closure `001-status.md` |
 | blackboard claim | `crates/codegg-core/src/workstream_claim.rs` — `WorkstreamClaimStore` | `src/tool/task.rs` — `.claim(codegg_core::workstream_claim::NewWorkstreamClaim {` | agent → `task` tool, `action=claim` | `tests/workstream_claim_m003.rs`; closure `003-status.md` |
 | peer event | `crates/codegg-core/src/bus/events.rs` — `AppEvent::AgentRunGroupUpdated` | `src/agent/follow_up.rs` — `fn inject_peer_observations` | agent turn → peer hint injected at a provider boundary | `src/agent/follow_up.rs:772`; closure `009-status.md` |
-| session-worktree launch | `crates/codegg-core/src/session_launch.rs` — `SessionLaunchService` | `src/core/session_launch.rs` — `pub async fn launch(` | `codegg launch` (CLI `src/main.rs:2281`) and the TUI worktree actions | `tests/session_launch_service.rs`; closure `006-status.md` |
+| session-worktree launch | `crates/codegg-core/src/session_launch.rs` — `SessionLaunchService` | `src/core/session_launch.rs` — `pub async fn launch(` | `codegg launch` (CLI `src/main.rs:2281`) and the TUI worktree actions | `tests/core_daemon/session_launch_service.inc`; closure `006-status.md` |
 | group lease | `crates/codegg-core/src/worktree_service.rs` — `WorktreeService::acquire_lease` | `src/core/writer_fence.rs` — `async fn shared_group(` | agent → `task` tool, `placement=serialized_shared` | `tests/shared_checkout_c006.rs`; closure `006-status.md` (C006) |
-| build optimization | `crates/codegg-core/src/jobs/quota.rs` — `ResourceClass::Build` | `src/scheduler/submission.rs` — `apply_resource_policy(&mut spec);` | any build or format job in one workspace | `tests/build_quota_admission.rs`; closure `007-status.md` |
+| build optimization | `crates/codegg-core/src/jobs/quota.rs` — `ResourceClass::Build` | `src/scheduler/submission.rs` — `apply_resource_policy(&mut spec);` | any build or format job in one workspace | `tests/scheduler_jobs/build_quota_admission.inc`; closure `007-status.md` |
 
 ### What "production consumer" means here
 
@@ -76,7 +76,7 @@ requires that:
   rather than passing it.
 
 The guard deliberately does **not** try to prove the capability *works*. That
-is the fixture suite's job (`tests/blackboard_trajectory_m008.rs`, and the
+is the fixture suite's job (`tests/agent_loop/blackboard_trajectory_m008.inc`, and the
 per-milestone closures the matrix cites). The guard proves the wiring is still
 there, which is the failure mode a static check can honestly see.
 

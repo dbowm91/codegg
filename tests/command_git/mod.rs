@@ -46,6 +46,9 @@ pub mod git_env_attack;
 #[path = "git_execution_origin_matrix.inc"]
 pub mod git_execution_origin_matrix;
 
+#[path = "git_fixture_isolation.inc"]
+pub mod git_fixture_isolation;
+
 #[path = "git_index_publication.inc"]
 pub mod git_index_publication;
 

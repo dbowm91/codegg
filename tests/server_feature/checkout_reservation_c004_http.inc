@@ -3,7 +3,7 @@
 //! The HTTP file and workspace routes are a human surface: they carry a
 //! transport-bound principal and never a run. They live in the server
 //! module, which is behind the `server` feature, so this suite is separate
-//! from the daemon-request suite in `tests/checkout_reservation_c004.rs`.
+//! from the daemon-request suite in `tests/core_daemon/checkout_reservation_c004.inc`.
 //!
 //! What it claims: an HTTP write into a checkout reserved by a live
 //! agent-run group is refused before the first filesystem mutation, the
@@ -13,17 +13,15 @@
 
 #![cfg(feature = "server")]
 
-mod common;
-
 use std::sync::Arc;
 
+use super::common::checkout_reservation::ReservedCheckout;
 use axum::extract::{Extension, State};
 use axum::Json;
 use codegg::server::routes::file::{DeleteFileRequest, WriteFileRequest};
 use codegg::server::routes::workspace::CreateWorkspaceRequest;
 use codegg::server::{ServerState, WsRateLimiter};
 use codegg_core::transport_auth::AuthenticatedPrincipal;
-use common::checkout_reservation::ReservedCheckout;
 
 fn server_state(fixture: &ReservedCheckout) -> ServerState {
     ServerState {

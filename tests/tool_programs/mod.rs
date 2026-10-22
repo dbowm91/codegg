@@ -69,6 +69,9 @@ pub mod tool_program_background;
 #[path = "tool_program_build_test_matrix.inc"]
 pub mod tool_program_build_test_matrix;
 
+#[path = "tool_program_c002_delegated_ceiling.inc"]
+pub mod tool_program_c002_delegated_ceiling;
+
 #[path = "tool_program_cache.inc"]
 pub mod tool_program_cache;
 
@@ -236,3 +239,6 @@ pub mod tool_registry;
 
 #[path = "tool_structured_execution.inc"]
 pub mod tool_structured_execution;
+
+#[path = "writer_disposition_guards.inc"]
+pub mod writer_disposition_guards;

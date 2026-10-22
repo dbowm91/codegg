@@ -124,12 +124,20 @@ fn two_processes_derive_different_process_unique_fixture_paths() {
     let child = |tag: &str| {
         Command::new(std::env::current_exe().expect("current exe"))
             .arg("--exact")
-            .arg("child_prints_its_own_process_unique_fixture_path")
+            // `--exact` matches the FULL test path, and in a family the path
+            // is `<family>::<member>::<test>`. A bare test name would select
+            // nothing, and the parent would read an empty child report as a
+            // failure to derive a fixture path.
+            .arg("git_fixture_isolation::child_prints_its_own_process_unique_fixture_path")
             // The child is `#[ignore]`d, so it only runs when ignored tests
             // are explicitly requested.
             .arg("--ignored")
             .arg("--nocapture")
             .env("CODEGG_FIXTURE_CHILD_TAG", tag)
+            // The child writes inside the repository tree, so the parent —
+            // which is the one asking for the fixture — carries the
+            // repository-writer opt-in across to it.
+            .env("CODEGG_REGENERATE_ASSETS", "1")
             .output()
             .expect("run child")
     };
@@ -196,6 +204,15 @@ fn two_processes_derive_different_process_unique_fixture_paths() {
 #[ignore = "child half of the cross-process fixture reproduction"]
 fn child_prints_its_own_process_unique_fixture_path() {
     let tag = std::env::var("CODEGG_FIXTURE_CHILD_TAG").expect("child tag");
+    // The child writes a scratch fixture under the repository tree, so it
+    // carries the same repository-writer opt-in every other `#[ignore]`d
+    // repository writer does: a routine `cargo test -- --ignored` must not
+    // write inside the tree. The parent sets the variable, because it is
+    // the one asking for the fixture.
+    if std::env::var("CODEGG_REGENERATE_ASSETS").as_deref() != Ok("1") {
+        eprintln!("skipped: set CODEGG_REGENERATE_ASSETS=1 to run the fixture child");
+        return;
+    }
     let pid = std::process::id();
     let root = PathBuf::from(format!(
         "{}/.codegg/test_tmp/fixture_isolation_child_{}_{}",

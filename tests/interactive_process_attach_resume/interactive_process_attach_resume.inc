@@ -1000,8 +1000,15 @@ async fn constrained_profile_refuses_before_pty_spawn() {
         // The marker matters: a filter that selects only self-skipping tests
         // qualifies nothing, and the run-store control has to be able to see
         // that. A silent `return` is reported as a pass.
+        //
+        // This half asserts the shape of the refusal on a host that CANNOT
+        // reach the M004 owner. Once the native route is enabled, or once the
+        // host can probe the process scopes, the qualified half of the
+        // contract is covered by
+        // `m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant`
+        // instead, and this half self-skips so the two do not overlap.
         eprintln!(
-            "skipped: set CODEGG_RUN_M004_PTY_NATIVE=1 on a qualified Linux runner for the constrained-profile PTY probe"
+            "skipped: the M004 native PTY route is enabled (CODEGG_RUN_M004_PTY_NATIVE=1), or this host can probe the Landlock process scopes; the qualified half is covered by m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"
         );
         return;
     }

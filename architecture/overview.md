@@ -493,6 +493,51 @@ files, 83 tool source files, 91 architecture docs and 67 guard scripts on this
 branch, 286 / 80 / 87 / 62 on `main` — before it was applied to the merged
 tree.
 
+`main` then advanced to `f4019a410` (PR #162, the Linux trusted-git C008
+contained managed-worktree work) — five commits past `23987df2f` — and the
+branch was reconciled with it by a fifth merge on 2026-10-22.
+
+That advance is not count-neutral for the root integration tests, and this
+reconciliation is not a rebase: `main` still carries its integration tests as
+top-level `tests/*.rs` files, while this branch consolidated them into 21
+families (M004). The two sides had to be reconciled as two *shapes*, not two
+values. `main`'s advance added sixteen top-level root integration-test files
+(286 → 302) and no family members.
+
+Two rows moved. The **integration test files** row keeps the M004 measure —
+`tests/*.rs` plus `tests/*/*.inc`, with the `tests/common/` helper tree
+excluded — and reads **318** on the merged tree: **3** top-level files plus
+**315** family members. Thirteen of `main`'s sixteen new top-level files were
+absorbed into the families that already owned their subject, which moves a file
+without moving the count: 16 + 302 = 318 before the absorption, and 3 + 315 =
+318 after it. The three that stay top-level are named by a hosted qualification
+lane — `shared_checkout_c006` and `macos_native_shared_checkout_containment`
+by the macOS shared-checkout lane, `contained_worktree_c008` by the Linux M004
+lane — and a target a CI lane names keeps its own target, which is the rule
+M004 already applied to the branch's own six "family of one" targets. The
+directory tree's "Integration tests (318 files)" follows.
+
+The **CI guard scripts** row moved 68 → **74**: six guards came from `main`
+(`check_blackboard_contract_matrix.py`, `check_network_intent_owner_wiring.py`,
+`check_process_denial.py`, `check_shared_checkout.py`,
+`check_test_filter_execution.py` and `check_writer_disposition.py`), and the
+branch's own six are already counted.
+
+The remaining rows were re-measured against their own listed `Source` and did
+not move: `codegg-core` modules **54**, `CoreRequest` variants **263** (239
+struct + 24 unit), `CoreResponse` variants **172** (171 struct + 1 unit),
+`CoreEvent` variants **92**, `ProjectionEvent` variants **47**, `AppEvent`
+variants **61**, tool registrations **67** (54 `register` + 13
+`register_boxed`), distinct production tool names **61** (66 production
+`impl Tool for` blocks, 5 of which resolve their name at runtime, less the 7
+test-only mock impls under `#[cfg(test)]`), tool source files **83**, authorized
+operations **257** (247 representative requests), identity newtypes **19**,
+built-in slash commands **168**, built-in agents **10**, bundled themes **50**,
+TUI state modules **33** (34 `.rs` files), database tables **95 statements / 91
+tables**, storage layout version **87**, Git operation variants **54**, Git risk
+classes **11**, LSP server definitions **39**, architecture docs **91**, and
+workspace member crates **11 (+ root)**.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 91 | `architecture/*.md` |

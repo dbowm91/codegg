@@ -646,3 +646,69 @@ name = "target_cannot_write_private_status_endpoint_after_exec"
 class = "environment-absent"
 condition = "the running kernel does not support Landlock"
 satisfied-by = "a Landlock-capable Linux kernel; the probe is codegg::security::sandbox::probe_landlock"
+
+# ---------------------------------------------------------------------------
+# The native qualification probes that arrived with `origin/main`.
+#
+# Each of these self-skips unless its host can actually produce the
+# environment it qualifies, so each reports *passed* having done nothing on
+# a host that cannot. Every one of them is satisfied by a hosted
+# qualification lane that sets the named variable, and the lane runs the
+# half that the host can qualify.
+# ---------------------------------------------------------------------------
+
+[[skip-exceptions]]
+file = "tests/interactive_process_attach_resume/interactive_process_attach_resume.inc"
+line = 996
+name = "constrained_profile_refuses_before_pty_spawn"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_PTY_NATIVE=1, or the host can probe the Landlock process scopes"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_M004_PTY_NATIVE=1, which self-skips this half; the qualified half is covered by m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"
+
+[[skip-exceptions]]
+file = "tests/interactive_process_attach_resume/interactive_process_attach_resume.inc"
+line = 1035
+name = "m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_PTY_NATIVE=1, and the host can probe the Landlock process scopes"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_M004_PTY_NATIVE=1 on a qualified Linux runner"
+
+[[skip-exceptions]]
+file = "tests/interactive_process_attach_resume/interactive_process_attach_resume.inc"
+line = 1182
+name = "m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_RESTRICTED_USERNS=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_M004_RESTRICTED_USERNS=1 on a restricted-userns runner"
+
+[[skip-exceptions]]
+file = "tests/linux_git_test_support/linux_m004_process_ipc.inc"
+line = 564
+name = "delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_M005_OFFLINE_NATIVE=1 on a qualified Linux runner"
+
+[[skip-exceptions]]
+file = "src/interactive_process.rs"
+line = 1959
+name = "protected_mount_pty_first_hop_preserves_terminal_and_workspace_write"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_C006_BWRAP_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_C006_BWRAP_NATIVE=1 on a qualified Linux runner"
+
+[[skip-exceptions]]
+file = "src/interactive_process.rs"
+line = 2061
+name = "m004_live_owner_preserves_tty_and_private_process_view"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M004_PTY_NATIVE=1, and the host can probe the Landlock process scopes"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_M004_PTY_NATIVE=1 on a qualified Linux runner"
+
+[[skip-exceptions]]
+file = "tests/contained_worktree_c008.rs"
+line = 559
+name = "the_contained_child_cannot_write_outside_its_grant"
+class = "opt-in-gated"
+condition = "CODEGG_RUN_M005_OFFLINE_NATIVE=1"
+satisfied-by = ".github/workflows/linux-m004-native.yml sets CODEGG_RUN_M005_OFFLINE_NATIVE=1 on a qualified Linux runner"

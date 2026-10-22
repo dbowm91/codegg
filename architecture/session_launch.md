@@ -259,7 +259,7 @@ What failing closed means in practice:
 Nothing is cleaned up. A reserved-but-never-created checkout and a
 half-made session are the evidence an operator needs.
 
-`tests/session_launch_service.rs` proves both halves: the fail-closed
+`tests/core_daemon/session_launch_service.inc` proves both halves: the fail-closed
 path, and the placement semantics against a **real** linked worktree
 that the fixture creates with a plain `git worktree add` and records in
 the state `create_reserved` would have set. The product's checkout

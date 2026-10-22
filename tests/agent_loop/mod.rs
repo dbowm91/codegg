@@ -30,6 +30,12 @@ pub mod agent_loop_harness;
 #[path = "asset_snapshot.inc"]
 pub mod asset_snapshot;
 
+#[path = "blackboard_economics_m008.inc"]
+pub mod blackboard_economics_m008;
+
+#[path = "blackboard_trajectory_m008.inc"]
+pub mod blackboard_trajectory_m008;
+
 #[path = "causal_active_m005.inc"]
 pub mod causal_active_m005;
 

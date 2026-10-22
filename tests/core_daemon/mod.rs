@@ -27,6 +27,9 @@ pub mod approval_router;
 #[path = "checked_restore_integration.inc"]
 pub mod checked_restore_integration;
 
+#[path = "checkout_reservation_c004.inc"]
+pub mod checkout_reservation_c004;
+
 #[path = "collaboration_m001_chat.inc"]
 pub mod collaboration_m001_chat;
 
@@ -93,6 +96,9 @@ pub mod provider_connections_lifecycle;
 #[path = "provider_reconnect_e2e.inc"]
 pub mod provider_reconnect_e2e;
 
+#[path = "session_launch_service.inc"]
+pub mod session_launch_service;
+
 #[path = "shell_projection_harness.inc"]
 pub mod shell_projection_harness;
 
@@ -131,6 +137,12 @@ pub mod work_orders_m007_trajectory;
 
 #[path = "workstream_claim_m003.inc"]
 pub mod workstream_claim_m003;
+
+#[path = "writer_fence_c003.inc"]
+pub mod writer_fence_c003;
+
+#[path = "writer_permit_service.inc"]
+pub mod writer_permit_service;
 
 #[path = "ws_rate_limit.inc"]
 pub mod ws_rate_limit;

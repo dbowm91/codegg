@@ -375,6 +375,11 @@ paths = [
   "src/skills/**",
   "src/plugin/**",
   "src/work_plan_*.rs",
+  # The multi-agent blackboard suites now live in this family, and they
+  # drive the shared-checkout coordinator and the daemon writer fence
+  # directly, so a change to those has to select this family too.
+  "src/core/writer_fence.rs",
+  "src/core/writer_permit.rs",
 ]
 targets = ["agent_loop"]
 
@@ -416,6 +421,11 @@ paths = [
   "src/live_execution_audit.rs",
   "src/execution_subject_capture.rs",
   "src/decision.rs",
+  # The tool-side writer fence. The C003 fence suite now lives in this
+  # family, and it exercises the fence through the native write tool, so a
+  # change to the fence has to select this family as well as the tool
+  # surface's own family.
+  "src/tool/writer_fence.rs",
 ]
 targets = ["core_daemon", "projection_replay", "session_family"]
 
@@ -444,6 +454,12 @@ paths = [
   "src/security/**",
   "src/permission/**",
   "src/preflight/**",
+  # The process-admission and capability surfaces. The C005 denial suite
+  # now lives in this family, and it refuses a process before any process
+  # exists — so a change to any of these has to select this family too.
+  "src/core/process_admission.rs",
+  "src/tool/process_admission.rs",
+  "src/tool/process_capability.rs",
 ]
 targets = ["security_permission"]
 
@@ -471,6 +487,52 @@ paths = [
   "src/client/**",
 ]
 targets = ["ide_protocols"]
+
+# The shared-checkout mediation contract (C006): the placement, the group
+# authorization, the writer permit, the fence, and the platform gate.
+#
+# This is a standalone target rather than a family member because the hosted
+# macOS qualification lane names it by target name, and the lane's scope is
+# the contract it qualifies.
+[[groups]]
+id = "root_shared_checkout_mediation"
+member = "codegg"
+paths = [
+  "src/core/writer_fence.rs",
+  "src/core/writer_permit.rs",
+  "crates/codegg-core/src/shared_checkout.rs",
+  "crates/codegg-core/src/run_placement.rs",
+  "crates/codegg-core/src/agent_run_group.rs",
+  "crates/codegg-core/src/writer_permit.rs",
+  "crates/codegg-core/src/process_admission.rs",
+]
+targets = ["shared_checkout_c006"]
+
+# The macOS native containment fixture for the shared checkout: Seatbelt
+# obtained, and a confined process unable to write outside its own roots.
+# It stays a standalone target for the same reason as the lane above.
+[[groups]]
+id = "root_macos_shared_checkout_containment"
+member = "codegg"
+paths = [
+  "src/security/sandbox.rs",
+  "src/security/sandbox/**",
+  "src/managed_process.rs",
+]
+targets = ["macos_native_shared_checkout_containment"]
+
+# The contained managed-worktree creation (C008): the creation seam, the
+# contained child, the grant it runs with, and the mount view. The hosted
+# Linux qualification lane names it by target name.
+[[groups]]
+id = "root_contained_worktree_c008"
+member = "codegg"
+paths = [
+  "src/git_contained_worktree.rs",
+  "crates/codegg-core/src/worktree_service.rs",
+  "crates/codegg-core/src/worktree.rs",
+]
+targets = ["contained_worktree_c008"]
 
 # The root package's catch-all: the remaining top-level source paths, and the
 # root library test target. A change to a root source file that no precise
@@ -599,6 +661,27 @@ targets = [
   "context",
   "decision_runtime_fixtures",
 ]
+
+# The durable session-launch store: the idempotency contract, the stage
+# machine, and the restart reconciliation.
+[[groups]]
+id = "core_session_launch"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/session_launch.rs",
+]
+targets = ["session_launch"]
+
+# The durable checkout writer permit store: the state machine, the
+# compare-and-swap, the fence, the quarantine transitions, and the restart
+# reconciliation.
+[[groups]]
+id = "core_writer_permit"
+member = "codegg-core"
+paths = [
+  "crates/codegg-core/src/writer_permit.rs",
+]
+targets = ["writer_permit"]
 
 # ---------------------------------------------------------------------
 # `codegg-document` coverage groups

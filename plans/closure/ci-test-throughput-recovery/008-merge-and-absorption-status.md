@@ -1,0 +1,213 @@
+# CI and Test Throughput Recovery — Fifth Merge and Absorption Status
+
+Status: closed
+
+Record kind: **supplemental reconciliation record**. This is not a new
+milestone of the recovery line and it opens no new milestone. It records the
+reconciliation of the recovery branch with `origin/main` and the absorption of
+the integration tests `main` carries into the branch's family topology.
+
+Source subsystem roadmap:
+
+- `plans/subsystems/ci-test-throughput-recovery-roadmap.md`
+
+Historical closure records this record supplements and does **not** rewrite:
+
+- `plans/closure/ci-test-throughput-recovery/001-status.md` (M001, closed)
+- `plans/closure/ci-test-throughput-recovery/002-status.md` (M002, closed)
+- `plans/closure/ci-test-throughput-recovery/003-status.md` (M003, closed)
+- `plans/closure/ci-test-throughput-recovery/004-status.md` (M004, closed)
+- `plans/closure/ci-test-throughput-recovery/005-status.md` (M005, closed)
+- `plans/closure/ci-test-throughput-recovery/006-status.md` (M006, closed)
+- `plans/closure/ci-test-throughput-recovery/007-status.md` (M007, closed)
+
+Repository baseline reviewed: `f4019a410` (`origin/main`)
+
+Implementation commits or pull requests:
+
+- `54715a41e` — merge(main): reconcile the CI/test-throughput recovery line
+  with origin/main
+- `<this record's commit>` — feat(ci): absorb main's integration tests into
+  the recovery families
+
+## 1. Executive finding
+
+The branch is **merged with `origin/main` and absorbed**, and the merged tree
+compiles, passes the repository's guard tier, and lands with no loss of
+coverage. What the merge had to reconcile was not two *values* but two
+*shapes*: `origin/main` never received M004's family consolidation and still
+carries its root integration tests as top-level `tests/*.rs` files, so the
+merge landed **sixteen** new top-level cargo targets that no family owned and
+that the ownership manifest could not map.
+
+Thirteen of the sixteen were absorbed into the family that already owned their
+subject; three stayed top-level because a hosted qualification lane names
+them. The root package's test-target count falls from **37** to **24** and the
+workspace's from **65** to **52**. No test function was removed, no assertion
+was weakened, and every guard the repository runs is green on the merged tree.
+
+## 2. What the merge changed
+
+### 2.1 The four textual conflicts
+
+| File | Resolution |
+|---|---|
+| `AGENTS.md` | The quick-tier guard list is the **union** of both sides: `cargo-profile-alignment`, `test-ownership`, `test-target-references` and `writer-disposition`. |
+| `scripts/verify.sh` | The branch split the guard tier into `run_guards` and `run_quick`; `main` added the test-filter-execution guard inside the old flat tier. The resolved file keeps the split and places `main`'s guard inside `run_guards`, beside the others it belongs with. |
+| `.github/workflows/linux-m004-native.yml` | `main`'s C008 step and path triggers are kept. The branch's rename of the M004 process/IPC target (`linux_m004_process_ipc` → `linux_git_test_support`) wins over `main`'s reference to the old name, because the old name no longer names a cargo target. `main`'s `check_test_filter_execution.py --run` wrapper is kept on the renamed steps. |
+| `architecture/overview.md` | Both sides' reconciliation narratives are kept: each records a dated pass over its own tree, and neither is invalidated by the other. The Verified-counts table is re-measured on the merged tree. |
+
+### 2.2 The absorption
+
+Thirteen files moved; the mapping and the three that stayed are in
+`architecture/testing.md` § "The families after the fifth merge (2026-10-22)".
+
+### 2.3 Repairs the merge exposed
+
+These are not cosmetic. Each was a **real defect** that the merge surfaced,
+and each is recorded here rather than hidden.
+
+| Defect | Where | Repair |
+|---|---|---|
+| A hosted workflow step named a cargo target that does not exist: `--test linux_m004_process_ipc` (renamed to `linux_git_test_support` by M004) | `.github/workflows/linux-m004-native.yml` | Repointed at the family, keeping `main`'s `check_test_filter_execution.py --run` wrapper. |
+| A hosted workflow step named a cargo target that does not exist: `--test sandbox_containment` (absorbed into the `security_permission` family by M004) | `.github/workflows/shared-checkout-macos-qualification.yml` | Repointed at the family with the member name as the filter, so the lane's scope stays narrow. |
+| The test-filter-execution guard could not see a family target: it resolved `--test NAME` to `tests/NAME.rs` and globbed only `*.rs`, so a family (a directory of `.inc` members) reported "selects zero declared tests" | `scripts/check_test_filter_execution.py` | The guard now resolves a family target to its directory, scans `*.inc` members as well as `*.rs`, and strips a `.inc` suffix from a module path. Its `--self-test` now proves the family resolution is not vacuous — it asserts that a family member's test is selected, and that a non-matching filter in the same family is still rejected. |
+| The Windows test-support release guard named two `[[test]]` targets that M004 had consolidated into the `windows_sandbox_test_support` family, so it failed on every run | `scripts/check_windows_test_support_release.py` | The guard now checks the family target's `required-features` and scans the family's `.inc` members for the feature gate. It is not in `verify.sh` or CI, so it was failing silently. |
+| A member's re-exec used `--exact <bare test name>`, which matches the *full* test path — so it selected nothing and the parent read the empty child report as a failure | `tests/command_git/git_fixture_isolation.inc` | The child is now named by its qualified path, `git_fixture_isolation::child_prints_its_own_process_unique_fixture_path`. |
+| A member called `crate::scheduler_admission_service(…)`, which resolved through the standalone file's own crate-root import | `tests/security_permission/process_denial_c005.inc` | The member names the helper directly. |
+| A member reached the shared helper with `use common::…`, which only resolves where `tests/common/` is a sibling directory | the five members that bound `mod common;` | Rewritten to `use super::common::…`; the `security_permission` family gained the `#[path = "../common/mod.rs"]` binding it needed. |
+| An `#[ignore]`d test wrote inside the repository tree with no opt-in, which is what M006's assertion-quality guard exists to prevent | `tests/command_git/git_fixture_isolation.inc` | The child now carries the repository-writer opt-in (`CODEGG_REGENERATE_ASSETS=1`) and the parent sets it, so a routine `cargo test -- --ignored` writes nothing. |
+| A skip marker told a reader to set the very variable whose presence made the test **skip** | `tests/interactive_process_attach_resume/interactive_process_attach_resume.inc` | The message now describes the condition that actually holds. The condition itself is **not** changed: it is deliberate — commit `f4f41a766` made the two constrained-PTY halves mutually exclusive, so the qualified half is covered by `m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant`. |
+| Eight test bodies that `main`'s CI never saw reported *passed* having skipped, because `main` does not carry M006's assertion-quality guard | `docs/test-assertion-quality.toml` | Triaged into the manifest: seven `[[skip-exceptions]]` entries, each naming the hosted lane that satisfies it, plus the repository-writer entry above. |
+
+The eight assertion-quality failures were **pre-existing at the merge commit**:
+the pre-merge branch head `644d6208a` reports **zero** of them, and the merge
+commit `54715a41e` reports **eight**. `main`'s CI does not run this guard,
+because the guard is the branch's, so `main`'s new tests were never triaged
+against it.
+
+## 3. Requirement-to-evidence matrix
+
+| Requirement | Evidence | Result |
+|---|---|---|
+| Merge `origin/main` without losing a branch change | Merge commit `54715a41e`; four conflicts resolved as recorded in §2.1 | pass |
+| Every root integration test is owned by a family or a named standalone target | `scripts/check_test_ownership.py` — "the test-ownership manifest matches the tree and the workspace" | pass |
+| The ownership guard is not vacuous | `scripts/check_test_ownership.py --self-test` — 13 injected violations rejected, "unmodified tree still passes" | pass |
+| The merged tree compiles, every target | `cargo check --workspace --all-targets` — 0 errors | pass |
+| The merged tree introduces no new clippy finding | `cargo clippy --workspace --all-targets` — the 8 errors are in files **byte-identical** to `origin/main` and are macOS-only artifacts of `#[cfg(not(target_os = "linux"))]` code; `main`'s own Linux CI runs "Workspace Clippy" to success | pass (no new finding; the 8 are pre-existing on `main` and Linux-invisible) |
+| The test-filter-execution guard sees family targets | `scripts/check_test_filter_execution.py` and `--self-test` | pass |
+| The Windows test-support guard names live targets | `scripts/check_windows_test_support_release.py` and `--self-test` | pass |
+| No test body reports pass after skipping | `scripts/check_test_assertion_quality.py` and `--self-test` | pass |
+| No duplicated test body | `scripts/check_test_duplication.py` and `--self-test` | pass |
+| The recorded counts are true on the merged tree | `architecture/overview.md`'s Verified-counts table, re-measured against each row's own `Source` | pass |
+
+## 4. The counts, re-measured
+
+Every row of `architecture/overview.md`'s Verified-counts table was re-measured
+against **its own listed `Source`** on the merged tree, not carried over from
+either side. Two rows moved; the rest did not.
+
+| Row | Before | After | Source |
+|---|---:|---:|---|
+| Integration test files | 302 | **318** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 3 top-level + 315 members |
+| CI guard scripts | 68 | **74** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted |
+
+The remaining rows were re-measured and did not move: `codegg-core` modules
+**54**, `CoreRequest` variants **263** (239 struct + 24 unit), `CoreResponse`
+variants **172** (171 struct + 1 unit), `CoreEvent` variants **92**,
+`ProjectionEvent` variants **47**, `AppEvent` variants **61**, tool
+registrations **67** (54 `register` + 13 `register_boxed`), distinct production
+tool names **61** (66 production `impl Tool for` blocks, 5 resolving their name
+at runtime, less the 7 test-only mock impls), tool source files **83**,
+authorized operations **257** (247 representative requests), identity newtypes
+**19**, built-in slash commands **168**, built-in agents **10**, bundled themes
+**50**, TUI state modules **33** (34 `.rs` files), database tables **95
+statements / 91 tables**, storage layout version **87**, Git operation variants
+**54**, Git risk classes **11**, LSP server definitions **39**, architecture
+docs **91**, workspace member crates **11 (+ root)**.
+
+Two of these deserve their derivation stated, because both sides had changed
+the source they are measured from:
+
+- **The integration-test measure did not change.** It is M004's measure —
+  root integration test *modules* — and the absorption moved a file without
+  moving the count: 16 + 302 = 318 before the absorption, 3 + 315 = 318 after
+  it. The count on `origin/main` is 318 too, by the other route: 302 top-level
+  files + 16 predecessor members.
+- **The tool-name row did not move, and it had been measured correctly.** The
+  row's parenthetical names 66 production `impl Tool for` blocks and 7
+  test-only mocks. The mock in `broker.rs` is spelled
+  `impl super::super::Tool for TestTool`, so a scan for `impl Tool for` alone
+  undercounts it and makes the row look stale by one. Measured on the merged
+  tree, on `origin/main`, and on the merge base, the numbers are 66 / 7 / 61
+  in all three.
+
+## 5. Verification executed
+
+### Commands run
+
+```bash
+git merge origin/main --no-commit            # the four conflicts of §2.1
+cargo check --workspace --all-targets        # the merged and absorbed tree
+cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/check_test_ownership.py [--self-test]
+python3 scripts/check_test_filter_execution.py [--self-test]
+python3 scripts/check_windows_test_support_release.py [--self-test]
+python3 scripts/check_test_assertion_quality.py [--self-test]
+python3 scripts/check_test_duplication.py [--self-test]
+bash scripts/verify.sh quick
+```
+
+### Results
+
+- `cargo check --workspace --all-targets`: **0 errors**.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: **8
+  errors**, all in files byte-identical to `origin/main`, all macOS-only
+  artifacts of `#[cfg(not(target_os = "linux"))]` code that Linux CI never
+  compiles. `main`'s own last green CI run executes "Workspace Clippy" to
+  **success** on `ubuntu`. The merge introduces no new clippy finding. These
+  eight are recorded as a **pre-existing `main` defect**, not as this line's.
+- The guard tier: every guard named above passes, and every `--self-test`
+  still rejects the failure class it exists to reject.
+- `bash scripts/verify.sh quick`: see §7.
+
+## 6. What this record does not claim
+
+- **It does not re-measure M005.** The hosted before/after evidence in
+  `plans/validation/ci-test-throughput-recovery/measurement-record.md` was
+  measured on the pre-merge tree, at the candidate `3dfeb6e2f`, against the
+  baseline `2c1953347`. The merge changed the tree it was measured on, so
+  those numbers are **not** the numbers for this tree. They remain the record
+  of what was measured, and this record does not restate them as current.
+- **It does not re-run the hosted suite.** The hosted run is CI's job on the
+  landed branch; this record reports the local gate and the hosted run's
+  result is reported where it happens.
+- **It does not claim the macOS clippy state is green.** It is not, on this
+  platform, and it was not before the merge either.
+
+## 7. Open items carried forward
+
+- **The eight macOS-only clippy findings in `origin/main`'s files.** They are
+  `#[cfg(not(target_os = "linux"))]` code that no macOS path calls. They
+  belong to `main`, they are invisible to Linux CI, and fixing them means
+  changing `main`'s platform gating — out of this line's scope. Recorded, not
+  silently inherited.
+- **The deferred rebase (roadmap §10 D9) is discharged by the merge.** The
+  branch was reconciled with `origin/main` rather than rebased, which is the
+  cheaper and safer of the two for a ten-commit branch and a 150-commit
+  divergence, and it keeps the merge commit as the single place the two
+  histories meet.
+
+## 8. Recommendation
+
+**Closed.** The branch is merged with `origin/main`, the integration tests
+`main` carries are absorbed into the recovery families, the hosted workflow
+references that the consolidation broke are repaired, the guards that the
+merge exposed are repaired, and the recorded counts are re-measured against
+their own sources. The tree compiles, the guard tier is green, and the
+recorded counts are true on the merged tree.
+
+This record opens no milestone and rewrites no earlier record. The eight
+macOS-only clippy findings are recorded as a pre-existing `origin/main`
+defect, and M005's hosted numbers are recorded as the measurement of the
+tree it was measured on, not as this tree's.

@@ -19,17 +19,15 @@
 //!   drained;
 //! * the refusal is recorded durably, attributed and redacted.
 
-mod common;
-
 use std::sync::Arc;
 
+use super::common::checkout_reservation::ReservedCheckout;
 use codegg::core::process_admission::build_process_admission;
 use codegg::tool::process_admission::{admit_process, SharedProcessAdmission};
 use codegg_core::process_admission::{
     PersistentProcessEntry, PersistentProcessRegistry, ProcessAdmissionService, ProcessDenial,
     ProcessDenialReason, ProcessKind,
 };
-use common::checkout_reservation::ReservedCheckout;
 
 /// The admission policy for a checkout, over the daemon's own authority.
 fn policy_for(fixture: &ReservedCheckout, root: &std::path::Path) -> SharedProcessAdmission {
@@ -380,7 +378,7 @@ async fn a_job_that_starts_no_process_is_not_refused() {
 #[tokio::test]
 async fn the_human_shell_is_refused_on_a_reserved_checkout() {
     let fixture = ReservedCheckout::build().await;
-    let admission = crate::scheduler_admission_service(&fixture);
+    let admission = scheduler_admission_service(&fixture);
 
     let scheduler = fixture
         .daemon

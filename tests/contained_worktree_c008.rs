@@ -16,9 +16,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use codegg::git_contained_worktree::{
-    build_worktree_grant, compose_worktree_child_launch, ContainedGitWorktreeCreator,
-    WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
+    build_worktree_grant, ContainedGitWorktreeCreator, WorktreeChildPaths, WorktreeChildStep,
+    WorktreeLaunchTiers,
 };
+// The native proof is the only consumer of the child-launch composition, and
+// it is Linux-only, so the import carries the same gate. Without it the
+// import is unused on every other platform, which is a clippy error.
+#[cfg(target_os = "linux")]
+use codegg::git_contained_worktree::compose_worktree_child_launch;
 use codegg_core::worktree_service::{
     ContainedWorktreeCreator, ContainedWorktreeOutcome, ContainedWorktreeRequest,
     CreateWorktreeRequest, WorktreeService, WorktreeServiceError,
@@ -26,6 +31,7 @@ use codegg_core::worktree_service::{
 use codegg_core::worktree_service::{ManagedWorktreeState, WorktreeHealth};
 
 /// The established opt-in for the native Linux M004/M005 proofs.
+#[cfg(target_os = "linux")]
 const NATIVE_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -523,6 +529,10 @@ async fn the_seam_creates_a_real_checkout_and_fails_closed() {
 // ── 3. The contained child ────────────────────────────────────────────────
 
 /// Write an executable script the child will run.
+// The native proof is the only consumer, and it is Linux-only, so the helper
+// carries the same gate. Without it the helper is unused on every other
+// platform, which is a clippy error.
+#[cfg(target_os = "linux")]
 fn write_script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write script");
     #[cfg(unix)]

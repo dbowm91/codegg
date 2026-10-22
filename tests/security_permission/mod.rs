@@ -14,12 +14,22 @@
 //! Consolidation replaces N separate Cargo test executables with 1,
 //! preserving every test body and every assertion. The only visible change
 //! is the test id, which becomes `<family>::<member>::<test>`.
+//!
+//! `common` — the shared integration-test helper module — lives one
+//! directory up under `tests/common/mod.rs`, so it is bound here with an
+//! explicit `#[path]`; the members reach it with `use super::common;`.
+
+#[path = "../common/mod.rs"]
+pub mod common;
 
 #[path = "approval_reviewer.inc"]
 pub mod approval_reviewer;
 
 #[path = "doom_loop.inc"]
 pub mod doom_loop;
+
+#[path = "host_admission_manifest.inc"]
+pub mod host_admission_manifest;
 
 #[path = "linux_bubblewrap_first_hop.inc"]
 pub mod linux_bubblewrap_first_hop;
@@ -38,6 +48,9 @@ pub mod permission;
 
 #[path = "preflight_integration.inc"]
 pub mod preflight_integration;
+
+#[path = "process_denial_c005.inc"]
+pub mod process_denial_c005;
 
 #[path = "sandbox_containment.inc"]
 pub mod sandbox_containment;

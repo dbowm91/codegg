@@ -30,7 +30,7 @@
 //! What this suite does **not** claim:
 //!
 //! * It does not claim anything about model quality, cost or latency. The
-//!   measured comparison is `tests/blackboard_economics_m008.rs`, and it is
+//!   measured comparison is `tests/agent_loop/blackboard_economics_m008.inc`, and it is
 //!   opt-in for that reason.
 //! * It does not claim a live two-agent race inside one daemon process. The
 //!   S4 arm here is two real writers contending for one real checkout's
@@ -40,14 +40,12 @@
 //!   unavailable the arm reports itself unrun rather than substituting an
 //!   unsafe emulation.
 
-mod common;
-
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::blackboard::{
+use super::common::blackboard::{
     add_worktree, commit_all, create_turn_members, git, init_repository, insert_run_rows,
     Blackboard,
 };

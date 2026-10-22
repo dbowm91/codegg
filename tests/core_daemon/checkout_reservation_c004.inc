@@ -1,6 +1,6 @@
 //! C004 qualification: CodeGG's non-broker checkout writers are mediated.
 //!
-//! The C003 suite (`tests/writer_fence_c003.rs`) covers the model's *native*
+//! The C003 suite (`tests/core_daemon/writer_fence_c003.inc`) covers the model's *native*
 //! writers. This suite covers the writers the model never reaches: the
 //! document service, the change-review LSP applier, project initialization,
 //! checkpoint restore, the managed-worktree admin requests, and the HTTP file
@@ -20,15 +20,13 @@
 //! mediation is proved before any product path may depend on it.
 //!
 //! The HTTP surface is proved separately in
-//! `tests/checkout_reservation_c004_http.rs`, because the server module is
+//! `tests/server_feature/checkout_reservation_c004_http.inc`, because the server module is
 //! behind the `server` feature.
 
-mod common;
-
+use super::common::checkout_reservation::ReservedCheckout;
 use codegg::protocol::core::{CoreRequest, CoreResponse};
 use codegg::protocol::document::DocumentScope;
 use codegg_core::agent_run::{AgentRunStatus, AgentRunTerminalOutcome};
-use common::checkout_reservation::ReservedCheckout;
 
 // ---------------------------------------------------------------------------
 // The refusal

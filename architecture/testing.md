@@ -490,6 +490,70 @@ Consequences worth knowing:
   target that does not exist — a renamed target would otherwise make a
   filter silently stop reserving the runner for it.
 
+### The families after the fifth merge (2026-10-22)
+
+`origin/main` never received M004's consolidation: it still carries its root
+integration tests as top-level `tests/*.rs` files, and its advance to
+`f4019a410` added **sixteen** more of them. The fifth merge therefore had to
+reconcile two *shapes* — `main`'s top-level files against this branch's
+families — rather than two values.
+
+Sixteen of those files arrived as top-level cargo targets. **Thirteen** were
+absorbed into the family that already owned their subject, and **three** stayed
+top-level because a hosted qualification lane names them:
+
+| Absorbed file | Family | Member |
+|---|---|---|
+| `tests/blackboard_economics_m008.rs` | `agent_loop` | `blackboard_economics_m008.inc` |
+| `tests/blackboard_trajectory_m008.rs` | `agent_loop` | `blackboard_trajectory_m008.inc` |
+| `tests/build_quota_admission.rs` | `scheduler_jobs` | `build_quota_admission.inc` |
+| `tests/checkout_reservation_c004.rs` | `core_daemon` | `checkout_reservation_c004.inc` |
+| `tests/checkout_reservation_c004_http.rs` | `server_feature` | `checkout_reservation_c004_http.inc` |
+| `tests/git_fixture_isolation.rs` | `command_git` | `git_fixture_isolation.inc` |
+| `tests/host_admission_manifest.rs` | `security_permission` | `host_admission_manifest.inc` |
+| `tests/process_denial_c005.rs` | `security_permission` | `process_denial_c005.inc` |
+| `tests/session_launch_service.rs` | `core_daemon` | `session_launch_service.inc` |
+| `tests/tool_program_c002_delegated_ceiling.rs` | `tool_programs` | `tool_program_c002_delegated_ceiling.inc` |
+| `tests/writer_disposition_guards.rs` | `tool_programs` | `writer_disposition_guards.inc` |
+| `tests/writer_fence_c003.rs` | `core_daemon` | `writer_fence_c003.inc` |
+| `tests/writer_permit_service.rs` | `core_daemon` | `writer_permit_service.inc` |
+
+The three that stayed top-level are named by a hosted qualification lane, and
+**a target a CI lane names keeps its own target** — the rule M004 already
+applied to the branch's own six "family of one" targets:
+
+| Target | Named by |
+|---|---|
+| `shared_checkout_c006` | `.github/workflows/shared-checkout-macos-qualification.yml` |
+| `macos_native_shared_checkout_containment` | the same macOS lane |
+| `contained_worktree_c008` | `.github/workflows/linux-m004-native.yml` |
+
+The root package's test-target count therefore falls from **37** to **24** (21
+families + 3), and the workspace's from **65** to **52** — the root's 13
+absorbed targets plus `codegg-core`'s two (`session_launch` and `writer_permit`,
+which M004 deliberately left outside the root package's family mechanism).
+
+Three consequences follow from the move, and each is a change a reader has to
+know about:
+
+- **A member reaches the shared helper with `use super::common::…`, not
+  `use common::…`.** A standalone test file declares `mod common;` because
+  `tests/common/` is its sibling directory; inside a family the helper is one
+  level up, so the family binds it with `#[path = "../common/mod.rs"]` and the
+  member imports the helper's items directly. The `security_permission` family
+  gained that binding for this merge, because `process_denial_c005` uses
+  `common::checkout_reservation`.
+- **`crate::` in an integration test means the test crate root, not the
+  library.** `crate::scheduler_admission_service(…)` resolved through the
+  standalone file's own crate-root import; as a family member it has to name
+  the helper directly.
+- **A member that re-invokes its own test binary must use the qualified
+  path.** `git_fixture_isolation` re-executes `current_exe() --exact <name>`,
+  and `--exact` matches the *full* path, which is now
+  `git_fixture_isolation::child_prints_its_own_process_unique_fixture_path`. A
+  bare test name selects nothing, and the parent reads the empty child report
+  as a failure to derive a fixture path.
+
 ### The measured link cost (M005)
 
 The family consolidation was justified by a **projection** (M004's closure

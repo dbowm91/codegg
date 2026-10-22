@@ -63,7 +63,7 @@
 workflow = ".github/workflows/linux-m004-native.yml"
 job = "process-ipc"
 step = "C007 private-index publication under containment"
-command = "cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1"
+command = "cargo test --locked --test linux_git_test_support --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1"
 filter = "production_private_index_publisher_stages_and_publishes_under_containment"
 tests = ["production_private_index_publisher_stages_and_publishes_under_containment"]
 security = "The private-index publisher must stage and publish under containment; the step self-skips without its opt-in."
@@ -151,7 +151,7 @@ security = "The trusted-Git read view must refuse repository-owned hooks, diff d
 workflow = ".github/workflows/linux-m004-native.yml"
 job = "restricted-userns-fails-closed"
 step = "Required M004 launch refuses before target under host userns policy"
-command = "cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture"
+command = "cargo test --locked --test linux_git_test_support --features linux-git-test-support required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture"
 filter = "required_process_tier_fails_closed_when_user_namespaces_are_restricted"
 tests = ["required_process_tier_fails_closed_when_user_namespaces_are_restricted"]
 security = "A required process tier must refuse before the target starts when user namespaces are restricted; the step self-skips without its opt-in."

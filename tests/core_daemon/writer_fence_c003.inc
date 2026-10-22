@@ -1,7 +1,7 @@
 //! C003 qualification: the checkout writer fence at the final native effect.
 //!
 //! The store's own tests live in `crates/codegg-core/tests/writer_permit.rs`;
-//! C002's adapter tests live in `tests/writer_permit_service.rs`. These cover
+//! C002's adapter tests live in `tests/core_daemon/writer_permit_service.inc`. These cover
 //! what C003 adds: the fence's *placement* in the writer path, the
 //! containment rule, the fail-closed effect classes, and the mutual
 //! exclusion two runs on one checkout actually produce.

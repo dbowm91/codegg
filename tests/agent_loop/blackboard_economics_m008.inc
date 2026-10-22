@@ -1,6 +1,6 @@
 //! M008 — the measured comparison for the agent-workstream blackboard.
 //!
-//! The functional arms live in `tests/blackboard_trajectory_m008.rs`. This
+//! The functional arms live in `tests/agent_loop/blackboard_trajectory_m008.inc`. This
 //! suite is the **measured** half of M008's work package D: it runs the same
 //! configurations over a fixed task set, publishes the per-task results with
 //! their denominators, and measures the Rust target-directory contention
@@ -41,15 +41,13 @@
 //! profile refuses every process-capable surface, so a build inside a shared
 //! checkout is refused by contract and could not be measured there at all.
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::blackboard::{add_worktree, commit_all, git, init_repository, Blackboard};
+use super::common::blackboard::{add_worktree, commit_all, git, init_repository, Blackboard};
 
 /// Write a file inside a checkout, creating its parent directories.
 fn write_in(root: &Path, relative: &str, contents: &str) {
