@@ -314,6 +314,18 @@ pub async fn acquire_writer_permit(
 /// The tool name and the target paths say *what* is written; the invocation
 /// key separates two calls that write the same path, so a retried call does
 /// not collide with the attempt it retries.
+///
+/// The key is a **digest** of that material. The permit store bounds an
+/// idempotency key at
+/// [`MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES`](codegg_core::writer_permit::MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES)
+/// bytes, and the readable form is longer than that on any real checkout: a
+/// managed checkout path alone runs past a hundred bytes, and the invocation
+/// key is another eighty. A key the store refuses is a write that never
+/// happens, so the readable form made the whole shared-checkout writer
+/// contract unreachable.
+///
+/// The digest keeps the property the store relies on: the same operation
+/// retried carries the same key, and two different operations never do.
 pub fn writer_fence_key(
     tool: &str,
     targets: &[PathBuf],
@@ -324,11 +336,25 @@ pub fn writer_fence_key(
         .map(|target| target.display().to_string())
         .collect::<Vec<_>>()
         .join(",");
-    match ctx.and_then(|ctx| ctx.invocation_key.as_deref()) {
+    let material = match ctx.and_then(|ctx| ctx.invocation_key.as_deref()) {
         Some(invocation) => format!("{tool}:{paths}:{invocation}"),
         None => format!("{tool}:{paths}"),
-    }
+    };
+    use sha2::Digest;
+    format!(
+        "wf1:{}:{:x}",
+        // The label is there for a human reading the permit row. The digest
+        // carries the tool name in full, so truncating the label cannot make
+        // two tools collide.
+        tool.chars()
+            .take(MAX_FENCE_KEY_LABEL_CHARS)
+            .collect::<String>(),
+        sha2::Sha256::digest(material.as_bytes())
+    )
 }
+
+/// How much of the tool name the readable part of a fence key carries.
+const MAX_FENCE_KEY_LABEL_CHARS: usize = 32;
 
 /// Settle the writer-fence permit for an effect that has already run.
 ///
@@ -571,4 +597,85 @@ pub trait WriterFenceFactory: Send + Sync {
         &self,
         request: WriterScopeRequest,
     ) -> Result<Option<Arc<dyn CheckoutWriterFence>>, WriterFenceError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::backend::{ToolBackendKind, ToolExecutionContext};
+
+    /// The permit store's own bound on an idempotency key.
+    const BOUND: usize = codegg_core::writer_permit::MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES;
+
+    /// A managed checkout path of the shape a real one has.
+    fn checkout_path() -> PathBuf {
+        PathBuf::from(
+            "/home/user/.local/share/codegg/worktrees/8f2c1a9e-4b7d-4c3a-9f1e-2d6b8a0c5e31/wt-6b41d2f9c8a3",
+        )
+    }
+
+    /// An invocation key of the shape the agent loop produces.
+    fn context() -> ToolExecutionContext {
+        let mut context = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+        context.invocation_key = Some(format!("agent-invocation-{}", "a".repeat(64)));
+        context
+    }
+
+    /// The readable key — tool, path and invocation — is longer than the
+    /// permit store's bound on a real checkout, so the key must be digested.
+    #[test]
+    fn a_realistic_checkout_key_fits_the_permit_bound() {
+        let context = context();
+        let key = writer_fence_key(
+            "write",
+            &[checkout_path().join("alpha.txt")],
+            Some(&context),
+        );
+        assert!(
+            key.len() <= BOUND,
+            "the permit store refuses a key of {} bytes: {key}",
+            key.len()
+        );
+    }
+
+    /// A key with no invocation key is bounded too.
+    #[test]
+    fn a_key_without_an_invocation_fits_the_permit_bound() {
+        let key = writer_fence_key("write", &[checkout_path().join("alpha.txt")], None);
+        assert!(key.len() <= BOUND, "the permit store refuses: {key}");
+    }
+
+    /// The same operation retried carries the same key, and two different
+    /// operations never do.
+    #[test]
+    fn the_key_separates_operations_and_survives_a_retry() {
+        let context = context();
+        let first = writer_fence_key(
+            "write",
+            &[checkout_path().join("alpha.txt")],
+            Some(&context),
+        );
+        let retried = writer_fence_key(
+            "write",
+            &[checkout_path().join("alpha.txt")],
+            Some(&context),
+        );
+        let other_path =
+            writer_fence_key("write", &[checkout_path().join("beta.txt")], Some(&context));
+        let other_tool =
+            writer_fence_key("edit", &[checkout_path().join("alpha.txt")], Some(&context));
+
+        assert_eq!(
+            first, retried,
+            "a retried operation must carry the same key"
+        );
+        assert_ne!(
+            first, other_path,
+            "a different path must carry a different key"
+        );
+        assert_ne!(
+            first, other_tool,
+            "a different tool must carry a different key"
+        );
+    }
 }
