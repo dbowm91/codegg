@@ -645,6 +645,55 @@ bash scripts/verify.sh quick
   path in a **doc comment**. Neither can make the renderer stop emitting the
   permission list. The failure belongs to the desktop foundation's line
   (`apps/desktop/`), not to this one.
+- **M011's composed-race test is flaky locally, and it is flaky on `main`
+  too.** `tests/composed_two_agent_race_m011.rs`'s
+  `two_live_agents_racing_on_one_shared_checkout_never_overlap` fails
+  intermittently with `each writer must take and release exactly one permit`,
+  `left: 2, right: 4` — one writer's permit pair never reaches the timeline.
+  **The attribution is measured on both trees, on this machine, at the same
+  load.** On the branch's tree: **8 failures in 12 runs**. On `origin/main`'s
+  tree at `726f3c645`: **9 failures in 12 runs**, and **2 in 7** in a second
+  measurement — and the failing test is the **same one**, by name, with the
+  same assertion.
+
+  The branch is not the cause, and the tree shows it: the branch changes
+  **nothing** on M011's production surface — `src/core/writer_fence.rs`,
+  `src/core/writer_mediation.rs`, `src/core/work_order_coordinator.rs`,
+  `crates/codegg-core/src/writer_permit.rs`,
+  `crates/codegg-core/src/worktree_service.rs`,
+  `crates/codegg-core/src/checkout_reservation.rs` and `src/tool/writer_fence.rs`
+  are all identical to `origin/main` — and `tests/composed_two_agent_race_m011.rs`
+  differs from `origin/main`'s copy by **one line**, the `pub mod common;`
+  binding of §2.9.
+
+  **Both writers' files land; only one writer's permit pair is recorded.** The
+  timeline is an *indirect* observation: the fence reports its transitions
+  through `tracing`, and the suite reads them from a `tracing` layer. So the
+  missing pair is either an event that was never emitted or one that was never
+  delivered to the subscriber — **this record does not determine which**, and
+  the difference matters: an event that was never emitted means a write
+  reached the checkout without passing through the fence's permit path, which
+  is a production defect; an event that was lost is a test-observability
+  defect. The owning line
+  (`plans/closure/agent-workstream-blackboard/011-status.md`) is the right
+  place to settle it.
+
+  On the **hosted Linux runner** the test passes on both trees — `main`'s own
+  `CI` run at `7d3c6ed09` ran 16,082 tests with this one among the passing
+  set (the run's single failure was
+  `codegg-core goal::checkpoint::tests::test_read_checkpoint_tail_returns_latest_updates`),
+  and the branch's `CI` run at `a85f7996a` passed "Workspace tests" too. The
+  flake therefore reproduces **locally under load and not on the hosted
+  runner**, which is consistent with `main`'s own closure record reporting
+  20 of 20 local passes on an unloaded machine.
+
+  A second, harmless difference in the same target is worth stating so it is
+  not mistaken for lost coverage: `origin/main`'s copy runs **8** tests and
+  the branch's runs **3**, because M007 moved five `#[test]` functions out of
+  `tests/common/secret_scan.rs` — where they were compiled into every binary
+  that binds the shared tree — into `tests/command_git/secret_scan_self_tests.inc`,
+  the one family that uses them. The five functions are still present and
+  still assert; they are no longer executed eight times over.
 - **The eight macOS-only clippy findings in `origin/main`'s files.** They are
   `#[cfg(not(target_os = "linux"))]` code that no macOS path calls. They
   belong to `main`, they are invisible to Linux CI, and fixing them means
