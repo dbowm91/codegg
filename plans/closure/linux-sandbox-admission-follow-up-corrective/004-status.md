@@ -842,12 +842,12 @@ Its **own** sweep is green on all six workflows (`39771529333` attempt 2,
 its code-bearing ancestor. That tip's CI failed once first, on the
 jobs/scheduler flake §10.4 records; the re-run on the identical tree passed.
 
-The **last swept head** is `57d919684`, two documentation-only commits above
-`a80d3b10c` — the two are `9ec279050` and `57d919684` — and
-`git diff --name-only a80d3b10c..57d919684` names this record only. Its sweep
-is green on all six workflows (`39798010473`,
-`39798010532`, `39798010491`, `39798010512`, `39798010549`,
-`39798010559`), with the same filter counts as every other green head and
+The **last swept head** is `011a63c0d`, five documentation-only commits above
+`a80d3b10c` (`9ec279050`, `57d919684`, `7f9ed0708`, `4804d100e` and `011a63c0d`),
+and `git diff --name-only a80d3b10c..011a63c0d` names this record and the review
+pack only. Its sweep is green on all six workflows (`39827127011`,
+`39827126880`, `39827129253`, `39827126987`, `39827126858`,
+`39827127190`), with the same filter counts as every other green head and
 **16,061 tests run, 16,061 passed, 9 skipped** on the default sweep.
 
 **The branch tip may sit documentation-only commits above that**, because
@@ -952,13 +952,19 @@ the evidence that the sweep is doing work.
 | `39798010512` | `57d919684` | Linux Git object snapshot CoW qualification | **success** |
 | `39798010549` | `57d919684` | Windows process launcher | **success** — not required for this line; see §5.3 |
 | `39798010559` | `57d919684` | Shared checkout macOS qualification | **success** |
+| `39827127011` | `011a63c0d` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
+| `39827126880` | `011a63c0d` | Linux M004 process and IPC qualification | **success** |
+| `39827129253` | `011a63c0d` | Linux C006 protected mount qualification | **success** |
+| `39827126987` | `011a63c0d` | Linux Git object snapshot CoW qualification | **success** |
+| `39827126858` | `011a63c0d` | Windows process launcher | **success** — not required for this line; see §5.3 |
+| `39827127190` | `011a63c0d` | Shared checkout macOS qualification | **success** |
 
 **All five milestone workflows are green on the code-bearing head
 `99f15e180`**, and so is the sixth, `main`'s macOS shared-checkout lane. Every
 documentation-only head above it is green on all six as well: the ones with
-their **own recorded runs** are `659e9324a`, `afba68e7b`, `a80d3b10c` and
-`57d919684`, and the one between them (`9ec279050`) is green by the
-attribution rule above, because it touches only `plans/**`. That is after the
+their **own recorded runs** are `659e9324a`, `afba68e7b`, `a80d3b10c`,
+`57d919684` and `011a63c0d`, and the ones between them are green by the
+attribution rule above, because they touch only `plans/**`. That is after the
 one failure §10.4 records. The
 failures above are
 the earlier heads, and each one found a defect that is now fixed and guarded —
@@ -1091,13 +1097,21 @@ estimate, and not a count the guard assumed.
 | `39798010491` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39798010512` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39798010549` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39827127011` | `CI` | `Workspace tests` | **16,061 tests run, 16,061 passed**, 9 skipped | — | none |
+| `39827126880` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39827126880` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39827126880` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39827129253` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39827129253` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39827126987` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39827126858` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
 | **local** | **native re-run through the wrapper** | **`protected_mount_`** (bwrap 0.9.0, kernel 6.8) | **11 executed** | **11** | none |
 | **local** | **native re-run through the wrapper** | **`trusted_git`** | **20 executed** | **17** | none |
 | **local** | **native re-run through the wrapper** | **CoW immutability** | **1 executed** | **1** | none |
 | **local** | **native re-run through the wrapper** | **restricted-userns PTY refusal** | **1 executed** | **1** | none |
 | **local** | **native re-run through the wrapper** | **restricted-userns LSP refusal** | **1 executed** | **1** | none |
 
-**Every security-filter count is identical on all nine green heads**: the same
+**Every security-filter count is identical on all ten green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
 on every job. That is the reproducibility claim made concrete, and it holds
 exactly where it is claimed — on the filter steps, which are this milestone's
@@ -1105,11 +1119,12 @@ own surface.
 
 **This count is a factual correction.** The sentence previously read "all seven
 green heads" while the table above it already held **eight** head blocks; the
-`57d919684` block is the ninth. The undercount was not a claim about the
-evidence — every head listed was green, and the counts on them were identical
-— but the number did not match the table a reviewer can count. It is stated
-here rather than silently rewritten, because the same table is the evidence
-this milestone rests on and its own arithmetic should be checkable.
+`57d919684` block made nine, and the `011a63c0d` block makes ten. The undercount was
+not a claim about the evidence — every head listed was green, and the counts on
+them were identical — but the number did not match the table a reviewer can
+count. It is stated here rather than silently rewritten, because the same
+table is the evidence this milestone rests on and its own arithmetic should be
+checkable.
 
 The **CI** count is the one that moves, from 16,031 to 16,061, and §5.0
 explains why: the base moved, not the code. The 30 added tests are M008's.
@@ -1140,7 +1155,7 @@ requires. The registry's list is the *required* set, not the exhaustive one.
   this workstation, with the same executed counts the hosted tier reports.
 * **Windows evidence is not required for this line, and no conclusion here
   rests on it.** The Windows process-launcher job did run and pass on these
-  heads (`39798010549` on the branch tip and the ones above it in §5.1), and
+  heads (`39827126858` on the branch tip and the ones above it in §5.1), and
   that result is recorded from the run log rather than inferred — but this
   milestone's boundaries are Linux-only, so a reviewer with a Linux host can
   qualify the line without it. The Windows job keeps running in CI for the
@@ -1249,7 +1264,7 @@ C004 adds no ADR and changes no ADR. The three ADRs the C001 line touched
 ### 10.1 The macOS target compile of this head (severity: low, owner: this milestone's reviewer)
 
 The **Windows** process-launcher job was run and **passed** on the corrective
-head (`39798010549` on the branch tip, and on `39792088985`,
+head (`39827126858` on the branch tip, and on `39798010549`, `39792088985`,
 `39785865725`, `39771529320`, `39763779264` and the heads below them), so
 the seven block-scalar conversions and the interior `--` fix are both proven
 on the platform that needed them. **This line does not depend on that
