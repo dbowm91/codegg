@@ -180,6 +180,13 @@ change-triggered (`ls scripts/check_*` for the full list):
   reads an empty success as evidence: the fixture prints nothing, the interrupted publisher
   never creates its lock, and the recovery scenario is never exercised while the test stays
   green. In `scripts/verify.sh quick` and in CI.
+- A binder of the **shared integration-test helper tree** → `python3 scripts/check_test_common_binding.py`
+  (every binder of the root package's `tests/common/` must bind it with `pub mod common;`). The
+  tree's items are `pub` and it carries **no** blanket `#[allow(dead_code)]` — that suppression was
+  removed on purpose — so a *private* `mod common;` makes them unreachable from the binding crate
+  root and rustc reports every one of them as dead code: a hosted clippy failure under
+  `-D warnings`, visible only on a **Linux** runner, because this tree's macOS build fails earlier
+  on unrelated findings. In `scripts/verify.sh quick` and in CI.
 - Tool Program parse-only invariant → `python3 scripts/check_tool_program_parse_only.py`
   (rejects a `pyo3` dependency, a `pyo3` import, a process spawn, or a Python FFI
   link in `crates/codegg-core/src/tool_program/`). The three test functions that

@@ -333,6 +333,44 @@ binary's tests as threads in one process, sees the interference. The same is
 true of the `agent_loop` family's other global-bus assertions, which is a
 standing property of the family rather than of this merge.
 
+### 2.9 A private binding of the shared helper tree, found only by hosted clippy
+
+The hosted `CI` job's **"Workspace Clippy"** step failed on the merged tree:
+`could not compile 'codegg' (test "composed_two_agent_race_m011") due to 5
+previous errors`, every one of them `never used` in
+`tests/common/secret_scan.rs`.
+
+**The cause is a difference between the two sides' lint posture.** This
+branch removed the blanket `#[allow(dead_code)]` that `tests/common/
+secret_scan.rs` used to carry, on purpose — the file says so in its own
+header — and made every binder of the shared tree declare it **public**,
+because a private binding makes the tree's `pub` items unreachable from the
+binding crate root and rustc reports each of them as dead code.
+`origin/main` still carries the blanket suppression, and `main`'s own clippy
+step passes at `7d3c6ed09`. But `main`'s PR #166 added two standalone targets
+that bind the tree **privately** — `mod common;` in
+`tests/contained_worktree_c008.rs` and in `tests/composed_two_agent_race_m011.rs`
+— which is harmless on `main` and a hosted clippy failure here.
+
+The mechanism was **proved in isolation**, not inferred: a two-file rustc
+reproduction with `mod common;` reports
+`error: constant 'SENTINEL_PREFIX' is never used` and exits 1 under
+`-D warnings`, and the same tree with `pub mod common;` exits 0.
+
+The repair binds both standalone targets publicly, exactly as the nine
+families already do, and `tests/common/mod.rs`'s header now says so.
+`scripts/check_test_common_binding.py` closes the class: every binder of the
+root package's shared helper tree must bind it publicly. It is in
+`verify.sh quick` and in CI, and its `--self-test` rejects a private binding
+in each kind of binder while accepting the unmodified copy.
+
+**Why the local gate could not see it.** This tree's macOS build fails
+earlier, on eight pre-existing findings in `origin/main`'s own files, so the
+dead-code analysis of the test targets never runs locally — the hosted Linux
+runner is the only place this class is visible. That is the same shape as
+§2.4's Windows compile break: a platform-specific gate is the authority on
+that platform.
+
 ## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
@@ -356,6 +394,7 @@ standing property of the family rather than of this merge.
 | The sixth reconciliation's merged tree compiles | `cargo check --workspace --all-targets` — 0 errors. The merge was clean (`git merge-tree --write-tree origin/main HEAD`), and the break it carried — a `#[path]` attribute relative to a file that had moved directory — was found by the compile, not by the merge | pass |
 | The sixth reconciliation's new file keeps its own target | `tests/composed_two_agent_race_m011.rs` stays top-level: it drives two live agents on the process-global event bus, and the agent-loop harness suites drain that bus and assert that nothing was left pending on it. Absorbing it into `agent_loop` was tried and **rejected on evidence** — the harness failed with "no attempt may reach the human when the model follows the offer" (`left: 1, right: 0`) while the file passed alone (`3 passed`). It gets its own `root_composed_two_agent_race_m011` ownership group | pass |
 | The `agent_loop` family passes under a plain `cargo test` | at `f8a9b6496` (before `main`'s advance): **530 passed, 0 failed, 1 ignored**; at the merged tip: **529 passed, 1 failed** — the harness drained the process-global bus with no session filter, and M004's consolidation had put it in a binary with thirty other members. The drain is now scoped to the test's own session, the idiom the file's own `EventCollector` already uses | pass (repeated runs); the hosted `CI` job cannot see this class, because the `ci` nextest profile runs one process per test |
+| The shared helper tree is bound publicly everywhere | `scripts/check_test_common_binding.py` and `--self-test`; the two standalone targets `main`'s PR #166 added now bind it `pub`, as the nine families already do. The mechanism was proved in isolation with rustc: a private binding reports `error: constant 'SENTINEL_PREFIX' is never used` under `-D warnings`, a public one exits 0 | pass locally; the hosted Linux clippy step is the authority |
 
 ## 4. The counts, re-measured
 
@@ -366,7 +405,7 @@ either side. Two rows moved; the rest did not.
 | Row | Before | After | Source |
 |---|---:|---:|---|
 | Integration test files | 302 | **319** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 4 top-level + 315 members |
-| CI guard scripts | 68 | **75** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted, plus the 1 this line adds |
+| CI guard scripts | 68 | **76** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted, plus the 2 this line adds |
 
 The remaining rows were re-measured and did not move: `codegg-core` modules
 **54**, `CoreRequest` variants **263** (239 struct + 24 unit), `CoreResponse`
@@ -391,13 +430,14 @@ the source they are measured from:
   files + 16 predecessor members. (The sixth reconciliation of §2.7 added one
   more file, which **stays** top-level, so the row now reads 319: 4 top-level +
   315 members.)
-- **The guard-script measure moved once more, for this line's own guard.**
-  `scripts/check_test_self_reexec_paths.py` is the seventy-fifth
-  `scripts/check_*` script, and it exists because the absorption changed the
-  path cargo knows a moved test by (§2.5). It is measured the same way as
-  every other guard — `ls scripts/check_*` — and the integration-test row
-  beside it is unchanged, because the absorption moved files without adding
-  or removing one.
+- **The guard-script measure moved twice more, for this line's own guards.**
+  `scripts/check_test_self_reexec_paths.py` and
+  `scripts/check_test_common_binding.py` are the seventy-fifth and
+  seventy-sixth `scripts/check_*` scripts, and both exist because this
+  line's own hosted runs showed the class they close (§2.5 and §2.9). They
+  are measured the same way as every other guard — `ls scripts/check_*` — and
+  the integration-test row beside them is unchanged, because the absorption
+  moved files without adding or removing one.
 - **The tool-name row did not move, and it had been measured correctly.** The
   row's parenthetical names 66 production `impl Tool for` blocks and 7
   test-only mocks. The mock in `broker.rs` is spelled
@@ -420,6 +460,7 @@ python3 scripts/check_windows_test_support_release.py [--self-test]
 python3 scripts/check_test_assertion_quality.py [--self-test]
 python3 scripts/check_test_duplication.py [--self-test]
 python3 scripts/check_test_self_reexec_paths.py [--self-test]
+python3 scripts/check_test_common_binding.py [--self-test]
 cargo test -p codegg --test command_git git_fixture_isolation -- --test-threads=1
 cargo test -p codegg --test security_permission
 cargo test -p codegg --test agent_loop
@@ -457,6 +498,10 @@ bash scripts/verify.sh quick
   cross-test race was attributed rather than assumed.
 - `cargo test -p codegg --test composed_two_agent_race_m011`: **3 passed, 0
   failed** — the sixth reconciliation's new target, kept standalone (§2.7).
+- `python3 scripts/check_test_common_binding.py`: **passes** on the merged
+  tree, and its `--self-test` rejects a private binding in each kind of
+  binder — a family root and a standalone target — while accepting the
+  unmodified copy.
 - `git merge-tree --write-tree origin/main HEAD`: a tree with **no** conflict
   entries, and exit 0 — the sixth merge was textually clean, and the tree it
   produced did not compile (§2.7).
@@ -501,6 +546,17 @@ bash scripts/verify.sh quick
   Windows security-hardening change to the backend, not a test repair. It
   belongs to the Windows native sandbox line
   (`plans/subsystems/windows-native-sandbox-roadmap.md`), not to this one.
+- **The `contained_worktree_c008` target fails on macOS.** It reports
+  `3 passed; 1 failed` locally —
+  `the_grant_names_only_the_administration_directory` panics at
+  `build_worktree_grant(…).expect("the contained worktree grant")`. The
+  attribution is measured: the branch's **pre-merge** copy of the file fails
+  the same way, and the file is `origin/main`'s apart from the binding
+  change of §2.9, so it is a pre-existing macOS-platform failure in a
+  Linux-targeted containment test rather than a regression. No local gate
+  runs that target — the Linux M004 lane does — so it is recorded rather
+  than repaired, and `architecture/testing.md`'s known-macOS-failures table
+  does not yet list it.
 - **The eight macOS-only clippy findings in `origin/main`'s files.** They are
   `#[cfg(not(target_os = "linux"))]` code that no macOS path calls. They
   belong to `main`, they are invisible to Linux CI, and fixing them means

@@ -241,6 +241,12 @@ jobs:
       - name: Self-re-exec test path control
         run: python3 scripts/check_test_self_reexec_paths.py
 
+      - name: Shared helper-tree binding control (self-test)
+        run: python3 scripts/check_test_common_binding.py --self-test
+
+      - name: Shared helper-tree binding control
+        run: python3 scripts/check_test_common_binding.py
+
       - name: Writer disposition guard
         run: python3 scripts/check_writer_disposition.py
 

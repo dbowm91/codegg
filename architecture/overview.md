@@ -522,11 +522,15 @@ The **CI guard scripts** row moved 68 → **74**: six guards came from `main`
 (`check_blackboard_contract_matrix.py`, `check_network_intent_owner_wiring.py`,
 `check_process_denial.py`, `check_shared_checkout.py`,
 `check_test_filter_execution.py` and `check_writer_disposition.py`), and the
-branch's own six are already counted. It then moved 74 → **75** with
+branch's own six are already counted. It then moved 74 → **76** with
 `check_test_self_reexec_paths.py`, which the merge's own hosted lanes showed
 to be needed: moving a test into a family changes the path cargo knows it by,
 and a self-re-exec test that names the old bare path selects **zero** tests
-while still exiting **0**.
+while still exiting **0** — and with
+`check_test_common_binding.py`, which the merge's own hosted clippy step
+showed to be needed: a binder of the shared helper tree that binds it
+privately makes the tree's `pub` items unreachable from its crate root, and
+the tree carries no blanket dead-code suppression.
 
 The remaining rows were re-measured against their own listed `Source` and did
 not move: `codegg-core` modules **54**, `CoreRequest` variants **263** (239
@@ -568,7 +572,7 @@ workspace member crates **11 (+ root)**.
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 319 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| CI guard scripts | 75 | `scripts/check_*` |
+| CI guard scripts | 76 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -896,7 +900,8 @@ One row moved again on **2026-10-22** when the same line reconciled with `main` 
 
 The same merge also produced a tree that **did not compile**, and no merge tool reported it: `main`'s edit to the agent-loop harness included a shared helper with `#[path = "common/scripted_provider.rs"]`, and a `#[path]` attribute is relative to **the file that carries it** — the harness had moved into `tests/agent_loop/`, so the path resolved to a directory that does not exist. The two sides touched different paths, git paired them by rename, and the break was silent; `cargo check --workspace --all-targets` on the merged tree is what found it. The merged family reaches the shared tree through the binding its root already declares, so the private include was both broken and redundant.
 
-CI guard scripts are unchanged at **75** (`ls scripts/check_*`): `main`'s advance added no guard. Every code-count row was re-checked against its own listed `Source` and is unchanged.
+CI guard scripts are now **76** (`ls scripts/check_*`): `main`'s advance added
+no guard, and this line's two guards are the ones it did — `check_test_self_reexec_paths.py` and `check_test_common_binding.py`. Every code-count row was re-checked against its own listed `Source` and is unchanged.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.

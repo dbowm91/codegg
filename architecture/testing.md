@@ -608,6 +608,17 @@ conflict:
   tree itself. Inside a family the root already binds that tree, so a second
   declaration would compile it twice; the member reaches it with
   `use super::common::…` instead.
+- **Every binder of the shared helper tree binds it `pub`.** The tree's items
+  are `pub` and the tree carries **no** blanket `#[allow(dead_code)]` — that
+  suppression was removed on purpose, so the lint keeps its teeth in a file
+  whose whole purpose is to be checked. A *private* `mod common;` makes those
+  items unreachable from the binding crate root, and rustc reports every one
+  of them as dead code: a hosted clippy failure under `-D warnings`, and one
+  that only a **Linux** runner sees, because this tree's macOS build fails
+  earlier on unrelated findings. `origin/main` still carries the blanket
+  suppression, which is why a private binding is harmless there and fatal
+  here. `scripts/check_test_common_binding.py` enforces it for every binder
+  of the root package's tree.
 - **A member that observes a process-global must scope what it observes.** The
   consolidation puts a member in a binary — and a process — with its
   siblings. The agent-loop harness subscribes to the **process-global** event

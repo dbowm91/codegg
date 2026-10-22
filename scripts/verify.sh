@@ -276,6 +276,17 @@ run_guards() {
 
     echo "==> python3 scripts/check_test_self_reexec_paths.py"
     (cd "$REPO_ROOT" && python3 scripts/check_test_self_reexec_paths.py)
+
+    # Every binder of the shared integration-test helper tree binds it
+    # publicly. The tree's items are `pub` and carry no blanket dead-code
+    # suppression, so a private binding makes them unreachable from the
+    # binding crate root -- a hosted clippy failure that only a Linux
+    # runner sees.
+    echo "==> python3 scripts/check_test_common_binding.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_common_binding.py --self-test)
+
+    echo "==> python3 scripts/check_test_common_binding.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_common_binding.py)
 }
 
 # ── Quick tier ──────────────────────────────────────────────────────────────
