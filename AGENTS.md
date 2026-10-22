@@ -223,6 +223,26 @@ change-triggered (`ls scripts/check_*` for the full list):
   ladder goes blind to a loop. The outer run bound is `ExecutionLimits::max_turns`, not the
   recovery ladder. A `ProgressSignal` variant with no producer is a claim, not a hook: `ChildAdvanced`
   sat hardcoded `false` at the only construction site until it was deleted.
+- The main buffer has **no status row of its own**. The working strip that used to
+  reserve one (reading `idle` most of the time, with a clickable row per advertised
+  subagent under it) is deleted, and **nothing is reserved** between the transcript and
+  the composer, so the transcript cannot reflow when the turn state changes. The task
+  state lives in the `Ctrl+T` tasks overlay (todos, active subagents, live jobs), and
+  the row above the composer is the buffer's one *situational* surface: the `space help`
+  chord, a latched turn failure, and an armed exit confirmation. It names **no verb
+  keys** — the help one keypress away is where the verbs are described. Turn failures
+  are **latched** in `SessionState::last_error` and cleared only by `TurnStarted`;
+  `report_turn_error` is for turn failures alone, not for shell/clipboard/theme
+  feedback. There is one cadence (`tui::components::spinner`, one frame table, 100ms)
+  and one `ActivityPhase` enum — a second spinner or a free-form label is how the
+  indicator a user watches became ten times slower than the one nobody looked at.
+- **Leaving the program takes two deliberate presses.** `q` and `Ctrl+C` each need a
+  second press of the same key within three seconds (`EXIT_ARM_WINDOW`); the first
+  `Ctrl+C` clears the input and arms the exit, and the row above the input names the
+  key to press again. `Esc` is the **mode switch** (Insert ↔ Normal) and never returns
+  a panel's selection to the main LLM — `Shift+Q` is the panel exit. A timed arm needs
+  `animation_interval` to keep the loop awake, or the confirmation outlives its window
+  and the second press is read as a first press.
 - The **checkout writer permit** is a third authority, and it is neither of the
   two it resembles. The *worktree lease* says who owns a checkout; the
   *scheduler* says whether a job may run; the permit says **who may write to
@@ -295,15 +315,6 @@ change-triggered (`ls scripts/check_*` for the full list):
   lifetime. The checkout stays `ready` and unleased until a run takes it —
   and a checkout another run *holds* is refused as a placement, because
   sharing it is shared-checkout execution, which M006 does not enable.
-- The **working strip row 0 is reserved unconditionally** and is the main buffer's only
-  status surface. Its height is subtracted from the transcript (`session_layout` splits
-  `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript
-  on every submit and completion. It reads `idle` when nothing runs. Put turn state here,
-  not on the hint line: there is one cadence (`tui::components::spinner`, one frame table,
-  100ms) and one `ActivityPhase` enum — a second spinner or a free-form label is how the
-  indicator a user watches became ten times slower than the one nobody looked at. Turn
-  failures are **latched** in `SessionState::last_error` and cleared only by `TurnStarted`;
-  `report_turn_error` is for turn failures alone, not for shell/clipboard/theme feedback.
 - `ToolBroker` is the only production tool-call boundary. Heavy work (tests, managed
   processes, subagent dispatch, tool programs) goes `JobSubmissionService` →
   `JobScheduler`, never direct executor calls.

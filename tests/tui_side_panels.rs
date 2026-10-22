@@ -419,8 +419,7 @@ async fn switching_back_to_session_restores_prompt_input_immediately() {
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
 
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    app.on_key(plain('q'));
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
     assert!(!app.panel_host.is_focused());
 }
 
@@ -453,8 +452,7 @@ async fn workspace_focus_mirrors_which_side_owns_the_keyboard() {
         WorkspaceFocus::Chat,
         "a focused chat panel must be reported as such"
     );
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
     assert_eq!(app.workspace_focus, WorkspaceFocus::Composer);
 }
 
@@ -691,7 +689,7 @@ async fn a_focused_chat_panel_in_insert_mode_leaves_typing_to_the_composer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn escape_leaves_insert_mode_before_it_leaves_the_panel() {
+async fn escape_leaves_insert_mode_and_never_releases_the_panel() {
     let mut app = test_app();
     select_chat(&mut app);
     to_normal(&mut app);
@@ -710,15 +708,24 @@ async fn escape_leaves_insert_mode_before_it_leaves_the_panel() {
     );
     assert!(app.panel_host.is_focused(), "one Esc is not two");
 
+    // `Esc` is the **mode switch** and never takes the keyboard away from a
+    // panel: the selection stays where the user put it until they move it
+    // with `Shift+H/J/K/L` or leave with `Shift+Q`.
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
-        !app.panel_host.is_focused(),
-        "a second Esc releases the panel"
+        app.panel_host.is_focused(),
+        "Esc must not release the panel — Shift+Q is the panel exit"
     );
     assert_eq!(
         app.prompt_state.prompt.get_text(),
         "h",
         "Esc must not discard what was typed"
+    );
+
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "Shift+Q is how the user leaves the panel"
     );
 }
 
@@ -737,14 +744,21 @@ async fn q_types_rather_than_unfocusing_while_composing() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn q_still_unfocuses_the_panel_in_normal_mode() {
+async fn q_is_inert_in_a_focused_panel() {
+    // `q` is the program's quit key and `Shift+Q` is the panel exit. A
+    // focused panel owns the keyboard, so `q` inside one must do neither:
+    // one key, one meaning, and the hint row names `Shift+Q` for leaving.
     let mut app = test_app();
     select_chat(&mut app);
     to_normal(&mut app);
     app.on_key(plain('q'));
     assert!(
-        !app.panel_host.is_focused(),
-        "outside Insert mode q keeps its exit meaning"
+        app.panel_host.is_focused(),
+        "q is not the panel exit any more — Shift+Q is"
+    );
+    assert!(
+        app.prompt_state.exit_armed_at.is_none(),
+        "and it must not arm the program's quit from inside a panel"
     );
 }
 

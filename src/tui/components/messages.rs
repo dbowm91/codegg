@@ -261,9 +261,9 @@ pub enum MessageRole {
 /// announced by an event that has to be wired to it. A main agent blocked on
 /// delegated work is deliberately NOT a phase here: it produces no events at
 /// all while it waits, so a phase set by an event would read as whatever the
-/// last event said — or as nothing. That wait is derived at the working strip
-/// (`App::awaiting_task_counts`) from the same projection the tasks overlay
-/// renders, so it cannot be dropped on the floor by an unwired handler.
+/// last event said — or as nothing. That wait is not a phase: it is listed by
+/// the tasks overlay, which derives it from the same projection instead of
+/// from an event, so it cannot be dropped on the floor by an unwired handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPhase {
     /// Turn admitted, first event not yet arrived.

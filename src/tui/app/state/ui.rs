@@ -125,9 +125,6 @@ pub struct UiState {
     /// View state: it is rebuilt from each projection snapshot, so an absent
     /// snapshot empties it rather than leaving stale rows on screen.
     pub subagents: SubagentState,
-    /// Frame rect of the working strip (throbber + subagent rows), recorded
-    /// on render so mouse hit testing resolves the row the user actually saw.
-    pub working_area: Option<Rect>,
 }
 
 impl UiState {

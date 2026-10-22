@@ -28,10 +28,12 @@ enum Chrome {
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
-/// `↑/↓` and `Esc` are deliberately absent even though `handle_key` answers
+/// `↑/↓` are deliberately absent even though `handle_key` answers
 /// them: a focused panel never sees them, because `SidePanelHost::handle_key`
-/// answers the arrow keys as panel directions and claims `Esc`/`q` as its
-/// universal exits before consulting the widget. `Enter` is absent for a second
+/// answers the arrow keys as panel directions before consulting the widget.
+/// `Esc` is absent for a different reason — it is the mode switch, so it means
+/// "close" in the modal box and something else in a column.
+/// `Enter` is absent for a second
 /// reason — it returns `TuiMsg::CloseDialog`, and docking popped this box off
 /// the modal stack before the panel adopted it, so that close has an empty
 /// stack to run against and does nothing. **A `/diff` in a column therefore has

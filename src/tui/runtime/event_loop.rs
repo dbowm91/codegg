@@ -16,6 +16,12 @@ use tokio::sync::mpsc;
 const STREAM_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 const SPINNER_RENDER_INTERVAL: Duration = Duration::from_millis(80);
 const TOAST_RENDER_INTERVAL: Duration = Duration::from_millis(250);
+/// How often the frame is redrawn while an exit confirmation is armed.
+///
+/// The confirmation's window is three seconds, so the tick only has to be
+/// fine enough for the line above the input to disappear when the window
+/// lapses rather than a quarter-second later.
+const EXIT_ARM_RENDER_INTERVAL: Duration = Duration::from_millis(250);
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
 /// Maximum queued daemon envelopes applied in a single loop iteration.
@@ -83,6 +89,15 @@ pub(crate) fn animation_interval(app: &app::App) -> Option<Duration> {
         // the daemon's ring; the panel just showed them when the user next
         // pressed something. Same tick, no timer of its own (I4).
         Some(crate::tui::commands::interactive_terminal::TERMINAL_PULL_RENDER_INTERVAL)
+    } else if crate::tui::commands::exit_control::exit_armed(app).is_some() {
+        // An armed exit confirmation is a **promise about time**: the row
+        // above the input says "press ctrl+c again to exit", and it has to
+        // stop saying that when the window lapses. With no contributor here
+        // the loop would park on `pending()` and the promise would outlive
+        // the window it was made in — the confirmation would sit on screen
+        // until the user typed something, and the second press would then be
+        // read as a *first* press, because the arm had expired in silence.
+        Some(EXIT_ARM_RENDER_INTERVAL)
     } else {
         None
     }

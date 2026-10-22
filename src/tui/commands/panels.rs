@@ -709,7 +709,7 @@ pub(crate) fn focus_panel_at(app: &mut App, placement: PanelPlacement) {
 ///
 /// Split out because two different routes leave a panel — [`blur_panel`] for
 /// the directional gesture, and `SidePanelHost`'s own `blur()` for the
-/// `Esc`/`q` exits — and both owe the composer the same restoration.
+/// `Shift+Q` exit — and both owe the composer the same restoration.
 fn restore_composer_mode_if_unfocused(app: &mut App) {
     if app.panel_host.is_focused() {
         return;
@@ -1276,7 +1276,7 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
     };
     // Leaving the panel by *any* route hands the composer its mode back:
     // the gesture lands in `blur_panel`, but the host blurs directly for
-    // the `Esc`/`q` exits, so the restore has to happen here too or `Esc`
+    // the `Shift+Q` exit, so the restore has to happen here too or the exit
     // would drop the user into the composer in Normal whatever they were
     // doing before. `take()` makes this idempotent with `blur_panel`.
     restore_composer_mode_if_unfocused(app);

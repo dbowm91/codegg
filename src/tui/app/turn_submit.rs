@@ -105,10 +105,10 @@ impl TurnSubmitOutcome {
     /// Whether this outcome is a turn failure for latched-reporting purposes.
     ///
     /// Contention is excluded: the turn is still running, so latching an error
-    /// on the working-strip status row would replace the live turn's spinner
-    /// and elapsed time with a stale `✗` line (see `render_working_strip`'s
-    /// documented precedence). The refusal is reported as a toast instead,
-    /// which is transient by design and is retained in `/logs`.
+    /// on the row above the composer would replace the live turn's status with
+    /// a stale `✗` line (see `App::situational_hints`'s documented
+    /// precedence). The refusal is reported as a toast instead, which is
+    /// transient by design and is retained in `/logs`.
     pub fn reports_as_turn_failure(&self) -> bool {
         matches!(
             self,
@@ -453,8 +453,8 @@ mod tests {
         assert_eq!(app.session_state.working_since, since);
         assert_eq!(app.session_state.session_status, SessionStatus::Working);
         assert!(app.status_bar.thinking, "the spinner keeps running");
-        // ...and no latched turn failure, because `render_working_strip` gives
-        // `last_error` absolute precedence over the live working line.
+        // ...and no latched turn failure, because the row above the composer
+        // gives `last_error` absolute precedence over the live status.
         assert_eq!(
             app.session_state.last_error, None,
             "contention is not a turn failure; latching it would replace the \

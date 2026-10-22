@@ -22,11 +22,15 @@
 //! [`SidePanelHost::handle_key`](codegg::tui::panels) top to bottom, before a
 //! widget is consulted the host has claimed:
 //!
-//! - `Esc` and `q`, as its universal exits — it blurs and returns `Consumed`
+//! - `Shift+Q`, as the panel exit — it blurs and returns `Consumed`
 //!   without calling the widget at all;
 //! - anything resolving to a panel direction. `insert_panel_direction_bindings`
 //!   binds **uppercase `H`/`J`/`K`/`L`** and the four arrow keys, unmodified
 //!   *and* shifted.
+//!
+//! `Esc` is absent for a different reason: it is the **mode switch**, so it
+//! means "close" in the modal box and something else in a column — a hosted
+//! hint cannot promise a key whose meaning the surface does not fix.
 //!
 //! So every `Esc close` in the twelve footers below was already dead the moment
 //! the box docked, and so was every `↑/↓ navigate` and every `J/K reorder` and

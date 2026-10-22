@@ -1,5 +1,5 @@
-//! Main-buffer usability regressions: click-to-expand, the working strip,
-//! and the subagent buffer.
+//! Main-buffer usability regressions: click-to-expand, the row above the
+//! composer, and the subagent buffer.
 //!
 //! These cover three defects that all made the LLM buffer hard to read or
 //! hard to drive:
@@ -15,8 +15,15 @@
 //!    badge was the only indicator, and it names nothing about which subagents
 //!    are in flight.
 //! 3. **Subagents were a bare count.** `[...3]` in the header states how many
-//!    delegated runs exist and nothing about who they are. The working strip
-//!    lists them, and clicking one opens a subagent buffer that `Esc` closes.
+//!    delegated runs exist and nothing about who they are. The tasks overlay
+//!    (`Ctrl+T`) lists them, and the subagent tab opens a buffer that `Esc`
+//!    closes.
+//!
+//! The working strip that used to sit between the transcript and the composer
+//! is **gone**: it reserved a row that read `idle` most of the time, and the
+//! task state it carried now lives in the tasks overlay. What is left above
+//! the composer is the one *situational* row — a latched failure, an armed
+//! exit — and that is what these tests read.
 
 use codegg::session::message::ToolStatus;
 use codegg::tui::app::state::subagents::SubagentRow;
@@ -56,24 +63,31 @@ fn buffer_text(buf: &Buffer) -> String {
         .join("\n")
 }
 
-/// Text of the working-strip rows only.
+/// Text of the row directly above the composer.
 ///
-/// The live toast column is a 60x10 overlay pinned to the top right, so
-/// `buffer_text` cannot distinguish "the status row says this" from "a toast
-/// that happens to be on screen right now says this". Reading the strip's own
-/// rect is the only way to assert on the record rather than the notification.
-fn strip_text(app: &App, buf: &Buffer) -> String {
-    let Some(strip) = app.ui_state.working_area else {
+/// The main buffer's one situational surface: the latched turn failure and
+/// the exit confirmations live there, and a panel's keymap is advertised
+/// there too. The live toast column is a 60x10 overlay pinned to the top
+/// right, so `buffer_text` cannot distinguish "the row says this" from "a
+/// toast that happens to be on screen right now says this". Reading the row
+/// itself is the only way to assert on the record rather than the
+/// notification.
+///
+/// The row directly **above** the input box.
+///
+/// The prompt chunk is carved in this order: the hint line, then the todo
+/// strip, then the tasks overlay, and the input box gets what is left. With no
+/// todos and no overlay open — the default in these tests — the row above the
+/// input box is the hint line.
+fn hint_row_text(app: &App, buf: &Buffer) -> String {
+    let prompt = app.prompt_area.expect("prompt area recorded");
+    if prompt.y == 0 {
         return String::new();
-    };
-    (strip.y..strip.y + strip.height)
-        .map(|y| {
-            (strip.x..strip.x + strip.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    }
+    let y = prompt.y - 1;
+    (0..buf.area.width)
+        .map(|x| buf[(x, y)].symbol())
+        .collect::<String>()
 }
 
 fn click(app: &mut App, column: u16, row: u16) {
@@ -199,44 +213,45 @@ fn a_click_cancels_rather_than_copying_one_character() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_working_turn_draws_a_throbber_above_the_composer() {
+fn the_main_buffer_reserves_no_status_row() {
+    // The working strip is gone. Its status row read `idle` for most of the
+    // buffer's life and spent a row of vertical space to say it; the task
+    // state it carried now lives in the `Ctrl+T` tasks overlay, and the row
+    // above the composer is the buffer's one *situational* surface.
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let text = buffer_text(&buffer);
+    let row = hint_row_text(&app, &buffer);
 
     assert!(
-        text.contains("working") || text.contains('s'),
-        "expected an activity throbber while the turn is in flight"
+        !row.contains("idle"),
+        "the buffer must not carry an idle indicator any more:\n{row}"
     );
-    let strip = app
-        .ui_state
-        .working_area
-        .expect("the strip must record the rect it was drawn into");
-    assert!(strip.height >= 1);
-    // The strip belongs to the buffer, not the composer: it sits above the
-    // prompt row so a turn in flight reads as part of the transcript.
-    let prompt = app.prompt_area.expect("prompt area recorded");
     assert!(
-        strip.y + strip.height <= prompt.y,
-        "strip {:?} must not overlap the prompt {:?}",
-        (strip.y, strip.height),
-        prompt.y
+        !row.contains("awaiting"),
+        "the wait for delegated work is the overlay's business, not a row here:\n{row}"
+    );
+    // The row above the composer is the hint line, and it is the *only*
+    // thing between the transcript and the input.
+    let prompt = app.prompt_area.expect("prompt area recorded");
+    let viewport = app.viewport_area.expect("viewport area recorded");
+    assert!(
+        prompt.y > viewport.y + viewport.height,
+        "the prompt chunk must start below the transcript: {prompt:?} {viewport:?}"
     );
 }
 
 #[test]
-fn the_status_row_is_reserved_in_every_state_so_the_transcript_never_reflows() {
-    // The strip's height is subtracted from the transcript viewport, so a strip
-    // that appears and disappears moves everything the user is reading. It used
-    // to be gated on "there is something to say", which meant the transcript
-    // jumped on every submit and again on every completion.
+fn the_composer_does_not_move_between_session_states() {
+    // The strip's height used to be subtracted from the transcript viewport, so
+    // a strip that appeared and disappeared moved everything the user was
+    // reading — it was gated on "there is something to say", and it said
+    // something on every submit and again on every completion.
     //
-    // Row 0 is reserved unconditionally now, so the invariant to defend is not
-    // "idle shows no strip" — it is that the viewport is the same size in every
-    // state. That is the stronger claim and the one actually worth a test.
-    let mut strip_heights = Vec::new();
+    // There is no reserved row now, so the invariant is the stronger and
+    // simpler one: nothing about the turn state changes the geometry.
     let mut prompt_tops = Vec::new();
+    let mut viewport_heights = Vec::new();
     for status in [
         SessionStatus::Idle,
         SessionStatus::Working,
@@ -246,42 +261,41 @@ fn the_status_row_is_reserved_in_every_state_so_the_transcript_never_reflows() {
         let mut app = test_app();
         app.session_state.session_status = status;
         render_to_buffer(&mut app, 100, 30);
-        let strip = app
-            .ui_state
-            .working_area
-            .expect("the status row is reserved in every state");
-        strip_heights.push(strip.height);
         prompt_tops.push(app.prompt_area.expect("prompt area recorded").y);
+        viewport_heights.push(app.viewport_area.expect("viewport area recorded").height);
     }
 
-    assert!(
-        strip_heights.iter().all(|h| *h == 1),
-        "the status row must stay exactly one row tall, got {strip_heights:?}"
-    );
     assert!(
         prompt_tops.windows(2).all(|w| w[0] == w[1]),
         "the composer must not move between session states, got {prompt_tops:?}"
     );
+    assert!(
+        viewport_heights.windows(2).all(|w| w[0] == w[1]),
+        "the transcript must not resize between session states, got {viewport_heights:?}"
+    );
 }
 
 #[test]
-fn an_idle_buffer_names_idle_rather_than_claiming_to_work() {
+fn an_idle_buffer_says_nothing_about_the_turn_state() {
+    // The row above the composer is *situational*: it says what the user must
+    // know now, and an idle session has nothing to say. It used to read
+    // `idle`, which is a state the user can see perfectly well elsewhere.
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let text = buffer_text(&buffer);
+    let row = hint_row_text(&app, &buffer);
 
     assert!(
-        text.contains("idle"),
-        "the reserved status row must still say something when nothing is running:\n{text}"
+        !row.contains("idle"),
+        "the buffer must not carry an idle indicator any more:\n{row}"
     );
     assert!(
-        !text.contains("working"),
-        "an idle session must never claim to be working:\n{text}"
+        !row.contains("working"),
+        "an idle session must never claim to be working:\n{row}"
     );
     assert!(
-        !text.contains("stop"),
-        "an idle session must not advertise a stop key it cannot honour:\n{text}"
+        !row.contains("stop"),
+        "an idle session must not advertise a stop key it cannot honour:\n{row}"
     );
 }
 
@@ -305,13 +319,13 @@ fn a_failed_turn_keeps_saying_why_until_the_agent_resumes() {
 
     // The reason must be readable from the main buffer alone. A toast is the
     // notification; this is the record, and it is the only surface that survives
-    // long enough to be read after the fact. Read from the strip's own rect so
-    // a toast that happens to be on screen cannot satisfy this.
+    // long enough to be read after the fact. Read from the row above the
+    // composer so a toast that happens to be on screen cannot satisfy this.
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let strip = strip_text(&app, &buffer);
+    let row = hint_row_text(&app, &buffer);
     assert!(
-        strip.contains("529 overloaded"),
-        "the failure reason must stay on screen:\n{strip}"
+        row.contains("529 overloaded"),
+        "the failure reason must stay on screen:\n{row}"
     );
     assert_eq!(
         app.session_state.last_error.as_deref(),
@@ -329,7 +343,7 @@ fn a_failed_turn_keeps_saying_why_until_the_agent_resumes() {
         "a resumed agent must stop reporting the previous failure"
     );
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let resumed = strip_text(&app, &buffer);
+    let resumed = hint_row_text(&app, &buffer);
     assert!(
         !resumed.contains("529 overloaded"),
         "a resumed agent must not keep reporting the previous failure:\n{resumed}"
@@ -348,15 +362,12 @@ fn an_error_outranks_a_running_phase_so_the_reason_is_never_buried() {
     app.report_turn_error("Agent error: provider error: 429 rate_limit");
 
     let buffer = render_to_buffer(&mut app, 100, 30);
-    let strip = strip_text(&app, &buffer);
-    assert!(
-        strip.contains("429 rate_limit"),
-        "reason must show:\n{strip}"
-    );
+    let row = hint_row_text(&app, &buffer);
+    assert!(row.contains("429 rate_limit"), "reason must show:\n{row}");
     // A spinner beside a failure would claim work is still progressing.
     assert!(
-        !strip.contains('⠋') && !strip.contains('⠙') && !strip.contains('⠹'),
-        "a latched failure must not animate as though work continues:\n{strip}"
+        !row.contains('⠋') && !row.contains('⠙') && !row.contains('⠹'),
+        "a latched failure must not animate as though work continues:\n{row}"
     );
 }
 
@@ -427,11 +438,13 @@ fn a_pending_permission_names_the_tool_the_user_is_being_asked_about() {
     );
 }
 
+/// The task state the working strip used to draw lives in the `Ctrl+T` tasks
+/// overlay: todos, then the active subagents, then the live jobs.
 #[test]
-fn active_subagents_are_listed_with_their_task_and_status() {
+fn active_subagents_are_listed_in_the_tasks_overlay() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
-    app.ui_state.subagents.set_rows(vec![
+    let rows = vec![
         SubagentRow {
             child_instance_id: None,
             profile: None,
@@ -454,58 +467,80 @@ fn active_subagents_are_listed_with_their_task_and_status() {
             description: "Warm the cargo cache".into(),
             status: "completed".into(),
         },
-    ]);
-    let buffer = render_to_buffer(&mut app, 100, 30);
+    ];
+    // The overlay reads the *projection*, not the local row list: the daemon
+    // owns the truth about what is running, so a test that seeds only the
+    // local rows proves nothing about the real surface.
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+    app.tasks_expanded = true;
+    let buffer = render_to_buffer(&mut app, 100, 50);
     let text = buffer_text(&buffer);
 
+    assert!(
+        text.contains("Subagents"),
+        "the overlay must name the group: {text}"
+    );
     assert!(text.contains("explore"), "{text}");
     assert!(text.contains("Map the auth flow"), "{text}");
-    assert!(text.contains("build"), "{text}");
-    assert!(text.contains("1 subagent"), "{text}");
-    assert_eq!(app.ui_state.subagents.hits.len(), 2);
+    assert!(
+        !text.contains("Warm the cargo cache"),
+        "a finished subagent is not work in flight: {text}"
+    );
+    assert!(
+        app.tasks_area.expect("the overlay reserves rows").height > 0,
+        "the overlay must be on screen when it is expanded"
+    );
 }
 
 #[test]
-fn a_long_fan_out_is_truncated_with_an_honest_count() {
+fn a_long_fan_out_is_bounded_by_the_overlay_with_an_honest_count() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
-    app.ui_state.subagents.set_rows(
-        (0..12)
-            .map(|i| SubagentRow {
-                child_instance_id: None,
-                profile: None,
-                usefulness: None,
-                task_id: i.to_string(),
-                run_id: None,
-                display_name: None,
-                agent: format!("agent{i}"),
-                description: format!("task {i}"),
-                status: "running".into(),
-            })
-            .collect(),
-    );
-    let buffer = render_to_buffer(&mut app, 100, 30);
+    let rows: Vec<SubagentRow> = (0..12)
+        .map(|i| SubagentRow {
+            child_instance_id: None,
+            profile: None,
+            usefulness: None,
+            task_id: i.to_string(),
+            run_id: None,
+            display_name: None,
+            agent: format!("agent{i}"),
+            description: format!("task {i}"),
+            status: "running".into(),
+        })
+        .collect();
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+    app.tasks_expanded = true;
+    let buffer = render_to_buffer(&mut app, 100, 50);
     let text = buffer_text(&buffer);
-    assert!(text.contains("more"), "truncation must be visible: {text}");
     assert!(
-        text.contains("12 subagent"),
-        "the header must report the true total: {text}"
+        text.contains("Subagents"),
+        "the overlay must name the group: {text}"
+    );
+    assert!(
+        text.contains("more"),
+        "a bound that hides rows must say so: {text}"
+    );
+    assert!(
+        !text.contains("task 6"),
+        "the bound must actually bind, or the assertion above proves nothing: {text}"
     );
 }
 
-/// Regression: a main agent blocked on delegated work must not read as idle.
+/// Regression: a main agent blocked on delegated work must be visible as such.
 ///
 /// The main agent fans out and then goes silent while it waits for a subagent
-/// or a job. `ActivityPhase::WaitingOnSubagent` existed for this the whole time
-/// and was never constructed by anything, so row 0 fell through to the literal
-/// word `idle` for the entire wait — which is indistinguishable from a hung
-/// session. The wait is now derived from the projection.
+/// or a job. The wait is derived from the projection and listed by the tasks
+/// overlay, so it cannot be dropped on the floor by an unwired handler — and
+/// the main buffer does not claim to be idle while it happens.
 #[test]
-fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
+fn a_main_agent_waiting_on_subagents_is_listed_by_the_overlay() {
     let mut app = test_app();
     // The main agent's own stream is finished; it is blocked on the subagent.
     app.session_state.session_status = SessionStatus::Idle;
-    app.ui_state.subagents.set_rows(vec![
+    let rows = vec![
         SubagentRow {
             child_instance_id: None,
             profile: None,
@@ -528,29 +563,29 @@ fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
             description: "already done".into(),
             status: "completed".into(),
         },
-    ]);
+    ];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
 
-    assert_eq!(app.awaiting_task_counts().0, 1, "only the live row counts");
-    let buffer = render_to_buffer(&mut app, 100, 30);
-    // Row 0 is the status surface under test. The footer separately renders the
-    // session's own status word, so assert on the strip rather than the frame.
-    let strip = strip_text(&app, &buffer);
+    app.tasks_expanded = true;
+    let buffer = render_to_buffer(&mut app, 100, 50);
+    let text = buffer_text(&buffer);
     assert!(
-        strip.contains("awaiting 1 task"),
-        "a blocked main agent must name the wait: {strip}"
+        text.contains("Subagents"),
+        "the overlay must name the group: {text}"
     );
     assert!(
-        !strip.lines().next().unwrap_or_default().contains(" idle"),
-        "`idle` is the wrong answer while work is in flight: {strip}"
+        text.contains("map the thing"),
+        "the live row must be listed: {text}"
     );
     assert!(
-        strip.contains("1 subagent"),
-        "the row must break the wait down by kind: {strip}"
+        !text.contains("already done"),
+        "a finished row is not work in flight: {text}"
     );
 }
 
 #[test]
-fn an_actually_idle_session_still_reads_idle() {
+fn an_actually_idle_session_has_no_pending_work() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     let rows = vec![SubagentRow {
@@ -567,12 +602,12 @@ fn an_actually_idle_session_still_reads_idle() {
     seed_projection_with_subagents(&mut app, &rows);
     app.ui_state.subagents.set_rows(rows);
 
-    assert_eq!(app.awaiting_task_counts(), (0, 0));
-    let buffer = render_to_buffer(&mut app, 100, 30);
-    let strip = strip_text(&app, &buffer);
+    app.tasks_expanded = true;
+    let buffer = render_to_buffer(&mut app, 100, 50);
+    let text = buffer_text(&buffer);
     assert!(
-        strip.lines().next().unwrap_or_default().contains("idle"),
-        "with no live work, idle is the honest answer: {strip}"
+        text.contains("Nothing pending"),
+        "with no live work the overlay says so: {text}"
     );
 }
 
@@ -676,7 +711,7 @@ fn seed_projection_with_subagents(app: &mut App, rows: &[SubagentRow]) {
 /// `active_tab_id` is `None` — and `active_snapshot` used to bail out on
 /// exactly that, reporting "no snapshot" for a session with a job running.
 #[test]
-fn a_live_job_in_the_projection_reaches_the_status_row() {
+fn a_live_job_in_the_projection_reaches_the_tasks_overlay() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     seed_projection_with_live_job(&mut app);
@@ -688,43 +723,39 @@ fn a_live_job_in_the_projection_reaches_the_status_row() {
         None,
         "precondition: the daemon-socket path never sets a tab"
     );
-    assert_eq!(
-        app.awaiting_task_counts(),
-        (0, 1),
-        "one live job must be counted straight from the projection"
-    );
-
-    let buffer = render_to_buffer(&mut app, 100, 30);
-    let strip = strip_text(&app, &buffer);
+    app.tasks_expanded = true;
+    let buffer = render_to_buffer(&mut app, 100, 50);
+    let text = buffer_text(&buffer);
     assert!(
-        strip.contains("awaiting 1 task"),
-        "a session waiting on a job must name the wait: {strip}"
+        text.contains("Jobs"),
+        "the overlay must name the group: {text}"
     );
     assert!(
-        strip.contains("1 job"),
-        "the row must break the wait down by kind: {strip}"
+        text.contains("map the subsystem"),
+        "the live job must be listed: {text}"
     );
 }
 
-/// Regression: the projection must reach the status row without the sidebar.
+/// Regression: the projection must reach the tasks overlay without the
+/// sidebar.
 ///
 /// `ui_state.subagents` was previously written only from the session-panel
 /// render path, so a layout that does not draw the panel left the count at
-/// zero. Row 0 is the strip's own status surface and must not depend on some
-/// other widget being visible.
+/// zero. The overlay must not depend on some other widget being visible.
 #[test]
-fn the_status_row_counts_live_work_without_the_sidebar() {
+fn the_tasks_overlay_counts_live_work_without_the_sidebar() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     seed_projection_with_live_job(&mut app);
 
     // No panel draw happens here; the render pass alone must establish the
-    // job count that row 0 reads.
-    let _ = render_to_buffer(&mut app, 100, 30);
-    assert_eq!(
-        app.awaiting_task_counts().1,
-        1,
-        "the job count must survive a render that never draws the panel"
+    // job count the overlay reads.
+    let _ = render_to_buffer(&mut app, 100, 50);
+    app.tasks_expanded = true;
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 50));
+    assert!(
+        text.contains("map the subsystem"),
+        "the job count must survive a render that never draws the panel: {text}"
     );
 }
 
@@ -732,8 +763,10 @@ fn the_status_row_counts_live_work_without_the_sidebar() {
 // 3. Subagent buffer
 // ---------------------------------------------------------------------------
 
+/// The task state the working strip used to draw lives in the `Ctrl+T` tasks
+/// overlay, and the overlay is where a subagent's buffer is opened from.
 #[test]
-fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
+fn the_tasks_overlay_opens_a_subagent_buffer_and_esc_returns_to_main() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     let rows = vec![SubagentRow {
@@ -749,20 +782,24 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
     }];
     seed_projection_with_subagents(&mut app, &rows);
     app.ui_state.subagents.set_rows(rows);
-    render_to_buffer(&mut app, 100, 30);
+    app.tasks_expanded = true;
+    render_to_buffer(&mut app, 100, 50);
 
-    let strip = app.ui_state.working_area.expect("strip drawn");
-    let (_, row_rect) = app.ui_state.subagents.hits[0];
-    // Row 0 of the strip is the throbber, so the first subagent is one below.
-    assert_eq!(row_rect.y, strip.y + 1);
-
-    click(&mut app, strip.x + 3, row_rect.y);
+    // The overlay's cursor rests on a body row, and `↵` opens it.
+    assert!(
+        app.move_tasks_selection(1),
+        "the overlay must have a selectable row to rest on"
+    );
+    assert!(
+        app.open_selected_task(),
+        "the overlay must open the row under its cursor"
+    );
     let tab = app
         .ui_state
         .subagents
         .active_tab()
         .cloned()
-        .expect("clicking a subagent row opens its buffer");
+        .expect("the overlay opens the subagent's buffer");
     assert_eq!(tab.row.agent, "explore");
 
     let buffer = render_to_buffer(&mut app, 100, 30);
@@ -776,58 +813,6 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
         app.ui_state.subagents.active_tab().is_none(),
         "Esc must return to the main buffer"
     );
-}
-
-#[test]
-fn clicking_the_throbber_row_opens_nothing() {
-    let mut app = test_app();
-    app.session_state.session_status = SessionStatus::Working;
-    app.ui_state.subagents.set_rows(vec![SubagentRow {
-        child_instance_id: None,
-        profile: None,
-        usefulness: None,
-        task_id: "7".into(),
-        run_id: None,
-        display_name: None,
-        agent: "explore".into(),
-        description: "Map the auth flow".into(),
-        status: "running".into(),
-    }]);
-    render_to_buffer(&mut app, 100, 30);
-
-    let strip = app.ui_state.working_area.expect("strip drawn");
-    click(&mut app, strip.x + 3, strip.y);
-    assert!(app.ui_state.subagents.active_tab().is_none());
-}
-
-#[test]
-fn the_strip_is_hit_tested_before_the_composer() {
-    // The strip is carved out of the prompt chunk. If the prompt were tested
-    // first, a subagent click would resolve to click-to-focus and the row
-    // would be unopenable.
-    let mut app = test_app();
-    app.session_state.session_status = SessionStatus::Working;
-    app.ui_state.subagents.set_rows(vec![SubagentRow {
-        child_instance_id: None,
-        profile: None,
-        usefulness: None,
-        task_id: "7".into(),
-        run_id: None,
-        display_name: None,
-        agent: "explore".into(),
-        description: "Map the auth flow".into(),
-        status: "running".into(),
-    }]);
-    render_to_buffer(&mut app, 100, 30);
-
-    let strip = app.ui_state.working_area.expect("strip drawn");
-    let (_, row_rect) = app.ui_state.subagents.hits[0];
-    assert!(
-        strip.y + strip.height <= app.prompt_area.expect("prompt").y,
-        "the strip must not overlap the prompt rect"
-    );
-    click(&mut app, strip.x + 3, row_rect.y);
-    assert!(app.ui_state.subagents.active_tab().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,9 +1050,9 @@ fn a_working_turn_names_the_key_that_stops_it() {
     let text = buffer_text(&buffer);
 
     assert!(
-        text.contains("to stop"),
-        "the working strip must advertise the stop key; a long pause with no \
-         way out is what reads as a disconnect. Rendered:\n{text}"
+        text.contains("stop agent"),
+        "the row above the composer must advertise the stop key; a long pause \
+         with no way out is what reads as a disconnect. Rendered:\n{text}"
     );
 }
 
@@ -1133,9 +1118,11 @@ fn a_stopped_turn_stays_visible_and_names_the_way_back() {
     let buffer = render_to_buffer(&mut app, 100, 30);
     let text = buffer_text(&buffer);
 
+    // The stopped *state* word is gone with the status row; what matters is
+    // that the turn stays visible and names the way out of it.
     assert!(
-        text.contains("stopped"),
-        "a stopped agent must say so. Rendered:\n{text}"
+        text.contains("start agent"),
+        "a stopped agent must name the way back. Rendered:\n{text}"
     );
     assert!(
         text.contains("/start"),
