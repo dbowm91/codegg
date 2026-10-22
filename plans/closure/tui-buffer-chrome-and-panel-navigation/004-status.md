@@ -143,6 +143,51 @@ Linux CI compiles the same files with their call sites present and is green.
 Those files are byte-identical between this head and `origin/main`, so the
 warnings are main's, inherited through the reconcile.
 
+### The landing on `main`
+
+The branch was reconciled with `origin/main` a second time after the evidence
+above was recorded, as merge commit `3e99349cd` (`origin/main` at `95bb9c5ae`).
+That reconcile is what resolved pull request #156's `CONFLICTING` state: the
+PR's pushed head (`c6c17573e`) predated it, so GitHub had nothing mergeable to
+work with; after the reconcile the same PR reported `MERGEABLE` on the same
+content. The reconciled head was then merged into `main` **directly**, as
+`8dde1c6a5` ("Merge branch 'feat/auto-20261020-513a8ce6' into main"), and
+pull request #156 auto-closed as `MERGED` against that commit. The tree of
+`8dde1c6a5` is byte-identical to the reconciled head `3e99349cd`: the merge
+needed no conflict resolution, because the reconcile had already brought
+`origin/main` into the branch.
+
+Re-verified on the merged `main` tree:
+
+- `scripts/verify.sh quick` — **"Quick verification passed."**, every guard
+  included, plus `cargo check --workspace --all-targets --locked`.
+- Hosted CI run `39712202789` on the reconciled head `3e99349cd`: all
+  thirty-eight guard steps green, `Formatting` green, **Workspace Clippy
+  green** (the Linux build of this exact tree, which is what makes the macOS
+  dead-code inheritance above a platform property rather than a defect), and
+  the Linux jobs (`protected-mount`, `restricted-userns-fails-closed`,
+  `process-ipc`) green. The one red step was `Workspace tests`: 16,013 tests,
+  12,916 passed, **1 failed** —
+  `tool_program_m015_daemon_failpoints::corrupt_committed_result_is_rejected_after_restart`,
+  which ran over its sixty-second slow-test budget and failed on a
+  `job_wait` timeout. That test **passes locally on the merged tree in
+  0.998 s**, and passed in 0.560 s and 0.567 s in the two green hosted runs of
+  this branch and of `main`. It spawns a real `core-stdio` daemon, kills it at
+  a failpoint, corrupts the committed result, and waits for the recovery to
+  fail closed; the hosted failure is a runner-load flake, not a regression.
+- `cargo nextest run --workspace --locked --profile ci --no-fail-fast` on the
+  merged tree — **15,959 tests run, 15,953 passed, 5 failed, 1 timed out, 8
+  skipped**. The six non-passing are the same environment-only set named
+  above: the two `core::daemon_refresh` `/tmp` root-path tests, the macOS-only
+  `managed_process` OfflineRequired refusal, main's two
+  `scratch_cache_root_contract` tests, and the 300 s `agent::asset_refresh`
+  coalescing wait under load. Every test this milestone touched is green.
+- macOS `cargo clippy --workspace --all-targets --locked -- -D warnings` —
+  the same inherited dead-code errors, now in three files
+  (`src/managed_process.rs`, `src/interactive_process.rs`,
+  `src/security/sandbox.rs`), all byte-identical to `origin/main` and none of
+  them touched by this milestone.
+
 ## 4. Recorded deviations
 
 - **A modal dialog still owns its own keys.** `Ctrl+C` inside a dialog
