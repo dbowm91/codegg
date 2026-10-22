@@ -79,6 +79,17 @@ NEXTEST_SUMMARY = re.compile(
 )
 # libtest per-test witness: `test some::path ... ok`
 LIBTEST_WITNESS = re.compile(r"^test\s+(?P<name>\S+)\s+\.\.\.\s+(?P<verdict>ok|FAILED|ignored)", re.MULTILINE)
+# libtest prints `test <name> ... <verdict>`, but a test whose *process-level*
+# stderr interleaves — `git init` writes to the process stderr, which libtest
+# does not capture — puts the verdict on a following line:
+#
+#     test process::tests::some_test ... Initialized empty Git repository in /tmp/x/.git/
+#     ok
+#
+# The verdict is then missed by the same-line pattern, and a test that really
+# ran would be reported as not executed.
+LIBTEST_START = re.compile(r"^test\s+(?P<name>\S+)\s+\.\.\.\s*(?P<rest>.*)$")
+LIBTEST_VERDICT = re.compile(r"^(?:ok|FAILED|ignored)\b")
 # nextest per-test witness: `PASS [   0.010s] ( 8417/16029) codegg::some::path`
 NEXTEST_WITNESS = re.compile(
     r"^\s*(?P<verdict>PASS|FAIL|SLOW|TIMEOUT)\s+\[[^\]]*\]\s*\(\s*\d+/\d+\)\s+(?P<name>\S+)",
@@ -597,6 +608,23 @@ def witness_names(output: str) -> set[str]:
         names.add(match.group("name"))
     for match in NEXTEST_WITNESS.finditer(output):
         names.add(match.group("name"))
+    # A verdict that interleaved onto a following line.
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        start = LIBTEST_START.match(line)
+        if start is None:
+            continue
+        if LIBTEST_VERDICT.match(start.group("rest")):
+            continue  # already captured by the same-line pattern
+        for follower in lines[index + 1 : index + 6]:
+            stripped = follower.strip()
+            if not stripped:
+                continue
+            if LIBTEST_START.match(follower):
+                break  # the next test's line: this one never reported a verdict
+            if LIBTEST_VERDICT.match(stripped):
+                names.add(start.group("name"))
+                break
     return names
 
 
@@ -904,6 +932,32 @@ def self_test() -> int:
     )
     if not check_output(skip_output, (), observe_skips=True):
         failures.append("the runtime control accepted a self-skipping run; it must reject it")
+
+    # A verdict that interleaved onto the following line is still a verdict.
+    # `git init` writes to the process stderr, which libtest does not capture,
+    # so the real output puts `ok` on its own line after the test's name.
+    #
+    # The clean test beside it matters: the missing-witness check is skipped
+    # when the run reported on no test at all, so a lone interleaved test
+    # would pass the control even with the pre-fix extraction.
+    interleaved_output = (
+        "running 2 tests\n"
+        "test process::tests::other_test ... ok\n"
+        "test process::tests::some_test ... Initialized empty Git repository in /tmp/x/.git/\n"
+        "ok\n"
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; "
+        "finished in 0.01s\n"
+    )
+    if check_output(interleaved_output, ("other_test", "some_test"), observe_skips=False):
+        failures.append(
+            "the runtime control did not recognise a verdict that interleaved onto the next line; "
+            "a test that really ran would be reported as not executed"
+        )
+    if not check_output(interleaved_output, ("other_test", "no_such_test"), observe_skips=False):
+        failures.append(
+            "the runtime control accepted a run that did not execute the named test, when the named "
+            "test was never reported"
+        )
 
     skipping_class_b = (
         "running 1 test\n"

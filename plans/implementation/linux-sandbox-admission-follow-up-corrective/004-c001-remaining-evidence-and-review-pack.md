@@ -1,6 +1,6 @@
 # C004 — C001 Remaining Evidence, Filter Controls and Review Pack
 
-Status: **ready** for implementation
+Status: **closed** — closure `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
 Source: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md`; C001 closure `plans/closure/linux-sandbox-admission-follow-up-corrective/001-status.md` (§10.1–§10.5)
 Baseline: `main` `2c1953347896848c2f52c2dfbd9f04029d1c2cc2`
 Closure target: `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
