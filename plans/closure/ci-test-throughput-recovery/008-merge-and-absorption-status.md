@@ -325,6 +325,7 @@ python3 scripts/check_test_filter_execution.py [--self-test]
 python3 scripts/check_windows_test_support_release.py [--self-test]
 python3 scripts/check_test_assertion_quality.py [--self-test]
 python3 scripts/check_test_duplication.py [--self-test]
+python3 scripts/check_test_self_reexec_paths.py [--self-test]
 cargo test -p codegg --test command_git git_fixture_isolation -- --test-threads=1
 cargo test -p codegg --test security_permission
 (cd examples/plugins/sdk-rust && cargo check --tests)
@@ -345,7 +346,13 @@ bash scripts/verify.sh quick
   and the qualified path selects it, which is the repair of §2.3.
 - `cargo test -p codegg --test security_permission`: **325 passed, 0 failed**
   — the family still carries every member on Unix after the `#[cfg(unix)]`
-  gate of §2.4.
+  gate of §2.4, and the §2.5 repair to `sandbox_policy_wiring` costs the
+  family nothing on a host that has a backend.
+- `python3 scripts/check_test_self_reexec_paths.py`: **passes** on the merged
+  tree, and its `--self-test` rejects each of the five defect classes — a bare
+  name in a family member, a sibling member's module name, a test that does
+  not exist, a macro-computed argument, and a module-qualified name in a
+  standalone target — while accepting the unmodified copy.
 - `examples/plugins/sdk-rust`: `cargo check --tests` **passes**.
 - The guard tier: every guard named above passes, and every `--self-test`
   still rejects the failure class it exists to reject.
@@ -364,6 +371,15 @@ bash scripts/verify.sh quick
   result is reported where it happens.
 - **It does not claim the macOS clippy state is green.** It is not, on this
   platform, and it was not before the merge either.
+- **It does not claim the AppContainer projection can run Git.** It cannot
+  today, and §2.5's repair does not change that — it stops the test from
+  pretending otherwise, and restores the seven host-denial probes that the
+  failing Git step was discarding. The null-device limitation itself is an
+  open item in §7.
+- **It does not claim the §2.5 repairs are proven on Windows or Linux.** The
+  local gate cannot run the Windows lane or the Linux M004 lane; the hosted
+  runs are the authority, and this record's own §2.5 quotes the failure they
+  must turn green.
 
 ## 7. Open items carried forward
 
