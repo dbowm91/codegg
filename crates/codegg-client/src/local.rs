@@ -252,7 +252,10 @@ impl LocalSocketClient {
         tokio::spawn(async move {
             loop {
                 enum Next {
-                    Event(EventEnvelope<CoreEvent>),
+                    // The envelope is boxed: it is an order of magnitude
+                    // larger than the other arms, and an unboxed variant
+                    // would make every step of the loop carry its size.
+                    Event(Box<EventEnvelope<CoreEvent>>),
                     Closed,
                     Lagged(u64),
                     Gap(u64),
@@ -263,7 +266,7 @@ impl LocalSocketClient {
                 }
                 let next = tokio::select! {
                     received = events.recv() => match received {
-                        Ok(event) => Next::Event(event),
+                        Ok(event) => Next::Event(Box::new(event)),
                         Err(broadcast::error::RecvError::Closed) => Next::Closed,
                         Err(broadcast::error::RecvError::Lagged(dropped)) => Next::Lagged(dropped),
                     },
@@ -275,7 +278,7 @@ impl LocalSocketClient {
                 };
                 match next {
                     Next::Event(event) => {
-                        if tx.send(ClientEvent::Event(Box::new(event))).await.is_err() {
+                        if tx.send(ClientEvent::Event(event)).await.is_err() {
                             break;
                         }
                     }

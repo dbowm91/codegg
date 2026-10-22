@@ -133,7 +133,8 @@ directly.
 | `cargo test -p codegg --lib core::transport::daemon_socket::tests::` | 15 tests, OK — local |
 | the same tests against the **unfixed** forwarder | **2 failed** — the failing-first evidence, §4.1 |
 | `python3 -m unittest discover -s dev/harness_lab/tests` | 316 tests, OK (1 skipped) — local |
-| `bash scripts/verify.sh quick` | see §4.2 — local |
+| `bash scripts/verify.sh quick` | **passed** — the agent schema, the core/client/desktop boundaries, the sandbox, execution ownership, the TUI authority, the HTTP-route disposition, audit coverage, the queue-delivery call sites, the queue-write transaction shape, the scheduler bypass, the config merge coverage, the no-hardcoded-models check, the provider wire/catalog/resilience checks, the OpenAI endpoint check, the Eggwork target routing, the 316-test harness suite and `cargo check --workspace --all-targets --locked` — local, not CI |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **passed** — local, not CI |
 | `cargo fmt --all` | clean — local |
 
 ### 4.1 The failing-first evidence
@@ -161,7 +162,10 @@ and to nothing else.
 
 ### 4.2 `scripts/verify.sh quick`
 
-See the commit message for the recorded result.
+Passed. The clippy pass initially reported one lint on the new code —
+`clippy::large_enum_variant` on the client's select-loop enum, whose event
+arm carried an unboxed 664-byte envelope. The arm is boxed now and the
+strict pass is clean.
 
 ## 5. Invariant review
 
