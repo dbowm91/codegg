@@ -51,6 +51,26 @@ use codegg_protocol::document::{WorkspaceDirectoryNodeDto, WorkspaceDirectoryNod
 /// retained 1 root, depth 3 retains all 37 roots in 290 KiB.
 pub const MAX_LISTING_DEPTH: usize = 3;
 
+/// The reason the walk reports when the depth window stopped it.
+///
+/// Single-sourced so the TUI can recognise it: the depth window is a
+/// *navigational* bound, not a loss. The panel slides its scope when a
+/// directory's children fall outside the window, so the user can always
+/// reach further — a notice about it would report a limit that is not one.
+pub fn depth_stop_reason() -> String {
+    format!("stopped at the maximum depth of {MAX_LISTING_DEPTH}")
+}
+
+/// Whether a truncation reason is **only** the depth window.
+///
+/// Every other bound — the retained-node budget, the examined-entry budget,
+/// the wire budget — hides entries the panel cannot show at all, and those
+/// stay visible. The depth window alone is a scope-relative shape the panel
+/// navigates around, so it is not reported.
+pub fn is_depth_stop_reason(reason: &str) -> bool {
+    reason == depth_stop_reason()
+}
+
 /// Maximum number of entries retained across the whole walk.
 ///
 /// This bounds one **listing**, which is one directory scope. It is not a cap
@@ -229,9 +249,7 @@ fn walk(
     }
     if depth >= MAX_LISTING_DEPTH {
         listing.truncated = true;
-        listing.truncated_reason = Some(format!(
-            "stopped at the maximum depth of {MAX_LISTING_DEPTH}"
-        ));
+        listing.truncated_reason = Some(depth_stop_reason());
         return;
     }
 

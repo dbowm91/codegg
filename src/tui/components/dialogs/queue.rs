@@ -62,9 +62,10 @@ enum Chrome {
 ///
 /// `handle_key` below is the implementation and this is the advertisement, so
 /// the two cannot drift. `Esc` is deliberately absent even though `handle_key`
-/// answers it, for the same reason `TreeDialog` omits it: the modal host
-/// claims `Esc` as its universal exit before consulting the widget, so
-/// advertising it here would teach a key that never reaches this code.
+/// answers it, for the same reason `TreeDialog` omits it: it is the mode
+/// switch, so it means one thing modally and another in a column, and
+/// advertising it here would teach a key whose meaning this surface does not
+/// fix.
 ///
 /// `Enter` is absent for a different reason and must stay that way: it is this
 /// box's **confirm** key inside a text step, so naming it here would describe a

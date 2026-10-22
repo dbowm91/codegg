@@ -1009,16 +1009,20 @@ pub trait SidePanel {
         true
     }
 
-    /// Whether the panel claims one of the host's exit keys
-    /// (`Esc`/`q`) before the host drops focus.
+    /// Whether the panel claims the host's exit key (`Shift+Q`) before the
+    /// host drops focus.
     ///
     /// A panel with an input mode uses the key to leave that mode — keeping
-    /// its buffer — instead, because `q` while composing is a letter, not a
-    /// command. The host drops focus only once the panel declines.
+    /// its buffer — instead. The host drops focus only once the panel
+    /// declines.
     ///
     /// Takes `ctx` because the claim can depend on state the panel does not
-    /// own: the Terminal panel claims these keys only while its PTY view is
+    /// own: the Terminal panel claims the key only while its PTY view is
     /// focused, which lives on the controller rather than on the panel.
+    ///
+    /// `Esc` is **not** the host's exit key any more. It is the mode switch —
+    /// Insert to Normal — and it reaches a panel directly, so a panel that
+    /// owns a text field or a live PTY keeps it.
     fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
         false
     }
@@ -1549,7 +1553,7 @@ impl SidePanelHost {
         // had taken, so the row persisted above the LLM buffer describing a
         // terminal the user was not in. Bespoke panels now decline; hosted
         // panels still speak.
-        match self.active() {
+        let panel = match self.active() {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
             SidePanelId::Terminal => self.terminal.composer_hints(&hints),
@@ -1559,7 +1563,29 @@ impl SidePanelHost {
                 .iter()
                 .find(|panel| panel.id() == other)
                 .and_then(|panel| panel.composer_hints(&hints)),
+        };
+        // The panel's **exit** is `Shift+Q`, and the panel's own verbs never
+        // mention it: they say what the panel *does*, not how the user leaves
+        // it. `Esc` used to be that answer and it no longer is — it is the
+        // mode switch — so a reader who presses it to get out stays put, and a
+        // row that does not say otherwise is a trap.
+        //
+        // One place adds it, so no panel can forget it and none can advertise
+        // a different exit. It leads the row because the tail is the first
+        // thing a narrow column clips, and this is the part a reader who is
+        // stuck needs first.
+        //
+        // The terminal is the exception: in INS the panel is a live PTY and
+        // `Shift+Q` is program input that reaches the shell, so advertising
+        // it as the exit there would be a lie. That row keeps saying `Esc
+        // read` instead, and the exit is offered again once the reader is
+        // back in NOR.
+        let terminal_reading =
+            self.active() == SidePanelId::Terminal && input_mode == InputMode::Insert;
+        if !self.is_focused() || terminal_reading {
+            return panel;
         }
+        panel.map(|panel| format!("⇧Q leave · {panel}"))
     }
 
     /// Chat panel's composer buffer, so a keystroke can mirror it into the
@@ -1909,15 +1935,14 @@ impl SidePanelHost {
         if !self.focused {
             return None;
         }
-        // `Esc`/`q` are the universal exits and are handled by the host so
-        // they do not have to be special-cased per panel. The panel gets
-        // first refusal: a chat panel in Compose mode uses `Esc` to return
-        // to Normal with its buffer intact before focus leaves.
-        if is_exit_key(key) {
+        // `Shift+Q` is the panel exit and is handled by the host so it does
+        // not have to be special-cased per panel. The panel gets first
+        // refusal: a panel that owns the key itself answers it.
+        if is_exit_key(key) && ctx.input_mode == crate::tui::input::InputMode::Normal {
             if self.panel().owns_exit_key(key, ctx) {
                 // The panel answered the key itself, so its intent has to
                 // reach the caller. Discarding it here and returning a bare
-                // `Consumed` meant a panel could claim `Esc` and emit
+                // `Consumed` meant a panel could claim the key and emit
                 // `TerminalPanelBlur` into nothing: focus stayed on the PTY,
                 // the host looked like it had handled the key, and there was no
                 // exit left. Returning the panel's own answer keeps the
@@ -1959,17 +1984,22 @@ impl SidePanelHost {
     }
 }
 
-/// Whether a key is one of the host-level exits that returns focus to the
-/// composer.
+/// Whether a key is the host-level exit that returns focus to the composer.
 ///
-/// Both are unmodified single keys. Modified variants are excluded so a
-/// `Ctrl+Q`-style shortcut, or a modifier the terminal reports alongside a
-/// printable key, cannot drop focus out from under a panel mid-edit.
+/// `Shift+Q`, and nothing else. `Esc` is the **mode** switch — Insert to
+/// Normal, and back out of a filter — so it must not take the keyboard away
+/// from a panel the user is working in: a panel that owns a text field needs
+/// `Esc` to leave that field, and a panel that owns a live PTY needs `Esc` to
+/// reach the terminal. `q` is the program's quit key, and a quit key that
+/// also meant "leave this panel" was two meanings for one press.
+///
+/// The panel gets first refusal through [`SidePanel::owns_exit_key`], so a
+/// panel that wants the key itself can still take it.
 fn is_exit_key(key: KeyEvent) -> bool {
-    if key.modifiers != KeyModifiers::NONE {
+    if !key.modifiers.contains(KeyModifiers::SHIFT) {
         return false;
     }
-    matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+    matches!(key.code, KeyCode::Char('Q'))
 }
 
 #[cfg(test)]
@@ -2494,7 +2524,7 @@ mod tests {
             !hint.contains("i act"),
             "the host's generic line describes a verb `/files` does not have, got {hint:?}"
         );
-        for verb in ["enter open", "l/→ peek into dir", "^d/^u page"] {
+        for verb in ["enter open", "l/→ open", "^d/^u page"] {
             assert!(hint.contains(verb), "missing {verb:?} in {hint:?}");
         }
     }
@@ -2556,9 +2586,15 @@ mod tests {
             let mut host = host_showing(id, PanelPlacement::Right);
             assert!(host.adopt(id, Box::new(Keyless)));
             assert!(host.focus());
+            // The host's own exit leads the line: `Shift+Q` is the panel exit,
+            // and a panel's own verbs never say so.
+            let expected = format!(
+                "⇧Q leave · {} · j/k scroll · i act · Shift+← back",
+                id.title()
+            );
             assert_eq!(
                 host.composer_hints(None, InputMode::Normal).as_deref(),
-                Some(format!("{} · j/k scroll · i act · Shift+← back", id.title()).as_str()),
+                Some(expected.as_str()),
                 "{id:?} must keep the line it shipped with"
             );
         }

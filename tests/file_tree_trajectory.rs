@@ -109,7 +109,7 @@ async fn a_file_discovered_by_the_tree_opens_like_any_typed_path() {
     let target = "src/nested/deep.rs";
     for step in ["src", "src/nested"] {
         state.selected = Some(step.to_string());
-        assert_eq!(state.toggle_selected().as_deref(), Some(step));
+        state.expanded.insert(step.to_string());
     }
     state.selected = Some(target.to_string());
 

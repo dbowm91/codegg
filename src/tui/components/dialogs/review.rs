@@ -233,8 +233,9 @@ impl ReviewDialog {
     /// cosmetic — a docked column destroyed them, and the verbs they carried
     /// (`↑/↓ navigate`, `Esc close`) cannot fire from a column in the first
     /// place, because `SidePanelHost::handle_key` claims the arrows as panel
-    /// directions and `Esc` as a universal exit before this widget is
-    /// consulted. `keymap_hint` is where a docked box now says what it does.
+    /// directions before this widget is consulted, and `Esc` is the mode
+    /// switch — it means "close" modally and something else in a column.
+    /// `keymap_hint` is where a docked box now says what it does.
     ///
     /// Keeping the two modes in one routine is the point rather than tidiness:
     /// `FileList` and `DiffView` used to be two render functions with two

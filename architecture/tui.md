@@ -580,7 +580,7 @@ contract in `architecture/authorization.md` (ADR-0007).
   exactly as before. Controller identity remains visible through
   the session projection.
 
-### Chat activity indicator, working strip, and todo strip
+### Chat activity indicator and the todo strip
 
 Strips bracket the chat viewport and are owned by `App`, not by the sidebar
 widget.
@@ -612,13 +612,12 @@ an event that has to be wired to it. A main agent **blocked on delegated work is
 deliberately not a phase here**: it emits nothing while it waits, so an
 event-set phase reads as whatever the last event said — or as nothing. There was
 a `WaitingOnSubagent { name }` variant for exactly this that nothing ever
-constructed, and row 0 said the literal word `idle` for the whole fan-out, which
-is indistinguishable from a hung session. It is now **derived** at row 0 from
-`App::awaiting_task_counts`, which counts live subagents and live jobs with the
-*same* predicates the overlay renders from (`SubagentRow::is_running`,
-`tasks::is_live_state`) so the two surfaces cannot disagree. Derivation is the
-point: an event can be dropped, coalesced, or simply not wired, and the wait is
-exactly the window in which that goes unnoticed.
+constructed, and the status row said the literal word `idle` for the whole
+fan-out, which is indistinguishable from a hung session. The wait is now
+**derived** in the tasks overlay, which lists the live subagents and live jobs
+with the *same* predicates (`SubagentRow::is_running`, `tasks::is_live_state`).
+Derivation is the point: an event can be dropped, coalesced, or simply not
+wired, and the wait is exactly the window in which that goes unnoticed.
 
 **Both inputs to that count are projection-derived, so the daemon-attached TUI
 depends on the projection actually reaching the controller.** The ordinary
@@ -634,44 +633,29 @@ same status while omitting unverified work rows. `/observe` retains its
 separate read-only subscription. See `architecture/projection.md` "Default TUI
 session subscription".
 
-`ui_state.subagents` is written from **two** render paths — the session panel
-(so the sidebar list and the strip agree on one vector) and `render_working_strip`
-itself. The strip's copy is what makes row 0 independent of the sidebar being
-drawn: the strip is the main buffer's only status surface, so a layout that hides
-the panel must not turn "waiting on 3 subagents" back into `idle`.
+`ui_state.subagents` is written from the session-panel render path and from
+the render pump's own projection sync, so the `/subagent` addressee lookup and
+the tasks overlay see the same vector whether or not the sidebar is drawn.
 
-**Working strip** (`render_working_strip`). The main buffer's **single status
-surface**, and row 0 is **reserved unconditionally** — it reads `idle` when
-nothing is running and nothing is delegated, and `awaiting N task[s]` (with the
-per-kind counts appended) when the main agent is blocked on subagents or jobs.
-This height is subtracted from the transcript
-(`session_layout` splits `prompt_height` against `Min(10)`), so gating row 0 on
-"there is something to say" reflowed the transcript on every submit and again on
-every completion. Reserving it permanently turns that off for good: the strip's
-*content* can change freely — idle, awaiting, working, stopped, failed — without the
-transcript viewport ever changing height. Subagent rows stay content-driven,
-because N subagents genuinely need N rows.
+**There is no working strip.** The main buffer used to reserve a status row
+between the transcript and the composer — `idle` when nothing ran, the live
+phase when something did, one clickable row per advertised subagent below it.
+It cost a row of vertical space to say `idle`, it duplicated the phase the
+header badge already carried, and it made the buffer's task state visible
+whether the user wanted it or not.
 
-Row 0 resolves in strict precedence order: a latched `last_error`, then
-`stopped_turn`, then the live phase, then `idle`. The error outranks everything
-because it is the one thing that explains why nothing is progressing, and by the
-time it is readable the toast that also said so has expired. Stopped and error
-both draw a **static** glyph — nothing is running, so an animated one would lie
-about it. The trailing half names the key that changes the situation (`x to
-stop`, `press x again to stop agent` while a confirmation is armed, `press x or
-/start` once stopped, a running subagent count), because a long pause with no
-way out is what reads as a dropped connection. The rows below it are clickable
-and their hit rects are rebuilt every frame in `UiState::working_area` /
-`SubagentState::hits`, so a click resolves against the geometry the user saw.
+The task state moved to the **tasks overlay** (`Ctrl+T`), which already unifies
+todos, in-flight subagents, and live jobs and is *on demand*. The situational
+facts that were on the strip's row 0 — a latched turn failure, an armed exit
+confirmation — moved to the **row above the composer**
+(`App::situational_hints`), which is the main buffer's one *situational*
+surface. Nothing is reserved between the transcript and the composer any more,
+so the transcript cannot reflow when the turn state changes: there is no row
+that appears or vanishes.
 
 The `queued` suffix (M004) is appended in the same left-aligned `" · "` chain
-as the subagent and job counts, and is text on the existing row — never an extra
-row and never a condition on row 0's existence. It sits *after* the phase
-selection so a latched `last_error` still outranks it: the failure is what
-explains why nothing is progressing, and a waiting-prompt count is not.
-`ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
-strip is carved out of the prompt chunk, so the reverse order would resolve
-every subagent click to click-to-focus.
+as the subagent and job counts, in the overlay, and is text on an existing row —
+never an extra row and never a condition on the overlay's existence.
 
 **Side panels are mouse surfaces like the buffer.** Every occupied column
 records its rect on each render (`App::panel_areas`), and
@@ -2801,17 +2785,45 @@ in all three.
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
-| `Enter` on a directory | expand/collapse **in place** — the cursor does not move |
-| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it |
+| `Enter` | **the same motion as `l`**: a directory is entered, a file is opened in the editor |
+| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
 | `h` / `←` | **back one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
-| `Enter` on a file | open it in the editor |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | re-walk the current root |
-| `Esc` | close |
+| `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
+| `Shift+Q` | close the box |
 
-Enter and `l` are deliberately different verbs: Enter reveals contents and
-leaves the cursor where the user put it, while `l` moves the *cursor into* the
-directory without moving the *pane*.
+`Enter` and `l` are **one** verb. `Enter` used to reveal a directory's contents
+in place and leave the cursor alone, which at the listing window's edge
+expanded a directory that has no children in the listing — an "empty
+directory" rather than a move. Both now enter the directory, and both slide the
+scope when the directory's children fall outside the daemon's three-level
+listing window.
+
+The slide lands on the directory's **grandparent**, not its parent: the
+grandparent is the *shallowest* scope in which the directory's children fit
+back inside the window, so the user keeps the widest context — the directory's
+parent stays visible beside the directory's siblings. The workspace root never
+changes: the scope is a view carried in the listing request's prefix, not a
+working directory.
+
+A slide also has to **open the chain down to the directory**. In the new scope
+the directory's *ancestors* are the rows, and they arrive collapsed — so
+expanding only the target leaves the row the user pressed `l` on off screen:
+the pane has changed scope and shown nothing new, which is the same "empty
+directory" symptom the slide exists to remove.
+`FileTreeState::expand_ancestors_of` opens the chain between the new scope and
+the directory, and the directory is expanded with it.
+
+The listing's **depth window is not a truncation**. The walker stops at three
+levels because that is the shape of one request, not because entries were lost,
+and the panel slides around it — so the panel does not report it as a cut
+listing. Every other bound (the node budget, the examined-entry budget, the
+wire budget) hides entries the panel genuinely cannot show, and those are still
+reported.
+
+The box's own hotkey row is gone. The row above the composer carries the
+panel's keymap, and a second copy at the bottom of the panel was noise.
 
 **`l` peeks; it does not re-root.** A directory whose children are still
 inside the listing window is expanded **in place** and the cursor moves into
@@ -3172,19 +3184,35 @@ object the `/terminal` box drives, because two VT parsers for one PTY would
 disagree about what is on screen. That grant carries presentation state only:
 no client, no locator, no authority to choose a project or a terminal.
 
-**A focused PTY claims `Esc`, but never `q`.** `owns_exit_key` takes `ctx`
+**A focused PTY claims the host's exit key.** `owns_exit_key` takes `ctx`
 because the claim depends on state the panel does not own. The Terminal panel
-returns true for `Esc` **only while its view is focused**, so it routes into
-`handle_key` instead of `SidePanelHost::blur`. Declining it split the two focus
-flags: the host dropped panel focus while `TerminalFocus::Focused` stayed set on
-the view, so `Esc` looked like it left and the PTY still held the keyboard — and
-because `panel_active` requires `is_focused()`, the panel then saw no keys at
-all while still reporting INS.
+returns true for `Shift+Q` **only while its view is focused**, so it routes
+into `handle_key` instead of `SidePanelHost::blur`. Declining it split the two
+focus flags: the host dropped panel focus while `TerminalFocus::Focused` stayed
+set on the view, so the exit looked like it happened and the PTY still held the
+keyboard — and because `panel_active` requires `is_focused()`, the panel then
+saw no keys at all while still reporting INS.
 
-`q` was claimed alongside it, which is why this section could not simply keep
-the old pair: in INS the panel *is* a terminal, and `q` is a character the user
-is typing. Claiming it meant the shell could never receive the most common
-letter in most commands. Only the mode key is claimed now.
+A bare `q` is never claimed. In INS the panel *is* a terminal, and `q` is a
+character the user is typing; claiming it meant the shell could never receive
+the most common letter in most commands. `q` is the program's quit key now,
+and `Shift+Q` is the only key that can mean "leave".
+
+**The panel exit is `Shift+Q`, and `Esc` is the mode switch.** `Esc` never
+returns the selection to the main LLM: it is the key that leaves insert mode
+(keeping a filter), and in Normal mode it does nothing at all. A panel keeps
+the keyboard and the selection until the user moves the panel selection with
+`Shift+H/J/K/L`, and leaves with `Shift+Q`. A quit key that also meant "leave
+this panel" was two meanings for one press, and `q` is now the program's quit
+key — gated behind a second press like `Ctrl+C`.
+
+The panel's own verbs never mention the exit — they say what the panel *does* —
+so `SidePanelHost::composer_hints` adds `⇧Q leave` to a **focused** panel's row.
+One place adds it, so no panel can forget it and none can advertise a
+different exit; it leads the row because the tail is the first thing a narrow
+column clips. The Terminal in INS is the exception: there `Shift+Q` is program
+input that reaches the shell, so that row keeps saying `Esc read` and the exit
+is offered again once the reader is back in NOR.
 
 **A panel that fronts a process claims Insert-mode keys.**
 `SidePanel::claims_insert_keys` is the opt-in that makes `panel_active` consult
@@ -3200,18 +3228,19 @@ attaching or has exited leaves those keys visible and recoverable in the
 composer instead of dropping them.
 
 `handle_key` owns the exit and ends in `TuiMsg::TerminalPanelBlur`, the one call
-that clears the view's focus. In NOR the panel declines, so `Esc`/`q` remain
-cheap focus exits.
+that clears the view's focus. In NOR the panel declines, so the host's own blur
+is right — nothing is typing — and `Esc` is the mode key that leaves INS, not
+the key that leaves the panel.
 
 **A focused panel owns navigation, not text — and only in Normal mode.** Two
 rules replace the original "consumes every key" contract:
 
 1. **Mode gate.** The host is consulted only when `input_mode == Normal` (or
    the selector overlay is up). This is load-bearing, not an optimisation: the
-   host claims `Esc` and `q` as focus exits, so consulting it in Insert mode
-   would make the letter `q` untypable and `Esc` unable to leave Insert. In
-   Insert mode the composer owns the keyboard, which is what lets one bottom
-   composer deliver to two destinations.
+   host claims `Shift+Q` as the focus exit, so consulting it in Insert mode
+   would make `Shift+Q` untypable into a PTY. In Insert mode the composer owns
+   the keyboard, which is what lets one bottom composer deliver to two
+   destinations.
 2. **Navigation vs text.** While focused in Normal mode the panel consumes
    arrows, `j`/`k`, paging, channel switching and its own verbs, so a stray
    `j` is never read as a keystroke elsewhere. It does not own text. A verb
@@ -3493,6 +3522,21 @@ long as the seed is armed, and `Esc` in Normal mode cancels it — clearing the
 clears it after the `start_chat_send`/`start_chat_edit` seam runs, so the
 target belongs to exactly one send.
 
+**`Esc` in the chat panel cancels the context, not the focus.** The browser's
+`ChatKeyAction::Exit` means "leave this surface", and the two surfaces read it
+differently: the `/chat` window closes, while the panel cannot — `Esc` is the
+mode switch and never takes the keyboard away from a panel. So the panel maps
+it to `TuiMsg::CancelChatComposer`, which drops the armed seed and keeps the
+typed text. The browser stays the single owner of the keymap and the app stays
+the single owner of the context; the panel names an intent rather than
+reaching into prompt state.
+
+A bare `q` inside the chat panel is **inert**. The browser maps `q` to its own
+`Exit` so the `/chat` window can be closed with it, and the panel filters the
+key out rather than inheriting a gesture meant for a different surface: `q` is
+the program's quit key, `Shift+Q` is the panel exit, and a focused panel owns
+the keyboard, so `q` there does neither.
+
 **`@` is not the same trigger in both destinations.** Against the agent
 session `@` opens the agent/file completion popup and Enter accepts. Against
 chat it is a mention. The completion layer claims Enter first, so leaving the
@@ -3549,23 +3593,23 @@ reader was not in. `TerminalPanel::composer_hints` now answers `None` when
 Two things follow, and both are the point rather than a side effect:
 
 - **The input box does not move.** `session_layout` gives the prompt chunk a
-  fixed, bottom-anchored height, and the working strip, hint line and todo strip
-  are carved off its **top** in that order. Removing the hint therefore shrinks
+  fixed, bottom-anchored height, and the hint line and the todo strip are
+  carved off its **top** in that order. Removing the hint therefore shrinks
   the carved region and hands the row to the transcript (`Min(10)`) — the only
   chunk that absorbs slack — while the composer stays on its row. Stated
   explicitly because the arithmetic reads as though the opposite should happen:
   a hint row that appeared or vanished and dragged the input with it would
-  reflow the frame under the user's hands every time a panel took or lost focus,
-  which is the same defect the working strip's reserved row 0 exists to prevent.
-- **The working strip's reserved row 0 is untouched.** It is reserved
-  unconditionally, and `Min(10)` for the transcript holds either way — the hint
-  row is a separate row carved from the prompt chunk.
+  reflow the frame under the user's hands every time a panel took or lost focus.
+- **Nothing is reserved above the hint row.** There is no working strip, so the
+  transcript gets the rows the strip used to take, and the hint row is a
+  separate row carved from the prompt chunk.
 
 **The row is not vacated when a panel lets go — the composer takes it.** The
-composer's own verbs (see *The hint row above the composer is derived from the
-claim table*) are what the row is for, so a panel releasing the keyboard hands
-the row to the composer rather than removing it. The carved region therefore
-keeps its height, and the working strip above it does not move at all. This is
+composer's own `space help` chord (see *The row above the composer is the
+buffer's situational surface*) is what the row is for, so a panel releasing the
+keyboard hands the row to the composer rather than removing it. The carved
+region therefore keeps its height, and the transcript above it does not move at
+all. This is
 *stronger* than the property above, and it is the one the frame actually
 carries: the row's **content** changes with the keyboard, its **presence** does
 not, so neither the composer nor the transcript moves when a panel takes or
@@ -4231,12 +4275,26 @@ Exiting is a separate, explicit action with its own binding:
 |---|---|---|
 | `q` | `Quit` | Normal mode only; Insert mode skips bare-char bindings so `q` still types |
 | `/exit` | `Quit` | `command.rs:488`; `quit` and `q` are aliases |
-| `Ctrl+C` | `ForceQuit` | Unwinds the same layers as `Esc`, then exits |
+| `Ctrl+C` | `ForceQuit` | Clears the input, then arms the exit |
+
+**Both exits are two-press.** Leaving the program is destructive and one
+keystroke away from a stray press, so `q` and `Ctrl+C` each need a **second
+press of the same key inside three seconds** (`EXIT_ARM_WINDOW`). The first
+`Ctrl+C` clears the field the user was typing into — the meaning the key has
+always had on an input — and arms the exit; the second one leaves. The row
+above the composer names the key to press again (`press ctrl+c again to exit`,
+`press q again to quit`), and the arm expires on its own if the user walks
+away.
+
+The expiry needs the event loop to be awake, so `animation_interval` treats an
+armed exit as a contributor: without it the timed arm parks on `pending()` and
+the confirmation would outlive the window it was made in, and the second press
+would be read as a *first* press.
 
 `Ctrl+C` and `Esc` are distinct `InputAction`s (`ForceQuit` was added
 for this) so the back-out key and the terminate key cannot drift into
-the same behavior again. Like `Esc`, `Ctrl+C` dismisses an open dialog
-before it exits, so a dialog needs two presses to leave.
+the same behavior again. `Ctrl+C` still dismisses an open dialog before it
+arms, so a dialog needs two presses to leave.
 
 ### Model selection is durable
 

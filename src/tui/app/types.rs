@@ -551,6 +551,13 @@ pub enum TuiMsg {
     /// this seed instead. `App::process_msg` puts the text in the prompt and
     /// records the context; nothing here is a daemon request.
     ChatComposerSeed(crate::tui::chat_browser::ChatComposeSeed),
+    /// The chat panel's `Esc`: drop the armed reply/edit context and keep the
+    /// text.
+    ///
+    /// `Esc` is the **mode switch** everywhere now — it leaves insert mode and
+    /// cancels an armed compose rather than handing the panel's selection back
+    /// to the conversation. The panel owns that intent, so it names it.
+    CancelChatComposer,
     /// The agents panel asked to act on one agent.
     ///
     /// A *selection*, not an instruction: the command layer resolves the
@@ -774,13 +781,14 @@ pub enum TuiMsg {
     /// path, so a refresh that lands after the user changed project is
     /// dropped rather than painted over the new workspace.
     FilesRefresh,
-    /// `/files`: peek into `path` (`l`).
+    /// `/files`: open `path` (`l`, and `Enter` on a directory).
     ///
     /// The box holds a *copy* of the shared tree state and cannot reach `App`
     /// from `render`, so the motion is an intent like opening a file: the
-    /// command layer decides whether the directory opens in place or the
-    /// scope slides, and issues the walk. The path is workspace-relative,
-    /// exactly as the listing reported it.
+    /// command layer decides whether the directory opens in place, the scope
+    /// slides, or — for a file, which has nothing to enter — the document
+    /// opens, and issues the walk. The path is workspace-relative, exactly as
+    /// the listing reported it.
     FilesDescend {
         path: String,
     },

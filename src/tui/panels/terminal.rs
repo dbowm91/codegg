@@ -300,10 +300,11 @@ impl SidePanel for TerminalPanel {
                 KeyCode::Enter => return PanelKey::Intent(self.type_intent()),
                 _ => {}
             }
-            // No `Esc` arm: the host claims `Esc`/`q` as panel exits before
-            // the panel is consulted, so an Esc arm here would be unreachable.
-            // In INS the panel does claim `Esc` (see `owns_exit_key`), so the
-            // mode key does reach it — just through the host's first-refusal.
+            // No `Esc` arm: in NOR there is no mode to leave, and the host
+            // no longer treats `Esc` as a panel exit, so `Esc` lands here as
+            // an ordinary key and is handled by the navigation seam below
+            // (or consumed). The panel keeps the keyboard and the selection;
+            // `Shift+Q` is how the user leaves it.
             // The selection survives the blur anyway — it lives on the
             // controller, not the panel — so stepping out and back keeps the
             // text the reader was about to copy.
@@ -354,25 +355,29 @@ impl SidePanel for TerminalPanel {
             .is_some_and(|handle| ctx.terminal.is_focused(handle))
     }
 
-    /// Claim `Esc` while the PTY is focused (INS).
+    /// Claim the host's exit key (`Shift+Q`) while the PTY is focused (INS).
     ///
-    /// The host drops panel focus on `Esc`/`q` *without consulting the
-    /// controller*, so a focused terminal that declined them left the two focus
-    /// flags disagreeing: the panel was no longer focused, but the view still
-    /// read `TerminalFocus::Focused`. Claiming the key routes it through
+    /// The host drops panel focus *without consulting the controller*, so a
+    /// focused terminal that declined the key left the two focus flags
+    /// disagreeing: the panel was no longer focused, but the view still read
+    /// `TerminalFocus::Focused`. Claiming the key routes it through
     /// [`Self::handle_key`], which owns the mode rule and ends in
     /// `TuiMsg::TerminalPanelBlur` — the one call that clears the view's focus.
     ///
-    /// `Esc` only, and **never `q`**. In INS the panel is a terminal, and `q`
-    /// is a character the user is typing — claiming it here meant the shell
-    /// could never receive a `q`, which is the most common letter in most
-    /// commands. `Esc` is claimed because it is the mode key: leaving the
-    /// keyboard has to come back through here to clear the controller flag too.
+    /// `Shift+Q` only, and **never a bare `q`**. In INS the panel is a
+    /// terminal, and `q` is a character the user is typing — claiming it here
+    /// meant the shell could never receive a `q`, which is the most common
+    /// letter in most commands. `Shift+Q` is the host's exit, so it is the one
+    /// key that can mean "leave", and in INS it is program input like any
+    /// other: it reaches the shell and the panel keeps the keyboard.
     ///
     /// Only in INS: while reading there is no PTY keyboard to protect, so the
-    /// host's exit is the correct answer and keeps `q`/`Esc` cheap.
+    /// host's exit is the correct answer and keeps the key cheap. In NOR the
+    /// host's own blur is right — nothing is typing — and `Esc` is the mode
+    /// switch that leaves INS, not the key that leaves the panel.
     fn owns_exit_key(&self, key: KeyEvent, ctx: &PanelCtx<'_>) -> bool {
-        matches!(key.code, KeyCode::Esc)
+        key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Char('Q'))
             && self
                 .handle
                 .as_deref()

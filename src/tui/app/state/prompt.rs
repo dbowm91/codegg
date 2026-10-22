@@ -74,6 +74,18 @@ pub struct PromptState {
     /// on its own so a confirmation prompt cannot sit on screen forever after
     /// the user has looked away.
     pub stop_armed_at: Option<std::time::Instant>,
+    /// When the **exit** confirmation was armed, and which exit it was for.
+    ///
+    /// Leaving the program is destructive and one keystroke away from a stray
+    /// `q` or from a terminal that delivers `Ctrl+C` to a program it did not
+    /// mean to stop, so both exits are gated behind a second press of the
+    /// *same* key inside [`EXIT_ARM_WINDOW`]. The first press clears the
+    /// input field instead; the second one leaves.
+    ///
+    /// `None` is the disarmed state; the arm also expires on its own so a
+    /// confirmation prompt cannot sit on screen forever after the user has
+    /// looked away.
+    pub exit_armed_at: Option<(ExitArm, std::time::Instant)>,
     /// C007: the subagent the next composer submission is addressed to.
     ///
     /// Deliberately **not** an `InputTarget` variant. Arming records what the
@@ -106,6 +118,25 @@ pub struct PromptState {
 /// confirmation nobody acts on does not outlive the attention it was asking
 /// for.
 pub const STOP_ARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long the **exit** confirmation stays armed before it lapses.
+///
+/// The same window as the stop confirmation, for the same reason: a second
+/// deliberate press, and no more time than that.
+pub const EXIT_ARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Which exit the user armed.
+///
+/// The arm records *which* key is waiting for its second press, so the line
+/// above the input can name that key rather than a generic "press again",
+/// and so a `q` cannot complete a `Ctrl+C` confirmation (or the reverse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitArm {
+    /// `q` — the program's quit key, from Normal mode.
+    Quit,
+    /// `Ctrl+C` — the unconditional exit.
+    Force,
+}
 
 /// How many displaced drafts the prompt stash retains.
 ///
