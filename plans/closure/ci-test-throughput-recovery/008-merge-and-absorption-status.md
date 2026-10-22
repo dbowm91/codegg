@@ -301,6 +301,38 @@ break a path *inside* it that no other file mentions, and neither the merge
 nor the text of the diff points at it. The audit that caught it was
 `cargo check --workspace --all-targets` on the merged tree, not the merge.
 
+### 2.8 A family member that observes a process-global
+
+The merged tree failed one `agent_loop` test under a plain `cargo test`:
+`agent_loop_harness::temp_root_write_following_the_offer_needs_no_human`,
+*"no attempt may reach the human when the model follows the offer"*, `left: 1,
+right: 0`.
+
+**The attribution is measured, not inferred.** At the branch tip before
+`main`'s advance (`f8a9b6496`) the family passes under plain `cargo test` —
+**530 passed, 0 failed, 1 ignored**. At the merged tip it fails —
+**529 passed, 1 failed, 1 ignored** — with the same total, so no test moved.
+The failing test subscribes to the **process-global** event bus
+(`GlobalEventBus::subscribe()`) and drains it counting **every**
+`AppEvent::PermissionPending`, with no session filter. M004's consolidation
+put that harness into the `agent_loop` family alongside thirty other members,
+so it now shares a binary — and a process — with tests that publish their own
+permission events. The assertion became a cross-test race, and `main`'s
+advance was what shifted the timing enough to make it fire.
+
+The repair scopes the drain to the test's own session, which is what the
+assertion means: *no attempt **for this agent** may reach the human*. The
+file's own `EventCollector` helper already filters that way, so the fix
+follows the idiom already in the file rather than inventing one.
+
+**This is invisible to the hosted CI, and that is worth saying plainly.** The
+hosted `CI` job runs `cargo nextest run --workspace --locked --profile ci`,
+and the `ci` profile runs **one process per test** — a process-global cannot
+be shared between two of them. Only a plain `cargo test`, which runs a
+binary's tests as threads in one process, sees the interference. The same is
+true of the `agent_loop` family's other global-bus assertions, which is a
+standing property of the family rather than of this merge.
+
 ## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
@@ -323,6 +355,7 @@ nor the text of the diff points at it. The audit that caught it was
 | The recorded counts are true on the merged tree | `architecture/overview.md`'s Verified-counts table, re-measured against each row's own `Source` | pass |
 | The sixth reconciliation's merged tree compiles | `cargo check --workspace --all-targets` — 0 errors. The merge was clean (`git merge-tree --write-tree origin/main HEAD`), and the break it carried — a `#[path]` attribute relative to a file that had moved directory — was found by the compile, not by the merge | pass |
 | The sixth reconciliation's new file keeps its own target | `tests/composed_two_agent_race_m011.rs` stays top-level: it drives two live agents on the process-global event bus, and the agent-loop harness suites drain that bus and assert that nothing was left pending on it. Absorbing it into `agent_loop` was tried and **rejected on evidence** — the harness failed with "no attempt may reach the human when the model follows the offer" (`left: 1, right: 0`) while the file passed alone (`3 passed`). It gets its own `root_composed_two_agent_race_m011` ownership group | pass |
+| The `agent_loop` family passes under a plain `cargo test` | at `f8a9b6496` (before `main`'s advance): **530 passed, 0 failed, 1 ignored**; at the merged tip: **529 passed, 1 failed** — the harness drained the process-global bus with no session filter, and M004's consolidation had put it in a binary with thirty other members. The drain is now scoped to the test's own session, the idiom the file's own `EventCollector` already uses | pass (repeated runs); the hosted `CI` job cannot see this class, because the `ci` nextest profile runs one process per test |
 
 ## 4. The counts, re-measured
 

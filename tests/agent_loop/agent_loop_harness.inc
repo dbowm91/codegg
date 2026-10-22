@@ -8018,10 +8018,19 @@ async fn temp_root_write_following_the_offer_needs_no_human() {
     assert!(outcome.is_ok(), "Loop should complete: {:?}", outcome.err());
 
     // No human was ever asked: the offered attempt was answered by the model.
+    //
+    // The drain is scoped to **this** session. The bus is process-global, so
+    // another test running in the same binary can publish a
+    // `PermissionPending` of its own; counting the whole bus would make this
+    // assertion a cross-test race rather than a statement about this agent.
+    // The file's own `EventCollector` filters the same way.
     let mut pending = 0usize;
     loop {
         match rx.try_recv() {
-            Ok(AppEvent::PermissionPending { .. }) => pending += 1,
+            Ok(AppEvent::PermissionPending {
+                session_id: event_session,
+                ..
+            }) if event_session == session_id => pending += 1,
             Ok(_) => continue,
             Err(_) => break,
         }

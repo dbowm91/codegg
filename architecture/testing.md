@@ -608,6 +608,17 @@ conflict:
   tree itself. Inside a family the root already binds that tree, so a second
   declaration would compile it twice; the member reaches it with
   `use super::common::…` instead.
+- **A member that observes a process-global must scope what it observes.** The
+  consolidation puts a member in a binary — and a process — with its
+  siblings. The agent-loop harness subscribes to the **process-global** event
+  bus, and one of its assertions counted *every* `PermissionPending` on that
+  bus with no session filter; in a family of thirty that assertion is a
+  cross-test race, and it fired. A member that reads a global must filter it
+  by what it owns — the file's own `EventCollector` helper already filters by
+  session id, and the assertion that bypassed it now filters the same way.
+  **The hosted `CI` job cannot see this class:** the `ci` nextest profile runs
+  **one process per test**, so two tests never share a process-global. A plain
+  `cargo test`, which runs a binary's tests as threads in one process, does.
 
 ### The measured link cost (M005)
 
