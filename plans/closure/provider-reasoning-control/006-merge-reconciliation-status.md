@@ -31,6 +31,14 @@ merge was `6d36a1888`.
 Changed-file surface: the branch carried 90 changed files against the
 merge-base, and **eight files were changed on both sides**.
 
+**The reconciliation took two stages, because `main` moved while it was in
+flight.** The first merge was against `8cee65934`. During the merged tree's
+qualification — which, on this host, took hours — `main` advanced a further
+**six commits** to `47f5572b1` (the agent-workstream blackboard's M008:
+`3477bc589`, `4d327add9`, `3549d9216`, `e1b898cb8`, `2a797c86c`,
+`47f5572b1`). The second merge brought that in, and is recorded in §2a and
+§4a.
+
 ## 1. Executive finding
 
 **The reasoning-control contract survived the reconciliation intact; two
@@ -92,6 +100,27 @@ side was strictly a superset, and that case is named.
 | `architecture/overview.md` | The Verified-counts table, both sides' numbers stale for the merged tree | `main`'s table structure, then **every row re-measured against its own listed `Source`** in the merged tree (§4) |
 | `plans/registry.md` | Both sides added rows to the same table | **Both kept** — the five reasoning-control rows and `main`'s two Linux-execution-isolation rows |
 
+## 2a. The second stage: `main` advanced while the first merge was being qualified
+
+The first merge was against `8cee65934`. Before it could be landed, `main`
+advanced six commits to `47f5572b1` — the agent-workstream blackboard's M008,
+which added `architecture/blackboard_contract_matrix.md`, two integration test
+files, a new guard (`scripts/check_blackboard_contract_matrix.py`), and a
+`tests/common/` fixture.
+
+`git merge origin/main` on top of the merged tree produced **one conflicted
+file**, and the other three files both sides had touched — `.github/workflows/ci.yml`,
+`plans/registry.md` and `scripts/verify.sh` — **auto-merged** without
+conflict.
+
+| File | Conflict | Resolution |
+|---|---|---|
+| `architecture/overview.md` | The two file-count rows of the Verified-counts table: the merged tree's 298 / 70 against `main`'s 300 / 67 | **Re-measured in the newly merged tree**, never picked: **300** integration test files (`ls tests/*.rs`) and **71** CI guard scripts (`ls scripts/check_*`). Both sides' values were correct for their own trees and the merged tree is the union of both sides' contributions — see §4a |
+
+No other file conflicted, and no reasoning-control file was among them: the
+second merge touched the counts, the CI matrix, the guard registry and the
+plan registry, none of which this line's contract depends on.
+
 ## 3. The indicator's re-landing
 
 The working strip is gone from the merged tree, so `render_working_strip`,
@@ -142,7 +171,7 @@ rest were confirmed unchanged by measurement.
 | `CoreResponse` variants | 172 (171 struct + 1 unit) | **174 (173 struct + 1 unit)** | M002's two variants |
 | Authorized operations | 257 | **260** | M002's three operations |
 | `Storage layout version` | 87 | **88** | The renumbered migration |
-| Integration test files | 296 | **298** | The new `tests/reasoning_overlay_narrowing.rs`, and one more |
+| Integration test files | 296 | **298** | `main`'s own contributions (`tests/host_admission_manifest.rs`, `tests/tool_program_c002_delegated_ceiling.rs`). **This line contributes none**: its new suite, `crates/codegg-core/tests/reasoning_overlay_narrowing.rs`, lives under that crate's own `tests/` directory, which the row's `tests/*.rs` Source — the repository **root** `tests/` directory — does not count. A later measurement pass had attributed this row's movement to that file; the attribution was wrong and is corrected here. |
 | CI guard scripts | 65 | **70** | `main`'s tree carries 66; this line contributes four |
 
 Confirmed unchanged by measurement: architecture docs **90**, tool
@@ -158,6 +187,31 @@ workspace member crates **11** (+ root).
 Note that `main`'s own table read **65** CI guard scripts while its tree
 carried **66**; the merged tree's **70** is the measured value, and the
 `Full check_* inventory` line was corrected with it.
+
+## 4a. The second stage's re-measurement
+
+The second merge (`main` at `47f5572b1`) moved the two file-count rows again,
+and they were **re-measured in the newly merged tree** rather than picked from
+either side:
+
+| Row | `main` at `47f5572b1` | Merged tree | Why |
+|---|---|---|---|
+| Integration test files | 300 | **300** (`ls tests/*.rs`) | `main` contributes the two new blackboard suites (`tests/blackboard_trajectory_m008.rs`, `tests/blackboard_economics_m008.rs`); **this line contributes none**, because its new suite lives at `crates/codegg-core/tests/reasoning_overlay_narrowing.rs`, under the crate's own `tests/` directory, which the root `tests/*.rs` Source does not count — the same distinction `main`'s own M008 pass drew for `tests/common/blackboard.rs` |
+| CI guard scripts | 67 | **71** (`ls scripts/check_*`) | `main`'s 67 (which includes the new `scripts/check_blackboard_contract_matrix.py`) plus this line's four |
+| Architecture docs | 91 | **91** (`architecture/*.md`) | `main`'s alone: this line adds no architecture document |
+
+Every **code**-count row is unchanged by the second merge, and each was
+re-checked against its own listed `Source` rather than assumed — the blackboard
+M008 added no production code and no schema migration.
+
+**A correction the second stage forced.** The first stage's note attributed
+the integration-test-files row's movement to this line's new overlay suite.
+That attribution was **wrong**: the row's `Source` is the repository **root**
+`tests/` directory, and this line's suite is under `crates/codegg-core/tests/`.
+Measured file-by-file, the root `tests/` directory held **280** files at the
+merge-base, **298** at `8cee65934` (all eighteen of the additions `main`'s),
+**300** at `47f5572b1`, and **300** in the merged tree — this line adds
+nothing to it. The table above carries the corrected attribution.
 
 ## 5. What was *not* changed
 
@@ -249,9 +303,12 @@ zero findings.
 
 - `cargo check --workspace --all-targets --locked`: **exit 0**, zero errors.
 - `cargo fmt --check --all`: **clean**.
-- All **44** guards invoked by `scripts/verify.sh quick` pass on the merged
-  tree, and the four guards this line introduces still reject every violation
-  their `--self-test` injects.
+- All **42** guards invoked by `scripts/verify.sh quick` pass on the merged
+  tree (41 after the first merge, plus `main`'s blackboard guard after the
+  second), and the four guards this line introduces still reject every
+  violation their `--self-test` injects. A set comparison of the guard
+  invocations before and after the second merge shows **one addition and no
+  removal**.
 - `scripts/check_adr_integrity.py` confirms the renumbered ADR identifiers are
   unique and their local paths resolve.
 - `cargo test -p codegg-core --lib`: **928 passed**.
@@ -262,6 +319,13 @@ zero findings.
 - `codegg validate --config codegg.example.jsonc`: **valid**. `main` did not
   touch that file; only this line's 24-line `model_profile.<model>.
   reasoning_capability` example differs from `main`'s copy.
+
+The second merge (§2a) was qualified the same way on the twice-merged tree:
+`cargo check --workspace --all-targets --locked` **exit 0** with zero errors,
+`cargo fmt --check --all` **clean**, and all **42** guards pass. The second
+merge changed no production code, so the suite results above still hold for
+it; what it did change — the counts, the CI matrix, the guard registry and
+the plan registry — was verified directly.
 
 ### 7.4 The whole workspace suite, and the six non-passes in it
 
@@ -296,6 +360,14 @@ to `private/tmp`, which the workspace registration rightly refuses.
 None of the seven is in a file this line touched, and none of the five
 consistent failures has a cause this line introduced. **The merge introduces
 zero new test failures.**
+
+The **feature-gated lane** was run on `main` after the fast-forward —
+`cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support
+--profile ci --no-fail-fast` — and returned **12,710 of 12,716 passed**
+(7 skipped), with the **same five consistent failures and the same one
+host-load timeout** and nothing else. The server, plugin and fake-LSP
+surfaces the merge could have disturbed are therefore qualified too, and the
+answer is the same: nothing new.
 
 
 ### 7.5 A third defect the merge introduced — caught by the merged tree's own tests

@@ -375,8 +375,10 @@ This roadmap is closed when:
 
 ### Merge reconciliation with `main` (2026-10-22)
 
-`origin/main` `8cee65934` — 439 commits ahead of this roadmap's merge-base —
-was reconciled with the closed milestone chain. The reasoning contract
+`main` was reconciled with the closed milestone chain **twice**, because it
+advanced while the merged tree was being qualified: first 439 commits to
+`8cee65934` (eight conflicts), then six more to `47f5572b1` — the
+agent-workstream blackboard's M008 — with one conflict. The reasoning contract
 survived intact; three allocations yielded to `main` and one surface moved:
 
 - **ADR-0044 → ADR-0048** and **ADR-0045 → ADR-0049** (main had already
@@ -386,6 +388,11 @@ survived intact; three allocations yielded to `main` and one surface moved:
   `STORAGE_LAYOUT_VERSION` 87 → 88; and
 - the M004 indicator moved from the **deleted working strip** to the **footer
   status bar**, with its guard's fourth rule rewritten accordingly.
+
+The second merge's single conflict was `architecture/overview.md`'s
+Verified-counts table, and its two file-count rows were **re-measured in the
+newly merged tree** rather than picked: **300** integration test files and
+**71** CI guard scripts, the union of both sides' contributions.
 
 Recorded in
 `plans/closure/provider-reasoning-control/006-merge-reconciliation-status.md`.
@@ -422,13 +429,18 @@ been silently narrowed by a test rather than the other way round.
 The table above qualifies the **milestone chain on the branch**, before the
 reconciliation. The merged tree was qualified again afterwards, because a
 merge can break things that each side had proved on its own — and one such
-breakage was found and fixed.
+breakage was found and fixed. `main` advanced a further six commits while
+that qualification was running, so the qualification was repeated after the
+second merge; the second merge touched only the counts, the CI matrix, the
+guard registry and the plan registry, and **no guard invocation was lost** —
+a set comparison of `scripts/verify.sh` before and after it shows one
+addition (`main`'s blackboard guard) and no removal.
 
 | Check on the merged tree | Result |
 |---|---|
 | `cargo check --workspace --all-targets --locked` | **exit 0**, zero errors |
 | `cargo fmt --check --all` | **clean** |
-| All 44 guards invoked by `scripts/verify.sh quick` | **all pass**, and the four new guards' `--self-test`s still reject every injected violation |
+| All 42 guards invoked by `scripts/verify.sh quick` | **all pass**, and the four new guards' `--self-test`s still reject every injected violation |
 | `cargo clippy -p codegg-core -p codegg-config -p codegg-protocol -p codegg-providers -p codegg-client --all-targets --locked -- -D warnings` | **exit 0**, zero findings — these are the crates this chain changed |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | **seven findings, all pre-existing on `main`** — see below |
 | `cargo test -p codegg-core --lib` | **928 passed** |
@@ -437,6 +449,7 @@ breakage was found and fixed.
 | `cargo test -p codegg --lib tui::commands::reasoning` | **7 passed** |
 | `cargo test -p codegg-providers --lib eggpool` | **30 passed** |
 | `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **16,060 of 16,067 passed** — six failures and one timeout, **all seven reproduced identically on clean `main`** (see below) |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` (run on `main` after the fast-forward) | **12,710 of 12,716 passed** — the **same five** consistent failures and the **same** host-load timeout, and nothing else |
 | `codegg validate --config codegg.example.jsonc` | **valid** |
 
 **The seven workspace-clippy findings are `main`'s, measured rather than
