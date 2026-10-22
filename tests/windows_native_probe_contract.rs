@@ -313,6 +313,7 @@ async fn execute(
             linux_offline_network: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
             target: shell.clone(),
             args: args
                 .iter()

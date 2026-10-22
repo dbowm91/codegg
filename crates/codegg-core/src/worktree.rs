@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use egggit::worktree::WorktreeInfo;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Re-export the canonical policy constants from the core surface for
 // compatibility. Construction itself is delegated to egggit's generic
@@ -132,6 +132,46 @@ pub fn is_git_file(git_path: &Path) -> bool {
 
 pub fn is_git_worktree(dir: &Path) -> bool {
     egggit::worktree::is_git_worktree(dir)
+}
+
+/// The **Git directory** of the repository rooted at `root`.
+///
+/// This is the directory Git stores its own metadata in — `<root>/.git` for an
+/// ordinary repository, or the path a linked worktree's `.git` pointer names
+/// for a checkout that is itself a worktree.
+///
+/// It is deliberately *not* the working tree: the working tree holds the
+/// project's files, while the Git directory holds the objects, refs, index and
+/// the `worktrees/` administration directory of every linked worktree. A
+/// contained child that creates a linked worktree needs the Git directory and
+/// never needs the source working tree.
+///
+/// Returns `None` when `root` is not inside a repository, when the `.git`
+/// entry is missing, or when a `.git` pointer file is malformed.
+pub fn git_dir_for(root: &Path) -> Option<PathBuf> {
+    let git_entry = root.join(".git");
+    let metadata = std::fs::symlink_metadata(&git_entry).ok()?;
+    if metadata.is_dir() {
+        return Some(git_entry);
+    }
+    if !metadata.is_file() {
+        return None;
+    }
+    let pointer = std::fs::read_to_string(&git_entry).ok()?;
+    let target = pointer
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir: "))?
+        .trim();
+    if target.is_empty() {
+        return None;
+    }
+    let target = PathBuf::from(target);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        root.join(target)
+    };
+    Some(target)
 }
 
 #[cfg(test)]

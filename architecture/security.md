@@ -146,6 +146,8 @@ pub struct SandboxConfig {
     pub enabled: bool,
     pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
+    pub read_only_paths: Vec<String>,      // readable, never writable
+    pub expected_created_git_pointers: Vec<String>, // the only '.git' a child may create
     pub deny_paths: Vec<String>,  // operator-declared; merged with policy::sensitive_deny_paths()
 }
 
@@ -156,11 +158,34 @@ pub struct SandboxLaunchSpec {
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
     pub deny_paths: Vec<PathBuf>,  // never readable/writable, regardless of profile
+    pub expected_created_git_pointers: Vec<PathBuf>,
 }
 ```
 
 `SandboxLaunchSpec` names **paths, not a mechanism**, so the same spec
 serves every backend.
+
+**Read-only grants and the Git-pointer exemption.** A *read-only grant* is a
+path the child can see and cannot change. It exists because some operations
+need a directory that is immutable except for one writable subdirectory — a
+linked worktree's administration directory lives inside the repository's Git
+directory, and the repository's Git directory must stay read-only except for
+that one path. It is a grant, not a weaker write grant.
+
+The **Git-pointer exemption** is narrower. The protected mount view hides a
+`.git` entry that does not exist yet inside a writable root, because a child
+that creates one there would be planting repository metadata it controls. A
+linked worktree's `.git` is different: it is a *pointer file* naming the
+parent repository's `worktrees/` administration directory, and the child has
+to write it because Git refuses to create a worktree in a non-empty
+directory. `expected_created_git_pointers` names the exact paths that are
+expected, and each one must be the top-level `.git` of a **granted write
+root** — a nested path is refused when the launch description is built, not
+silently ignored. The caller still verifies afterwards that the result is a
+pointer file naming the expected administration directory, so a child that
+plants a nested repository instead is a failure rather than a success. ADR-0048
+(`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
+is the authority for the one operation that uses it.
 
 **Linux launch contract (M002 interface slice):**
 `src/security/sandbox/linux_launch.rs` models requested filesystem, network,

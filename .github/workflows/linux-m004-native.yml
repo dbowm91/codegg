@@ -55,6 +55,14 @@ on:
       - 'src/tool/git.rs'
       - 'src/tool/commit.rs'
       - 'tests/git_index_publication.rs'
+      # C008 contained worktree creation: the creation seam, the contained
+      # child, the grant it runs with, and the mount view that renders it.
+      # The contained `git worktree add` is only exercised here, so a change
+      # to any of these must be able to trigger this qualification job.
+      - 'crates/codegg-core/src/worktree.rs'
+      - 'crates/codegg-core/src/worktree_service.rs'
+      - 'src/git_contained_worktree.rs'
+      - 'tests/contained_worktree_c008.rs'
   push:
     paths:
       - '.github/workflows/linux-m004-native.yml'
@@ -108,6 +116,14 @@ on:
       - 'src/tool/git.rs'
       - 'src/tool/commit.rs'
       - 'tests/git_index_publication.rs'
+      # C008 contained worktree creation: the creation seam, the contained
+      # child, the grant it runs with, and the mount view that renders it.
+      # The contained `git worktree add` is only exercised here, so a change
+      # to any of these must be able to trigger this qualification job.
+      - 'crates/codegg-core/src/worktree.rs'
+      - 'crates/codegg-core/src/worktree_service.rs'
+      - 'src/git_contained_worktree.rs'
+      - 'tests/contained_worktree_c008.rs'
 
 permissions:
   contents: read
@@ -179,6 +195,15 @@ jobs:
         # this step rather than cancel the whole job.
         timeout-minutes: 10
         run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1
+
+      - name: C008 contained managed-worktree creation under containment
+        # The C008 qualification is recorded independently of the wider
+        # suite: it creates a real managed worktree through the contained
+        # child and proves that a hostile repository configuration cannot
+        # reach the host. Its own budget, so a hang here fails this step
+        # rather than cancelling the whole job.
+        timeout-minutes: 10
+        run: cargo test --locked --test contained_worktree_c008 -- --nocapture --test-threads=1
 
       - name: M004 managed-process host PID and IPC denial probes
         run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support -- --nocapture

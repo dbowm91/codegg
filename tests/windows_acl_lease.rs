@@ -75,6 +75,7 @@ async fn assert_reparse_root_rejected(root: PathBuf, marker: PathBuf) {
         linux_offline_network: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
+        expected_created_git_pointers: Vec::new(),
         target: executable,
         args: args
             .iter()
@@ -149,6 +150,7 @@ try {
         linux_offline_network: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
+        expected_created_git_pointers: Vec::new(),
         target: executable,
         args: args
             .iter()
@@ -240,6 +242,7 @@ async fn windows_acl_lease_cancellation_restores_after_job_termination() {
         linux_offline_network: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
+        expected_created_git_pointers: Vec::new(),
         target: executable,
         args: args
             .iter()

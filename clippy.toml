@@ -4,6 +4,16 @@
 # Maximum number of bytes before suggesting to use a Box
 large-error-threshold = 256
 
+# Maximum size for a single enum variant before suggesting to use a Box.
+#
+# `SandboxRequest::Required` carries the whole launch description — the
+# paths the child may read, the paths it may write, the paths it may never
+# touch, and the Git metadata it must not create in. That description is the
+# security boundary, so it travels as one typed value rather than as a set
+# of out-of-band parameters. It sits well under the 256 bytes this file
+# already accepts for an error type.
+enum-variant-size-threshold = 256
+
 # Maximum size for types on the stack before warning
 too-many-arguments-threshold = 8
 

@@ -2725,6 +2725,7 @@ mod tests {
             linux_offline_network: offline_network,
             protected_readonly_paths: vec![],
             path_identities: vec![],
+            expected_created_git_pointers: Vec::new(),
         }
     }
 
@@ -3070,6 +3071,7 @@ mod tests {
             linux_offline_network: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
             deny_paths: Vec::new(),
             target: PathBuf::from("/bin/sh"),
             args: vec!["-c".to_string(), format!("touch {}", marker.display())],
@@ -3370,6 +3372,7 @@ mod tests {
             linux_offline_network: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
             target: PathBuf::from("/bin/sh"),
             args: vec!["-c".to_string(), format!("touch {}", marker.display())],
             read_paths: vec![directory.path().to_path_buf()],
@@ -3403,6 +3406,7 @@ mod tests {
                 linux_offline_network: false,
                 protected_readonly_paths: Vec::new(),
                 path_identities: Vec::new(),
+                expected_created_git_pointers: Vec::new(),
                 deny_paths: Vec::new(),
                 target: PathBuf::from("/bin/sh"),
                 args: vec!["-c".to_string(), "true".to_string()],
@@ -4679,6 +4683,7 @@ mod tests {
                 linux_offline_network: false,
                 protected_readonly_paths: Vec::new(),
                 path_identities: Vec::new(),
+                expected_created_git_pointers: Vec::new(),
                 target: executable.clone(),
                 args: args
                     .iter()
