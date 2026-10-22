@@ -297,7 +297,7 @@ the branch's last measurement:
 - **Built-in slash commands** is 168, matching the tripwire
   `built_in_command_count_matches_release_docs` asserts; `main`'s
   Eggwork M002 `/nodes` and this branch's `/network` each moved it.
-- **Integration test files** is 298.
+- **Integration test files** is 300.
 - **Database tables (`CREATE TABLE`)** is 95 statements over 92 distinct
   names — `migration_version`, `origin_attribution` and the transient
   `origin_attribution_new` rebuild each appear twice — so the table
@@ -424,7 +424,7 @@ The remaining rows were re-measured against their own listed `Source` and did
 not move. The enum-variant measure was calibrated against the tree those values
 were published against before it was applied, as in the passes above, and the
 file-count measure reproduces both sides' published values exactly — 290 test
-files, 83 tool source files, 91 architecture docs and 66 guard scripts on this
+files, 83 tool source files, 91 architecture docs and 67 guard scripts on this
 branch, 286 / 80 / 87 / 62 on `main` — before it was applied to the merged
 tree.
 
@@ -453,8 +453,8 @@ tree.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 298 | `tests/*.rs` |
-| CI guard scripts | 66 | `scripts/check_*` |
+| Integration test files | 300 | `tests/*.rs` |
+| CI guard scripts | 67 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -768,7 +768,7 @@ Two rows moved again on **2026-10-20** when the M005 writer-containment correcti
 
 Three rows moved again on **2026-10-21** when the M005 writer-containment corrective closed C006 (restricted shared-checkout qualification), and one row was **corrected rather than incremented**: `codegg-core` modules are **53** (`pub mod` in `crates/codegg-core/src/lib.rs` — the count moved by two, the new `run_placement` module that owns the durable placement type and the platform availability gate, and the new `shared_checkout` module that owns the group's shared-checkout coordinator); integration test files are **283** (`ls tests/*.rs` — the count moved by one, `tests/shared_checkout_c006.rs`); CI guard scripts are **65** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_shared_checkout.py`). The **tool source files** row was **stale**: it read 81, but the C005 pass added `src/tool/process_admission.rs` and `src/tool/process_capability.rs` without re-measuring the row. Re-measured against its listed `Source` (`src/tool/**.rs`, incl. `bash/`) it is **83**. The table above now carries the measured values; the earlier rows remain correct for their own trees.
 
-Three rows moved again on **2026-10-22** when the agent-workstream blackboard closed M008 (comparative trajectory and economics qualification), and no row changed for any other reason: architecture docs are **91** (`architecture/*.md` — the count moved by one, the new `architecture/blackboard_contract_matrix.md`, which freezes the comparison baseline for the multi-agent workstream); integration test files are **298** (`ls tests/*.rs` — the count moved by two, `tests/blackboard_trajectory_m008.rs` and `tests/blackboard_economics_m008.rs`); CI guard scripts are **66** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_blackboard_contract_matrix.py`, which keeps that matrix frozen). M008 added no production code and no schema migration, so **every code-count row is unchanged**; each was re-checked against its listed `Source` rather than assumed. The shared fixture the two M008 suites use lives at `tests/common/blackboard.rs`, which the `tests/*.rs` Source does not count — the row measures top-level integration test binaries, not the support module beneath `tests/common/`.
+Three rows moved again on **2026-10-22** when the agent-workstream blackboard closed M008 (comparative trajectory and economics qualification), and no row changed for any other reason: architecture docs are **91** (`architecture/*.md` — the count moved by one, the new `architecture/blackboard_contract_matrix.md`, which freezes the comparison baseline for the multi-agent workstream); integration test files are **300** (`ls tests/*.rs` — the count moved by two, `tests/blackboard_trajectory_m008.rs` and `tests/blackboard_economics_m008.rs`); CI guard scripts are **67** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_blackboard_contract_matrix.py`, which keeps that matrix frozen). These rows were measured on the branch's own base and then **remeasured on the tree this branch lands on**: `main` had advanced past the M005 merge and added two integration test files (`tests/host_admission_manifest.rs`, `tests/tool_program_c002_delegated_ceiling.rs`) and one guard (`scripts/check_network_intent_owner_wiring.py`), so the two file-count rows are the union of both sides' contributions and the architecture-doc row is M008's alone. M008 added no production code and no schema migration, so **every code-count row is unchanged**; each was re-checked against its listed `Source` rather than assumed. The shared fixture the two M008 suites use lives at `tests/common/blackboard.rs`, which the `tests/*.rs` Source does not count — the row measures top-level integration test binaries, not the support module beneath `tests/common/`.
 
 Every other row was re-checked against its listed `Source` and is unchanged.
 

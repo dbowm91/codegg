@@ -374,7 +374,13 @@ reports `blackboard-contract-matrix self-test ok`.
 ## 12. Source verification
 
 Every file:line in §2 and §3 was read in the tree at `012ece80a`, and every
-consumer marker was re-confirmed by grep against it. The guard re-checks the
+consumer marker was re-confirmed by grep against it.
+
+The milestone was landed on `origin/main` at `8cee65934`, which is past the
+M005 merge. The counts in `architecture/overview.md` were therefore **remeasured
+on that base** rather than carried over: `main` had added two integration test
+files and one guard script since `012ece80a`, so the two file-count rows are the
+union of both sides' contributions. The guard re-checks the
 consumers on every run, so a matrix that drifts fails CI rather than quietly
 describing a tree that no longer exists. The measured numbers in §6 come from
 the run recorded in `target/m008-economics/blackboard-m008-economics.json` and
