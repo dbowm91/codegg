@@ -195,7 +195,10 @@ three rows above are the ones that qualify the line as merged.
 ### 5.2 The C004 corrective head
 
 Recorded in `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
-§5, with the run links and the executed counts.
+§5, with the run links and the executed counts. The sweep ran on three
+successive heads of the branch, because the sweep itself found two of the
+five defects the milestone introduced; the intermediate heads and their
+failures are recorded there rather than hidden.
 
 ### 5.3 Which boundaries need which hosted job
 

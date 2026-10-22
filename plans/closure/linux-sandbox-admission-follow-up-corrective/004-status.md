@@ -261,12 +261,17 @@ The self-test proves the runtime counter is not vacuous in both directions:
 | a run that did not execute the named test | rejected | rejected |
 | a healthy run | accepted | accepted |
 
-The static side is proved by injecting **seven** distinct tree defects, each
+The static side is proved by injecting **eight** distinct tree defects, each
 of which must be rejected by the check that owns it: the wrapper removed
 from the workflow, the registered command changed, the filter's tests
 renamed so it selects nothing, the security rationale blanked, the registry
 naming a test the filter does not select, a single-line wrapper step folded
-onto two lines, and a block-scalar wrapper step folded back onto one.
+onto two lines, a block-scalar wrapper step folded back onto one, and a
+registered command whose whitespace does not survive the shell-to-argv path.
+
+The runtime side adds two more cases: a verdict that interleaved onto the
+following line must be recognised as a verdict, and a named test that was
+never reported must still be reported as missing.
 
 #### 3.4.4 The silent self-skips
 
@@ -276,10 +281,10 @@ not as skipped. Those four now emit `skipped: ` markers:
 `src/interactive_process.rs` (1) and
 `tests/interactive_process_attach_resume.rs` (3).
 
-### 3.5 Two defects this milestone introduced, caught by the existing guards
+### 3.5 Five defects this milestone introduced, caught by the existing guards
 
 They are recorded because a reviewer should not have to find them by hand,
-and because one of them is exactly the class of defect this milestone was
+and because two of them are exactly the class of defect this milestone was
 supposed to prevent.
 
 **The Windows workflow folded seven steps onto one shell line.** The wrapper
@@ -315,6 +320,65 @@ pulled in with an explicit `#[path]` so the dependency is visible at the use
 site. The `.output()` call is gone; the fixture uses `.status()`, which the
 canonical finite path allows.
 
+**The wrapper stripped the `--` that separates cargo's arguments from the
+test binary's.** This one was caught by the **hosted** run `39720061964`
+(Linux Git object snapshot CoW qualification), which failed with
+
+```
+filter-execution control failed: the command is not a registered security
+filter, so nothing can be asserted about what it executed
+```
+
+The wrapper removed *every* `--` from the argv it received. The shell passes
+the command as `-- <tokens>`, and `argparse`'s REMAINDER keeps that
+separator — so exactly one **leading** `--` has to go. But a cargo command
+also carries an **interior** `--`, the one that separates cargo's own
+arguments from the test binary's arguments. Stripping that one changed the
+command, so the registry lookup — which is by the joined command — missed
+every one of the 20 entries, and the wrapper refused the step. The same
+strip also removed the separator cargo needs to forward `--nocapture`.
+
+The fix removes exactly one leading `--`. A new static check computes the
+key the wrapper would look up — the shell's tokens behind a `--`, with one
+leading separator removed — and requires it to equal the registered command.
+The check is not vacuous: reinstating the pre-fix normalisation makes it
+report **all 20** entries, and the self-test adds an injected defect (a
+registered command whose whitespace does not survive the shell-to-argv path)
+that the guard rejects.
+
+**The wrapper could not see a libtest verdict that interleaved onto the next
+line.** This one was caught by the hosted run `39720934488` (Linux C006
+protected mount qualification), which failed with
+
+```
+filter-execution control failed: the run did not report
+trusted_git_status_neutralizes_included_repository_configuration as executed
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out
+```
+
+All 20 tests ran and passed. libtest prints `test <name> ... <verdict>`, but
+a test whose *process-level* stderr interleaves puts the verdict on a
+following line — `git init` writes to the process stderr, which libtest does
+not capture:
+
+```
+test process::tests::trusted_git_status_neutralizes_included_repository_configuration ... Initialized empty Git repository in /tmp/.tmp9VQoEv/repo/.git/
+ok
+```
+
+The witness pattern required the verdict on the same line, so a test that
+really ran was reported as not executed. The same step would have failed on
+the M004 native tier, which runs the same filter.
+
+The witness extraction now also recognises a verdict that landed on a
+following line. **The self-test case for it is non-vacuous**, and the first
+attempt at it was not: the missing-witness check is skipped when the run
+reported on no test at all, so a *lone* interleaved test passed the control
+even with the pre-fix extraction. The fixture now carries a cleanly-reported
+test beside the interleaved one; with the pre-fix extraction reinstated the
+control reports `the run did not report some_test as executed`, and with the
+fix it reports nothing.
+
 **The guard was also made an order of magnitude faster.** `self_skipping_tests`
 rescanned every declared test name against every marker-bearing file *per
 registry entry*: 47 s for one `check_registry` call and **5m30s** for the
@@ -324,6 +388,96 @@ the source root's **content** rather than its path, so the self-test's copies
 share it. **47 s → 4.6 s** and **5m30s → 5.8 s**, with an unchanged result:
 the marker attribution stays deliberately conservative, so a name mentioned in
 any marker-bearing file still counts.
+
+### 3.6 The M004 native job was qualifying 9 of its 11 protected-mount regressions
+
+This one was caught by the hosted M004 run `39722365986`, and it is the most
+interesting of the five, because the milestone's own control exposed a
+**pre-existing** false green rather than one of its own making.
+
+The M004 `process-ipc` job's "Protected mount and Git regressions" step runs
+the `protected_mount_` filter, which selects **11** tests. Two of them — the
+real managed-process handoff and the PTY first hop — are behind the
+`CODEGG_RUN_C006_BWRAP_NATIVE` gate, and the M004 job does not enable it: it
+enables `CODEGG_RUN_C009_BWRAP_NATIVE`, `CODEGG_RUN_M004_BWRAP_NATIVE`,
+`CODEGG_RUN_M004_CARGO_NATIVE`, `CODEGG_RUN_M004_PTY_NATIVE` and
+`CODEGG_RUN_M005_OFFLINE_NATIVE`. So those two tests skipped there, and the
+step reported `11 passed` while qualifying **9**.
+
+One of the two skipped **silently** — `src/interactive_process.rs`'s
+`protected_mount_pty_first_hop_preserves_terminal_and_workspace_write` had a
+bare `return;` with no marker — so nothing reported it. The other emitted a
+marker, and the runtime control caught it:
+
+```
+filter-execution control failed: the run emitted 1 self-skip marker(s); a
+self-skip is not a skip-free run: skipped: set CODEGG_RUN_C006_BWRAP_NATIVE=1
+for native Bubblewrap qualification
+```
+
+**Three things were fixed.**
+
+1. The silent skip now emits a marker. A whole-tree sweep — every
+   environment-guarded `return` in `src/`, `tests/` and `crates/` — found
+   this one remaining site; the other four Class C silent skips were already
+   converted in this milestone.
+2. The M004 job now enables `CODEGG_RUN_C006_BWRAP_NATIVE`. The job already
+   installs Bubblewrap and enables user namespaces — **the same setup the
+   C006 job has** — so the gate's preconditions hold, and the step now
+   qualifies all 11 of the regressions it names instead of 9. The extra cost
+   is the two tests' own runtime, which the C006 job already runs in 0.68 s
+   alongside the other nine.
+3. A **static** control now catches this class before a hosted run can. The
+   registry records the native-qualification gates each step's job enables,
+   and the guard requires that every gate behind a self-skipping selected
+   test is one of them — and that every gate the registry declares is
+   actually set by that job. The gate is read from the **test's own
+   function body**, not from its file, because a file can hold tests behind
+   different gates.
+
+The static check is scoped to the step's **job**: a gate set on a different
+job does not enable anything for this one, and a workflow-level `env:` does
+apply to every job.
+
+**Non-vacuity.** Reinstating the pre-fix state — the C006 gate absent from
+the M004 job — makes the guard report exactly this entry:
+
+```
+.github/workflows/linux-m004-native.yml::process-ipc::Protected mount and Git
+regressions::cargo test --locked --lib protected_mount_ -- --nocapture: the
+registry declares the gate CODEGG_RUN_C006_BWRAP_NATIVE, but the workflow does
+not set it, so the step could not run what it claims to qualify
+```
+
+The self-test injects this defect two ways — removing the gate from the job,
+and removing it from the registry — and each is rejected by the check that
+owns it.
+
+**What this finding is worth.** Before this milestone, a native qualification
+step could report a green run having qualified only part of what its filter
+selected, and nothing in the repository could see it. That is precisely the
+failure C001 §10.3 named, and it was still live in the M004 tier when this
+milestone started.
+
+### 3.7 What the wrapper refuses on a host without native qualification
+
+Two of the registered filters — `protected_mount_` and the M004 native
+filters — are **native qualification** filters: their tests self-skip unless
+the host is natively qualified. On this workstation the wrapper **rejects**
+those steps, and that is the control working as intended: a native
+qualification step that skipped is exactly the false green the control exists
+to prevent.
+
+The qualified runners set the gates — `CODEGG_RUN_C009_BWRAP_NATIVE=1`,
+`CODEGG_RUN_M004_PTY_NATIVE=1`, `CODEGG_RUN_M004_RESTRICTED_USERNS=1` — so
+the tests run there and no marker is emitted. With
+`CODEGG_RUN_M004_RESTRICTED_USERNS=1` the restricted-userns PTY step passes
+locally: `1 test(s) executed, 1 registered test(s) witnessed, no self-skip
+marker emitted`.
+
+This is recorded rather than smoothed over: the local rejection is a
+property of this host, not a defect, and the hosted native tier is the
+evidence that the qualification actually happened.
 
 ## 4. Verification executed
 
@@ -340,7 +494,7 @@ any marker-bearing file still counts.
 | `python3 scripts/check_adr_integrity.py` (+ `--self-test`) | pass |
 | `python3 scripts/check_project_catalog_invariants.py` | 7/7 |
 | `python3 scripts/check_test_filter_execution.py` | 20 registered filters verified |
-| `python3 scripts/check_test_filter_execution.py --self-test` | 7 injected defects, each rejected |
+| `python3 scripts/check_test_filter_execution.py --self-test` | 8 injected defects, each rejected |
 
 ### 4.2 The focused test targets
 
@@ -396,40 +550,67 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Corrective head:** `a6e5966424664d210933ddd782966736d3c2797b` on
+**Corrective head:** `e3685b5680e63ace9e7adde0e69ee03c82e9c66b` on
 `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
 
 ### 5.1 The hosted runs
 
-| Run | Workflow | Event | Result |
+The sweep was run on three successive heads of the branch, because the
+sweep itself found two of the five defects in §3.5. The intermediate heads
+are recorded rather than hidden: they are the evidence that the sweep is
+doing work.
+
+| Run | Head | Workflow | Result |
 |---|---|---|---|
-| `39720061913` | `CI` — the default sweep | `pull_request` | see §5.2 |
-| `39720061957` | Linux M004 process and IPC qualification | `pull_request` | see §5.2 |
-| `39720061980` | Linux C006 protected mount qualification | `pull_request` | see §5.2 |
-| `39720061964` | Linux Git object snapshot CoW qualification | `pull_request` | see §5.2 |
-| `39720061973` | Windows process launcher | `pull_request` | **not awaited** — see §5.3 |
-| `39719961702` | Linux M004 process and IPC qualification | `push` | see §5.2 |
+| `39720061964` | `a6e596642` | Linux Git object snapshot CoW qualification | **failure** — the wrapper refused the step; §3.5 defect 3 |
+| `39720934488` | `8aebb0b38` | Linux C006 protected mount qualification | **failure** — the wrapper could not see a witness; §3.5 defect 4 |
+| `39722366126` | `e3685b568` | `CI` — the default sweep | **success** — 16,031 tests run, 16,031 passed, 9 skipped |
+| `39722365986` | `e3685b568` | Linux M004 process and IPC qualification | **failure** — the wrapper caught a self-skip in the protected-mount step; §3.6 |
+| `39722366140` | `e3685b568` | Linux C006 protected mount qualification | **success** |
+| `39722366040` | `e3685b568` | Linux Git object snapshot CoW qualification | **success** |
+| `39722365990` | `e3685b568` | Windows process launcher | **success** |
+
+The macOS target compile was **not run** on this head; see §5.3.
 
 ### 5.2 The executed counts
 
-§5.2 is filled from the hosted run logs.
+Every count below is the wrapper's own line, read from the run log — not an
+estimate, and not a count the guard assumed.
+
+| Run | Workflow | Step | Executed | Witnesses | Self-skip marker |
+|---|---|---|---|---|---|
+| `39722366126` | `CI` | `Workspace tests` | **16,031 tests run, 16,031 passed**, 9 skipped (1 slow) | — | none |
+| `39722366140` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39722366140` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39722366040` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39722365990` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39722365986` | M004 | 7 filter steps before the protected-mount step | **1 each** | **1 each** | none |
+
+The Windows job's **8** registered filters run in **6** steps on a
+`pull_request`: the WRITE_RESTRICTED feasibility probe and the C044 token-flag
+differential are gated on `workflow_dispatch` with
+`inputs.run_bounded_successor_probes`, so they did not run here. That is the
+step's own `if:` condition, not a skip the wrapper tolerated.
+
+The C006 job's `trusted_git` step reports **17** witnesses against **20**
+executed: the filter selects 20 tests and the registry names the 17 it
+requires. The registry's list is the *required* set, not the exhaustive one.
 
 ### 5.3 The platform scope, stated honestly
 
-Per the user's instruction to keep testing scoped to what changed, the
-**Windows** and **macOS** hosted jobs were **not awaited** for this head.
-
-* The Windows process-launcher job (`39720061973`) was started by the pull
-  request and its result is **not** claimed here. It is recorded as *not
-  awaited*, which is not the same as a pass.
-* The macOS target compile was **not run** on this head.
+* The **Windows** process-launcher job was run and **passed** on the
+  corrective head (`39722365990`). It was not awaited on the intermediate
+  heads, and the final result is recorded from the run rather than inferred.
+* The **macOS** target compile was **not run** on this head. It is recorded
+  as *not run*, not as a pass.
 * The plan's WP5 asks to "await the native and macOS jobs only for the
   boundaries the ledger marks as needing them". The C004 head changes
   `src/interactive_process.rs`, which the M004 native tier's trigger list
-  names, so the **M004 native tier is awaited and its result is recorded**.
-  The C006 protected-mount tier and the Git CoW tier are awaited for the
-  same reason: the head changes the workflow files that own them.
+  names, so the **M004 native tier is awaited and its result is recorded** —
+  including the failure that found §3.6. The C006 protected-mount tier and
+  the Git CoW tier are awaited for the same reason: the head changes the
+  workflow files that own them.
 
 **No platform behaviour is inferred from a job that was not run.**
 

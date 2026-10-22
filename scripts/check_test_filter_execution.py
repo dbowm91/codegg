@@ -67,6 +67,10 @@ MANIFEST_PATH = Path("docs") / "security-test-filters.toml"
 # single-prefix detector cannot miss one class.
 SELF_SKIP_PREFIXES = ("skipped: ", "skipping ")
 
+# The native-qualification gates: the environment variables a self-skipping
+# test reads to decide whether it may run for real.
+GATE_NAME = re.compile(r"\bCODEGG_RUN_[A-Z0-9_]+\b")
+
 # `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out;`
 CARGO_RESULT = re.compile(
     r"test result:\s*\w+\.\s*(?P<passed>\d+)\s+passed;\s*(?P<failed>\d+)\s+failed",
@@ -117,6 +121,7 @@ class FilterEntry:
     filter: str
     tests: tuple[str, ...]
     security: str
+    gates: tuple[str, ...]
 
     @property
     def label(self) -> str:
@@ -174,6 +179,7 @@ def parse_manifest(path: Path) -> tuple[list[FilterEntry], list[str]]:
                         filter=current["filter"],
                         tests=tests,
                         security=current["security"],
+                        gates=_split_list(current.get("gates", "")),
                     )
                 )
         current = {}
@@ -297,6 +303,7 @@ def module_path_for(root: Path, path: Path, source_root: str) -> str:
 # self-test checks the same source under several directories, and keying by
 # path would make every copy pay for a full re-read and re-parse.
 _DECLARED_CACHE: dict[tuple[str, str], dict[str, str]] = {}
+_DECLARED_GATES_CACHE: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {}
 _SOURCE_TEXT_CACHE: dict[tuple[str, str], list[str]] = {}
 _MARKER_NAMES_CACHE: dict[tuple[str, str], set[str]] = {}
 _FINGERPRINT_CACHE: dict[tuple[str, str], str] = {}
@@ -347,33 +354,69 @@ def declared_tests(root: Path, source_root: str) -> dict[str, str]:
     if cached is not None:
         return cached
     found: dict[str, str] = {}
+    gates: dict[str, tuple[str, ...]] = {}
     for path in iter_source_files(root, source_root):
         text = path.read_text(encoding="utf-8", errors="replace")
         file_module = module_path_for(root, path, source_root)
         stack: list[tuple[str, int]] = []
         depth = 0
         pending_test_attribute = False
+        # The test whose body is currently being read, with the gates it names.
+        pending: list = []
+
+        def close_pending() -> None:
+            if pending:
+                gates[pending[0][0]] = tuple(sorted(set(pending[0][2])))
+                pending.clear()
+
         for raw in text.splitlines():
             module = MOD_DECL.match(raw)
             if module and raw.rstrip().endswith("{"):
                 stack.append((module.group(1), depth))
+            previous_depth = depth
             opens = raw.count("{")
             closes = raw.count("}")
             depth += opens - closes
             while stack and depth <= stack[-1][1]:
                 stack.pop()
+            if pending and depth <= pending[0][1]:
+                close_pending()
             if TEST_ATTRIBUTE.match(raw):
                 pending_test_attribute = True
                 continue
             declaration = FN_DECL.match(raw)
             if declaration and pending_test_attribute:
+                close_pending()
                 parts = [p for p in ([file_module] if file_module else [])]
                 parts.extend(name for name, _ in stack)
                 parts.append(declaration.group(1))
-                found["::".join(parts)] = declaration.group(1)
+                full_path = "::".join(parts)
+                found[full_path] = declaration.group(1)
+                # The gates are read from the function's own body, not from
+                # the whole file: a file can hold tests behind different gates.
+                pending.append((full_path, previous_depth, []))
                 pending_test_attribute = False
+            elif pending:
+                pending[0][2].extend(GATE_NAME.findall(raw))
+        close_pending()
     _DECLARED_CACHE[key] = found
+    _DECLARED_GATES_CACHE[key] = gates
     return found
+
+
+def declared_test_gates(root: Path, source_root: str) -> dict[str, tuple[str, ...]]:
+    """The native-qualification gates each declared test's file names.
+
+    A test that self-skips is behind an environment variable. The gate is
+    read from the file that declares the test, so the whole file's set is
+    attributed to each of its tests. That over-approximates, and it
+    over-approximates in the safe direction: a gate that appears anywhere in
+    the file still has to be declared for the step that selects the test.
+    """
+    key = (source_root, source_fingerprint(root, source_root))
+    if key not in _DECLARED_GATES_CACHE:
+        declared_tests(root, source_root)
+    return _DECLARED_GATES_CACHE.get(key, {})
 
 
 def filter_matches(filter_text: str, full_path: str, function_name: str) -> bool:
@@ -566,7 +609,96 @@ def check_registry(root: Path) -> list[str]:
                 "its command does not pass `--nocapture`, so the skip marker cannot be observed"
             )
 
+        # Every gate a self-skipping selected test is behind must be enabled by
+        # the step's job. A gate that is not enabled makes the test skip, and a
+        # step whose tests skip is a green run that qualified nothing.
+        declared_gates = set(entry.gates)
+        for gate in sorted(declared_gates):
+            if not workflow_enables_gate(workflow_text, gate, entry.job):
+                problems.append(
+                    f"{entry.label}: the registry declares the gate {gate}, but the workflow does not set "
+                    "it, so the step could not run what it claims to qualify"
+                )
+        for source_root in source_roots_for(entry.command):
+            gates_by_test = declared_test_gates(root, source_root)
+            for full_path in skipping:
+                for gate in gates_by_test.get(full_path, ()):  # a test with no gate cannot skip
+                    if gate not in declared_gates:
+                        problems.append(
+                            f"{entry.label}: the selected test {full_path} is behind the gate {gate}, "
+                            "which the step's job does not enable, so the step would skip it and report a "
+                            "green run that qualified less than it claims"
+                        )
+
     return problems
+
+
+def workflow_job_block(workflow_text: str, job: str) -> str:
+    """The YAML block of one job in a workflow.
+
+    Scoped to the job on purpose: a gate set on a *different* job does not
+    enable anything for this one, and a workflow-level `env:` applies to
+    every job — so a gate is only accepted if the step's own job, or the
+    workflow as a whole, enables it.
+    """
+    lines = workflow_text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(rf"^  {re.escape(job)}:\s*$", line):
+            start = index
+            break
+    if start is None:
+        return workflow_text
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if re.match(r"^  \S", lines[index]):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def workflow_top_level_env(workflow_text: str) -> str:
+    """The workflow's own top-level `env:` block.
+
+    A top-level `env:` applies to every job in the workflow. A *job's*
+    `env:` applies only to that job, so a gate set on one job does not
+    enable anything for another.
+    """
+    lines = workflow_text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(r"^env:\s*$", line):
+            start = index
+            break
+    if start is None:
+        return ""
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].strip() and not lines[index].startswith((" ", "\t")):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def workflow_enables_gate(workflow_text: str, gate: str, job: str = "") -> bool:
+    """Whether the workflow sets `gate` to an enabled value for this job.
+
+    The check is textual on purpose: the guard must not depend on a YAML
+    parser being present on the runner. A commented-out gate does not count,
+    and a gate set on a *different* job does not count either.
+    """
+    pattern = re.compile(rf"^\s*{re.escape(gate)}\s*:\s*['\"]?([^'\"\s#]+)", re.MULTILINE)
+    scopes: list[str] = []
+    if job:
+        scopes.append(workflow_job_block(workflow_text, job))
+    scopes.append(workflow_top_level_env(workflow_text))
+    for scope in scopes:
+        for match in pattern.finditer(scope):
+            value = match.group(1).strip()
+            if value in ("", "0", "false", "False"):
+                continue
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -807,6 +939,51 @@ def _fold_wrapper_run(work: Path, probe: FilterEntry) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _drop_gate_from_workflow(work: Path, probe: FilterEntry) -> None:
+    """Stop the probe's job from enabling one of its native-qualification gates."""
+    path = work / probe.workflow
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(rf"^  {re.escape(probe.job)}:\s*$", line):
+            start = index
+            break
+    if start is None:
+        raise AssertionError(f"no job {probe.job} in {probe.workflow}")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if re.match(r"^  \S", lines[index]):
+            end = index
+            break
+    doomed: list[int] = []
+    for gate in probe.gates:
+        pattern = re.compile(rf"^[ \t]*{re.escape(gate)}[ \t]*:")
+        for index in range(start, end):
+            if pattern.match(lines[index]):
+                doomed.append(index)
+    if not doomed:
+        raise AssertionError(f"no gate of {probe.gates} found in the {probe.job} job")
+    for index in reversed(doomed):
+        del lines[index]
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def _drop_gate_from_registry(work: Path, probe: FilterEntry) -> None:
+    """Stop the registry from declaring one of the probe's gates."""
+    path = work / MANIFEST_PATH
+    text = path.read_text(encoding="utf-8")
+    for gate in probe.gates:
+        needle = f'gates = ["{gate}"]'
+        if needle in text:
+            path.write_text(text.replace(needle, 'gates = []', 1), encoding="utf-8")
+            return
+        needle = f"gates = [{gate}]"
+        if needle in text:
+            path.write_text(text.replace(needle, "gates = []", 1), encoding="utf-8")
+            return
+    raise AssertionError(f"no gate of {probe.gates} found in the registry")
+
+
 def self_test() -> int:
     """Prove the guard is not vacuous."""
     failures: list[str] = []
@@ -833,6 +1010,10 @@ def self_test() -> int:
                 (entry for entry in entries if "windows-process-launcher" in entry.workflow),
                 probe,
             )
+            # A second probe whose filter selects a self-skipping test, so
+            # the native-qualification gate checks are proved against a step
+            # that really has a gate.
+            gated_probe = next((entry for entry in entries if entry.gates), probe)
             cases = [
                 (
                     "the workflow step stops running through the counting wrapper",
@@ -888,6 +1069,16 @@ def self_test() -> int:
                         probe.command.replace(" -- ", "  -- ", 1),
                     ),
                     "shell-to-argv path",
+                ),
+                (
+                    "the job stops enabling a native-qualification gate its step needs",
+                    lambda work: _drop_gate_from_workflow(work, gated_probe),
+                    "the workflow does not set it",
+                ),
+                (
+                    "the registry stops declaring a native-qualification gate",
+                    lambda work: _drop_gate_from_registry(work, gated_probe),
+                    "which the step's job does not enable",
                 ),
             ]
 

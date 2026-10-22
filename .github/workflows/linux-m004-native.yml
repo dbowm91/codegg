@@ -131,6 +131,15 @@ jobs:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_M004_BWRAP_NATIVE: '1'
       CODEGG_RUN_C009_BWRAP_NATIVE: '1'
+      # The "Protected mount and Git regressions" step runs the
+      # `protected_mount_` filter, which also selects the two protected-mount
+      # regressions gated on the C006 native qualification — the real managed
+      # process handoff and the PTY first hop. Without this gate those two
+      # tests skipped here, and one of them skipped *silently*, so the step
+      # reported a green run that had qualified only 9 of its 11 selected
+      # tests. This job installs Bubblewrap and enables user namespaces, the
+      # same setup the C006 job has, so the gate's preconditions hold.
+      CODEGG_RUN_C006_BWRAP_NATIVE: '1'
       CODEGG_RUN_M004_CARGO_NATIVE: '1'
       CODEGG_RUN_M004_PTY_NATIVE: '1'
       CODEGG_RUN_M005_OFFLINE_NATIVE: '1'
