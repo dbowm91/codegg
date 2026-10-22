@@ -626,6 +626,25 @@ bash scripts/verify.sh quick
   runs that target — the Linux M004 lane does — so it is recorded rather
   than repaired, and `architecture/testing.md`'s known-macOS-failures table
   does not yet list it.
+- **The Desktop E2E lane is red on the branch, and it is red on `main` with the
+  identical assertion.** The branch's run `39860226104` fails in
+  `apps/desktop/e2e/specs/m004-session.e2e.ts` with
+  `element ("[data-testid="permission-list"]") still not existing after
+  120000ms` at `m004-session.e2e.ts:169:5`. `main`'s **own most recent** run,
+  `39679968444` at `53d9fc9fd`, fails with the **same** message, at the
+  **same** file and line, with the same timeout. `main`'s history is nine
+  failures with one older success, so the lane has been red on `main` for
+  days.
+
+  The lane runs on the branch only because the branch touches two of the
+  workflow's path filters, and **both** changes are inert with respect to the
+  failure: `.github/workflows/desktop-e2e.yml` adds
+  `--config 'profile.dev.strip="none"'` to the daemon build so the bundled
+  binary keeps its debug info, and
+  `src/core/transport/daemon_socket_integration_tests.rs` repoints a stale
+  path in a **doc comment**. Neither can make the renderer stop emitting the
+  permission list. The failure belongs to the desktop foundation's line
+  (`apps/desktop/`), not to this one.
 - **The eight macOS-only clippy findings in `origin/main`'s files.** They are
   `#[cfg(not(target_os = "linux"))]` code that no macOS path calls. They
   belong to `main`, they are invisible to Linux CI, and fixing them means
