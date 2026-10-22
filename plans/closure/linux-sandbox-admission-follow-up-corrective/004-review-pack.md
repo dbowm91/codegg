@@ -196,9 +196,9 @@ three rows above are the ones that qualify the line as merged.
 
 Recorded in `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`
 §5, with the run links and the executed counts. The sweep ran on successive
-heads of the branch, because the sweep itself found two of the five defects
-the milestone introduced; the intermediate heads and their failures are
-recorded there rather than hidden.
+heads of the branch, because the sweep itself found three of the five defects
+the milestone introduced — two of them in §3.5 and the fifth in §3.6; the
+intermediate heads and their failures are recorded there rather than hidden.
 
 ### 5.3 Which boundaries need which hosted job
 

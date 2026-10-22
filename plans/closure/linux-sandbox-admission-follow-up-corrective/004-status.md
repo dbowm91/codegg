@@ -560,16 +560,24 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Corrective head:** `18bffb33906b0896c7b17fe06767ee485bac28fe` on
+**Corrective head:** `fa8dbf413ff3b6911073046be3a9a2c5a6f958a8` on
 `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
 
+The evidence head `fa8dbf413` changes **only this record** — no source, no
+test, no workflow, no guard — so the sweep on it qualifies the merged tree's
+code exactly. The commit that adds this attribution is documentation-only as
+well: it touches this record and the sibling review pack, and moves no code
+under test. `git diff --name-only` against the evidence head shows those two
+files alone.
+
 ### 5.1 The hosted runs
 
-The sweep was run on three successive heads of the branch, because the
-sweep itself found two of the five defects in §3.5. The intermediate heads
-are recorded rather than hidden: they are the evidence that the sweep is
-doing work.
+The sweep was run on successive heads of the branch, because the sweep itself
+found three of the five defects in §3.5 and §3.6 — two of them in §3.5 and the
+fifth in §3.6. The other two were caught locally, before a hosted run ever
+executed them. The intermediate heads are recorded rather than hidden: they are
+the evidence that the sweep is doing work.
 
 | Run | Head | Workflow | Result |
 |---|---|---|---|
@@ -581,11 +589,17 @@ doing work.
 | `39731707200` | `18bffb339` | Linux C006 protected mount qualification | **success** |
 | `39731707258` | `18bffb339` | Linux Git object snapshot CoW qualification | **success** |
 | `39731707127` | `18bffb339` | Windows process launcher | **success** |
+| `39735856172` | `fa8dbf413` | `CI` — the default sweep | **success** — 16,031 tests run, 16,031 passed, 9 skipped |
+| `39735856365` | `fa8dbf413` | Linux M004 process and IPC qualification | **success** — `restricted-userns-fails-closed` **success**, `process-ipc` **success**, `git-cost-pilot` skipped |
+| `39735856175` | `fa8dbf413` | Linux C006 protected mount qualification | **success** |
+| `39735856194` | `fa8dbf413` | Linux Git object snapshot CoW qualification | **success** |
+| `39735856171` | `fa8dbf413` | Windows process launcher | **success** |
 
-**All five workflows are green on the final head.** The three failures above
-are the earlier heads, and each one found a defect that is now fixed and
-guarded — they are recorded here rather than hidden, because they are the
-evidence that the sweep is doing work.
+**All five workflows are green on the final head, and green again on its
+documentation-only successor.** The three failures above are the earlier heads,
+and each one found a defect that is now fixed and guarded — they are recorded
+here rather than hidden, because they are the evidence that the sweep is doing
+work.
 
 The macOS target compile was **not run** on this head; see §5.3.
 
@@ -604,6 +618,18 @@ estimate, and not a count the guard assumed.
 | `39731707200` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39731707258` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39731707127` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39735856172` | `CI` | `Workspace tests` | **16,031 tests run, 16,031 passed**, 9 skipped (1 slow) | — | none |
+| `39735856365` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39735856365` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39735856365` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39735856175` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39735856175` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39735856194` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39735856171` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+
+The counts are **identical** on the two green heads. That is the reproducibility
+claim made concrete: the same tree yields the same executed count, the same
+witness set and the same absence of self-skip markers on every job.
 
 The M004 protected-mount step's **11 executed, 11 witnessed, no marker** is
 the fix in §3.6 working: before it, the step reported `11 passed` while
@@ -623,8 +649,9 @@ requires. The registry's list is the *required* set, not the exhaustive one.
 ### 5.3 The platform scope, stated honestly
 
 * The **Windows** process-launcher job was run and **passed** on the
-  corrective head (`39731707127`). The final result is recorded from the run
-  rather than inferred.
+  corrective head (`39735856171`, and again on the preceding head
+  `39731707127`). The final result is recorded from the run rather than
+  inferred.
 * The **macOS** target compile was **not run** on this head. It is recorded
   as *not run*, not as a pass.
 * The plan's WP5 asks to "await the native and macOS jobs only for the
