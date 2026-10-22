@@ -578,6 +578,13 @@ evidence for the diagnosis.
 boundary, and it is touched **only inside its test module**. No production
 behaviour changed. The review pack's chunk 9 is updated to include it.
 
+**The fix is validated on the runner that failed it.** The hosted M004 run
+`39763779281` on the fix head `99f15e180` reports the `protected_mount_`
+filter at **11 executed, 11 witnessed, no self-skip marker** — the same
+filter that reported `10 passed; 1 failed` before the fix. Every other
+filter count on that head is identical to the earlier green heads, and the
+CI sweep passed 16,061 tests.
+
 ### 3.8 What the wrapper refuses on a host without native qualification
 
 Two of the registered filters — `protected_mount_` and the M004 native
@@ -686,10 +693,9 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Code-bearing head:** the branch head carrying §3.7's fix. The merge commit
-`259794bb9` (this branch merged with `main`@`47f5572b1`) is the code-bearing
-head before that fix; the fix's own head and its hosted sweep are named in
-the attribution commit that follows it.
+**Code-bearing head:** `99f15e180d2b84dc04df506bb3bb6a89efe90bb6` — the
+merge commit `259794bb9` (this branch merged with `main`@`47f5572b1`) plus
+§3.7's fix.
 **Branch:** `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
 
@@ -708,7 +714,9 @@ commit, and its own sweep is green on all five workflows (`39748205888`,
 `5b7ab4887` is that plus two more documentation-only commits; four of its
 five workflows were green and the M004 native job failed on §3.7's race,
 which its re-run then passed — a pre-fix tree, so the race is intermittent
-and load-dependent rather than deterministic on that runner.
+and load-dependent rather than deterministic on that runner. The head
+`99f15e180` adds §3.7's fix and is green on all six workflows, including the
+M004 native tier that failed before the fix.
 
 ### 5.0 The base moved under this branch
 
@@ -774,8 +782,15 @@ the evidence that the sweep is doing work.
 | `39748205884` | `d85c402a9` | Windows process launcher | **success** |
 | `39753981468` | `5b7ab4887` | Linux M004 process and IPC qualification | **failure** — the `protected_mount_` step failed on a cancel/spawn race in one of its own regressions; §3.7 |
 | `39753981468` (attempt 2) | `5b7ab4887` | Linux M004 process and IPC qualification | **success** — the same tree, re-run; the race is intermittent and load-dependent; §3.7 |
+| `39763779271` | `99f15e180` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
+| `39763779281` | `99f15e180` | Linux M004 process and IPC qualification | **success** — the §3.7 fix, qualified on the runner that failed it |
+| `39763779119` | `99f15e180` | Linux C006 protected mount qualification | **success** |
+| `39763779280` | `99f15e180` | Linux Git object snapshot CoW qualification | **success** |
+| `39763779264` | `99f15e180` | Windows process launcher | **success** |
+| `39763779109` | `99f15e180` | Shared checkout macOS qualification | **success** — `main`'s M005 shared-checkout lane, pulled in by the §5.0 merge; see §5.3 |
 
-**All five workflows are green on the closing head.** The failures above are
+**All five milestone workflows are green on the closing head `99f15e180`**, and
+so is the sixth, `main`'s macOS shared-checkout lane. The failures above are
 the earlier heads, and each one found a defect that is now fixed and guarded —
 they are recorded here rather than hidden, because they are the evidence that
 the sweep is doing work. Two of them are of a different kind and are recorded
@@ -864,6 +879,14 @@ estimate, and not a count the guard assumed.
 | `39753981468` (attempt 2) | M004 | 4 single-test filter steps | **1 each** | **1 each** | none |
 | `39753981468` (attempt 2) | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
 | `39753981468` (attempt 2) | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39763779271` | `CI` | `Workspace tests` | **16,061 tests run, 16,061 passed**, 9 skipped | — | none |
+| `39763779281` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39763779281` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39763779281` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39763779119` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39763779119` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39763779280` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39763779264` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
 
 **Every security-filter count is identical on all four green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
@@ -897,7 +920,15 @@ requires. The registry's list is the *required* set, not the exhaustive one.
   `39740206635`, `39735856171` and `39731707127`). The final result is
   recorded from the run rather than inferred.
 * The **macOS** target compile was **not run** on this head. It is recorded
-  as *not run*, not as a pass.
+  as *not run*, not as a pass. The workflow that runs it
+  (`command-authorization-macos-compile.yml`, one-shot) is triggered by
+  `workflow_dispatch` or a push to one of two *named* branches —
+  `planning/linux-sandbox-next-admission-and-adr-cleanup` and
+  `planning/linux-execution-isolation` — and this branch is neither, so it
+  cannot run here without a manual dispatch. The **macOS shared-checkout
+  qualification** (`39763779109`) is a *different* workflow from `main`'s
+  M005 line, it did run on this head, and it passed; it qualifies the shared
+  checkout profile, not this milestone's boundary.
 * The plan's WP5 asks to "await the native and macOS jobs only for the
   boundaries the ledger marks as needing them". The C004 head changes
   `src/interactive_process.rs`, which the M004 native tier's trigger list
