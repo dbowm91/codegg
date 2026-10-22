@@ -274,7 +274,7 @@ either side. Two rows moved; the rest did not.
 | Row | Before | After | Source |
 |---|---:|---:|---|
 | Integration test files | 302 | **318** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded — 3 top-level + 315 members |
-| CI guard scripts | 68 | **74** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted |
+| CI guard scripts | 68 | **75** | `scripts/check_*` — 6 from `main`, the branch's 6 already counted, plus the 1 this line adds |
 
 The remaining rows were re-measured and did not move: `codegg-core` modules
 **54**, `CoreRequest` variants **263** (239 struct + 24 unit), `CoreResponse`
@@ -292,12 +292,18 @@ docs **91**, workspace member crates **11 (+ root)**.
 
 Two of these deserve their derivation stated, because both sides had changed
 the source they are measured from:
-
 - **The integration-test measure did not change.** It is M004's measure —
   root integration test *modules* — and the absorption moved a file without
   moving the count: 16 + 302 = 318 before the absorption, 3 + 315 = 318 after
   it. The count on `origin/main` is 318 too, by the other route: 302 top-level
   files + 16 predecessor members.
+- **The guard-script measure moved once more, for this line's own guard.**
+  `scripts/check_test_self_reexec_paths.py` is the seventy-fifth
+  `scripts/check_*` script, and it exists because the absorption changed the
+  path cargo knows a moved test by (§2.5). It is measured the same way as
+  every other guard — `ls scripts/check_*` — and the integration-test row
+  beside it is unchanged, because the absorption moved files without adding
+  or removing one.
 - **The tool-name row did not move, and it had been measured correctly.** The
   row's parenthetical names 66 production `impl Tool for` blocks and 7
   test-only mocks. The mock in `broker.rs` is spelled

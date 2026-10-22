@@ -521,7 +521,11 @@ The **CI guard scripts** row moved 68 → **74**: six guards came from `main`
 (`check_blackboard_contract_matrix.py`, `check_network_intent_owner_wiring.py`,
 `check_process_denial.py`, `check_shared_checkout.py`,
 `check_test_filter_execution.py` and `check_writer_disposition.py`), and the
-branch's own six are already counted.
+branch's own six are already counted. It then moved 74 → **75** with
+`check_test_self_reexec_paths.py`, which the merge's own hosted lanes showed
+to be needed: moving a test into a family changes the path cargo knows it by,
+and a self-re-exec test that names the old bare path selects **zero** tests
+while still exiting **0**.
 
 The remaining rows were re-measured against their own listed `Source` and did
 not move: `codegg-core` modules **54**, `CoreRequest` variants **263** (239
@@ -563,7 +567,7 @@ workspace member crates **11 (+ root)**.
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 318 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| CI guard scripts | 74 | `scripts/check_*` |
+| CI guard scripts | 75 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -884,6 +888,8 @@ Every other row was re-checked against its listed `Source` and is unchanged.
 One row moved on **2026-10-22** when the Linux trusted Git cost corrective opened C008 (contained managed-worktree creation): integration test files are **301** (`ls tests/*.rs` — the count moved by one, `tests/contained_worktree_c008.rs`). C008 added one production source file (`src/git_contained_worktree.rs`) but **no** new `codegg-core` module (the new items live in the existing `worktree_service` and `worktree` modules), **no** schema migration, **no** new `GitOperation` variant, **no** new tool, **no** new request/response/event variant and **no** new guard script — so every code-count row is unchanged, each re-checked against its own listed `Source` rather than assumed. The **architecture docs** row is unchanged at **91** (`architecture/*.md`): C008 extended `git.md` and `session_launch.md` rather than adding a document. The `git` module's own deep dive covers the new contained route; see [git.md](git.md) §"Contained managed-worktree creation".
 
 **Amended 2026-10-22 (same row, no count moved).** The contained operation was **measured** to be two steps rather than one: `git worktree add <path> <existing-branch>` locks and rewrites `refs/heads/<branch>` even when the value is unchanged, so it cannot run inside a grant that excludes `refs`. ADR-0048 was **amended** accordingly — the operation is `git worktree add --detach <path> <commit>` followed by `git symbolic-ref HEAD refs/heads/<branch>`, both inside the same containment. The writable set did not widen, no code-count row moved, and no new module, variant, tool or guard was added.
+
+One row moved on **2026-10-22** when the CI/test-throughput recovery line reconciled with `main` and absorbed `main`'s integration tests into the recovery families: CI guard scripts are **75** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_test_self_reexec_paths.py`). The **integration test files** row is unchanged at **318** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded): the absorption moved files between families without adding or removing one. The new guard exists because the absorption changed the path cargo knows a moved test by — a family member's path is `<member>::<test_fn>`, a standalone target's is `<test_fn>` — and a self-re-exec test that keeps the old bare path selects **zero** tests while still exiting **0**, so the child does no work and the parent reads that empty success as evidence. The hosted Windows and Linux M004 lanes showed both consequences: a fixture child that published no PID, and an interrupted-publication recovery scenario that was never exercised. Every code-count row was re-checked against its own listed `Source` and is unchanged.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.
