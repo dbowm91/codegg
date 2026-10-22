@@ -106,12 +106,7 @@ impl FakeTuiState {
                     self.recent_turn_count += 1;
                 }
             }
-            ProjectionEvent::TurnFailed {
-                turn_id,
-                message: _,
-                failed_at: _,
-                ..
-            } => {
+            ProjectionEvent::TurnFailed { turn_id, .. } => {
                 if self.active_turn_id.as_deref() == Some(turn_id.as_str()) {
                     self.active_turn_id = None;
                     self.active_turn_status = None;
