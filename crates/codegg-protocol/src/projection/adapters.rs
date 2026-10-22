@@ -714,15 +714,23 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             events.push(ProjectionEvent::JobUpserted { job });
         }
         CoreEvent::JobStarted {
-            job_id, attempt_id, ..
+            job_id,
+            attempt_id,
+            session_id,
+            workspace_id,
+            kind,
         } => {
             let job = JobProjection {
                 job_id: job_id.clone(),
-                workspace_id: String::new(),
-                kind: String::new(),
+                workspace_id: workspace_id.clone().unwrap_or_default(),
+                kind: truncate_str(
+                    kind.as_deref().unwrap_or_default(),
+                    MAX_PROJECTION_STRING_BYTES,
+                )
+                .into_owned(),
                 state: "started".to_string(),
                 summary: attempt_id.clone(),
-                session_id: env.session_id.clone(),
+                session_id: session_id.clone().or_else(|| env.session_id.clone()),
                 turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: None,
@@ -731,15 +739,23 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             events.push(ProjectionEvent::JobUpserted { job });
         }
         CoreEvent::JobCompleted {
-            job_id, attempt_id, ..
+            job_id,
+            attempt_id,
+            session_id,
+            workspace_id,
+            kind,
         } => {
             let job = JobProjection {
                 job_id: job_id.clone(),
-                workspace_id: String::new(),
-                kind: String::new(),
+                workspace_id: workspace_id.clone().unwrap_or_default(),
+                kind: truncate_str(
+                    kind.as_deref().unwrap_or_default(),
+                    MAX_PROJECTION_STRING_BYTES,
+                )
+                .into_owned(),
                 state: "completed".to_string(),
                 summary: attempt_id.clone(),
-                session_id: env.session_id.clone(),
+                session_id: session_id.clone().or_else(|| env.session_id.clone()),
                 turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: None,
@@ -752,14 +768,21 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             attempt_id,
             error_class,
             message,
+            session_id,
+            workspace_id,
+            kind,
         } => {
             let job = JobProjection {
                 job_id: job_id.clone(),
-                workspace_id: String::new(),
-                kind: String::new(),
+                workspace_id: workspace_id.clone().unwrap_or_default(),
+                kind: truncate_str(
+                    kind.as_deref().unwrap_or_default(),
+                    MAX_PROJECTION_STRING_BYTES,
+                )
+                .into_owned(),
                 state: "failed".to_string(),
                 summary: truncate_str(message, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned(),
-                session_id: env.session_id.clone(),
+                session_id: session_id.clone().or_else(|| env.session_id.clone()),
                 turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: Some(

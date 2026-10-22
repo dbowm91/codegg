@@ -126,6 +126,19 @@ pub enum AuditAction {
     AuditQuery,
     WorkOrderLifecycle,
     HumanShellRun,
+    /// M005 C004: a checkout writer was refused because the checkout is
+    /// reserved by a live agent-run group. This is the durable deny event
+    /// for the non-broker writer surface — the side that never reaches the
+    /// writer permit store because it is refused before any effect.
+    CheckoutWriterRefusal,
+    /// M005 C005: a process launch was refused by the restricted
+    /// shared-checkout profile, before the process existed.
+    ///
+    /// Distinct from `authorization_decision`: the caller's authority was
+    /// never in question. The refusal is a fact about the *checkout* — it
+    /// is shared by a live agent-run group, and a shared checkout admits
+    /// no unqualified process.
+    ProcessDenial,
     /// M007: the operator disposition removed one of the daemon's own
     /// disposable scratch trees.
     ScratchReclaim,
@@ -135,7 +148,7 @@ pub enum AuditAction {
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 28] = [
+    pub const ALL: [&'static str; 30] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -163,6 +176,8 @@ impl AuditAction {
         "audit_query",
         "work_order_lifecycle",
         "human_shell_run",
+        "checkout_writer_refusal",
+        "process_denial",
         "scratch_reclaim",
     ];
 
@@ -195,6 +210,8 @@ impl AuditAction {
             Self::AuditQuery => "audit_query",
             Self::WorkOrderLifecycle => "work_order_lifecycle",
             Self::HumanShellRun => "human_shell_run",
+            Self::CheckoutWriterRefusal => "checkout_writer_refusal",
+            Self::ProcessDenial => "process_denial",
             Self::ScratchReclaim => "scratch_reclaim",
             Self::Unknown => "unknown",
         }
@@ -230,6 +247,8 @@ impl AuditAction {
             "audit_query" => Self::AuditQuery,
             "work_order_lifecycle" => Self::WorkOrderLifecycle,
             "human_shell_run" => Self::HumanShellRun,
+            "checkout_writer_refusal" => Self::CheckoutWriterRefusal,
+            "process_denial" => Self::ProcessDenial,
             "scratch_reclaim" => Self::ScratchReclaim,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));

@@ -229,6 +229,21 @@ pub async fn write_file(
         "file_modify",
     )
     .await?;
+    // M005 corrective C004: refuse a write into a checkout reserved by a
+    // live agent-run group, before any filesystem mutation. The refusal is
+    // a conflict, not an authorization failure: the caller's own authority
+    // is untouched and it may retry once the group finishes.
+    if let Some(daemon) = state.daemon.as_ref() {
+        daemon
+            .mediate_http_checkout_write(
+                &principal,
+                Some(context.project_id.clone()),
+                &context.workspace_root,
+                crate::core::checkout_mediation::CheckoutWriterSink::HttpFileWrite,
+            )
+            .await
+            .map_err(|conflict| AppError::Storage(StorageError::Conflict(conflict.to_string())))?;
+    }
     let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
     if let Some(parent) = full.parent() {
         tokio::fs::create_dir_all(parent)
@@ -272,6 +287,19 @@ pub async fn delete_file(
         "file_modify",
     )
     .await?;
+    // M005 corrective C004: same pre-effect reservation refusal as the
+    // write route. A delete is a checkout write too.
+    if let Some(daemon) = state.daemon.as_ref() {
+        daemon
+            .mediate_http_checkout_write(
+                &principal,
+                Some(context.project_id.clone()),
+                &context.workspace_root,
+                crate::core::checkout_mediation::CheckoutWriterSink::HttpFileDelete,
+            )
+            .await
+            .map_err(|conflict| AppError::Storage(StorageError::Conflict(conflict.to_string())))?;
+    }
     let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
     tokio::fs::remove_file(&full).await.map_err(AppError::Io)?;
     Ok(StatusCode::NO_CONTENT)

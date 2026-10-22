@@ -47,6 +47,8 @@ fn default_new_job(ws_id: &WorkspaceId) -> NewJob {
             command: "echo test".into(),
             argv: Some(vec!["echo".into(), "test".into()]),
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

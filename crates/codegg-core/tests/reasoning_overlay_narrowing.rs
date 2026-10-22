@@ -2,7 +2,7 @@
 //!
 //! Milestone 005 of `provider-reasoning-control` retains a provider's
 //! published thinking-capability contract from a catalog response and hands
-//! it to M003's single resolution point. ADR-0045's load-bearing rule is
+//! it to M003's single resolution point. ADR-0049's load-bearing rule is
 //! that the overlay may only **narrow** the compiled adapter baseline: it
 //! may remove an option the baseline offers, and it may never add one,
 //! introduce a label or a bound the baseline does not declare, or change the

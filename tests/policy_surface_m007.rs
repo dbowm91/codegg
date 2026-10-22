@@ -150,6 +150,8 @@ fn automatic_modes_never_imply_full_host() {
 
 fn plain_view() -> EffectivePolicyView {
     EffectivePolicyView {
+        requested_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        effective_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         requested_mode: codegg_core::approval::ApprovalMode::Yolo,
         effective_mode: codegg_core::approval::ApprovalMode::Yolo,
         requested_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
@@ -181,6 +183,8 @@ fn effective_line_distinguishes_request_from_ceiling() {
 #[test]
 fn automatic_without_reviewer_is_visibly_degraded_never_yolo() {
     let view = EffectivePolicyView {
+        requested_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        effective_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         requested_mode: codegg_core::approval::ApprovalMode::Automatic,
         effective_mode: codegg_core::approval::ApprovalMode::Automatic,
         requested_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,

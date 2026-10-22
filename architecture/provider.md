@@ -1095,7 +1095,7 @@ later wins:
 4. The frontend's `/reasoning` selection, carried per turn on
    `CoreRequest::TurnSubmit.reasoning` (`apply_reasoning_override`).
 
-**The vocabulary is open and provider-scoped** (ADR-0044). The effort
+**The vocabulary is open and provider-scoped** (ADR-0048). The effort
 selection is a free-form label, not a level on a closed enum: a vendor label
 such as `xhigh`, `max`, `none` or `default` is selectable and is carried
 verbatim from the selection to the provider wire. Nothing normalizes,
@@ -1176,7 +1176,7 @@ label verbatim, and every turn-admission path must resolve the daemon-owned
 selection.
 
 
-### Per-model reasoning capability model (ADR-0045)
+### Per-model reasoning capability model (ADR-0049)
 
 The vocabulary is open, so the daemon cannot tell from a label alone
 whether the model behind it accepts that label. A **capability record**
@@ -1236,7 +1236,7 @@ and `ReasoningCapabilityPolicy`, and produces exactly one of:
 
 The kernel's default policy is **fail-closed** — `unsupported → Reject`,
 `unknown → Reject`, `mixed → WarnDrop` — and that is the disposition set
-ADR-0045 decided. The consequence is deliberate: a selection on a
+ADR-0049 decided. The consequence is deliberate: a selection on a
 dimension nobody has published a contract for is refused at admission
 rather than forwarded optimistically.
 

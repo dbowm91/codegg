@@ -381,9 +381,9 @@ OS-enforced resource limits. Conservative defaults are centralized in
 | Kind | CPU | Memory hint | Processes | IO | Network | Default conflict |
 |---|---:|---:|---:|---:|---:|---|
 | Test | 2 | 1024 MB | 1 | 2 | 0 | — |
-| Build | 3 | 2048 MB | 1 | 3 | 0 | exclusive:workspace-mutation |
+| Build | 3 | 2048 MB | 1 | 3 | 0 | build quota (workspace-scoped) |
 | Lint | 1 | 768 MB | 1 | 1 | 0 | — |
-| Format | 1 | 256 MB | 1 | 1 | 0 | exclusive:workspace-mutation |
+| Format | 1 | 256 MB | 1 | 1 | 0 | build quota (workspace-scoped) |
 | Subagent | 1 | 512 MB | 1 | 1 | 1 | — |
 | Git mutation | 1 | 256 MB | 1 | 1 | 0 | exclusive:worktree-mutation |
 | AgentTurn | 1 | 512 MB | 1 | 1 | 1 | — |
@@ -397,11 +397,17 @@ Impossible requests fail before executor invocation. Temporarily blocked
 requests are requeued, and the bounded candidate window prevents one
 blocked workspace from stopping unrelated work.
 
-`exclusive:workspace-mutation` is a legacy global key on selected Build and
-Format job profiles. It is not checkout-scoped and is not acquired by every
-AgentTurn writer, so it does not serialize arbitrary workspace mutations.
-WorkOrder `shared`/`serialized` mutation therefore fails closed until all
-writers use a canonical checkout-scoped reservation.
+M007 replaced the legacy global `exclusive:workspace-mutation` key on the
+Build and Format profiles. That key was not checkout-scoped, so it
+serialized every build in every workspace, and it was not acquired by
+every AgentTurn writer, so it did not serialize arbitrary workspace
+mutations either. The build class now carries a **counted**,
+workspace-scoped quota whose limit is configuration-owned; see
+`architecture/build_admission.md`.
+
+WorkOrder `shared`/`serialized` mutation still fails closed until all
+writers use a canonical checkout-scoped reservation — the scheduler
+quota is admission, and it is not the checkout writer permit.
 
 ## Canonical process policy
 

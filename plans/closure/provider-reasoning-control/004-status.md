@@ -65,8 +65,11 @@ Now:
 - The option set is derived from the model's published capability, and a
   model with no published capability falls back to the known-label ladder and
   says so.
-- The selection is persistently visible in working strip row 0, reading the
-  daemon-owned selection, with no second spinner and no second cadence.
+- The selection is persistently visible in the footer status bar's activity
+  chain, reading the daemon-owned selection, with no second spinner and no
+  second cadence. (It was introduced in the working strip's reserved row 0;
+  `main` deleted the working strip in the merge, and the indicator moved to
+  the status bar — see §14.)
 
 The milestone is closed **conditionally** for two reasons that are outside
 this milestone's ownership, both recorded in §10:
@@ -88,9 +91,9 @@ Every acceptance criterion of plan §13, with the evidence that discharges it.
 | 3 | The frontend offers only the options the model accepts: its labels, a disable only when permitted, a budget only when permitted and within bounds | `crates/codegg-protocol/src/provider.rs::reasoning_options`; tests `provider::tests::established_capability_offers_the_capabilitys_labels_in_its_order`, `provider::tests::capability_without_disable_offers_no_off_option`, `provider::tests::budget_outside_the_models_bounds_is_not_offered`, `provider::tests::unsupported_and_unknown_budget_dimensions_offer_no_budget`; TUI test `the_cycle_moves_through_the_models_options` | pass | Effort: the published labels **in the capability's order**. Disable: only when the disable axis is `Supported` and the model does not always reason. Budget: only when the budget axis is `Supported` and the value is inside the model's range. |
 | 4 | An always-reasoning model is offered **no** disable, and the reason is stated | Test `provider::tests::always_reasons_model_is_stated_and_offers_no_off_option`; TUI test `an_always_reasons_model_is_stated_and_has_no_off`; `src/tui/commands/reasoning.rs::option_note` returns `"this model always reasons, so there is no off"` | pass | A model whose `always_reasons` is `Some(true)` gets no `Off` option even when the disable axis claims `Supported`, and the command states the reason instead of appearing broken. |
 | 5 | A client with no capability payload falls back to the known-label ladder and does **not** present it as the model's option set | `reasoning_options(None)` returns the four `KNOWN_REASONING_EFFORT_LABELS` plus the historic off option with `fallback == true`; tests `provider::tests::absent_capability_falls_back_to_the_known_label_ladder` and TUI `an_absent_capability_falls_back_to_the_known_label_ladder` assert the ladder is present, `fallback` is set, and the note says `"known labels"` | pass | The fallback carries no budget: the known-label vocabulary declares no budget contract. The fallback is flagged, so a surface that shows it says so. |
-| 6 | The selection is persistently visible in working strip row 0, reading the daemon-owned selection, and the daemon's value wins over a divergent local display | `src/tui/app/render.rs` — row 0 appends `" · reasoning: {detail}"` from `ui_state.reasoning_mode`; TUI tests `the_indicator_shows_the_daemon_owned_selection`, `a_daemon_side_selection_wins_over_a_stale_local_display`, `the_command_writes_the_selection_through_the_daemon` | pass | The indicator reads `UiState::reasoning_mode`, which is the projection of the daemon-owned selection. The daemon's response overwrites the local display; when they differ, the daemon's value is applied and a correction toast is raised. |
+| 6 | The selection is persistently visible in the footer status bar's activity chain, reading the daemon-owned selection, and the daemon's value wins over a divergent local display | `src/tui/app/render.rs` — `build_status_summary` pushes `"reasoning: {detail}"` from `ui_state.reasoning_mode`; TUI tests `the_indicator_shows_the_daemon_owned_selection`, `a_daemon_side_selection_wins_over_a_stale_local_display`, `the_command_writes_the_selection_through_the_daemon` | pass | The indicator reads `UiState::reasoning_mode`, which is the projection of the daemon-owned selection. The daemon's response overwrites the local display; when they differ, the daemon's value is applied and a correction toast is raised. |
 | 7 | The indicator adds no second spinner, no second cadence, and no free-form competing label; the single-`ActivityPhase` and one-frame-table invariants are intact | `scripts/check_tui_reasoning_surface.py` — five checks, all pass; `--self-test` injects four violations and proves each is rejected. TUI test `the_indicator_adds_no_second_spinner_or_cadence` asserts two renders are byte-identical and that row 0 carries no `SPINNER_FRAMES` glyph | pass | The indicator is a static string in a row the one 100 ms frame table already redraws. `ActivityPhase` and `tui::components::spinner` are untouched. The pre-existing tool-call-header frame table is recorded in §10. |
-| 8 | Working strip row 0 stays reserved unconditionally, and the transcript does not reflow when the indicator appears or disappears | TUI test `the_indicator_does_not_reflow_the_transcript` asserts `working_strip_rows()` and `session_layout(...)` are identical before and after the selection changes; `scripts/check_tui_reasoning_surface.py` fails when `working_strip_rows` mentions the reasoning state | pass | The indicator is a suffix on the reserved row, in the same `" · "` chain as the queued count — never an extra row and never a condition on row 0's existence. |
+| 8 | The indicator is content in the status bar's chain, never a condition on the surface's presence, and the transcript does not reflow when it appears or disappears | TUI test `the_indicator_does_not_reflow_the_transcript` asserts `session_layout(...)` is identical before and after the selection changes; `scripts/check_tui_reasoning_surface.py` fails when the chip is pushed conditionally and when `status_bar.rs` mentions the reasoning state at all | pass | The indicator is a chip in the bar's activity chain, next to the daemon-resolved policy line — never an extra surface and never a condition on one. The status bar is a fixed-height row, so a chip cannot reflow the transcript the way a row could. |
 | 9 | `/reasoning` and `/thinking` remain distinct; the `/reasoning` alias set and its transient toast are unchanged | `src/tui/command.rs:588` is unchanged: `/reasoning` with aliases `reasoning-effort`, `thinking-budget`. `/thinking` is untouched. The transient toast is still emitted synchronously by the `/reasoning` handler | pass | The toast is preserved but is no longer the only place the selection is visible. |
 | 10 | The option list is a subset of what the capability permits, and the capability is never used as an authorization input | Test `provider::tests::option_set_is_a_subset_of_what_the_capability_permits` asserts every derived option is permitted by the capability. The payload is display/selection data only; the daemon's admission path (`src/core/daemon_turns.rs`, owned by M003) is unchanged and still refuses a selection the model does not accept | pass | The frontend derives options; it never widens them, and it never fabricates a label. |
 | 11 | `STORAGE_LAYOUT_VERSION` is unchanged, no migration was added, and the project-catalog invariants guard still passes | `crates/codegg-core/src/storage/mod.rs:43` — `STORAGE_LAYOUT_VERSION: u32 = 84` (unchanged by this milestone). No migration was added. `python3 scripts/check_project_catalog_invariants.py` → 7/7 checks passed | pass | No storage change of any kind. |
@@ -109,7 +112,7 @@ Every acceptance criterion of plan §13, with the evidence that discharges it.
 | `src/tui/app/mod.rs` | The `/reasoning` handler, the capability lookup and cache, `TurnSubmit` no longer sending an explicit override, `dispatch_builtin_command` made crate-visible, and the updated pre-existing `/reasoning` tests |
 | `src/tui/app/state/ui.rs` | `reasoning_capabilities`, `reasoning_preference_revision`, `reasoning_request`; `reasoning_mode` redefined as the daemon-owned projection |
 | `src/tui/app/commands.rs` | `TuiCommand::ReasoningPreferenceUpdated` and `TuiCommand::ReasoningPreferenceLoaded` |
-| `src/tui/app/render.rs` | The working strip's row-0 reasoning indicator, and the render tests |
+| `src/tui/app/render.rs` | The status bar's reasoning chip in `build_status_summary`, and the render tests |
 | `src/tui/runtime/command_dispatch.rs` | The dispatch arms, and the capability cache update on the model-resolution completion |
 | `src/tui/runtime/event_loop.rs` | The start-up read of the daemon-owned selection |
 | `src/tui/commands/mod.rs` | The `reasoning` module registration |
@@ -226,22 +229,23 @@ The frontend's cycle moves through **the model's** options
 selection that is not one of the model's options restarts the cycle at the
 model's first option rather than inventing a neighbouring level.
 
-### The working-strip presentation, and the proof it adds no second cadence
+### The status-bar presentation, and the proof it adds no second cadence
 
-`src/tui/app/render.rs` — row 0 of the working strip gains one suffix, in
-the same left-aligned `" · "` chain as the queued count:
+`src/tui/app/render.rs` — the footer status bar's activity chain gains one
+chip, next to the daemon-resolved approval and sandbox policy:
 
 ```
-idle · reasoning: high
-idle · reasoning: off
-idle · reasoning: default
+agent:build  reasoning: high
+agent:build  reasoning: off
+agent:build  reasoning: default
 ```
 
-It is **content in the reserved row**, never a condition on the row's
-presence. Row 0's height is subtracted from the transcript
-(`session_layout` splits `prompt_height` against `Min(10)`), so gating the row
-on the selection reflowed the transcript on every submit and completion. The
-guard fails when `working_strip_rows` mentions the reasoning state at all.
+It is **content in an existing chain**, never a condition on the surface's
+presence. The chip is pushed unconditionally in `build_status_summary`, and
+`src/tui/components/status_bar.rs` never mentions the reasoning state, so the
+bar's height and width budget cannot become a function of the selection. The
+guard fails when the chip is pushed conditionally and when the status bar
+mentions the reasoning state at all.
 
 It adds **no second spinner, no second cadence, and no second frame table**:
 
@@ -369,7 +373,7 @@ these are interference/environment failures rather than regressions.
   [ok] the reasoning surface defines no animation frame table
   [ok] the reasoning surface creates no timer of its own
   [ok] the reasoning surface draws no frame of its own
-  [ok] the reasoning indicator never gates the working strip's rows
+  [ok] the reasoning indicator is unconditional content in the status bar
 
 5/5 checks passed.
 ```
@@ -395,9 +399,9 @@ not vacuous.
 | The capability is never an authorization input | The payload is display/selection data only; the daemon's admission path is unchanged and still refuses a selection the model does not accept | holds |
 | An advisory never creates an escalation on its own | Unchanged — the capability is read on the selection surface only and never feeds a permission decision | holds |
 | The models channel keeps its `Vec<String>` shape | `crates/codegg-protocol/src/core.rs` untouched; `models_snapshot_and_refresh_shapes_are_unchanged` | holds |
-| The working strip row 0 is reserved unconditionally; its height is subtracted from the transcript | The indicator is a suffix; `the_indicator_does_not_reflow_the_transcript`; the guard fails when `working_strip_rows` mentions the reasoning state | holds |
+| The indicator is content in the status bar's chain; no surface's presence or height is a function of the reasoning state | The chip is pushed unconditionally; `the_indicator_does_not_reflow_the_transcript`; the guard fails when the chip is conditional and when `status_bar.rs` mentions the reasoning state | holds |
 | One cadence, one `ActivityPhase` enum, one frame table (100 ms) | `tui::components::spinner` and `ActivityPhase` untouched; the guard's frame-table census and the behavioural render test | holds |
-| The hint line is not a status surface | The indicator is in the working strip, not the hint line | holds |
+| The hint line is not a status surface | The indicator is a status-bar chip, not the hint line | holds |
 | `/reasoning` and `/thinking` stay distinct | `/thinking` untouched; `/reasoning`'s alias set unchanged | holds |
 | The `/reasoning` command's existing behaviour is preserved where the capability does not change it — the transient toast, the alias set, the stripping-provider warning | The toast and the stripping warning are still emitted synchronously by the handler; the alias set in `src/tui/command.rs` is unchanged | holds |
 | `STORAGE_LAYOUT_VERSION` is unchanged; no migration | 84, unchanged; no migration added | holds |

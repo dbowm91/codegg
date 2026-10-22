@@ -15,11 +15,12 @@ one rotation, while the one nobody looked at kept up. Two sources of truth
 for "is anything happening" is how the faster one stopped being the visible
 one.
 
-Provider reasoning control (M004) adds a **persistent** indicator to the
-working strip's reserved row 0. A persistent indicator is exactly where a
-second cadence creeps in: it is the obvious place to hang a spinner that
-"shows the reasoning is active", and it would compete with the one activity
-indicator for the user's attention.
+Provider reasoning control (M004) adds a **persistent** indicator: the
+daemon-owned extended-thinking selection, shown in the footer status bar's
+activity chain next to the daemon-resolved policy line. A persistent
+indicator is exactly where a second cadence creeps in: it is the obvious
+place to hang a spinner that "shows the reasoning is active", and it would
+compete with the one activity indicator for the user's attention.
 
 This guard proves four properties that are easy to regress silently:
 
@@ -30,11 +31,18 @@ This guard proves four properties that are easy to regress silently:
    must not start an interval, a sleep, or a tick loop of its own.
 3. **The reasoning surface draws no frame.** It must not reach for the
    frame table or the frame chooser; the indicator is static text.
-4. **The reasoning indicator is content in the reserved row, never a
-   condition on the row.** The working strip's row count — which is
-   subtracted from the transcript — must not depend on the reasoning state.
-   Gating the row on the selection reflowed the transcript on every submit
-   and completion.
+4. **The reasoning indicator is content in the status bar's chain, never a
+   condition on the bar.** The chip is pushed unconditionally into the
+   activity list, and the status bar's own layout never mentions the
+   reasoning state. A conditional chip would make the bar's contents — and
+   therefore its width budget — depend on the selection.
+
+The indicator's surface moved once already. The branch that introduced it
+put the chip in the working strip's reserved row 0; `main` later deleted the
+working strip as part of its buffer-chrome roadmap, and the indicator moved
+to the footer status bar. The property that survived the move is the one
+that mattered: the indicator is **content**, and no surface's presence or
+height is a function of the reasoning state.
 
 The guard also keeps a **census** of the frame tables under `src/tui/`. The
 activity indicator's table is the one in `src/tui/components/spinner.rs`.
@@ -68,6 +76,11 @@ FRAME_TABLE_OWNER = Path("src") / "tui" / "components" / "spinner.rs"
 # write path, and the render module that draws the indicator.
 REASONING_COMMAND = Path("src") / "tui" / "commands" / "reasoning.rs"
 REASONING_RENDER = Path("src") / "tui" / "app" / "render.rs"
+
+# The status bar: the surface that renders the indicator's chip. It must not
+# mention the reasoning state at all, so the bar's height and width budget
+# can never become a function of the selection.
+STATUS_BAR = Path("src") / "tui" / "components" / "status_bar.rs"
 
 # Frame tables that are known and are **not** the activity indicator's.
 #
@@ -311,13 +324,12 @@ def check_reasoning_surface_draws_no_frame(root: Path) -> bool:
     return True
 
 
-def _working_strip_rows_body(source: str) -> str | None:
-    """The body of `working_strip_rows`, or `None` when it is not found.
+def _function_body(source: str, signature: str) -> str | None:
+    """The body of the function whose declaration starts with `signature`.
 
-    The row count is what is subtracted from the transcript, so it is the
-    one place a state-dependent indicator would reflow the buffer.
+    The body is found by brace matching, so a nested block does not end it.
     """
-    marker = source.find("fn working_strip_rows")
+    marker = source.find(signature)
     if marker < 0:
         return None
     brace = source.find("{", marker)
@@ -332,12 +344,12 @@ def _working_strip_rows_body(source: str) -> str | None:
         char = source[cursor]
         if in_string:
             if escaped:
-                escaped = False
-            elif char == "\\":
                 escaped = True
-            elif char == '"':
+            elif char == chr(92):
+                escaped = True
+            elif char == chr(34):
                 in_string = False
-        elif char == '"':
+        elif char == chr(34):
             in_string = True
         elif char == "{":
             depth += 1
@@ -349,23 +361,65 @@ def _working_strip_rows_body(source: str) -> str | None:
     return None
 
 
-def check_indicator_never_gates_the_row(root: Path) -> bool:
-    """The working strip's row count must not depend on the reasoning state."""
+# A conditional on the reasoning state. Any of these would make the chip's
+# presence -- and therefore the bar's contents -- a function of the selection.
+# The trailing boundary is deliberately absent: the field is spelled
+# `reasoning_mode`, and an underscore is a word character, so `\breasoning\b`
+# would NOT match `reasoning_mode` -- the one spelling the code actually uses.
+CONDITIONAL_ON_REASONING = re.compile(
+    r"^\s*(if|else\s+if|match|while)\b.*\breasoning",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def check_indicator_is_unconditional_content(root: Path) -> bool:
+    """The chip is content in the status bar's chain, never a condition.
+
+    Two properties, both about the same thing:
+
+    - the status summary pushes a `reasoning:` chip **unconditionally** -- no
+      `if`, no `match`, no loop whose condition reads the reasoning state;
+      and
+    - the status bar component itself never mentions the reasoning state, so
+      the bar's height and width budget cannot become a function of the
+      selection.
+    """
     path = root / REASONING_RENDER
     if not path.is_file():
         print(f"  [FAIL] the render surface is missing: {REASONING_RENDER}")
         return False
     source = _strip_test_modules(_read(path))
-    body = _working_strip_rows_body(source)
+    body = _function_body(source, "fn build_status_summary")
     if body is None:
-        print("  [FAIL] `working_strip_rows` was not found; the row count cannot be checked")
+        print("  [FAIL] `build_status_summary` was not found; the chip cannot be checked")
         return False
-    if "reasoning" in body.lower():
-        print("  [FAIL] the working strip's row count depends on the reasoning state:")
+    if "reasoning:" not in body:
+        print("  [FAIL] the status summary does not push a `reasoning:` chip at all:")
         print(f"         {body.strip()[:200]}")
-        print("         row 0 is reserved unconditionally; the indicator is content in it")
+        print("         the daemon-owned selection must be visible in the status bar")
         return False
-    print("  [ok] the reasoning indicator never gates the working strip's rows")
+    conditional = CONDITIONAL_ON_REASONING.search(body)
+    if conditional is not None:
+        print("  [FAIL] the reasoning chip is pushed conditionally:")
+        print(f"         {conditional.group(0).strip()[:200]}")
+        print("         the chip is content in the chain; it must not be gated on the selection")
+        return False
+
+    bar = root / STATUS_BAR
+    if not bar.is_file():
+        print(f"  [FAIL] the status bar component is missing: {STATUS_BAR}")
+        return False
+    bar_source = _strip_test_modules(_read(bar))
+    if "reasoning" in bar_source.lower():
+        print("  [FAIL] the status bar mentions the reasoning state:")
+        for line in bar_source.splitlines():
+            if "reasoning" in line.lower():
+                print(f"         {line.strip()[:160]}")
+                break
+        print("         the bar's height and width budget must not depend on the selection")
+        return False
+
+    print("  [ok] the reasoning indicator is unconditional content in the status bar")
     return True
 
 
@@ -393,7 +447,7 @@ def _self_test() -> int:
                 ),
                 "no timer": check_reasoning_surface_creates_no_timer(tree),
                 "no frame": check_reasoning_surface_draws_no_frame(tree),
-                "no gated row": check_indicator_never_gates_the_row(tree),
+                "unconditional chip": check_indicator_is_unconditional_content(tree),
             }
             if not all(results.values()):
                 print(f"  [PASS] self-test: {description} is rejected")
@@ -437,18 +491,35 @@ def _self_test() -> int:
             encoding="utf-8",
         )
 
-    def inject_gated_row(tree: Path) -> None:
-        """The strip's row count made to depend on the reasoning state."""
+    def inject_conditional_chip(tree: Path) -> None:
+        """The chip made conditional on the reasoning state."""
         target = tree / REASONING_RENDER
         source = target.read_text(encoding="utf-8")
         target.write_text(
             source.replace(
-                "        let overflow = u16::from(total > shown);\n",
-                "        let overflow = u16::from(total > shown);\n"
-                "        let reasoning_rows = u16::from(self.ui_state.reasoning_mode.requests_reasoning());\n",
-            ).replace(
-                "        1 + shown as u16 + overflow\n",
-                "        1 + shown as u16 + overflow + reasoning_rows\n",
+                "        activity.push(format!(\n"
+                "            \"reasoning:{}\",\n"
+                "            self.ui_state.reasoning_mode.detail()\n"
+                "        ));",
+                "        if !self.ui_state.reasoning_mode.requests_reasoning() {\n"
+                "            activity.push(format!(\n"
+                "                \"reasoning:{}\",\n"
+                "                self.ui_state.reasoning_mode.detail()\n"
+                "            ));\n"
+                "        }",
+            ),
+            encoding="utf-8",
+        )
+
+    def inject_bar_dependency(tree: Path) -> None:
+        """The status bar itself made to depend on the reasoning state."""
+        target = tree / STATUS_BAR
+        source = target.read_text(encoding="utf-8")
+        target.write_text(
+            source.replace(
+                "    pub fn set_status(&mut self, status: String) {",
+                "    pub fn set_status(&mut self, status: String) {\n"
+                "        let _reasoning_rows = self.reasoning_height();\n",
             ),
             encoding="utf-8",
         )
@@ -456,7 +527,8 @@ def _self_test() -> int:
     run_case("a second animation frame table", inject_second_frame_table)
     run_case("a timer in the reasoning surface", inject_timer)
     run_case("the reasoning surface reaching for the frame table", inject_frame_reference)
-    run_case("the strip's row count gated on the reasoning state", inject_gated_row)
+    run_case("the reasoning chip made conditional", inject_conditional_chip)
+    run_case("the status bar made to depend on the reasoning state", inject_bar_dependency)
 
     if failures:
         print(f"{failures} self-test case(s) FAILED.")
@@ -477,7 +549,10 @@ def main() -> int:
         ),
         ("the reasoning surface creates no timer", check_reasoning_surface_creates_no_timer),
         ("the reasoning surface draws no frame", check_reasoning_surface_draws_no_frame),
-        ("the reasoning indicator never gates the strip's rows", check_indicator_never_gates_the_row),
+        (
+            "the reasoning indicator is unconditional content in the status bar",
+            check_indicator_is_unconditional_content,
+        ),
     )
     results = [(name, fn(REPO_ROOT)) for name, fn in checks]
 

@@ -20,6 +20,13 @@
 # remains for local direct invocation (the fixtures gate only skips
 # work when `CODEGG_EGGWORK_FIXTURES_PREBUILT=1`).
 #
+# The built artifacts' own modes follow the *process umask* (cargo does not
+# narrow them), and the pinned node refuses a sandbox helper that is
+# group- or world-writable. The live qualification therefore stages the
+# node and the helper in a private directory before starting the node, so
+# the trust chain does not depend on the operator's umask. This script
+# only has to produce the artifacts; it does not have to trust them.
+#
 # Linux-only: the helper links Linux-only `landlock`. On other
 # platforms this script reports a skip and exits 0; the live test
 # target compiles to zero tests there.

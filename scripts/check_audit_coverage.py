@@ -185,6 +185,34 @@ def _executor_hook_actions(source: str | None = None) -> list[str]:
     return re.findall(r'action:\s*"([^"]+)"', match.group(1))
 
 
+def _daemon_hook_actions(source: str | None = None) -> list[str]:
+    """Declarative daemon-gate live audit hook actions (M005 C004)."""
+    text = source if source is not None else _read(INSTR_MODULE)
+    match = re.search(
+        r"pub const DAEMON_LIVE_AUDIT_HOOKS[^=]*=\s*&\[(.*?)\];", text, re.DOTALL
+    )
+    if not match:
+        return []
+    return re.findall(r'action:\s*"([^"]+)"', match.group(1))
+
+
+def _daemon_hook_pins() -> list[tuple[str, str, str]]:
+    """The declarative daemon-gate owner pins (M005 C004)."""
+    pins_path = REPO_ROOT / "src" / "core" / "checkout_mediation.rs"
+    if not pins_path.is_file():
+        return []
+    source = pins_path.read_text(encoding="utf-8")
+    match = re.search(
+        r"pub const DAEMON_HOOK_OWNER_PINS[^=]*=\s*&\[(.*?)\];", source, re.DOTALL
+    )
+    if not match:
+        return []
+    return re.findall(
+        r'action:\s*"([^"]+)",\s*owner_file:\s*"([^"]+)",\s*emit_symbol:\s*"([^"]+)"',
+        match.group(1),
+    )
+
+
 def _future_distributed_actions(source: str | None = None) -> list[str]:
     """Intentionally future/distributed actions from the core table."""
     text = source if source is not None else _read(INSTR_MODULE)
@@ -220,6 +248,10 @@ def check_live_mapped_actions_have_operation_mapping() -> bool:
     pairs = _instrumented_pairs()
     mapped_actions = {action for _, action in pairs}
     executor_actions = set(_executor_hook_actions(source))
+    # M005 C004: a daemon *gate* that refuses an operation before its effect
+    # emits its own action. The refused operation never happened, so the
+    # action has no operation mapping; the gate owns the live evidence.
+    daemon_actions = set(_daemon_hook_actions(source))
     ok = True
     for block in blocks:
         action_match = re.search(r'action:\s*"([^"]+)"', block)
@@ -239,6 +271,8 @@ def check_live_mapped_actions_have_operation_mapping() -> bool:
         # its `job_retry` request mapping alongside the terminal hook,
         # so it still appears here; command/git are executor-only.
         if action in executor_actions:
+            continue
+        if action in daemon_actions:
             continue
         if action not in mapped_actions:
             print(f"  FAIL: live-mapped action has no operation mapping: {action}")
@@ -301,6 +335,73 @@ def check_executor_hook_table_is_authoritative() -> bool:
     for op in ("interactive_process_create", "interactive_process_input"):
         if op not in uninstrumented:
             print(f"  FAIL: {op} must stay explicitly uninstrumented (executor hook owns the event)")
+            ok = False
+    return ok
+
+
+def check_daemon_hook_table_is_authoritative() -> bool:
+    """M005 C004/C005: the daemon-gate live hook table is exact and pinned.
+
+    The checkout mediation gate refuses a non-broker writer before its
+    effect, and the process admission gate refuses a process launch before
+    the process exists. Neither refused operation happened, so neither action
+    has a daemon operation mapping; the gates own the live evidence instead.
+    The table must therefore name exactly those two refusals, each row must
+    be live_mapped, and each owner pin must resolve to a file that still
+    holds the emit symbol.
+    """
+    source = _read(INSTR_MODULE)
+    ok = True
+    daemon = _daemon_hook_actions(source)
+    expected_daemon = ["checkout_writer_refusal", "process_denial"]
+    if daemon != expected_daemon:
+        print(
+            f"  FAIL: daemon hook table must be {expected_daemon}, got "
+            f"{daemon}"
+        )
+        return False
+    live = _coverage_live_map(source)
+    for action in daemon:
+        if live.get(action) is not True:
+            print(f"  FAIL: daemon action {action} must be live_mapped=true")
+            ok = False
+    pairs = _instrumented_pairs()
+    mapped_actions = {action for _, action in pairs}
+    for action in daemon:
+        if action in mapped_actions:
+            print(
+                f"  FAIL: {action} must not have a daemon operation mapping; "
+                "the refused operation never ran"
+            )
+            ok = False
+    future = set(_future_distributed_actions(source))
+    for action in daemon:
+        if action in future:
+            print(f"  FAIL: daemon action {action} must not be a future action")
+            ok = False
+    pins = _daemon_hook_pins()
+    if not pins:
+        print("  FAIL: no daemon hook owner pins parsed (table moved?)")
+        return False
+    for action, owner_file, emit_symbol in pins:
+        if action not in daemon:
+            print(f"  FAIL: owner pin for non-daemon action {action}")
+            ok = False
+        path = REPO_ROOT / owner_file
+        if not path.is_file():
+            print(f"  FAIL: hook owner missing: {owner_file} (action {action})")
+            ok = False
+            continue
+        owner_source = path.read_text(encoding="utf-8")
+        # The marker must be a *definition*, not merely a string. The pin
+        # table itself names the symbol, so a plain substring search would
+        # keep passing after the emit function was renamed.
+        if not re.search(rf"\bfn\s+{re.escape(emit_symbol)}\s*\(", owner_source):
+            print(f"  FAIL: {owner_file} missing hook marker {emit_symbol} (action {action})")
+            ok = False
+    for action in daemon:
+        if not any(pin_action == action for pin_action, _, _ in pins):
+            print(f"  FAIL: daemon action {action} has no owner pin")
             ok = False
     return ok
 
@@ -593,6 +694,7 @@ def main() -> int:
         ("M003 scheduler job-complete hook is present at canonical owner", check_m003_scheduler_job_complete_present),
         ("M004 executor/future/daemon categories are authoritative", check_executor_hook_table_is_authoritative),
         ("M004 executor owner pins have executable owners", check_m004_executor_owner_pins_present),
+        ("C004 daemon-gate hook table is authoritative and pinned", check_daemon_hook_table_is_authoritative),
         ("audit operator matrix doc exists", check_audit_doc_has_matrix),
     ]
     results: list[tuple[str, bool]] = []

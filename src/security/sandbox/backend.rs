@@ -52,6 +52,9 @@ impl BackendId {
     pub const LANDLOCK: BackendId = BackendId("landlock");
     /// macOS Seatbelt (SBPL profile applied with `sandbox_init`).
     pub const SEATBELT: BackendId = BackendId("seatbelt");
+    /// Bubblewrap protected mount view, selected only by an explicit Linux
+    /// launch request and not registered as a legacy backend fallback.
+    pub const BUBBLEWRAP: BackendId = BackendId("bubblewrap-mount-view");
 
     pub const fn as_str(self) -> &'static str {
         self.0

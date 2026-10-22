@@ -23,7 +23,13 @@ use serde::{Deserialize, Serialize};
 // ── Protocol version ───────────────────────────────────────────────────
 
 /// Version of the scratch protocol surface.
-pub const SCRATCH_PROTOCOL_VERSION: u32 = 1;
+///
+/// Version 2 made the per-tree reclaim verdict tri-state: `reclaimable` is
+/// now `Option<bool>`, where `None` means the verdict could not be
+/// established because the walk was truncated or the tree vanished. Version
+/// 1 carried a plain `bool`, which could not express "unknown" and so let a
+/// partially-read tree report itself as reclaimable.
+pub const SCRATCH_PROTOCOL_VERSION: u32 = 2;
 
 // ── Refusal taxonomy ───────────────────────────────────────────────────
 
@@ -70,7 +76,12 @@ pub struct ScratchTreeUsageDto {
     /// The newest modification time observed, in milliseconds since the epoch.
     pub newest_modified_ms: Option<i64>,
     /// The reclaim validator's own verdict for this tree.
-    pub reclaimable: bool,
+    ///
+    /// `None` when the verdict could not be established — the walk was
+    /// truncated before the tree was fully read, or the tree vanished while
+    /// it was being read. A partial walk never yields `Some(true)`.
+    #[serde(default)]
+    pub reclaimable: Option<bool>,
     /// Which rule refused the tree, when it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<ScratchReclaimRefusalDto>,

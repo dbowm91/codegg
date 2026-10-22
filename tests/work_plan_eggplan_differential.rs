@@ -126,6 +126,8 @@ fn test_payload() -> JobPayload {
         cwd: None,
         scope: None,
         parent_run_id: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     }
 }
 
@@ -133,6 +135,8 @@ fn managed_payload() -> JobPayload {
     JobPayload::ManagedArgv {
         argv: vec!["echo".into(), "hi".into()],
         cwd: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     }
 }
 
@@ -149,6 +153,7 @@ fn subagent_payload() -> JobPayload {
         run_id: codegg_core::identity::AgentRunId::new(),
         delegation_key: "dk-1".into(),
         base_commit: None,
+        placement: codegg_core::run_placement::RunPlacement::Auto,
     }
 }
 
@@ -732,6 +737,8 @@ async fn differential_verification_unavailable_errors() {
         command: "echo hi".to_string(),
         argv: None,
         cwd: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     let job_id = evidence_job(
         &pool,
@@ -926,6 +933,8 @@ async fn differential_scheduler_job_variants_complete() {
                 command: "echo hi".to_string(),
                 argv: Some(vec!["echo".to_string(), "hi".to_string()]),
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
         ),
         (

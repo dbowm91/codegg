@@ -1,4 +1,4 @@
-# ADR-0044: Open, provider-scoped reasoning control vocabulary
+# ADR-0048: Open, provider-scoped reasoning control vocabulary
 
 Status: accepted
 
@@ -8,6 +8,16 @@ Accepted: 2026-10-21, by the project maintainer, selecting Option B: open
 provider-scoped vocabulary with a faithful wire intent, with the selection owned
 by the daemon. Accepted as written, without amendment, and authorized for
 implementation across the `provider-reasoning-control` roadmap milestones.
+
+Renumbering note (2026-10-22, merge reconciliation — the decision is unchanged):
+this record was **ADR-0044** on the `provider-reasoning-control` branch.
+`main` had already published ADR-0044 (the contained-Git live-object and
+metadata authority decision), so the branch yields the number to `main` and
+this record moves to **ADR-0048**. Main wins the number. The title, the
+decision, `Status: accepted`, the acceptance date and the accepting authority
+are unchanged — only the identifier and the file name moved. The same
+collision also moved the per-model capability authority record from ADR-0045
+to **ADR-0049**.
 
 Decision owners: project maintainers
 
@@ -110,7 +120,7 @@ Costs and failure modes: it persists a fact that is partly provider-deployment-s
 
 The decision has four parts.
 
-1. **Open label vocabulary.** The protocol carries a reasoning effort as an open, provider-scoped string rather than a closed enum. CodeGG does not enumerate, validate against a fixed list, or translate vendor labels. A label that the selected model does not accept is handled by the capability policy of ADR-0045, not by the type.
+1. **Open label vocabulary.** The protocol carries a reasoning effort as an open, provider-scoped string rather than a closed enum. CodeGG does not enumerate, validate against a fixed list, or translate vendor labels. A label that the selected model does not accept is handled by the capability policy of ADR-0049, not by the type.
 
 2. **Faithful wire intent.** The CodeGG → `eggpool-wire` bridge constructs `ReasoningIntent` so that each user intent maps to the distinct kernel shape that expresses it:
    - "thinking off" → the kernel's explicit-disable intent (`requested: Some(false)`, `explicit_disable: true`), which is *not* the same as "unspecified";
@@ -119,7 +129,7 @@ The decision has four parts.
    - an adaptive/always-on toggle → mode `Adaptive` or `Toggle`, which is the shape a binary provider thinking contract accepts.
    The CodeGG request type therefore distinguishes "unspecified" from "explicitly off", and the two no longer share one representation.
 
-3. **No fabrication.** CodeGG never converts an effort label into a token budget, never invents a level, and never coerces an unsupported label into a supported one. Where a surface cannot express the selected dimension, the request is either rejected locally under ADR-0045's policy or the control is reported as inapplicable — never silently dropped.
+3. **No fabrication.** CodeGG never converts an effort label into a token budget, never invents a level, and never coerces an unsupported label into a supported one. Where a surface cannot express the selected dimension, the request is either rejected locally under ADR-0049's policy or the control is reported as inapplicable — never silently dropped.
 
 4. **Surface-awareness is a consequence, not a goal.** The control does not promise that every provider honours every dimension. What it promises is that CodeGG **knows** which dimension it selected, sends the shape that expresses that dimension, and never reports a state the request did not actually express. A provider that rejects a value CodeGG legitimately sends is a provider error, reported as such.
 
@@ -146,7 +156,7 @@ The per-turn override is carried on every daemon turn-admission path, and the pr
 ### Negative
 
 - The protocol's reasoning type is no longer exhaustively matchable. Every consumer of the label must tolerate a value it does not recognise, and the frontend can no longer derive a cycling order from the type.
-- The available options for a control become data rather than code, so the frontend needs a source of per-model options before the control can present a truthful choice. That is ADR-0045's subject.
+- The available options for a control become data rather than code, so the frontend needs a source of per-model options before the control can present a truthful choice. That is ADR-0049's subject.
 - A bridge that is faithful is also more expressive, so the space of distinct request shapes CodeGG can produce grows; the wire-boundary tests must cover each shape rather than the two the current bridge can build.
 - The always-on case may, on some surfaces, be reportable but not adjustable — an honest limitation rather than a hidden one.
 - Daemon ownership introduces **one new durable column** and therefore one storage migration, where a per-turn-only design would have introduced none. The migration is additive and follows the established `migrate_v62` precedent on the same table, but it is a real cost and it must satisfy the project-catalog invariants guard.
@@ -155,21 +165,21 @@ The per-turn override is carried on every daemon turn-admission path, and the pr
 ### Neutral or deferred
 
 - The `eggpool-wire` pin is unchanged. This decision widens CodeGG's use of an existing pinned kernel; it does not propose changing the dependency, and no new dependency is introduced.
-- Whether per-model capability data is persisted in SQLite is **not** decided here. It is deferred to ADR-0045 and its milestone, and the capability must be expressible without a migration.
+- Whether per-model capability data is persisted in SQLite is **not** decided here. It is deferred to ADR-0049 and its milestone, and the capability must be expressible without a migration.
 - Provider-side reasoning text rendering (the separate `/thinking` display toggle) is unaffected. That toggle governs whether reasoning *summaries* are rendered and is not part of this decision.
 
 ## Compatibility and migration
 
 - **Protocol.** The reasoning override's serialized shape changes. The change is additive and backwards-tolerant in the direction that matters: a client that does not know the new shape must still decode old and new requests, and a daemon that receives a request it does not understand must fall back to the configured default rather than failing the turn. `CoreRequest::TurnSubmit.reasoning` is already `#[serde(default)]`, so an absent field continues to mean "inherit". A new client against an old daemon degrades to "the daemon ignores the field" — which must be stated in the operator-visible compatibility notes rather than left implicit.
-- **Storage.** One additive, nullable column on `runtime_preferences` — the reasoning selection — with its own store method and its own protocol request. It follows the established `migrate_v62` precedent on the same table (a plain `ALTER TABLE … ADD COLUMN` that keeps every existing row) and requires `STORAGE_LAYOUT_VERSION` to be bumped to match the highest wired migration, as the project-catalog invariants guard enforces. Existing rows read as "no explicit selection", which preserves the current behaviour exactly. The **per-model capability data** is a separate matter and is decided by ADR-0045; this decision does not require it to be persisted.
+- **Storage.** One additive, nullable column on `runtime_preferences` — the reasoning selection — with its own store method and its own protocol request. It follows the established `migrate_v62` precedent on the same table (a plain `ALTER TABLE … ADD COLUMN` that keeps every existing row) and requires `STORAGE_LAYOUT_VERSION` to be bumped to match the highest wired migration, as the project-catalog invariants guard enforces. Existing rows read as "no explicit selection", which preserves the current behaviour exactly. The **per-model capability data** is a separate matter and is decided by ADR-0049; this decision does not require it to be persisted.
 - **Configuration.** `default_reasoning_effort` and `default_thinking_budget` keep their current types and meaning. A configuration value naming a vendor label is already carried verbatim; under this decision it reaches the wire instead of being discarded. Existing configuration therefore changes behaviour from "silently dropped on some surfaces" to "sent as selected", which is the intent of the change and must be called out in release notes.
-- **Provider behaviour.** For providers whose surface cannot express the selected dimension, the request changes from "no reasoning field" to "a field the surface rejects" in some configurations. Under ADR-0045's policy this is resolved locally before dispatch, so the provider should not see a request it will reject; the remaining risk is a provider that rejects a value its own documentation advertises, which is a provider-side defect and is reported as such.
+- **Provider behaviour.** For providers whose surface cannot express the selected dimension, the request changes from "no reasoning field" to "a field the surface rejects" in some configurations. Under ADR-0049's policy this is resolved locally before dispatch, so the provider should not see a request it will reject; the remaining risk is a provider that rejects a value its own documentation advertises, which is a provider-side defect and is reported as such.
 - **Removal criteria.** The legacy closed-effort type and the "unspecified means disabled" behaviour are removed once every consumer reads the open vocabulary. There is no flag day: the removal is internal and complete within the milestone series.
 
 ## Security and reliability implications
 
 - **No secret exposure.** Reasoning labels and budgets are request-shaping configuration, not credentials. No label value derived from a provider response may be logged verbatim without redaction rules if a provider ever places user data in a label position; the capability overlay from a provider catalog is treated as untrusted input and is validated as a bounded, typed shape before use.
-- **Untrusted discovery input.** Per-model capability data obtained from a provider's catalog response is attacker-influenceable if the endpoint is attacker-controlled. Under ADR-0045 such data may only *narrow* what CodeGG offers, never widen it beyond the adapter-declared baseline, and it may not introduce a budget or label the adapter did not declare.
+- **Untrusted discovery input.** Per-model capability data obtained from a provider's catalog response is attacker-influenceable if the endpoint is attacker-controlled. Under ADR-0049 such data may only *narrow* what CodeGG offers, never widen it beyond the adapter-declared baseline, and it may not introduce a budget or label the adapter did not declare.
 - **Denial of service.** A provider catalog that advertises an enormous accepted-effort list is bounded before it reaches a UI or a request. The list is capped and deduplicated.
 - **Fail-closed on capability absence.** The canonical specification requires security-sensitive capability absence to fail closed. A reasoning control is not itself a security boundary, so the failure mode is a typed refusal at admission with a truthful message rather than an unbounded wait or a provider-side 400 with an opaque body.
 - **Cancellation and restart.** The per-turn override is a per-turn value carried on the turn request, so it is naturally re-established on a restart from the same admitted request, and a cancelled turn discards it with the turn. The persisted selection is daemon state with the same restart properties as the existing `runtime_preferences` rows: it reloads on restart, and a write failure is reported rather than silently applying in memory only. No new recovery policy is introduced.
@@ -191,4 +201,4 @@ The decision is proven by:
 
 None. This record is superseded only by a later accepted ADR that changes the reasoning control contract.
 
-Related, and distinct: ADR-0045 (per-model reasoning capability authority) decides where the per-model capability facts come from and how they are applied at admission. ADR-0044 decides the vocabulary and the wire-intent fidelity; ADR-0045 decides the authority and policy for the facts that constrain that vocabulary.
+Related, and distinct: ADR-0049 (per-model reasoning capability authority) decides where the per-model capability facts come from and how they are applied at admission. ADR-0048 decides the vocabulary and the wire-intent fidelity; ADR-0049 decides the authority and policy for the facts that constrain that vocabulary.

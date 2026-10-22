@@ -746,6 +746,8 @@ fn remote_template(node_id: &str) -> codegg_core::jobs::schedule::JobTemplate {
         payload: JobPayload::ManagedArgv {
             argv: vec!["cargo".to_owned(), "build".to_owned()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: codegg_core::jobs::ResourceRequest::for_kind(JobKind::Build),
         retry_policy: RetryPolicy::no_retry(),

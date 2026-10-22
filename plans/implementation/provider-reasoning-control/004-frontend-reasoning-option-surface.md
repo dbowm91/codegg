@@ -15,8 +15,8 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0044-open-provider-scoped-reasoning-control-vocabulary.md` (§4 the open vocabulary, §5 the daemon-owned selection).
-- `plans/adrs/ADR-0045-per-model-reasoning-capability-authority.md` (§1 the authority order, §2 the record's shape, §3 the unknown semantics).
+- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` (§4 the open vocabulary, §5 the daemon-owned selection).
+- `plans/adrs/ADR-0049-per-model-reasoning-capability-authority.md` (§1 the authority order, §2 the record's shape, §3 the unknown semantics).
 
 Primary class: capability
 
@@ -27,7 +27,7 @@ Make the reasoning control **truthful in the interface**: offer only the options
 ## 2. Why this milestone is ready
 
 - **Hard dependency:** M003 closed. M003 produces the effective per-model capability; without it the frontend has nothing truthful to offer.
-- **ADRs:** ADR-0044 and ADR-0045 accepted. See §14.
+- **ADRs:** ADR-0048 and ADR-0049 accepted. See §14.
 - **Interface dependency — the established model DTOs.** `ProviderModelDto` and `SelectedModelDto` in `crates/codegg-protocol/src/provider.rs` already carry per-model metadata (`context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`), and the same file already establishes the additive-field pattern this milestone needs: `ConnectionHealthDto::credential_status` uses `#[serde(default, skip_serializing_if = "Option::is_none")]` with a doc comment stating that an absent value "means the peer predates the axis, which reads as 'not established'". The new capability payload follows that pattern exactly.
 - **Interface dependency — the working strip.** The TUI's working strip **row 0** is reserved unconditionally and is the main buffer's only status surface; its height is subtracted from the transcript, so gating it on turn state reflows the transcript on every submit and completion. That is where turn state belongs, and therefore where a persistent reasoning indicator belongs.
 
@@ -303,7 +303,7 @@ Do not claim commands that were not actually run in the closure record. The repo
 
 The agent must stop and report rather than improvise when:
 
-- **M003 has not closed**, or **ADR-0044 / ADR-0045 are not `accepted`**.
+- **M003 has not closed**, or **ADR-0048 / ADR-0049 are not `accepted`**.
 - The capability cannot be exposed additively on the existing model DTOs. A **required** field would break a new client decoding an old daemon, so the agent must not add one; if the payload genuinely cannot be optional, the agent reports that and stops.
 - The option surface would require changing the `ModelsSnapshot` / `ModelsRefresh` channel shape. That is a breaking change to the most-used models path and is out of scope.
 - The persistent indicator would require a second spinner, a second timer, or a second `ActivityPhase`. The one-cadence invariant is not negotiable.

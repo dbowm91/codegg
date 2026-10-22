@@ -306,6 +306,18 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::SessionRead),
         ),
+        // M006: a launch creates a session *and* places it in a
+        // checkout. The session is the primary effect, so the
+        // descriptor carries `session.create`; the checkout half is
+        // authorized separately by the handler, which asks for
+        // `worktree.create` when the placement allocates one. The scope
+        // is the project the launch names, so a team principal fails
+        // closed on a project it is not a member of.
+        R::SessionLaunch { .. } => OperationDescriptor::new(
+            "session_launch",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
         R::SessionDelete { .. } => OperationDescriptor::new(
             "session_delete",
             ScopeKind::ViaSession,
@@ -1269,6 +1281,9 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::SandboxProfileSet { .. } => {
             OperationDescriptor::new("sandbox_profile_set", ScopeKind::Global, None)
         }
+        R::NetworkIntentSet { .. } => {
+            OperationDescriptor::new("network_intent_set", ScopeKind::Global, None)
+        }
         R::RuntimePolicySet { .. } => {
             OperationDescriptor::new("runtime_policy_set", ScopeKind::Global, None)
         }
@@ -1602,6 +1617,16 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::SessionFork {
             session_id: String::new(),
+        },
+        R::SessionLaunch {
+            project_id: String::new(),
+            intent: codegg_protocol::core::SessionLaunchIntentDto::New,
+            parent_session_id: None,
+            placement: codegg_protocol::core::SessionLaunchPlacementDto::NewManagedCheckout {
+                base_ref: None,
+                target_branch: None,
+            },
+            idempotency_key: String::new(),
         },
         R::SessionDelete {
             session_id: String::new(),
@@ -2326,6 +2351,10 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::SandboxProfileSet {
             sandbox_profile: String::new(),
+            expected_revision: None,
+        },
+        R::NetworkIntentSet {
+            network_intent: String::new(),
             expected_revision: None,
         },
         R::RuntimePolicySet {

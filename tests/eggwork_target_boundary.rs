@@ -140,6 +140,11 @@ fn remote_template(node_id: &str) -> JobTemplate {
         payload: JobPayload::ManagedArgv {
             argv: vec!["cargo".to_owned(), "build".to_owned()],
             cwd: None,
+            // This template carries no filesystem ceiling and no network
+            // preference: it is a plain remote build, and the historical
+            // intent is the one the payload used before either field existed.
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Build),
         retry_policy: RetryPolicy::no_retry(),

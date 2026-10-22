@@ -366,7 +366,7 @@ Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `default_thinking_budget`, `max_parallel_tools`, `preferred_tools`,
 `disabled_tools`, `task_state_policy`.
 
-`default_reasoning_effort` is an **open, provider-scoped label** (ADR-0044),
+`default_reasoning_effort` is an **open, provider-scoped label** (ADR-0048),
 not a level on a closed enum: a vendor label such as `xhigh` or `max` is a
 legitimate value, and it now reaches the provider wire verbatim instead of
 being rejected as an unknown level. The four labels in
@@ -379,7 +379,7 @@ agent / model-profile default**, so a configured label still loses to the
 user's own choice; see `architecture/provider.md`.
 
 `reasoning_capability` is the operator's **per-model reasoning capability
-override** (ADR-0045). It carries the four independent dimensions of the
+override** (ADR-0049). It carries the four independent dimensions of the
 capability record — the accepted effort labels, whether reasoning can be
 disabled, whether a fixed thinking budget is accepted (and its bounds), and
 whether the model always reasons — each with a status in the kernel's

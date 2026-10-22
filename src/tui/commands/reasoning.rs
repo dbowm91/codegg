@@ -393,6 +393,7 @@ mod tests {
             principal_id: "local".to_string(),
             approval_mode: crate::protocol::core::ApprovalModeDto::Interactive,
             sandbox_profile: crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+            network_intent: crate::protocol::core::NetworkIntentDto::LegacyUnrestricted,
             revision: 7,
             updated_at_ms: 0,
             last_provider_connection_id: None,

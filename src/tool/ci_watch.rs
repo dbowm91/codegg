@@ -109,6 +109,9 @@ impl Tool for CiWatchTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        // M005 C005: refuse a process launch under the restricted shared
+        // profile, before the tool runs and before any process exists.
+        crate::tool::process_admission::admit_tool_process("ci_watch", ctx.as_ref()).await?;
         let value = self.execute_impl(input, ctx).await?;
         let status = value
             .get("state")

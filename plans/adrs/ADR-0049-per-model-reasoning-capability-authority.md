@@ -1,4 +1,4 @@
-# ADR-0045: Per-model reasoning capability authority and admission policy
+# ADR-0049: Per-model reasoning capability authority and admission policy
 
 Status: accepted
 
@@ -8,6 +8,15 @@ Accepted: 2026-10-21, by the project maintainer, selecting Option B: layered
 authority (adapter baseline, narrowing-only discovery overlay, local typed
 admission policy). Accepted as written, without amendment, and authorized for
 implementation across the `provider-reasoning-control` roadmap milestones.
+
+Renumbering note (2026-10-22, merge reconciliation — the decision is unchanged):
+this record was **ADR-0045** on the `provider-reasoning-control` branch.
+`main` had already published ADR-0045 (the command syntax and execution
+authority decision), so the branch yields the number to `main` and this record
+moves to **ADR-0049**. Main wins the number. The title, the decision,
+`Status: accepted`, the acceptance date and the accepting authority are
+unchanged — only the identifier and the file name moved. The same collision
+also moved the open-vocabulary record from ADR-0044 to **ADR-0048**.
 
 Amendment note (2026-10-21, post-acceptance — the decision is unchanged): a
 verification of the pinned upstream established that the
@@ -44,11 +53,11 @@ Related architecture documents:
 
 Related ADRs:
 
-- `plans/adrs/ADR-0044-open-provider-scoped-reasoning-control-vocabulary.md` — decides the open vocabulary and the faithful wire intent. This record decides **where the per-model facts come from** and **how they are applied at admission**.
+- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` — decides the open vocabulary and the faithful wire intent. This record decides **where the per-model facts come from** and **how they are applied at admission**.
 
 ## Context
 
-ADR-0044 makes the reasoning vocabulary open and provider-scoped. An open vocabulary creates a new obligation: CodeGG must know, for the model a turn will actually use, **which reasoning dimensions that model accepts** and **whether it can reason at all**. Without that knowledge, CodeGG can only forward whatever the user selected and let the provider reject it — which is precisely the failure mode the decision exists to remove.
+ADR-0048 makes the reasoning vocabulary open and provider-scoped. An open vocabulary creates a new obligation: CodeGG must know, for the model a turn will actually use, **which reasoning dimensions that model accepts** and **whether it can reason at all**. Without that knowledge, CodeGG can only forward whatever the user selected and let the provider reject it — which is precisely the failure mode the decision exists to remove.
 
 At the repository baseline `c93211542` CodeGG has almost none of this knowledge.
 

@@ -34,11 +34,12 @@ enum Chrome {
 /// `handle_key` is the implementation and this is the advertisement. Two of
 /// the old footer's tokens are deliberately absent even though the arms exist:
 ///
-/// - `Esc close` never fires from a panel.
-///   [`SidePanelHost::handle_key`](crate::tui::panels::SidePanelHost) claims
-///   `Esc`/`q` as its universal exits and blurs *without* consulting the
-///   widget, so the pair below `PgUp/PgDn` in the retired footer was teaching
-///   a docked box a key the host had already answered.
+/// - `Esc close` means two different things in the two surfaces: it closes the
+///   modal box and it is the mode switch in a column, where
+///   [`SidePanelHost::handle_key`](crate::tui::panels::SidePanelHost) no
+///   longer claims it at all. A hosted hint cannot promise either, so the pair
+///   below `PgUp/PgDn` in the retired footer was teaching a docked box a key
+///   whose meaning it could not fix.
 /// - `H copy hunk` cannot fire at all. `handle_key` has a real `Char('H')`
 ///   arm, but `insert_panel_direction_bindings` binds **bare uppercase `H`** as
 ///   `InputAction::DirectionLeft`, unmodified and shifted, so the host claims

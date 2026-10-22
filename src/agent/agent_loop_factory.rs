@@ -39,10 +39,19 @@ pub struct AgentLoopBuildInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005: principal network intent captured independently of filesystem
+    /// containment. Missing means legacy unrestricted networking.
+    pub network_intent: Option<codegg_core::approval::NetworkIntent>,
     /// M010: optional inference feedback bound to the session's selected
     /// provider connection revision.
     pub credential_observer:
         Option<crate::agent::provider_qualification::SharedProviderCredentialObserver>,
+    /// M005 corrective C005: the process admission policy for this turn's
+    /// checkout scope.
+    ///
+    /// Built by the daemon over the daemon-resolved workspace root.
+    /// `None` leaves the turn on the ordinary profile.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Permission rules declared by the agent this loop will treat as current.
@@ -73,6 +82,14 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     // (`merge_rulesets` lets the later ruleset win a tie).
     .with_agent_rules(active_agent_rules(&input.agents))
     .with_active_mode(&input.config);
+    // M005 C003: the daemon turn's checkout scope. A top-level turn holds
+    // no managed worktree, so the fence can contain the effect inside the
+    // session's workspace but can never mint a checkout permit.
+    let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> = Some(
+        std::sync::Arc::new(crate::tool::writer_fence::WorkspaceWriterFence::new(
+            input.execution.workspace_root.clone(),
+        )),
+    );
     let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
         input.agents,
         input.provider,
@@ -84,6 +101,8 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.artifact_store,
         input.execution.workspace_root.clone(),
         input.session_id,
+        writer_fence,
+        input.process_admission.clone(),
     );
     agent_loop.set_turn_id(input.turn_id);
     agent_loop.set_provider_registry(input.provider_registry);
@@ -127,6 +146,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     }
     if let Some(profile) = input.sandbox_profile {
         agent_loop.set_sandbox_profile(profile);
+    }
+    if let Some(network_intent) = input.network_intent {
+        agent_loop.set_network_intent(network_intent);
     }
     agent_loop
 }

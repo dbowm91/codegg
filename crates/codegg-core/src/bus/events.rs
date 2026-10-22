@@ -406,6 +406,30 @@ pub enum AppEvent {
         claim: codegg_protocol::projection::WorkstreamClaimProjection,
         action: String,
     },
+    /// M007: a coarse, scheduler-owned job status for same-group
+    /// consumers.
+    ///
+    /// Carries only the job identity, the typed job kind and a bounded
+    /// phase label. The command line, environment values, logs, cache
+    /// contents and artifact paths are deliberately absent: this event
+    /// reaches every member of a group, so it must never carry anything
+    /// the group is not entitled to see.
+    ///
+    /// A consumer must confirm the session scope and the observer's own
+    /// group membership before forming model-visible context.
+    JobStatusObserved {
+        session_id: String,
+        /// The turn that submitted the job, when the scheduler recorded
+        /// one. A consumer uses it to tell a peer's job from its own.
+        #[serde(default)]
+        turn_id: Option<String>,
+        job_id: String,
+        /// The typed job kind, e.g. `build`.
+        kind: String,
+        /// Bounded phase label: `running`, `completed`, `failed`,
+        /// `cancelled`, `timed_out` or `interrupted`.
+        phase: String,
+    },
     /// Bounded Git/result evidence derived from the durable AgentRunResult.
     /// Internal peer hint only; it is not a new client or authority surface.
     AgentRunEvidenceObserved {
@@ -515,6 +539,7 @@ impl AppEvent {
             AppEvent::AgentRunControlUpdated { .. } => "agent_run:control_updated",
             AppEvent::WorktreeUpdated { .. } => "worktree:updated",
             AppEvent::AgentRunGroupUpdated { .. } => "agent_run_group:updated",
+            AppEvent::JobStatusObserved { .. } => "job:status_observed",
             AppEvent::WorkstreamClaimUpdated { .. } => "workstream_claim:updated",
             AppEvent::AgentRunEvidenceObserved { .. } => "agent_run:evidence_observed",
             AppEvent::ConvergenceUpdated { .. } => "convergence:updated",

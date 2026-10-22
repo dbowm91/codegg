@@ -13,6 +13,10 @@ use crate::provider::{
     ProviderRegistry, ProviderRequestContext,
 };
 use crate::tool::backend::provider_request_context;
+use crate::tool::writer_fence::{
+    acquire_writer_permit, settle_writer_fence, writer_fence_key, NativeEffectClass,
+    WriterFenceOutcome,
+};
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
 /// Native tool that creates a commit. Refactored around the typed
@@ -23,6 +27,11 @@ pub struct CommitTool {
     workdir: PathBuf,
     run_store: Option<std::sync::Arc<dyn codegg_core::run_store::RunStore>>,
     provider: Option<std::sync::Arc<dyn Provider>>,
+    /// C007: the private index publication backend.
+    ///
+    /// `None` means the `Add` mutation is refused rather than downgraded to
+    /// the legacy in-place `git add` route.
+    publication: Option<std::sync::Arc<crate::git_publication::GitIndexPublisher>>,
 }
 
 impl CommitTool {
@@ -31,6 +40,7 @@ impl CommitTool {
             workdir: crate::tool::util::unresolved_workspace_root(),
             run_store: None,
             provider: None,
+            publication: None,
         }
     }
 
@@ -47,6 +57,15 @@ impl CommitTool {
         self
     }
 
+    /// Inject the C007 private index publication backend.
+    pub fn with_publication(
+        mut self,
+        publication: std::sync::Arc<crate::git_publication::GitIndexPublisher>,
+    ) -> Self {
+        self.publication = Some(publication);
+        self
+    }
+
     /// Override provider selection for callers that already own a provider
     /// and for focused nested-request tests.
     pub fn with_provider(mut self, provider: std::sync::Arc<dyn Provider>) -> Self {
@@ -56,7 +75,13 @@ impl CommitTool {
 
     /// Build a `GitMutationExecutor` rooted at this tool's workdir.
     fn executor(&self) -> GitMutationExecutor {
-        GitMutationExecutor::new().with_env_policy(GitEnvPolicy::default())
+        let exec = GitMutationExecutor::new().with_env_policy(GitEnvPolicy::default());
+        // C007: the `Add` mutation publishes the repository index through the
+        // private index publication backend.
+        match self.publication.clone() {
+            Some(publication) => exec.with_publication(publication),
+            None => exec,
+        }
     }
 
     /// Generate a commit message from the staged diff via the LLM.
@@ -170,6 +195,15 @@ impl CommitTool {
             GitMutationError::StateMismatch { expected, actual } => ToolError::Execution(format!(
                 "state mismatch: expected operation '{expected}' but found '{actual}' on disk"
             )),
+            GitMutationError::PublicationConflict(conflict) => {
+                ToolError::Execution(format!("publication conflict: {conflict}"))
+            }
+            GitMutationError::PublicationRefused(refusal) => {
+                ToolError::Execution(format!("publication refused: {refusal}"))
+            }
+            GitMutationError::PublicationFailed(message) => {
+                ToolError::Execution(format!("publication failed: {message}"))
+            }
         }
     }
 }
@@ -325,6 +359,66 @@ impl CommitTool {
             }
         };
 
+        // M005 C004: a commit stages paths and moves a branch, so it is a
+        // checkout writer exactly like the typed Git mutations. The permit
+        // is taken after the input validation and before the first staging,
+        // and is held through the commit. It is settled on every exit
+        // path: an unsettled permit parks the checkout rather than freeing
+        // it, so a failure that may have staged something reports
+        // `Unproven` and the checkout stays parked instead of being handed
+        // to the next writer with a dirty index.
+        let mut effect_possible = false;
+        let permit = acquire_writer_permit(
+            context,
+            NativeEffectClass::GitMutation,
+            vec![self.workdir.clone()],
+            writer_fence_key(self.name(), std::slice::from_ref(&self.workdir), context),
+        )
+        .await?;
+
+        let result = self
+            .commit_effects(
+                &selection,
+                selection_kind,
+                manual_message,
+                amend,
+                co_authored,
+                allow_empty,
+                provider_context,
+                &mut effect_possible,
+            )
+            .await;
+
+        let fence_outcome = match &result {
+            Ok(_) => WriterFenceOutcome::Settled,
+            Err(_) if effect_possible => WriterFenceOutcome::Unproven(
+                "the commit failed after staging may have begun; the checkout index may be dirty"
+                    .to_owned(),
+            ),
+            Err(_) => WriterFenceOutcome::NoEffect,
+        };
+        settle_writer_fence(permit, fence_outcome, result.is_err()).await?;
+        result
+    }
+
+    /// The staging-and-commit effect, run under the checkout's writer
+    /// permit.
+    ///
+    /// Split out of the tool entry point so the permit is held *around* the
+    /// whole effect: every exit path returns here and is settled by the
+    /// caller.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_effects(
+        &self,
+        selection: &CommitSelection,
+        selection_kind: SelectionKind,
+        manual_message: Option<&str>,
+        amend: bool,
+        co_authored: bool,
+        allow_empty: bool,
+        provider_context: ProviderRequestContext,
+        effect_possible: &mut bool,
+    ) -> Result<String, ToolError> {
         let message = if let Some(msg) = manual_message {
             msg.to_string()
         } else if amend {
@@ -334,15 +428,19 @@ impl CommitTool {
         } else {
             // For non-amend with StageAll, stage first so get_staged_diff
             // sees the changes.
-            let needs_paths = match &selection {
+            let needs_paths = match selection {
                 CommitSelection::StageAll => {
+                    *effect_possible = true;
                     let exec = self.executor();
                     stage_all(&exec, &self.workdir)
                         .await
                         .map_err(Self::map_mutation_err)?;
                     None
                 }
-                CommitSelection::StagePaths(paths) => Some(paths.clone()),
+                CommitSelection::StagePaths(paths) => {
+                    *effect_possible = true;
+                    Some(paths.clone())
+                }
                 _ => None,
             };
             if let Some(paths) = needs_paths {
@@ -366,10 +464,11 @@ impl CommitTool {
         };
 
         let exec = self.executor();
+        *effect_possible = true;
         let outcome = commit_with_selection(
             &exec,
             &self.workdir,
-            selection,
+            selection.clone(),
             &final_message,
             amend,
             allow_empty,

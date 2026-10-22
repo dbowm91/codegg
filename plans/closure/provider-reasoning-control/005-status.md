@@ -12,7 +12,7 @@ Source subsystem roadmap:
 
 Source decision:
 
-- `plans/adrs/ADR-0045-per-model-reasoning-capability-authority.md` (accepted)
+- `plans/adrs/ADR-0049-per-model-reasoning-capability-authority.md` (accepted)
 
 Repository baseline reviewed: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5`
 

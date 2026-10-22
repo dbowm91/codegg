@@ -160,6 +160,14 @@ impl App {
             TuiMsg::ChatComposerSeed(seed) => {
                 self.arm_chat_composer(seed);
             }
+            TuiMsg::CancelChatComposer => {
+                // `Esc` inside a panel is the **mode switch**, not a panel
+                // exit: it backs out of the armed compose context and leaves
+                // the keyboard where it was. With no context armed there is
+                // nothing to cancel, so the key is a no-op rather than a
+                // silent focus move.
+                self.cancel_chat_composer();
+            }
             TuiMsg::AgentPanelAction { selection, name } => {
                 crate::tui::commands::agent_editor::apply_agent_selection(self, selection, &name);
             }
@@ -469,6 +477,59 @@ impl App {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
                 }
+            }
+            // M006: launch a session into an isolated checkout.
+            //
+            // The dialog stays open: the launch runs in the background
+            // and reports itself when it lands, and closing the dialog
+            // would cancel the very task that reports it.
+            TuiMsg::LaunchSession {
+                parent_session_id,
+                worktree_id,
+            } => {
+                let Some(project_id) = self
+                    .active_project_id()
+                    .map(str::to_string)
+                    .or_else(|| self.active_project_key())
+                else {
+                    self.messages_state
+                        .toasts
+                        .warning("No project is active — pick one before launching a session");
+                    return;
+                };
+                let intent = if parent_session_id.is_some() {
+                    crate::protocol::core::SessionLaunchIntentDto::Fork
+                } else {
+                    crate::protocol::core::SessionLaunchIntentDto::New
+                };
+                let placement = match worktree_id {
+                    Some(worktree_id) => {
+                        crate::protocol::core::SessionLaunchPlacementDto::ExistingManagedWorktree {
+                            worktree_id,
+                        }
+                    }
+                    None => crate::protocol::core::SessionLaunchPlacementDto::NewManagedCheckout {
+                        base_ref: None,
+                        target_branch: None,
+                    },
+                };
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::SessionLaunch {
+                            project_id,
+                            intent,
+                            parent_session_id,
+                            placement,
+                            idempotency_key: format!("tui-launch-{}", uuid::Uuid::new_v4()),
+                        },
+                    );
+                }
+            }
+            TuiMsg::LaunchNeedsCheckout => {
+                self.messages_state.toasts.info(
+                    "This session runs in the project's own root — it has no managed checkout to reuse",
+                );
             }
             TuiMsg::SubmitImportPreview => {
                 self.handle_import_send();

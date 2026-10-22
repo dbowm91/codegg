@@ -161,6 +161,13 @@ pub struct JobExecutionContext {
     pub cancellation: CancellationToken,
     pub progress: Arc<dyn JobProgressSink>,
     pub resources: ResourcePermitGuard,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// The final executor consults it before it starts a process, so a
+    /// process-class job cannot slip past the submission-time check by
+    /// being admitted while the checkout was free and dispatched after it
+    /// became reserved.
+    pub process_admission: Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>,
 }
 
 impl JobExecutionContext {
@@ -529,6 +536,8 @@ mod tests {
                 JobPayload::ManagedArgv {
                     argv: vec!["cargo".into(), "check".into()],
                     cwd: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
             ),
             attempt_id: codegg_core::jobs::AttemptId::new_unchecked("attempt"),
@@ -543,6 +552,7 @@ mod tests {
             resources: crate::scheduler::permit::ResourcePermitGuard::new_orphan(
                 crate::scheduler::permit::PermitDimensions::default(),
             ),
+            process_admission: None,
         };
 
         assert!(matches!(
@@ -562,6 +572,8 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
         );
         let r = ExecutorRegistry::new();

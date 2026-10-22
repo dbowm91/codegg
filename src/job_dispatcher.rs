@@ -95,6 +95,8 @@ impl JobDispatcher for SubAgentJobDispatcher {
             // M005: durable-job fallback inherits the default ceiling.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            process_admission: None,
+            writer_fence: None,
         };
 
         self.pool
@@ -134,6 +136,8 @@ mod tests {
                 command: "echo hi".to_string(),
                 argv: None,
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: codegg_core::jobs::ResourceRequest::default(),
             timeout: None,

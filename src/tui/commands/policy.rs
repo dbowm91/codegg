@@ -16,7 +16,7 @@
 //! bumps the request generation and the matching `apply_*` drops stale
 //! completions.
 
-use codegg_core::approval::{ApprovalMode, SandboxProfile};
+use codegg_core::approval::{ApprovalMode, NetworkIntent, SandboxProfile};
 
 use crate::policy_surface::{
     format_policy_detail, format_policy_line, format_restore_summary, warning_for,
@@ -88,9 +88,11 @@ pub(crate) fn view_from_dtos(
     let requested_mode = ApprovalMode::parse(preference.approval_mode.as_str()).unwrap_or_default();
     let requested_profile =
         SandboxProfile::parse(preference.sandbox_profile.as_str()).unwrap_or_default();
+    let requested_network_intent = network_intent_from_dto(preference.network_intent);
     let effective_mode = ApprovalMode::parse(snapshot.approval_mode.as_str()).unwrap_or_default();
     let effective_profile =
         SandboxProfile::parse(snapshot.sandbox_profile.as_str()).unwrap_or_default();
+    let effective_network_intent = network_intent_from_dto(snapshot.network_intent);
     let enforcement_summary = snapshot
         .sandbox_enforcement
         .as_ref()
@@ -101,10 +103,21 @@ pub(crate) fn view_from_dtos(
         effective_mode,
         requested_profile,
         effective_profile,
+        requested_network_intent,
+        effective_network_intent,
         enforcement_summary,
         reviewer_available: snapshot.reviewer_available,
         reviewer_detail: snapshot.reviewer_detail.clone(),
         revision: Some(preference.revision),
+    }
+}
+
+fn network_intent_from_dto(intent: crate::protocol::core::NetworkIntentDto) -> NetworkIntent {
+    match intent {
+        crate::protocol::core::NetworkIntentDto::LegacyUnrestricted => {
+            NetworkIntent::LegacyUnrestricted
+        }
+        crate::protocol::core::NetworkIntentDto::OfflineRequired => NetworkIntent::OfflineRequired,
     }
 }
 
@@ -553,6 +566,78 @@ pub(crate) fn start_policy_update(
     );
 }
 
+pub(crate) fn request_network_intent_change(app: &mut App, intent: NetworkIntent) {
+    let expected_revision = app.policy_ui.cached.as_ref().and_then(|view| view.revision);
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Network policy update unavailable: no core connection");
+        return;
+    };
+    let request_id = app.policy_ui.request.begin();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "network_intent_update",
+        async move {
+            let preference = match core_client
+                .request(crate::core::new_request(
+                    format!("network-intent-set-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::NetworkIntentSet {
+                        network_intent: intent.as_str().to_owned(),
+                        expected_revision,
+                    },
+                ))
+                .await
+            {
+                Ok(CoreResponse::ApprovalPreference { preference }) => preference,
+                Ok(CoreResponse::Error { code, message }) => {
+                    return Some(TuiCommand::PolicyUpdateFinished {
+                        request_id,
+                        preference: None,
+                        snapshot: None,
+                        error: Some(policy_update_error_hint(&code, &message)),
+                    });
+                }
+                Ok(_) => {
+                    return Some(TuiCommand::PolicyUpdateFinished {
+                        request_id,
+                        preference: None,
+                        snapshot: None,
+                        error: Some("Network policy update got an unexpected response".into()),
+                    });
+                }
+                Err(error) => {
+                    return Some(TuiCommand::PolicyUpdateFinished {
+                        request_id,
+                        preference: None,
+                        snapshot: None,
+                        error: Some(format!("Network policy update failed: {error}")),
+                    });
+                }
+            };
+            let snapshot = match core_client
+                .request(crate::core::new_request(
+                    format!("network-intent-effective-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::ExecutionPolicyGet { session_id: None },
+                ))
+                .await
+            {
+                Ok(CoreResponse::ExecutionPolicy { snapshot }) => Some(snapshot),
+                _ => None,
+            };
+            Some(TuiCommand::PolicyUpdateFinished {
+                request_id,
+                preference: Some(preference),
+                snapshot,
+                error: None,
+            })
+        },
+    );
+}
+
 /// Apply a `PolicyUpdateFinished` completion. Failed updates leave the
 /// previous effective policy cached and report the error; the cache is
 /// only replaced by daemon-confirmed state.
@@ -598,6 +683,8 @@ pub(crate) fn apply_policy_updated(
                 .unwrap_or_default(),
             effective_profile: SandboxProfile::parse(preference.sandbox_profile.as_str())
                 .unwrap_or_default(),
+            requested_network_intent: network_intent_from_dto(preference.network_intent),
+            effective_network_intent: network_intent_from_dto(preference.network_intent),
             enforcement_summary: String::new(),
             reviewer_available: false,
             reviewer_detail: "effective snapshot refresh pending".to_string(),

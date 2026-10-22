@@ -1,0 +1,17 @@
+[package]
+name = "linux-trusted-git-cost-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+with-gix = ["dep:gix"]
+
+[dependencies]
+egggit = { path = "../../../crates/egggit" }
+gix = { version = "0.89.0", default-features = false, features = ["sha1", "status"], optional = true }
+libc = "0.2"
+tempfile = "3"

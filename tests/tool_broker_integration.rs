@@ -257,6 +257,7 @@ fn make_ctx_with_grant(
     allowed_effect_class: &str,
 ) -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller,
         cwd: PathBuf::from("."),
         session_id: Some("test-session".to_string()),
@@ -282,6 +283,7 @@ fn make_ctx_with_grant(
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -293,6 +295,7 @@ fn make_ctx_with_grant_snapshot(
     tool_names: &[&str],
 ) -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller,
         cwd: PathBuf::from("."),
         session_id: Some("test-session".to_string()),
@@ -320,6 +323,7 @@ fn make_ctx_with_grant_snapshot(
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -718,6 +722,7 @@ async fn broker_unauthorized_non_agent_non_internal_rejected() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "test".to_string(),
         },
@@ -742,6 +747,7 @@ async fn broker_unauthorized_non_agent_non_internal_rejected() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let err = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -757,6 +763,7 @@ async fn broker_authorized_programmatic_caller_accepted() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "test".to_string(),
         },
@@ -786,6 +793,7 @@ async fn broker_authorized_programmatic_caller_accepted() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let result = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -847,6 +855,7 @@ async fn broker_validate_pre_execution_caller_policy() {
     // "large_output" has no contract override — defaults to DirectOnly
     let contract = broker.lookup_contract("large_output").unwrap();
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "test".to_string(),
         },
@@ -897,6 +906,7 @@ async fn broker_validate_pre_execution_caller_policy() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
 
     let err = broker

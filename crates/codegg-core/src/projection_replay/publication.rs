@@ -876,6 +876,12 @@ mod tests {
             payload: CoreEvent::JobStarted {
                 job_id: "job-1".into(),
                 attempt_id: "attempt-1".into(),
+                // The lifecycle event carries no scope of its own here: the
+                // envelope is the trusted owner, which is exactly what this
+                // fixture exercises.
+                session_id: None,
+                workspace_id: None,
+                kind: None,
             },
         };
         let events = projection_events_from_core(&envelope);
@@ -906,6 +912,12 @@ mod tests {
             payload: CoreEvent::JobStarted {
                 job_id: "job-1".into(),
                 attempt_id: "attempt-1".into(),
+                // The lifecycle event carries no scope of its own here: the
+                // envelope is the trusted owner, which is exactly what this
+                // fixture exercises.
+                session_id: None,
+                workspace_id: None,
+                kind: None,
             },
         };
         assert!(projection_events_from_core(&envelope).is_empty());

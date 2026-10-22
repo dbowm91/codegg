@@ -2782,7 +2782,13 @@ mod tests {
             let response = match envelope.payload {
                 CoreRequest::InteractiveProcessCreate { request } => {
                     self.protocol
-                        .create(CLIENT_ID, &self.ctx, &request, None)
+                        .create(
+                            CLIENT_ID,
+                            &self.ctx,
+                            codegg_core::approval::SandboxProfile::FullHost,
+                            &request,
+                            None,
+                        )
                         .await
                 }
                 CoreRequest::InteractiveProcessAttach {

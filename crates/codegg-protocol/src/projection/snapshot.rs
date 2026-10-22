@@ -204,6 +204,13 @@ impl SessionProjectionSnapshot {
     }
 
     /// Upsert a job, dropping the oldest if the cap is reached.
+    ///
+    /// The upsert *merges*: facts already observed for a job are kept
+    /// when the incoming projection does not carry them. A lifecycle
+    /// event that knows only the job id and the attempt id must not
+    /// erase the kind and the workspace the creation event recorded —
+    /// a job whose kind is blank cannot be classified, and a job whose
+    /// workspace is blank cannot be authorized against one.
     pub fn upsert_job(&mut self, job: JobProjection) {
         if let Some(slot) = self.jobs.iter_mut().find(|j| j.job_id == job.job_id) {
             let prior_terminal = terminal_job_state(&slot.state);

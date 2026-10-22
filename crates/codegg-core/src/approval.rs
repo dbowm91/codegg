@@ -119,6 +119,20 @@ impl SandboxProfile {
         matches!(self, Self::FullHost)
     }
 
+    /// The more contained of two profiles.
+    ///
+    /// `ReadOnly` is narrower than `WorkspaceWrite`, which is narrower than
+    /// `FullHost`. Combining a carried profile with a ceiling therefore
+    /// never widens: the result keeps whichever of the two is more
+    /// contained.
+    pub const fn narrow(self, other: Self) -> Self {
+        if other.rank() < self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Legacy `SandboxMode` config name for compatibility mapping.
     ///
     /// `ReadOnly`/`WorkspaceWrite` map 1:1. `FullHost` maps to the
@@ -132,6 +146,33 @@ impl SandboxProfile {
             Self::ReadOnly => "read_only",
             Self::WorkspaceWrite => "workspace_write",
             Self::FullHost => "danger_full_access",
+        }
+    }
+}
+
+/// Network policy for child execution. Offline is an independent principal
+/// preference and never follows implicitly from the filesystem profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkIntent {
+    #[default]
+    LegacyUnrestricted,
+    OfflineRequired,
+}
+
+impl NetworkIntent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyUnrestricted => "legacy_unrestricted",
+            Self::OfflineRequired => "offline_required",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "legacy_unrestricted" | "unrestricted" => Some(Self::LegacyUnrestricted),
+            "offline_required" | "offline" => Some(Self::OfflineRequired),
+            _ => None,
         }
     }
 }
@@ -183,19 +224,27 @@ impl FilesystemEnforcement {
 
 /// Obtained network containment for one execution context (M005).
 ///
-/// CodeGG has no OS network-isolation backend: normal shell execution
-/// under `ReadOnly`/`WorkspaceWrite`/`FullHost` reports
-/// [`NetworkEnforcement::Unrestricted`]. Permission/security policy may
-/// still classify network commands, but that is not OS isolation and
-/// must never be rendered as "sandboxed network".
+/// A network boundary is only ever reported when it was **obtained**.
+///
+/// The legacy Landlock route provides no network dimension, so a constrained
+/// launch on that route truthfully reports
+/// [`NetworkEnforcement::Unrestricted`]. The Bubblewrap route can place the
+/// child in a private network namespace, and when it does, the launch reports
+/// [`NetworkEnforcement::Enforced`] — the M005 offline-network candidate.
+///
+/// The distinction matters because "filesystem success never implies network
+/// isolation": the two dimensions are obtained separately and are reported
+/// separately. Permission/security policy may still classify network
+/// commands, but that is not OS isolation and must never be rendered as
+/// "sandboxed network".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkEnforcement {
-    /// OS network containment is active (no current backend produces this
-    /// for normal shell; reserved for a future measured backend).
+    /// OS network containment is active. Produced by a launch that observed
+    /// its own sandbox setup completing with the network namespace requested.
     Enforced { backend: String },
-    /// No OS network isolation. The truthful state for all shell paths
-    /// until a network backend exists.
+    /// No OS network isolation. The truthful state for a launch that did not
+    /// obtain a network namespace.
     Unrestricted,
     /// Network state could not be determined.
     Unavailable { reason: String },
@@ -204,6 +253,26 @@ pub enum NetworkEnforcement {
 impl NetworkEnforcement {
     pub const fn is_enforced(&self) -> bool {
         matches!(self, Self::Enforced { .. })
+    }
+
+    /// A stable, human-readable name for the obtained boundary.
+    ///
+    /// The name states the *fact*, never the request: `unrestricted` means no
+    /// network namespace was obtained, not that none was asked for.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Enforced { .. } => "enforced",
+            Self::Unrestricted => "unrestricted",
+            Self::Unavailable { .. } => "unavailable",
+        }
+    }
+
+    /// The mechanism that obtained the boundary, when one did.
+    pub fn backend(&self) -> Option<&str> {
+        match self {
+            Self::Enforced { backend } => Some(backend.as_str()),
+            _ => None,
+        }
     }
 }
 
@@ -231,6 +300,12 @@ impl SandboxEnforcement {
     }
 
     /// Constrained request with active OS containment.
+    ///
+    /// This is the **profile** on the host, not a launch. Its network field
+    /// is the profile's network posture: filesystem success never implies
+    /// network isolation. An *obtained* network boundary belongs to a
+    /// launch, which reports it on its own outcome — see
+    /// `NetworkEnforcement`.
     pub fn for_constrained_enforced(
         requested: SandboxProfile,
         backend: impl Into<String>,
@@ -240,8 +315,6 @@ impl SandboxEnforcement {
         Self {
             requested,
             filesystem: FilesystemEnforcement::enforced(backend, abi),
-            // No network backend exists; filesystem success never implies
-            // network isolation.
             network: NetworkEnforcement::Unrestricted,
         }
     }
@@ -412,6 +485,8 @@ pub struct ExecutionPolicySnapshot {
     approval_mode: ApprovalMode,
     sandbox_profile: SandboxProfile,
     #[serde(default)]
+    network_intent: NetworkIntent,
+    #[serde(default)]
     principal_id: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
@@ -438,6 +513,7 @@ impl ExecutionPolicySnapshot {
         Self {
             approval_mode,
             sandbox_profile,
+            network_intent: NetworkIntent::LegacyUnrestricted,
             principal_id: bounded_opt(principal_id, 256),
             session_id: bounded_opt(session_id, 256),
             agent_id: bounded_opt(agent_id, 256),
@@ -466,6 +542,25 @@ impl ExecutionPolicySnapshot {
 
     pub const fn sandbox_profile(&self) -> SandboxProfile {
         self.sandbox_profile
+    }
+
+    pub const fn network_intent(&self) -> NetworkIntent {
+        self.network_intent
+    }
+
+    pub fn with_network_intent(
+        mut self,
+        network_intent: NetworkIntent,
+    ) -> Result<Self, PreferenceError> {
+        if self.network_intent == NetworkIntent::OfflineRequired
+            && network_intent != NetworkIntent::OfflineRequired
+        {
+            return Err(PreferenceError::CeilingExceeded(
+                "child network intent exceeds the OfflineRequired parent ceiling".into(),
+            ));
+        }
+        self.network_intent = network_intent;
+        Ok(self)
     }
 
     pub fn principal_id(&self) -> Option<&str> {
@@ -524,6 +619,7 @@ impl ExecutionPolicySnapshot {
         Ok(Self {
             approval_mode: child_mode,
             sandbox_profile: child_sandbox,
+            network_intent: self.network_intent,
             principal_id: self.principal_id.clone(),
             session_id: self.session_id.clone(),
             agent_id: self.agent_id.clone(),
@@ -555,6 +651,9 @@ pub struct RuntimePreference {
     pub principal_id: String,
     pub approval_mode: Option<ApprovalMode>,
     pub sandbox_profile: Option<SandboxProfile>,
+    /// Operator opt-in for child network isolation. Missing rows/values
+    /// preserve the legacy unrestricted default.
+    pub network_intent: Option<NetworkIntent>,
     /// Reserved for M004: last-used provider connection identity.
     pub last_provider_connection_id: Option<String>,
     /// Reserved for M004: last-used model identity.
@@ -588,6 +687,10 @@ impl RuntimePreference {
 
     pub fn effective_sandbox_profile(&self) -> SandboxProfile {
         self.sandbox_profile.unwrap_or_default()
+    }
+
+    pub fn effective_network_intent(&self) -> NetworkIntent {
+        self.network_intent.unwrap_or_default()
     }
 
     /// `true` when a last-used model preference is present (both
@@ -751,7 +854,7 @@ impl RuntimePreferenceStore {
         validate_principal_id(principal_id)?;
         let row: Option<RuntimePreferenceRow> = sqlx::query_as(
             r#"
-            SELECT principal_id, approval_mode, sandbox_profile,
+            SELECT principal_id, approval_mode, sandbox_profile, network_intent,
                    last_provider_connection_id, last_model_id,
                    last_task_provider_connection_id, last_task_model_id,
                    reasoning_selection,
@@ -797,6 +900,22 @@ impl RuntimePreferenceStore {
             principal_id,
             "sandbox_profile",
             Some(profile.as_str()),
+            expected_revision,
+        )
+        .await
+    }
+
+    pub async fn set_network_intent(
+        &self,
+        principal_id: &str,
+        network_intent: NetworkIntent,
+        expected_revision: Option<u64>,
+    ) -> Result<RuntimePreference, PreferenceError> {
+        validate_principal_id(principal_id)?;
+        self.write_field(
+            principal_id,
+            "network_intent",
+            Some(network_intent.as_str()),
             expected_revision,
         )
         .await
@@ -1086,16 +1205,18 @@ impl RuntimePreferenceStore {
         }
         let next_revision = current_revision.saturating_add(1).max(1);
         let now = now_millis();
-        let (approval_mode, sandbox_profile) = match current.as_ref() {
+        let (approval_mode, sandbox_profile, network_intent) = match current.as_ref() {
             Some(p) => (
                 p.approval_mode.map(|m| m.as_str().to_owned()),
                 p.sandbox_profile.map(|s| s.as_str().to_owned()),
+                p.network_intent.map(|intent| intent.as_str().to_owned()),
             ),
-            None => (None, None),
+            None => (None, None, None),
         };
-        let (approval_mode, sandbox_profile) = match field {
-            "approval_mode" => (value.map(str::to_owned), sandbox_profile),
-            "sandbox_profile" => (approval_mode, value.map(str::to_owned)),
+        let (approval_mode, sandbox_profile, network_intent) = match field {
+            "approval_mode" => (value.map(str::to_owned), sandbox_profile, network_intent),
+            "sandbox_profile" => (approval_mode, value.map(str::to_owned), network_intent),
+            "network_intent" => (approval_mode, sandbox_profile, value.map(str::to_owned)),
             _ => return Err(PreferenceError::Validation("unknown field".into())),
         };
         let (connection_id, model_id) = match current.as_ref() {
@@ -1118,15 +1239,16 @@ impl RuntimePreferenceStore {
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
-                (principal_id, approval_mode, sandbox_profile,
+                (principal_id, approval_mode, sandbox_profile, network_intent,
                  last_provider_connection_id, last_model_id,
                  last_task_provider_connection_id, last_task_model_id,
                  reasoning_selection,
                  revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(principal_id) DO UPDATE SET
                 approval_mode = excluded.approval_mode,
                 sandbox_profile = excluded.sandbox_profile,
+                network_intent = excluded.network_intent,
                 revision = excluded.revision,
                 updated_at = excluded.updated_at
             "#,
@@ -1134,6 +1256,7 @@ impl RuntimePreferenceStore {
         .bind(principal_id)
         .bind(approval_mode)
         .bind(sandbox_profile)
+        .bind(network_intent)
         .bind(connection_id)
         .bind(model_id)
         .bind(task_connection_id)
@@ -1341,6 +1464,7 @@ struct RuntimePreferenceRow {
     principal_id: String,
     approval_mode: Option<String>,
     sandbox_profile: Option<String>,
+    network_intent: Option<String>,
     last_provider_connection_id: Option<String>,
     last_model_id: Option<String>,
     last_task_provider_connection_id: Option<String>,
@@ -1359,6 +1483,10 @@ impl RuntimePreferenceRow {
                 .sandbox_profile
                 .as_deref()
                 .and_then(SandboxProfile::parse),
+            network_intent: self
+                .network_intent
+                .as_deref()
+                .and_then(NetworkIntent::parse),
             last_provider_connection_id: sanitize_identity(self.last_provider_connection_id),
             last_model_id: sanitize_identity(self.last_model_id),
             last_task_provider_connection_id: sanitize_identity(
@@ -1489,6 +1617,7 @@ pub const RUNTIME_PREFERENCE_SCHEMA_STATEMENTS: &[&str] = &[
         principal_id TEXT PRIMARY KEY,
         approval_mode TEXT CHECK (approval_mode IS NULL OR approval_mode IN ('interactive','automatic','yolo')),
         sandbox_profile TEXT CHECK (sandbox_profile IS NULL OR sandbox_profile IN ('read_only','workspace_write','full_host')),
+        network_intent TEXT CHECK (network_intent IS NULL OR network_intent IN ('legacy_unrestricted','offline_required')),
         last_provider_connection_id TEXT CHECK (last_provider_connection_id IS NULL OR length(last_provider_connection_id) <= 512),
         last_model_id TEXT CHECK (last_model_id IS NULL OR length(last_model_id) <= 512),
         last_task_provider_connection_id TEXT CHECK (last_task_provider_connection_id IS NULL OR length(last_task_provider_connection_id) <= 512),
@@ -1517,7 +1646,7 @@ pub const RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS: &[&str] = &[
 /// Additive M002 provider-reasoning migration statements for
 /// `runtime_preferences`.
 ///
-/// Applied by `migrate_v84` on pre-M002 databases. Plain `ADD COLUMN`
+/// Applied by `migrate_v88` on pre-M002 databases. Plain `ADD COLUMN`
 /// keeps every existing row untouched — approval, sandbox, model and
 /// Task preferences are all preserved — and the new column defaults to
 /// `NULL` ("no explicit reasoning selection"). The column holds the
@@ -1525,8 +1654,19 @@ pub const RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS: &[&str] = &[
 /// vocabulary; the label inside it is an open, provider-scoped string.
 /// Bounds are enforced in Rust (`validate_reasoning_selection` on write,
 /// `decode_reasoning_selection` on read).
+///
+/// The migration was `migrate_v84` on the provider-reasoning-control branch
+/// and is **v88** in the merged tree: `main` had already published v84 (the
+/// additive network-intent preference below) and v85 through v87, so the
+/// branch yields the lower number to `main`.
 pub const RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS: &[&str] =
     &["ALTER TABLE runtime_preferences ADD COLUMN reasoning_selection TEXT"];
+
+/// M005 offline networking opt-in. Existing principals remain unrestricted
+/// because the nullable value resolves to `LegacyUnrestricted`.
+pub const RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS: &[&str] = &[
+    "ALTER TABLE runtime_preferences ADD COLUMN network_intent TEXT CHECK (network_intent IS NULL OR network_intent IN ('legacy_unrestricted','offline_required'))",
+];
 
 #[cfg(test)]
 mod tests {
@@ -1664,13 +1804,16 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .with_network_intent(NetworkIntent::OfflineRequired)
+        .expect("network ceiling may narrow to offline");
         assert!(parent
             .narrow_for_child(ApprovalMode::Yolo, SandboxProfile::WorkspaceWrite)
             .is_err());
-        assert!(parent
+        let child = parent
             .narrow_for_child(ApprovalMode::Interactive, SandboxProfile::ReadOnly)
-            .is_ok());
+            .expect("child may narrow filesystem and retain network ceiling");
+        assert_eq!(child.network_intent(), NetworkIntent::OfflineRequired);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1695,6 +1838,23 @@ mod tests {
         assert_eq!(second.sandbox_profile, Some(SandboxProfile::ReadOnly));
         // Approval mode is retained across sandbox writes.
         assert_eq!(second.approval_mode, Some(ApprovalMode::Yolo));
+        assert_eq!(
+            second.effective_network_intent(),
+            NetworkIntent::LegacyUnrestricted,
+            "existing preference writes do not opt into offline networking"
+        );
+        let third = store
+            .set_network_intent(
+                "local-owner",
+                NetworkIntent::OfflineRequired,
+                Some(second.revision),
+            )
+            .await
+            .unwrap();
+        assert_eq!(third.revision, 3);
+        assert_eq!(third.network_intent, Some(NetworkIntent::OfflineRequired));
+        assert_eq!(third.sandbox_profile, Some(SandboxProfile::ReadOnly));
+        assert_eq!(third.approval_mode, Some(ApprovalMode::Yolo));
     }
     #[tokio::test(flavor = "current_thread")]
     async fn reasoning_selection_round_trips_an_open_label_verbatim() {
@@ -2037,13 +2197,19 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("in-memory db");
-        // A pre-M002 `runtime_preferences` table: no reasoning column.
+        // A pre-reasoning-migration `runtime_preferences` table: no reasoning
+        // column. It **does** carry `network_intent`, because in the merged
+        // tree the reasoning migration is v88 and runs *after* main's v84
+        // network-intent migration — a database in the state this migration
+        // expects already has that column. The fixture states the real
+        // migration order rather than an obsolete one.
         sqlx::query(
             r#"
             CREATE TABLE runtime_preferences (
                 principal_id TEXT PRIMARY KEY,
                 approval_mode TEXT,
                 sandbox_profile TEXT,
+                network_intent TEXT,
                 last_provider_connection_id TEXT,
                 last_model_id TEXT,
                 last_task_provider_connection_id TEXT,
@@ -2058,12 +2224,12 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO runtime_preferences
-             (principal_id, approval_mode, sandbox_profile,
+             (principal_id, approval_mode, sandbox_profile, network_intent,
               last_provider_connection_id, last_model_id,
               last_task_provider_connection_id, last_task_model_id,
               revision, updated_at)
-             VALUES ('erin', 'yolo', 'workspace_write', 'conn-s', 'model-s',
-                     'conn-t', 'model-t', 3, 7)",
+             VALUES ('erin', 'yolo', 'workspace_write', 'offline_required',
+                     'conn-s', 'model-s', 'conn-t', 'model-t', 3, 7)",
         )
         .execute(&pool)
         .await
@@ -2077,13 +2243,18 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(column_exists, 1, "migrate_v84 must add the column");
+        assert_eq!(column_exists, 1, "migrate_v88 must add the column");
         let store = RuntimePreferenceStore::new(pool);
         let pref = store.get("erin").await.unwrap().unwrap();
         // Every pre-existing dimension survives the additive migration.
         assert_eq!(pref.revision, 3);
         assert_eq!(pref.approval_mode, Some(ApprovalMode::Yolo));
         assert_eq!(pref.sandbox_profile, Some(SandboxProfile::WorkspaceWrite));
+        assert_eq!(
+            pref.network_intent,
+            Some(NetworkIntent::OfflineRequired),
+            "the reasoning migration must not disturb main's network-intent column"
+        );
         assert_eq!(pref.last_provider_connection_id.as_deref(), Some("conn-s"));
         assert_eq!(pref.last_model_id.as_deref(), Some("model-s"));
         assert_eq!(
@@ -2194,11 +2365,16 @@ mod tests {
         for statement in RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
-        // A real legacy database also received `migrate_v84`, which adds the
+        // A real legacy database also received `migrate_v88`, which adds the
         // M002 reasoning column. The read path selects that column, so a
         // database that never received it cannot be read at all — the
         // migration chain is what makes the row readable, not the row.
         for statement in RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        // And `migrate_v84`, which adds the M005 network-intent column; the
+        // read path selects that one too.
+        for statement in RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
         // Re-running is idempotent via the caller's duplicate-tolerant
@@ -2388,6 +2564,7 @@ mod tests {
             principal_id: "p".into(),
             approval_mode: None,
             sandbox_profile: None,
+            network_intent: None,
             last_provider_connection_id: Some("conn-1".into()),
             last_model_id: Some("model-1".into()),
             last_task_provider_connection_id: None,
@@ -2496,6 +2673,7 @@ mod tests {
             principal_id: "local-owner".into(),
             approval_mode: Some(ApprovalMode::Interactive),
             sandbox_profile: Some(SandboxProfile::WorkspaceWrite),
+            network_intent: Some(NetworkIntent::OfflineRequired),
             last_provider_connection_id: Some("conn-1".into()),
             last_model_id: Some("model-1".into()),
             last_task_provider_connection_id: Some("conn-t".into()),
@@ -2514,6 +2692,7 @@ mod tests {
                     "principal_id"
                         | "approval_mode"
                         | "sandbox_profile"
+                        | "network_intent"
                         | "last_provider_connection_id"
                         | "last_model_id"
                         | "last_task_provider_connection_id"

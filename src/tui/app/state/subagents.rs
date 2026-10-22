@@ -20,8 +20,6 @@
 //! and the attached/detached distinction. This module owns only the *rows* and
 //! the mouse hit geometry, and reconciles the two on every arriving snapshot.
 
-use ratatui::layout::Rect;
-
 use crate::tui::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, SubagentTabs};
 use crate::tui::wrap::ellipsize_to_width;
 
@@ -206,14 +204,6 @@ pub struct SubagentState {
     /// Subagents opened as tabs in the main buffer. `None` as the active tab
     /// *is* the main conversation; see [`SubagentTabs`].
     pub tabs: SubagentTabs,
-    /// Hit rects for the rendered rows, in absolute frame coordinates,
-    /// paired with their index into `rows`.
-    ///
-    /// Rebuilt on every render. Mouse hit testing reads the *last rendered*
-    /// geometry rather than recomputing a layout, so the click target is
-    /// exactly the row the user saw — the same contract the scrollbar drag
-    /// path uses.
-    pub hits: Vec<(usize, Rect)>,
 }
 
 impl SubagentState {
@@ -235,19 +225,6 @@ impl SubagentState {
     /// Number of subagents still running.
     pub fn running_count(&self) -> usize {
         self.rows.iter().filter(|row| row.is_running()).count()
-    }
-
-    /// Which row index the given frame cell falls on, if any.
-    pub fn hit_at(&self, column: u16, row: u16) -> Option<usize> {
-        self.hits
-            .iter()
-            .find(|(_, rect)| {
-                column >= rect.x
-                    && column < rect.x + rect.width
-                    && row >= rect.y
-                    && row < rect.y + rect.height
-            })
-            .map(|(index, _)| *index)
     }
 
     /// The subagent tab currently on screen, if any.
@@ -317,7 +294,6 @@ impl SubagentState {
     /// is already what is showing.
     pub fn close(&mut self) {
         self.tabs.close_active();
-        self.hits.clear();
     }
 
     /// The tab id for `task_id`, if one is open.
@@ -507,17 +483,6 @@ mod tests {
         let mut state = SubagentState::default();
         state.set_rows(vec![row("running"), row("completed"), row("running")]);
         assert_eq!(state.running_count(), 2);
-    }
-
-    #[test]
-    fn hit_testing_resolves_the_rendered_row() {
-        let mut state = SubagentState::default();
-        state.set_rows(vec![row("running"), row("running")]);
-        state.hits = vec![(0, Rect::new(2, 10, 30, 1)), (1, Rect::new(2, 11, 30, 1))];
-        assert_eq!(state.hit_at(5, 11), Some(1));
-        assert_eq!(state.hit_at(5, 10), Some(0));
-        assert_eq!(state.hit_at(5, 12), None);
-        assert_eq!(state.hit_at(40, 10), None);
     }
 
     #[test]

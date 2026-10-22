@@ -52,9 +52,12 @@ use crate::workspace::WorkspaceId;
 /// with the exact active goal that authorized its submission.
 pub const GOAL_PROVENANCE_LABEL_KEY: &str = "goal_id";
 
+pub mod quota;
 pub mod schedule;
 pub mod schedule_store;
 pub mod store;
+
+pub use quota::{KeyedQuotaRequest, ResourceClass, MAX_QUOTA_KEY_BYTES, MAX_QUOTA_SLOTS};
 
 pub use schedule::{
     compute_next_run, missed_run_targets, occurrence_job_id, ClaimedOccurrence, JobTemplate,
@@ -108,6 +111,25 @@ pub struct ToolProgramExecutionContext {
     pub provider_model: Option<String>,
     pub backend_policy: String,
     pub correlation_id: String,
+    /// M005/C002: the accepted filesystem profile ceiling that bounds this
+    /// invocation and every job it delegates.
+    ///
+    /// A delegated child job inherits it as a ceiling. It may narrow it, but
+    /// it can never widen it back to an uncontained launch. `None` means the
+    /// invocation carried no profile ceiling, which is the historical
+    /// pre-M005 meaning and is preserved for payloads that predate it.
+    #[serde(default)]
+    pub sandbox_profile: Option<crate::approval::SandboxProfile>,
+    /// M005/C002: the authenticated per-principal network intent accepted for
+    /// this invocation.
+    ///
+    /// Network intent is an independent axis: it is never implied by the
+    /// filesystem profile. A delegated child job inherits it and may narrow
+    /// it, but it can never widen it back to `LegacyUnrestricted`. The default
+    /// is the historical `LegacyUnrestricted` meaning, preserved for payloads
+    /// that predate it.
+    #[serde(default)]
+    pub network_intent: crate::approval::NetworkIntent,
 }
 
 fn default_tool_program_context_version() -> u16 {
@@ -307,7 +329,7 @@ impl ToolProgramExecutionContext {
     /// digest in the replay fingerprint.
     pub fn compute_digest(&self) -> String {
         let fields = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.schema_version,
             self.workspace_path_policy_id,
             self.session_id.as_deref().unwrap_or(""),
@@ -320,6 +342,13 @@ impl ToolProgramExecutionContext {
             self.policy_revision.as_deref().unwrap_or(""),
             self.principal_ref.as_deref().unwrap_or(""),
             self.contract_snapshot_json,
+            // M005/C002: the delegated-execution ceiling is part of the
+            // replay-safety surface. A context whose policy changed must not
+            // share a digest with the one it replaced.
+            self.sandbox_profile
+                .map(|profile| profile.as_str())
+                .unwrap_or(""),
+            self.network_intent.as_str(),
         );
         format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
     }
@@ -706,6 +735,15 @@ pub struct ResourceRequest {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// M007: typed keyed quota slots.
+    ///
+    /// A quota is a *counted* bound scoped to a host-computed key
+    /// (currently a canonical `WorkspaceId`), where an exclusivity key
+    /// is a binary mutex over a name. The field is serde-defaulted so a
+    /// request persisted before M007 decodes unchanged and keeps its
+    /// historical admission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyed_quotas: Vec<KeyedQuotaRequest>,
     /// Optional remote resource limits for a job that runs on a named
     /// Eggwork node.
     ///
@@ -734,14 +772,23 @@ impl Default for ResourceRequest {
             io_weight: 1,
             network_slots: 0,
             exclusivity_keys: Vec::new(),
+            keyed_quotas: Vec::new(),
             remote: None,
         }
     }
 }
 
 impl ResourceRequest {
+    /// The kind-derived resource policy.
+    ///
+    /// The policy is *class*-level: it names the resource classes a kind
+    /// belongs to without binding their scope. A quota's scope is the
+    /// canonical workspace, which only the submission boundary knows;
+    /// the boundary binds it. An unbound class request is still
+    /// counted — against one shared global bucket — so a request that
+    /// never reached the boundary cannot escape the bound.
     pub fn for_kind(kind: JobKind) -> Self {
-        match kind {
+        let mut request = match kind {
             JobKind::AgentTurn | JobKind::Subagent | JobKind::Research => Self {
                 cpu_weight: 1,
                 memory_mb_hint: 512,
@@ -749,6 +796,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 1,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Build => Self {
@@ -757,7 +805,12 @@ impl ResourceRequest {
                 process_slots: 1,
                 io_weight: 3,
                 network_slots: 0,
-                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                // M007: the legacy global `exclusive:workspace-mutation`
+                // key is replaced by the counted, workspace-scoped build
+                // class attached below. The key was never checkout-scoped
+                // and serialized unrelated workspaces against each other.
+                exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Lint => Self {
@@ -767,6 +820,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Format => Self {
@@ -775,7 +829,9 @@ impl ResourceRequest {
                 process_slots: 1,
                 io_weight: 1,
                 network_slots: 0,
-                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                // M007: see the `Build` arm.
+                exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Test => Self {
@@ -785,6 +841,7 @@ impl ResourceRequest {
                 io_weight: 2,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Shell | JobKind::ManagedProcess => Self {
@@ -794,6 +851,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Python => Self {
@@ -803,6 +861,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::GitRead => Self {
@@ -812,6 +871,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::GitMutation => Self {
@@ -821,6 +881,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:worktree-mutation".to_string()],
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Maintenance => Self {
@@ -830,6 +891,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::ToolProgram => Self {
@@ -839,9 +901,24 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
                 remote: None,
             },
             JobKind::Unsupported => Self::default(),
+        };
+        request.attach_resource_class(kind);
+        request
+    }
+
+    /// Attach the resource class a kind belongs to, if any.
+    ///
+    /// The class is attached with an *unbound* scope; the submission
+    /// boundary binds it to the canonical workspace.
+    pub fn attach_resource_class(&mut self, kind: JobKind) {
+        if let Some(class) = ResourceClass::for_job_kind(kind) {
+            self.keyed_quotas
+                .retain(|quota| quota.namespace() != Some(class.namespace()));
+            self.keyed_quotas.push(KeyedQuotaRequest::unbound(class));
         }
     }
 }
@@ -1091,6 +1168,13 @@ pub enum JobPayload {
         /// Host-validated immutable Git base for a convergence child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_commit: Option<String>,
+        /// M005 C006: where the run is placed.
+        ///
+        /// Additive: a payload written before the placement existed decodes
+        /// as `Auto`, which is the isolated-worktree default the run had
+        /// anyway. The shared profile is opt-in and is never inferred.
+        #[serde(default)]
+        placement: crate::run_placement::RunPlacement,
     },
     Test {
         command: String,
@@ -1101,15 +1185,43 @@ pub enum JobPayload {
         /// other sensitive inputs are never carried in this payload.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_run_id: Option<crate::run_store::RunId>,
+        /// Accepted sandbox ceiling captured before scheduler admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before scheduler admission.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     ManagedArgv {
         argv: Vec<String>,
         cwd: Option<String>,
+        /// Accepted filesystem profile ceiling captured before scheduler
+        /// admission. The executor uses it as a ceiling and refuses a
+        /// constrained job if its sandbox request is absent. Legacy and
+        /// operator jobs omit it and decode as `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before
+        /// scheduler admission. Legacy payloads decode as the unrestricted
+        /// intent, which is the historical behavior of this payload.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Shell {
         command: String,
         argv: Option<Vec<String>>,
         cwd: Option<String>,
+        /// Accepted filesystem profile ceiling captured before scheduler
+        /// admission. The executor uses it as a ceiling and refuses a
+        /// constrained job if its sandbox request is absent. Legacy and
+        /// operator jobs omit it and decode as `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before
+        /// scheduler admission. Legacy payloads decode as the unrestricted
+        /// intent, which is the historical behavior of this payload.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Python {
         script_path: String,
@@ -1131,6 +1243,14 @@ pub enum JobPayload {
         /// Effective timeout in seconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
+        /// Accepted filesystem profile captured at the model tool boundary.
+        /// The executor uses it as a ceiling and refuses a constrained job
+        /// if its sandbox request is absent. Legacy/operator jobs omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before scheduler admission.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Git {
         argv: Vec<String>,
@@ -2126,10 +2246,15 @@ mod tests {
         let agent = ResourceRequest::for_kind(JobKind::AgentTurn);
         assert!(agent.network_slots >= 1);
         let format = ResourceRequest::for_kind(JobKind::Format);
+        // M007: the build class carries a counted, workspace-scoped quota
+        // rather than the legacy *global* exclusivity key, which
+        // serialized every build in every workspace.
         assert!(format
             .exclusivity_keys
             .iter()
-            .any(|k| k == "exclusive:workspace-mutation"));
+            .all(|k| k != "exclusive:workspace-mutation"));
+        assert_eq!(format.keyed_quotas.len(), 1);
+        assert_eq!(format.keyed_quotas[0].namespace(), Some("build"));
         let git = ResourceRequest::for_kind(JobKind::GitMutation);
         assert!(git
             .exclusivity_keys
@@ -2211,6 +2336,40 @@ mod tests {
         assert_eq!(json["kind"], "agent_turn");
         assert_eq!(json["prompt"], "hi");
         assert_eq!(json["agent"], "build");
+    }
+
+    #[test]
+    fn legacy_test_and_python_payloads_default_to_unrestricted_network() {
+        let legacy_test: JobPayload = serde_json::from_value(serde_json::json!({
+            "kind": "test",
+            "command": "cargo test",
+            "argv": ["cargo", "test"],
+            "cwd": null,
+            "scope": null
+        }))
+        .expect("legacy test payload remains readable");
+        assert!(matches!(
+            legacy_test,
+            JobPayload::Test {
+                network_intent: crate::approval::NetworkIntent::LegacyUnrestricted,
+                ..
+            }
+        ));
+
+        let legacy_python: JobPayload = serde_json::from_value(serde_json::json!({
+            "kind": "python",
+            "script_path": "script.py",
+            "args": [],
+            "mode": "verify"
+        }))
+        .expect("legacy Python payload remains readable");
+        assert!(matches!(
+            legacy_python,
+            JobPayload::Python {
+                network_intent: crate::approval::NetworkIntent::LegacyUnrestricted,
+                ..
+            }
+        ));
     }
 
     #[test]

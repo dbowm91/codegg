@@ -13,6 +13,177 @@ use codegg::command_planner::{plan_execution, ExecutionBackend};
 use codegg::command_routing::{resolve_routing, RoutingDecision};
 use std::path::PathBuf;
 
+// M004 design fixture only. Production command dispatch does not call this
+// predicate. It captures the admission facts a constrained specialized route
+// would need before any future promotion: immutable accepted authority,
+// matching profile, and observed backend effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestRouteClass {
+    ConstrainedRaw,
+    FullHostSpecialized,
+    GitFilter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestObtainedFilesystem {
+    LandlockOutsideDenied,
+    Disabled,
+    StatusOnly,
+}
+
+fn m004_test_only_route_admitted(
+    authorization: Option<&codegg::tool::authorization::ExecutionAuthorizationContext>,
+    route: TestRouteClass,
+    obtained_profile: codegg_core::approval::SandboxProfile,
+    filesystem: TestObtainedFilesystem,
+) -> bool {
+    use codegg::permission::PermissionLevel;
+    use codegg_core::approval::SandboxProfile;
+
+    let Some(authorization) = authorization else {
+        return false;
+    };
+    let snapshot = &authorization.snapshot;
+    let receipt = &authorization.receipt;
+    if receipt.outcome != PermissionLevel::Allow
+        || receipt.decision_id.is_empty()
+        || receipt.policy_revision.as_deref() != snapshot.policy_revision()
+        || snapshot.sandbox_profile() != obtained_profile
+    {
+        return false;
+    }
+
+    match route {
+        TestRouteClass::ConstrainedRaw => {
+            snapshot.sandbox_profile() != SandboxProfile::FullHost
+                && filesystem == TestObtainedFilesystem::LandlockOutsideDenied
+        }
+        TestRouteClass::FullHostSpecialized => {
+            snapshot.sandbox_profile() == SandboxProfile::FullHost
+                && filesystem == TestObtainedFilesystem::Disabled
+        }
+        // The Linux Git C002 filter/hook containment dependency is still
+        // blocked, independent of command syntax or a status label.
+        TestRouteClass::GitFilter => false,
+    }
+}
+
+fn m004_authorization(
+    profile: codegg_core::approval::SandboxProfile,
+    snapshot_revision: Option<&str>,
+    receipt_revision: Option<&str>,
+) -> codegg::tool::authorization::ExecutionAuthorizationContext {
+    use codegg_core::approval::{ApprovalMode, ExecutionPolicySnapshot};
+    codegg::tool::authorization::ExecutionAuthorizationContext {
+        scratch_scope: None,
+        snapshot: ExecutionPolicySnapshot::capture(
+            ApprovalMode::Interactive,
+            profile,
+            Some("principal-1".into()),
+            Some("session-1".into()),
+            None,
+            snapshot_revision.map(str::to_owned),
+            None,
+        ),
+        receipt: codegg::permission::PermissionDecisionReceipt {
+            decision_id: "decision-1".into(),
+            outcome: codegg::permission::PermissionLevel::Allow,
+            source: "test-fixture".into(),
+            issued_at: 1,
+            policy_revision: receipt_revision.map(str::to_owned),
+        },
+        command_preflight: None,
+    }
+}
+
+#[test]
+fn m004_test_only_route_gate_requires_matching_authority_and_obtained_rights() {
+    use codegg_core::approval::SandboxProfile;
+
+    let constrained = m004_authorization(SandboxProfile::WorkspaceWrite, Some("r1"), Some("r1"));
+    assert!(m004_test_only_route_admitted(
+        Some(&constrained),
+        TestRouteClass::ConstrainedRaw,
+        SandboxProfile::WorkspaceWrite,
+        TestObtainedFilesystem::LandlockOutsideDenied,
+    ));
+    assert!(!m004_test_only_route_admitted(
+        Some(&constrained),
+        TestRouteClass::ConstrainedRaw,
+        SandboxProfile::WorkspaceWrite,
+        TestObtainedFilesystem::Disabled,
+    ));
+    assert!(!m004_test_only_route_admitted(
+        Some(&constrained),
+        TestRouteClass::ConstrainedRaw,
+        SandboxProfile::FullHost,
+        TestObtainedFilesystem::LandlockOutsideDenied,
+    ));
+    assert!(!m004_test_only_route_admitted(
+        Some(&constrained),
+        TestRouteClass::ConstrainedRaw,
+        SandboxProfile::WorkspaceWrite,
+        TestObtainedFilesystem::StatusOnly,
+    ));
+}
+
+#[test]
+fn m004_test_only_route_gate_rejects_missing_stale_and_broader_routes() {
+    use codegg_core::approval::SandboxProfile;
+
+    let constrained = m004_authorization(SandboxProfile::ReadOnly, Some("r2"), Some("r1"));
+    assert!(!m004_test_only_route_admitted(
+        Some(&constrained),
+        TestRouteClass::ConstrainedRaw,
+        SandboxProfile::ReadOnly,
+        TestObtainedFilesystem::LandlockOutsideDenied,
+    ));
+    assert!(!m004_test_only_route_admitted(
+        None,
+        TestRouteClass::ConstrainedRaw,
+        SandboxProfile::WorkspaceWrite,
+        TestObtainedFilesystem::LandlockOutsideDenied,
+    ));
+
+    let full_host = m004_authorization(SandboxProfile::FullHost, None, None);
+    assert!(m004_test_only_route_admitted(
+        Some(&full_host),
+        TestRouteClass::FullHostSpecialized,
+        SandboxProfile::FullHost,
+        TestObtainedFilesystem::Disabled,
+    ));
+    assert!(!m004_test_only_route_admitted(
+        Some(&full_host),
+        TestRouteClass::FullHostSpecialized,
+        SandboxProfile::WorkspaceWrite,
+        TestObtainedFilesystem::Disabled,
+    ));
+    assert!(!m004_test_only_route_admitted(
+        Some(&full_host),
+        TestRouteClass::GitFilter,
+        SandboxProfile::FullHost,
+        TestObtainedFilesystem::Disabled,
+    ));
+}
+
+#[test]
+fn m004_test_only_route_gate_does_not_treat_status_or_labels_as_denial_proof() {
+    use codegg_core::approval::SandboxProfile;
+
+    let accepted = m004_authorization(SandboxProfile::ReadOnly, Some("r3"), Some("r3"));
+    for route in [
+        TestRouteClass::ConstrainedRaw,
+        TestRouteClass::FullHostSpecialized,
+    ] {
+        assert!(!m004_test_only_route_admitted(
+            Some(&accepted),
+            route,
+            SandboxProfile::ReadOnly,
+            TestObtainedFilesystem::StatusOnly,
+        ));
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 fn assert_not_safe(intent_kind: CommandIntentKind) {

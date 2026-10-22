@@ -231,7 +231,7 @@ pub struct EggpoolProbeSummary {
 }
 
 // ---------------------------------------------------------------------------
-// The discovery overlay (ADR-0045, milestone 005).
+// The discovery overlay (ADR-0049, milestone 005).
 //
 // A provider may publish a thinking-capability contract alongside a model in
 // its catalog response. The contract is **untrusted input**: it may only
@@ -280,7 +280,7 @@ const OVERLAY_LABEL_KEYS: [&str; 2] = ["accepted_efforts", "supported_efforts"];
 /// reaches the capability resolution — plus the provider's always-reasons
 /// claim, which is retained for reporting and deliberately **not** part of
 /// the record: the compiled baseline owns the always-reasons property
-/// (ADR-0045 §1), and a provider's advertisement is not an authority over
+/// (ADR-0049 §1), and a provider's advertisement is not an authority over
 /// its own model's behaviour.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EggpoolThinkingOverlay {
@@ -2220,7 +2220,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // The discovery overlay (ADR-0045, milestone 005).
+    // The discovery overlay (ADR-0049, milestone 005).
     // ------------------------------------------------------------------
 
     /// A flat `thinking` capability — the shape the pinned upstream exposes

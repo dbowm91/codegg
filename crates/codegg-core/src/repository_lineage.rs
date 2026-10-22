@@ -374,17 +374,20 @@ fn run_git(path: &Path, args: &[&str]) -> Result<Output, RepositoryLineageError>
     let mut argv = Vec::with_capacity(args.len() + 1);
     argv.push("git".to_owned());
     argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-    let mut child = egggit::process::GitEnvPolicy::default()
+    // Keep the policy wrapper alive until the child exits: for object-reading
+    // probes it owns the temporary private object view referenced by the
+    // child's GIT_OBJECT_DIRECTORY environment variable.
+    let mut command = egggit::process::GitEnvPolicy::default()
         .apply_sync(&argv, path)
-        .map_err(RepositoryLineageError::Policy)?
+        .map_err(RepositoryLineageError::Policy)?;
+    command
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(RepositoryLineageError::Spawn)?;
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(RepositoryLineageError::Spawn)?;
 
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();

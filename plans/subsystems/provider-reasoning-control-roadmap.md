@@ -23,8 +23,8 @@ Long-term references:
 
 Related ADRs:
 
-- `plans/adrs/ADR-0044-open-provider-scoped-reasoning-control-vocabulary.md` — the open, provider-scoped vocabulary and the faithful wire intent.
-- `plans/adrs/ADR-0045-per-model-reasoning-capability-authority.md` — the layered per-model capability authority and the local admission policy.
+- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` — the open, provider-scoped vocabulary and the faithful wire intent.
+- `plans/adrs/ADR-0049-per-model-reasoning-capability-authority.md` — the layered per-model capability authority and the local admission policy.
 
 Related architecture documents:
 
@@ -169,7 +169,7 @@ Four properties of the target architecture carry the invariants:
 ## 6. Dependency graph
 
 ```text
-        ADR-0044 (accepted)            ADR-0045 (accepted)
+        ADR-0048 (accepted)            ADR-0049 (accepted)
               │                              │
               ▼                              │
         Milestone M001 ◄──────────────────────┤
@@ -194,8 +194,8 @@ Four properties of the target architecture carry the invariants:
 
 | Dependency | Class | Note |
 |---|---|---|
-| ADR-0044 accepted | hard (decision) | M001–M003 implement it; the roadmap is written against it. |
-| ADR-0045 accepted | hard (decision) | M003 implements it; M005 extends it. |
+| ADR-0048 accepted | hard (decision) | M001–M003 implement it; the roadmap is written against it. |
+| ADR-0049 accepted | hard (decision) | M003 implements it; M005 extends it. |
 | M001 → M002 | hard | M002's new vocabulary values have no wire representation until M001 restores them. |
 | M002 → M003 | hard | M003's admission policy validates a selection value that must be expressible and carried. |
 | M003 → M004 | hard | The frontend can only offer the effective capability's options once that capability exists. |
@@ -211,7 +211,7 @@ Class: capability
 
 Objective: Restore the distinction between "no reasoning preference" and "explicitly disable reasoning", and make every user intent reach the encoder as the distinct kernel shape that expresses it.
 
-Dependencies: ADR-0044 accepted. No hard code dependency.
+Dependencies: ADR-0048 accepted. No hard code dependency.
 
 Deliverable boundary: `crates/codegg-providers` — the CodeGG → `eggpool-wire` bridge constructs `ReasoningIntent` losslessly; the request type distinguishes unspecified from explicit disable; per-surface encoding fixtures cover each intent; a narrow static guard prevents the collapse from being reintroduced.
 
@@ -227,7 +227,7 @@ Class: capability
 
 Objective: Replace the closed effort enum with an open, provider-scoped label set, and move the selection from frontend-local state into a daemon-owned, principal-scoped, durable preference so every turn-admission path resolves it from one place.
 
-Dependencies: M001 closed (hard); ADR-0044 accepted.
+Dependencies: M001 closed (hard); ADR-0048 accepted.
 
 Deliverable boundary: `crates/codegg-protocol` (open label type; the selection request/response pair), `crates/codegg-core` (the `runtime_preferences` column, its store method, and the additive migration), `src/core` (the daemon handler and the turn-admission resolution point), `src/agent` (the precedence and the selection-to-request mapping), `crates/codegg-client` (native client composition). One additive nullable column and one migration; no other storage change.
 
@@ -243,7 +243,7 @@ Class: capability
 
 Objective: Give the daemon a per-model statement of what reasoning the model accepts and whether it can be turned off, and refuse an unsupported selection locally and typed instead of forwarding it to a provider 400.
 
-Dependencies: M002 closed (hard); ADR-0045 accepted.
+Dependencies: M002 closed (hard); ADR-0049 accepted.
 
 Deliverable boundary: `crates/codegg-core` — the adapter-baseline capability record, its `build.rs` validation, and the resolved capability; `crates/codegg-providers` — the capability resolution order and the kernel-policy application; `src/core` — the typed admission refusal.
 
@@ -275,11 +275,11 @@ Class: infrastructure
 
 Objective: Use provider-published capability metadata, where it exists, to narrow the adapter baseline per deployment.
 
-Dependencies: M003 closed (interface — the resolution order already accommodates an absent overlay); ADR-0045 accepted.
+Dependencies: M003 closed (interface — the resolution order already accommodates an absent overlay); ADR-0049 accepted.
 
 Deliverable boundary: `crates/codegg-providers` — the catalog probe retains a published thinking-control contract instead of discarding it; the discovery overlay is bounded, typed, refreshed on the existing cadence, and applied only to narrow.
 
-User or operator value: a deployment whose proxy advertises a narrower label set is offered exactly that set, without a CodeGG release. **At this baseline the value is not yet live**: the upstream contract this milestone reads is a design document, not an implemented wire shape — the pinned `/v1/models` response carries no capability block, and the capability shape upstream does expose rides a route CodeGG does not call. The milestone lands the narrowing machinery, forward-compatible and inert, and its closure says so explicitly. See the milestone plan's §3 and ADR-0045's amendment note.
+User or operator value: a deployment whose proxy advertises a narrower label set is offered exactly that set, without a CodeGG release. **At this baseline the value is not yet live**: the upstream contract this milestone reads is a design document, not an implemented wire shape — the pinned `/v1/models` response carries no capability block, and the capability shape upstream does expose rides a route CodeGG does not call. The milestone lands the narrowing machinery, forward-compatible and inert, and its closure says so explicitly. See the milestone plan's §3 and ADR-0049's amendment note.
 
 Exit conditions: the overlay is bounded and deduplicated; malformed input degrades to `Unknown`; the overlay never widens the baseline, proven by an injected hostile overlay; the overlay is replaced atomically so a turn never observes a partial update; direct provider connections are entirely unaffected.
 
@@ -340,13 +340,13 @@ Verification follows the repository's existing posture: focused deterministic te
 |---|---|
 | The protocol's reasoning type loses exhaustive matchability, so a consumer may mishandle an unrecognised label | The capability policy refuses an unsupported selection at admission, and the frontend only offers capability-permitted labels. Both are covered by explicit tests. |
 | A stale discovery overlay offers a label a model no longer accepts | Bounded consequence: the provider rejects it and the error is reported as a provider error. The overlay refresh cadence is the existing one; no new staleness is introduced. |
-| The capability record and the adapter's existing reasoning defaults could disagree | The precedence rule is defined in ADR-0045 and is implemented and tested as a single resolution function, not as two independent reads. |
+| The capability record and the adapter's existing reasoning defaults could disagree | The precedence rule is defined in ADR-0049 and is implemented and tested as a single resolution function, not as two independent reads. |
 | The `SessionPromptSubmit` protocol variant gains a field, which is a wire-visible change | Additive and optional, consistent with the protocol's existing tolerance rules; a new client against an old daemon degrades to "inherit". |
 | Effort-vs-budget precedence can invert when an agent sets an effort and a profile sets a budget | Resolved by the mutual-exclusivity rule: the effective selection resolves to exactly one dimension, and the resolution function is the single place that decides. |
 | The kernel's neutral capability type is status-only and carries no accepted-value list | CodeGG carries the accepted-label set in its own capability record and uses the kernel for the per-dimension status decision — the division the kernel's own documentation describes. |
 | Scope drift into general per-model metadata | Explicitly a non-goal; the added payload is scoped to reasoning. |
 | A milestone attempts to persist the capability in SQLite | Not permitted without a separate recorded decision; the core capability is expressible without migration. |
-| ADR-0044 or ADR-0045 is not accepted | M001–M005 are written against those decisions. If either is amended, the affected milestone plans are corrected before handoff rather than the roadmap being rewritten silently. |
+| ADR-0048 or ADR-0049 is not accepted | M001–M005 are written against those decisions. If either is amended, the affected milestone plans are corrected before handoff rather than the roadmap being rewritten silently. |
 
 ## 11. Completion definition
 
@@ -367,11 +367,28 @@ This roadmap is closed when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 — Faithful reasoning intent at the wire boundary | closed | `plans/implementation/provider-reasoning-control/001-faithful-reasoning-intent-at-the-wire-boundary.md` | `plans/closure/provider-reasoning-control/001-status.md` | — (ADR-0044 accepted 2026-10-21) |
-| 2 — Open reasoning vocabulary and daemon-owned selection | closed | `plans/implementation/provider-reasoning-control/002-open-reasoning-vocabulary-and-daemon-owned-selection.md` | `plans/closure/provider-reasoning-control/002-status.md` | — (M001 closed; ADR-0044 accepted 2026-10-21) |
-| 3 — Per-model capability record and local admission policy | closed | `plans/implementation/provider-reasoning-control/003-per-model-capability-record-and-admission-policy.md` | `plans/closure/provider-reasoning-control/003-status.md` | — (M002 closed; ADR-0045 accepted 2026-10-21) |
+| 1 — Faithful reasoning intent at the wire boundary | closed | `plans/implementation/provider-reasoning-control/001-faithful-reasoning-intent-at-the-wire-boundary.md` | `plans/closure/provider-reasoning-control/001-status.md` | — (ADR-0048 accepted 2026-10-21) |
+| 2 — Open reasoning vocabulary and daemon-owned selection | closed | `plans/implementation/provider-reasoning-control/002-open-reasoning-vocabulary-and-daemon-owned-selection.md` | `plans/closure/provider-reasoning-control/002-status.md` | — (M001 closed; ADR-0048 accepted 2026-10-21) |
+| 3 — Per-model capability record and local admission policy | closed | `plans/implementation/provider-reasoning-control/003-per-model-capability-record-and-admission-policy.md` | `plans/closure/provider-reasoning-control/003-status.md` | — (M002 closed; ADR-0049 accepted 2026-10-21) |
 | 4 — Frontend reasoning option surface | closed | `plans/implementation/provider-reasoning-control/004-frontend-reasoning-option-surface.md` | `plans/closure/provider-reasoning-control/004-status.md` | — (M003 closed) |
-| 5 — Discovery overlay from provider catalog metadata | closed | `plans/implementation/provider-reasoning-control/005-discovery-overlay-from-catalog-metadata.md` | `plans/closure/provider-reasoning-control/005-status.md` | — (M003 closed; ADR-0045 accepted 2026-10-21) |
+| 5 — Discovery overlay from provider catalog metadata | closed | `plans/implementation/provider-reasoning-control/005-discovery-overlay-from-catalog-metadata.md` | `plans/closure/provider-reasoning-control/005-status.md` | — (M003 closed; ADR-0049 accepted 2026-10-21) |
+
+### Merge reconciliation with `main` (2026-10-22)
+
+`origin/main` `8cee65934` — 439 commits ahead of this roadmap's merge-base —
+was reconciled with the closed milestone chain. The reasoning contract
+survived intact; three allocations yielded to `main` and one surface moved:
+
+- **ADR-0044 → ADR-0048** and **ADR-0045 → ADR-0049** (main had already
+  published both numbers; main wins the number, and the decision content,
+  status and acceptance date are unchanged);
+- the reasoning-selection migration **v84 → v88**, with
+  `STORAGE_LAYOUT_VERSION` 87 → 88; and
+- the M004 indicator moved from the **deleted working strip** to the **footer
+  status bar**, with its guard's fourth rule rewritten accordingly.
+
+Recorded in
+`plans/closure/provider-reasoning-control/006-merge-reconciliation-status.md`.
 
 ## 13. Verification
 
@@ -399,3 +416,76 @@ set to three recorded callers, and a test is a fourth. The test now drives
 the delivery through the permitted post-terminal-wake entry, so the guard
 describes the tree it is supposed to police. The guard would otherwise have
 been silently narrowed by a test rather than the other way round.
+
+### The merged tree was qualified again, separately
+
+The table above qualifies the **milestone chain on the branch**, before the
+reconciliation. The merged tree was qualified again afterwards, because a
+merge can break things that each side had proved on its own — and one such
+breakage was found and fixed.
+
+| Check on the merged tree | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked` | **exit 0**, zero errors |
+| `cargo fmt --check --all` | **clean** |
+| All 44 guards invoked by `scripts/verify.sh quick` | **all pass**, and the four new guards' `--self-test`s still reject every injected violation |
+| `cargo clippy -p codegg-core -p codegg-config -p codegg-protocol -p codegg-providers -p codegg-client --all-targets --locked -- -D warnings` | **exit 0**, zero findings — these are the crates this chain changed |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | **seven findings, all pre-existing on `main`** — see below |
+| `cargo test -p codegg-core --lib` | **928 passed** |
+| `cargo test -p codegg-core --test reasoning_overlay_narrowing` | **6 passed** |
+| `cargo test -p codegg --lib core::daemon_turns` | **22 passed** |
+| `cargo test -p codegg --lib tui::commands::reasoning` | **7 passed** |
+| `cargo test -p codegg-providers --lib eggpool` | **30 passed** |
+| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **16,060 of 16,067 passed** — six failures and one timeout, **all seven reproduced identically on clean `main`** (see below) |
+| `codegg validate --config codegg.example.jsonc` | **valid** |
+
+**The seven workspace-clippy findings are `main`'s, measured rather than
+assumed.** They are all in `main`'s own Linux-execution-isolation code —
+`src/interactive_process.rs` (two), `src/lsp/m004.rs`,
+`src/managed_process.rs` (three) and `src/security/sandbox.rs` — and none is
+in a file this chain touched. Running the same clippy invocation on a **clean
+checkout of `main` at `8cee65934`** produced the **identical seven findings
+at the identical seven locations**, so the merge introduces **zero** new
+findings. They are visible here and not in CI because they sit in
+`#[cfg(target_os = "linux")]` / `#[cfg(not(target_os = "linux"))]` pairs that
+Linux never compiles both sides of. This is `main`'s pre-existing macOS gap
+and is recorded, not fixed, by this line.
+
+**The suite's six failures and one timeout are `main`'s too, measured the
+same way.** All seven were run **in isolation on a clean checkout of `main`
+at `8cee65934`**, and the result is identical — five fail and two pass, the
+same five and the same two. The five consistent failures (two
+`daemon_refresh` cases, one `managed_process` case, two
+`scratch_cache_root_contract` cases) are in files this chain never touched.
+The two that differ between the whole-suite run and the isolated run are
+**host-load artifacts** of a machine running thirty-plus concurrent cargo
+builds: `agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication`
+hit the profile's 300-second slow-timeout in the suite and **passes in 0.15 s
+in isolation on both trees**, and
+`tool_program_m015_daemon_failpoints::active_child_is_reattached_from_pending_wait_checkpoint`
+failed at 62 s in the suite and **passes in under ten seconds in isolation on
+both trees**. `main`'s own closure record
+(`plans/closure/managed-agent-scratch/007-status.md`) already proves the two
+`daemon_refresh` cases the same way, in a clean worktree at `origin/main`,
+with the same `InvalidRootPath("/tmp")` cause — on macOS `/tmp` is a symlink
+to `private/tmp`, which the workspace registration rightly refuses. **The
+merge introduces zero new test failures.**
+
+
+**A merge-induced defect the merged tree's own tests caught.** The
+`approval::tests::reasoning_selection_migration_is_additive_and_preserves_rows`
+fixture built a `runtime_preferences` table that predated `main`'s v84
+network-intent column, so the merged store's `get()` — which now selects that
+column — failed with `no such column: network_intent`. The fixture was
+corrected to state the **real** migration order: the reasoning migration is
+**v88** in the merged tree and runs *after* main's v84, so a database in the
+state it expects already has `network_intent`. The test was strengthened
+rather than weakened — it now also asserts that main's column and its value
+survive the reasoning migration.
+
+Two more merge artifacts were caught: a `network_intent` field duplicated in
+one struct literal in `src/core/daemon_ops.rs`, and a `VALUES` clause in
+`crates/codegg-core/src/approval.rs` that ended the merge with 11 columns, 10
+placeholders and 11 binds — a **runtime** defect the compiler cannot see.
+Both are fixed. Details: the merge-reconciliation record's §7.
+

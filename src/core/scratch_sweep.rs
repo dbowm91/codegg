@@ -679,7 +679,10 @@ pub async fn reclaim_session_scratch_for_operator(
         byte_count: usage.total_bytes,
         present: !usage.vanished,
         quarantined: usage.quarantined,
-        reclaimable: usage.reclaimable,
+        // Fail-closed: only an established "yes" is reclaimable. A tree the
+        // preview could only partly read carries an unknown verdict, and an
+        // unknown verdict is not a permission to reclaim.
+        reclaimable: usage.reclaimable == Some(true),
         refusal: usage.refusal,
         removed: false,
         leased: false,
@@ -899,6 +902,8 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::for_kind(JobKind::Test),
             timeout: None,

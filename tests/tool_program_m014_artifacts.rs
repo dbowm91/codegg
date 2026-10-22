@@ -208,6 +208,7 @@ fn c41_executor_fixture(
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),
+        process_admission: None,
     };
     (executor, context)
 }

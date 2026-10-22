@@ -22,10 +22,30 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
-The Linux execution-isolation and command-authority decisions use ADR-0027 and
-ADR-0028, respectively. These identities were assigned after the Windows
-records landed on main so no ADR number is reused.
+## Linux/command identity migrations (2026-10-14 onward)
 
+The C004 identity corrective archived the exact pre-migration Linux and command
+records under `plans/archive/linux-command-adr-id-aliases/`, with source blob IDs,
+content digests, and mappings in `migration.json`. Reconciliation with current
+main preserves all main ADR allocations through ADR-0043. The accepted command
+authority decision is retained under ADR-0045 and the accepted Linux isolation
+decision under ADR-0046. Their substance and acceptance status are unchanged;
+production Linux backend registration and rollout remain gated by native
+qualification. The proposed contained-Git live-object decision is retained as
+ADR-0044 and does not authorize replacing the immutable trusted-Git route.
+
+A second collision was reconciled on 2026-10-21: main had allocated ADR-0043 to
+the accepted session-owned subagent lifecycle projection decision and ADR-0042 to
+the accepted composer normal-mode key ownership decision, so the Linux isolation
+record moved from ADR-0043 to ADR-0046 and the command authority record from
+ADR-0042 to ADR-0045. Main wins both numbers; the decision content, status, and
+acceptance dates are unchanged.
+
+`plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
+records the original migration contract and
+`plans/closure/linux-execution-isolation/012-status.md` records its historical
+evidence. The current canonical mapping is recorded in
+`plans/adrs/linux-command-adr-id-migration.md`.
 ## Status lifecycle
 
 ```text
@@ -141,8 +161,20 @@ were never active on main and must not be reused for Windows references.
 
 - ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
 - ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
+- ADR-0031 — **accepted** authenticated idle continuation and delegated turn admission (current-main decision).
+- ADR-0032 — **accepted** daemon-owned agent workstream coordination and explicit shared-checkout mutation; production shared writes remain gated on M005.
+- ADR-0033 — **accepted** directory-tied project identity and client working directory.
+- ADR-0034 — **proposed** editor syntax-tree dependency (current-main decision).
+- ADR-0035 through ADR-0041 — current-main accepted decisions; see their individual records.
+- ADR-0042 — **accepted** composer normal-mode key ownership (current-main decision).
+- ADR-0043 — **accepted** session-owned subagent lifecycle projection (current-main decision; Option A accepted 2026-10-19).
+- ADR-0044 — **proposed only** contained Git execution with live mutable ODB reads and brokered metadata promotion; test-only proof is permitted, but replacing the immutable trusted-Git route requires independent maintainer acceptance and native security/performance admission. See `ADR-0044-contained-git-live-objects-and-metadata-authority.md`.
+- ADR-0045 — **accepted** command syntax is advisory and execution authority is enforced.
+- ADR-0046 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
+- ADR-0047 — **accepted** restricted CodeGG-managed shared-checkout writer contract (option B, accepted 2026-10-19); it enables no shared mutation by itself. Renumbered twice as `main` took the lower numbers: ADR-0042 and then ADR-0044. Neither number may be reused for this decision. See `ADR-0047-restricted-agent-shared-checkout-writer-contract.md`.
+- ADR-0048 — **accepted** open, provider-scoped reasoning control vocabulary with a faithful wire intent and a daemon-owned selection (option B, accepted 2026-10-21). Renumbered once as `main` took ADR-0044 for the contained-Git live-object decision; that number may not be reused for this decision. See `ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md`.
+- ADR-0049 — **accepted** per-model reasoning capability authority and local admission policy (option B, accepted 2026-10-21): layered authority, narrowing-only overlays, fail-closed on an undeclared dimension. Renumbered once as `main` took ADR-0045 for the command syntax and execution authority decision; that number may not be reused for this decision. See `ADR-0049-per-model-reasoning-capability-authority.md`.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
-
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 
 ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md was
@@ -151,3 +183,27 @@ modify accepted ADR-0002, admit shared-write child execution, or confer new
 capability by existing group membership. M005 is active for writer-containment
 design and qualification; shared-write execution remains unavailable pending
 real tool-path confinement and lifecycle recovery evidence.
+
+## ADR-0047 restricted shared-checkout boundary reservation (2026-10-19)
+
+The M005 writer-containment corrective proposed
+ADR-0047-restricted-agent-shared-checkout-writer-contract.md and recorded a
+narrower CodeGG-mediated checkout writer-coordination boundary (external
+same-user processes are not contained). Filing the ADR neither authorized new
+checkout sharing nor amended accepted ADR-0002 or ADR-0032. Implementation
+corrective C001 established the contract and decision evidence: the 48-root
+writer inventory, the disposition manifest `docs/writer-disposition.toml` and
+the static guard `scripts/check_writer_disposition.py`.
+
+**Update — accepted 2026-10-19.** The maintainers accepted **option B**
+(the restricted CodeGG-managed coordination profile) after reviewing that C001
+package. The acceptance is recorded in the ADR's own "Acceptance record"
+section. It unblocks **C002 only** — the durable, generation-fenced checkout
+writer permit and its lifecycle service. C003–C006 remain blocked on their own
+predecessor closures. Acceptance does **not** enable shared-checkout mutation:
+no permit exists, no writer is fenced, and no user-visible shared-mutation
+selector is activated. Option A (universal filesystem exclusion) remains
+deferred to a separate OS-isolation project; option C (advisory path claims)
+remains rejected. Accepted ADR-0002 and ADR-0032 are unmodified and the legacy
+isolated behavior is unchanged.
+Check concurrent branch ADR identity allocation before integration.

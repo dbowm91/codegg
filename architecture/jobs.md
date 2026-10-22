@@ -61,6 +61,13 @@ there is no inherited ambient or later-resolved goal identity. The label is
 durable job metadata used for evidence correlation only and grants no
 execution authority.
 
+Specialized executors may also pass owner-controlled metadata through
+`submit_with_labels`; those labels are size-checked and persisted with the
+job before enqueue. Python uses this for the canonical workspace root needed
+to validate its execution cwd after scheduler admission. Labels remain
+descriptive executor input and never carry permission receipts or grant
+authority.
+
 ## Key Types & APIs
 
 ### Typed Identifiers (`mod.rs:346-465`)
@@ -656,9 +663,9 @@ are centralized in `ResourceRequest::for_kind` (`mod.rs:713`):
 | AgentTurn | 1 | 512 MB | 1 | 1 | 1 | — |
 | Subagent | 1 | 512 MB | 1 | 1 | 1 | — |
 | Research | 1 | 512 MB | 1 | 1 | 1 | — |
-| Build | 3 | 2048 MB | 1 | 3 | 0 | exclusive:workspace-mutation |
+| Build | 3 | 2048 MB | 1 | 3 | 0 | build quota (workspace-scoped) |
 | Lint | 1 | 768 MB | 1 | 1 | 0 | — |
-| Format | 1 | 256 MB | 1 | 1 | 0 | exclusive:workspace-mutation |
+| Format | 1 | 256 MB | 1 | 1 | 0 | build quota (workspace-scoped) |
 | Test | 2 | 1024 MB | 1 | 2 | 0 | — |
 | Shell/ManagedProcess | 1 | 256 MB | 1 | 1 | 0 | — |
 | Python | 1 | 512 MB | 1 | 1 | 0 | — |
@@ -951,13 +958,29 @@ launch spec capped at 64 KiB, and a private versioned status pipe
 capped at 16 KiB; target output is never a control channel. On Unix,
 finite executions run in a child session; cancellation and timeout
 send SIGTERM, wait a bounded grace period, then SIGKILL the verified
-process group and reap the direct child. Other platforms retain
-direct-child cleanup only. On Linux, constrained launches also pass through
-the internal composable launch contract owned by this service. Its host
+process group and reap the direct child. On Windows, the target is started
+suspended, assigned to a kill-on-close Job Object before resume, and the job is
+closed for timeout/cancellation cleanup before the direct child is reaped. This
+is descendant lifecycle supervision, not filesystem containment. Other hosts
+retain direct-child cleanup only. On Linux, constrained launches also pass
+through the internal composable launch contract owned by this service. Its host
 feature probe is diagnostic only: the service still selects the existing
-filesystem helper, and namespace, offline-network, seccomp, and cgroup
-dimensions remain unavailable until native enforcement is implemented and
-qualified. Probe results never establish a child's obtained status.
+filesystem helper. A daemon-owned `OfflineRequired` intent is carried in
+authenticated execution snapshots or durable Test/Python job payloads and
+requires the M004 process/IPC composition plus Bubblewrap's private network
+namespace before exec. Legacy jobs remain unrestricted. Probe results never
+establish a child's obtained status; the new authenticated owner path remains
+under exact-head M005 qualification. The
+long-lived interactive PTY owner uses the same helper receipt/ack path for an
+internal M004 candidate; it retains PTY and child lifetime ownership and stays
+available through the daemon protocol only when the daemon-resolved principal
+profile is constrained and the required M004 setup succeeds. Unsupported setup
+fails before target start; there is no direct-spawn fallback.
+When all three inherited standard streams are terminals, the helper pins its
+own executable into the private mount view and uses it as an in-namespace
+bootstrap. The bootstrap creates a PID-namespace-visible foreground process
+group, then execs the requested target in place so the PTY owner continues to
+supervise the target process directly.
 Shell, TestRunner, and SubAgentPool retain
 their domain semantics behind typed executors; TestRunner is an
 explicit lifecycle exemption because it streams parser input into

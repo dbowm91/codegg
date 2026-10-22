@@ -84,6 +84,40 @@ pub async fn resolve_commit(root: &Path, commit: &str) -> Result<String, EgggitE
     Ok(resolved.to_owned())
 }
 
+/// Resolve a base **ref** — a branch or tag name — to an immutable
+/// commit id in the supplied repository.
+///
+/// This is deliberately separate from [`resolve_commit`], which refuses
+/// anything but a full object id because its callers use the result as
+/// *provenance*. A worktree base is not provenance: it names where a
+/// checkout starts, and the caller wants a commit, not an expression.
+///
+/// A ref, never a revision expression. `..`, `~`, `^`, `:`, `@{`, a
+/// leading `-` and any whitespace are refused, so the resolver cannot be
+/// talked into evaluating an arbitrary Git expression. The returned
+/// value is the canonical commit id, which is what callers store.
+pub async fn resolve_base_ref(root: &Path, base_ref: &str) -> Result<String, EgggitError> {
+    let trimmed = base_ref.trim();
+    if trimmed.is_empty() {
+        return Err(EgggitError::InvalidBaseRef(base_ref.to_owned()));
+    }
+    if trimmed.starts_with('-')
+        || trimmed.len() > 255
+        || trimmed.chars().any(|ch| {
+            ch.is_whitespace() || matches!(ch, '.' | '~' | '^' | ':' | '@' | '{' | '}' | '\\')
+        })
+    {
+        return Err(EgggitError::InvalidBaseRef(base_ref.to_owned()));
+    }
+    let expression = format!("{trimmed}^{{commit}}");
+    let resolved = capture_stdout(root, &["rev-parse", "--verify", &expression]).await?;
+    let resolved = resolved.trim();
+    if resolved.is_empty() || !resolved.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(EgggitError::InvalidBaseRef(base_ref.to_owned()));
+    }
+    Ok(resolved.to_owned())
+}
+
 /// List all branches with upstream info.
 pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::EgggitError> {
     if !root.exists() {

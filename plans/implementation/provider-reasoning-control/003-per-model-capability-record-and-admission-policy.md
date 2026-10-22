@@ -1,6 +1,6 @@
 # Provider Reasoning Control Milestone 003 — Per-model capability record and local admission policy
 
-Status: active (M002 closed; ADR-0045 accepted 2026-10-21; implementation in progress)
+Status: active (M002 closed; ADR-0049 accepted 2026-10-21; implementation in progress)
 
 Repository baseline: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5` (branch `feat/auto-20261021-d6b5ffc5`)
 
@@ -15,8 +15,8 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0045-per-model-reasoning-capability-authority.md` — the layered authority and the admission policy.
-- `plans/adrs/ADR-0044-open-provider-scoped-reasoning-control-vocabulary.md` — the open vocabulary this capability constrains.
+- `plans/adrs/ADR-0049-per-model-reasoning-capability-authority.md` — the layered authority and the admission policy.
+- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` — the open vocabulary this capability constrains.
 
 Primary class: capability
 
@@ -27,7 +27,7 @@ Give the daemon a per-model statement of **which reasoning the model accepts** a
 ## 2. Why this milestone is ready
 
 - **Hard dependency:** M002 closed. M002 makes the label open and gives the daemon a durable selection; this milestone validates that selection against a model.
-- **ADRs:** ADR-0045 accepted (its §1 authority order, §2 record shape, §3 unknown semantics, §4 admission policy, §5 no-migration decision). ADR-0044 accepted, since this milestone constrains the vocabulary it defines.
+- **ADRs:** ADR-0049 accepted (its §1 authority order, §2 record shape, §3 unknown semantics, §4 admission policy, §5 no-migration decision). ADR-0048 accepted, since this milestone constrains the vocabulary it defines.
 - **Interface dependency — the kernel's capability machinery, already public in the pinned revision.** `eggpool-wire`'s `adaptation` module provides `NeutralThinkingCapability` (independent `status`, `toggle`, `effort`, `budget` dimensions, each `Supported | Unsupported | Unknown | Mixed | Conflicting`), `ReasoningCapabilityPolicy` (a `CapabilityDisposition` per capability class), `CapabilityDisposition` (`Reject | WarnDrop | AllowWithWarning | Allow`), and the pure decision function `reasoning_capability_notices_neutral`. The kernel's default policy is fail-closed: unsupported → `Reject`, unknown → `Reject`, mixed → `WarnDrop`. **The kernel supplies the decision function; CodeGG supplies the facts.**
 - **Interface dependency — the model-adapter registry, already the single compiled model-policy authority.** `crates/codegg-core/src/model_profile/adapter.rs` defines `AdapterProfile` with `#[serde(deny_unknown_fields)]`, and the resolved profile already carries `default_reasoning_effort` and `default_thinking_budget`. The capability record is an extension of that record, not a second table.
 - **Predecessor roadmaps:** the closed provider-wire-kernel consolidation roadmap (one CodeGG authority for model policy; provider modules must not re-resolve model names into a second table) and the closed model-adaptation roadmap (the declarative adapter registry). Both are preserved.
@@ -65,7 +65,7 @@ The declarative assets live in `crates/codegg-core/assets/model-adapters/*.toml`
 
 **The kernel's capability types are status-only.** `NeutralThinkingCapability` carries a *status* per dimension, not an accepted-value list. The accepted-label set is CodeGG's to carry, in its own record; the kernel supplies the per-dimension decision. This is the division the kernel's own documentation describes: *"Capability outcomes are caller-owned facts, never inferred by codecs."*
 
-**There is no storage change here.** ADR-0045 §5 decides that the capability baseline is compiled and the overlay is held on the existing discovery layer, so this milestone adds no column, no table, and no migration.
+**There is no storage change here.** ADR-0049 §5 decides that the capability baseline is compiled and the overlay is held on the existing discovery layer, so this milestone adds no column, no table, and no migration.
 
 ## 4. Invariants that must not regress
 
@@ -113,7 +113,7 @@ The declarative assets live in `crates/codegg-core/assets/model-adapters/*.toml`
 
   Each dimension carries an explicit status using the kernel's vocabulary (`Supported | Unsupported | Unknown | Mixed | Conflicting`), so that an undeclared dimension is `Unknown` rather than `Unsupported`.
 - `crates/codegg-core/src/model_profile/types.rs` — `ResolvedModelProfile` carries the resolved record.
-- `crates/codegg-core/src/model_profile/adapter.rs` — the merge/inheritance list is extended so the capability record participates in adapter merging exactly as the other profile fields do. **The merge rule for the record is the resolution order of ADR-0045 §1**: the more specific adapter's *narrowing* wins, and an overlay may only narrow.
+- `crates/codegg-core/src/model_profile/adapter.rs` — the merge/inheritance list is extended so the capability record participates in adapter merging exactly as the other profile fields do. **The merge rule for the record is the resolution order of ADR-0049 §1**: the more specific adapter's *narrowing* wins, and an overlay may only narrow.
 - `crates/codegg-core/build.rs` — the `Profile` mirror gains the same field in the same change. The `orchestration_tier` drift is reported and, if it is a one-line safe fix, corrected in the same change with a test.
 - `crates/codegg-config/src/schema.rs` — `ModelProfileConfig` gains the same record so an operator can narrow or override it from configuration.
 - `crates/codegg-core/assets/model-adapters/*.toml` — the shipped adapters are populated for the model families whose published contracts are known, including the always-reasons property for the families that publish it.
@@ -187,7 +187,7 @@ Acceptance evidence:
 Intent: Produce one effective capability per turn, and refuse an unsupported selection locally.
 
 Required changes:
-- The resolution function, with the ADR-0045 §1 order.
+- The resolution function, with the ADR-0049 §1 order.
 - The kernel-policy application and the typed refusal.
 - The bounded validation of the accepted-label set and of any operator override.
 
@@ -330,7 +330,7 @@ Do not claim commands that were not actually run in the closure record. The repo
 
 The agent must stop and report rather than improvise when:
 
-- **M002 has not closed**, or **ADR-0045 is not `accepted`**.
+- **M002 has not closed**, or **ADR-0049 is not `accepted`**.
 - The pinned `eggpool-wire` revision does not expose the capability machinery this milestone depends on — specifically `NeutralThinkingCapability`, `ReasoningCapabilityPolicy`, `CapabilityDisposition`, and `reasoning_capability_notices_neutral` — or exposes a different shape. The agent reports the actual pinned shape rather than writing a local reimplementation of the policy.
 - The capability record cannot be added to the adapter registry without changing the **meaning** of an existing profile field. The record is additive.
 - The five-place change cannot be made consistently. The agent reports which place resists rather than adding a second path around the registry, because a second path is exactly the "second policy table" the closed provider-wire-kernel roadmap forbids.

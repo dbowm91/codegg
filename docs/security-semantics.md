@@ -79,10 +79,12 @@ Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
 
 On Linux, host feature discovery for user namespaces, other namespace types,
 seccomp, proc, Bubblewrap, Landlock, cgroup v2, and active LSMs is diagnostic.
-It does not mean those dimensions were applied to a child. CodeGG currently
-uses its existing filesystem helper; network remains unrestricted under the
-legacy profile, and enhanced namespace/network/resource requests remain
-unavailable until their native enforcement gates close.
+It does not mean those dimensions were applied to a child. Network remains
+unrestricted by default. The explicit per-principal `/network offline` policy
+is being qualified through managed-process, scheduler-owned Test/Python, PTY,
+and LSP owners; it requires a constrained profile and refuses on unsupported
+host setup. Do not treat the stored preference as proof of enforcement on a
+host that has not passed M005 qualification.
 
 ### Tuning
 

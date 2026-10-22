@@ -199,6 +199,27 @@ the highlight move without refetching, because `pending_update` pairs the
 rendered models with the highlighted connection and would bind the wrong
 model to the wrong connection.
 
+## The session checkout surface (M006)
+
+The session dialog is where a session's **checkout** is shown and where a
+session is *placed* in one. Read `architecture/tui.md`
+§"The session checkout surface (M006, agent-workstream-blackboard)" before
+changing it.
+
+Three rules, each of which was a defect first:
+
+- The row shows the checkout's **branch**, or `root` for the project's own
+  working tree, and a `⚠` when the checkout needs an operator. A row that
+  shows only a title and a timestamp makes the checkout invisible.
+- `n` (new session in a new checkout), `w` (new session in the selected
+  session's **existing** checkout) and `F` (fork into a new checkout) are
+  three different acts. `w` must **name** the checkout: reusing "nothing"
+  would quietly allocate one. The lowercase `f` is the pre-existing plain
+  fork and stays untouched.
+- The launch runs as a registered background task and reports itself in a
+  toast. The dialog stays open while it runs — closing the dialog cancels
+  the task that reports it.
+
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`
@@ -273,8 +294,8 @@ model to the wrong connection.
   widget renders into an in-memory backend sized to the column and is copied
   out. Do not add per-panel branches to the render path. A focused panel owns
   *navigation* — arrows, `j`/`k`, paging, its own verbs — and is consulted
-  **only in Normal mode**, because the host claims `Esc`/`q` as exits and
-  would otherwise make `q` untypable while composing.
+  **only in Normal mode**, because the host claims `Shift+Q` as the panel exit
+  and consulting it in Insert would make `Shift+Q` untypable while composing.
   `PanelKey::PassThrough` exists only for panels that hold
   no draft (the chat panel passes `i`/`a` to the composer); a panel with a
   live buffer must still consume everything. A verb that carries text to
@@ -300,12 +321,11 @@ model to the wrong connection.
     was in.
   - **The row is a carved row, and the input box does not move with it.**
     `session_layout` gives the prompt chunk a fixed, bottom-anchored height, and
-    the working strip, hint line and todo strip come off its **top** in that
-    order. So the composer stays on its row whatever the carved region does —
-    the opposite of what the arithmetic looks like it should do. Pin it, because
-    a hint row that reflowed the input every time a panel took or lost focus
-    would be the same defect the working strip's reserved row 0 exists to
-    prevent. Nothing to do with that strip, which is reserved unconditionally.
+    the hint line and the todo strip come off its **top** in that order. So the
+    composer stays on its row whatever the carved region does — the opposite of
+    what the arithmetic looks like it should do. Pin it, because a hint row that
+    reflowed the input every time a panel took or lost focus would be the same
+    defect the buffer's layout has to prevent.
     **The row is not vacated when a panel lets go**: the composer takes it over,
     because the composer's own verbs are what the row is for (M007). The row's
     *content* changes with the keyboard; its *presence* does not, so the working
@@ -362,9 +382,10 @@ model to the wrong connection.
   because a wrapped line occupies several rows, so both hand the clamp to the
   render pass and two clamps reach a different last row with no error to show.
   A `keymap_hint` is a claim about the **hosted** verb set: `Esc` never reaches
-  a hosted widget (the host claims `Esc`/`q` as its own exit and blurs first)
-  and `Enter`'s `CloseDialog` runs against an empty modal stack, because
-  docking popped the box off it. Do not name either, and do not replay a
+  a hosted widget as an *exit* — the host's exit is `Shift+Q`, and `Esc` is the
+  mode switch (Insert ↔ Normal), so a panel that owns a text field or a live
+  PTY keeps it — and `Enter`'s `CloseDialog` runs against an empty modal stack,
+  because docking popped the box off it. Do not name either, and do not replay a
   `set_custom_footer` string into the hint — those describe the modal box.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
@@ -382,13 +403,18 @@ model to the wrong connection.
   and the Ctrl+T pane use. Only a *file* emits an open intent; a directory has
   no document. `/files` is `DocumentScope::Workspace`, so the editor's
   `[project]` badge is the honest reading.
-- **`Enter` expands, `l` peeks, `h` goes up a level.** `Enter` reveals a
-  directory's contents in place and leaves the cursor alone. `l` **peeks**:
-  the selected directory opens in place and the cursor moves into it, so the
+- **`Enter` and `l` are one motion: open the selected row.** `Enter` on a
+  directory enters it — the same motion `l` makes — and `Enter` on a file
+  emits `TuiMsg::FilesOpenSelected`, routed to `open_editor` — the same seam
+  `/open` and the Ctrl+T pane use. `l` **peeks** into a directory: the
+  selected directory opens in place and the cursor moves into it, so the
   parent and the siblings stay on screen — it does **not** make the directory
-  the listing's root. Only a directory at the listing window's edge (the
-  daemon's listing reaches three levels) slides the scope to the directory's
-  **parent**, with the directory still selected and expanded. `h` is the
+  the listing's root. `l` on a **file** opens it, because a file has nothing
+  to enter: the key is never dead. Only a directory at the listing window's
+  edge (the daemon's listing reaches three levels) slides the scope, and it
+  slides to the directory's **grandparent** — the shallowest scope in which
+  the directory's children still fit inside the window, so the user keeps the
+  widest context — with the directory still selected and expanded. `h` is the
   mirror: from inside a directory it moves the cursor to the parent row and
   collapses that directory; from a top-level row it slides the scope up one
   level; at the workspace root it collapses the selected directory in place,
@@ -990,26 +1016,25 @@ model to the wrong connection.
   unreachable, because the viewport click arm is the only thing that expands
   a message. All other surfaces keep immediate press behaviour through the
   shared `dispatch_click`.
-- **The working strip owns turn liveness, and it names the way out.**
-  `render_working_strip` draws one status row plus one row per advertised
-  subagent between the transcript and the composer, reserved from the prompt
-  allocation and carved back off like the hint line and the todo strip.
-  **Row 0 is reserved unconditionally** — it reads `idle` when nothing runs —
-  because this height is subtracted from the transcript (`session_layout` splits
-  `prompt_height` against `Min(10)`). Gating it on turn state reflowed the
-  transcript on every submit and every completion; reserving it permanently
-  lets the content change freely with the viewport height fixed. Subagent rows
-  stay content-driven, since N subagents need N rows. Row 0 resolves in strict
-  precedence — latched `last_error`, then `stopped_turn`, then the live phase,
-  then `idle` — and pairs it with the key that changes it (`x to stop`, `press x
-  again to stop agent` while a confirmation is armed, `press x or /start` once
-  stopped): a long pause with no way out is what reads as a dropped connection.
-  Error and stopped both draw a **static** glyph; nothing is running, so an
-  animated one would lie about it.
-  `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
-  because the strip is carved out of the prompt chunk — the reverse order
-  resolves every subagent click to click-to-focus. Hit rects live in
-  `SubagentState::hits` and are rebuilt every frame.
+- **There is no working strip, and the row above the composer is situational.**
+  The strip used to draw one status row plus one row per advertised subagent
+  between the transcript and the composer. It cost a row of vertical space to
+  say `idle` most of the time, and it made the buffer's task state visible
+  whether the user wanted it or not. It is **deleted**: `working_strip_rows`,
+  `render_working_strip`, `ClickTarget::Working`, `UiState::working_area` and
+  `SubagentState::hits` are all gone, and **nothing is reserved** between the
+  transcript and the composer — so the transcript cannot reflow when the turn
+  state changes, because there is no row that appears or vanishes.
+  The task state lives in the **`Ctrl+T` tasks overlay**, which already
+  unifies todos, in-flight subagents and live jobs and is on demand.
+  The row above the composer is the buffer's one *situational* surface: the
+  `space help` chord, a latched `last_error` (`✗ {error}`), and an armed exit
+  confirmation. It names **no verb keys** — a list of bare letters is not a
+  map, and the help one keypress away is where the verbs are described.
+  Two things the strip used to own moved with it: the stop-agent arm's expiry
+  (`expire_pending_stop_armed`) and the projection sync for
+  `ui_state.subagents` are now called from the **render pump**, not from a
+  renderer.
 - **One spinner, one cadence, one phase enum.** Frames come from
   `tui::components::spinner::spinner_frame(elapsed)` — a pure function over one
   frame table at 100ms, so there is no counter to drift and renders stay
@@ -1026,17 +1051,18 @@ model to the wrong connection.
   interrupted mid-sentence. Route genuine turn failures through it only; shell,
   clipboard, and `/theme` errors would otherwise claim a turn failure that never
   happened. The full text stays in the toast and `/logs` keeps 50.
-- **The reasoning indicator is strip content, and the daemon owns the value.**
-  Row 0 also carries the extended-thinking selection (`reasoning: high`,
-  `reasoning: off`, `reasoning: budget 2048`) in the same `" · "` suffix chain.
-  Three properties are load-bearing. It is **content in the reserved row**,
-  never a condition on the row's presence — `working_strip_rows` must not
-  mention the reasoning state at all, because the strip's height is subtracted
-  from the transcript and gating row 0 reflowed the transcript on every submit
-  and completion. It adds **no second spinner and no second cadence**: there
+- **The reasoning indicator is status-bar content, and the daemon owns the
+  value.** The footer status bar's activity chain carries the extended-thinking
+  selection (`reasoning: high`, `reasoning: off`, `reasoning: budget 2048`),
+  next to the daemon-resolved approval and sandbox policy. Three properties are
+  load-bearing. It is **content in an existing chain**, never a condition on a
+  surface's presence — the chip is pushed unconditionally in
+  `build_status_summary`, and `status_bar.rs` must not mention the reasoning
+  state at all, so the bar's height and width budget cannot become a function
+  of the selection. It adds **no second spinner and no second cadence**: there
   is one frame table, one `ActivityPhase` enum, and one 100 ms cadence, and
-  the indicator is static text in a row that row 0's frame already redraws.
-  And it reads the **daemon-owned** selection, never a frontend-local field —
+  the indicator is static text in a bar the one frame already redraws. And it
+  reads the **daemon-owned** selection, never a frontend-local field —
   the daemon resolves the selection at every turn-admission path, so a local
   copy is a projection, not an authority. `/reasoning` therefore writes
   through `CoreRequest::ReasoningPreferenceSet` with the daemon's preference
@@ -1047,6 +1073,12 @@ model to the wrong connection.
   `reasoning_vocabulary_unsupported`, `reasoning_capability_unsupported`) —
   the last two are different conditions and must not collapse into one
   message. `scripts/check_tui_reasoning_surface.py` guards all of it.
+  **The indicator's surface moved once already**: it was introduced in the
+  working strip's reserved row 0, and `main` deleted the working strip as
+  part of its buffer-chrome roadmap, so it lives in the status bar now. The
+  property that survived the move is the one that mattered — the indicator is
+  content, and no surface's presence or height is a function of the
+  reasoning state.
 - **One approval on screen; the rest queue, and the queued row is the way back.**
   `show_permission_dialog` used to assign straight into `permission_dialog`, so
   the second `PermissionPending` of a batch destroyed the first *along with its
@@ -1443,7 +1475,7 @@ model to the wrong connection.
   mode paints a solid block instead. Both read
   `PromptWidget::caret_cell`, the single computation of where the caret is on
   screen, so the two cannot disagree. The app runs **one** animation cadence
-  (the 100 ms working strip), so a blinking caret must come from the terminal —
+  (the 100 ms activity cadence), so a blinking caret must come from the terminal —
   ratatui hides the terminal cursor whenever a frame did not position it, so
   "position nothing" is how the composer shows no cursor at all. The rule the
   badge and the caret share: **when the composer holds the keyboard, `[INS]`

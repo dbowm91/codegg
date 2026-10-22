@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static guard for the open provider-reasoning vocabulary (M002).
 
-The reasoning vocabulary is **open and provider-scoped** (ADR-0044): an
+The reasoning vocabulary is **open and provider-scoped** (ADR-0048): an
 arbitrary vendor label such as `xhigh`, `max`, `none` or `default` is
 selectable and is carried verbatim end to end. The closed four-level
 `ReasoningEffort` enum that used to stand in for the vocabulary is gone,
@@ -197,7 +197,7 @@ def check_no_closed_reasoning_enum(root: Path) -> bool:
                 print(
                     f"  FAIL: {path.relative_to(root)} declares the closed "
                     f"reasoning level enum `{name}`; the vocabulary is open and "
-                    "provider-scoped (ADR-0044)"
+                    "provider-scoped (ADR-0048)"
                 )
                 ok = False
     return ok

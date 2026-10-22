@@ -42,10 +42,12 @@ enum Chrome {
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
-/// `↑/↓` and `Esc` are deliberately absent even though `handle_key` answers
+/// `↑/↓` are deliberately absent even though `handle_key` answers
 /// them: a focused panel never sees them, because `SidePanelHost::handle_key`
-/// answers the arrow keys as panel directions and claims `Esc`/`q` as its
-/// universal exits before consulting the widget. Repeating the footer's old
+/// answers the arrow keys as panel directions before consulting the widget.
+/// `Esc` is absent for a different reason — it is the mode switch, so it means
+/// "close" in the modal box and "leave the widget's mode" in a column.
+/// Repeating the footer's old
 /// `"↑/↓ navigate … | Esc close"` would teach a docked panel two keys that
 /// cannot fire.
 const HINT: &str = "j/k move · e expand · f fork · enter select";
@@ -638,9 +640,10 @@ mod tests {
     }
 
     /// `handle_key` answers `Esc`, `↑` and `↓`, and the hint names none of them:
-    /// a focused panel never sees them, because `SidePanelHost::handle_key`
-    /// answers the arrows as panel directions and claims `Esc`/`q` as its
-    /// universal exits before consulting the widget.
+    /// the arrows never reach a focused panel, because `SidePanelHost::handle_key`
+    /// answers them as panel directions before consulting the widget, and `Esc`
+    /// is the mode switch — it means "close" in the modal box and something
+    /// else in a column, so a hosted hint cannot promise it.
     #[test]
     fn keymap_hint_names_no_key_the_host_answers_first() {
         let dialog = loaded(1);

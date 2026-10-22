@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
+use crate::tool::backend::ToolExecutionContext;
+use crate::tool::writer_fence::{
+    acquire_writer_permit, settle_writer_fence, writer_fence_key, NativeEffectClass,
+    WriterFenceOutcome,
+};
 use crate::tool::{Tool, ToolCategory};
 
 pub struct WriteTool {
@@ -63,6 +68,71 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_inner(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
+        let scratch_scope = ctx
+            .as_ref()
+            .and_then(|ctx| ctx.execution_authorization.as_ref())
+            .and_then(|authorization| authorization.scratch_scope.as_ref());
+        let scratch = if let Some(scope) = scratch_scope {
+            Some(scope.private_root.clone())
+        } else {
+            ctx.as_ref()
+                .and_then(|ctx| ctx.session_id.as_deref())
+                .filter(|session_id| !session_id.is_empty())
+                .map(crate::scratch::session_scratch_dir)
+                .transpose()
+                .map_err(|error| ToolError::Execution(error.to_string()))?
+        };
+        let shared_roots = scratch_scope
+            .into_iter()
+            .flat_map(|scope| scope.shared.iter().map(|root| root.path.clone()))
+            .collect::<Vec<_>>();
+        let requested = input["path"].as_str().map(Path::new);
+        let output = if let (Some(path), Some(scratch)) = (requested, scratch) {
+            let root = std::iter::once(scratch.clone())
+                .chain(shared_roots)
+                .find(|root| path.is_absolute() && path.starts_with(root));
+            if let Some(root) = root {
+                // The shared scratch root is a different write root than this
+                // tool's own, so the effect has to run against *that* root —
+                // including the fence, which must name the path this root
+                // resolves to.
+                let tool = Self::new().with_allowed_root(root);
+                tool.execute_inner(input, ctx.as_ref()).await?
+            } else {
+                if crate::tool::util::validate_target_path(path, &self.allowed_root).is_err() {
+                    if let Some(error) = temp_path_recovery_error(path, Some(&scratch)) {
+                        return Err(error);
+                    }
+                }
+                self.execute_inner(input, ctx.as_ref()).await?
+            }
+        } else {
+            self.execute_inner(input, ctx.as_ref()).await?
+        };
+        Ok(crate::tool::StructuredToolResult::legacy("write", output))
+    }
+}
+
+impl WriteTool {
+    /// The write effect, with the checkout writer fence held across it.
+    ///
+    /// The fence is an *additional* refusal on top of the existing path
+    /// boundary: it never widens what this tool may write. A context without
+    /// a fence mints no permit, so the legacy path behaves exactly as
+    /// before.
+    async fn execute_inner(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let path_str = input["path"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?
@@ -77,49 +147,105 @@ impl Tool for WriteTool {
         let unrestricted = self.unrestricted;
         let content_for_write = content.clone();
 
-        let (existed, old_content, final_path, formatted) =
-            tokio::task::spawn_blocking(move || {
-                let original_path = Path::new(&path_str);
-                let validated_path = if !unrestricted {
-                    crate::tool::util::validate_target_path(original_path, &allowed_root)?
-                } else {
-                    let parent_to_validate = original_path
-                        .parent()
-                        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
-                    crate::tool::util::check_path_for_symlinks(parent_to_validate)?;
-                    let parent_canonical = parent_to_validate.canonicalize().map_err(|_| {
-                        ToolError::Execution(format!(
-                            "invalid path: {}",
-                            parent_to_validate.display()
-                        ))
-                    })?;
-                    let file_name = original_path
-                        .file_name()
-                        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
-                    parent_canonical.join(file_name)
-                };
+        // Resolve the target before the permit is taken: the fence has to
+        // name the very path the write lands on, and the target may not
+        // exist yet, so this is the tool's own `validate_target_path`
+        // resolution — not a second, looser one.
+        let validated_path = tokio::task::spawn_blocking(move || {
+            let original_path = Path::new(&path_str);
+            if !unrestricted {
+                crate::tool::util::validate_target_path(original_path, &allowed_root)
+            } else {
+                let parent_to_validate = original_path
+                    .parent()
+                    .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+                crate::tool::util::check_path_for_symlinks(parent_to_validate)?;
+                let parent_canonical = parent_to_validate.canonicalize().map_err(|_| {
+                    ToolError::Execution(format!("invalid path: {}", parent_to_validate.display()))
+                })?;
+                let file_name = original_path
+                    .file_name()
+                    .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+                Ok::<_, ToolError>(parent_canonical.join(file_name))
+            }
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
-                if let Some(parent) = validated_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| ToolError::Execution(e.to_string()))?;
-                }
+        // The permit is taken after the path boundary approved the target
+        // and immediately before the first mutation, and it is held until
+        // the write has settled.
+        let targets = vec![validated_path.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
 
-                let existed = std::path::Path::new(&validated_path).exists();
-                let old_content = if existed {
-                    std::fs::read_to_string(&validated_path).unwrap_or_default()
-                } else {
-                    String::new()
-                };
+        let effect = match tokio::task::spawn_blocking(move || {
+            if let Some(parent) = validated_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    (
+                        ToolError::Execution(e.to_string()),
+                        WriterFenceOutcome::NoEffect,
+                    )
+                })?;
+            }
 
-                std::fs::write(&validated_path, content_for_write.as_bytes())
-                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+            let existed = std::path::Path::new(&validated_path).exists();
+            let old_content = if existed {
+                std::fs::read_to_string(&validated_path).unwrap_or_default()
+            } else {
+                String::new()
+            };
 
-                let formatted = std::fs::read_to_string(&validated_path).unwrap_or_default();
+            // `fs::write` truncates before it writes, so a failure here can
+            // leave a partially written file behind: the effect is unproven,
+            // not absent.
+            std::fs::write(&validated_path, content_for_write.as_bytes()).map_err(|e| {
+                (
+                    ToolError::Execution(e.to_string()),
+                    WriterFenceOutcome::Unproven(e.to_string()),
+                )
+            })?;
 
-                Ok::<_, ToolError>((existed, old_content, validated_path, formatted))
-            })
-            .await
-            .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+            let formatted = std::fs::read_to_string(&validated_path).unwrap_or_default();
+
+            Ok::<_, (ToolError, WriterFenceOutcome)>((
+                existed,
+                old_content,
+                validated_path,
+                formatted,
+            ))
+        })
+        .await
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        let (existed, old_content, final_path, formatted) = match effect {
+            Ok(written) => {
+                // The effect landed and was observed, so the permit is
+                // released. A failure to release it is reported: the caller
+                // has to know the checkout was not handed on.
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+                written
+            }
+            Err((error, outcome)) => {
+                // Settle before the error propagates: a failed effect must
+                // still release (or park) the permit it held. The tool's own
+                // error is the one the caller sees.
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        };
 
         let action_str = if existed { "Modified" } else { "Created" };
         let path_display = final_path.to_string_lossy().to_string();
@@ -152,50 +278,6 @@ impl Tool for WriteTool {
                 format!("\n\n{diff}")
             }
         ))
-    }
-
-    async fn execute_structured(
-        &self,
-        input: serde_json::Value,
-        ctx: Option<crate::tool::backend::ToolExecutionContext>,
-    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
-        let scratch_scope = ctx
-            .as_ref()
-            .and_then(|ctx| ctx.execution_authorization.as_ref())
-            .and_then(|authorization| authorization.scratch_scope.as_ref());
-        let scratch = if let Some(scope) = scratch_scope {
-            Some(scope.private_root.clone())
-        } else {
-            ctx.as_ref()
-                .and_then(|ctx| ctx.session_id.as_deref())
-                .filter(|session_id| !session_id.is_empty())
-                .map(crate::scratch::session_scratch_dir)
-                .transpose()
-                .map_err(|error| ToolError::Execution(error.to_string()))?
-        };
-        let shared_roots = scratch_scope
-            .into_iter()
-            .flat_map(|scope| scope.shared.iter().map(|root| root.path.clone()))
-            .collect::<Vec<_>>();
-        let requested = input["path"].as_str().map(Path::new);
-        let output = if let (Some(path), Some(scratch)) = (requested, scratch) {
-            let root = std::iter::once(scratch.clone())
-                .chain(shared_roots)
-                .find(|root| path.is_absolute() && path.starts_with(root));
-            if let Some(root) = root {
-                Self::new().with_allowed_root(root).execute(input).await?
-            } else {
-                if crate::tool::util::validate_target_path(path, &self.allowed_root).is_err() {
-                    if let Some(error) = temp_path_recovery_error(path, Some(&scratch)) {
-                        return Err(error);
-                    }
-                }
-                self.execute(input).await?
-            }
-        } else {
-            self.execute(input).await?
-        };
-        Ok(crate::tool::StructuredToolResult::legacy("write", output))
     }
 }
 

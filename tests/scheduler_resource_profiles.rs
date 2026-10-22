@@ -53,14 +53,32 @@ fn build_is_heaviest() {
 
 #[test]
 fn mutation_kinds_have_exclusivity_keys() {
-    assert!(ResourceRequest::for_kind(JobKind::Build)
-        .exclusivity_keys
-        .iter()
-        .any(|k| k == "exclusive:workspace-mutation"));
-    assert!(ResourceRequest::for_kind(JobKind::Format)
-        .exclusivity_keys
-        .iter()
-        .any(|k| k == "exclusive:workspace-mutation"));
+    // M007: Build and Format no longer carry the legacy *global*
+    // `exclusive:workspace-mutation` key. It was never checkout-scoped,
+    // so it serialized every build in every workspace. They carry the
+    // counted, workspace-scoped build quota instead, which the
+    // submission boundary binds to the canonical workspace.
+    for kind in [JobKind::Build, JobKind::Format] {
+        let request = ResourceRequest::for_kind(kind);
+        assert!(
+            request
+                .exclusivity_keys
+                .iter()
+                .all(|k| k != "exclusive:workspace-mutation"),
+            "{kind:?} must not carry the legacy global key"
+        );
+        assert_eq!(
+            request.keyed_quotas.len(),
+            1,
+            "{kind:?} must carry the build class"
+        );
+        assert_eq!(request.keyed_quotas[0].namespace(), Some("build"));
+        assert_eq!(
+            request.keyed_quotas[0].scope(),
+            "",
+            "{kind:?} carries the class; the scope is bound at submission"
+        );
+    }
     assert!(ResourceRequest::for_kind(JobKind::GitMutation)
         .exclusivity_keys
         .iter()

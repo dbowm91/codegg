@@ -124,7 +124,7 @@ pub fn compose_turn_submit(input: TurnSubmitInput) -> Result<CoreRequest, Compos
     if input.messages.is_empty() {
         return Err(ComposerError::EmptyMessages);
     }
-    // Capability negotiation (ADR-0044): a non-enumerated label is only
+    // Capability negotiation (ADR-0048): a non-enumerated label is only
     // sent to a daemon that advertised the open, provider-scoped vocabulary.
     // A client that has not observed that capability sends no such label —
     // it fails closed here rather than letting a daemon decode `xhigh` as

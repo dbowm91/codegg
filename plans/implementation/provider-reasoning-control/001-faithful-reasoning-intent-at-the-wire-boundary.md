@@ -1,6 +1,6 @@
 # Provider Reasoning Control Milestone 001 — Faithful reasoning intent at the wire boundary
 
-Status: closed (ADR-0044 accepted 2026-10-21; closure record `plans/closure/provider-reasoning-control/001-status.md`)
+Status: closed (ADR-0048 accepted 2026-10-21; closure record `plans/closure/provider-reasoning-control/001-status.md`)
 
 Repository baseline: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5` (branch `feat/auto-20261021-d6b5ffc5`)
 
@@ -15,7 +15,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0044-open-provider-scoped-reasoning-control-vocabulary.md`
+- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md`
 
 Primary class: capability
 
@@ -28,7 +28,7 @@ This milestone changes no vocabulary, no protocol shape, and no user-visible sur
 ## 2. Why this milestone is ready
 
 - **Hard dependencies:** none. No other milestone in this roadmap depends on this one for correctness of a *later* concern; it is the foundation the rest build on.
-- **ADR:** ADR-0044 is the decision this milestone implements, and it is `proposed` — see §14, which requires the agent to confirm acceptance before starting.
+- **ADR:** ADR-0048 is the decision this milestone implements, and it is `proposed` — see §14, which requires the agent to confirm acceptance before starting.
 - **Interface dependency:** the `eggpool-wire` kernel is already an immutable-pinned dependency of `crates/codegg-providers`, and its `ir` module is public in the pinned revision. No new dependency, no pin change, and no kernel change is required.
 - **Predecessor roadmaps:** the closed provider-wire-kernel consolidation roadmap established that `eggpool-wire` is the single encoder and that provider-facing request policy stays in CodeGG. This milestone preserves both.
 
@@ -301,7 +301,7 @@ Do not claim commands that were not actually run in the closure record. The repo
 
 The agent must stop and report rather than improvise when:
 
-- **ADR-0044 is not `accepted`.** This milestone implements that decision. If the ADR is still `proposed`, or if it was amended in a way that changes the intent-to-kernel mapping, the agent reports that instead of implementing a decision nobody has made.
+- **ADR-0048 is not `accepted`.** This milestone implements that decision. If the ADR is still `proposed`, or if it was amended in a way that changes the intent-to-kernel mapping, the agent reports that instead of implementing a decision nobody has made.
 - The pinned `eggpool-wire` revision does not expose the `ReasoningIntent` shape this milestone depends on (in particular `explicit_disable`, the `Adaptive`/`Toggle` modes, or `ReasoningIntent::disabled()`). The agent reports the actual pinned shape rather than working around it with a local approximation.
 - The faithful mapping cannot be expressed without changing the `eggpool-wire` pin. A pin change is a separate decision and is not this milestone's to make.
 - The explicit-disable signal cannot be represented without a protocol serialized-shape change. That change belongs to M002; the agent reports the collision rather than absorbing M002's scope.

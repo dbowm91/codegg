@@ -33,6 +33,8 @@ fn build_test_spec(workspace_id: WorkspaceId) -> NewJob {
             cwd: Some("/tmp".into()),
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -63,6 +65,8 @@ fn build_build_spec(workspace_id: WorkspaceId) -> NewJob {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "build".into()],
             cwd: Some("/tmp".into()),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

@@ -128,20 +128,38 @@ async fn user_prompt_queue_v81_migration_creates_the_owner_table() {
     let pool = isolated_pool().await;
     ensure_session(&pool, SESSION_ID).await;
 
-    // This is a tripwire: it pins the *current* number so a silent bump is
-    // visible in review, and the assertion above proves the constant still
+    // This is a tripwire: it pins that the queue's own migrations are part of
+    // the current layout, and the assertion above proves the constant still
     // equals the highest wired migration.
     //
-    // It is currently v84: M007 took v82 for `run_at_ms`, then managed scratch
-    // reserved v83, then provider reasoning control M002 took v84 for the
-    // daemon-owned extended-thinking selection column. M002b's own claim — that
-    // the owner binding bumped the layout at all — is unchanged and is what the
-    // table assertions below prove.
+    // It is a **floor**, not an equality. A hard-coded equality here broke the
+    // build for C002 (v84) and again for M006 (v85) without testing anything:
+    // the constant is bumped by every later migration, and the assertion above
+    // already fails closed if the constant and the wired migration ever
+    // disagree. M002b's own claim — that the owner binding bumped the layout at
+    // all — is unchanged and is what the table assertions below prove.
+    //
+    // The provider-reasoning-control branch's reasoning-selection column was
+    // v84 on that branch and is v88 in the merged tree, so it never appears in
+    // a floor or an equality here.
+    let layout: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read migration marker");
     assert_eq!(
-        STORAGE_LAYOUT_VERSION, 84,
+        layout, STORAGE_LAYOUT_VERSION as i64,
+        "layout constant must equal the highest wired migration"
+    );
+    // The floor is asserted against the **durable** layout, not the
+    // constant: a comparison between two constants has a value the
+    // compiler folds away, and a folded assertion is not a test.
+    assert!(
+        layout >= 82,
         "M002b bumps the layout to the owner binding; M007 advanced it to v82 \
-         for the optional due time, managed scratch advanced it to v83, and \
-         provider reasoning control M002 advanced it to v84"
+         for the optional due time, and the queue's migrations must still be \
+         part of the current layout"
     );
 
     let table: i64 = sqlx::query_scalar(
