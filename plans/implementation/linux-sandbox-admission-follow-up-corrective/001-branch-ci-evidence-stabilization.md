@@ -1,6 +1,6 @@
 # C001 — Linux Branch and CI Evidence Stabilization
 
-Status: **ready** (corrective infrastructure; no production admission)
+Status: **closed** — closure `plans/closure/linux-sandbox-admission-follow-up-corrective/001-status.md`; C001's §10.1–§10.5 were discharged by C004 (closure `plans/closure/linux-sandbox-admission-follow-up-corrective/004-status.md`), §10.6 was carried forward to upstream. Class **infrastructure** — no production admission.
 Source: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md`, C001; original Linux M003/C010 and C005 no-admission remains. Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `d251b11cd7fa5b89ca008e45d80a28a4ac3aea9f`, 2026-10-20.
 Closure target: `plans/closure/linux-sandbox-admission-follow-up-corrective/001-status.md`.
 

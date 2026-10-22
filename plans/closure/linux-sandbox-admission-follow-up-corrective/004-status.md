@@ -52,6 +52,17 @@ regressions, which §3.6's own gate fix is what made run in that job for the
 first time. Both are fixed, and both are recorded with the evidence that
 proves the diagnosis rather than a plausible story about it.
 
+**Two further findings are carried forward rather than fixed, and neither has
+a causal link to this milestone.** §10.4 is a one-in-3,600 flake in the
+jobs/scheduler suite, which this milestone neither enabled, gated nor
+changed. §10.6 is the pre-existing Desktop E2E failure. Both are recorded
+with the evidence that would close them.
+
+**And a seventh finding was made by reading, not by a run.** §10.5: the
+registry listed three of this line's milestones twice, with contradictory
+statuses — C001 as both **ready** and **closed**. That contradiction is
+fixed here.
+
 **Three of the six findings were found by the hosted sweep** — two in §3.5
 and the fifth in §3.6 — which is the sweep doing its job.
 
@@ -718,6 +729,14 @@ and load-dependent rather than deterministic on that runner. The head
 `99f15e180` adds §3.7's fix and is green on all six workflows, including the
 M004 native tier that failed before the fix.
 
+The branch tip `659e9324a` is `99f15e180` plus one documentation-only commit
+— `git diff --name-only` between them names exactly one file, this record.
+Its **own** sweep is green on all six workflows (`39771529333` attempt 2,
+`39771529398`, `39771529325`, `39771529385`, `39771529320`,
+`39771529459`), so the sweep now measures the branch tip itself and not only
+its code-bearing ancestor. That tip's CI failed once first, on the
+jobs/scheduler flake §10.4 records; the re-run on the identical tree passed.
+
 ### 5.0 The base moved under this branch
 
 `main` advanced from `95bb9c5ae` (the C002 merge, PR #158) to `47f5572b1`
@@ -788,16 +807,27 @@ the evidence that the sweep is doing work.
 | `39763779280` | `99f15e180` | Linux Git object snapshot CoW qualification | **success** |
 | `39763779264` | `99f15e180` | Windows process launcher | **success** |
 | `39763779109` | `99f15e180` | Shared checkout macOS qualification | **success** — `main`'s M005 shared-checkout lane, pulled in by the §5.0 merge; see §5.3 |
+| `39771529333` | `659e9324a` | `CI` — the default sweep | **failure** — the jobs/scheduler suite's sub-second grid comparison; §10.4. Not a defect of this milestone's tree |
+| `39771529333` (attempt 2) | `659e9324a` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
+| `39771529398` | `659e9324a` | Linux M004 process and IPC qualification | **success** |
+| `39771529325` | `659e9324a` | Linux C006 protected mount qualification | **success** |
+| `39771529385` | `659e9324a` | Linux Git object snapshot CoW qualification | **success** |
+| `39771529320` | `659e9324a` | Windows process launcher | **success** |
+| `39771529459` | `659e9324a` | Shared checkout macOS qualification | **success** — `main`'s M005 shared-checkout lane; see §5.3 |
 
 **All five milestone workflows are green on the closing head `99f15e180`**, and
-so is the sixth, `main`'s macOS shared-checkout lane. The failures above are
+so is the sixth, `main`'s macOS shared-checkout lane. The branch tip
+`659e9324a` — a documentation-only child of that head — is green on all six
+as well, after the one failure §10.4 records. The failures above are
 the earlier heads, and each one found a defect that is now fixed and guarded —
 they are recorded here rather than hidden, because they are the evidence that
 the sweep is doing work. Two of them are of a different kind and are recorded
 separately: the CI failure on `f82c1f980` found no defect at all (§5.1.1), and
 the M004 failure on `5b7ab4887` found a **pre-existing** race that this
 milestone's own gate fix had exposed (§3.7) — not a defect this milestone
-introduced.
+introduced. The CI failure on `659e9324a` is a third kind: a **pre-existing
+flake in another subsystem** that this milestone did not cause and did not
+expose (§10.4).
 
 ### 5.1.1 The CI failure on `f82c1f980` was a runner termination, not a test result
 
@@ -887,8 +917,16 @@ estimate, and not a count the guard assumed.
 | `39763779119` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39763779280` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39763779264` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39771529333` (attempt 2) | `CI` | `Workspace tests` | **16,061 tests run, 16,061 passed**, 9 skipped | — | none |
+| `39771529398` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39771529398` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39771529398` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39771529325` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39771529325` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39771529385` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39771529320` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
 
-**Every security-filter count is identical on all four green heads**: the same
+**Every security-filter count is identical on all five green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
 on every job. That is the reproducibility claim made concrete, and it holds
 exactly where it is claimed — on the filter steps, which are this milestone's
@@ -1032,6 +1070,16 @@ source — it changes `src/interactive_process.rs`, `src/tool/bash.rs`,
 the macOS compile's trigger list does not name any of them, so no macOS
 qualification was required by this milestone's boundary ledger.
 
+**It could not have run on this branch either.** The workflow that runs it
+(`command-authorization-macos-compile.yml`, one-shot) is triggered by
+`workflow_dispatch` or a push to one of two *named* branches —
+`planning/linux-sandbox-next-admission-and-adr-cleanup` and
+`planning/linux-execution-isolation` — and this branch is neither, so running
+it here would need a manual dispatch. A *different* macOS workflow,
+`shared-checkout-macos-qualification` from `main`'s M005 line, did run on this
+head (`39763779109`) and passed; it qualifies the shared-checkout profile, not
+this milestone's boundary, and no macOS behaviour is inferred from it here.
+
 **Exact future evidence required.** The macOS target compile's conclusion on
 this head, recorded as a link, if a reviewer wants the platform's compile
 result on this tree.
@@ -1059,6 +1107,116 @@ executed counts and witnesses, so the probe and the block-scalar form both
 work on the Windows runner. What remains unverified on Windows is the two
 `workflow_dispatch`-only filters, which do not run on a pull request.
 
+### 10.4 A one-in-3,600 CI flake in the jobs/scheduler suite (severity: low, owner: upstream)
+
+The hosted CI run `39771529333` on head `659e9324a` failed with:
+
+```
+thread 'inmem_compute_next_run_alignment' panicked at tests/durable_jobs_phase4.rs:1605:5:
+next run should be >= now (next=2026-10-22 12:00:00 UTC, now=2026-10-22 12:00:00.848051028 UTC)
+test result: FAILED. 8161 passed (1 slow), 1 failed, 9 skipped
+```
+
+**The mechanism is a granularity mismatch, and it is in the test.**
+`compute_next_run` (`crates/codegg-core/src/jobs/schedule.rs:495`) works at
+**whole-second** granularity: it truncates `now` with `now.timestamp()` and
+returns the next point on the anchor's grid. The test compares that
+whole-second result against a **full-precision** `now`. The two agree except
+during the first second after a grid point, where the result *is* the grid
+point and `now` has already moved past it by up to one second. The test
+therefore fails only when it happens to begin within the first second of an
+hour — **about one run in 3,600**. The CI job began at 12:00:00.848 UTC.
+
+**It was reproduced deterministically.** Pinning the test's `now` to the
+hosted failing instant reproduces the hosted message and numbers exactly:
+
+```
+next run should be >= now (next=2026-10-22 12:00:00 UTC, now=2026-10-22 12:00:00.848051028 UTC)
+```
+
+**It is pre-existing and outside this milestone's boundary.** Neither
+`tests/durable_jobs_phase4.rs` nor `crates/codegg-core/src/jobs/schedule.rs`
+is touched by this milestone, and `main` touched **neither** either — both
+files' last changes belong to the Eggwork M004/M005 line. This is the
+jobs/scheduler subsystem, not the Linux sandbox admission line this milestone
+belongs to.
+
+Unlike §3.6 and §3.7, there is **no causal link** from this milestone to this
+failure: the milestone did not enable, gate or otherwise change the test's
+execution. Fixing it here would pull a third subsystem into this milestone's
+diff for a defect the milestone did not cause and did not expose.
+
+**The hosted timing confirms the mechanism, not just the failure.** The failed
+attempt's `Workspace tests` step panicked at **12:00:00.857 UTC** — 857 ms
+into the minute whose grid point it compares against, which is exactly the
+sub-second window the whole-second truncation cannot survive. The re-run
+began at **12:07:12 UTC**, more than seven minutes past that grid point and
+therefore outside the window, and passed **16,061 tests, 16,061 passed, 9
+skipped**. A flake whose reproduction is "start within the first second of
+the hour" behaves that way; an unrelated defect would not.
+
+**Recorded, not fixed here.** The recommended upstream fix is one line:
+compare at the granularity the implementation actually models, or pin `now`
+to a whole second. The CI job was re-run on the same head
+(`39771529333` attempt 2) and passed — that is the run recorded in §5.1.
+
+### 10.5 The registry carries two contradictory rows for three of this line's milestones (severity: low, owner: this milestone)
+
+`plans/registry.md` lists C001, C002 and C003 **twice**, under two different
+subsystem names, with **contradictory statuses**. The row numbers below are
+the ones the rows had **when the contradiction was found**, before this
+milestone's fix removed the stale set:
+
+| Row (as found) | Subsystem name | Milestone | Status |
+|---|---|---|---|
+| 187 | `Linux sandbox admission corrective` | C001 branch/CI stabilization | **ready** |
+| 407 | `Linux sandbox admission post-review corrective` | C001 branch and CI evidence stabilization | **closed** |
+| 188 | `Linux sandbox admission corrective` | C002 M005 delegated owner and host evidence | **ready** |
+| 408 | `Linux sandbox admission post-review corrective` | C002 M005 delegated execution and supported-host admission | **conditionally closed** |
+| 189 | `Linux sandbox admission corrective` | C003 Git consistency and hostile metadata | **ready for test/type/ADR packet only** |
+| 409 | `Linux sandbox admission post-review corrective` | C003 typed Git live-read consistency and metadata review | **ready for non-promoting interface/review only** |
+
+Both sets point at the **same three implementation plan files**, and the
+later set is the one the closure records, the addendum and the subsystem
+row all use. The earlier set was written by `941a15907` (2026-10-20), which
+registered the line under the shorter name "Linux sandbox admission
+corrective"; the later set was written by `8aaa61276` (2026-10-21), which
+re-registered it under "Linux sandbox admission **post-review** corrective"
+and added the closure-record column. The rename left the first set behind
+instead of replacing it.
+
+So a reader of the registry today finds C001 simultaneously **ready** and
+**closed**. That is the same class of contradiction this milestone already
+reconciled once — commit `d3a2e5293` fixed three stale status surfaces for
+exactly this reason — and it is found by the same reading, not by a failing
+run.
+
+**It is fixed here, by removing the superseded rows.** The three stale rows
+are deleted rather than edited: the later set already carries the same plan
+paths, the closure records and the accurate statuses, so keeping the earlier
+set would leave two competing rows for the same milestone. The subsystem
+name in the later set is the one the addendum's own title and the subsystem
+row use, so the deleted rows' name was the outlier.
+
+**The prose paragraph at the old line 414 is corrected too.** It described
+C001, C002 and C003 as "individually ready, non-promoting handoffs" — true
+when written on 2026-10-20, false now that C001 is closed and C002 is
+conditionally closed. It now states the current disposition and names C004.
+
+**The two plan files carried the same stale status.** C001's plan header read
+`Status: **ready**` and C002's read `Status: **ready** for
+implementation/qualification`, both contradicting their closure records. They
+now read **closed** and **conditionally closed** with their closure paths.
+C003's header is left alone: C003 is untouched by this milestone and is
+genuinely still ready for non-promoting work.
+
+**Scope note.** The registry has no guard script and `plans/**` is
+paths-ignored by CI, so nothing catches this automatically. The same file
+also carries three genuinely duplicated rows in the unrelated "Agent tool-use
+operability corrective" block, which this milestone did **not** touch and
+which is recorded here only as an observation, not as work this milestone
+owns.
+
 ## 11. Roadmap disposition
 
 * **C001** — **closed**. Its §10.1–§10.5 are discharged by this record.
@@ -1073,6 +1231,8 @@ work on the Windows runner. What remains unverified on Windows is the two
   dependencies: C004 in *this* line is the evidence and review-pack
   milestone, and it is not the C004 those dependencies name.
 * **C004** — **closed** by this record.
+* **The registry** — the three superseded rows for this line are removed and
+  the line's prose paragraph corrected (§10.5, §12).
 
 ## 12. Registry updates
 
@@ -1081,6 +1241,13 @@ work on the Windows runner. What remains unverified on Windows is the two
   this record's path and the review pack's path.
 - `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md`
   records C004's closure and points at this record.
+- **The three superseded dependency-ready rows for this line were removed**
+  (§10.5). They registered C001, C002 and C003 a second time under the older
+  subsystem name "Linux sandbox admission corrective", with statuses that
+  contradicted the authoritative rows — C001 as **ready** while it is
+  **closed**. The surviving rows carry the same plan paths plus the closure
+  records. The line's prose paragraph in "Current execution order and
+  dependency gates" was corrected to the same effect.
 - **Unblock audit:** C003 was audited. Its hard dependencies are unchanged by
   this milestone, so C003 is **not** unblocked. No other registered plan's
   blocker is resolved here.

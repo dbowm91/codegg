@@ -1,6 +1,6 @@
 # C002 — M005 Delegated Execution and Supported-Host Admission Corrective
 
-Status: **ready** for implementation/qualification; M005 production remains **unqualified**
+Status: **conditionally closed** — closure `plans/closure/linux-sandbox-admission-follow-up-corrective/002-status.md`; the named condition is the maintainer-owned host-admission record, not an implementation gap. M005 production remains **unqualified** and no host is admitted.
 Source: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md` C002; parent `plans/implementation/linux-execution-isolation/005-offline-network-isolation.md`; C014 `plans/closure/linux-execution-isolation/022-status.md`; C023 `plans/closure/linux-execution-isolation/023-status.md`.
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `d251b11cd7fa5b89ca008e45d80a28a4ac3aea9f` (2026-10-20).
 Closure target: `plans/closure/linux-sandbox-admission-follow-up-corrective/002-status.md`.
