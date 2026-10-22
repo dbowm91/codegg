@@ -1,9 +1,10 @@
 # Agent Workstream Blackboard M011 — The Composed Two-Agent Daemon Race
 
-Status: active — C008 is conditionally closed and supplies the contained
-managed-worktree creation this milestone needs. The remaining M005 non-claim
-is the composed two-agent daemon race recorded at C006 §9.2; this milestone
-discharges it.
+Status: implemented — closed by
+`plans/closure/agent-workstream-blackboard/011-status.md`. C008 is closed and
+supplies the contained managed-worktree creation this milestone needs. The
+remaining M005 non-claim was the composed two-agent daemon race recorded at
+C006 §9.2; this milestone discharged it.
 
 ## 1. Objective
 
@@ -97,11 +98,36 @@ lands and its evidence is recorded.
 
 ## 6. Required production changes
 
-**None are expected, and that is the point.** M011's production surface is
-already correct; what is missing is the composed evidence.
+**One was needed, and the composed race is what found it.** The rest of M011's
+production surface was already correct; what was missing was the composed
+evidence — and the evidence immediately showed that the shared-checkout writer
+could not work at all.
 
-Two seams may need to become reachable from an integration test, and both are
-narrow:
+### 6.1 The fence's idempotency key exceeded the permit's bound
+
+Every mutating tool takes its writer permit under an idempotency key built by
+`writer_fence_key` (`src/tool/writer_fence.rs`). That key was the readable form
+— tool, target paths, invocation key — and the permit store bounds an
+idempotency key at 128 bytes (`MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES`, enforced
+by a `CHECK` constraint on `writer_permit.idempotency_key`).
+
+A managed checkout path alone runs past a hundred bytes, and the invocation key
+is another eighty, so the readable key was always over the bound. The store
+refused it, and the refusal surfaced to the model as
+`the checkout writer fence is unavailable: writer permit scope is invalid`.
+
+**The consequence is that M005's shared-checkout writer was unreachable in
+production.** Every write on a shared checkout was refused, for every tool
+(`write`, `edit`, `replace`, `apply_patch`, `commit`, the typed `git`
+mutations). C006 did not find this because it drove the fence **directly**,
+with short hand-made keys; only a composed run through the real tool hits it.
+
+The fix is to **digest** the key. It stays stable for a retried operation and
+distinct for two different operations, which is exactly what the store
+relies on, and it is bounded by construction. See
+`plans/closure/agent-workstream-blackboard/011-status.md` §3.
+
+### 6.2 The seams that had to become reachable
 
 - **A shared scripted provider.** Today it exists only inside
   `tests/agent_loop_harness.rs`. It has to move to a module both that file and
@@ -113,10 +139,9 @@ narrow:
   constructors cannot express that without a production change, the change is
   limited to making an existing constructor usable.
 
-If the composition turns out to need a *new* production seam — for example a
-way for a test to observe the permit timeline — that seam is a
-`WriterFencePermitSettler` observation point, it is narrow, and it is
-recorded in the closure with the reason it was necessary.
+No new observation seam was needed. The fence already reports every permit
+transition through `tracing`, and the suite reads those reports rather than
+asking the fence to behave differently for a test.
 
 ## 7. Ordered work packages
 
@@ -140,6 +165,29 @@ Register two agents with distinct names and the same `provider/model`, so
 both resolve through the same `ProviderRegistry` entry. A run that names an
 agent the pool does not hold must still fail with the existing typed refusal —
 that path is covered by existing tests and must not change.
+
+**As implemented, the composition is at the agent-loop level rather than
+through a `SubAgentPool`.** Two `AgentLoop`s run in one process, each carrying
+the **same two named agents** (`alpha` and `beta`) and its own scripted
+provider, and each selecting the agent it is running. The reasons are
+structural, not a shortcut:
+
+- An `AgentLoop` carries **one** provider. Two agents inside one loop would
+  share one scripted response sequence, so the two turns could not be driven
+  independently — the second turn would consume whichever response the first
+  one did not.
+- `AgentLoop::run` takes `&mut self`, so two concurrent turns cannot share one
+  loop even with two providers.
+- `SubAgentPool` would work, but it reaches the same fence through a delegated
+  child's own loop and its own durable run plumbing. The milestone's subject
+  is the fence, and the agent-loop seam exercises the **same** fence, the
+  **same** broker and the **same** production `write` tool, with less
+  machinery between the scenario and the claim.
+
+Both names resolve in both loops, and each run resolves its own by name, so
+the intent of this work package is met. What the composition does **not**
+claim is the delegated child's own transport and durable-record plumbing;
+that path is covered by the worker and C006's carrier.
 
 ### WP3 — the shared checkout, allocated for real
 
@@ -220,16 +268,28 @@ The scenario asserts:
 
 ## 10. Required tests
 
+Paired down to the three the change actually needs. The six names below were
+the original draft; the first three are one scenario with three assertion
+blocks, because splitting them would have made a vacuous pass easier to write.
+
 1. `two_live_agents_racing_on_one_shared_checkout_never_overlap` — the
-   composed scenario. This is the milestone's evidence.
-2. `both_agents_wrote_to_the_same_checkout` — the payload assertion, so that
-   "never overlapped" cannot be satisfied by two no-ops.
-3. `the_composed_race_needs_both_agents_to_actually_run` — the vacuity guard:
-   if the agents did not both issue their operation, the scenario fails.
-4. `a_run_outside_the_group_still_may_not_write_the_shared_checkout` — the
-   C006 invariant, re-asserted in the composed scenario.
-5. The existing C006 suite still passes, unchanged.
-6. The existing agent-loop harness still passes, unchanged.
+   composed scenario, and the milestone's evidence. It asserts, in order: both
+   agents ran and both issued their operation; the two tool-call windows
+   overlapped (the vacuity guard); both writes landed; the permit timeline
+   shows one permit released before the other was taken; the permit store
+   agrees.
+2. `a_run_outside_the_group_may_not_write_the_shared_checkout` — the C006
+   invariant, re-asserted in the composed scenario.
+3. `the_shared_checkout_is_a_real_linked_worktree` — the checkout is a real
+   linked worktree that Git itself reports on the recorded branch, not a
+   directory that merely looks like one.
+
+Plus the non-regression evidence, which is a command rather than a test:
+
+4. The existing C006 suite still passes, unchanged.
+5. The existing agent-loop harness still passes, unchanged.
+6. `src/tool/writer_fence.rs`'s new unit tests cover the idempotency-key
+   bound, the retry stability and the distinctness of two operations.
 
 ## 11. Required verification commands
 
@@ -322,3 +382,49 @@ The agent **reports rather than improvises** if any of these occur:
 - The composed race is about **fence mechanics**. A pass that comes from the
   two agents never overlapping is not a pass.
 - Windows produces no evidence here and claims none.
+
+## 17. Implementation record
+
+What the implementation did, and the three places it departed from the draft
+above. The evidence is in
+`plans/closure/agent-workstream-blackboard/011-status.md`.
+
+### 17.1 The production fix the race forced
+
+`writer_fence_key` now digests its material. Without that, the milestone's
+own scenario could not run a single write — see §6.1. The fix is one function
+in `src/tool/writer_fence.rs` plus three unit tests beside it; no fence
+policy, permit model, placement rule or platform gate changed.
+
+### 17.2 The creator that ran
+
+The fixture installs `tests/common/linked_worktree.rs`'s
+`LinkedWorktreeCreator`, which creates a **real linked worktree** by the same
+two Git operations the contained child runs — a detached `git worktree add`
+followed by `git symbolic-ref HEAD` to attach the branch. The checkout the
+coordinator allocates therefore passes the service's own `git worktree list`
+check, and `the_shared_checkout_is_a_real_linked_worktree` asserts that Git
+reports it on the recorded branch.
+
+The creator is **not** the production contained creator and claims no
+containment: it runs Git directly, with no sandbox and therefore no network
+enforcement of its own. C008's containment contract is proved by C008's own
+suite and by the hosted M004 lane. The same creator is shared with C008's
+suite, so there is one implementation of "a real linked worktree" in the tree.
+
+### 17.3 The fairness guard
+
+The scenario runs on a `current_thread` runtime, and the two providers hold
+their **first** request at a barrier until both have arrived. Neither agent can
+finish its turn before the other has started one.
+
+That is a construction guarantee, so the suite also *observes* it: the
+provider records when each request arrived, the first request opens the
+agent's tool-call window and the second closes it, and the scenario asserts
+that the two windows overlap. A pass that came from the two agents running one
+after the other therefore fails the scenario rather than satisfying it.
+
+The permit timeline is read from the `tracing` reports the production fence
+already emits — "the checkout writer fence took the checkout's writer permit"
+and "…released the checkout's writer permit" — with the run id and the
+checkout id as fields. No new observation seam was added to the fence.

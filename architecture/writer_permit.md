@@ -129,6 +129,20 @@ scope's fingerprint for the lifetime of the acquisition.
 The binding is scoped to the live acquisition: the key is cleared when the
 permit is released or quarantined, and a later acquisition may reuse it.
 
+**The key is bounded, and the tool layer digests to meet it.** The store
+accepts an idempotency key of at most 128 bytes
+(`MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES`, and a `CHECK` constraint on the
+column). The tool layer's key is a **digest** of the tool name, the target
+paths and the invocation key — `wf1:{tool}:{sha256}` — because the readable
+form of that material is longer than the bound on any real checkout: a managed
+checkout path alone runs past a hundred bytes and the invocation key is
+another eighty.
+
+A key the store refuses is a write that never happens, so this is not a
+readability preference. The digest keeps both properties the store relies on:
+the same operation retried carries the same key, and two different operations
+never do.
+
 ## Quiescence
 
 A release is only permitted with **positive** evidence that the caller's

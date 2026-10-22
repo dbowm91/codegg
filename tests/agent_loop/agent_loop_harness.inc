@@ -22,6 +22,15 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 
+// The scripted provider lives in the shared test tree because the M011
+// composed race needs it too. It is included by path rather than through
+// `mod common;` so that this binary's test composition — and with it the
+// scheduling of tests that share the global event bus — does not change.
+#[path = "common/scripted_provider.rs"]
+mod scripted_provider;
+
+use scripted_provider::ScriptedProvider;
+
 // =============================================================================
 // HARNESS DOCUMENTATION
 // =============================================================================
@@ -258,13 +267,6 @@ async fn wait_for_permission_pending(
 }
 
 #[derive(Clone)]
-struct ScriptedProvider {
-    responses: Vec<Vec<ChatEvent>>,
-    requests: Arc<Mutex<Vec<ChatRequest>>>,
-    response_index: Arc<Mutex<usize>>,
-}
-
-#[derive(Clone)]
 struct PeerEvidenceDuringStreamProvider {
     requests: Arc<Mutex<Vec<ChatRequest>>>,
     calls: Arc<AtomicUsize>,
@@ -390,70 +392,6 @@ impl Tool for CountedWriteTool {
     async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok("write executed".into())
-    }
-}
-
-impl ScriptedProvider {
-    fn new(responses: Vec<Vec<ChatEvent>>) -> Self {
-        Self {
-            responses,
-            requests: Arc::new(Mutex::new(Vec::new())),
-            response_index: Arc::new(Mutex::new(0)),
-        }
-    }
-
-    async fn get_requests(&self) -> Vec<ChatRequest> {
-        self.requests.lock().await.clone()
-    }
-
-    async fn request_count(&self) -> usize {
-        *self.response_index.lock().await
-    }
-}
-
-#[async_trait]
-impl Provider for ScriptedProvider {
-    fn id(&self) -> &str {
-        "scripted"
-    }
-
-    fn name(&self) -> &str {
-        "Scripted Provider"
-    }
-
-    fn clone_box(&self) -> Box<dyn Provider> {
-        Box::new(self.clone())
-    }
-
-    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        self.requests.lock().await.push(request.clone());
-
-        let mut idx = self.response_index.lock().await;
-        let events = if *idx < self.responses.len() {
-            self.responses[*idx].clone()
-        } else {
-            vec![ChatEvent::Finish {
-                stop_reason: "stop".to_string().into(),
-                usage: TokenUsage::default(),
-            }]
-        };
-        *idx += 1;
-
-        let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
-        Ok(Box::pin(stream))
-    }
-
-    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![ModelInfo {
-            id: "test/model".to_string(),
-            name: "Test Model".to_string(),
-            provider: "test".to_string(),
-            context_window: 4096,
-            max_output_tokens: Some(2048),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        }])
     }
 }
 
@@ -2360,7 +2298,7 @@ mod m008_peer_observation_contract {
                 usage: TokenUsage::default(),
             },
         ]]);
-        let requests = provider.requests.clone();
+        let requests = provider.request_log();
         let mut agent_loop = observing_loop(Box::new(provider)).await;
         let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
             Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
@@ -2473,7 +2411,7 @@ mod m008_peer_observation_contract {
                 usage: TokenUsage::default(),
             },
         ]]);
-        let requests = provider.requests.clone();
+        let requests = provider.request_log();
         let mut agent_loop = observing_loop(Box::new(provider)).await;
         let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
             Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
@@ -2568,7 +2506,7 @@ mod m008_peer_observation_contract {
                 },
             ],
         ]);
-        let requests = provider.requests.clone();
+        let requests = provider.request_log();
         let mut agent_loop = observing_loop(Box::new(provider)).await;
         let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
             Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());

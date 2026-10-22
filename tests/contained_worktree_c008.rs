@@ -15,6 +15,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 use codegg::git_contained_worktree::{
     build_worktree_grant, ContainedGitWorktreeCreator, WorktreeChildPaths, WorktreeChildStep,
     WorktreeLaunchTiers,
@@ -343,54 +345,11 @@ impl ContainedWorktreeCreator for FakeCreator {
                 })
             }
             FakeMode::LinkedWorktree => {
-                // The branch is the daemon's: it is created before the child
-                // runs, so the child attaches to an existing branch.
-                run_git(
-                    &request.repository_root,
-                    &[
-                        "branch",
-                        request.branch.as_str(),
-                        request.base_commit.as_str(),
-                    ],
-                );
-                // The production shape: the worktree is created detached and
-                // the branch is attached afterwards.
-                let administration_dir = request.repository_gitdir.join("worktrees").join(
-                    request
-                        .worktree_path
-                        .file_name()
-                        .expect("worktree name")
-                        .to_string_lossy()
-                        .to_string(),
-                );
-                run_git(
-                    &request.repository_gitdir,
-                    &[
-                        "--git-dir",
-                        request.repository_gitdir.to_str().expect("gitdir"),
-                        "worktree",
-                        "add",
-                        "--detach",
-                        request.worktree_path.to_str().expect("worktree path"),
-                        request.base_commit.as_str(),
-                    ],
-                );
-                run_git(
-                    &administration_dir,
-                    &[
-                        "--git-dir",
-                        administration_dir.to_str().expect("administration dir"),
-                        "symbolic-ref",
-                        "HEAD",
-                        &format!("refs/heads/{}", request.branch),
-                    ],
-                );
-                Ok(ContainedWorktreeOutcome {
-                    administration_dir,
-                    backend: "test-double".into(),
-                    abi: None,
-                    network_enforced: true,
-                })
+                // The real linked worktree, shared with the suites that need
+                // a checkout Git itself recognises.
+                common::linked_worktree::LinkedWorktreeCreator::new()
+                    .create(request)
+                    .await
             }
         }
     }
