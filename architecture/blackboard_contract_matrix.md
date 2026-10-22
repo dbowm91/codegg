@@ -145,8 +145,12 @@ recorded decision with evidence behind it, never a quiet edit.
   matrix records the gate; the gate is the contract.
 * **It does not claim a live two-agent race inside one daemon process.** The
   shared profile's carrier is composed at the scheduler and executor level.
-  Two live agents issuing real writes inside one daemon process are a
-  separate, narrower claim, and M008 does not make it.
+  M008 does not make that claim. **M011 does**, in its own scope and with its
+  own evidence: two live agents, one shared checkout allocated through the
+  real `WorktreeService::create` path, two real mutating broker operations, and
+  a permit timeline showing one permit released before the other was taken
+  (`plans/closure/agent-workstream-blackboard/011-status.md`). The matrix's own
+  arms are unchanged by it.
 * **It does not claim descendant quiescence on any platform.** A process
   started before the reservation can still be writing; C005's preflight
   refuses the *reservation*, not the process.
