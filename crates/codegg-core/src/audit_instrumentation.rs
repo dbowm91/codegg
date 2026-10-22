@@ -906,6 +906,15 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "runtime_policy_set",
     "task_model_preference_set",
     "execution_policy_get",
+    // Provider reasoning control M002: the reasoning selection is a
+    // principal-scoped daemon-owned preference in the same class as the
+    // approval preferences above — the daemon binds the principal
+    // server-side, the payload carries no project-keyed data, and the
+    // write touches only the caller's own preference row.
+    // `reasoning_capabilities` is a global version probe.
+    "reasoning_preference_get",
+    "reasoning_preference_set",
+    "reasoning_capabilities",
     // Provider setup catalog: secret-free daemon-owned projection for
     // selection surfaces (no secrets, no authorization grant), like
     // `provider_connection_list`.

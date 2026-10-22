@@ -20,6 +20,15 @@ pub struct CoreDaemon {
     pub generation: String,
     pub pool: Option<sqlx::SqlitePool>,
     pub deps: CoreRuntimeDeps,
+    /// Provider reasoning control M002: the capability advertisement this
+    /// daemon serves and enforces.
+    ///
+    /// The same value is served by the `ReasoningCapabilities` request and
+    /// consulted by the turn-admission check, so "advertised" and
+    /// "accepted" cannot drift apart. A daemon that has not advertised the
+    /// open vocabulary refuses a non-enumerated label with a typed error
+    /// rather than folding it onto a known level.
+    pub reasoning_capabilities: crate::protocol::core::ReasoningCapabilitiesDto,
     pub event_log: Arc<super::event_log::EventLog>,
     /// M006-B: digest-keyed per-project diagnostics tracking.
     ///

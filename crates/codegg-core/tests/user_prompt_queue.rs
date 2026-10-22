@@ -208,9 +208,11 @@ async fn user_prompt_queue_v80_migration_creates_table_index_and_layout() {
     );
     // M002b bumped the layout to 81 for the queue-owner binding; M007 took v82
     // for the optional due time; managed-scratch M002 uses v83 for shared grants
-    // and attempt leases. The constant is asserted against the wired migration
-    // above; this line pins the reviewed current version.
-    assert_eq!(STORAGE_LAYOUT_VERSION, 83);
+    // and attempt leases; provider reasoning control M002 took v84 for the
+    // daemon-owned extended-thinking selection column. The constant is asserted
+    // against the wired migration above; this line pins the reviewed current
+    // version.
+    assert_eq!(STORAGE_LAYOUT_VERSION, 84);
 
     let table: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='user_prompt_queue_entry'",

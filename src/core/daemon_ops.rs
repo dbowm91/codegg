@@ -345,6 +345,7 @@ impl CoreDaemon {
                             last_model_id: None,
                             last_task_provider_connection_id: None,
                             last_task_model_id: None,
+                            reasoning_selection: None,
                         },
                     }),
                     Some(pool) => {
@@ -366,6 +367,7 @@ impl CoreDaemon {
                                     last_model_id: None,
                                     last_task_provider_connection_id: None,
                                     last_task_model_id: None,
+                                    reasoning_selection: None,
                                 },
                             }),
                             Err(error) => Ok(CoreResponse::Error {
@@ -570,6 +572,91 @@ impl CoreDaemon {
                     }),
                 }
             }
+            // ── Provider Reasoning Control M002 ──
+            //
+            // The daemon owns the durable extended-thinking selection. It
+            // is principal-scoped: the principal comes from transport
+            // authority, never from the request body, and the payload
+            // carries no identity field.
+            CoreRequest::ReasoningCapabilities => Ok(CoreResponse::ReasoningCapabilities {
+                capabilities: self.reasoning_capabilities().clone(),
+            }),
+            CoreRequest::ReasoningPreferenceGet => {
+                let principal_id = authority.principal_id().as_str().to_owned();
+                match self.pool.clone() {
+                    None => Ok(CoreResponse::ReasoningPreference {
+                        preference: default_preference_dto(principal_id),
+                    }),
+                    Some(pool) => {
+                        let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                        match store.get(&principal_id).await {
+                            Ok(Some(pref)) => Ok(CoreResponse::ReasoningPreference {
+                                preference: approval_preference_to_dto(&pref),
+                            }),
+                            Ok(None) => Ok(CoreResponse::ReasoningPreference {
+                                preference: default_preference_dto(principal_id),
+                            }),
+                            Err(error) => Ok(CoreResponse::Error {
+                                code: "preference_read_failed".to_string(),
+                                message: error.to_string(),
+                            }),
+                        }
+                    }
+                }
+            }
+            CoreRequest::ReasoningPreferenceSet {
+                selection,
+                expected_revision,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "preference_unavailable".to_string(),
+                        message: "reasoning selection requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                // A non-enumerated label is only accepted by a daemon that
+                // advertised the open vocabulary. A daemon that has not
+                // advertised it refuses the write with a typed error
+                // rather than folding the label onto a known level.
+                if let Some(crate::protocol::core::ReasoningOverride::Effort { level }) =
+                    selection.as_ref()
+                {
+                    if let Err(reason) = self.check_reasoning_label(level) {
+                        return Ok(CoreResponse::Error {
+                            code: "reasoning_vocabulary_unsupported".to_string(),
+                            message: reason,
+                        });
+                    }
+                }
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                match store
+                    .set_reasoning_selection(&principal_id, selection.as_ref(), expected_revision)
+                    .await
+                {
+                    Ok(pref) => Ok(CoreResponse::ReasoningPreference {
+                        preference: approval_preference_to_dto(&pref),
+                    }),
+                    Err(codegg_core::approval::PreferenceError::Conflict { expected, current }) => {
+                        Ok(CoreResponse::Error {
+                            code: "preference_conflict".to_string(),
+                            message: format!(
+                                "stale preference revision: expected {expected}, current {current}"
+                            ),
+                        })
+                    }
+                    Err(codegg_core::approval::PreferenceError::Validation(message)) => {
+                        Ok(CoreResponse::Error {
+                            code: "invalid_reasoning_selection".to_string(),
+                            message,
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "preference_write_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
             CoreRequest::ExecutionPolicyGet { session_id } => {
                 let principal_id = authority.principal_id().as_str().to_owned();
                 let (mode, profile, revision) = match self.pool.clone() {
@@ -625,6 +712,26 @@ impl CoreDaemon {
     }
 }
 
+/// The effective-default preference projection for a principal that has no
+/// stored row yet.
+///
+/// No explicit selection: the turn inherits the agent / model-profile
+/// default.
+fn default_preference_dto(principal_id: String) -> crate::protocol::core::RuntimePreferenceDto {
+    crate::protocol::core::RuntimePreferenceDto {
+        principal_id,
+        approval_mode: crate::protocol::core::ApprovalModeDto::Interactive,
+        sandbox_profile: crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+        revision: 0,
+        updated_at_ms: chrono::Utc::now().timestamp_millis(),
+        last_provider_connection_id: None,
+        last_model_id: None,
+        last_task_provider_connection_id: None,
+        last_task_model_id: None,
+        reasoning_selection: None,
+    }
+}
+
 fn approval_preference_to_dto(
     pref: &codegg_core::approval::RuntimePreference,
 ) -> crate::protocol::core::RuntimePreferenceDto {
@@ -658,6 +765,7 @@ fn approval_preference_to_dto(
         last_model_id: pref.last_model_id.clone(),
         last_task_provider_connection_id: pref.last_task_provider_connection_id.clone(),
         last_task_model_id: pref.last_task_model_id.clone(),
+        reasoning_selection: pref.reasoning_selection.clone(),
     }
 }
 

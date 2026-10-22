@@ -13,7 +13,9 @@
 //! agents from daemon-owned state must stop and split that dependency
 //! (plan §9/§24) rather than fabricate hollow `Agent` DTOs.
 
-use codegg_protocol::core::CoreRequest;
+use codegg_protocol::core::{
+    is_known_reasoning_effort_label, CoreRequest, ReasoningCapabilitiesDto, ReasoningOverride,
+};
 use codegg_protocol::dto::{Agent, ProviderMessage};
 
 /// Client-side bound on captured prompt text. The daemon applies its own
@@ -33,6 +35,20 @@ pub struct TurnSubmitInput {
     pub agents: Vec<Agent>,
     pub current_agent_idx: usize,
     pub messages: Vec<ProviderMessage>,
+    /// The explicit per-turn extended-thinking selection.
+    ///
+    /// `None` sends no override, which leaves the daemon's own persisted
+    /// selection (and, failing that, the agent / model-profile default) in
+    /// charge.
+    pub reasoning: Option<ReasoningOverride>,
+    /// The daemon's reasoning capability advertisement, as observed by this
+    /// client.
+    ///
+    /// A **non-enumerated** label — one outside the known convenience set —
+    /// may only be sent to a daemon that advertised the open, provider-scoped
+    /// vocabulary. `None` means "not observed", and a client that has not
+    /// observed the capability sends no non-enumerated label.
+    pub reasoning_capabilities: Option<ReasoningCapabilitiesDto>,
 }
 
 /// Prompt composition failures. All variants fail closed before any
@@ -53,11 +69,27 @@ pub enum ComposerError {
     AgentIndexOutOfRange { idx: usize, len: usize },
     #[error("prompt has no provider messages")]
     EmptyMessages,
+    #[error(
+        "reasoning label {label:?} needs a daemon that advertises the open reasoning vocabulary"
+    )]
+    ReasoningVocabularyUnsupported { label: String },
     #[error("invalid prompt intent transition: {action} from {from}")]
     InvalidTransition {
         from: &'static str,
         action: &'static str,
     },
+}
+
+/// The reasoning options a non-TUI frontend may offer for a model.
+///
+/// The derivation is shared with the TUI, so two surfaces that show the
+/// option set show the **same** one for the same capability. A surface that
+/// does not consume the per-model capability payload simply never calls
+/// this — it is unaffected by the payload's presence.
+pub fn reasoning_options(
+    capability: Option<&codegg_protocol::provider::ReasoningCapabilityDto>,
+) -> codegg_protocol::provider::ReasoningOptionSet {
+    codegg_protocol::provider::reasoning_options(capability)
 }
 
 /// Build a canonical `TurnSubmit` request from fully resolved inputs.
@@ -92,6 +124,25 @@ pub fn compose_turn_submit(input: TurnSubmitInput) -> Result<CoreRequest, Compos
     if input.messages.is_empty() {
         return Err(ComposerError::EmptyMessages);
     }
+    // Capability negotiation (ADR-0044): a non-enumerated label is only
+    // sent to a daemon that advertised the open, provider-scoped vocabulary.
+    // A client that has not observed that capability sends no such label —
+    // it fails closed here rather than letting a daemon decode `xhigh` as
+    // `high`.
+    if let Some(ReasoningOverride::Effort { level }) = input.reasoning.as_ref() {
+        if !is_known_reasoning_effort_label(level) {
+            let advertised = input
+                .reasoning_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.accepts_open_label())
+                .unwrap_or(false);
+            if !advertised {
+                return Err(ComposerError::ReasoningVocabularyUnsupported {
+                    label: level.clone(),
+                });
+            }
+        }
+    }
     Ok(CoreRequest::TurnSubmit {
         session_id: input.session_id,
         text: input.text,
@@ -100,7 +151,7 @@ pub fn compose_turn_submit(input: TurnSubmitInput) -> Result<CoreRequest, Compos
         agents: input.agents,
         current_agent_idx: input.current_agent_idx,
         messages: input.messages,
-        reasoning: None,
+        reasoning: input.reasoning,
         human_shell_promotion_ids: Vec::new(),
     })
 }
@@ -322,6 +373,8 @@ mod tests {
                     text: "hello".into(),
                 }],
             }],
+            reasoning: None,
+            reasoning_capabilities: None,
         }
     }
 
@@ -456,5 +509,156 @@ mod tests {
         assert_ne!(first.text_digest(), third.text_digest());
         // Intent ids stay unique per capture (at-most-once identity).
         assert_ne!(first.intent_id(), second.intent_id());
+    }
+
+    #[test]
+    fn a_client_without_the_capability_sends_no_non_enumerated_label() {
+        // The client has not observed the open-vocabulary advertisement, so
+        // it must not send a vendor label at all.
+        let mut input = input();
+        input.reasoning = Some(ReasoningOverride::Effort {
+            level: "xhigh".to_string(),
+        });
+        assert_eq!(
+            compose_turn_submit(input).unwrap_err(),
+            ComposerError::ReasoningVocabularyUnsupported {
+                label: "xhigh".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_client_with_the_capability_sends_the_open_label_verbatim() {
+        let mut input = input();
+        input.reasoning = Some(ReasoningOverride::Effort {
+            level: "xhigh".to_string(),
+        });
+        input.reasoning_capabilities = Some(ReasoningCapabilitiesDto::current());
+        let request = compose_turn_submit(input).expect("compose");
+        let CoreRequest::TurnSubmit { reasoning, .. } = request else {
+            panic!("expected TurnSubmit");
+        };
+        assert_eq!(
+            reasoning,
+            Some(ReasoningOverride::Effort {
+                level: "xhigh".to_string()
+            }),
+            "the open label must reach the wire verbatim"
+        );
+    }
+
+    #[test]
+    fn a_known_label_needs_no_capability_observation() {
+        // The known convenience labels are the legacy vocabulary every
+        // daemon understands, so they need no advertisement.
+        let mut input = input();
+        input.reasoning = Some(ReasoningOverride::Effort {
+            level: "medium".to_string(),
+        });
+        let request = compose_turn_submit(input).expect("compose");
+        let CoreRequest::TurnSubmit { reasoning, .. } = request else {
+            panic!("expected TurnSubmit");
+        };
+        assert_eq!(
+            reasoning,
+            Some(ReasoningOverride::Effort {
+                level: "medium".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn no_selection_means_the_daemon_owns_the_effective_one() {
+        let request = compose_turn_submit(input()).expect("compose");
+        let CoreRequest::TurnSubmit { reasoning, .. } = request else {
+            panic!("expected TurnSubmit");
+        };
+        assert_eq!(reasoning, None);
+    }
+}
+
+#[cfg(test)]
+mod reasoning_capability_tests {
+    use super::*;
+    use codegg_protocol::dto::{Agent, ContentPart, ProviderMessage};
+    use codegg_protocol::provider::{
+        ReasoningCapabilityAxis, ReasoningCapabilityDto, ReasoningOptionSet,
+    };
+
+    fn input() -> TurnSubmitInput {
+        TurnSubmitInput {
+            session_id: "session-1".into(),
+            text: "hello".into(),
+            plan_mode: false,
+            model: "test/model".into(),
+            agents: vec![Agent {
+                name: "fixture-agent".into(),
+                ..Default::default()
+            }],
+            current_agent_idx: 0,
+            messages: vec![ProviderMessage::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".into(),
+                }],
+            }],
+            reasoning: None,
+            reasoning_capabilities: None,
+        }
+    }
+
+    fn capability() -> ReasoningCapabilityDto {
+        ReasoningCapabilityDto {
+            effort: ReasoningCapabilityAxis::Supported,
+            accepted_effort_labels: vec!["low".into(), "high".into()],
+            disable: ReasoningCapabilityAxis::Unsupported,
+            budget: ReasoningCapabilityAxis::Unsupported,
+            min_budget_tokens: None,
+            max_budget_tokens: None,
+            always_reasons: Some(false),
+        }
+    }
+
+    /// A surface that does not consume the per-model capability payload is
+    /// unaffected: the composed turn request is identical whether or not the
+    /// daemon published one.
+    #[test]
+    fn a_surface_that_does_not_consume_the_payload_is_unaffected() {
+        let with_payload = compose_turn_submit(input()).expect("compose");
+        let without_payload = compose_turn_submit(input()).expect("compose");
+        assert_eq!(
+            format!("{with_payload:?}"),
+            format!("{without_payload:?}"),
+            "a surface that does not consume the payload must not change"
+        );
+        // The per-model capability is not an input to turn composition at
+        // all: the caller's explicit selection is what travels.
+        let CoreRequest::TurnSubmit { reasoning, .. } = &with_payload else {
+            panic!("expected TurnSubmit");
+        };
+        assert!(reasoning.is_none());
+    }
+
+    /// The surfaces that do consume the payload show the same option set:
+    /// the derivation is shared, not reimplemented per surface.
+    #[test]
+    fn consuming_surfaces_share_one_option_set() {
+        let capability = capability();
+        let from_client = reasoning_options(Some(&capability));
+        let from_protocol = codegg_protocol::provider::reasoning_options(Some(&capability));
+        assert_eq!(from_client, from_protocol);
+        assert!(!from_client.fallback);
+        assert!(!from_client.allows_disable());
+    }
+
+    /// A client with no published capability falls back to the known-label
+    /// ladder, and does not present it as the model's full option set.
+    #[test]
+    fn an_absent_capability_falls_back_on_this_surface_too() {
+        let options: ReasoningOptionSet = reasoning_options(None);
+        assert!(options.fallback);
+        assert!(options
+            .options
+            .iter()
+            .any(|option| matches!(option, codegg_protocol::core::ReasoningMode::Effort(_))));
     }
 }

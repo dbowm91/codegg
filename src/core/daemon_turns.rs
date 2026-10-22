@@ -28,6 +28,39 @@ fn turn_admission_receipt_response(
     }
 }
 
+/// Provider reasoning control M003: the outcome of admitting one reasoning
+/// selection against the model's effective capability.
+pub(crate) struct ReasoningCapabilityAdmission {
+    /// The selection the turn carries after the policy.
+    pub selection: Option<crate::protocol::core::ReasoningOverride>,
+    /// The notice to record, when a dimension was dropped or is uncertain.
+    /// A dropped dimension is never silent.
+    pub notice: Option<String>,
+}
+
+/// Provider reasoning control M003: the wire surface a turn's request will
+/// be encoded on, when the daemon knows it.
+///
+/// The shared provider profile is the codebase's only wire-routing
+/// authority, and it adapts one provider for routing with exact reviewed
+/// model hints. A turn whose provider/model pair has no reviewed route has
+/// no surface this boundary can claim.
+///
+/// The daemon therefore passes **no** surface rather than a guessed one.
+/// The capability check does not need one: the kernel reads the surface
+/// only to label the notice it returns, and CodeGG's notice text names
+/// the model and the dimension instead.
+fn reasoning_target_surface(model: &str) -> Option<codegg_providers::capability::WireSurface> {
+    let provider = crate::core::session_selection::runtime_model_provider_segment(model);
+    let model_id = match model.trim().split_once('/') {
+        Some((_, id)) => id,
+        None => model.trim(),
+    };
+    codegg_providers::provider_profile::resolve_route(provider, model_id)
+        .ok()
+        .map(|route| route.surface)
+}
+
 /// Narrow domain error for daemon-side prompt composition. Protocol
 /// response construction belongs to the `SessionPromptSubmit` boundary.
 #[derive(Debug)]
@@ -53,6 +86,195 @@ impl PromptCompositionError {
 }
 
 impl CoreDaemon {
+    /// Provider reasoning control M002: the capability advertisement this
+    /// daemon serves and enforces.
+    ///
+    /// The same value is served by `ReasoningCapabilities` and consulted by
+    /// the turn-admission check, so "advertised" and "accepted" cannot
+    /// drift apart.
+    pub(crate) fn reasoning_capabilities(
+        &self,
+    ) -> &crate::protocol::core::ReasoningCapabilitiesDto {
+        &self.reasoning_capabilities
+    }
+
+    /// Provider reasoning control M002: whether this daemon accepts a
+    /// reasoning label.
+    ///
+    /// A non-enumerated label — one outside the advertised `known_labels` —
+    /// is accepted only when the daemon advertised the open, provider-scoped
+    /// vocabulary. A daemon that has not advertised it refuses the label
+    /// with a typed error rather than folding it onto a known level: that
+    /// would silently change what the model is asked to do.
+    pub(crate) fn check_reasoning_label(&self, label: &str) -> Result<(), String> {
+        let capabilities = self.reasoning_capabilities();
+        if capabilities.accepts_open_label() || capabilities.is_enumerated_label(label) {
+            return Ok(());
+        }
+        Err(format!(
+            "this daemon does not accept an open reasoning label: {label}"
+        ))
+    }
+
+    /// Provider reasoning control M002: resolve the effective
+    /// extended-thinking selection for one turn.
+    ///
+    /// Precedence: **explicit turn override ▸ persisted principal
+    /// preference ▸ agent / model-profile default**. The persisted
+    /// preference is consulted only when the turn carries no explicit
+    /// override; the agent-layer precedence
+    /// (`apply_agent_config` → `apply_model_profile_defaults` →
+    /// `apply_reasoning_override`) is unchanged.
+    ///
+    /// The principal comes from transport authority, never from the request
+    /// body. A preference store that cannot be read is not authority: the
+    /// turn falls back to the agent / model-profile default rather than
+    /// failing the whole turn. The **loss is reported, not silent** — a
+    /// store that cannot be read drops the choice the person made, and a
+    /// turn that continued without saying so would hand them a different
+    /// model behaviour with no indication that their stored choice was
+    /// gone.
+    ///
+    /// `session_id` scopes the report. The notice is session-scoped
+    /// because the daemon's event log only delivers a session-less event to
+    /// a client as a global event, and the WS filter drops a global
+    /// `CoreEvent::Error` (`event_matches_raw_filter` in
+    /// `src/server/ws.rs`). A session-scoped notice is therefore the only
+    /// shape that actually reaches the client that asked for the turn.
+    pub(crate) async fn resolve_reasoning_selection(
+        &self,
+        session_id: &str,
+        explicit: Option<crate::protocol::core::ReasoningOverride>,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+    ) -> Option<crate::protocol::core::ReasoningOverride> {
+        if explicit.is_some() {
+            return explicit;
+        }
+        let pool = self.pool.clone()?;
+        let principal = authority.principal_id().as_str().to_owned();
+        let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+        match store.get(&principal).await {
+            Ok(Some(pref)) => pref.reasoning_selection,
+            Ok(None) => None,
+            Err(error) => {
+                self.record_reasoning_selection_unreadable(session_id, &error)
+                    .await;
+                None
+            }
+        }
+    }
+
+    /// Provider reasoning control M003: report a persisted reasoning
+    /// selection that could not be read.
+    ///
+    /// The code is deliberately its own — not `reasoning_capability_notice`
+    /// (a capability drop), not `reasoning_capability_unsupported` (a
+    /// capability refusal), and not `reasoning_vocabulary_unsupported` (a
+    /// vocabulary refusal). A frontend has to be able to tell the four
+    /// apart: one is a notice, two are refusals of the turn, and one is a
+    /// refusal of the *label* rather than of the model.
+    async fn record_reasoning_selection_unreadable(
+        &self,
+        session_id: &str,
+        error: &codegg_core::approval::PreferenceError,
+    ) {
+        self.event_log
+            .publish(
+                Some(session_id.to_string()),
+                None,
+                crate::protocol::core::CoreEvent::Error {
+                    code: "reasoning_selection_unreadable".to_string(),
+                    message: format!(
+                        "the stored reasoning selection could not be read; the agent default applies: {error}"
+                    ),
+                },
+            )
+            .await;
+    }
+
+    /// Provider reasoning control M003: admit one resolved reasoning
+    /// selection against the model's effective reasoning capability.
+    ///
+    /// The effective capability is resolved through the single resolution
+    /// function in `codegg_core::model_profile::capability`, in the order
+    /// operator override ▸ adapter baseline ▸ discovery overlay ▸ unknown.
+    /// The resolved model profile already carries the operator's
+    /// configuration override — `apply_config_override` folds it into the
+    /// profile — so the override is applied **exactly once** here and is
+    /// not passed a second time. The discovery overlay is absent in this
+    /// milestone; the call is shaped so one can be passed without changing
+    /// the gate.
+    ///
+    /// The policy is the kernel's fail-closed default
+    /// (`unsupported → Reject`, `unknown → Reject`, `mixed → WarnDrop`),
+    /// which is the disposition set ADR-0045 decided. A dimension nobody
+    /// has published a contract for is refused at admission rather than
+    /// forwarded optimistically.
+    ///
+    /// The check is **read-only**: it never mutates the adapter baseline,
+    /// the configuration, or any in-flight turn state.
+    pub(crate) fn admit_reasoning_capability(
+        &self,
+        config: &crate::config::schema::Config,
+        model: &str,
+        selection: Option<&crate::protocol::core::ReasoningOverride>,
+    ) -> Result<ReasoningCapabilityAdmission, String> {
+        use codegg_core::model_profile::capability;
+
+        let profile = codegg_core::model_profile::ModelProfileResolver::new(config).resolve(model);
+        let effective = capability::resolve_reasoning_capability(
+            profile.reasoning_capability.as_ref(),
+            None,
+            None,
+        );
+        let decision = capability::evaluate_reasoning_selection(
+            model,
+            selection,
+            &effective.effective,
+            &codegg_providers::capability::ReasoningCapabilityPolicy::default(),
+            reasoning_target_surface(model),
+        );
+        match &decision {
+            capability::ReasoningCapabilityDecision::Allow => Ok(ReasoningCapabilityAdmission {
+                selection: selection.cloned(),
+                notice: None,
+            }),
+            capability::ReasoningCapabilityDecision::AllowWithWarning { notice, .. } => {
+                Ok(ReasoningCapabilityAdmission {
+                    selection: selection.cloned(),
+                    notice: Some(notice.clone()),
+                })
+            }
+            capability::ReasoningCapabilityDecision::WarnDrop { notice, .. } => {
+                Ok(ReasoningCapabilityAdmission {
+                    selection: decision.effective_selection(selection),
+                    notice: Some(notice.clone()),
+                })
+            }
+            capability::ReasoningCapabilityDecision::Reject(refusal) => Err(refusal.to_string()),
+        }
+    }
+
+    /// Provider reasoning control M003: record a capability notice on the
+    /// turn's event log.
+    ///
+    /// The daemon's turn event log is the session-scoped channel the
+    /// clients already read, and it is the only one that carries a typed
+    /// code alongside the message — so the notice says both *what* was
+    /// dropped and *why*.
+    async fn record_reasoning_capability_notice(&self, session_id: &str, notice: String) {
+        self.event_log
+            .publish(
+                Some(session_id.to_string()),
+                None,
+                crate::protocol::core::CoreEvent::Error {
+                    code: "reasoning_capability_notice".to_string(),
+                    message: notice,
+                },
+            )
+            .await;
+    }
+
     pub(crate) async fn handle_turns_request(
         &self,
         request: CoreRequest,
@@ -125,6 +347,53 @@ impl CoreDaemon {
                         }
                     }
                 }
+                // Provider reasoning control M002: refuse a non-enumerated
+                // label before the turn is admitted, so a daemon that has
+                // not advertised the open vocabulary answers with a typed
+                // error instead of mis-decoding the label.
+                if let Some(crate::protocol::core::ReasoningOverride::Effort { level }) =
+                    reasoning.as_ref()
+                {
+                    if let Err(reason) = self.check_reasoning_label(level) {
+                        return Ok(CoreResponse::Error {
+                            code: "reasoning_vocabulary_unsupported".to_string(),
+                            message: reason,
+                        });
+                    }
+                }
+                // Provider reasoning control M002: resolve the effective
+                // selection here — the single admission point every turn
+                // passes through. An explicit override wins; otherwise the
+                // persisted principal preference applies; otherwise the
+                // agent / model-profile default stands.
+                let reasoning = self
+                    .resolve_reasoning_selection(&session_id, reasoning, &authority)
+                    .await;
+                // The configuration is loaded once per turn and shared by
+                // the capability check and the turn input, so the operator's
+                // capability override and the turn's profile cannot come
+                // from two different snapshots.
+                let config = super::load_config_or_default();
+                // Provider reasoning control M003: judge the **resolved**
+                // selection against the model's effective reasoning
+                // capability. A selection the model does not accept is
+                // refused here, before any provider request is dispatched.
+                let reasoning =
+                    match self.admit_reasoning_capability(&config, &model, reasoning.as_ref()) {
+                        Ok(admission) => {
+                            if let Some(notice) = admission.notice {
+                                self.record_reasoning_capability_notice(&session_id, notice)
+                                    .await;
+                            }
+                            admission.selection
+                        }
+                        Err(refusal) => {
+                            return Ok(CoreResponse::Error {
+                                code: "reasoning_capability_unsupported".to_string(),
+                                message: refusal,
+                            });
+                        }
+                    };
                 if current_agent_idx >= agents.len() {
                     crate::bus::global::GlobalEventBus::publish(
                         crate::bus::events::AppEvent::Error {
@@ -315,7 +584,6 @@ impl CoreDaemon {
                 // also validates provider existence internally, so this is
                 // intentionally duplicated for backward-compatible error handling.
                 let mut registry = crate::provider::ProviderRegistry::new();
-                let config = super::load_config_or_default();
                 // This pre-check must resolve providers with the *same*
                 // authority the turn runtime uses. Built without connection
                 // authority it falls through to the credential-store
@@ -828,6 +1096,15 @@ impl CoreDaemon {
                     Ok(composed) => composed,
                     Err(error) => return Ok(error.into_core_response()),
                 };
+                // Provider reasoning control M002: a session-prompt submit
+                // carries no per-turn override of its own, so the
+                // daemon-owned selection applies here rather than being
+                // dropped on the floor. Resolving it at this site (rather
+                // than hard-coding `None`) keeps the persisted selection
+                // live for this path.
+                let reasoning = self
+                    .resolve_reasoning_selection(&session_id, None, &authority)
+                    .await;
                 return Box::pin(self.handle_turns_request(
                     CoreRequest::TurnSubmit {
                         session_id,
@@ -837,7 +1114,7 @@ impl CoreDaemon {
                         agents,
                         current_agent_idx: 0,
                         messages,
-                        reasoning: None,
+                        reasoning,
                         human_shell_promotion_ids,
                     },
                     request_id,
@@ -2768,15 +3045,31 @@ mod tests {
     /// call ever leaving the process.
     struct RecordingTurnRuntime {
         called: AtomicBool,
+        /// Provider reasoning control M002: the selection the daemon
+        /// resolved for the admitted turn.
+        reasoning_override: std::sync::Mutex<Option<crate::protocol::core::ReasoningOverride>>,
+    }
+
+    impl RecordingTurnRuntime {
+        fn reasoning_override(&self) -> Option<crate::protocol::core::ReasoningOverride> {
+            self.reasoning_override
+                .lock()
+                .expect("reasoning override lock")
+                .clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl crate::agent::turn_runtime::TurnRuntime for RecordingTurnRuntime {
         async fn run_turn(
             &self,
-            _input: crate::agent::turn_runtime::TurnRunInput,
+            input: crate::agent::turn_runtime::TurnRunInput,
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
             self.called.store(true, Ordering::SeqCst);
+            *self
+                .reasoning_override
+                .lock()
+                .expect("reasoning override lock") = input.reasoning_override.clone();
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
@@ -2812,6 +3105,7 @@ mod tests {
     async fn daemon(pool: sqlx::SqlitePool) -> (CoreDaemon, Arc<RecordingTurnRuntime>) {
         let runtime = Arc::new(RecordingTurnRuntime {
             called: AtomicBool::new(false),
+            reasoning_override: std::sync::Mutex::new(None),
         });
         let deps = CoreRuntimeDeps::new(Some(pool), None, None)
             .with_turn_runtime(
@@ -2940,6 +3234,15 @@ mod tests {
     }
 
     fn turn_request(session_id: &str, model: &str) -> RequestEnvelope<CoreRequest> {
+        turn_request_with_reasoning(session_id, model, None)
+    }
+
+    /// A turn request that carries an explicit reasoning selection.
+    fn turn_request_with_reasoning(
+        session_id: &str,
+        model: &str,
+        reasoning: Option<crate::protocol::core::ReasoningOverride>,
+    ) -> RequestEnvelope<CoreRequest> {
         let agent = crate::agent::Agent {
             git_read_only: false,
             name: "test".into(),
@@ -2957,7 +3260,7 @@ mod tests {
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).expect("agent dto")],
                 current_agent_idx: 0,
                 messages: vec![],
-                reasoning: None,
+                reasoning,
             },
         )
     }
@@ -2967,6 +3270,762 @@ mod tests {
             CoreResponse::Error { code, message } => (code.as_str(), message.as_str()),
             other => panic!("expected CoreResponse::Error, got {other:?}"),
         }
+    }
+
+    /// Persist the daemon-owned reasoning selection for `principal_id`.
+    async fn persist_reasoning_selection(pool: &sqlx::SqlitePool, principal_id: &str, label: &str) {
+        let store = codegg_core::approval::RuntimePreferenceStore::new(pool.clone());
+        store
+            .set_reasoning_selection(
+                principal_id,
+                Some(&crate::protocol::core::ReasoningOverride::Effort {
+                    level: label.to_string(),
+                }),
+                None,
+            )
+            .await
+            .expect("persist reasoning selection");
+    }
+
+    /// Hold the process-global environment lock and make the `minimax`
+    /// provider registrable for the duration of one test.
+    ///
+    /// The reasoning tests need a provider whose model family ships a
+    /// reasoning capability baseline, because the admission policy is
+    /// fail-closed: a family with no baseline leaves every dimension
+    /// `unknown`, and an unknown dimension is refused. `minimax` is the
+    /// shipped baseline that publishes an effort ladder.
+    ///
+    /// Environment mutation is process-global, so the lock serializes it
+    /// against every other test that touches the same variable.
+    struct MiniMaxEnv {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        previous: Option<String>,
+        previous_config: Option<String>,
+        _config_dir: Option<tempfile::TempDir>,
+    }
+
+    impl MiniMaxEnv {
+        fn acquire() -> Self {
+            let guard = crate::auth::test_support::lock_env();
+            let previous = std::env::var("MINIMAX_API_KEY").ok();
+            std::env::set_var("MINIMAX_API_KEY", "test-key-not-used");
+            Self {
+                _guard: guard,
+                previous,
+                previous_config: std::env::var("CODEGG_TUI_CONFIG").ok(),
+                _config_dir: None,
+            }
+        }
+
+        /// Install a temporary configuration file for the duration of the
+        /// test.
+        ///
+        /// The environment lock this guard already holds serializes the
+        /// configuration path too: it is process-global for the same reason
+        /// the API key is.
+        fn install_config(&mut self, contents: &str) {
+            let dir = tempfile::tempdir().expect("config temp dir");
+            let path = dir.path().join("codegg.json");
+            std::fs::write(&path, contents).expect("write config");
+            std::env::set_var("CODEGG_TUI_CONFIG", &path);
+            self._config_dir = Some(dir);
+        }
+    }
+
+    impl Drop for MiniMaxEnv {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("MINIMAX_API_KEY", value),
+                None => std::env::remove_var("MINIMAX_API_KEY"),
+            }
+            match self.previous_config.take() {
+                Some(value) => std::env::set_var("CODEGG_TUI_CONFIG", value),
+                None => std::env::remove_var("CODEGG_TUI_CONFIG"),
+            }
+        }
+    }
+
+    /// A daemon whose session already carries a durable model selection, so
+    /// the turn-admission path can resolve a provider. Returns the daemon,
+    /// the recording runtime, and the session id.
+    async fn daemon_with_selected_model() -> (
+        MiniMaxEnv,
+        CoreDaemon,
+        Arc<RecordingTurnRuntime>,
+        sqlx::SqlitePool,
+        String,
+    ) {
+        let env = MiniMaxEnv::acquire();
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id =
+            seed_connection(&pool, ProviderKind::Other("minimax".to_string())).await;
+        seed_catalog(&pool, &connection_id, &["minimax-m3"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "minimax-m3",
+        )
+        .await;
+        (env, daemon, runtime, pool, session_id)
+    }
+
+    /// Provider reasoning control M002: the persisted, principal-scoped
+    /// selection reaches a turn that carries no explicit override.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_persisted_selection_reaches_a_direct_turn_submit() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        persist_reasoning_selection(&pool, "local-owner", "xhigh").await;
+        let response = daemon
+            .handle_request(turn_request(&session_id, "minimax/minimax-m3"))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the turn must be admitted, got {response:?}"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            Some(crate::protocol::core::ReasoningOverride::Effort {
+                level: "xhigh".to_string()
+            }),
+            "the daemon-owned selection must reach the turn verbatim"
+        );
+    }
+
+    /// Provider reasoning control M002: the same selection reaches a
+    /// **session-prompt submit**, the first of the three paths that used to
+    /// drop it on the floor.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_persisted_selection_reaches_a_session_prompt_submit() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        persist_reasoning_selection(&pool, "local-owner", "max").await;
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "req-session-prompt".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id: session_id.clone(),
+                    text: "hello".into(),
+                    plan_mode: false,
+                    human_shell_promotion_ids: vec![],
+                },
+            ))
+            .await
+            .expect("session prompt submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the prompt must be admitted, got {response:?}"
+        );
+        assert!(
+            runtime.called.load(Ordering::SeqCst),
+            "the turn must have reached the runtime"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            Some(crate::protocol::core::ReasoningOverride::Effort {
+                level: "max".to_string()
+            }),
+            "a session-prompt submit must apply the daemon-owned selection"
+        );
+    }
+
+    /// Provider reasoning control M002: an explicit per-turn override wins
+    /// over the persisted principal preference.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_explicit_turn_override_beats_the_persisted_selection() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        persist_reasoning_selection(&pool, "local-owner", "max").await;
+        let request = crate::core::new_request(
+            "req-submit-explicit".into(),
+            CoreRequest::TurnSubmit {
+                session_id: session_id.clone(),
+                text: "hello".into(),
+                plan_mode: false,
+                human_shell_promotion_ids: vec![],
+                model: "minimax/minimax-m3".to_string(),
+                agents: vec![
+                    crate::protocol_conversions::agent_to_dto(crate::agent::Agent {
+                        git_read_only: false,
+                        name: "test".into(),
+                        description: "test agent".into(),
+                        ..Default::default()
+                    })
+                    .expect("agent dto"),
+                ],
+                current_agent_idx: 0,
+                messages: vec![],
+                reasoning: Some(crate::protocol::core::ReasoningOverride::Effort {
+                    level: "low".to_string(),
+                }),
+            },
+        );
+        let response = daemon.handle_request(request).await.expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the turn must be admitted, got {response:?}"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            Some(crate::protocol::core::ReasoningOverride::Effort {
+                level: "low".to_string()
+            }),
+            "the explicit override must win over the persisted preference"
+        );
+    }
+
+    /// Provider reasoning control M002: with no persisted selection the turn
+    /// inherits the agent / model-profile default (no override at all).
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_persisted_selection_means_no_override() {
+        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let response = daemon
+            .handle_request(turn_request(&session_id, "minimax/minimax-m3"))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the turn must be admitted, got {response:?}"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            None,
+            "no persisted selection means the agent / model-profile default stands"
+        );
+    }
+
+    /// Provider reasoning control M002: the selection is principal-scoped, so
+    /// another principal's preference never leaks into this turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_selection_is_principal_scoped() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        persist_reasoning_selection(&pool, "some-other-principal", "xhigh").await;
+        let response = daemon
+            .handle_request(turn_request(&session_id, "minimax/minimax-m3"))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the turn must be admitted, got {response:?}"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            None,
+            "another principal's selection must not apply"
+        );
+    }
+
+    /// Provider reasoning control M002: a daemon that has not advertised the
+    /// open vocabulary refuses a non-enumerated label with a typed error
+    /// instead of failing the daemon or mis-decoding the label.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_daemon_without_the_open_vocabulary_refuses_a_non_enumerated_label() {
+        let (_env, daemon, _runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let mut daemon = daemon;
+        daemon.reasoning_capabilities.open_label_vocabulary = false;
+        let request = crate::core::new_request(
+            "req-submit-open-label".into(),
+            CoreRequest::TurnSubmit {
+                session_id: session_id.clone(),
+                text: "hello".into(),
+                plan_mode: false,
+                human_shell_promotion_ids: vec![],
+                model: "minimax/minimax-m3".to_string(),
+                agents: vec![
+                    crate::protocol_conversions::agent_to_dto(crate::agent::Agent {
+                        git_read_only: false,
+                        name: "test".into(),
+                        description: "test agent".into(),
+                        ..Default::default()
+                    })
+                    .expect("agent dto"),
+                ],
+                current_agent_idx: 0,
+                messages: vec![],
+                reasoning: Some(crate::protocol::core::ReasoningOverride::Effort {
+                    level: "xhigh".to_string(),
+                }),
+            },
+        );
+        let response = daemon.handle_request(request).await.expect("turn submit");
+        let (code, message) = error_of(&response);
+        assert_eq!(code, "reasoning_vocabulary_unsupported");
+        assert!(
+            message.contains("xhigh"),
+            "the refusal must name the refused label, got {message}"
+        );
+    }
+
+    /// Provider reasoning control M002: the daemon advertises the open
+    /// vocabulary, and a known label is accepted by any daemon.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_daemon_advertises_the_open_vocabulary() {
+        let pool = pool().await;
+        let (daemon, _runtime) = daemon(pool).await;
+        let capabilities = daemon.reasoning_capabilities();
+        assert!(
+            capabilities.accepts_open_label(),
+            "this build advertises the open, provider-scoped vocabulary"
+        );
+        assert_eq!(
+            capabilities.known_labels,
+            vec!["minimal", "low", "medium", "high"],
+            "the advertised known labels are the fallback ladder"
+        );
+        assert_eq!(capabilities.max_label_bytes, 64);
+    }
+
+    /// Provider reasoning control M003: a selection the model does not
+    /// accept is refused **at admission**, with a typed refusal that names
+    /// the model and the dimension, and no provider request is dispatched.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unsupported_reasoning_selection_is_refused_before_any_provider_request() {
+        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let response = daemon
+            .handle_request(turn_request_with_reasoning(
+                &session_id,
+                "minimax/minimax-m3",
+                Some(crate::protocol::core::ReasoningOverride::Effort {
+                    level: "turbo".to_string(),
+                }),
+            ))
+            .await
+            .expect("turn submit");
+        let (code, message) = error_of(&response);
+        assert_eq!(code, "reasoning_capability_unsupported");
+        assert!(
+            message.contains("minimax/minimax-m3"),
+            "the refusal must name the model, got {message}"
+        );
+        assert!(
+            message.contains("effort"),
+            "the refusal must name the dimension, got {message}"
+        );
+        assert!(
+            !runtime.called.load(Ordering::SeqCst),
+            "a refused turn must not dispatch a provider request"
+        );
+    }
+
+    /// Provider reasoning control M003: an always-reasons model refuses an
+    /// explicit disable at admission.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_explicit_disable_is_refused_for_an_always_reasons_model() {
+        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let response = daemon
+            .handle_request(turn_request_with_reasoning(
+                &session_id,
+                "minimax/minimax-m3",
+                Some(crate::protocol::core::ReasoningOverride::Off),
+            ))
+            .await
+            .expect("turn submit");
+        let (code, message) = error_of(&response);
+        assert_eq!(code, "reasoning_capability_unsupported");
+        assert!(
+            message.contains("disable"),
+            "the refusal must name the dimension, got {message}"
+        );
+        assert!(
+            !runtime.called.load(Ordering::SeqCst),
+            "a refused turn must not dispatch a provider request"
+        );
+    }
+
+    /// Provider reasoning control M003: a selection the model accepts
+    /// proceeds and reaches the request **unchanged**.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_supported_reasoning_selection_reaches_the_turn_unchanged() {
+        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let response = daemon
+            .handle_request(turn_request_with_reasoning(
+                &session_id,
+                "minimax/minimax-m3",
+                Some(crate::protocol::core::ReasoningOverride::Effort {
+                    level: "xhigh".to_string(),
+                }),
+            ))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the turn must be admitted, got {response:?}"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            Some(crate::protocol::core::ReasoningOverride::Effort {
+                level: "xhigh".to_string()
+            }),
+            "a supported selection must reach the request unchanged"
+        );
+    }
+
+    /// Provider reasoning control M003: ADR-0045's fail-closed-on-absence
+    /// rule. A family with no capability baseline declares no record, so
+    /// every dimension of it is `Unknown` — and a selection on an unknown
+    /// dimension is refused at admission rather than forwarded optimistically.
+    ///
+    /// `opencode_go` ships no model adapter, so it resolves to the generic
+    /// adapter, which declares no reasoning capability record. The refusal
+    /// happens at admission, before provider resolution, so this model needs
+    /// no connection of its own.
+    ///
+    /// This is the rule whose behaviour change is the most visible, so it
+    /// is pinned here.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_selection_on_an_unknown_dimension_is_refused_at_admission() {
+        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let response = daemon
+            .handle_request(turn_request_with_reasoning(
+                &session_id,
+                "opencode_go/a-model-without-a-capability-baseline",
+                Some(crate::protocol::core::ReasoningOverride::Effort {
+                    level: "high".to_string(),
+                }),
+            ))
+            .await
+            .expect("turn submit");
+        let (code, message) = error_of(&response);
+        assert_eq!(code, "reasoning_capability_unsupported");
+        assert!(
+            message.contains("a-model-without-a-capability-baseline"),
+            "the refusal must name the model, got {message}"
+        );
+        assert!(
+            !runtime.called.load(Ordering::SeqCst),
+            "a refused turn must not dispatch a provider request"
+        );
+    }
+
+    /// Provider reasoning control M003: a turn with **no** reasoning
+    /// selection is never gated by the capability check — the check exists
+    /// to refuse a selection the model does not accept, not to gate
+    /// ordinary turns.
+    ///
+    /// The model here is the MiniMax family, whose baseline is deliberately
+    /// restrictive: it always reasons and refuses an explicit disable. A
+    /// plain turn still runs, because a turn that asks for nothing must not
+    /// be refused for what it did not ask for.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_turn_without_a_reasoning_selection_is_not_gated() {
+        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let response = daemon
+            .handle_request(turn_request(&session_id, "minimax/minimax-m3"))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "a turn without a selection must not be refused, got {response:?}"
+        );
+        assert!(runtime.called.load(Ordering::SeqCst));
+    }
+
+    /// Provider reasoning control M003: a dimension the capability says is
+    /// only partly supported is **dropped**, and the drop is recorded as a
+    /// notice that names what was dropped. A silently dropped dimension is
+    /// the defect this workstream exists to remove.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dropped_reasoning_dimension_is_recorded_as_a_notice() {
+        let (mut env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        // The operator's override narrows the shipped MiniMax baseline to
+        // a `mixed` effort dimension, which the fail-closed policy drops
+        // with a notice rather than refusing.
+        env.install_config(
+            r#"{"model_profile":{"minimax/minimax-m3":{"reasoning_capability":{"effort_status":"mixed"}}}}"#,
+        );
+        let mut events = daemon.event_log.subscribe();
+        let response = daemon
+            .handle_request(turn_request_with_reasoning(
+                &session_id,
+                "minimax/minimax-m3",
+                Some(crate::protocol::core::ReasoningOverride::Effort {
+                    level: "xhigh".to_string(),
+                }),
+            ))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "a dropped dimension must not refuse the turn, got {response:?}"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            None,
+            "the dropped dimension must not reach the request"
+        );
+        let mut notice = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let crate::protocol::core::CoreEvent::Error { code, message } = &envelope.payload {
+                if code == "reasoning_capability_notice" {
+                    notice = Some(message.clone());
+                    break;
+                }
+            }
+        }
+        let notice = notice.expect("a dropped dimension must be recorded as a notice");
+        assert!(
+            notice.contains("effort"),
+            "the notice must name what was dropped, got {notice}"
+        );
+    }
+
+    /// Provider reasoning control M003: a persisted reasoning selection that
+    /// **cannot be read** is reported, not silently dropped.
+    ///
+    /// A store that cannot be read is not authority, so the turn continues
+    /// on the agent / model-profile default — that part is right. But the
+    /// person who chose a label would otherwise get a different model
+    /// behaviour with no indication that their stored choice was gone. The
+    /// loss is published as a typed notice on the session's event channel.
+    ///
+    /// The code is its own: a frontend has to tell this apart from
+    /// `reasoning_capability_notice` (a capability drop),
+    /// `reasoning_capability_unsupported` (a capability refusal), and
+    /// `reasoning_vocabulary_unsupported` (a vocabulary refusal).
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unreadable_reasoning_selection_is_reported_as_a_notice() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        // The preference store's table is gone, so the read fails with a
+        // storage error instead of returning "no preference".
+        sqlx::query("DROP TABLE runtime_preferences")
+            .execute(&pool)
+            .await
+            .expect("drop the preference table");
+        let mut events = daemon.event_log.subscribe();
+        let response = daemon
+            .handle_request(turn_request(&session_id, "minimax/minimax-m3"))
+            .await
+            .expect("turn submit");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "an unreadable store must not refuse the turn, got {response:?}"
+        );
+        assert!(
+            runtime.called.load(Ordering::SeqCst),
+            "an unreadable store must not stop the turn"
+        );
+        let mut notice = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let crate::protocol::core::CoreEvent::Error { code, message } = &envelope.payload {
+                if code == "reasoning_selection_unreadable" {
+                    notice = Some(message.clone());
+                    break;
+                }
+            }
+        }
+        let notice = notice.expect("an unreadable selection must be reported as a notice");
+        assert!(
+            notice.contains("the stored reasoning selection could not be read"),
+            "the notice must say what was lost, got {notice}"
+        );
+        assert!(
+            notice.contains("the agent default applies"),
+            "the notice must say what applies instead, got {notice}"
+        );
+        assert!(
+            notice.contains("runtime_preferences"),
+            "the notice must carry the underlying error text, got {notice}"
+        );
+    }
+
+    /// Provider reasoning control M003: the capability check is read-only.
+    ///
+    /// It resolves the profile and judges the selection; it never mutates
+    /// the adapter baseline, the configuration, or the in-flight turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_capability_check_does_not_mutate_the_profile_or_the_config() {
+        let (_env, daemon, _runtime, _pool, _session_id) = daemon_with_selected_model().await;
+        let config = crate::config::schema::Config::default();
+        let model = "minimax/minimax-m3";
+        let before = codegg_core::model_profile::ModelProfileResolver::new(&config)
+            .resolve(model)
+            .reasoning_capability
+            .clone();
+        let selection = crate::protocol::core::ReasoningOverride::Effort {
+            level: "xhigh".to_string(),
+        };
+        let first = daemon
+            .admit_reasoning_capability(&config, model, Some(&selection))
+            .expect("the selection is supported");
+        let second = daemon
+            .admit_reasoning_capability(&config, model, Some(&selection))
+            .expect("the selection is supported");
+        assert_eq!(
+            first.selection, second.selection,
+            "the check must be deterministic"
+        );
+        assert_eq!(first.selection, Some(selection.clone()));
+        let after = codegg_core::model_profile::ModelProfileResolver::new(&config)
+            .resolve(model)
+            .reasoning_capability
+            .clone();
+        assert_eq!(
+            before, after,
+            "the check must not mutate the resolved profile"
+        );
+        assert_eq!(
+            config.model_profile, None,
+            "the check must not mutate the configuration"
+        );
+    }
+
+    /// Provider reasoning control M002: the same selection reaches a
+    /// **queued-prompt delivery**, the second of the three paths that used
+    /// to drop it on the floor.
+    ///
+    /// The queue entry itself carries no selection: the selection is
+    /// resolved at **delivery** time, because the model chosen at delivery
+    /// may differ from the one at enqueue.
+    ///
+    /// The ordering is the proof. The entry is enqueued while **no**
+    /// selection is persisted at all, and the selection is written only
+    /// afterwards, before the delivery. An implementation that captured the
+    /// selection into the entry at enqueue time would deliver no selection,
+    /// so this test distinguishes the two resolution points instead of
+    /// passing under either.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_persisted_selection_reaches_a_queued_prompt_delivery() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        let team = codegg_core::team::TeamStore::new(pool.clone());
+        // The queue attributes the entry to a principal, and the queue
+        // owner needs `agent.invoke` on the owning project.
+        let project_id: String = sqlx::query_scalar("SELECT project_id FROM session WHERE id = ?1")
+            .bind(&session_id)
+            .fetch_one(&pool)
+            .await
+            .expect("session project");
+        let project = codegg_core::identity::ProjectId::parse(&project_id).expect("project id");
+        let tokens =
+            codegg_core::transport_auth::PersonalTokenStore::with_team(pool.clone(), team.clone());
+        let record = team
+            .create_principal(codegg_core::team::PrincipalKind::Human, "QueueOwner")
+            .await
+            .expect("queue owner principal");
+        let (plaintext, _) = tokens
+            .create_personal_token(&record.id, "device", None)
+            .await
+            .expect("personal token");
+        let principal = tokens
+            .verify_for_client(&plaintext, "client-queue-owner")
+            .await
+            .expect("verified principal");
+        team.create_membership(
+            &project,
+            &record.id,
+            codegg_core::team::ProjectRole::Contributor,
+        )
+        .await
+        .expect("queue owner membership");
+        daemon.clients.register_with_principal(
+            "client-queue-owner".to_owned(),
+            "client-queue-owner-name".to_owned(),
+            None,
+            principal,
+        );
+        // The entry is enqueued **before** any selection is persisted, so
+        // the delivered turn can only observe a selection that was resolved
+        // at delivery time. An implementation that captured the selection
+        // into the queue entry at enqueue time would deliver no selection
+        // at all, because none existed yet.
+        let response = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    "req-queue-add".into(),
+                    CoreRequest::UserPromptQueueAdd {
+                        session_id: session_id.clone(),
+                        entry_id: "entry-1".into(),
+                        text: "queued while idle".into(),
+                        run_at_ms: None,
+                    },
+                ),
+                "client-queue-owner",
+            )
+            .await
+            .expect("queue add");
+        assert!(
+            !matches!(response, CoreResponse::Error { .. }),
+            "the queue entry must be accepted, got {response:?}"
+        );
+
+        // The stored entry carries no selection of its own: the selection is
+        // resolved at delivery time, so a captured one would be stale
+        // against the model chosen at delivery. This is the behavioural
+        // counterpart of `the_queue_entry_captures_no_selection`, which
+        // proves the shape is selection-free by reading the source.
+        let stored = codegg_core::session::UserPromptQueueStore::new(pool.clone())
+            .list_all_for_session(&session_id)
+            .await
+            .expect("the stored queue entries");
+        let entry = stored
+            .iter()
+            .find(|entry| entry.id == "entry-1")
+            .expect("the queued entry");
+        assert!(
+            !format!("{entry:?}").to_lowercase().contains("reasoning"),
+            "the queued entry must carry no reasoning selection: {entry:?}"
+        );
+
+        // The selection is the queue owner's, because the delivery resolves
+        // it against the entry's owner principal. It is persisted **after**
+        // the entry was enqueued and **before** the delivery.
+        persist_reasoning_selection(&pool, record.id.as_str(), "xhigh").await;
+
+        // The delivery is driven through the daemon's **permitted**
+        // post-terminal-wake entry, not by calling the delivery entry
+        // directly. ADR-0038 fixes that entry's caller set to three recorded
+        // callers, and `scripts/check_queue_delivery_callsites.py` fails a
+        // fourth — including a test. A test that called the entry directly
+        // would make the guard describe the tree it is supposed to police.
+        daemon.deliver_next_queued_prompt(&session_id).await;
+        assert!(
+            runtime.called.load(Ordering::SeqCst),
+            "the queued prompt must be delivered"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            Some(crate::protocol::core::ReasoningOverride::Effort {
+                level: "xhigh".to_string()
+            }),
+            "a queued-prompt delivery must apply the daemon-owned selection"
+        );
+    }
+
+    /// Provider reasoning control M002: the queue entry carries **no**
+    /// selection, so a selection written after the entry was enqueued still
+    /// applies at delivery time.
+    ///
+    /// A captured selection would be stale against the model chosen at
+    /// delivery, so the entry's wire shape and its durable row must both
+    /// stay selection-free.
+    #[test]
+    fn the_queue_entry_captures_no_selection() {
+        let dto = include_str!("../../crates/codegg-protocol/src/core.rs");
+        let entry = dto
+            .split("pub struct UserPromptQueueEntryDto {")
+            .nth(1)
+            .expect("the queue entry DTO exists")
+            .split('}')
+            .next()
+            .expect("the queue entry DTO body is bounded");
+        assert!(
+            !entry.contains("reasoning"),
+            "the queue entry must not carry a reasoning selection: the selection \
+             is resolved at delivery time, so a captured one would be stale \
+             against the model chosen at delivery"
+        );
+        let store = include_str!("../../crates/codegg-core/src/session/user_prompt_queue.rs");
+        assert!(
+            !store.to_lowercase().contains("reasoning"),
+            "the durable queue row must not carry a reasoning selection either"
+        );
     }
 
     /// Drive one concrete model string for a session whose durable selection

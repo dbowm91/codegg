@@ -322,6 +322,40 @@ the transient `origin_attribution_new` rebuild name, which is 88 tables;
 the statement count is 92 because `migration_version` and the
 `origin_attribution` rebuild each appear twice.
 
+Two rows were **remeasured on 2026-10-21** for the provider-reasoning-control
+milestone, each against its own listed `Source` rather than copied from
+another row. `CI guard scripts` (63 → 65) was measured against
+`scripts/check_*`: the count carries both the open-reasoning-vocabulary guard
+and the model-profile capability mirror guard that landed with this
+milestone. The `Storage layout version` row was **stale** (83 → 84), measured
+against `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION`: the
+reasoning-selection migration that landed before this milestone moved the
+version, and the row had not been re-measured since. The remaining rows were
+left alone — this milestone adds no architecture document, no `codegg-core`
+top-level module, no protocol variant, no database table, no integration test
+file, and no migration of its own.
+
+Every row was then **remeasured again on 2026-10-21**, when the whole
+provider-reasoning-control milestone chain closed. Four rows had drifted and
+were corrected, each against its own listed `Source`: `CoreRequest` variants
+(**261 → 264**, 238 struct + 26 unit), `CoreResponse` variants (**171 → 173**),
+authorized operations (**255 → 258**, distinct `OperationDescriptor::new`
+names), and `CI guard scripts` (**65 → 66**, the TUI reasoning-surface guard).
+The first three were missed by milestone 002's closure record, which claimed
+the table had been remeasured when it had not; the fourth is this milestone's
+own guard. The remaining rows were **confirmed unchanged** by measurement, not
+by assumption: architecture docs **87**, tool registrations **65**
+(`registry.register` + `registry.register_boxed` inside `with_options()`),
+distinct production tool names **61**, tool source files **80**, LSP server
+definitions **39**, `codegg-core` modules **47**, `AppEvent` variants **60**,
+`CoreEvent` variants **92**, `ProjectionEvent` variants **47**, identity
+newtypes **19**, built-in slash commands **167**, built-in agents **10**,
+bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
+`mod.rs`), database tables **88** (89 distinct `CREATE TABLE` names less the
+transient `origin_attribution_new`), storage layout version **84**, Git
+operation variants **54**, Git risk classes **11**, workspace member crates
+**11** (+ root), and integration test files **280**.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 87 | `architecture/*.md` |
@@ -331,23 +365,23 @@ the statement count is 92 because `migration_version` and the
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 261 (237 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 171 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 264 (238 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 173 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 255 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 258 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
 | Database tables (`CREATE TABLE`) | 88 | `crates/codegg-core/src/session/schema.rs` (distinct table names: 89 `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version` and the `origin_attribution` rebuild each appear twice) |
-| Storage layout version | 83 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Storage layout version | 84 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 280 | `tests/*.rs` |
-| CI guard scripts | 62 | `scripts/check_*` |
+| CI guard scripts | 66 | `scripts/check_*` |
 
 
 ## Feature gates
@@ -640,7 +674,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (62 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (66 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, model-profile capability mirror, project-catalog invariants, provider-connections coverage/tombstones, reasoning intent fidelity, reasoning vocabulary openness, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, TUI reasoning surface, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
@@ -654,5 +688,27 @@ Every row was **remeasured on 2026-10-20** against its listed `Source` when the 
 
 The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_composer_motions.rs` (M004), `tests/tui_composer_selection.rs` (M005), `tests/tui_composer_undo.rs` and `tests/tui_composer_insert_transitions.rs` (M006), and `tests/tui_composer_keymap_consistency.rs` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
 
+The CI guard script row was **remeasured once more on 2026-10-21** when the
+provider reasoning control workstream landed M001: CI guard scripts are now
+**63** (`ls scripts/check_*`). The workstream contributes one new guard —
+`scripts/check_reasoning_intent_fidelity.py` from M001, which holds the
+CodeGG → `eggpool-wire` reasoning bridge lossless — and no new integration
+test file at the repository root. The `Full check_* inventory` line above was
+carrying the stale 62 and is corrected here to 63.
+
+The CI guard script row was **remeasured once more on 2026-10-21** when the
+provider reasoning control workstream closed its milestone chain: CI guard
+scripts are now **66** (`ls scripts/check_*`). The workstream contributes
+**four** new guards — `scripts/check_reasoning_intent_fidelity.py` (M001, the
+CodeGG → `eggpool-wire` reasoning bridge stays lossless),
+`scripts/check_reasoning_vocabulary_open.py` (M002, the effort vocabulary
+stays open), `scripts/check_model_profile_capability_mirror.py` (M003, the
+adapter profile and its build-time mirror stay in step), and
+`scripts/check_tui_reasoning_surface.py` (M004, the reasoning indicator adds
+no second spinner and never gates the working strip's rows) — and no new
+integration test file at the repository root. The `Full check_* inventory`
+line above was carrying the stale 65 and is corrected here to 66.
+
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
+
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.

@@ -673,6 +673,73 @@ explains why nothing is progressing, and a waiting-prompt count is not.
 strip is carved out of the prompt chunk, so the reverse order would resolve
 every subagent click to click-to-focus.
 
+**The reasoning indicator (provider reasoning control M004).** Row 0 also carries
+the extended-thinking selection, in the same `" · "` suffix chain: `reasoning:
+high`, `reasoning: off`, `reasoning: default`, `reasoning: budget 2048`. It
+reads the **daemon-owned** selection (`UiState::reasoning_mode`), never a
+frontend-local field — the daemon resolves the selection at every
+turn-admission path, so a local copy is a projection, not an authority.
+
+Three properties are load-bearing:
+
+- It is **content in the reserved row**, never a condition on the row's
+  presence. The strip's height is subtracted from the transcript, so gating
+  row 0 on the selection reflowed the transcript on every submit and again on
+  every completion. `working_strip_rows` must not mention the reasoning state
+  at all; `scripts/check_tui_reasoning_surface.py` enforces that.
+- It adds **no second spinner and no second cadence**. There is one frame
+  table, one `ActivityPhase` enum, and one 100 ms frame table
+  (`tui::components::spinner`); the indicator is static text in a row that
+  row 0's frame already redraws. The same guard fails a second frame table
+  anywhere under `src/tui/`, a timer in the reasoning surface, and a reach for
+  the frame chooser from it.
+- The transient toast after `/reasoning` is **preserved** — it confirms the
+  action — but it is no longer the only place the selection is visible.
+
+**The `/reasoning` write path (M004).** The daemon owns the selection, so
+`/reasoning` writes it: the command derives the model's options, advances the
+cycle, and sends `CoreRequest::ReasoningPreferenceSet` with the daemon's
+preference revision as the compare-and-set. The local display is updated from
+the daemon's **response**, not from the option the user just picked — when the
+two differ, the daemon's value wins and the display is corrected. A refused
+write puts the daemon's last known value back and surfaces the typed refusal
+(`preference_conflict`, `invalid_reasoning_selection`,
+`reasoning_vocabulary_unsupported`, `reasoning_capability_unsupported`) instead
+of swallowing it.
+
+Because the selection is daemon state, the turn carries **no** explicit
+override: `TurnSubmit.reasoning` is `None`, so the daemon's persisted
+selection applies. Sending the frontend's copy as an override made the local
+value beat the persisted one — the opposite of what the daemon promises — so
+the turn inherits the daemon's selection and the frontend's copy is a
+projection of it.
+
+The option set comes from the daemon's model-resolution response, which
+carries the model's effective capability (`ReasoningCapabilityDto` on
+`SelectedModelDto` and `ProviderModelDto`). The rules are one per dimension:
+the accepted labels **in the capability's order**; a disable only when the
+model permits one; a budget only when the model accepts one and the value is
+inside its bounds. A dimension that is absent or `Unknown` falls back to the
+known-label ladder — and says so, because the ladder is a convenience
+vocabulary, not a statement about the model. The frontend's option list is
+always a **subset** of what the capability permits; it never widens it.
+
+The option set is a **subset** of what the capability permits and the cycle
+moves through the **model's** options rather than a static ladder. A model
+that accepts no disable is never offered one, and the command explains why
+instead of appearing broken. A model that always reasons is told so: there is
+no off.
+
+**The WS-attach frontend cannot store the selection.** `TuiMessage` carries no
+`CoreRequest` variant, so a frontend attached over the remote WebSocket has
+no channel to send `ReasoningPreferenceSet` on. There, `/reasoning` says the
+selection cannot be stored and **does not** change the display — it does not
+fall back to a local value the daemon would ignore, because a local value that
+the daemon never sees is a second, contradictory source of truth. The
+attached frontend still *shows* the daemon's selection in row 0. Adding the
+channel means adding a `TuiMessage` variant that carries a core request; that
+is a protocol change and is deliberately not smuggled into this milestone.
+
 **Side panels are mouse surfaces like the buffer.** Every occupied column
 records its rect on each render (`App::panel_areas`), and
 `ClickTarget::Panel { placement }` resolves a click inside one. A panel that is
@@ -3872,10 +3939,14 @@ pub struct UiState {
     pub sidebar_visible: bool,
     pub auto_scroll: bool,
     pub show_thinking: bool,
-    /// Per-turn extended-thinking selection (`/reasoning`).
-    /// Frontend-local; sent on each `TurnSubmit`, never persisted.
+    /// The extended-thinking selection (`/reasoning`), projected from the
+    /// **daemon-owned** selection.
     ///
-    /// When the cycled mode actually requests reasoning
+    /// The daemon resolves the selection at every turn-admission path, so
+    /// this is a projection: it is corrected from the daemon's response
+    /// whenever the two differ, and the daemon's value wins.
+    ///
+    /// When the selected mode actually requests reasoning
     /// (`ReasoningMode::requests_reasoning`) and the selected model's provider
     /// strips `reasoning_effort` on the wire, the confirmation is raised as a
     /// warning instead of an info toast. The provider is derived from the
@@ -3884,6 +3955,17 @@ pub struct UiState {
     /// `ProviderCapabilities::for_provider` — never a TUI-maintained list. An
     /// unresolvable provider stays silent rather than warning speculatively.
     pub reasoning_mode: ReasoningMode,
+    /// The reasoning capability the daemon published for each model it has
+    /// resolved, keyed by model id. A model with no entry has **no published
+    /// capability**, which reads as "not established" — never as "this model
+    /// accepts nothing".
+    pub reasoning_capabilities: HashMap<String, ReasoningCapabilityDto>,
+    /// The daemon's preference revision, used as the compare-and-set
+    /// revision for a reasoning write.
+    pub reasoning_preference_revision: Option<u64>,
+    /// Request generation for the reasoning read/write path. A stale
+    /// completion is dropped rather than applied.
+    pub reasoning_request: AsyncUiRequestState,
     pub show_timestamps: bool,
     pub routes: RouteManager,
     pub dialog: Dialog,

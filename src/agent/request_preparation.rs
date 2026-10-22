@@ -8,6 +8,7 @@
 use super::r#loop::AgentLoop;
 use super::tool_inspect::{compute_model_flags, filter_tools_for_model, mcp_tool_surface_revision};
 use crate::bus::events::AppEvent;
+use crate::provider::wire::ReasoningControl;
 use crate::provider::{ChatRequest, ContentPart, Message};
 
 fn project_initial_tool_palette(
@@ -773,12 +774,14 @@ impl AgentLoop {
     /// explicit user selection always wins over configuration. `Inherit`
     /// leaves whatever the earlier steps decided untouched.
     ///
-    /// `Off` clears both fields: the wire encoder treats "neither field set"
-    /// as thinking not requested (`wire.rs`), which is the only way to
-    /// express an explicit disable — an agent that sets `thinking_budget`
-    /// otherwise keeps thinking no matter what the user chose.
+    /// `Off` clears both selection fields *and* marks the request as an
+    /// explicit disable. Clearing the fields is not enough on its own: the
+    /// wire encoder treats "neither field set" as "no preference", so a
+    /// request that only cleared them would be indistinguishable from a
+    /// request that never asked for thinking. The explicit-disable mark is
+    /// what reaches the wire as a disable.
     pub(super) fn apply_reasoning_override(&self, request: &mut ChatRequest) {
-        let Some(chosen) = self.state.reasoning_override else {
+        let Some(chosen) = self.state.reasoning_override.clone() else {
             return;
         };
         Self::apply_reasoning_choice(request, chosen);
@@ -790,6 +793,10 @@ impl AgentLoop {
     /// choice must win over agent config and model-profile defaults, and effort
     /// and budget must never both be set (the wire encoder picks its mode from
     /// whichever is present, so leaving both would silently prefer budget).
+    ///
+    /// The effort label is **open and provider-scoped** (ADR-0044): it is
+    /// carried verbatim, never normalized, lower-cased, or mapped onto a
+    /// closed level set.
     fn apply_reasoning_choice(
         request: &mut ChatRequest,
         chosen: crate::protocol::core::ReasoningOverride,
@@ -798,17 +805,21 @@ impl AgentLoop {
         match chosen {
             ReasoningOverride::Effort { level } => {
                 request.thinking_budget = None;
-                request.reasoning_effort = Some(level.as_str().to_string());
+                request.reasoning_effort = Some(level);
+                request.context.reasoning = ReasoningControl::Unspecified;
             }
             ReasoningOverride::Budget { tokens } => {
                 request.reasoning_effort = None;
                 request.thinking_budget = Some(tokens);
+                request.context.reasoning = ReasoningControl::Unspecified;
             }
             ReasoningOverride::Off => {
-                // Both cleared: the wire encoder treats "neither set" as
-                // thinking-not-requested, which is the only way to disable.
+                // Both cleared, so no configured selection survives, and the
+                // request is marked as an explicit disable so the wire
+                // boundary can tell "off" from "no preference".
                 request.reasoning_effort = None;
                 request.thinking_budget = None;
+                request.context.reasoning = ReasoningControl::Disabled;
             }
         }
     }
@@ -2358,12 +2369,12 @@ mod tests {
 
     #[test]
     fn reasoning_effort_choice_overrides_a_configured_budget() {
-        use crate::protocol::core::{ReasoningEffort, ReasoningOverride};
+        use crate::protocol::core::ReasoningOverride;
         let mut request = request_with_thinking_configured();
         AgentLoop::apply_reasoning_choice(
             &mut request,
             ReasoningOverride::Effort {
-                level: ReasoningEffort::Low,
+                level: "low".to_string(),
             },
         );
         assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
@@ -2392,6 +2403,52 @@ mod tests {
             (request.reasoning_effort, request.thinking_budget),
             (None, None),
             "Off must clear both, or the model keeps thinking anyway"
+        );
+    }
+
+    #[test]
+    fn reasoning_off_marks_the_request_as_an_explicit_disable() {
+        use crate::protocol::core::ReasoningOverride;
+        let mut request = request_with_thinking_configured();
+        let unset = request.context.reasoning;
+        AgentLoop::apply_reasoning_choice(&mut request, ReasoningOverride::Off);
+        assert_eq!(
+            request.context.reasoning,
+            ReasoningControl::Disabled,
+            "Off must mark the request as an explicit disable. Clearing the selection \
+             alone is indistinguishable from no preference on the wire."
+        );
+        assert_ne!(
+            request.context.reasoning, unset,
+            "an explicit disable must be distinguishable from an unset request"
+        );
+    }
+
+    #[test]
+    fn an_explicit_selection_leaves_the_request_unmarked() {
+        use crate::protocol::core::ReasoningOverride;
+        let mut effort_request = request_with_thinking_configured();
+        AgentLoop::apply_reasoning_choice(
+            &mut effort_request,
+            ReasoningOverride::Effort {
+                level: "low".to_string(),
+            },
+        );
+        assert_eq!(
+            effort_request.context.reasoning,
+            ReasoningControl::Unspecified,
+            "a concrete selection is not an explicit disable"
+        );
+
+        let mut budget_request = request_with_thinking_configured();
+        AgentLoop::apply_reasoning_choice(
+            &mut budget_request,
+            ReasoningOverride::Budget { tokens: 2048 },
+        );
+        assert_eq!(
+            budget_request.context.reasoning,
+            ReasoningControl::Unspecified,
+            "a concrete selection is not an explicit disable"
         );
     }
 }

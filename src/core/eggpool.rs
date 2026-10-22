@@ -28,7 +28,8 @@ use tokio_util::sync::CancellationToken;
 
 use codegg_core::identity::{PrincipalId, ProjectId, ProviderConnectionId};
 use codegg_core::provider_connections::{
-    Endpoint, ProviderConnection, ProviderConnectionState, ProviderScope, SecretRef, TlsPolicy,
+    Endpoint, ProviderConnection, ProviderConnectionState, ProviderKind, ProviderScope, SecretRef,
+    TlsPolicy,
 };
 use codegg_protocol::provider::{
     ConnectionHealthDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -775,12 +776,18 @@ impl ProviderConnectionProvisioner {
                 .await
                 .map_err(|_| EggpoolError::Storage)?
                 .ok_or(EggpoolError::Storage)?;
+        let provider_kind = connection.provider_kind.clone();
+        let config = super::load_config_or_default();
         Ok(CreateEggpoolConnectionResult {
             operation_id: operation_id.to_owned(),
             connection: self
                 .summary(&connection, Some(&probe.catalog_revision), Some(probe))
                 .await?,
-            models: probe.models.iter().map(model_dto).collect(),
+            models: probe
+                .models
+                .iter()
+                .map(|model| model_dto(&config, &provider_kind, model))
+                .collect(),
             catalog_revision: probe.catalog_revision.clone(),
         })
     }
@@ -891,16 +898,36 @@ impl ProviderConnectionProvisioner {
         .fetch_all(&self.pool)
         .await
         .map_err(|_| EggpoolError::Storage)?;
+        // The reasoning capability is a property of the model *and* of the
+        // provider that serves it, so it is resolved against the
+        // connection's provider kind.
+        let provider_kind =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone())
+                .get(connection_id)
+                .await
+                .map_err(|_| EggpoolError::Storage)?
+                .map(|connection| connection.provider_kind);
+        let config = super::load_config_or_default();
         Ok((
             catalog_revision,
             rows.into_iter()
-                .map(|(id, name, context, max, tools, vision)| ProviderModelDto {
-                    id,
-                    name,
-                    context_window: context as u64,
-                    max_output_tokens: max.map(|v| v as u64),
-                    supports_tools: tools != 0,
-                    supports_vision: vision != 0,
+                .map(|(id, name, context, max, tools, vision)| {
+                    let reasoning_capability = provider_kind.as_ref().map(|provider_kind| {
+                        crate::core::session_selection::reasoning_capability_dto(
+                            &config,
+                            provider_kind,
+                            &id,
+                        )
+                    });
+                    ProviderModelDto {
+                        id,
+                        name,
+                        context_window: context as u64,
+                        max_output_tokens: max.map(|v| v as u64),
+                        supports_tools: tools != 0,
+                        supports_vision: vision != 0,
+                        reasoning_capability,
+                    }
                 })
                 .collect(),
         ))
@@ -2707,7 +2734,11 @@ fn error_code(error: &EggpoolError) -> &'static str {
     }
 }
 
-fn model_dto(model: &ProbedModel) -> ProviderModelDto {
+fn model_dto(
+    config: &crate::config::schema::Config,
+    provider_kind: &ProviderKind,
+    model: &ProbedModel,
+) -> ProviderModelDto {
     ProviderModelDto {
         id: model.id.clone(),
         name: model.name.clone(),
@@ -2715,6 +2746,11 @@ fn model_dto(model: &ProbedModel) -> ProviderModelDto {
         max_output_tokens: model.max_output_tokens,
         supports_tools: model.supports_tools,
         supports_vision: model.supports_vision,
+        reasoning_capability: Some(crate::core::session_selection::reasoning_capability_dto(
+            config,
+            provider_kind,
+            &model.id,
+        )),
     }
 }
 fn idempotency_key(spec: &NormalizedSpec) -> String {

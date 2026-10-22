@@ -418,7 +418,7 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (228 native operations; repository initialization adds
+rendering (258 native operations; repository initialization adds
 `project_init_draft` and `project_init_publish`; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
 audit store contract; collaboration M001 adds twelve `chat_*`
@@ -430,7 +430,10 @@ adds seventeen `work_order_*` rows below, all project-scoped on
 `session.create`/`session.read` (repository binding adds `work_plan_*`
 plus `work_order_bind_repository` on the same gates); M005 adds four
 `work_order_trigger_*` management rows on the same gates (firing is
-not a Core operation):
+not a Core operation); provider reasoning control M002 adds three global
+rows below — `reasoning_preference_get`, `reasoning_preference_set`, and the
+`reasoning_capabilities` negotiation row, all principal-scoped like the
+approval preferences and never project-keyed):
 
 | Operation | Scope | Capability |
 |---|---|---|
@@ -482,6 +485,8 @@ not a Core operation):
 | `continuation_grant_revoke` | via_session | `agent.invoke` |
 | `continuation_grant_status` | via_session | `session.read` |
 | `document_capabilities` | global | `none` |
+| `document_create` | direct_project | `file.modify` |
+| `document_delete` | direct_project | `file.modify` |
 | `document_modify` | direct_project | `file.modify` |
 | `document_read` | direct_project | `file.read` |
 | `project_init_draft` | direct_project | `file.read` |
@@ -496,6 +501,9 @@ not a Core operation):
 | `eggpool_connection_create` | opaque | `project.configure` |
 | `eggpool_connection_status` | opaque | `project.read` |
 | `execution_policy_get` | global | `none` |
+| `reasoning_capabilities` | global | `none` |
+| `reasoning_preference_get` | global | `none` |
+| `reasoning_preference_set` | global | `none` |
 | `goal_checkpoint` | via_session | `session.create` |
 | `goal_clear` | via_session | `session.create` |
 | `goal_done` | via_session | `session.create` |
@@ -543,6 +551,7 @@ not a Core operation):
 | `memory_search` | global | `none` |
 | `model_select` | via_session | `agent.invoke` |
 | `models_refresh` | global | `none` |
+| `node_telemetry_read` | opaque | `node.target` |
 | `notification_speak` | global | `none` |
 | `notification_stop` | global | `none` |
 | `permission_respond` | global | `none` |
@@ -685,6 +694,7 @@ not a Core operation):
 | `user_prompt_queue_reorder` | via_session | `agent.invoke` |
 | `user_prompt_queue_adopt` | via_session | `agent.invoke` |
 | `user_prompt_queue_transfer` | via_session | `agent.invoke` |
+| `user_prompt_queue_send_now` | via_session | `agent.invoke` |
 
 ### Deliberate divergence: the queue read is narrower than the promotion read
 
@@ -767,6 +777,21 @@ scripts/verify.sh quick
 ```
 
 ## Source verification
+
+Verified 2026-10-21 against `crates/codegg-core/src/authorization/policy.rs`
+after provider reasoning control M002 added three operations. Re-extracted
+every operation-name literal from the `operation_descriptor` body and
+confirmed an exact set-diff against the doc table in both directions — 258
+source names, 258 distinct doc rows, zero additions and zero removals.
+Corrected the prose count "228 native operations" → 258. Four rows had
+drifted and were added: `document_create` and `document_delete`
+(`direct_project` / `file.modify`), `node_telemetry_read` (`opaque` /
+`node.target`), and `user_prompt_queue_send_now` (`via_session` /
+`agent.invoke`). The three M002 rows are `reasoning_preference_get`,
+`reasoning_preference_set`, and `reasoning_capabilities`, all `global` /
+`none`: the principal is derived from transport authority, the payload
+carries no identity field, and the capability advertisement is a static
+daemon-owned read.
 
 Verified 2026-10-06 against `crates/codegg-core/src/authorization/policy.rs`
 (`operation_descriptor`, `:101`-`:1243`), `crates/codegg-protocol/src/core.rs`,

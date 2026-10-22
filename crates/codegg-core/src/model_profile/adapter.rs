@@ -1,5 +1,6 @@
 use super::types::{
-    OrchestrationTier, PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy,
+    OrchestrationTier, PromptProfileKind, ReasoningCapabilityRecord, ReliabilityTier,
+    ResolvedModelProfile, TaskStatePolicy,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,11 @@ pub struct AdapterProfile {
     pub requires_post_tool_continue_nudge: Option<bool>,
     pub default_reasoning_effort: Option<String>,
     pub default_thinking_budget: Option<usize>,
+    /// The adapter-declared reasoning capability baseline.
+    ///
+    /// `None` means the adapter declared no capability record, so every
+    /// dimension is `Unknown` rather than `Unsupported`.
+    pub reasoning_capability: Option<ReasoningCapabilityRecord>,
     pub max_parallel_tools: Option<usize>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -372,6 +378,10 @@ fn effective_profile(model: &str, a: &AdapterDefinition) -> ResolvedModelProfile
         default_thinking_budget: p
             .default_thinking_budget
             .or(conservative.default_thinking_budget),
+        reasoning_capability: p
+            .reasoning_capability
+            .clone()
+            .or(conservative.reasoning_capability),
         max_parallel_tools: p
             .max_parallel_tools
             .or(a.tools.max_parallel)
@@ -414,6 +424,18 @@ fn merge_adapter(base: &AdapterDefinition, overlay: &AdapterDefinition) -> Adapt
     inherit!(default_reasoning_effort);
     inherit!(default_thinking_budget);
     inherit!(max_parallel_tools);
+    // The reasoning capability record merges by **narrowing**, not by
+    // "overlay wins": the more specific adapter may only remove from the
+    // baseline's accepted set, never widen it beyond the baseline.
+    merged.profile.reasoning_capability = match (
+        merged.profile.reasoning_capability.take(),
+        base.profile.reasoning_capability.as_ref(),
+    ) {
+        (Some(overlay), Some(base)) => Some(super::capability::merge_capability(base, &overlay)),
+        (Some(overlay), None) => Some(overlay),
+        (None, Some(base)) => Some(base.clone()),
+        (None, None) => None,
+    };
     if merged.tools.format.is_none() {
         merged.tools.format = base.tools.format.clone();
     }
@@ -664,5 +686,26 @@ mod tests {
         }
         // Also force the cached definitions() init path.
         assert!(!definitions().is_empty());
+    }
+
+    #[test]
+    fn the_runtime_profile_and_the_build_rs_mirror_declare_the_same_fields() {
+        // The build script parses the same TOML with its own mirror of the
+        // profile, so the two declarations have to agree. A one-sided
+        // change otherwise surfaces as a `deny_unknown_fields` error on an
+        // asset, which reads like a data problem instead of a shape
+        // mismatch.
+        let mut mirror = super::super::capability::struct_fields_from_source(
+            &super::super::capability::build_rs_source(),
+            "Profile",
+        );
+        let mut runtime =
+            super::super::capability::serialized_field_names(&AdapterProfile::default());
+        mirror.sort();
+        runtime.sort();
+        assert_eq!(
+            mirror, runtime,
+            "the runtime AdapterProfile and the build.rs Profile mirror declare different fields"
+        );
     }
 }

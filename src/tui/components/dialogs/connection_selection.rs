@@ -561,6 +561,7 @@ mod tests {
             supports_tools: true,
             supports_vision: false,
             catalog_revision: "rev-19".to_string(),
+            reasoning_capability: None,
         }
     }
 

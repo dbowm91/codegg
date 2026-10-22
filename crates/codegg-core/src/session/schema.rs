@@ -271,6 +271,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 83 {
         migrate_and_record(pool, 83).await?;
     }
+    if current_version < 84 {
+        migrate_and_record(pool, 84).await?;
+    }
 
     Ok(())
 }
@@ -366,6 +369,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             81 => migrate_v81(&mut tx).await?,
             82 => migrate_v82(&mut tx).await?,
             83 => migrate_v83(&mut tx).await?,
+            84 => migrate_v84(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3548,6 +3552,34 @@ async fn migrate_v83(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .execute(&mut **tx)
             .await
             .map_err(|error| StorageError::Migration(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Provider reasoning control M002: the daemon-owned, principal-scoped
+/// extended-thinking selection.
+///
+/// One additive nullable column on `runtime_preferences`. Plain
+/// `ADD COLUMN` keeps every existing row untouched — approval, sandbox,
+/// session model and Task-composer preferences are all preserved — and
+/// the new column defaults to `NULL` ("no explicit selection"). The
+/// stored value is the protocol's own serialized selection shape, so the
+/// durable column carries no second vocabulary; the label inside it is an
+/// open, provider-scoped string. Bounds are enforced in Rust, not by the
+/// schema, on a migrated database.
+async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    // The column needs its table. The schema constant's create-if-absent
+    // statement is a no-op on a real database (the table was created by
+    // `migrate_v58`) and creates the table on a database that never had
+    // one, so the `ALTER TABLE` below always has a target.
+    for statement in crate::approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    for statement in crate::approval::RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS {
+        add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
     }
     Ok(())
 }

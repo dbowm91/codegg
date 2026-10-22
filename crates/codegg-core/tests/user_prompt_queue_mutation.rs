@@ -132,13 +132,16 @@ async fn user_prompt_queue_v81_migration_creates_the_owner_table() {
     // visible in review, and the assertion above proves the constant still
     // equals the highest wired migration.
     //
-    // It is currently v83: M007 took v82 for `run_at_ms`, then managed scratch
-    // reserved v83. M002b's own claim — that the owner binding bumped the
-    // layout at all — is unchanged and is what the table assertions below prove.
+    // It is currently v84: M007 took v82 for `run_at_ms`, then managed scratch
+    // reserved v83, then provider reasoning control M002 took v84 for the
+    // daemon-owned extended-thinking selection column. M002b's own claim — that
+    // the owner binding bumped the layout at all — is unchanged and is what the
+    // table assertions below prove.
     assert_eq!(
-        STORAGE_LAYOUT_VERSION, 83,
+        STORAGE_LAYOUT_VERSION, 84,
         "M002b bumps the layout to the owner binding; M007 advanced it to v82 \
-         for the optional due time and managed scratch advanced it to v83"
+         for the optional due time, managed scratch advanced it to v83, and \
+         provider reasoning control M002 advanced it to v84"
     );
 
     let table: i64 = sqlx::query_scalar(

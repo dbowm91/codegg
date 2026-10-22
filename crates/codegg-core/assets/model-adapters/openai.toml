@@ -21,6 +21,22 @@ patch_reliability = "high"
 supports_late_system_messages = true
 max_parallel_tools = 10
 
+[profile.reasoning_capability]
+# OpenAI's reasoning control is `reasoning_effort`. The exact ladder
+# varies per model inside this family — the o-series does not accept
+# `minimal` — so the family contract is the union of the published
+# values. A per-model mismatch is a provider-side concern, not a
+# capability fact, and this record does not fabricate a per-model
+# ladder it cannot publish.
+#
+# The OpenAI surfaces have no fixed thinking budget.
+effort_status = "supported"
+accepted_effort_labels = ["minimal", "low", "medium", "high"]
+disable_status = "supported"
+budget_status = "unsupported"
+always_reasons_status = "unsupported"
+always_reasons = false
+
 [tools]
 format = "openai_function"
 tool_choice = "auto"

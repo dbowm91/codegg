@@ -14,23 +14,29 @@ branching with a single, auditable, fingerprinted resolution surface.
 |------|------|
 | `crates/codegg-core/assets/model-adapters/*.toml` | 7 adapter definitions (build-time source) |
 | `crates/codegg-core/src/model_profile/adapter.rs` | `AdapterDefinition`, `ResolvedModelAdapter`, `resolve_adapter()` |
+| `crates/codegg-core/src/model_profile/capability.rs` | Reasoning-capability record resolution, merge rule, local admission policy |
 | `crates/codegg-core/src/model_profile/resolve.rs` | `ModelProfileResolver`, config override application |
 | `crates/codegg-core/src/model_profile/types.rs` | `ResolvedModelProfile`, `TaskStatePolicy` |
 | `crates/codegg-core/src/model_profile/policy.rs` | `push_control_instruction()` — provider-aware system message placement |
 | `crates/codegg-core/src/model_profile/mod.rs` | Re-exports |
 | `crates/codegg-core/build.rs` | Parses TOML files, validates, embeds source text into `$OUT_DIR` |
+| `crates/codegg-config/src/schema.rs` | `ReasoningCapabilityRecord`, `ModelProfileConfig.reasoning_capability` |
+| `crates/codegg-providers/src/capability.rs` | The kernel's capability machinery, reached without a second `eggpool-wire` declaration |
 
 ### Adapter TOML Files
 
-| File | Adapter ID | Models | Profile |
-|------|-----------|--------|---------|
-| `generic.toml` | `generic` | Fallback for unknown models | `default` |
-| `anthropic.toml` | `anthropic-frontier` | Claude/Sonnet/Opus/Haiku | `frontier_reasoning` |
-| `openai.toml` | `openai-frontier` | GPT/o1/o3/o4/Codex | `frontier_reasoning` |
-| `google.toml` | `google-long-context` | Gemini models | `long_context_planner` |
-| `minimax.toml` | `minimax-fast-executor` | MiniMax models | `fast_executor` |
-| `local.toml` | `local-strict` | Ollama/Qwen/DeepSeek/Kimi | `local_strict` |
-| `laguna.toml` | `poolside-laguna-agentic` | Poolside Laguna M/XS/S | `local_strict` |
+| File | Adapter ID | Models | Profile | Capability record |
+|------|-----------|--------|---------|-------------------|
+| `generic.toml` | `generic` | Fallback for unknown models | `default` | none |
+| `anthropic.toml` | `anthropic-frontier` | Claude/Sonnet/Opus/Haiku | `frontier_reasoning` | budget-only |
+| `openai.toml` | `openai-frontier` | GPT/o1/o3/o4/Codex | `frontier_reasoning` | effort ladder |
+| `google.toml` | `google-long-context` | Gemini models | `long_context_planner` | none |
+| `minimax.toml` | `minimax-fast-executor` | MiniMax models | `fast_executor` | always-reasons |
+| `local.toml` | `local-strict` | Ollama/Qwen/DeepSeek/Kimi | `local_strict` | none |
+| `laguna.toml` | `poolside-laguna-agentic` | Poolside Laguna M/XS/S | `local_strict` | none |
+
+"none" means the adapter declares **no** capability record, so every
+dimension of that family is `Unknown` — not `Unsupported`.
 
 ## How It Works
 
@@ -76,6 +82,115 @@ repair, and the conservative `orchestration_tier`) without editing adapter
 TOML. The tier defaults to `SoloPreferred`; unknown models and adapters are
 never promoted to `ConvergenceCapable` by inference. A project or user
 profile may explicitly override the tier.
+
+## Reasoning Capability Record
+
+An adapter may declare what the model family accepts on the reasoning
+dimensions: the accepted effort labels, whether reasoning can be turned
+off, whether a fixed thinking budget is accepted, and whether the model
+always reasons. The record is compiled into the binary and resolved per
+turn, so an unsupported selection is refused locally instead of being
+forwarded for the provider to reject.
+
+### The Record
+
+`ReasoningCapabilityRecord` (`crates/codegg-config/src/schema.rs`) carries
+four **independent** dimensions. Each has its own status in the kernel's
+vocabulary — `Supported | Unsupported | Unknown | Mixed | Conflicting` —
+so an **undeclared** dimension is `Unknown`, never `Unsupported`:
+
+| Dimension | Fields | Meaning |
+|---|---|---|
+| effort | `effort_status`, `accepted_effort_labels` | The accepted reasoning-effort labels — an **open, provider-scoped** string set |
+| disable | `disable_status` | May reasoning be turned off at all? |
+| budget | `budget_status`, `min_thinking_budget`, `max_thinking_budget` | Is a fixed token budget accepted, and within which bounds? |
+| always-reasons | `always_reasons_status`, `always_reasons` | Does the model always reason? |
+
+`Unknown` is a claim about *knowledge*, not about the model: an undeclared
+dimension means "nobody has published a contract for this", which is not
+the same as "the model refuses this". The kernel's fail-closed policy is
+what turns that distinction into a refusal at admission time; the record
+never collapses the two states into each other.
+
+The accepted-label set is never a fixed enumeration and never fabricated.
+A label is carried verbatim; a depth label is never converted into a
+token budget; a bound is never invented for a model whose maximum nobody
+has published.
+
+### The Merge Rule
+
+Adapters merge over `generic`, and the capability record merges by
+**narrowing**, not by "overlay wins":
+
+- the merged status of a dimension is the more restrictive of the two
+  declared statuses;
+- the merged accepted-label set is the **intersection** of the two
+  declared sets, so a merge can never widen a dimension's accepted set
+  beyond the baseline;
+- the merged thinking-budget range is the intersection of the two
+  declared ranges;
+- the always-reasons property is the narrower of the two claims.
+
+A dimension a side does not declare imposes no constraint, so the generic
+baseline — which declares nothing — never erases what a specific adapter
+declares.
+
+### Resolution Order
+
+`resolve_reasoning_capability(baseline, operator_override, overlay)`
+resolves the effective capability for a model:
+
+1. the **operator override** (`[model_profile.<model>].reasoning_capability`)
+   is authoritative for the dimensions it declares, and may only narrow
+   the compiled baseline;
+2. the **adapter baseline** is the compiled, deterministic record;
+3. the **discovery overlay** may only narrow — an overlay that declares a
+   label, a bound, or an always-reasons value the effective record does
+   not already carry is **rejected in full** and the rejection is
+   reported, never silent;
+4. **unknown** — the absence of a record.
+
+The resolution is **read-only**: it never mutates the baseline, the
+override, the overlay, or any in-flight turn state.
+
+### The Local Admission Policy
+
+`evaluate_reasoning_selection(...)` applies the effective capability to a
+resolved selection through the kernel's `reasoning_capability_notices_neutral`
+and `ReasoningCapabilityPolicy`, producing exactly one of:
+
+| Outcome | Meaning |
+|---|---|
+| `Reject` | The selection is refused locally with a typed refusal naming the model and the dimension |
+| `WarnDrop` | The unsupported dimension is dropped and a notice records **what was dropped** |
+| `AllowWithWarning` | The selection proceeds with a recorded warning |
+| `Allow` | The selection proceeds unchanged |
+
+The kernel's default policy is **fail-closed**: `unsupported → Reject`,
+`unknown → Reject`, `mixed → WarnDrop`. This milestone relies on that
+default. Its consequence is deliberate: a selection on a dimension the
+effective capability does not declare is refused locally rather than
+forwarded optimistically.
+
+The kernel's neutral capability type is **status-only** — it carries no
+accepted-label list and never validates a label — so CodeGG owns the
+accepted-label set and the budget bounds, and the kernel supplies the
+per-dimension decision.
+
+### The Shipped Baseline
+
+Only families with a published contract carry a record:
+
+| Family | Record | Published contract relied on |
+|---|---|---|
+| `minimax` | effort `supported` = `low, medium, high, xhigh, max`; disable `unsupported`; budget `unknown`; always-reasons `true` | MiniMax-M3.1 accepts those `reasoning_effort` values, rejects `none` and rejects `thinking.type = "disabled"` with "requires adaptive thinking" |
+| `anthropic` | effort `unsupported`; disable `supported`; budget `supported`, min `1024`; always-reasons `false` | Claude's extended thinking is a fixed token budget (documented minimum 1024 tokens); the Messages API has no `reasoning_effort` parameter |
+| `openai` | effort `supported` = `minimal, low, medium, high`; disable `supported`; budget `unsupported`; always-reasons `false` | OpenAI's reasoning control is `reasoning_effort`; the ladder varies per model inside the family, so the family contract is the union of the published values |
+
+`google`, `local`, `laguna`, and `generic` carry **no** record. Their
+published contracts vary materially across the versions inside one
+family, and a family-scoped record that guessed at them would be a
+fabrication. An undeclared family is `Unknown`, not `Unsupported`.
 
 ## Key Types & APIs
 
@@ -178,6 +293,7 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
 | `model_profile.<model>.disabled_tools` | Remove specific tools for a model |
 | `model_profile.<model>.preferred_tools` | Preferred tool ordering |
 | `model_profile.<model>.orchestration_tier` | `solo_preferred`, `delegation_capable`, or `convergence_capable` |
+| `model_profile.<model>.reasoning_capability` | Override the reasoning-capability record for a model (narrowing only) |
 
 ## Invariants & Gotchas
 
@@ -204,10 +320,32 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
   round-trip/output remains gated by the resolved policy.
 - **Text tool repair is model-specific**: Controlled by adapter; never
   a generic text-to-action parser.
+- **Unknown is not Unsupported**: An undeclared reasoning dimension means
+  "nobody published a contract for this", not "the model refuses it".
+  The kernel's fail-closed policy refuses it at admission; the record
+  never collapses the two.
+- **The capability record only narrows**: A merge, an operator override,
+  and a discovery overlay may all remove from a dimension's accepted set
+  and none of them may widen it. A discovery overlay that tries is
+  rejected in full and the rejection is reported.
+- **The build script mirrors the profile shape**: `build.rs` declares its
+  own copy of `AdapterProfile` and of `ReasoningCapabilityRecord`. A
+  one-sided change between them surfaces as a `deny_unknown_fields` error
+  against an adapter asset, which reads like a data problem.
+  `scripts/check_model_profile_capability_mirror.py` asserts that the two
+  declare the same field set, and the `codegg-core` test suite asserts it
+  again from the runtime side.
+- **The kernel is reached through one declaration**: `eggpool-wire` is
+  declared once, in `crates/codegg-providers/Cargo.toml`. Cargo resolves a
+  git dependency's path dependencies from the first declaration it
+  encounters, so a second declaration would give the workspace two copies
+  of the crate and two `WireSurface` types. `codegg-core` therefore
+  reaches the kernel through `codegg_providers::capability`.
 
 ## Testing
 
 - Unit tests in `crates/codegg-core/src/model_profile/adapter.rs::tests`
+- Capability tests in `crates/codegg-core/src/model_profile/capability.rs::tests`
 - Narrowest run:
   ```bash
   cargo test -p codegg-core model_profile::

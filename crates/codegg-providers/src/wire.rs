@@ -27,6 +27,14 @@ use crate::{
     ToolCall,
 };
 
+/// The explicit reasoning vocabulary this bridge projects onto the kernel's
+/// canonical [`eggpool_wire::ir::ReasoningIntent`].
+///
+/// Re-exported here because the wire module owns the mapping: the type
+/// physically lives with the request types in `provider_core.rs`, and this
+/// is its public path.
+pub use crate::provider_core::ReasoningControl;
+
 /// Project a CodeGG request into canonical wire semantics. Provider-private
 /// reasoning is omitted: callers must opt in through a later resolved policy
 /// projection before it can be represented here.
@@ -112,22 +120,7 @@ pub fn canonical_request(
         .as_deref()
         .and_then(|policy| policy.max_parallel_tools)
         .map(|max| max != 1);
-    canonical.reasoning = if request.thinking_budget.is_some() || request.reasoning_effort.is_some()
-    {
-        eggpool_wire::ir::ReasoningIntent {
-            requested: Some(true),
-            mode: if request.thinking_budget.is_some() {
-                ReasoningMode::FixedBudget
-            } else {
-                ReasoningMode::Effort
-            },
-            effort: request.reasoning_effort.clone(),
-            budget_tokens: request.thinking_budget.map(|value| value as u64),
-            explicit_disable: false,
-        }
-    } else {
-        eggpool_wire::ir::ReasoningIntent::default()
-    };
+    canonical.reasoning = reasoning_intent(request);
     canonical.response_format = request.response_format.as_ref().map(response_format);
     canonical.presence = RequestPresence {
         stream: eggpool_wire::ir::Presence::Value(true),
@@ -139,6 +132,59 @@ pub fn canonical_request(
         parallel_tool_calls: presence(canonical.parallel_tool_calls),
     };
     canonical
+}
+
+/// Project CodeGG's reasoning intent onto the kernel's canonical intent.
+///
+/// The projection is lossless over the vocabulary CodeGG owns:
+///
+/// | CodeGG request                              | canonical `ReasoningIntent`                       |
+/// |---------------------------------------------|---------------------------------------------------|
+/// | no preference                               | the kernel's unspecified intent (`requested: None`)|
+/// | explicit disable (`ReasoningControl::Disabled`) | the kernel's own `ReasoningIntent::disabled()` |
+/// | effort label (`ChatRequest::reasoning_effort`)  | mode `Effort`, label carried verbatim         |
+/// | fixed budget (`ChatRequest::thinking_budget`)    | mode `FixedBudget`, budget carried verbatim   |
+/// | thinking on, no depth (`ReasoningControl::Enabled`) | mode `Adaptive`                          |
+///
+/// Two properties are load-bearing:
+///
+/// - The explicit disable is the **kernel's own constructor**, not a
+///   hand-rolled literal. `ReasoningIntent::disabled()` is the only place
+///   that sets `explicit_disable: true`, and the explicit-disable and the
+///   no-preference intents therefore differ on the wire instead of
+///   collapsing into one shape.
+/// - `explicit_disable` is never written as a literal anywhere in this
+///   bridge. Every other case inherits the kernel default, so a hard-coded
+///   `explicit_disable: false` — the shape that made "off" unreachable —
+///   cannot reappear at a construction site. `scripts/
+///   check_reasoning_intent_fidelity.py` enforces this.
+///
+/// Effort and budget stay mutually exclusive, exactly as the agent layer
+/// guarantees: the budget branch wins when both are somehow present, and
+/// neither is ever converted into the other.
+pub(crate) fn reasoning_intent(request: &ChatRequest) -> eggpool_wire::ir::ReasoningIntent {
+    match request.context.reasoning {
+        ReasoningControl::Disabled => eggpool_wire::ir::ReasoningIntent::disabled(),
+        ReasoningControl::Enabled => eggpool_wire::ir::ReasoningIntent {
+            requested: Some(true),
+            mode: ReasoningMode::Adaptive,
+            ..eggpool_wire::ir::ReasoningIntent::default()
+        },
+        ReasoningControl::Unspecified => {
+            if let Some(tokens) = request.thinking_budget {
+                eggpool_wire::ir::ReasoningIntent::fixed(tokens as u64)
+            } else if let Some(label) = &request.reasoning_effort {
+                eggpool_wire::ir::ReasoningIntent {
+                    requested: Some(true),
+                    mode: ReasoningMode::Effort,
+                    effort: Some(label.clone()),
+                    ..eggpool_wire::ir::ReasoningIntent::default()
+                }
+            } else {
+                eggpool_wire::ir::ReasoningIntent::default()
+            }
+        }
+    }
 }
 
 /// Encode a canonical request for a finite shared wire surface.
@@ -1841,6 +1887,283 @@ mod tests {
         let mut decoder = SharedStreamDecoder::new(post_terminal.adapter);
         decoder.push(post_terminal.bytes).unwrap();
         assert!(decoder.finish().is_err());
+    }
+
+    // ── Reasoning intent fidelity ───────────────────────────────────────────
+
+    /// A request carrying one reasoning state, with the concrete selection
+    /// spelled out separately so each intent can be built in isolation.
+    fn reasoning_request(
+        control: ReasoningControl,
+        reasoning_effort: Option<&str>,
+        thinking_budget: Option<usize>,
+    ) -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".into()),
+                }],
+            }],
+            model: "test-model".into(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget,
+            reasoning_effort: reasoning_effort.map(|label| label.to_string()),
+            context: crate::ProviderRequestContext {
+                reasoning: control,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The wire surfaces CodeGG encodes. Every one of them is exercised
+    /// below: a surface that cannot express a dimension must emit no
+    /// reasoning field at all, and saying so is part of the contract.
+    const REASONING_SURFACES: [WireSurface; 4] = [
+        WireSurface::OpenaiChatCompletions,
+        WireSurface::OpenaiResponses,
+        WireSurface::AnthropicMessages,
+        WireSurface::GeminiGenerateContent,
+    ];
+
+    /// The reasoning content an encoded body carries for one surface, or
+    /// `None` when the surface cannot express that dimension and therefore
+    /// emits no reasoning field at all.
+    fn encoded_reasoning(body: &Value, surface: WireSurface) -> Option<Value> {
+        match surface {
+            WireSurface::OpenaiChatCompletions => body.get("reasoning_effort").cloned(),
+            WireSurface::OpenaiResponses => body.get("reasoning").cloned(),
+            WireSurface::AnthropicMessages => body.get("thinking").cloned(),
+            WireSurface::GeminiGenerateContent => body
+                .get("generationConfig")
+                .and_then(|config| config.get("thinkingConfig"))
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    /// Every key anywhere in the encoded body whose name looks reasoning-related.
+    ///
+    /// [`encoded_reasoning`] reads one exact path per surface, so a
+    /// differently-spelled reasoning field would be reported as "this surface
+    /// cannot express it" and the fixture would still pass. This walk turns
+    /// "the surface emitted no reasoning content at all" into an assertion
+    /// about the whole body rather than about one path.
+    fn reasoning_keys(value: &Value) -> Vec<String> {
+        fn walk(value: &Value, path: &str, found: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    for (key, child) in map {
+                        let child_path = if path.is_empty() {
+                            key.clone()
+                        } else {
+                            format!("{path}.{key}")
+                        };
+                        let lowered = key.to_ascii_lowercase();
+                        if lowered.contains("reason")
+                            || lowered.contains("think")
+                            || lowered.contains("effort")
+                            || lowered.contains("budget")
+                        {
+                            found.push(child_path.clone());
+                        }
+                        walk(child, &child_path, found);
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        walk(item, &format!("{path}[{index}]"), found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        walk(value, "", &mut found);
+        found
+    }
+
+    /// Encode one request through the production encoder for `surface`.
+    fn encode_for_surface(request: &ChatRequest, surface: WireSurface) -> Value {
+        match surface {
+            WireSurface::OpenaiChatCompletions => encode_openai_chat(request, None, false).unwrap(),
+            WireSurface::OpenaiResponses => encode_openai_responses(request, false).unwrap(),
+            WireSurface::AnthropicMessages => encode_anthropic_messages(request).unwrap(),
+            WireSurface::GeminiGenerateContent => {
+                encode(&canonical_request(request, None), surface, false).unwrap()
+            }
+            _ => panic!("no production encoder for {surface:?}"),
+        }
+    }
+
+    #[test]
+    fn no_preference_and_explicit_disable_are_different_kernel_intents() {
+        let unspecified = reasoning_intent(&reasoning_request(
+            ReasoningControl::Unspecified,
+            None,
+            None,
+        ));
+        let disabled = reasoning_intent(&reasoning_request(ReasoningControl::Disabled, None, None));
+
+        assert_ne!(
+            unspecified, disabled,
+            "no preference and an explicit disable must not collapse into one intent"
+        );
+        assert_eq!(
+            unspecified,
+            eggpool_wire::ir::ReasoningIntent::default(),
+            "no preference is the kernel's unspecified intent"
+        );
+        assert_eq!(
+            disabled,
+            eggpool_wire::ir::ReasoningIntent::disabled(),
+            "the explicit disable must be the kernel's own constructor, not a literal"
+        );
+        assert_eq!(disabled.requested, Some(false));
+        assert!(disabled.explicit_disable);
+    }
+
+    #[test]
+    fn effort_label_and_budget_reach_the_kernel_intent_verbatim() {
+        let effort = reasoning_intent(&reasoning_request(
+            ReasoningControl::Unspecified,
+            Some("xhigh"),
+            None,
+        ));
+        assert_eq!(effort.requested, Some(true));
+        assert_eq!(effort.mode, ReasoningMode::Effort);
+        assert_eq!(effort.effort.as_deref(), Some("xhigh"));
+        assert_eq!(
+            effort.budget_tokens, None,
+            "an effort selection must not become a budget"
+        );
+
+        let budget = reasoning_intent(&reasoning_request(
+            ReasoningControl::Unspecified,
+            None,
+            Some(2048),
+        ));
+        assert_eq!(budget.requested, Some(true));
+        assert_eq!(budget.mode, ReasoningMode::FixedBudget);
+        assert_eq!(budget.budget_tokens, Some(2048));
+        assert_eq!(
+            budget.effort, None,
+            "a budget selection must not become an effort label"
+        );
+    }
+
+    #[test]
+    fn binary_thinking_on_maps_to_the_adaptive_kernel_intent() {
+        let enabled = reasoning_intent(&reasoning_request(ReasoningControl::Enabled, None, None));
+        assert_eq!(enabled.requested, Some(true));
+        assert_eq!(enabled.mode, ReasoningMode::Adaptive);
+        assert_eq!(enabled.effort, None);
+        assert_eq!(enabled.budget_tokens, None);
+    }
+
+    #[test]
+    fn reasoning_intent_encodes_a_per_surface_fixture() {
+        // surface order: OpenAI Chat Completions, OpenAI Responses,
+        // Anthropic Messages, Gemini GenerateContent.
+        let cases: [(&str, ChatRequest, [Option<Value>; 4]); 5] = [
+            (
+                "no preference",
+                reasoning_request(ReasoningControl::Unspecified, None, None),
+                [None, None, None, None],
+            ),
+            (
+                "explicit disable",
+                reasoning_request(ReasoningControl::Disabled, None, None),
+                [
+                    Some(serde_json::json!("none")),
+                    Some(serde_json::json!({"effort": "none"})),
+                    Some(serde_json::json!({"type": "disabled"})),
+                    Some(serde_json::json!({"thinkingBudget": 0})),
+                ],
+            ),
+            (
+                "effort label",
+                reasoning_request(ReasoningControl::Unspecified, Some("xhigh"), None),
+                [
+                    Some(serde_json::json!("xhigh")),
+                    Some(serde_json::json!({"effort": "xhigh"})),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                "fixed budget",
+                reasoning_request(ReasoningControl::Unspecified, None, Some(2048)),
+                [
+                    None,
+                    None,
+                    Some(serde_json::json!({"type": "enabled", "budget_tokens": 2048})),
+                    Some(serde_json::json!({"thinkingBudget": 2048})),
+                ],
+            ),
+            (
+                "thinking on, no depth",
+                reasoning_request(ReasoningControl::Enabled, None, None),
+                [
+                    None,
+                    None,
+                    Some(serde_json::json!({"type": "adaptive"})),
+                    None,
+                ],
+            ),
+        ];
+
+        for (name, request, expected) in cases {
+            for (surface, expectation) in REASONING_SURFACES.iter().zip(expected.iter()) {
+                let body = encode_for_surface(&request, *surface);
+                assert_eq!(
+                    encoded_reasoning(&body, *surface),
+                    *expectation,
+                    "{name} on {surface:?} encoded {body}"
+                );
+                if expectation.is_none() {
+                    // The surface cannot express this dimension, so it must
+                    // emit no reasoning content at all — not a differently
+                    // spelled field somewhere else in the body.
+                    let keys = reasoning_keys(&body);
+                    assert!(
+                        keys.is_empty(),
+                        "{name} on {surface:?} is recorded as inexpressible but the \
+                         body carries reasoning content at {keys:?}: {body}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_reasoning_preference_encodes_no_reasoning_field_on_any_surface() {
+        // The baseline: a request that expresses no preference carries the
+        // kernel's unspecified intent, so every surface keeps its own default
+        // and the body is byte-identical to the pre-milestone encoding.
+        let request = reasoning_request(ReasoningControl::Unspecified, None, None);
+        assert_eq!(
+            canonical_request(&request, None).reasoning,
+            eggpool_wire::ir::ReasoningIntent::default()
+        );
+        for surface in REASONING_SURFACES {
+            let body = encode_for_surface(&request, surface);
+            assert_eq!(
+                encoded_reasoning(&body, surface),
+                None,
+                "{surface:?} must carry no reasoning field without a preference: {body}"
+            );
+            let keys = reasoning_keys(&body);
+            assert!(
+                keys.is_empty(),
+                "{surface:?} must carry no reasoning content at all without a \
+                 preference, but the body carries {keys:?}: {body}"
+            );
+        }
     }
 }
 

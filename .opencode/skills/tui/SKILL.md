@@ -1026,6 +1026,27 @@ model to the wrong connection.
   interrupted mid-sentence. Route genuine turn failures through it only; shell,
   clipboard, and `/theme` errors would otherwise claim a turn failure that never
   happened. The full text stays in the toast and `/logs` keeps 50.
+- **The reasoning indicator is strip content, and the daemon owns the value.**
+  Row 0 also carries the extended-thinking selection (`reasoning: high`,
+  `reasoning: off`, `reasoning: budget 2048`) in the same `" · "` suffix chain.
+  Three properties are load-bearing. It is **content in the reserved row**,
+  never a condition on the row's presence — `working_strip_rows` must not
+  mention the reasoning state at all, because the strip's height is subtracted
+  from the transcript and gating row 0 reflowed the transcript on every submit
+  and completion. It adds **no second spinner and no second cadence**: there
+  is one frame table, one `ActivityPhase` enum, and one 100 ms cadence, and
+  the indicator is static text in a row that row 0's frame already redraws.
+  And it reads the **daemon-owned** selection, never a frontend-local field —
+  the daemon resolves the selection at every turn-admission path, so a local
+  copy is a projection, not an authority. `/reasoning` therefore writes
+  through `CoreRequest::ReasoningPreferenceSet` with the daemon's preference
+  revision as the compare-and-set, and the local display is corrected from
+  the daemon's **response** rather than from the option the user just picked.
+  A refused write puts the daemon's last known value back and surfaces the
+  typed refusal (`preference_conflict`, `invalid_reasoning_selection`,
+  `reasoning_vocabulary_unsupported`, `reasoning_capability_unsupported`) —
+  the last two are different conditions and must not collapse into one
+  message. `scripts/check_tui_reasoning_surface.py` guards all of it.
 - **One approval on screen; the rest queue, and the queued row is the way back.**
   `show_permission_dialog` used to assign straight into `permission_dialog`, so
   the second `PermissionPending` of a batch destroyed the first *along with its

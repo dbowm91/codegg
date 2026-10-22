@@ -128,14 +128,25 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **79**, defined by
-`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:41`), and must track the
+The current layout version is **84**, defined by
+`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:43`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
 `tests/storage_migrations.rs` equality assertion). It is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases.
+
+Version 84 adds one additive nullable column, `runtime_preferences.reasoning_selection`,
+holding the daemon-owned extended-thinking selection (provider reasoning
+control M002). Plain `ALTER TABLE … ADD COLUMN` leaves every existing row
+untouched — approval, sandbox, session-model and Task-composer preferences
+are all preserved — and the new column defaults to `NULL` ("no explicit
+selection"). The stored value is the protocol's own serialized selection
+shape, so the durable column carries no second vocabulary; the effort label
+inside it is an open, provider-scoped string carried verbatim. Bounds are
+enforced in Rust on write and re-checked on read, not by the schema on a
+migrated database.
 
 Migration 70 rebuilds `cached_models` with the composite primary key
 `(id, provider)`. The table is a **cross-provider** discovery cache, so the
@@ -282,8 +293,8 @@ pub async fn init_pool_at_for_migration(db_path: &Path)
 
 Migrations are implemented in `session/schema.rs`, not in the storage
 module. The storage module calls `session::schema::migrate()` during
-initialization. `session/schema.rs` contains 87 `CREATE TABLE`
-statements; migrations v1–v79 are all present as `migrate_v<N>` functions
+initialization. `session/schema.rs` contains 92 `CREATE TABLE`
+statements; migrations v1–v84 are all present as `migrate_v<N>` functions
 (declaration order in the file is not numeric — `migrate_v67`,
 `migrate_v34`, `migrate_v33` lead, and `migrate_v50`/`v47`/`v46`/`v32` are
 defined at the end).
@@ -294,7 +305,9 @@ schema constant rather than inlining SQL: v55 →
 `approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS`, v59 →
 `work_plan::WORK_PLAN_SCHEMA_STATEMENTS`, v65 →
 `session_control::SESSION_CONTROL_SCHEMA_STATEMENTS`, and v68 →
-`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`.
+`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`. v84 follows
+the same convention with
+`approval::RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS`.
 
 Key storage-layout migrations:
 - **v22**: Workspace table, `session.workspace_id` column — Phase 2

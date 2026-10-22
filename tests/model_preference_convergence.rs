@@ -404,6 +404,7 @@ fn durable_selection_projects_to_canonical_runtime_string() {
             supports_tools: true,
             supports_vision: true,
             catalog_revision: "cat-v1".into(),
+            reasoning_capability: None,
         }),
         connection_revision: 1,
         catalog_revision: "cat-v1".into(),

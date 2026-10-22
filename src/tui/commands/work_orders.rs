@@ -3527,6 +3527,7 @@ mod tests {
                         last_model_id: None,
                         last_task_provider_connection_id: Some("conn-a".to_string()),
                         last_task_model_id: Some("gone-model".to_string()),
+                        reasoning_selection: None,
                     },
                 },
                 CoreRequest::WorkOrderCreate { request } => CoreResponse::WorkOrder {
@@ -3570,6 +3571,7 @@ mod tests {
                         last_model_id: None,
                         last_task_provider_connection_id: None,
                         last_task_model_id: None,
+                        reasoning_selection: None,
                     },
                 },
                 CoreRequest::WorkOrderCancel { work_order_id } => CoreResponse::WorkOrder {

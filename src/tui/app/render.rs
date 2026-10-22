@@ -1955,6 +1955,21 @@ impl App {
                 head.push_str(&format!(" · {queued} queued"));
             }
         }
+        // Provider reasoning control M004: the extended-thinking selection is
+        // **daemon-owned**, so row 0 reports what the daemon will actually
+        // use rather than what a frontend-local field believes.
+        //
+        // It is content in the reserved row — a suffix, like the queued count
+        // above — never a condition on the row's presence. Row 0's height is
+        // subtracted from the transcript, so gating the row on the selection
+        // would reflow the transcript every time the selection changed.
+        //
+        // It adds no spinner and no cadence: it is a static string in a row
+        // that is already redrawn by the one 100 ms frame table.
+        head.push_str(&format!(
+            " · reasoning: {}",
+            self.ui_state.reasoning_mode.detail()
+        ));
         lines.push(Line::from(Span::styled(
             format!(" {head}"),
             Style::default().fg(color),
@@ -3393,5 +3408,112 @@ mod viewport_owner_tests {
             ViewportOwner::ChangeReview,
             "a modal decision surface must never be covered by a tab"
         );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_indicator_tests {
+    use super::*;
+    use crate::protocol::core::ReasoningMode;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Render the working strip on its own and return the drawn rows.
+    fn strip_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                app.render_working_strip(frame, Some(Rect::new(0, 0, width, height)));
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The indicator shows the **daemon-owned** selection compactly.
+    #[test]
+    fn the_indicator_shows_the_daemon_owned_selection() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let rows = strip_rows(&mut app, 80, 3);
+        assert!(
+            rows[0].contains("reasoning: high"),
+            "row 0 must show the selection, got {:?}",
+            rows[0]
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Off;
+        let rows = strip_rows(&mut app, 80, 3);
+        assert!(
+            rows[0].contains("reasoning: off"),
+            "row 0 must show the off selection, got {:?}",
+            rows[0]
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Inherit;
+        let rows = strip_rows(&mut app, 80, 3);
+        assert!(
+            rows[0].contains("reasoning: default"),
+            "row 0 must show the default selection, got {:?}",
+            rows[0]
+        );
+    }
+
+    /// The indicator is content in the reserved row, never a condition on
+    /// the row's presence: the strip's height — which is subtracted from the
+    /// transcript — does not move when the selection appears or changes.
+    #[test]
+    fn the_indicator_does_not_reflow_the_transcript() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let rows_before = app.working_strip_rows();
+        let layout_before = app
+            .ui_state
+            .layout
+            .session_layout(Rect::new(0, 0, 80, 24), Some(3));
+
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let rows_after = app.working_strip_rows();
+        let layout_after = app
+            .ui_state
+            .layout
+            .session_layout(Rect::new(0, 0, 80, 24), Some(3));
+
+        assert_eq!(
+            rows_before, rows_after,
+            "the reasoning indicator must not add or remove a strip row"
+        );
+        assert_eq!(
+            layout_before, layout_after,
+            "the reasoning indicator must not move the transcript"
+        );
+    }
+
+    /// The indicator adds no second spinner and no second cadence: it is
+    /// static text in a row that is already redrawn by the one 100 ms frame
+    /// table, so two renders of the same selection are byte-identical and
+    /// the row carries no animation glyph of its own.
+    #[test]
+    fn the_indicator_adds_no_second_spinner_or_cadence() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let first = strip_rows(&mut app, 80, 3);
+        let second = strip_rows(&mut app, 80, 3);
+        assert_eq!(
+            first, second,
+            "the reasoning indicator must be static, not an animated frame"
+        );
+        for frame in crate::tui::components::spinner::SPINNER_FRAMES {
+            assert!(
+                !first[0].contains(frame),
+                "the reasoning indicator must not draw a spinner frame ({frame})"
+            );
+        }
     }
 }

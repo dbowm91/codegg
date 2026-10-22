@@ -53,6 +53,7 @@ struct Profile {
     tool_call_reliability: Option<String>,
     instruction_adherence: Option<String>,
     patch_reliability: Option<String>,
+    orchestration_tier: Option<String>,
     supports_late_system_messages: Option<bool>,
     prefers_user_control_messages: Option<bool>,
     prefers_small_patches: Option<bool>,
@@ -60,7 +61,27 @@ struct Profile {
     requires_post_tool_continue_nudge: Option<bool>,
     default_reasoning_effort: Option<String>,
     default_thinking_budget: Option<usize>,
+    reasoning_capability: Option<ReasoningCapability>,
     max_parallel_tools: Option<usize>,
+}
+/// The build-time mirror of the runtime reasoning-capability record.
+///
+/// The runtime record is `codegg_config::schema::ReasoningCapabilityRecord`,
+/// re-exported by `crates/codegg-core/src/model_profile/capability.rs`. The
+/// field set must stay identical to it; the status is mirrored as a plain
+/// string because the build script cannot depend on `codegg-config`, and the
+/// vocabulary is asserted below.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ReasoningCapability {
+    effort_status: Option<String>,
+    accepted_effort_labels: Option<Vec<String>>,
+    disable_status: Option<String>,
+    budget_status: Option<String>,
+    min_thinking_budget: Option<usize>,
+    max_thinking_budget: Option<usize>,
+    always_reasons_status: Option<String>,
+    always_reasons: Option<bool>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +169,129 @@ impl Transform {
             | Self::RequireLateSystemMessages { field }
             | Self::RequireContinueNudge { field } => field,
         }
+    }
+}
+
+/// The capability-status vocabulary, mirrored from the runtime record.
+const CAPABILITY_STATUSES: [&str; 5] = [
+    "supported",
+    "unsupported",
+    "unknown",
+    "mixed",
+    "conflicting",
+];
+/// The largest accepted reasoning-effort label set.
+const MAX_REASONING_CAPABILITY_LABELS: usize = 32;
+/// The largest accepted length of one reasoning-effort label, in bytes.
+const MAX_REASONING_CAPABILITY_LABEL_BYTES: usize = 64;
+
+/// Validate one adapter's reasoning-capability record at build time.
+///
+/// The record must be well formed before it is compiled into the
+/// binary: a bounded label list, consistent dimension statuses, and a
+/// budget range whose minimum does not exceed its maximum.
+fn validate_reasoning_capability(capability: &ReasoningCapability, path: &std::path::Path) {
+    let statuses = [
+        ("effort_status", capability.effort_status.as_deref()),
+        ("disable_status", capability.disable_status.as_deref()),
+        ("budget_status", capability.budget_status.as_deref()),
+        (
+            "always_reasons_status",
+            capability.always_reasons_status.as_deref(),
+        ),
+    ];
+    for (field, status) in statuses {
+        if let Some(status) = status {
+            assert!(
+                CAPABILITY_STATUSES.contains(&status),
+                "{}: {field} '{status}' is not a capability status",
+                path.display()
+            );
+        }
+    }
+
+    if let Some(labels) = &capability.accepted_effort_labels {
+        assert!(
+            !labels.is_empty(),
+            "{}: accepted_effort_labels must not be empty",
+            path.display()
+        );
+        assert!(
+            labels.len() <= MAX_REASONING_CAPABILITY_LABELS,
+            "{}: accepted_effort_labels declares {} labels; maximum is {MAX_REASONING_CAPABILITY_LABELS}",
+            path.display(),
+            labels.len()
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for label in labels {
+            assert!(
+                !label.trim().is_empty(),
+                "{}: accepted_effort_labels contains an empty label",
+                path.display()
+            );
+            assert!(
+                label.len() <= MAX_REASONING_CAPABILITY_LABEL_BYTES,
+                "{}: accepted_effort_labels entry '{label}' exceeds {MAX_REASONING_CAPABILITY_LABEL_BYTES} bytes",
+                path.display()
+            );
+            assert!(
+                seen.insert(label.as_str()),
+                "{}: accepted_effort_labels contains the duplicate label '{label}'",
+                path.display()
+            );
+        }
+    }
+
+    match capability.effort_status.as_deref() {
+        Some("supported") => assert!(
+            capability.accepted_effort_labels.is_some(),
+            "{}: effort_status 'supported' requires an accepted_effort_labels set",
+            path.display()
+        ),
+        Some("unsupported") => assert!(
+            capability.accepted_effort_labels.is_none(),
+            "{}: effort_status 'unsupported' must not declare accepted_effort_labels",
+            path.display()
+        ),
+        _ => {}
+    }
+
+    if let (Some(min), Some(max)) = (
+        capability.min_thinking_budget,
+        capability.max_thinking_budget,
+    ) {
+        assert!(
+            min <= max,
+            "{}: min_thinking_budget ({min}) exceeds max_thinking_budget ({max})",
+            path.display()
+        );
+    }
+    assert!(
+        capability.budget_status.as_deref() != Some("unsupported")
+            || (capability.min_thinking_budget.is_none()
+                && capability.max_thinking_budget.is_none()),
+        "{}: budget_status 'unsupported' must not declare a thinking-budget range",
+        path.display()
+    );
+
+    if capability.always_reasons == Some(true) {
+        assert!(
+            capability.disable_status.as_deref() != Some("supported"),
+            "{}: always_reasons 'true' requires a disable_status that is not 'supported'",
+            path.display()
+        );
+    }
+    // The always-reasons status and its value are one fact: 'supported'
+    // means the model always reasons, 'unsupported' means it does not,
+    // and the remaining statuses leave it undeclared.
+    match (capability.always_reasons_status.as_deref(), capability.always_reasons) {
+        (Some("supported"), Some(true))
+        | (Some("unsupported"), Some(false))
+        | (None | Some("unknown") | Some("mixed") | Some("conflicting"), None) => {}
+        (status, always) => panic!(
+            "{}: always_reasons ({always:?}) is inconsistent with always_reasons_status ({status:?})",
+            path.display()
+        ),
     }
 }
 
@@ -258,6 +402,9 @@ fn main() {
             "{}: max_parallel out of bounds",
             path.display()
         );
+        if let Some(capability) = &parsed.profile.reasoning_capability {
+            validate_reasoning_capability(capability, &path);
+        }
         let mut transform_keys = std::collections::HashSet::new();
         for t in &parsed.transforms {
             let field = t.field();
