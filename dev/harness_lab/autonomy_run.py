@@ -34,11 +34,18 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
-from . import autonomy, budget, scoring, supervisor
+from . import autonomy, budget, faults, scoring, supervisor
+
+#: The namespaced session-update kind the ACP adapter uses to report a hole
+#: in the daemon's event stream. It is optional: a consumer that does not
+#: know it ignores it.
+EVENT_GAP_SESSION_UPDATE = "codegg_event_gap"
 from .autonomy import AutonomyCase, AutonomySuite, verify_isolation
 from .pilot import _prepare_lane_home, opencode_go_credential
 from .supervisor import AcpClient, HarnessError, HarnessTimeout, HarnessTurnFailure, SubjectSpec
@@ -88,15 +95,52 @@ def _copy_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, symlinks=False)
 
 
+def _observed_event_gap(client: AcpClient) -> Optional[dict[str, Any]]:
+    """Return the event-stream gap the daemon reported, if it reported one.
+
+    The daemon's event log is a bounded broadcast, so a connection that falls
+    behind it loses events. The daemon says so on an optional, namespaced
+    session update; the adapter forwards it and the turn's result carries the
+    count. When the harness sees one, the trial's observation has a hole in
+    it, so the trial is **unmeasured** — not a candidate failure.
+
+    Before the product reported the gap, this was invisible: the trial simply
+    carried on with fewer events and the missing tool completion read as a
+    tool that never finished.
+    """
+    reported: Optional[dict[str, Any]] = None
+    for notification in client.notifications:
+        if notification.get("method") != "session/update":
+            continue
+        params = notification.get("params", {})
+        update = params.get("update", {}) if isinstance(params, dict) else {}
+        if not isinstance(update, dict):
+            continue
+        if update.get("sessionUpdate") != EVENT_GAP_SESSION_UPDATE:
+            continue
+        dropped = update.get("dropped")
+        reported = {
+            "dropped": dropped if isinstance(dropped, int) and not isinstance(dropped, bool) else 0,
+            "source": update.get("source") if isinstance(update.get("source"), str) else "unknown",
+        }
+    return reported
+
+
 def build_transcript(case: AutonomyCase, tool_calls: list[dict[str, Any]], *,
                      terminal: str, stop_reason: Optional[str],
-                     failure: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                     failure: Optional[dict[str, Any]] = None,
+                     fault: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Return the transcript a case's verifier reads.
 
     The transcript records what the agent **did**, not what it said. The
     harness projects the tool name and a digest of the tool's arguments, never
     the arguments themselves, so a verifier can tell "the same call again"
     from "a different call" without reading the call's payload.
+
+    ``fault`` records the fault the case declared and what the transcript
+    shows about it. It is ``None`` for a case that declared no fault, and a
+    fault that was declared but never observed is recorded as unexercised
+    rather than left out.
     """
     return {
         "schema_version": 1,
@@ -107,8 +151,65 @@ def build_transcript(case: AutonomyCase, tool_calls: list[dict[str, Any]], *,
         "terminal": terminal,
         "stop_reason": stop_reason,
         "failure": failure,
+        "fault": fault,
         "tool_calls": tool_calls,
     }
+
+
+class _ToolCallProjector:
+    """Project the ACP notification stream into ordered tool-call records.
+
+    A tool call is reported by two ACP notifications: a ``tool_call`` start
+    that names the tool and carries the argument digest, and a
+    ``tool_call_update`` finish that carries the terminal status. The start
+    without a finish means the call never completed, and its status stays
+    unknown rather than being reported as a success.
+
+    The projection is incremental so a live turn can be watched while it runs:
+    the records are the same whether the stream is read at the end of the turn
+    or while the turn is still going.
+    """
+
+    def __init__(self) -> None:
+        self._started: dict[str, dict[str, Any]] = {}
+        self._order: list[str] = []
+        self._finished: dict[str, str] = {}
+
+    def absorb(self, notification: dict[str, Any]) -> None:
+        """Absorb one ACP notification."""
+        if notification.get("method") != "session/update":
+            return
+        params = notification.get("params", {})
+        update = params.get("update", {}) if isinstance(params, dict) else {}
+        if not isinstance(update, dict):
+            return
+        kind = update.get("sessionUpdate")
+        if kind == "tool_call":
+            call_id = update.get("toolCallId")
+            if not isinstance(call_id, str):
+                return
+            if call_id not in self._started:
+                self._order.append(call_id)
+            title = update.get("title")
+            digest = update.get("codeggArgumentsSha256")
+            self._started[call_id] = {
+                "tool": title if isinstance(title, str) else "unknown",
+                "arguments_sha256": digest if isinstance(digest, str) else None,
+            }
+        elif kind == "tool_call_update":
+            call_id = update.get("toolCallId")
+            status = update.get("status")
+            if isinstance(call_id, str) and isinstance(status, str):
+                self._finished[call_id] = status
+
+    def calls(self) -> list[dict[str, Any]]:
+        """Return the projected tool calls, in the order they started."""
+        return [{
+            "index": index,
+            "tool": self._started[call_id]["tool"],
+            "arguments_sha256": self._started[call_id]["arguments_sha256"],
+            "status": self._finished.get(call_id, "unknown"),
+        } for index, call_id in enumerate(self._order)]
 
 
 def _observed_tool_calls(client: AcpClient) -> list[dict[str, Any]]:
@@ -120,43 +221,91 @@ def _observed_tool_calls(client: AcpClient) -> list[dict[str, Any]]:
     without a finish means the call never completed, and its status stays
     unknown rather than being reported as a success.
     """
-    started: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    finished: dict[str, str] = {}
+    projector = _ToolCallProjector()
     for notification in client.notifications:
-        if notification.get("method") != "session/update":
-            continue
-        update = notification.get("params", {}).get("update", {})
-        if not isinstance(update, dict):
-            continue
-        kind = update.get("sessionUpdate")
-        if kind == "tool_call":
-            call_id = update.get("toolCallId")
-            if not isinstance(call_id, str):
-                continue
-            if call_id not in started:
-                order.append(call_id)
-            started[call_id] = {
-                "tool": update.get("title") if isinstance(update.get("title"), str) else "unknown",
-                "arguments_sha256": (update.get("codeggArgumentsSha256")
-                                     if isinstance(update.get("codeggArgumentsSha256"), str)
-                                     else None),
-            }
-        elif kind == "tool_call_update":
-            call_id = update.get("toolCallId")
-            status = update.get("status")
-            if isinstance(call_id, str) and isinstance(status, str):
-                finished[call_id] = status
-    calls: list[dict[str, Any]] = []
-    for index, call_id in enumerate(order):
-        entry = started[call_id]
-        calls.append({
-            "index": index,
-            "tool": entry["tool"],
-            "arguments_sha256": entry["arguments_sha256"],
-            "status": finished.get(call_id, "unknown"),
-        })
-    return calls
+        projector.absorb(notification)
+    return projector.calls()
+
+
+class _FaultWatcher:
+    """Stop a faulted trial once the declared bound of identical failures is met.
+
+    The watcher reads the same notification stream the transcript is built
+    from, so the bound it enforces and the transcript the verifier reads are
+    two views of one record. It never decides whether the control held: it
+    only stops a trial that has already failed the same way enough times, so a
+    faulted case is bounded even when the agent never gives up.
+    """
+
+    def __init__(self, client: AcpClient, spec: faults.FaultSpec, session_id: str, *,
+                 applied: Optional[faults.AppliedFault] = None,
+                 poll_seconds: float = 0.05) -> None:
+        self._client = client
+        self._spec = spec
+        self._session_id = session_id
+        self._applied = applied
+        self._poll_seconds = poll_seconds
+        self._projector = _ToolCallProjector()
+        self._absorbed = 0
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.bound_reached = False
+        self.reapplied = 0
+        self.cancel_error: Optional[str] = None
+
+    def start(self) -> None:
+        """Begin watching the turn."""
+        self._thread = threading.Thread(target=self._run, name="harness-fault-watcher",
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop watching and absorb whatever the stream carried meanwhile."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+        self._absorb()
+
+    def observed_failures(self) -> int:
+        """Return how many times the faulted call has failed so far."""
+        return int(faults.observe_fault(self._projector.calls(), self._spec)["observed_failures"])
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._absorb()
+            self._hold()
+            if self.observed_failures() >= self._spec.max_consecutive_failures:
+                self._cancel()
+                return
+            self._stop.wait(self._poll_seconds)
+        self._absorb()
+
+    def _hold(self) -> None:
+        """Put the fault back in force if the agent undid it."""
+        if self._applied is None:
+            return
+        try:
+            if self._applied.reapply():
+                self.reapplied += 1
+        except OSError:
+            # A fault that cannot be held is reported by the receipt as a
+            # failed observation, not by crashing the trial.
+            return
+
+    def _absorb(self) -> None:
+        notifications = self._client.notifications
+        while self._absorbed < len(notifications):
+            self._projector.absorb(notifications[self._absorbed])
+            self._absorbed += 1
+
+    def _cancel(self) -> None:
+        try:
+            self._client.notify("session/cancel", {"sessionId": self._session_id})
+        except Exception as error:  # noqa: BLE001 - the failure is recorded, not raised
+            self.cancel_error = f"{type(error).__name__}: {error}"
+            return
+        self.bound_reached = True
 
 
 def _run_verifier(command: list[str], cwd: Path, env: dict[str, str],
@@ -213,6 +362,12 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     ``guard`` lets a caller share one spend guard across a suite, so a
     declared request cap covers the whole suite instead of restarting at
     every case.
+
+    A case may declare a ``fault``. The fault is applied to the lane's own
+    copy of the fixture before the prompt is submitted, so the agent meets a
+    deterministic failure at the tool boundary while the instruction never
+    names it. The receipt records the fault, what the transcript shows about
+    it, and whether the declared bound stopped the trial.
     """
     if "/" not in model:
         raise HarnessError("model must be a provider/model composite")
@@ -284,6 +439,23 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps({"model": model}), encoding="utf-8")
 
+    # A declared fault is applied to the lane's own copy of the fixture before
+    # the prompt is submitted, so the agent meets a deterministic failure at
+    # the tool boundary while the instruction never names it. A fault the seam
+    # cannot honour refuses the trial: a case that declared a fault and ran
+    # without one would read as a control that was exercised when it was not.
+    fault_spec: Optional[faults.FaultSpec] = None
+    applied_fault: Optional[faults.AppliedFault] = None
+    fault_restore_error: Optional[str] = None
+    if case.fault:
+        try:
+            fault_spec = faults.FaultSpec.parse(case.fault)
+            applied_fault = faults.apply_fault(fault_spec, agent_root,
+                                               private_root / "fault-stash")
+        except faults.FaultError as error:
+            raise HarnessError(f"case {case.case_id} declared a fault the seam cannot "
+                               f"honour: {error}") from error
+
     client = AcpClient(binary, env, agent_root, timeout, profile)
     started = time.monotonic()
     terminal = "failed"
@@ -292,6 +464,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     result: dict[str, Any] = {}
     session_id: Optional[str] = None
     policy_receipt: Any = None
+    watcher: Optional[_FaultWatcher] = None
     try:
         client.request("initialize", {"protocolVersion": ACP_PROTOCOL_VERSION,
                                       "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
@@ -301,22 +474,33 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         if not isinstance(session_id, str) or not session_id:
             raise HarnessError("ACP did not return a session id for the autonomy case")
         policy_receipt = opened.get("codeggPolicy")
+        if fault_spec is not None:
+            # The watcher stops the trial once the same call has failed the
+            # declared number of times, so a faulted case is bounded even when
+            # the agent never gives up.
+            watcher = _FaultWatcher(client, fault_spec, session_id, applied=applied_fault)
+            watcher.start()
         result = client.request("session/prompt", {
             "sessionId": session_id,
             "model": model,
             "codeggAgent": agent,
             "prompt": [{"type": "text", "text": case.prompt}],
         }, timeout=timeout)
-        terminal = "completed"
         stop_reason = result.get("stopReason") if isinstance(result, dict) else None
+        terminal = "cancelled" if stop_reason in ("cancelled", "canceled") else "completed"
     except HarnessTurnFailure as error:
         failure = {"kind": type(error).__name__, "category": error.category,
                    "usage_reason": error.usage_unavailable_reason}
-        terminal = "failed"
+        # A cancelled turn is a terminal of its own, not a generic failure.
+        terminal = "cancelled" if error.category == "cancelled" else "failed"
     except HarnessTimeout as error:
         terminal = "timeout"
         result = {"error": str(error)}
     finally:
+        if watcher is not None:
+            watcher.stop()
+        if applied_fault is not None:
+            fault_restore_error = applied_fault.restore()
         client.close()
         try:
             supervisor.stop_lane_daemon(spec)
@@ -327,9 +511,29 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
 
     duration_ms = int((time.monotonic() - started) * 1000)
     tool_calls = _observed_tool_calls(client)
+    event_gap = _observed_event_gap(client)
+    if event_gap is not None:
+        # The observation has a hole in it. The trial is unmeasured: it says
+        # nothing about the candidate, and it is never counted as one.
+        terminal = "infrastructure_error"
+        failure = {"kind": "EventStreamGap", "category": "infrastructure_error",
+                   "usage_reason": None}
+
+    fault_receipt: Optional[dict[str, Any]] = None
+    if fault_spec is not None:
+        observation = faults.observe_fault(tool_calls, fault_spec)
+        fault_receipt = dict(applied_fault.as_dict()) if applied_fault is not None \
+            else fault_spec.as_dict()
+        fault_receipt.update(observation)
+        fault_receipt["bound_reached"] = bool(observation["bound_reached"]
+                                              or (watcher is not None and watcher.bound_reached))
+        fault_receipt["restore_error"] = fault_restore_error
+        fault_receipt["cancel_error"] = watcher.cancel_error if watcher is not None else None
+        fault_receipt["reapplied"] = watcher.reapplied if watcher is not None else 0
 
     transcript = build_transcript(case, tool_calls, terminal=terminal,
-                                  stop_reason=stop_reason, failure=failure)
+                                  stop_reason=stop_reason, failure=failure,
+                                  fault=fault_receipt)
     transcript_path = private_root / "TRANSCRIPT.json"
     transcript_path.write_text(json.dumps(transcript, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -390,6 +594,11 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
         "verifier_confirmed": verifier_confirmed,
         "solved": solved,
         "repeated_identical_failure": _repeated_identical_failure(tool_calls),
+        "fault": fault_receipt,
+        "event_gap": event_gap,
+        "control_exercised": _control_exercised({"fault": fault_receipt,
+                                                 "repeated_identical_failure":
+                                                 _repeated_identical_failure(tool_calls)}),
         "daemon_stop_error": daemon_stop_error,
         "policy_receipt": policy_receipt if isinstance(policy_receipt, dict) else None,
         "budget": guard.as_dict(),
@@ -486,24 +695,52 @@ def _repeated_identical_failure(tool_calls: list[dict[str, Any]]) -> bool:
     return any(attempts[key] >= 2 and failures.get(key, 0) >= 2 for key in attempts)
 
 
+def _control_exercised(run: dict[str, Any]) -> bool:
+    """Return whether the harness actually put the trial in the control's situation.
+
+    A protected control only means something when the situation it is about
+    really happened. A faulted control was exercised when the faulted call
+    really failed again; a control with no fault was exercised when the same
+    call really failed more than once. A control that was never exercised is
+    reported as such and is **not** counted as a control that failed to hold.
+    """
+    fault = run.get("fault")
+    if isinstance(fault, Mapping):
+        return bool(fault.get("exercised"))
+    return bool(run.get("repeated_identical_failure"))
+
+
 def _control_rate(runs: list[dict[str, Any]]) -> Optional[float]:
-    """Return the fraction of protected controls that still terminated as expected.
+    """Return the fraction of exercised controls that still held.
 
     A protected negative control's verifier is the case's own statement of
     what "as expected" means, so the control holds when that verifier
     **confirms** the trial. A control that was never exercised — the agent
-    never put the harness in the situation the control is about — does not
-    hold, and the comparison reports the per-run classification so a reader
-    can tell "the control did not hold" from "the control never ran".
+    never put the harness in the situation the control is about — is excluded
+    rather than counted as a control that failed to hold, and when no control
+    was exercised the metric is **unmeasured**, not zero: "we did not see it
+    happen" is not "it went wrong".
 
     Counting the *absence* of a solved task instead would be vacuous here: a
     control's task is impossible by construction, so it is never solved and
     the rate would always be 1.0.
     """
     controls = [run for run in runs if bool(run.get("protected"))]
-    if not controls:
+    exercised = [run for run in controls if _control_exercised(run)]
+    if not exercised:
         return None
-    return sum(1 for run in controls if run.get("verifier_confirmed")) / len(controls)
+    return sum(1 for run in exercised if run.get("verifier_confirmed")) / len(exercised)
+
+
+def _control_exercise_counts(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return how many controls ran and how many of them were exercised."""
+    controls = [run for run in runs if bool(run.get("protected"))]
+    exercised = [run for run in controls if _control_exercised(run)]
+    return {"controls": len(controls),
+            "exercised": len(exercised),
+            "held": sum(1 for run in exercised if run.get("verifier_confirmed")),
+            "never_exercised": [run.get("case_id") for run in controls
+                                if not _control_exercised(run)]}
 
 
 def _success_rate(runs: list[dict[str, Any]]) -> Optional[float]:
@@ -524,14 +761,22 @@ def _success_rate(runs: list[dict[str, Any]]) -> Optional[float]:
     """
     if not runs:
         return None
+    # An infrastructure error is an **unmeasured** trial: the harness, the
+    # daemon or the transport failed before the trial could produce an
+    # observation, so it says nothing about the candidate. It is excluded from
+    # the denominator rather than counted as a failure — and a retried trial
+    # does not add a second row to it.
+    measured = [run for run in runs if run.get("terminal") != "infrastructure_error"]
+    if not measured:
+        return None
     good = 0
-    for run in runs:
+    for run in measured:
         if run.get("terminal") != "completed":
             continue
         if run.get("terminal_failure"):
             continue
         good += 1
-    return good / len(runs)
+    return good / len(measured)
 
 
 def _median_duration_ms(runs: list[dict[str, Any]]) -> Optional[float]:
@@ -575,6 +820,11 @@ def compare_runs(contract: scoring.ScoreContract,
             "baseline_cases": len(baseline),
             "candidate_cases": len(candidate),
             "paired_case_ids": paired,
+            # How many protected controls ran and how many of them were
+            # actually exercised. A control that never ran is named here
+            # rather than hidden inside an average.
+            "controls": {"baseline": _control_exercise_counts(baseline),
+                         "candidate": _control_exercise_counts(candidate)},
             # The measured values, so a reader can see what moved and what
             # did not. A verdict without its numbers is an assertion.
             "observations": {

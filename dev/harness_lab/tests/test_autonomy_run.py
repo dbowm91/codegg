@@ -30,20 +30,27 @@ def _case(case_id: str) -> autonomy.AutonomyCase:
 
 def _run(case_id: str, solved: bool, protected: bool = False,
          terminal: str = "completed", duration_ms: int = 1000) -> dict:
+    # A protected control run stands for a control the harness *did* put the
+    # trial in the situation of, so it is marked as exercised.
     return {"case_id": case_id, "solved": solved, "protected": protected,
             "terminal": terminal, "verifier_confirmed": solved,
-            "duration_ms": duration_ms}
+            "duration_ms": duration_ms, "repeated_identical_failure": protected}
 
 
-def _control_run(holds: bool) -> dict:
+def _control_run(holds: bool, exercised: bool = True) -> dict:
     """Return a protected control run whose verifier holds, or does not.
 
     A control holds when its own verifier confirms the trial. The control's
     task is impossible, so it is never "solved".
+
+    ``exercised`` says whether the harness actually put the trial in the
+    situation the control is about. A control that was never exercised is not
+    counted as a control that failed to hold.
     """
     return {"case_id": "control", "solved": False, "protected": True,
             "terminal": "stalled" if holds else "completed",
-            "verifier_confirmed": holds, "duration_ms": 1000}
+            "verifier_confirmed": holds, "duration_ms": 1000,
+            "repeated_identical_failure": exercised}
 
 
 class BuildTranscriptTests(unittest.TestCase):

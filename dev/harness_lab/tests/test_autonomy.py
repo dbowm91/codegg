@@ -114,11 +114,14 @@ class ShippedManifestTests(unittest.TestCase):
         self.assertGreaterEqual(len(members), 2)
         protected = [case for case in members if case.protected]
         tasks = [case for case in members if not case.protected]
-        self.assertEqual(len(protected), 1)
+        self.assertGreaterEqual(len(protected), 1)
         self.assertTrue(tasks)
-        control = protected[0]
-        self.assertEqual(control.group_id, tasks[0].group_id)
-        self.assertIn("stall", control.title.lower())
+        for control in protected:
+            self.assertEqual(control.group_id, tasks[0].group_id)
+            self.assertIn("control", control.title.lower())
+        # The group carries a control about the stall itself, beside the
+        # control that induces the repeated failure.
+        self.assertTrue(any("stall" in control.title.lower() for control in protected))
 
     def test_supported_cases_declare_an_independently_executable_verifier(self) -> None:
         self.assertTrue(self.suite.supported_cases())

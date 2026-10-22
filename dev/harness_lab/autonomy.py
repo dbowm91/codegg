@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from . import faults
+
 AUTONOMY_SCHEMA_VERSION = 1
 
 #: The six separately scoped case families named by the plan's work package A.
@@ -64,9 +66,9 @@ MANIFEST_RELPATH = "dev/harness_lab/fixtures/agent_autonomy/cases.jsonl"
 _CASE_KEYS = frozenset({
     "schema_version", "case_id", "family", "group_id", "title", "prompt",
     "verifier", "verifier_scope", "budget", "abort", "allowed_tools",
-    "network", "protected", "support", "deferral_reason",
+    "network", "protected", "support", "deferral_reason", "fault",
 })
-_REQUIRED_CASE_KEYS = tuple(sorted(_CASE_KEYS - {"deferral_reason"}))
+_REQUIRED_CASE_KEYS = tuple(sorted(_CASE_KEYS - {"deferral_reason", "fault"}))
 _VERIFIER_KEYS = frozenset({"kind", "command", "cwd"})
 _BUDGET_KEYS = frozenset({"max_provider_requests", "max_tool_calls",
                           "max_wallclock_seconds", "max_cost_usd"})
@@ -180,6 +182,7 @@ class AutonomyCase:
     protected: bool
     support: str
     deferral_reason: Optional[str]
+    fault: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.family not in SUPPORTED_FAMILIES:
@@ -212,7 +215,8 @@ class AutonomyCase:
                 "network": network,
                 "protected": self.protected,
                 "support": self.support,
-                "deferral_reason": self.deferral_reason}
+                "deferral_reason": self.deferral_reason,
+                "fault": dict(self.fault) if isinstance(self.fault, Mapping) else None}
 
 
 @dataclass(frozen=True)
@@ -353,6 +357,22 @@ def _validate_allowed_tools(value: Any, label: str) -> Tuple[str, ...]:
     return tuple(tools)
 
 
+def _validate_fault(value: Any, label: str) -> Optional[Dict[str, Any]]:
+    """Return the validated fault declaration, or None when the case has none.
+
+    A fault is optional. When it is declared it is validated by the seam that
+    will apply it, so a declaration the seam cannot honour is refused here —
+    before a provider is reached — rather than discovered mid-trial.
+    """
+    if value is None:
+        return None
+    try:
+        spec = faults.FaultSpec.parse(value)
+    except faults.FaultError as error:
+        raise ValueError(f"{label} fault is invalid: {error}") from error
+    return spec.as_dict()
+
+
 def _case_from_mapping(mapping: Mapping[str, Any], line_number: int) -> AutonomyCase:
     """Validate one manifest record and return the frozen case."""
     raw_id = mapping.get("case_id")
@@ -388,6 +408,7 @@ def _case_from_mapping(mapping: Mapping[str, Any], line_number: int) -> Autonomy
     allowed_tools = _validate_allowed_tools(mapping["allowed_tools"], label)
     network = _validate_network(mapping["network"], label)
     protected = _require_bool(mapping["protected"], f"{label} protected")
+    fault = _validate_fault(mapping.get("fault"), label)
 
     support = mapping["support"]
     if support not in SUPPORT_MODES:
@@ -403,7 +424,7 @@ def _case_from_mapping(mapping: Mapping[str, Any], line_number: int) -> Autonomy
                          prompt=prompt, verifier=verifier, verifier_scope=verifier_scope,
                          budget=budget, abort=abort, allowed_tools=allowed_tools,
                          network=network, protected=protected, support=support,
-                         deferral_reason=deferral_reason)
+                         deferral_reason=deferral_reason, fault=fault)
 
 
 def load_autonomy_suite(root: Optional[Path] = None) -> AutonomySuite:
