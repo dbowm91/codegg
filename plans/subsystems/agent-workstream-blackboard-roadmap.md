@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004, M006, M007 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005 active for checkout-scoped writer-containment feasibility and qualification. Its writer-containment corrective closed **C001–C006** on 2026-10-21, with **C006 conditional**: the restricted shared checkout is now a real, opt-in, platform-gated path (Linux and macOS qualified on native containment evidence; Windows disabled with a named reason), while the WorkOrder `shared`/`serialized` mutation policy still fails closed. M007 per-workspace build admission and M006 isolated session/worktree UX are both closed (2026-10-19). M008's isolated arms are eligible; its shared-checkout arm stays blocked on M005's named re-entry conditions — the absent Windows native backend, and a live two-agent race inside one daemon process. The macOS native containment evidence is **closed** (hosted lane run `39616896281` passed on 2026-10-21, `macos` joined the qualified table on that evidence, and the lane was re-run **on the flip itself** — `39627440691` — passing again with the gate asserting *available* on macOS).
+Status: active; M001–M004, M006, M007 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005 active for checkout-scoped writer-containment feasibility and qualification. Its writer-containment corrective closed **C001–C006** on 2026-10-21, with **C006 conditional**: the restricted shared checkout is now a real, opt-in, platform-gated path (Linux and macOS qualified on native containment evidence; Windows disabled with a named reason), while the WorkOrder `shared`/`serialized` mutation policy still fails closed. M007 per-workspace build admission and M006 isolated session/worktree UX are both closed (2026-10-19). **M008 closed on 2026-10-22** with its contract matrix frozen and guarded, its five configurations qualified against that matrix, and its measured comparison published with its denominators; the shared-checkout arm (S4) is qualified on Linux and macOS and **unrun on Windows**, where the shared profile has no filesystem-enforcement backend at all. M008 claims no live-model performance and no live two-agent daemon race — both are recorded as named non-claims. The macOS native containment evidence is **closed** (hosted lane run `39616896281` passed on 2026-10-21, `macos` joined the qualified table on that evidence, and the lane was re-run **on the flip itself** — `39627440691` — passing again with the gate asserting *available* on macOS).
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -69,10 +69,10 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             +-- M006 isolated session/worktree launch UX          [closed; M005 not required]
             +-- M007 per-workspace build admission                [closed; M005 not required]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
-            +-- M008 broad trajectory and economics                [isolated arms eligible; shared-checkout arm eligible on Linux and macOS since C006; unrun on Windows]
+            +-- M008 broad trajectory and economics                [closed; S4 qualified on Linux and macOS, unrun on Windows]
 ~~~
 
-M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. M005 became active after strict M004 closure and ADR-0032 acceptance; its shared-write capability remains gated on effective writer containment, which the corrective now provides on Linux and leaves conditional elsewhere. M006's isolated session ownership and M007's per-workspace scheduler quota do not depend on shared writes and may proceed alongside M005. M010 qualifies the closed M003/M004 substrate on isolated checkouts. M008 retains broad comparative and economic requirements; M006 and M007 both closed their half of that gate on 2026-10-19, so its isolated arms are eligible, while its shared-checkout arm stays blocked on M005.
+M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. M005 became active after strict M004 closure and ADR-0032 acceptance; its shared-write capability remains gated on effective writer containment, which the corrective now provides on Linux and leaves conditional elsewhere. M006's isolated session ownership and M007's per-workspace scheduler quota do not depend on shared writes and may proceed alongside M005. M010 qualifies the closed M003/M004 substrate on isolated checkouts. M008 retained broad comparative and economic requirements; M006 and M007 both closed their half of that gate on 2026-10-19, and C006 discharged the shared-checkout gate for Linux and macOS, so M008 closed on 2026-10-22 with its shared-checkout arm qualified on those platforms and unrun on Windows.
 
 ## Milestones / deliverables
 
@@ -157,11 +157,33 @@ M010 closed the deterministic claim/worktree/Rust/Python/integration trajectory.
 Plan: `plans/implementation/agent-workstream-blackboard/010-isolated-rust-python-trajectory.md`.
 Closure: `plans/closure/agent-workstream-blackboard/010-status.md`.
 
-### M008 — Comparative validation and closure (isolated arms eligible; shared-checkout arm eligible on Linux and macOS since C006)
+### M008 — Comparative validation and closure (closed; S4 qualified on Linux and macOS, unrun on Windows)
 
 Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware using identical task/evaluation budgets; include Rust and Python fixtures, overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Any shared checkout arm runs only on a platform where M005 qualified it — Linux and macOS since C006 — and is marked unrun elsewhere; never emulate shared writes unsafely. Deterministic traces support CI; provider-backed experiments are separately reported. Negative/no-improvement results must be reported without hiding them.
 
 Plan: plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md
+Closure: plans/closure/agent-workstream-blackboard/008-status.md
+
+**Closed 2026-10-22.** M008's first work package was to freeze the contract
+every comparison arm runs against, and that freeze is now a document and a
+guard: `architecture/blackboard_contract_matrix.md` names the six capabilities
+the blackboard added, the authority that owns each one and the **production**
+consumer that exercises it, and `scripts/check_blackboard_contract_matrix.py`
+fails when a capability loses its production consumer, when a consumer
+retreated into a test-only module, or when a row goes empty. The five
+configurations are qualified against that matrix: S0 performs no blackboard
+work at all, S1's worktree isolation is unchanged, S2/S3's peer observations
+attribute the actual peer action and stay untrusted data, S3's claim
+arbitration yields exactly one owner without widening a scope, and S4 places
+two children on one shared checkout with the real writer fence serializing
+them and both commits Git-verified. The measured comparison is published with
+its denominators and its negative cases, and the Rust target-directory
+contention measurement shows what M007's counted quota buys: the serialized
+arm cannot wait for a lock it never contends for, while the concurrent arm's
+second build does. The shared-checkout arm is **qualified on Linux and macOS
+and unrun on Windows**, where the shared profile has no filesystem-enforcement
+backend at all. M008 makes **no** live-model performance claim and **no** live
+two-agent daemon-race claim; both are recorded as named non-claims.
 
 ## Security, persistence, protocol and operations
 
@@ -179,4 +201,4 @@ Stop and create a new corrective plan if acceptance needs a second admission aut
 
 ## Registry/unblock responsibility
 
-After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009 and ADR-0032 was accepted on 2026-10-15, making M005 eligible and active for containment feasibility and qualification. The shared-write capability remains unavailable until writer-path containment is verified. M010 is closed with deterministic functional evidence only; it unblocks no new milestone. M008 broad comparison waits on M006, with any shared-checkout arm separately gated by M005 — a gate C006 discharged on 2026-10-21 for Linux and macOS, where the shared checkout is now a real opt-in path; the arm stays unrun on Windows. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
+After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009 and ADR-0032 was accepted on 2026-10-15, making M005 eligible and active for containment feasibility and qualification. The shared-write capability remains unavailable until writer-path containment is verified. M010 is closed with deterministic functional evidence only; it unblocks no new milestone. M008 broad comparison waited on M006, with any shared-checkout arm separately gated by M005 — a gate C006 discharged on 2026-10-21 for Linux and macOS, where the shared checkout is now a real opt-in path; the arm stayed unrun on Windows. **M008 closed on 2026-10-22** with the contract matrix frozen and guarded, the five configurations qualified against it, and the measured comparison published with its denominators. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.

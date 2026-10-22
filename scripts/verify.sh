@@ -140,6 +140,12 @@ run_quick() {
     echo "==> python3 scripts/check_shared_checkout.py"
     (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py)
 
+    echo "==> python3 scripts/check_blackboard_contract_matrix.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_blackboard_contract_matrix.py --self-test)
+
+    echo "==> python3 scripts/check_blackboard_contract_matrix.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_blackboard_contract_matrix.py)
+
     echo "==> python3 scripts/check_audit_coverage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_audit_coverage.py)
 

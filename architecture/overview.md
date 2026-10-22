@@ -116,6 +116,7 @@ The agent layer owns the execution cycle: receiving user input, routing through 
 | Research | Structured research pipeline: sources → evidence → claims → verification | [research.md](research.md) |
 | Work Orders / Work Plan | Durable work-order lifecycle and plan item tracking | [work_orders.md](work_orders.md), [work_plan.md](work_plan.md) |
 | Model Profile / Task State | Model behavioral profiles, todo/task state machine, injection and projection | [model_profile_task_state.md](model_profile_task_state.md) |
+| Blackboard Contract Matrix | The frozen comparison baseline for the multi-agent workstream: the six capabilities, their authorities, their production consumers, and the S0–S4 configuration table | [blackboard_contract_matrix.md](blackboard_contract_matrix.md) |
 
 ### Tool Layer — Capabilities and Execution
 
@@ -296,7 +297,7 @@ the branch's last measurement:
 - **Built-in slash commands** is 168, matching the tripwire
   `built_in_command_count_matches_release_docs` asserts; `main`'s
   Eggwork M002 `/nodes` and this branch's `/network` each moved it.
-- **Integration test files** is 296.
+- **Integration test files** is 300.
 - **Database tables (`CREATE TABLE`)** is 95 statements over 92 distinct
   names — `migration_version`, `origin_attribution` and the transient
   `origin_attribution_new` rebuild each appear twice — so the table
@@ -423,14 +424,14 @@ The remaining rows were re-measured against their own listed `Source` and did
 not move. The enum-variant measure was calibrated against the tree those values
 were published against before it was applied, as in the passes above, and the
 file-count measure reproduces both sides' published values exactly — 290 test
-files, 83 tool source files, 90 architecture docs and 65 guard scripts on this
+files, 83 tool source files, 91 architecture docs and 67 guard scripts on this
 branch, 286 / 80 / 87 / 62 on `main` — before it was applied to the merged
 tree.
 
 
 | Item | Count | Source |
 |------|-------|--------|
-| Architecture docs | 90 | `architecture/*.md` |
+| Architecture docs | 91 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 67 (54 `register` + 13 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
 | Distinct production tool names | 61 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (66 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 7 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`) |
 | Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`) |
@@ -452,8 +453,8 @@ tree.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 296 | `tests/*.rs` |
-| CI guard scripts | 65 | `scripts/check_*` |
+| Integration test files | 300 | `tests/*.rs` |
+| CI guard scripts | 67 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -561,6 +562,7 @@ Every architecture document in this directory, grouped by theme.
 - [Work Plan](work_plan.md) — plan item tracking
 - [Exec](exec.md) — non-interactive execution mode
 - [Model Profile & Task State](model_profile_task_state.md) — behavioral profiles, todo/task state
+- [Blackboard Contract Matrix](blackboard_contract_matrix.md) — the frozen comparison baseline for the multi-agent workstream
 
 ### Context and Compaction
 - [Compaction](compaction.md) — context-window overflow management
@@ -765,6 +767,8 @@ The two file-count rows were **remeasured once more on 2026-10-20** when the TUI
 Two rows moved again on **2026-10-20** when the M005 writer-containment corrective closed C005 (process and persistent-service deny contract): `codegg-core` modules are **51** (`pub mod` in `crates/codegg-core/src/lib.rs` — the count moved by one, the new `process_admission` module that owns the authoritative process admission state and the live persistent-process registry) and integration test files are **282** (`ls tests/*.rs` — the count moved by one, `tests/process_denial_c005.rs`). CI guard scripts are **64** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_process_denial.py`). The immediately preceding row's C004 measurement (`codegg-core` **50**, test files **281**, guard scripts **63**) was correct for its own tree and is superseded here.
 
 Three rows moved again on **2026-10-21** when the M005 writer-containment corrective closed C006 (restricted shared-checkout qualification), and one row was **corrected rather than incremented**: `codegg-core` modules are **53** (`pub mod` in `crates/codegg-core/src/lib.rs` — the count moved by two, the new `run_placement` module that owns the durable placement type and the platform availability gate, and the new `shared_checkout` module that owns the group's shared-checkout coordinator); integration test files are **283** (`ls tests/*.rs` — the count moved by one, `tests/shared_checkout_c006.rs`); CI guard scripts are **65** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_shared_checkout.py`). The **tool source files** row was **stale**: it read 81, but the C005 pass added `src/tool/process_admission.rs` and `src/tool/process_capability.rs` without re-measuring the row. Re-measured against its listed `Source` (`src/tool/**.rs`, incl. `bash/`) it is **83**. The table above now carries the measured values; the earlier rows remain correct for their own trees.
+
+Three rows moved again on **2026-10-22** when the agent-workstream blackboard closed M008 (comparative trajectory and economics qualification), and no row changed for any other reason: architecture docs are **91** (`architecture/*.md` — the count moved by one, the new `architecture/blackboard_contract_matrix.md`, which freezes the comparison baseline for the multi-agent workstream); integration test files are **300** (`ls tests/*.rs` — the count moved by two, `tests/blackboard_trajectory_m008.rs` and `tests/blackboard_economics_m008.rs`); CI guard scripts are **67** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_blackboard_contract_matrix.py`, which keeps that matrix frozen). These rows were measured on the branch's own base and then **remeasured on the tree this branch lands on**: `main` had advanced past the M005 merge and added two integration test files (`tests/host_admission_manifest.rs`, `tests/tool_program_c002_delegated_ceiling.rs`) and one guard (`scripts/check_network_intent_owner_wiring.py`), so the two file-count rows are the union of both sides' contributions and the architecture-doc row is M008's alone. M008 added no production code and no schema migration, so **every code-count row is unchanged**; each was re-checked against its listed `Source` rather than assumed. The shared fixture the two M008 suites use lives at `tests/common/blackboard.rs`, which the `tests/*.rs` Source does not count — the row measures top-level integration test binaries, not the support module beneath `tests/common/`.
 
 Every other row was re-checked against its listed `Source` and is unchanged.
 
