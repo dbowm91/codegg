@@ -488,13 +488,36 @@ class ScoreContractTests(unittest.TestCase):
         self.assertIsNotNone(outcome.score)
         self.assertEqual(scored["evidence_pairs"], len(SCORING_CASES))
 
-    def test_reliability_only_improvement_is_accepted_with_a_reliability_objective(self) -> None:
+    def test_a_reliability_only_improvement_is_rejected_but_still_reported(self) -> None:
+        # A candidate that removed one avoidable tool failure but left the
+        # task failing has not remediated a defect: the acceptance rule is a
+        # correctness improvement. The movement is still reported, because it
+        # happened; it just cannot carry the acceptance.
         candidate = _baseline_rows("candidate")
         candidate[("task-flaky", 0)] = _trial_row("candidate", "task-flaky", 0, "timeout", 100)
         outcome = self._scored(candidate)["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_REJECTED)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_NONE)
+        primary, reasons = decision_reasons(outcome)
+        self.assertEqual(primary, "no_substantive_criterion_improved")
+        self.assertIn("reliability_criterion_improved", reasons)
+        self.assertNotIn("correctness_criterion_improved", reasons)
+
+    def test_a_predeclared_reliability_contract_can_accept_a_reliability_improvement(self) -> None:
+        contract = scoring.ScoreContract(
+            version=scoring.SCORE_CONTRACT_VERSION,
+            criteria=(
+                scoring.Criterion(id="correctness.pass_rate", kind="correctness",
+                                  direction="higher_is_better"),
+                scoring.Criterion(id="reliability.success_rate", kind="reliability",
+                                  direction="higher_is_better", improvement_accepts=True),
+            ))
+        candidate = _baseline_rows("candidate")
+        candidate[("task-flaky", 0)] = _trial_row("candidate", "task-flaky", 0, "timeout", 100)
+        outcome = score_candidate_trials(SCORING_CASES, _baseline_rows(), candidate,
+                                         contract=contract)["outcome"]
         self.assertEqual(outcome.decision, scoring.DECISION_ACCEPTED)
         self.assertEqual(outcome.objective, scoring.OBJECTIVE_RELIABILITY)
-        self.assertNotIn("correctness_criterion_improved", outcome.reasons)
 
     def test_protected_control_regression_is_rejected_even_with_other_improvements(self) -> None:
         candidate = _baseline_rows("candidate")
@@ -546,6 +569,51 @@ class ScoreContractTests(unittest.TestCase):
         primary, reasons = decision_reasons(outcome)
         self.assertEqual(primary, "no_criterion_improved")
         self.assertIn("no_criterion_improved", reasons)
+
+    def test_a_negative_control_that_must_fail_is_not_a_reliability_failure(self) -> None:
+        # The control's declared expectation IS an avoidable failure: it
+        # failed exactly as the suite requires. It is excluded from the
+        # reliability metric, so a candidate that stopped the control from
+        # failing cannot buy a reliability improvement with it.
+        cases = SCORING_CASES + [{"schema_version": 1, "task_id": "control-stall",
+                                  "group_id": GROUP_ID, "expected_terminal": "execution_failed"}]
+        baseline = dict(_baseline_rows())
+        candidate = dict(_baseline_rows("candidate"))
+        baseline[("control-stall", 0)] = _trial_row("baseline", "control-stall", 0,
+                                                    "execution_failed", 100)
+        candidate[("control-stall", 0)] = _trial_row("candidate", "control-stall", 0,
+                                                     "execution_failed", 100)
+        scored = score_candidate_trials(cases, baseline, candidate)
+        reliability = next(observation for observation in scored["candidate_observations"]
+                           if observation.criterion_id == "reliability.success_rate")
+        # Five trials where an unexpected avoidable failure is possible; the
+        # control that must fail is outside the metric. One of the five did
+        # end in an avoidable failure.
+        self.assertEqual(reliability.value, 4 / 5)
+        # Making the negative control stop failing does not move the metric.
+        broken = dict(candidate)
+        broken[("control-stall", 0)] = _trial_row("candidate", "control-stall", 0, "passed", 100)
+        scored = score_candidate_trials(cases, baseline, broken)
+        reliability = next(observation for observation in scored["candidate_observations"]
+                           if observation.criterion_id == "reliability.success_rate")
+        self.assertEqual(reliability.value, 4 / 5)
+
+    def test_a_candidate_that_only_changed_the_duration_is_not_accepted(self) -> None:
+        # The defect this guards: a candidate that fixed nothing — no
+        # correctness result moved, no reliability result moved, every
+        # negative control held — was accepted because the advisory duration
+        # criterion happened to improve by a margin. A marginal latency win
+        # over a candidate that does the same work is not an improvement.
+        candidate = _baseline_rows("candidate")
+        for row in candidate.values():
+            row["metrics"]["wall_time_ms"] = 50
+        outcome = self._scored(candidate)["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_REJECTED)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_NONE)
+        primary, reasons = decision_reasons(outcome)
+        self.assertEqual(primary, "no_substantive_criterion_improved")
+        self.assertIn("efficiency_criterion_improved", reasons)
+        self.assertEqual(outcome.protected_violations, ())
 
     def test_unmeasured_trial_never_maps_to_zero(self) -> None:
         durations = {("task-pass", 0): 400, ("task-defect", 0): 100, ("task-flaky", 0): 200,

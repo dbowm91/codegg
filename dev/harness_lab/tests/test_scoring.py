@@ -50,13 +50,25 @@ class DefaultContractTests(unittest.TestCase):
         self.assertIn("correctness.pass_rate", encoded)
         self.assertEqual(contract_from_mapping(contract.as_dict()), contract)
 
+    def test_the_default_contract_never_accepts_on_an_advisory_criterion(self) -> None:
+        contract = default_contract()
+        # A protected control is a guard: it never carries an acceptance, so
+        # it is excluded from the set of criteria that can.
+        accepting = {criterion.id for criterion in contract.criteria
+                     if criterion.improvement_accepts and not criterion.protected}
+        self.assertEqual(accepting, {"correctness.pass_rate"})
+        advisory = {criterion.id for criterion in contract.criteria
+                    if not criterion.improvement_accepts}
+        self.assertEqual(advisory, {"reliability.success_rate", "efficiency.duration_ms"})
+
 
 class ObjectiveTests(unittest.TestCase):
     def _contract(self):
         return _contract([
             Criterion(id="correctness.pass_rate", kind="correctness", direction="higher_is_better"),
             Criterion(id="reliability.success_rate", kind="reliability", direction="higher_is_better"),
-            Criterion(id="efficiency.duration_ms", kind="efficiency", direction="lower_is_better"),
+            Criterion(id="efficiency.duration_ms", kind="efficiency", direction="lower_is_better",
+                      improvement_accepts=True),
         ])
 
     def test_correctness_improvement_is_accepted_as_a_correctness_fix(self) -> None:
@@ -97,6 +109,67 @@ class ObjectiveTests(unittest.TestCase):
         self.assertEqual(outcome.decision, DECISION_ACCEPTED)
         self.assertEqual(outcome.objective, OBJECTIVE_EFFICIENCY)
         self.assertIn("efficiency_criterion_improved", outcome.reasons)
+
+
+class SubstantiveImprovementTests(unittest.TestCase):
+    """An acceptance must rest on a substantive improvement.
+
+    A candidate that changed no measured outcome but happened to run a
+    marginal amount faster is not an improvement. A millisecond-scale
+    artifact must never buy an acceptance, because a candidate that exits
+    early or changes nothing looks exactly like that.
+    """
+
+    def _sides(self, correctness: float, reliability: float, duration: float) -> tuple:
+        baseline = [_obs("correctness.pass_rate", 0.5), _obs("reliability.success_rate", 0.9),
+                    _obs("efficiency.duration_ms", 1000.0), _obs("control.no_regression", 1.0)]
+        candidate = [_obs("correctness.pass_rate", correctness),
+                     _obs("reliability.success_rate", reliability),
+                     _obs("efficiency.duration_ms", duration),
+                     _obs("control.no_regression", 1.0)]
+        return baseline, candidate
+
+    def test_an_advisory_only_improvement_is_rejected(self) -> None:
+        baseline, candidate = self._sides(0.5, 0.9, 700.0)
+        outcome = score_candidate(default_contract(), baseline, candidate, evidence_pairs=13)
+        self.assertEqual(outcome.decision, DECISION_REJECTED)
+        self.assertEqual(outcome.objective, OBJECTIVE_NONE)
+        self.assertIn("no_substantive_criterion_improved", outcome.reasons)
+        # The advisory movement is still reported: it happened.
+        self.assertIn("efficiency_criterion_improved", outcome.reasons)
+
+    def test_an_advisory_improvement_does_not_hide_a_substantive_one(self) -> None:
+        baseline, candidate = self._sides(1.0, 0.9, 700.0)
+        outcome = score_candidate(default_contract(), baseline, candidate, evidence_pairs=13)
+        self.assertEqual(outcome.decision, DECISION_ACCEPTED)
+        self.assertEqual(outcome.objective, OBJECTIVE_CORRECTNESS_FIX)
+        self.assertIn("efficiency_criterion_improved", outcome.reasons)
+        self.assertNotIn("no_substantive_criterion_improved", outcome.reasons)
+
+    def test_a_predeclared_latency_campaign_can_still_accept(self) -> None:
+        contract = _contract([
+            Criterion(id="correctness.pass_rate", kind="correctness", direction="higher_is_better"),
+            Criterion(id="reliability.success_rate", kind="reliability", direction="higher_is_better"),
+            Criterion(id="efficiency.duration_ms", kind="efficiency", direction="lower_is_better",
+                      regression_blocks=False, improvement_accepts=True),
+        ])
+        baseline, candidate = self._sides(0.5, 0.9, 700.0)
+        outcome = score_candidate(contract, baseline, candidate, evidence_pairs=13)
+        self.assertEqual(outcome.decision, DECISION_ACCEPTED)
+        self.assertEqual(outcome.objective, OBJECTIVE_EFFICIENCY)
+        self.assertIn("efficiency_criterion_improved", outcome.reasons)
+
+    def test_a_non_bool_improvement_accepts_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            Criterion(id="x", kind="efficiency", direction="lower_is_better",
+                      improvement_accepts="yes")
+
+    def test_the_improvement_floor_round_trips_through_a_mapping(self) -> None:
+        contract = contract_from_mapping(default_contract().as_dict())
+        self.assertEqual(
+            {criterion.id: criterion.improvement_accepts for criterion in contract.criteria},
+            {criterion.id: criterion.improvement_accepts
+             for criterion in default_contract().criteria})
 
 
 class ProtectedControlTests(unittest.TestCase):
@@ -209,10 +282,18 @@ class ContractStrictnessTests(unittest.TestCase):
         return mapping
 
     def test_unsupported_contract_version_is_rejected(self) -> None:
-        for version in (0, 2, SCORE_CONTRACT_VERSION + 1):
+        for version in (0, 1, SCORE_CONTRACT_VERSION + 1):
             with self.subTest(version=version):
                 with self.assertRaises(ValueError):
                     contract_from_mapping(self._mapping(version=version))
+
+    def test_the_previous_contract_version_is_refused_not_reinterpreted(self) -> None:
+        # Version 1 decided acceptance on an advisory criterion alone. The
+        # version boundary is explicit: a v1 contract is not silently read as
+        # a v2 contract with different decision semantics.
+        mapping = self._mapping(version=1)
+        with self.assertRaises(ValueError):
+            contract_from_mapping(mapping)
 
     def test_missing_version_is_rejected(self) -> None:
         mapping = self._mapping()
@@ -231,6 +312,12 @@ class ContractStrictnessTests(unittest.TestCase):
     def test_unknown_criterion_key_is_rejected(self) -> None:
         mapping = self._mapping()
         mapping["criteria"][0]["extra"] = "value"
+        with self.assertRaises(ValueError):
+            contract_from_mapping(mapping)
+
+    def test_a_non_bool_improvement_accepts_is_rejected(self) -> None:
+        mapping = self._mapping()
+        mapping["criteria"][0]["improvement_accepts"] = "yes"
         with self.assertRaises(ValueError):
             contract_from_mapping(mapping)
 

@@ -736,6 +736,7 @@ SCORE_REASON_ACCEPTED = "accepted_by_score_contract"
 SCORE_REASON_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 SCORE_REASON_PROTECTED_CONTROL_REGRESSED = "protected_control_regressed"
 SCORE_REASON_NO_IMPROVEMENT = "no_criterion_improved"
+SCORE_REASON_NO_SUBSTANTIVE_IMPROVEMENT = "no_substantive_criterion_improved"
 SCORE_REASON_CRITERION_REGRESSED = "criterion_regressed"
 
 
@@ -840,7 +841,10 @@ def score_candidate_trials(cases: list[dict[str, Any]],
     * ``correctness.pass_rate`` — fraction of the *non-control* cases whose
       recorded terminal matched the expected terminal.
     * ``reliability.success_rate`` — fraction of the paired trials that did not
-      end in ``execution_failed`` or ``infrastructure_error``.
+      end in ``execution_failed`` or ``infrastructure_error``, over the trials
+      where an unexpected failure is possible. A case whose declared
+      expectation is itself an avoidable failure is excluded from the metric:
+      it failed as the suite requires.
     * ``efficiency.duration_ms`` — median observed duration of the paired
       trials that reported a duration on *both* sides.
     * ``control.no_regression`` — fraction of the protected negative controls
@@ -874,12 +878,32 @@ def score_candidate_trials(cases: list[dict[str, Any]],
                       if rows[key].get("terminal") == expected[key].get("expected_terminal", "passed"))
         return matched / len(keys)
 
+    # A case whose declared expectation is itself an avoidable failure — the
+    # negative control that must fail, with ``expected_terminal:
+    # "execution_failed"`` — failed exactly as the suite requires. It is not a
+    # failure of the candidate, so it is excluded from the reliability metric
+    # entirely: counting it would let a candidate that stopped the control
+    # from failing buy a reliability improvement, which is the plan's "do not
+    # turn a negative-control ``execution_failed`` into a false performance
+    # improvement" rule.
+    reliability_keys = [key for key in expected
+                        if expected[key].get("expected_terminal", "passed")
+                        not in AVOIDABLE_FAILURE_TERMINALS]
+
     def reliability_rate(rows: dict[tuple[str, int], dict[str, Any]]) -> float | None:
-        """Fraction of the paired trials that did not end in an avoidable failure."""
+        """Fraction of the paired trials that did not end in an avoidable failure.
+
+        The denominator is the trials where an *unexpected* avoidable failure
+        is possible. A case whose declared expectation is itself an avoidable
+        failure failed as the suite requires, so it is excluded rather than
+        counted as a failure.
+        """
         if not covers(rows, list(expected)):
             return None
-        return sum(1 for key in expected
-                   if rows[key].get("terminal") not in AVOIDABLE_FAILURE_TERMINALS) / len(expected)
+        if not reliability_keys:
+            return None
+        return sum(1 for key in reliability_keys
+                   if rows[key].get("terminal") not in AVOIDABLE_FAILURE_TERMINALS) / len(reliability_keys)
 
     duration_keys = [key for key in complete
                      if _observed_duration_ms(baseline_by_key[key]) is not None
@@ -934,6 +958,11 @@ def decision_reasons(outcome: Any) -> tuple[str, list[str]]:
         primary = SCORE_REASON_PROTECTED_CONTROL_REGRESSED
     elif "criterion_regressed" in outcome.reasons:
         primary = SCORE_REASON_CRITERION_REGRESSED
+    elif SCORE_REASON_NO_SUBSTANTIVE_IMPROVEMENT in outcome.reasons:
+        # Something moved, but only on an advisory criterion: a candidate that
+        # changed no measured outcome does not get an acceptance from a
+        # millisecond-scale artifact.
+        primary = SCORE_REASON_NO_SUBSTANTIVE_IMPROVEMENT
     else:
         primary = SCORE_REASON_NO_IMPROVEMENT
     reasons: list[str] = []

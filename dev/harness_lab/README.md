@@ -168,6 +168,54 @@ Without it, the supervisor creates an OS temporary experiment directory and
 removes it after cleanup. The output is a bounded JSON receipt on stdout;
 ACP stderr tails are capped at 64 KiB per child.
 
+## The score contract
+
+`dev/harness_lab/scoring.py` holds the versioned contract that decides whether a
+measured candidate is an acceptable improvement. It is deliberately standalone
+and pure — no I/O, no clock, no randomness, no network — and it lives under a
+path candidate patches may not touch, so a candidate cannot edit the contract
+that judges it.
+
+An acceptance rests on a **substantive** improvement: a criterion that declares
+`improvement_accepts` must have improved, and no blocking regression floor may
+have regressed. In the default contract that criterion is
+`correctness.pass_rate` alone, so a candidate is accepted for a **verified
+correctness improvement** — a non-control task that failed at baseline now
+meets its expected terminal.
+
+Everything else is measured and reported, but cannot *be* the acceptance:
+
+| Criterion | Measured | Carries an acceptance |
+|---|---|---|
+| `correctness.pass_rate` | yes | **yes** |
+| `reliability.success_rate` | yes | no |
+| `efficiency.duration_ms` (advisory) | yes | no |
+| `control.no_regression` (protected) | yes | never — it is a guard |
+
+So a candidate that merely got marginally faster is **rejected**
+(`no_substantive_criterion_improved`), and so is one that removed a single
+avoidable tool failure while leaving the task failing. Both movements are
+still reported in the receipt's reasons, so nothing is hidden — they simply do
+not buy an acceptance. A contract that genuinely runs a reliability or latency
+campaign declares that intent by setting `improvement_accepts` on the
+criterion it optimizes.
+
+Two rules keep the metrics honest:
+
+- A **protected negative control** that regresses rejects the candidate
+  outright, and it never contributes to an improvement, an objective, or the
+  weighted aggregate.
+- The **reliability rate's denominator excludes** every case whose declared
+  `expected_terminal` is itself an avoidable failure. The
+  `repeated-identical-read-error` control must fail; counting its expected
+  failure as an avoidable failure would let a candidate that stopped the
+  control from failing buy a reliability improvement.
+
+A missing measurement is never read as zero: an unmeasured criterion yields
+`insufficient_evidence` with no score. The contract's version moves when its
+decision semantics change, so an older contract is refused rather than
+reinterpreted.
+
 ## Live pilot and sustained scenarios
 
 `pilot` runs one live ACP turn against a real provider route and records the

@@ -28,9 +28,30 @@ Decision order
 3. A required criterion that is unmeasured on either side is
    ``insufficient_evidence``.
 4. Otherwise the weighted comparison decides ``accepted`` or ``rejected``:
-   the candidate must improve at least one comparable criterion and regress
-   none.
-5. The objective is classified from the measured improvements.
+   the candidate must improve at least one *substantive* comparable criterion
+   and regress none.
+5. The objective is classified from the substantive improvements.
+
+Substantive improvement
+------------------------
+An improvement is *substantive* when its criterion declares
+``improvement_accepts``. A criterion that declares it false is advisory: it
+records what moved without letting that movement carry the acceptance. The
+default contract declares both ``reliability.success_rate`` and
+``efficiency.duration_ms`` advisory, so a candidate is accepted only by a
+correctness result that actually moved — a defect that was remediated, not a
+failure that was relabelled or a millisecond-scale artifact. A median
+wall-clock delta is a fact about the machine that produced it, not evidence
+that the candidate did the task better; accepting on it alone would let a
+candidate that exited early — or changed nothing at all — buy an acceptance
+with a millisecond-scale artifact. A contract that genuinely targets
+reliability or latency must *predeclare* that intent by setting
+``improvement_accepts`` on the criterion it optimizes, which is the plan's
+"predeclared threshold" requirement made executable.
+
+The advisory floor is symmetric: a criterion whose regression does not block
+(``regression_blocks`` false) is advisory about improvement unless it says
+otherwise. A regression is recorded either way; only acceptance is gated.
 
 Objective semantics
 -------------------
@@ -50,7 +71,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-SCORE_CONTRACT_VERSION = 1
+SCORE_CONTRACT_VERSION = 2
 
 DECISION_ACCEPTED = "accepted"
 DECISION_REJECTED = "rejected"
@@ -66,7 +87,7 @@ CRITERION_DIRECTIONS = frozenset({"higher_is_better", "lower_is_better"})
 
 _CONTRACT_KEYS = frozenset({"version", "criteria", "minimum_evidence_pairs"})
 _CRITERION_KEYS = frozenset({"id", "kind", "direction", "weight", "protected", "required",
-                             "regression_blocks"})
+                             "regression_blocks", "improvement_accepts"})
 
 
 def _require_text(value: Any, name: str) -> str:
@@ -117,6 +138,14 @@ class Criterion:
         regression without blocking acceptance. This is the contract's
         regression floor: a correctness fix is not disqualified by a slightly
         slower run, while a correctness or reliability regression always is.
+    improvement_accepts: when true an improvement in this criterion is
+        *substantive* and can accept a candidate on its own. When false the
+        criterion is advisory: it records what moved without letting that
+        movement carry the acceptance. A marginal latency win over a
+        candidate that changed no measured outcome is not an improvement, so
+        the default contract declares the raw duration advisory and a
+        deliberate latency campaign must predeclare ``improvement_accepts``
+        on the criterion it optimizes.
     """
 
     id: str
@@ -126,6 +155,7 @@ class Criterion:
     protected: bool = False
     required: bool = True
     regression_blocks: bool = True
+    improvement_accepts: bool = True
 
     def __post_init__(self) -> None:
         _require_text(self.id, "criterion id")
@@ -137,6 +167,7 @@ class Criterion:
         _require_bool(self.protected, "criterion protected")
         _require_bool(self.required, "criterion required")
         _require_bool(self.regression_blocks, "criterion regression_blocks")
+        _require_bool(self.improvement_accepts, "criterion improvement_accepts")
 
 
 @dataclass(frozen=True)
@@ -180,7 +211,8 @@ class ScoreContract:
                               "weight": float(criterion.weight),
                               "protected": criterion.protected,
                               "required": criterion.required,
-                              "regression_blocks": criterion.regression_blocks}
+                              "regression_blocks": criterion.regression_blocks,
+                              "improvement_accepts": criterion.improvement_accepts}
                              for criterion in self.criteria]}
 
 
@@ -215,6 +247,14 @@ class ScoreOutcome:
     a missing measurement must never be representable as a zero score. It is
     also ``None`` when no criterion was comparable on both sides, because an
     undefined aggregate is not a zero aggregate.
+
+    ``objective`` names the objective the candidate's substantive improvements
+    satisfy. It is ``none`` when the outcome is ``insufficient_evidence`` (no
+    decision supports an objective), when a protected control regressed (a
+    safety regression is not an improvement objective, and a correctness fix
+    requires its mandatory controls to hold), and when only advisory criteria
+    improved (a movement that cannot carry an acceptance cannot name one
+    either).
     """
 
     decision: str
@@ -242,22 +282,34 @@ def default_contract() -> ScoreContract:
         confirmed at the candidate. This is the defect-fix signal.
     ``reliability.success_rate`` (reliability, higher is better): fraction of
         paired trials that completed without an avoidable tool failure, a
-        premature stall, or an infrastructure error.
+        premature stall, or an infrastructure error. It is **reported, not
+        accepting**: a candidate that removed one avoidable tool failure but
+        left the task failing has not remediated a defect, and a candidate
+        loop that accepts it would buy an acceptance by changing how a
+        failure is labelled.
     ``efficiency.duration_ms`` (efficiency, lower is better): median
         wall-clock duration of the paired trials. Its weight keeps a
         millisecond-scale metric commensurate with the ``[0, 1]`` rates in the
-        weighted aggregate.
+        weighted aggregate. It is **advisory in both directions**: a slower
+        run is recorded but does not disqualify a candidate that fixed a real
+        defect, and a faster run does not accept a candidate that fixed
+        nothing. A candidate is accepted only by a substantive improvement —
+        a correctness result that actually moved.
     ``control.no_regression`` (correctness, higher is better, protected):
         fraction of the protected negative-control cases that still terminate
         as expected. A candidate that breaks an expected denial, failure,
         cancellation, or timeout is a safety regression, not an improvement;
         the control is a guard, so it never counts toward the objective.
 
-    ``efficiency.duration_ms`` carries an advisory regression floor: a slower
-    run is recorded but does not by itself reject a candidate that fixed a
-    real defect. ``correctness.pass_rate`` and ``reliability.success_rate``
-    keep a blocking floor, so a candidate that trades correctness or
-    reliability for speed is rejected.
+    Only ``correctness.pass_rate`` accepts an improvement in the default
+    contract, because only a correctness result is a *defect remediation*:
+    a non-control task that failed at baseline now meets its expected
+    terminal. The milestone's acceptance rule is exactly that — a candidate
+    is accepted for a verified correctness improvement, and a candidate that
+    changed nothing else is rejected rather than celebrated. ``reliability``
+    and ``efficiency`` remain measured and reported, and a contract that
+    genuinely runs a reliability or latency campaign declares that intent by
+    setting ``improvement_accepts`` on the criterion it optimizes.
 
     ``minimum_evidence_pairs`` is 1. The orchestrator may raise it to the
     number of paired repeats it actually measured.
@@ -269,10 +321,11 @@ def default_contract() -> ScoreContract:
             Criterion(id="correctness.pass_rate", kind="correctness",
                       direction="higher_is_better", weight=1.0),
             Criterion(id="reliability.success_rate", kind="reliability",
-                      direction="higher_is_better", weight=1.0),
+                      direction="higher_is_better", weight=1.0,
+                      improvement_accepts=False),
             Criterion(id="efficiency.duration_ms", kind="efficiency",
                       direction="lower_is_better", weight=0.001,
-                      regression_blocks=False),
+                      regression_blocks=False, improvement_accepts=False),
             Criterion(id="control.no_regression", kind="correctness",
                       direction="higher_is_better", weight=1.0, protected=True),
         ))
@@ -319,7 +372,8 @@ def contract_from_mapping(mapping: Mapping[str, Any]) -> ScoreContract:
                                   weight=entry.get("weight", 1.0),
                                   protected=entry.get("protected", False),
                                   required=entry.get("required", True),
-                                  regression_blocks=entry.get("regression_blocks", True)))
+                                  regression_blocks=entry.get("regression_blocks", True),
+                                  improvement_accepts=entry.get("improvement_accepts", True)))
     return ScoreContract(version=version, criteria=tuple(criteria),
                          minimum_evidence_pairs=mapping.get("minimum_evidence_pairs", 1))
 
@@ -440,6 +494,11 @@ def score_candidate(contract: ScoreContract,
     regressed = [criterion for criterion in comparable
                  if _is_worse(criterion, candidate_by_id[criterion.id].value,
                               baseline_by_id[criterion.id].value)]
+    # An improvement is *substantive* when its criterion declares that an
+    # improvement may accept a candidate on its own. An advisory improvement is
+    # recorded but never carries the acceptance: a marginal latency win over a
+    # candidate that changed no measured outcome is not an improvement.
+    substantive = [criterion for criterion in improved if criterion.improvement_accepts]
 
     reasons = []
     objective = OBJECTIVE_NONE
@@ -451,10 +510,14 @@ def score_candidate(contract: ScoreContract,
                                  OBJECTIVE_EFFICIENCY)):
         if any(criterion.kind == kind for criterion in improved):
             reasons.append(reason)
-            if objective == OBJECTIVE_NONE:
-                objective = value
+        # The objective names what the *substantive* improvements satisfy. An
+        # advisory movement is reported, but it never names an objective.
+        if objective == OBJECTIVE_NONE and any(criterion.kind == kind for criterion in substantive):
+            objective = value
     if not improved:
         reasons.append("no_criterion_improved")
+    elif not substantive:
+        reasons.append("no_substantive_criterion_improved")
     # A regression only rejects the candidate when the criterion declares a
     # blocking floor. An advisory regression is recorded, because a defect
     # fix that is slightly slower is still a defect fix.
@@ -467,7 +530,9 @@ def score_candidate(contract: ScoreContract,
     if score is not None and baseline_score is not None and score < baseline_score:
         reasons.append("weighted_score_below_baseline")
 
-    # 5. Accepted only when something improved and no blocking floor regressed.
-    decision = DECISION_ACCEPTED if improved and not blocking_regressed else DECISION_REJECTED
+    # 5. Accepted only when something substantive improved and no blocking
+    #    floor regressed.
+    decision = (DECISION_ACCEPTED if substantive and not blocking_regressed
+                else DECISION_REJECTED)
     return ScoreOutcome(decision=decision, score=score, objective=objective,
                         reasons=tuple(reasons), protected_violations=())
