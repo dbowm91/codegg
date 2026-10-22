@@ -141,7 +141,110 @@ compiled exactly as before — the family still carries 325 tests on macOS,
 16 of them in `sandbox_containment::` — and on Windows the member is excluded,
 which is what happened before the families existed.
 
-## 3. Requirement-to-evidence matrix
+### 2.5 The Windows lane, and the `--exact` defect behind two red lanes
+
+The hosted Windows native probe contract lane is the one lane that never went
+green on this branch. It is worth being precise about **when** it went red,
+because the answer is not "the merge broke it".
+
+**The lane was already red before the merge, and `main`'s lane is green.**
+`origin/main`'s lane at `f4019a410` is run `39838658024`, `success`: it builds
+`--test windows_native_probe_contract` (1 test) and
+`--test windows_restricted_managed_process` (6 tests), and its sibling
+`windows-process-launcher.yml` run `39838658197` is `success` with
+`--test windows_process_launcher` → `8 passed`. Every one of the branch's six
+runs of that workflow failed, the earliest being run `39781219609` at
+`559eee514` — a **pre-merge** commit — which already failed with the eight
+compile errors §2.4 describes.
+
+The cause is the pre-merge workstream commit `4f89b4b05` (M004), not the merge.
+That commit repointed both Windows workflows at the whole `security_permission`
+family and moved eight standalone targets into it. `git diff 54715a41e^1
+54715a41e -- .github/workflows/windows-native-probe-contract.yml` is **empty**:
+the merge changed nothing in this lane. What the merge *did* do is add
+`#![cfg(unix)]` to `sandbox_containment.inc`, which converted the lane from a
+**compile** failure into a **five-assertion** failure — and made the underlying
+defects visible for the first time.
+
+Five assertions failed. They are three defects.
+
+**One: a self-re-exec test named its test by a path the family move had
+invalidated.** `tests/security_permission/windows_process_launcher.inc` builds
+its fixture child with `--exact windows_process_fixture`. When that file was the
+standalone target `tests/windows_process_launcher.rs`, the bare name *was* the
+full path. As a family member the path is
+`windows_process_launcher::windows_process_fixture`, and a bare name matches
+**nothing**: cargo prints `0 passed; … 32 filtered out` and exits **0**. The
+child therefore did no work and exited successfully, and the parent read an
+empty success as evidence. The hosted log shows exactly that child output. Three
+of the five failures are this one defect.
+
+The same defect was **actively failing the Linux M004 lane** in
+`tests/linux_git_test_support/linux_m004_process_ipc.inc`, where a recovery
+worker is re-execed with
+`--exact test_only_contained_git_add_stages_index_and_objects_in_private_gitdir`.
+The bare name matched nothing, so the worker exited 0 having done no work and
+never created the interrupted publisher's `index.lock`. The parent then failed
+at `linux_m004_process_ipc.inc:1977` with *"displaced authorized gitdir lost
+the interrupted publisher lock"* — run `39850835891`, `18 passed; 1 failed`. The
+consequence there is the quieter and worse one: the assertion that reads the
+child's exit status as evidence would have accepted an empty success, and the
+interrupted-publication **recovery scenario was never exercised at all**. A
+third site, `tests/command_git/git_fixture_isolation.inc`, had already been
+repaired in this line for the same reason.
+
+The repair is to name each test by its full module path. A new guard,
+`scripts/check_test_self_reexec_paths.py`, now rejects a `--exact` argument
+that is not the full module path of a test function defined in that same file —
+so the next absorption cannot silently gut a test this way again.
+
+**Two: `sandbox_policy_wiring`'s assertion could not be reached.** The test
+`unsupported_host_rejects_constrained_command_before_execution` builds
+`BashTool::new().with_sandbox_profile(…)` and expects the constrained request to
+be refused with "…filesystem containment is unavailable…". It never got there.
+`BashTool::new()` carries **no workspace root**, so the managed shell refuses
+the call with `MissingWorkspaceRoot` *before* it consults the host capability —
+a different refusal from the one the test names. The test therefore asserted
+nothing on any host: on macOS the `platform_sandbox_capability()` guard returns
+early (macOS has the Seatbelt backend), and on Windows — the only host with no
+backend — the tool failed earlier, for the unrelated reason above.
+
+The repair is to give the tool the workspace root it needs, so the refusal
+under test is actually the one that happens. The assertion now also reports the
+actual error text when it fails, so a future divergence says what it produced.
+
+**Three: C014's Git step aborted the child and discarded every host-denial
+probe.** `c014_projection_tool_smoke_and_unprojected_host_denials` writes a
+PowerShell child that (1) proves the projection is writable, (2) runs `git init`
+in it, and (3) then probes **seven** host paths for denial. The Git step threw
+on failure, and under the AppContainer it does fail: Git for Windows opens the
+null device (`/dev/null` → `\Device\Null`) and the AppContainer child cannot
+open it, so `git init` dies with `fatal: could not open '/dev/null' for
+reading and writing: Permission denied`. The throw aborted the child, so steps
+(3) — the seven denial probes — **never ran**. The test was failing at step (2)
+and silently carrying no coverage of step (3).
+
+The repair makes the Git step report its outcome instead of aborting the child,
+and asserts that a Git failure is the *named* null-device limitation — any other
+Git failure still fails the test. The seven denial probes now execute, which is
+coverage the test was not actually delivering before.
+
+### 2.6 The null-device limitation is a real product gap, not a test artefact
+
+The `NUL` denial is a genuine limitation of the current AppContainer
+projection, and this record does **not** claim it away. The C019 probe's own
+report shows it: the `null_device_access` observation is `state: denied`,
+`expected: allowed`, and the same report shows `git_init`, `git_status`,
+`python_version` and `cargo_version` all `state: failed` where `expected:
+allowed`. The probe *reports* those states; it does not enforce its `expected`
+field for them, which is why the C019 test passes with them failing.
+
+Granting `\Device\Null` to an AppContainer child means changing a device
+object's DACL, which is a Windows security-hardening change to the backend
+itself — not a test repair, and not something this merge should make silently.
+It is carried forward as an open item in §7.
+
+
 
 | Requirement | Evidence | Result |
 |---|---|---|
@@ -156,6 +259,10 @@ which is what happened before the families existed.
 | No duplicated test body | `scripts/check_test_duplication.py` and `--self-test` | pass |
 | The 98 test functions the workstream commit stripped are restored | the ten files are byte-identical to `origin/main`; the SDK example compiles (`cargo check --tests` in `examples/plugins/sdk-rust`); the desktop and research files parse (`rustfmt --check`) | pass |
 | The `security_permission` family compiles on Windows | `sandbox_containment.inc` carries `#![cfg(unix)]`; on Unix the family still carries 325 tests, 16 of them in `sandbox_containment::` | pass locally; the hosted Windows lane is the authority |
+| A self-re-exec test names its test by a path that exists | `scripts/check_test_self_reexec_paths.py` and `--self-test`; the three known sites carry their full module path | pass |
+| The Linux M004 lane's interrupted-publication recovery is exercised | the worker is named `linux_m004_process_ipc::test_only_contained_git_add_stages_index_and_objects_in_private_gitdir`, so it actually creates the interrupted `index.lock` the parent asserts on; run `39850835891` failed at `linux_m004_process_ipc.inc:1977` with the bare name | pass locally; the hosted Linux M004 lane is the authority |
+| `sandbox_policy_wiring`'s refusal assertion is reachable | the tool is given the workspace root it needs, so the refusal under test is the capability refusal and not `MissingWorkspaceRoot`; the assertion reports the actual error text | pass locally; the hosted Windows lane is the authority |
+| C014's host-denial probes run | the Git step reports its outcome instead of aborting the child; a Git failure must be the named null-device limitation | pass locally; the hosted Windows lane is the authority |
 | The recorded counts are true on the merged tree | `architecture/overview.md`'s Verified-counts table, re-measured against each row's own `Source` | pass |
 
 ## 4. The counts, re-measured
@@ -254,6 +361,17 @@ bash scripts/verify.sh quick
 
 ## 7. Open items carried forward
 
+- **The AppContainer child cannot open the null device.** `\Device\Null` is
+  denied to the restricted child, so Git for Windows cannot run inside the
+  projection at all (`fatal: could not open '/dev/null' … Permission denied`),
+  and the C019 probe reports `null_device_access` as `state: denied` against
+  `expected: allowed` alongside `git_init`, `git_status`, `python_version` and
+  `cargo_version`. §2.5 makes C014 *report* that limitation instead of
+  aborting on it, so the seven host-denial probes now run; it does not **fix**
+  it. Granting the null device means changing a device object's DACL — a
+  Windows security-hardening change to the backend, not a test repair. It
+  belongs to the Windows native sandbox line
+  (`plans/subsystems/windows-native-sandbox-roadmap.md`), not to this one.
 - **The eight macOS-only clippy findings in `origin/main`'s files.** They are
   `#[cfg(not(target_os = "linux"))]` code that no macOS path calls. They
   belong to `main`, they are invisible to Linux CI, and fixing them means
@@ -272,12 +390,13 @@ bash scripts/verify.sh quick
 references that the consolidation broke are repaired, the guards that the
 merge exposed are repaired, the 98 test functions the workstream commit
 stripped out of ten out-of-workspace files are restored, the `security_permission`
-family compiles on Windows again, and the recorded counts are re-measured
-against their own sources. The tree compiles, the guard tier is green, and
-the recorded counts are true on the merged tree.
+family compiles on Windows again, the three defects the Windows lane exposed
+are repaired (§2.5), and the recorded counts are re-measured against their own
+sources. The tree compiles, the guard tier is green, and the recorded counts
+are true on the merged tree.
 
-Two findings are worth carrying forward beyond this line, because both are
-about **what the local gate does not cover**:
+Three findings are worth carrying forward beyond this line, because all three
+are about **what the local gate does not cover**:
 
 - **The root workspace's gate compiles the root workspace.** The ten files
   the workstream commit damaged are all outside it — the desktop crate, the
@@ -291,6 +410,24 @@ about **what the local gate does not cover**:
   family that a Windows lane builds, and the member's Unix-only APIs broke
   that lane's build. The Windows lane is the authority on Windows
   compilation, and it is the only place this could be seen.
+- **A test that cannot reach its own assertion is a green test that asserts
+  nothing.** `sandbox_policy_wiring`'s refusal assertion was unreachable on
+  every host: the guard returned early where a backend exists, and the tool
+  failed for an unrelated reason where none does. It passed for years
+  because passing was the only outcome it could produce. The same shape
+  appeared in `linux_m004_process_ipc`, where a child that matched no test
+  exited 0 having done nothing and the parent's "the child succeeded"
+  assertion read that empty success as evidence — so the interrupted-publish
+  recovery it exists to prove was never exercised. It was the *next*
+  assertion, the one that checks the interrupted lock actually exists, that
+  caught it. **A test that re-executes its own binary must name its test by a
+  path that exists**, and `scripts/check_test_self_reexec_paths.py` now
+  enforces exactly that.
+- **A failing prerequisite can silently discard the assertions behind it.**
+  C014's Git step aborted the child, so the seven host-denial probes after it
+  never ran — the test was failing at step two while carrying no coverage of
+  step three. A step that cannot succeed on a given host must *report* its
+  outcome and let the rest of the test proceed, not abort the whole run.
 
 This record opens no milestone and rewrites no earlier record. The eight
 macOS-only clippy findings are recorded as a pre-existing `origin/main`

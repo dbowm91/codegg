@@ -1921,7 +1921,12 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
     let interrupted = Command::new(worker)
         .args([
             "--exact",
-            "test_only_contained_git_add_stages_index_and_objects_in_private_gitdir",
+            // `--exact` matches the FULL test path, and in a family the path
+            // is `<family>::<member>::<test>`. A bare test name selects
+            // nothing: the worker exits successfully having done no work, so
+            // the interrupted-publication recovery scenario is never
+            // exercised at all.
+            "linux_m004_process_ipc::test_only_contained_git_add_stages_index_and_objects_in_private_gitdir",
             "--nocapture",
         ])
         .env("CODEGG_C004_RECOVERY_WORKER_GITDIR", &source_gitdir)

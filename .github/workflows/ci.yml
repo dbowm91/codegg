@@ -235,6 +235,12 @@ jobs:
       - name: Security test-filter execution control
         run: python3 scripts/check_test_filter_execution.py
 
+      - name: Self-re-exec test path control (self-test)
+        run: python3 scripts/check_test_self_reexec_paths.py --self-test
+
+      - name: Self-re-exec test path control
+        run: python3 scripts/check_test_self_reexec_paths.py
+
       - name: Writer disposition guard
         run: python3 scripts/check_writer_disposition.py
 

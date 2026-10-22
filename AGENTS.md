@@ -171,6 +171,15 @@ change-triggered (`ls scripts/check_*` for the full list):
   undercounts `tests/` by 76%. `rust_test_scan.py --validate` is the ground
   truth; `check_test_assertion_quality.py --self-test` and
   `check_test_duplication.py --self-test` prove each guard is not vacuous.
+- A test that **re-executes its own binary** → `python3 scripts/check_test_self_reexec_paths.py`
+  (every `--exact` argument must be the full path of a test function defined in that same
+  file). `--exact` matches the whole test path, and that path is `<member>::<test_fn>` for a
+  family member but a bare `<test_fn>` for a standalone target — so moving a file into a
+  family silently invalidates the bare name it used to carry. A name that matches nothing
+  selects **zero** tests and still exits **0**, so the child does no work and the parent
+  reads an empty success as evidence: the fixture prints nothing, the interrupted publisher
+  never creates its lock, and the recovery scenario is never exercised while the test stays
+  green. In `scripts/verify.sh quick` and in CI.
 - Tool Program parse-only invariant → `python3 scripts/check_tool_program_parse_only.py`
   (rejects a `pyo3` dependency, a `pyo3` import, a process spawn, or a Python FFI
   link in `crates/codegg-core/src/tool_program/`). The three test functions that

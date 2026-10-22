@@ -68,7 +68,11 @@ fn process_fixture_request(
             .expect("Windows process test executable")
             .into_os_string(),
         OsString::from("--exact"),
-        OsString::from("windows_process_fixture"),
+        // `--exact` matches the FULL test path, and in a family the path is
+        // `<family>::<member>::<test>`. A bare test name selects nothing, so
+        // the fixture child exits immediately with "0 passed" instead of
+        // publishing its PID.
+        OsString::from("windows_process_launcher::windows_process_fixture"),
         OsString::from("--nocapture"),
     ];
     let mut request = ManagedProcessRequest::new(
@@ -166,7 +170,13 @@ fn windows_process_fixture() {
             .expect("fixture child PID file");
         let child =
             StdCommand::new(std::env::current_exe().expect("Windows process test executable"))
-                .args(["--exact", "windows_process_fixture", "--nocapture"])
+                .args([
+                    "--exact",
+                    // The full family-qualified path — see the note on the
+                    // `--exact` argument in `process_fixture_request`.
+                    "windows_process_launcher::windows_process_fixture",
+                    "--nocapture",
+                ])
                 .env("CODEGG_WINDOWS_FIXTURE_MODE", "wait")
                 .env("CODEGG_WINDOWS_FIXTURE_PID_FILE", &child_pid_file)
                 .spawn()

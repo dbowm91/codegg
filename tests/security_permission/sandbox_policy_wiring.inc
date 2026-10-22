@@ -433,18 +433,29 @@ async fn unsupported_host_rejects_constrained_command_before_execution() {
     use codegg::tool::Tool;
 
     if platform_sandbox_capability().is_available() {
-        // On a capable host this scenario cannot be exercised.
+        // On a capable host this scenario cannot be exercised. Note that this
+        // makes the test *vacuous* on a host that has a backend (macOS has
+        // Seatbelt), so the assertion below only ever runs on a host with no
+        // backend at all.
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let tool = BashTool::new().with_sandbox_profile(SandboxProfile::WorkspaceWrite, dir.path());
+    // The tool needs a workspace root. Without one the managed shell refuses
+    // the call with `MissingWorkspaceRoot` *before* it ever consults the
+    // host capability, so the test would be asserting a different refusal
+    // than the one it names.
+    let tool = BashTool::new()
+        .with_sandbox_profile(SandboxProfile::WorkspaceWrite, dir.path())
+        .with_workspace_root(dir.path().to_path_buf());
     let error = tool
         .execute(serde_json::json!({"command": "echo degraded-ok"}))
         .await
         .expect_err("an unsupported host must reject constrained Bash execution");
-    assert!(error
-        .to_string()
-        .contains("filesystem containment is unavailable"));
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("filesystem containment is unavailable"),
+        "the refusal must name the missing containment; actual error: {rendered}"
+    );
 }
 
 // ── Restart and recovery ────────────────────────────────────────────────

@@ -266,6 +266,16 @@ run_guards() {
 
     echo "==> python3 scripts/check_test_filter_execution.py"
     (cd "$REPO_ROOT" && python3 scripts/check_test_filter_execution.py)
+
+    # A test that re-executes its own binary must name its test by the full
+    # path it has inside its own cargo target. Moving a file into a family
+    # changes that path, and a name that no longer matches selects nothing
+    # while still exiting 0.
+    echo "==> python3 scripts/check_test_self_reexec_paths.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_self_reexec_paths.py --self-test)
+
+    echo "==> python3 scripts/check_test_self_reexec_paths.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_test_self_reexec_paths.py)
 }
 
 # ── Quick tier ──────────────────────────────────────────────────────────────
