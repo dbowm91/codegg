@@ -41,10 +41,18 @@ source, not by relaxing a check:
 The remaining three findings (the review pack, the hosted evidence, and the
 pre-existing Desktop E2E failure) are discharged or recorded.
 
-**Two defects this milestone introduced were caught by the repository's
-existing guards and are fixed.** They are recorded in §3.3 rather than
-hidden, because one of them is the kind of defect that a reviewer would
-otherwise have had to find by hand.
+**Five defects this milestone introduced were caught by the repository's
+existing guards and by the hosted sweep, and all five are fixed.** They are
+recorded in §3.5 rather than hidden. Two of them were found by the hosted
+sweep, which is the sweep doing its job.
+
+**And the control found a false green that was already there.** The M004
+native tier's "Protected mount and Git regressions" step was reporting a
+green run having qualified **9** of the **11** tests its filter selected: two
+of them were behind a native-qualification gate the job does not enable, and
+one of them skipped *silently*. That is C001 §10.3's failure mode, still
+live, in a tier nobody had re-read. §3.6 records it, and a static check now
+catches the class before a hosted run can.
 
 **No production behaviour changed.** C004 is evidence and review tooling.
 C002's status is unchanged: **conditionally closed** on the maintainer-owned
@@ -61,13 +69,13 @@ default is set, and no ADR is accepted.
 | WP2: if the cause stays unknown, record **conditional** — do not lower the timeout and do not widen the exclusion | The cause did **not** stay unknown, so the conditional path was not needed. §3.3.3 records the diagnosed cause. No timeout was lowered; no test was excluded | met |
 | WP3: for each security filter, assert the executed count is non-zero, assert no self-skip marker was emitted, and provide a positive and a negative control | §3.4 — `docs/security-test-filters.toml` registers all 20 filters; `scripts/check_test_filter_execution.py` is both the static guard and the runtime wrapper. The positive/negative control pair is §3.4.3: the runtime counter was shown able to say "zero", to reject a self-skipping run, to reject a run that did not execute the named test, and to accept a healthy one | met |
 | WP4: produce a per-boundary changed-file/commit ledger, the exact `main` merge baseline, the migration and ADR integrity result, the CI qualification matrix, and a proposed review chunking | §4 — the review pack. 44 boundaries over 322 commits and 302 files, with a per-boundary owner map and a 9-chunk risk-ordered proposal | met |
-| WP5: run the branch-wide hosted sweep on the corrective head and record the run link; await the native and macOS jobs only for the boundaries the ledger marks as needing them | §5 — the hosted run links and executed counts for the corrective head. The Windows and macOS jobs are recorded as **not awaited**, per the user's instruction to keep testing scoped; they are recorded as *not run*, not as passes | met, with the platform scope stated |
+| WP5: run the branch-wide hosted sweep on the corrective head and record the run link; await the native and macOS jobs only for the boundaries the ledger marks as needing them | §5 — the hosted run links and executed counts for the corrective head. The `CI` sweep, the C006 and Git CoW native tiers and the Windows job all ran and passed. The **macOS** target compile was **not run**, per the user's instruction to keep testing scoped, and is recorded as *not run*, not as a pass | met, with the platform scope stated |
 | Invariant: no Git subcommand authorization may be widened to make a test pass | §6.1 — no Git authorization code was touched. The typed refusal is asserted by the rebound tests | met |
 | Invariant: no timeout may be lowered, and no test may be disabled or silently excluded to obtain a green run | §6.1 — no timeout was lowered; the LSP tests keep their 120 s bound and their functional assertions; no test was excluded. The only `#[ignore]` added is the *child half* of the new cross-process reproduction, which the parent invokes by name | met |
-| Invariant: a filter that matches zero tests is not a pass, and a self-skip marker is not a skip-free run | §3.4 — the runtime wrapper rejects a zero count and any `skipped: `/`skipping ` marker. The four silent self-skips that no marker scan could see now emit markers | met |
-| Invariant: a closure may not claim more than the evidence supports | §10 and §11 — the Windows and macOS behaviour of this head is explicitly not claimed; C002's conditional status is unchanged | met |
+| Invariant: a filter that matches zero tests is not a pass, and a self-skip marker is not a skip-free run | §3.4 — the runtime wrapper rejects a zero count and any `skipped: `/`skipping ` marker. **Five** silent self-skips that no marker scan could see now emit markers, and a whole-tree sweep confirms none is left. §3.6 — the static guard additionally requires every gate behind a self-skipping selected test to be enabled by the step's job | met |
+| Invariant: a closure may not claim more than the evidence supports | §10 and §11 — the macOS behaviour of this head is explicitly not claimed; the Windows result is recorded as observed; C002's conditional status is unchanged | met |
 | Verification: `git diff --check`; `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --locked`; `scripts/verify.sh quick`; the named static guards; the named focused test targets; the branch-wide hosted sweep | §4 | met |
-| Verification: capture executed counts for every filter, and do not infer platform behaviour that was not run | §4.3 — every filter's executed count is captured. §5.3 records the platform scope honestly | met |
+| Verification: capture executed counts for every filter, and do not infer platform behaviour that was not run | §4.3 and §5.2 — every filter's executed count is captured, read from the run logs. §5.3 records the platform scope honestly | met |
 | Stop condition: stop and report rather than improvise if the fixture audit would require widening Git authorization, if the LSP characterization would require lowering a timeout or widening an exclusion, if a filter control cannot be made to fail on an injected defect, or if the review pack would require reopening a closed milestone | §6.2 — none of the four stop conditions was reached. Every control was made to fail on an injected defect | met |
 | Exit condition: the six C001 findings are discharged and C001 can be closed rather than conditionally held | §11 — C001's §10.1–§10.5 are discharged by this record; §10.6 was already assigned to upstream and remains recorded, not fixed | met |
 
@@ -261,13 +269,15 @@ The self-test proves the runtime counter is not vacuous in both directions:
 | a run that did not execute the named test | rejected | rejected |
 | a healthy run | accepted | accepted |
 
-The static side is proved by injecting **eight** distinct tree defects, each
+The static side is proved by injecting **ten** distinct tree defects, each
 of which must be rejected by the check that owns it: the wrapper removed
 from the workflow, the registered command changed, the filter's tests
 renamed so it selects nothing, the security rationale blanked, the registry
 naming a test the filter does not select, a single-line wrapper step folded
-onto two lines, a block-scalar wrapper step folded back onto one, and a
-registered command whose whitespace does not survive the shell-to-argv path.
+onto two lines, a block-scalar wrapper step folded back onto one, a
+registered command whose whitespace does not survive the shell-to-argv path,
+a job that stops enabling a native-qualification gate its step needs, and a
+registry that stops declaring one.
 
 The runtime side adds two more cases: a verdict that interleaved onto the
 following line must be recognised as a verdict, and a named test that was
@@ -494,7 +504,7 @@ evidence that the qualification actually happened.
 | `python3 scripts/check_adr_integrity.py` (+ `--self-test`) | pass |
 | `python3 scripts/check_project_catalog_invariants.py` | 7/7 |
 | `python3 scripts/check_test_filter_execution.py` | 20 registered filters verified |
-| `python3 scripts/check_test_filter_execution.py --self-test` | 8 injected defects, each rejected |
+| `python3 scripts/check_test_filter_execution.py --self-test` | 10 injected defects, each rejected |
 
 ### 4.2 The focused test targets
 
@@ -622,8 +632,8 @@ requires. The registry's list is the *required* set, not the exhaustive one.
 |---|---|
 | No Git subcommand authorization may be widened | No Git authorization code was touched. The rebound tests still assert the typed `BackendUnavailable[RepositoryAlias]` refusal |
 | No timeout may be lowered, and no test may be disabled or silently excluded | No timeout was lowered — the 120 s nextest bound, the 30 s LSP request timeout and the 30 s readiness timeout are unchanged. No test was excluded; the only `#[ignore]` is the harness half of the new reproduction, invoked by name |
-| A filter that matches zero tests is not a pass, and a self-skip marker is not a skip-free run | The runtime wrapper rejects a zero count and any self-skip marker. The four silent self-skips that no marker scan could see now emit markers |
-| A closure may not claim more than the evidence supports | §5.3 records the Windows and macOS scope as *not run*. §10 lists what is still open with its owner |
+| A filter that matches zero tests is not a pass, and a self-skip marker is not a skip-free run | The runtime wrapper rejects a zero count and any self-skip marker. **Five** silent self-skips that no marker scan could see now emit markers, and a whole-tree sweep confirms none is left. The static guard additionally requires every gate behind a self-skipping selected test to be enabled by the step's job — which is what the M004 tier was missing |
+| A closure may not claim more than the evidence supports | §5.3 records the macOS scope as *not run* and the Windows result as it was observed. §10 lists what is still open with its owner |
 
 ### 6.2 The plan's four stop conditions
 
@@ -687,18 +697,22 @@ C004 adds no ADR and changes no ADR. The three ADRs the C001 line touched
 
 ## 10. Unresolved findings
 
-### 10.1 The Windows and macOS platform behaviour of this head (severity: low, owner: this milestone's reviewer)
+### 10.1 The macOS target compile of this head (severity: low, owner: this milestone's reviewer)
 
-The Windows process-launcher job was started but **not awaited**, and the
-macOS target compile was not run. The C004 head changes
-`.github/workflows/windows-process-launcher.yml` — the seven block-scalar
-conversions — so a reviewer should read that workflow's run log rather than
-take this record's word for it. The change is a YAML scalar form only; the
-commands each step runs are unchanged.
+The **Windows** process-launcher job was run and **passed** on the corrective
+head (`39722365990`), so the seven block-scalar conversions and the interior
+`--` fix are both proven on the platform that needed them.
 
-**Exact future evidence required.** The Windows process-launcher run's
-conclusion on this head, and the macOS target compile's conclusion, recorded
-as links.
+The **macOS** target compile was **not run** on this head. It is recorded as
+*not run*, not as a pass. The C004 head does not change any macOS-visible
+source — it changes `src/interactive_process.rs`, `src/tool/bash.rs`,
+`src/tool/lsp.rs`, `src/security/workflow/report.rs` and the workflows — and
+the macOS compile's trigger list does not name any of them, so no macOS
+qualification was required by this milestone's boundary ledger.
+
+**Exact future evidence required.** The macOS target compile's conclusion on
+this head, recorded as a link, if a reviewer wants the platform's compile
+result on this tree.
 
 ### 10.2 The pre-existing Desktop E2E failure (severity: low, owner: upstream)
 
@@ -707,15 +721,21 @@ as links.
 `main` before this milestone and is not attributable to this branch. It is
 C001's §10.6, carried forward unchanged: recorded, not fixed here.
 
-### 10.3 The Windows runtime path of the wrapper is not locally validated (severity: low, owner: this milestone's reviewer)
+### 10.3 The Windows runtime path of the wrapper was not locally validated (severity: low, owner: this milestone's reviewer)
 
 The wrapper is pure Python 3 standard library with no `tomllib`
 dependency — it carries its own narrow TOML reader — so it has no Python
 version floor. The Windows runner's interpreter is probed as `python3` and
 then `python`, following the repository's own precedent
 (`.github/workflows/windows-native-probe-contract.yml`). The wrapper fails
-loudly (non-zero exit) rather than silently, and §10.1 covers the run that
-would show it.
+loudly (non-zero exit) rather than silently.
+
+This was **not** validated locally — this workstation is Linux — but it was
+validated on the platform: the Windows process-launcher job passed on the
+corrective head with all six dispatchable filter steps reporting their
+executed counts and witnesses, so the probe and the block-scalar form both
+work on the Windows runner. What remains unverified on Windows is the two
+`workflow_dispatch`-only filters, which do not run on a pull request.
 
 ## 11. Roadmap disposition
 

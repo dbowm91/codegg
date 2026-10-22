@@ -74,7 +74,7 @@ job = "process-ipc"
 step = "M004 constrained PTY live-owner qualification"
 command = "cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture"
 filter = "interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view"
-gates = [CODEGG_RUN_M004_PTY_NATIVE]
+gates = ["CODEGG_RUN_M004_PTY_NATIVE"]
 tests = ["m004_live_owner_preserves_tty_and_private_process_view"]
 security = "The constrained PTY route must keep the owner's TTY and hide the private process view; the step self-skips without its opt-in."
 
@@ -84,7 +84,7 @@ job = "process-ipc"
 step = "M004 daemon-authorized PTY routing and descendant cleanup"
 command = "cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant -- --nocapture"
 filter = "m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"
-gates = [CODEGG_RUN_M004_PTY_NATIVE]
+gates = ["CODEGG_RUN_M004_PTY_NATIVE"]
 tests = ["m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant"]
 security = "The daemon-authorized PTY route must apply the principal's profile and cancel the descendant; the step self-skips without its opt-in."
 
@@ -94,7 +94,7 @@ job = "process-ipc"
 step = "M004 daemon-owned constrained LSP duplex and procfs qualification"
 command = "cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope --features lsp-test-support -- --test-threads=1 --nocapture"
 filter = "lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope"
-gates = [CODEGG_RUN_M004_BWRAP_NATIVE]
+gates = ["CODEGG_RUN_M004_BWRAP_NATIVE"]
 tests = ["constrained_lsp_process_is_owned_by_m004_scope"]
 security = "The constrained language server must be owned by the M004 scope, not by the ambient process."
 
@@ -104,7 +104,7 @@ job = "process-ipc"
 step = "Protected mount and Git regressions"
 command = "cargo test --locked --lib protected_mount_ -- --nocapture"
 filter = "protected_mount_"
-gates = [CODEGG_RUN_C006_BWRAP_NATIVE, CODEGG_RUN_C009_BWRAP_NATIVE]
+gates = ["CODEGG_RUN_C006_BWRAP_NATIVE", "CODEGG_RUN_C009_BWRAP_NATIVE"]
 tests = [
   "protected_mount_concurrent_launches_keep_workspaces_separate",
   "protected_mount_pty_first_hop_preserves_terminal_and_workspace_write",
@@ -162,7 +162,7 @@ job = "restricted-userns-fails-closed"
 step = "Constrained PTY route refuses before target under host userns policy"
 command = "cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture"
 filter = "m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted"
-gates = [CODEGG_RUN_M004_RESTRICTED_USERNS]
+gates = ["CODEGG_RUN_M004_RESTRICTED_USERNS"]
 tests = ["m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted"]
 security = "The constrained PTY route must fail closed before the target when user namespaces are restricted; the step self-skips without its opt-in."
 
@@ -172,7 +172,7 @@ job = "restricted-userns-fails-closed"
 step = "Constrained LSP launch refuses before target under host userns policy"
 command = "cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture"
 filter = "lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted"
-gates = [CODEGG_RUN_M004_RESTRICTED_USERNS]
+gates = ["CODEGG_RUN_M004_RESTRICTED_USERNS"]
 tests = ["constrained_lsp_launch_fails_before_target_when_userns_are_restricted"]
 security = "The constrained language-server launch must refuse before the target when user namespaces are restricted."
 
@@ -186,7 +186,7 @@ job = "protected-mount"
 step = "ManagedProcessService protected-mount qualification"
 command = "cargo test --locked --lib protected_mount_ -- --nocapture"
 filter = "protected_mount_"
-gates = [CODEGG_RUN_C006_BWRAP_NATIVE, CODEGG_RUN_C009_BWRAP_NATIVE]
+gates = ["CODEGG_RUN_C006_BWRAP_NATIVE", "CODEGG_RUN_C009_BWRAP_NATIVE"]
 tests = [
   "protected_mount_concurrent_launches_keep_workspaces_separate",
   "protected_mount_pty_first_hop_preserves_terminal_and_workspace_write",
