@@ -71,6 +71,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 
 from pathlib import Path
 
@@ -86,9 +87,13 @@ class SelectionError(RuntimeError):
 # ── git facts ───────────────────────────────────────────────────────────────
 
 
-def _git(*args: str) -> str:
+def _git(*args: str, cwd: Path | None = None) -> str:
     result = subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+        ["git", *args],
+        cwd=cwd or REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise SelectionError(
@@ -97,10 +102,10 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
-def changed_files(base: str) -> tuple[str, list[str]]:
+def changed_files(base: str, cwd: Path | None = None) -> tuple[str, list[str]]:
     """The changed files, and the merge base they were computed against."""
     try:
-        merge_base = _git("merge-base", base, "HEAD").strip()
+        merge_base = _git("merge-base", base, "HEAD", cwd=cwd).strip()
     except SelectionError as error:
         raise SelectionError(
             f"could not compute a merge base against {base!r}: {error}. "
@@ -120,7 +125,7 @@ def changed_files(base: str) -> tuple[str, list[str]]:
         ("diff", "--name-only", "--cached", "HEAD"),
         ("ls-files", "--others", "--exclude-standard"),
     ):
-        output = _git(*args)
+        output = _git(*args, cwd=cwd)
         files.update(line for line in output.splitlines() if line.strip())
     return merge_base, sorted(files)
 
@@ -484,10 +489,96 @@ def report_text(selection: dict) -> str:
     return "\n".join(lines)
 
 
+def _self_test_base() -> tuple[str, str]:
+    """A ref this self-test can compute a merge base against.
+
+    `origin/main` is the production default and is used whenever it is
+    present, so the self-test exercises the production path wherever the
+    environment allows it. It is **absent from a shallow CI checkout** —
+    `actions/checkout@v4` fetches depth 1 — where `git merge-base
+    origin/main HEAD` fails with "Not a valid object name origin/main".
+    That is a property of the checkout, not of the selection algorithm, and
+    a self-test that fails on it reports a defect that does not exist.
+
+    `HEAD` always exists, and `git merge-base HEAD HEAD` is `HEAD`, so it
+    is the fallback. When an explicit file list is supplied — which is how
+    the self-test calls `select()` — the merge base is only a reporting
+    anchor and does not affect the selection.
+
+    Returns the base and a note describing which one was used, so the run's
+    log says which anchor the self-test actually exercised.
+    """
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", DEFAULT_BASE],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode == 0:
+        return DEFAULT_BASE, f"the production base {DEFAULT_BASE!r}"
+    return "HEAD", (
+        f"{DEFAULT_BASE!r} is absent from this checkout (a shallow CI "
+        f"checkout fetches depth 1), so the merge-base anchor is 'HEAD'"
+    )
+
+
+def _self_test_changed_files() -> list[str]:
+    """Prove the changed-file computation against a repository this test makes.
+
+    The selection calls in this self-test pass an **explicit** file list, so
+    they never exercise `changed_files()` itself — and that function is the
+    one that needs a merge base, which is exactly what a shallow checkout
+    cannot provide. A temporary repository gives it real commits to diff,
+    and it exists in every environment, so the changed-file path is covered
+    rather than skipped.
+    """
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="scoped-selection-selftest-") as tmp:
+        repo = Path(tmp)
+
+        def run(*args: str) -> str:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise SelectionError(
+                    f"git {' '.join(args)} failed in the fixture: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+            return result.stdout
+
+        try:
+            run("init", "-q")
+            run("config", "user.email", "selftest@example.invalid")
+            run("config", "user.name", "scoped selection self-test")
+            (repo / "a.txt").write_text("a\n")
+            run("add", "a.txt")
+            run("commit", "-q", "-m", "base")
+            base = run("rev-parse", "HEAD").strip()
+            (repo / "b.txt").write_text("b\n")
+            run("add", "b.txt")
+            run("commit", "-q", "-m", "head")
+            merge_base, files = changed_files(base, cwd=repo)
+        except (SelectionError, OSError) as error:
+            failures.append(f"the changed-file fixture failed: {error}")
+            return failures
+
+        if merge_base != base:
+            failures.append(f"expected the merge base {base}, got {merge_base}")
+        if files != ["b.txt"]:
+            failures.append(f"expected the changed file list ['b.txt'], got {files}")
+    return failures
+
+
 def _self_test() -> int:
     """Prove the selection algorithm against known inputs.
 
-    Three properties are checked, and each of them is a property the caller
+    Four properties are checked, and each of them is a property the caller
     depends on:
 
     1. the dependency pull-in widens a dependent to its full surface;
@@ -495,9 +586,15 @@ def _self_test() -> int:
        the third is the union of the selected targets' required features;
     3. a member whose targets need no feature produces an **empty** third
        column — the caller expands that array, and an empty expansion under
-       `set -u` in bash 3.2 is an error unless the caller guards it.
+       `set -u` in bash 3.2 is an error unless the caller guards it;
+    4. the changed-file computation resolves a merge base and reports the
+       right files — checked against a repository this test creates, so it
+       holds in a shallow checkout as well as in a full one.
     """
     failures: list[str] = []
+
+    # 4. The changed-file computation, against a self-made repository.
+    failures.extend(_self_test_changed_files())
 
     # 1. The dependency pull-in.
     selection = {
@@ -540,8 +637,9 @@ def _self_test() -> int:
         )
 
     # The real tree's own selection must satisfy the same contract.
+    base, base_note = _self_test_base()
     try:
-        real = select(DEFAULT_BASE, ["crates/eggsentry/src/command.rs"])
+        real = select(base, ["crates/eggsentry/src/command.rs"])
         for line in members_lines(real):
             if len(line.split("\t")) != 3:
                 failures.append(f"real selection produced a malformed member line: {line!r}")
@@ -558,7 +656,7 @@ def _self_test() -> int:
         # the member is already present silently drops the dependency widening
         # for exactly the case where a change touches two areas at once.
         both = select(
-            DEFAULT_BASE,
+            base,
             ["crates/eggsentry/src/command.rs", "src/tui/app/mod.rs"],
         )
         root = next((m for m in both["members"] if m["name"] == "codegg"), None)
@@ -575,7 +673,7 @@ def _self_test() -> int:
 
         # A change confined to the root package's own source must stay
         # precise: the root package has no dependents, so nothing is pulled in.
-        root_only = select(DEFAULT_BASE, ["src/tui/app/mod.rs"])
+        root_only = select(base, ["src/tui/app/mod.rs"])
         root_targets = next(
             (m for m in root_only["members"] if m["name"] == "codegg"), None
         )
@@ -594,12 +692,14 @@ def _self_test() -> int:
     if failures:
         print(f"scoped_selection --self-test: {len(failures)} failing")
         return 1
+    print(f"  ok: the changed-file computation resolves a merge base and the right files")
     print("  ok: the dependency pull-in widens the dependent")
     print("  ok: the `members` line format has exactly three columns")
     print("  ok: a member with no required feature yields an empty third column")
     print("  ok: a member affected both directly and by dependency gets its full surface")
     print("  ok: a root-only change stays precise")
     print("  ok: the real tree's selection satisfies the same contract")
+    print(f"  note: merge-base anchor — {base_note}")
     print("scoped_selection --self-test: all checks pass")
     return 0
 
