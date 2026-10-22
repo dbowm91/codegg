@@ -104,6 +104,27 @@ async fn upgrading_from_the_single_key_shape_preserves_rows_and_lifts_the_constr
         .execute(&pool)
         .await
         .expect("seed version 69");
+    // A real v69 database already has runtime_preferences from v58 and the
+    // task-model columns from v62. Keep this legacy fixture representative:
+    // v83 adds network_intent to this table after main's migrations v80-v82.
+    sqlx::query(
+        r#"
+        CREATE TABLE runtime_preferences (
+            principal_id TEXT PRIMARY KEY,
+            approval_mode TEXT,
+            sandbox_profile TEXT,
+            last_provider_connection_id TEXT,
+            last_model_id TEXT,
+            last_task_provider_connection_id TEXT,
+            last_task_model_id TEXT,
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            updated_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create pre-v83 runtime_preferences");
     sqlx::query(
         r#"
         CREATE TABLE cached_models (

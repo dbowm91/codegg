@@ -427,7 +427,11 @@ impl From<InteractiveError> for InteractiveAttachError {
             | InteractiveError::WorkspacePolicy(_) => {
                 InteractiveAttachError::InvalidRequest("invalid create parameters")
             }
-            InteractiveError::AdmissionBlocked(_)
+            // M005 C005: a process refusal is a refusal, not a transport
+            // fault. It is reported as an upstream failure with a
+            // secret-free summary, exactly like a refused spawn.
+            InteractiveError::ProcessDenied(_)
+            | InteractiveError::AdmissionBlocked(_)
             | InteractiveError::AdmissionImpossible(_)
             | InteractiveError::PlatformUnsupported { .. }
             | InteractiveError::SpawnFailed(_)
@@ -445,6 +449,9 @@ impl From<InteractiveError> for InteractiveAttachError {
 /// environment content never cross into responses or logs.
 fn strip_interactive_details(error: &InteractiveError) -> String {
     match error {
+        InteractiveError::ProcessDenied(_) => {
+            "the restricted shared-checkout profile refused the launch".to_string()
+        }
         InteractiveError::AdmissionBlocked(_) => {
             "scheduler admission refused the spawn".to_string()
         }
@@ -542,6 +549,20 @@ impl InteractiveProcessProtocol {
         }
     }
 
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority on the PTY engine.
+    ///
+    /// A PTY is a persistent process: it outlives the request that opened
+    /// it. Under the restricted shared-checkout profile the launch is
+    /// refused before the child exists.
+    pub fn with_process_admission(
+        self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) -> Self {
+        self.service.set_process_admission(service);
+        self
+    }
+
     /// Underlying M001 engine (shutdown coordination, diagnostics).
     pub fn service(&self) -> &Arc<InteractiveProcessService> {
         &self.service
@@ -593,6 +614,27 @@ impl InteractiveProcessProtocol {
         &self,
         client_id: &str,
         ctx: &Arc<ExecutionContext>,
+        profile: codegg_core::approval::SandboxProfile,
+        dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
+        audit: Option<InteractiveAuditHook>,
+    ) -> CoreResponse {
+        self.create_with_network_intent(
+            client_id,
+            ctx,
+            profile,
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            dto,
+            audit,
+        )
+        .await
+    }
+
+    pub async fn create_with_network_intent(
+        &self,
+        client_id: &str,
+        ctx: &Arc<ExecutionContext>,
+        profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
         dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
         audit: Option<InteractiveAuditHook>,
     ) -> CoreResponse {
@@ -602,10 +644,22 @@ impl InteractiveProcessProtocol {
         if let Err(error) = dto.validate() {
             return map_protocol_error(&error);
         }
-        let spec = match create_to_spec(dto) {
+        let mut spec = match create_to_spec(dto) {
             Ok(spec) => spec,
             Err(error) => return error.response(),
         };
+        if profile != codegg_core::approval::SandboxProfile::FullHost {
+            spec.constrained_profile = Some(profile);
+        }
+        if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired
+            && profile == codegg_core::approval::SandboxProfile::FullHost
+        {
+            return InteractiveAttachError::InvalidRequest(
+                "OfflineRequired PTY policy requires a constrained profile",
+            )
+            .response();
+        }
+        spec.network_intent = network_intent;
         match self.service.spawn(ctx, spec).await {
             Ok(handle) => match self.service.snapshot(&handle).await {
                 Ok(snapshot) => {

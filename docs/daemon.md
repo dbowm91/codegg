@@ -118,7 +118,7 @@ lock steps in `docs/TROUBLESHOOTING.md`.
 | `codegg daemon start` | Starts the daemon **in the foreground** (see above). `--endpoint` picks the socket; `--force-take-lock` is accepted but cannot override a held lock. |
 | `codegg daemon stop` | Graceful shutdown. Verifies the live daemon's identity first, then signals it. Unix only. |
 | `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, connected clients, and a one-line scratch usage summary. |
-| `codegg daemon scratch-usage` | Measures the daemon's disposable scratch cache: tree count, total size, age, and whether the reclaim path would accept each tree. `--json` emits the raw report; `--refresh` runs a fresh measurement instead of the daemon's last snapshot. |
+| `codegg daemon scratch-usage` | Measures the daemon's disposable scratch cache: tree count, total size, age, and the reclaim path's verdict for each tree. A tree the walk did not finish reading carries **no** verdict — it is reported as `unknown`, never as reclaimable. `--json` emits the raw report; `--refresh` runs a fresh measurement instead of the daemon's last snapshot. |
 | `codegg daemon scratch-reclaim` | Disposes of one scratch tree, named by its opaque digest. A dry run is the default: the command reports what it would remove and removes nothing. `--apply` actually removes it. |
 | `codegg daemon logs` | Shows the tail of `daemon.log`. `--lines` defaults to `50`; `--file` reads a specific file. |
 | `codegg daemon attach` | Opens the TUI against a running daemon over the local socket. `--endpoint`, `--session`, `--new`. |
@@ -136,6 +136,13 @@ the opaque digest that names each tree — never a path, a file name, file
 content, or a session identity. The daemon answers from its last snapshot;
 `--refresh` asks for exactly one fresh bounded walk. The command is served on
 the local daemon socket only.
+
+Each tree carries the reclaim path's own verdict, and the verdict has three
+states: **yes**, **no**, and **unknown**. A tree whose walk hit a budget
+before the tree was fully read has no verdict at all — the entries it did not
+reach could be ones the reclaim path would refuse, so the report says
+`unknown` rather than claiming the tree is reclaimable. A tree that vanished
+while it was being read is `unknown` for the same reason.
 
 `daemon scratch-reclaim` is the operator disposition for a tree the automatic
 reclaim path can never accept — a tree holding a planted symlink, say. It is

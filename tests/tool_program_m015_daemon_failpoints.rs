@@ -128,6 +128,7 @@ fn accepted_context(
     let contract_json = canonical_contract_json(&contracts).unwrap();
     let contract_digest = canonical_contract_digest(&contracts).unwrap();
     let direct = ToolExecutionContext {
+        writer_fence: None,
         backend: ToolBackendKind::Native,
         session_id: Some(format!("session-{program_id}")),
         cwd: PathBuf::from("."),
@@ -161,6 +162,7 @@ fn accepted_context(
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let mut context = to_core_context(Some(&direct), workspace_id, program_id).unwrap();
     context.contract_snapshot_json = contract_json;

@@ -81,6 +81,17 @@ canonical containment under the session-authorized workspace. Treat it as
 untrusted input and open targets only through `DocumentOpen`; a missing value
 means display-only. Never infer a path from the basename or trust an LSP URI.
 
+LSP servers are long-lived child processes in a daemon-owned service. The
+service accepts one `LspProcessLauncher` at construction and routes initial
+launches and restarts through it. FullHost turns retain the shared direct
+launcher. On Linux, a constrained turn may receive only its own M004 service
+scope, bound to the canonical workspace and daemon-resolved profile. The M004
+launcher preserves supervised JSON-RPC pipes and retains the helper status
+receipt through child exit. The turn owns launch, restart, and shutdown; it
+cannot reuse a FullHost client. `lsp`, `lsp_read`, preview apply, and LSP
+prompt-context collection stay unavailable if scope construction or launch
+fails. Never accept profile selection from an LSP client payload.
+
 Use the root package's `lsp-test-support` feature and its
 `codegg-lsp-test-server` harness for deterministic integration scenarios.
 The `egglsp` crate also builds a separate `egglsp-test-server` binary; they

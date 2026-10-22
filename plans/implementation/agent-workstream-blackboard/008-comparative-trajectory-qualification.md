@@ -1,6 +1,31 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked — M006 and M007 closure required for the broad cross-capability comparison; shared-checkout experiment arms additionally require M005
+Status: **closed 2026-10-22** — the contract matrix is frozen and guarded, the five configurations are qualified against it, and the measured comparison is published with its denominators and its negative cases. The shared-checkout arm (S4) is **qualified on Linux and macOS** and **unrun on Windows**, where the shared profile is disabled because no filesystem-enforcement backend is registered for Windows at all. Closure: `plans/closure/agent-workstream-blackboard/008-status.md`.
+
+Closure note (2026-10-22): this milestone's first work package asked for the contract matrix to be frozen *before* any two configurations were compared against each other. That freeze is `architecture/blackboard_contract_matrix.md`, kept frozen by `scripts/check_blackboard_contract_matrix.py`, which fails when a capability loses its production consumer, when a consumer retreats into a test-only module, or when a row goes empty. The qualification suites are `tests/blackboard_trajectory_m008.rs` (the S0–S4 functional arms, the explicit-integration conflict case and the notification-durability case) and `tests/blackboard_economics_m008.rs` (the opt-in measured comparison and the Rust target-directory contention arm), with the peer-observation contract pinned in `tests/agent_loop_harness.rs`. **No live-model performance claim and no live two-agent daemon-race claim** are made; both are recorded as named non-claims in the closure record, alongside the M007 product-side umask defect that this milestone recorded and did not fix.
+
+Gate status 2026-10-19: the gate this milestone waited on was M006 (isolated
+session/worktree launch UX) and M007 (per-workspace build admission). Both
+closed on 2026-10-19, so the configurations that need only isolated
+checkouts — S0, S1, S2, S3 — may proceed. S4 (two children in an explicitly
+serialized shared worktree) additionally requires M005 closure, and M005's
+shared mutation is still unavailable behind its corrective sub-line
+(C001–C002 closed, C003 ready, C004–C006 blocked). If a configuration lacks
+supported OS shared-write containment, mark it unrun rather than substituting
+an unsafe emulation.
+
+Gate status 2026-10-21: the S4 gate was M005, and M005's corrective has now
+closed it — C001–C006 are closed with C006 conditional, the shared checkout is
+a real opt-in production path, and the platform table qualifies **Linux and
+macOS** (`crates/codegg-core/src/run_placement.rs`). S4 therefore runs on those
+two platforms and is marked **unrun on Windows**, where the profile is disabled
+for a capability reason rather than an evidence reason. Two claims carry into
+S4 unchanged and are not re-established by this gate: the three C005 process
+surfaces that are **not** refused pre-effect (the local MCP stdio client, the
+`egglsp` server launch and the hook shell adapter) keep their recorded
+compensating controls, and a shared checkout still admits no unqualified
+process — so S4's Rust build arm is unavailable by contract, exactly as C006
+recorded.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008

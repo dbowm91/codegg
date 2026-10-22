@@ -143,6 +143,7 @@ fn program_ctx(
     program_id: &str,
 ) -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: program_id.to_string(),
         },
@@ -167,6 +168,7 @@ fn program_ctx(
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -196,6 +198,7 @@ fn agent_ctx(workspace: &Path) -> BrokerInvocationContext {
     };
     grant.decision_digest = grant.compute_digest();
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: workspace.to_path_buf(),
         session_id: None,
@@ -218,6 +221,7 @@ fn agent_ctx(workspace: &Path) -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

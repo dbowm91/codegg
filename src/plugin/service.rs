@@ -161,6 +161,23 @@ impl PluginService {
         self.policy.as_ref()
     }
 
+    /// Whether the named plugin runs as an OS process.
+    ///
+    /// A process-backed plugin is a **process surface**: it can write
+    /// anywhere the daemon user can, and its write set is not enumerable
+    /// at the call site. A builtin or WASM plugin is not — the WASM
+    /// runtime has no host process to spawn.
+    ///
+    /// This is the plugin's **effective runtime effect**, not its declared
+    /// metadata: a plugin cannot opt itself into the restricted profile's
+    /// process ban by describing itself as read-only.
+    pub async fn is_process_backed(&self, plugin_id: &str) -> bool {
+        match self.registry().get(plugin_id).await {
+            Some(info) => matches!(info.manifest.runtime, PluginRuntimeSpec::Process { .. }),
+            None => false,
+        }
+    }
+
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry
     }

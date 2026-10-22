@@ -5897,6 +5897,13 @@ diff --git a/src/lib.rs b/src/lib.rs
         .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
     }
 
+    // Resource class: real-lsp. This test queries a live language server,
+    // so its runtime is the server's workspace-indexing time — minutes on a
+    // large tree, and past the nextest kill threshold under load. The
+    // repository's policy is that a test needing an installed server is
+    // opt-in (`lsp-real-server-tests`) and is not part of the default
+    // sweep; the default sweep must be host-independent.
+    #[cfg(feature = "lsp-real-server-tests")]
     #[tokio::test(flavor = "current_thread")]
     async fn security_context_preset_scenarios_share_one_service() {
         let tool = live_security_tool();
@@ -6353,6 +6360,13 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     // ── Call expansion operation-level tests ──────────────────────────
 
+    // Resource class: real-lsp. This test queries a live language server,
+    // so its runtime is the server's workspace-indexing time — minutes on a
+    // large tree, and past the nextest kill threshold under load. The
+    // repository's policy is that a test needing an installed server is
+    // opt-in (`lsp-real-server-tests`) and is not part of the default
+    // sweep; the default sweep must be host-independent.
+    #[cfg(feature = "lsp-real-server-tests")]
     #[tokio::test(flavor = "current_thread")]
     async fn security_context_call_expansion_scenarios_share_one_service() {
         let tool = live_security_tool();
@@ -6704,6 +6718,13 @@ diff --git a/src/lib.rs b/src/lib.rs
         );
     }
 
+    // Resource class: real-lsp. This test queries a live language server,
+    // so its runtime is the server's workspace-indexing time — minutes on a
+    // large tree, and past the nextest kill threshold under load. The
+    // repository's policy is that a test needing an installed server is
+    // opt-in (`lsp-real-server-tests`) and is not part of the default
+    // sweep; the default sweep must be host-independent.
+    #[cfg(feature = "lsp-real-server-tests")]
     #[tokio::test]
     async fn security_context_call_expansion_truncated_limit_field_present() {
         let tool = live_security_tool();

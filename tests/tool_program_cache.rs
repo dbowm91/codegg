@@ -113,6 +113,7 @@ fn make_broker() -> (ToolBroker, ToolRegistry) {
 fn program_ctx() -> BrokerInvocationContext {
     let (_broker, registry) = make_broker();
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "prog-cache-test".to_string(),
         },
@@ -140,6 +141,7 @@ fn program_ctx() -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

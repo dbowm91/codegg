@@ -31,10 +31,10 @@ use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
 
-use crate::tui::app::state::file_tree::{FileTreeState, FileTreeStatus};
+use crate::tui::app::state::file_tree::{FileTreeState, FileTreeStatus, TreePanelMode};
 use crate::tui::app::TuiMsg;
 use crate::tui::file_icons::{self, FileIconStyle};
-use crate::tui::file_tree::{TreeListing, TreeNodeKind};
+use crate::tui::file_tree::{TreeFilterField, TreeListing, TreeNodeKind};
 
 /// Hints rendered under the listing. Kept in one place so the box, its
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
@@ -45,7 +45,7 @@ use crate::tui::file_tree::{TreeListing, TreeNodeKind};
 /// second copy in `panels/hosted.rs` is what taught the panel to advertise an
 /// `i act` verb `handle_key` never implemented.
 pub const HINT: &str =
-    "j/k move · ^d/^u page · l/→ peek into dir · h/← up · enter open · r refresh · esc close";
+    "j/k move · ^d/^u page · l/→ open · h/← up · enter open · i filter · r refresh · ⇧Q close";
 
 /// Separator between breadcrumb components. A `›` reads as "down one level"
 /// and is BMP box-adjacent, so it survives the plain-icon fallback.
@@ -128,11 +128,11 @@ impl FilesDialog {
     fn activate(&mut self) -> Option<TuiMsg> {
         let row = self.state.selected_row()?;
         match row.kind {
-            TreeNodeKind::Directory => {
-                self.state.toggle_selected();
-                self.reveal();
-                None
-            }
+            // A directory is **entered**, the same motion `l` makes: the
+            // standalone toggle verb is retired, and a toggle at the listing
+            // window's edge expanded a directory that has no children in the
+            // listing — which reads as an empty directory, not as a move.
+            TreeNodeKind::Directory => Some(TuiMsg::FilesDescend { path: row.path }),
             TreeNodeKind::File => Some(TuiMsg::FilesOpenSelected { path: row.path }),
         }
     }
@@ -142,6 +142,17 @@ impl FilesDialog {
         let selected = self.state.selected_index();
         let icon_style_kind = FileIconStyle::active();
         let mut lines: Vec<Line> = Vec::new();
+
+        // The **filter field** takes a row of its own when it has something
+        // to show. It is a row rather than an overlay because the panel is a
+        // listing, and a listing that silently changed under a typed filter
+        // would be a listing the reader could not account for.
+        let field = TreeFilterField::new(
+            &self.state.filter,
+            self.state.panel_mode == TreePanelMode::Insert,
+        );
+        let field_rows = u16::from(field.is_visible());
+        let list_height = area.height.saturating_sub(field_rows);
 
         if let Some(message) = self.error_line() {
             lines.push(Line::from(Span::styled(
@@ -164,7 +175,7 @@ impl FilesDialog {
             for (offset, row) in rows
                 .iter()
                 .skip(self.scroll.get())
-                .take(area.height as usize)
+                .take(list_height as usize)
                 .enumerate()
             {
                 let is_selected = selected == Some(self.scroll.get() + offset);
@@ -227,7 +238,25 @@ impl FilesDialog {
                 )));
             }
         }
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+        // The listing gets the rows above the field; the field itself is
+        // drawn on its own row at the bottom.
+        let list_area = Rect {
+            height: list_height,
+            ..area
+        };
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), list_area);
+        if field_rows == 1 {
+            field.render(
+                frame,
+                Rect {
+                    x: area.x,
+                    y: area.y + list_height,
+                    width: area.width,
+                    height: 1,
+                },
+                theme,
+            );
+        }
     }
 
     /// The title is a breadcrumb of the scope, not a flat path.
@@ -272,12 +301,50 @@ impl FilesDialog {
             _ => None,
         }
     }
+
+    /// Type into the panel's filter.
+    ///
+    /// The panel's insert mode is its own: `Esc` leaves it and **keeps** the
+    /// filter, so the rows the user narrowed to stay narrowed while the
+    /// panel goes back to navigation.
+    fn handle_insert_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.panel_mode = TreePanelMode::Normal;
+                None
+            }
+            KeyCode::Enter => {
+                self.state.panel_mode = TreePanelMode::Normal;
+                None
+            }
+            KeyCode::Backspace => {
+                self.state.filter.pop();
+                self.state.reanchor_selection();
+                self.reveal();
+                None
+            }
+            // Only plain (or shifted) characters are typed. A control or alt
+            // combination is a chord, not a character.
+            KeyCode::Char(character)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.state.filter.push(character);
+                self.state.reanchor_selection();
+                self.reveal();
+                None
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Component for FilesDialog {
-    /// A plain viewer box: no composer, no live filter, no mode of its own,
-    /// so the panel host may resolve `Shift+←/→/↑/↓` as the docking gesture
-    /// before this dialog sees the key.
+    /// A plain viewer box: no composer of its own, so the panel host may
+    /// resolve `Shift+←/→/↑/↓` as the docking gesture before this dialog
+    /// sees the key. The filter is the *panel's* input and the panel's mode,
+    /// not the composer's — the composer badge reports the app-level mode,
+    /// and a filter being typed must never be reported as the composer being
+    /// in Insert.
     fn docks_as_viewer(&self) -> bool {
         true
     }
@@ -316,6 +383,13 @@ impl Component for FilesDialog {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+        // The panel's own insert mode owns the keyboard while it is active:
+        // printable keys edit the filter and `Esc` leaves insert mode. The
+        // composer is a different surface with a different job, and this
+        // filter is the panel's input.
+        if self.state.panel_mode == TreePanelMode::Insert {
+            return self.handle_insert_key(key);
+        }
         // Checked before the character arms: `Ctrl+d`/`Ctrl+u` carry
         // `Char('d')`/`Char('u')` codes, so a listing taller than the box
         // needs a verb that moves more than one row. The box owns the
@@ -334,7 +408,23 @@ impl Component for FilesDialog {
             }
         }
         match key.code {
-            KeyCode::Esc => Some(TuiMsg::CloseDialog),
+            // `Esc` is the **mode** switch, not the exit. In Normal mode
+            // there is no mode to leave, so the key does nothing: the panel
+            // keeps the keyboard and the selection, and `Shift+Q` is how the
+            // user leaves.
+            KeyCode::Esc => None,
+            // `Shift+Q` closes the box, the same gesture that exits a
+            // docked panel. It is spelled with the shift modifier so the
+            // plain `q` stays the program's quit key.
+            KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(TuiMsg::CloseDialog)
+            }
+            // `i` opens the panel's filter field. The filter narrows the rows
+            // the panel shows; it never re-scopes the listing.
+            KeyCode::Char('i') => {
+                self.state.panel_mode = TreePanelMode::Insert;
+                None
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_selection(1);
                 None
@@ -343,15 +433,13 @@ impl Component for FilesDialog {
                 self.move_selection(-1);
                 None
             }
-            // `l` peeks into the selected directory and `h` goes back one
-            // level. Both are intents: the box holds a copy of the shared
-            // state and the walk belongs to the command layer, so it names
-            // the direction rather than moving its own scope.
+            // `l` opens the selected row and `h` goes back one level. Both
+            // are intents: the box holds a copy of the shared state and the
+            // walk belongs to the command layer, so it names the direction
+            // rather than moving its own scope. A directory is entered; a
+            // file is opened, because it has nothing to enter.
             KeyCode::Char('l') | KeyCode::Right => {
                 let row = self.state.selected_row()?;
-                if row.kind != TreeNodeKind::Directory {
-                    return None;
-                }
                 Some(TuiMsg::FilesDescend { path: row.path })
             }
             KeyCode::Char('h') | KeyCode::Left => Some(TuiMsg::FilesAscend),
@@ -382,30 +470,13 @@ impl Component for FilesDialog {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // The hint row is reserved rather than overlaid, so the listing never
-        // draws under it and the last visible file is never half-hidden. It
-        // belongs to the box only: `render_in_panel` omits it, and the same
-        // bytes reach a docked panel through the status line above the composer
-        // instead of a column too narrow to hold them.
-        let height = inner.height.saturating_sub(1) as usize;
-        self.visible_height = height.max(1);
+        // The listing gets the whole box. The hotkey line that used to sit
+        // at the bottom of the box duplicated the keymap the composer status
+        // line already carries above the input, and in a narrow box it
+        // wrapped onto rows and pushed the listing out of view.
+        self.visible_height = inner.height as usize;
         self.reveal();
-
-        let list_area = Rect {
-            height: inner.height.saturating_sub(1),
-            ..inner
-        };
-        self.render_rows(frame, list_area, theme);
-
-        let hint_area = Rect {
-            y: inner.y + inner.height.saturating_sub(1),
-            height: 1,
-            ..inner
-        };
-        frame.render_widget(
-            Paragraph::new(HINT).style(Style::default().fg(theme.muted)),
-            hint_area,
-        );
+        self.render_rows(frame, inner, theme);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -455,20 +526,26 @@ mod tests {
     }
 
     #[test]
-    fn enter_expands_a_directory_in_place_without_moving_the_cursor() {
+    fn enter_asks_the_command_layer_to_enter_the_directory() {
         let root = temp();
         write(root.path(), "dir/a.txt");
 
         let mut dialog = dialog(root.path());
         assert_eq!(dialog.selected_path().as_deref(), Some("dir"));
 
-        assert!(dialog.handle_key(key(KeyCode::Enter)).is_none());
-        assert_eq!(dialog.selected_path().as_deref(), Some("dir"));
-        assert!(dialog.visible_row_count() >= 2);
+        // `Enter` is the same motion as `l`: it enters the directory. It used
+        // to expand it in place, which at the listing window's edge expanded a
+        // directory with no children — an "empty directory", not a move.
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Enter)),
+            Some(TuiMsg::FilesDescend {
+                path: "dir".to_string()
+            })
+        );
     }
 
     #[test]
-    fn l_asks_the_command_layer_to_peek_into_the_directory() {
+    fn l_asks_the_command_layer_to_open_the_row() {
         let root = temp();
         write(root.path(), "dir/a.txt");
         write(root.path(), "top.txt");
@@ -489,9 +566,15 @@ mod tests {
             })
         );
 
-        // A file has no directory to peek into.
+        // A file has no directory to enter, so `l` opens it: the command
+        // layer resolves the row, and the key is never dead.
         dialog.state.selected = Some("top.txt".to_string());
-        assert_eq!(dialog.handle_key(key(KeyCode::Char('l'))), None);
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Char('l'))),
+            Some(TuiMsg::FilesDescend {
+                path: "top.txt".to_string()
+            })
+        );
     }
 
     #[test]
@@ -549,16 +632,39 @@ mod tests {
         );
     }
 
+    /// `Enter` on a directory is the same motion as `l`: it enters the
+    /// directory, and it never opens a document for it.
     #[test]
-    fn enter_on_a_directory_never_emits_an_open_intent() {
+    fn enter_on_a_directory_enters_it_and_never_emits_an_open_intent() {
         let root = temp();
         write(root.path(), "dir/a.txt");
 
         let mut dialog = dialog(root.path());
+        dialog.state.selected = Some("dir".to_string());
         assert_eq!(
             dialog.handle_key(key(KeyCode::Enter)),
-            None,
-            "a directory has no document to open; it is expanded in place"
+            Some(TuiMsg::FilesDescend {
+                path: "dir".to_string()
+            }),
+            "a directory has no document to open; it is entered"
+        );
+    }
+
+    /// `l` on a **file** opens it: the key is never dead, and a file has
+    /// nothing to enter.
+    #[test]
+    fn l_on_a_file_asks_the_command_layer_to_open_it() {
+        let root = temp();
+        write(root.path(), "a.txt");
+
+        let mut dialog = dialog(root.path());
+        dialog.state.selected = Some("a.txt".to_string());
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Char('l'))),
+            Some(TuiMsg::FilesDescend {
+                path: "a.txt".to_string()
+            }),
+            "the command layer resolves the row into an open"
         );
     }
 
@@ -575,17 +681,50 @@ mod tests {
         );
     }
 
+    /// `Esc` is the **mode** switch, not the exit: it leaves insert mode and
+    /// keeps the filter, and in Normal mode it does nothing at all. The box is
+    /// left with `Shift+Q`.
     #[test]
-    fn esc_closes_and_unclaimed_keys_do_nothing() {
+    fn esc_is_the_mode_switch_and_shift_q_closes() {
         let root = temp();
         write(root.path(), "a.txt");
 
         let mut dialog = dialog(root.path());
         assert_eq!(
             dialog.handle_key(key(KeyCode::Esc)),
-            Some(TuiMsg::CloseDialog)
+            None,
+            "Esc must not close the box or hand the keyboard back"
+        );
+        assert_eq!(
+            dialog.handle_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT,)),
+            Some(TuiMsg::CloseDialog),
+            "Shift+Q is the box's exit"
         );
         assert!(dialog.handle_key(key(KeyCode::Char('z'))).is_none());
+    }
+
+    /// `i` opens the panel's filter, and `Esc` leaves insert mode **keeping**
+    /// what was typed.
+    #[test]
+    fn the_filter_is_typed_in_insert_mode_and_survives_esc() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+
+        let mut dialog = dialog(root.path());
+        assert!(dialog.handle_key(key(KeyCode::Char('i'))).is_none());
+        assert_eq!(dialog.state.panel_mode, TreePanelMode::Insert);
+
+        assert!(dialog.handle_key(key(KeyCode::Char('a'))).is_none());
+        assert!(dialog.handle_key(key(KeyCode::Char('l'))).is_none());
+        assert_eq!(dialog.state.filter, "al");
+
+        // Esc leaves insert mode and keeps the filter, so the rows the user
+        // narrowed to stay narrowed.
+        assert!(dialog.handle_key(key(KeyCode::Esc)).is_none());
+        assert_eq!(dialog.state.panel_mode, TreePanelMode::Normal);
+        assert_eq!(dialog.state.filter, "al");
+        assert_eq!(dialog.state.rows().len(), 1, "only alpha.txt survives");
     }
 
     #[test]
@@ -861,17 +1000,18 @@ mod tests {
         );
     }
 
-    /// The in-box footer stays: a modal box owns its whole surface and has no
-    /// status line of its own. Only the *panel* drops it.
+    /// The box's own hotkey row is gone. The row above the composer carries
+    /// the panel's keymap, and a second copy at the bottom of the box was the
+    /// noise the user asked to be rid of.
     #[test]
-    fn the_modal_box_keeps_its_own_footer() {
+    fn the_modal_box_spends_its_rows_on_the_listing() {
         let root = temp();
         write(root.path(), "a.txt");
         let mut dialog = dialog(root.path());
         let text = render_text(&mut dialog, 100, 12);
         assert!(
-            text.contains("enter open"),
-            "the box's own hint row is its only keymap, got {text:?}"
+            !text.contains("enter open"),
+            "the box must not repeat the keymap the composer row already carries: {text:?}"
         );
     }
 

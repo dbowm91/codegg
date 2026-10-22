@@ -214,6 +214,8 @@ impl AgentLoop {
         artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
         workspace_root: std::path::PathBuf,
         session_id: String,
+        writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
+        process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
     ) -> Self {
         let mut map = HashMap::new();
         let mut default_name = "build".to_string();
@@ -444,6 +446,12 @@ impl AgentLoop {
                 tool_advisor_schema_budget,
                 runtime_asset_pin: None,
                 tool_broker,
+                // M005 C003: the loop's checkout writer fence, handed to
+                // every tool execution context it builds.
+                writer_fence,
+                // M005 C005: the loop's process admission policy, handed to
+                // every tool execution context it builds.
+                process_admission,
                 notification_service: None,
                 job_notification_service: None,
                 ci_watch_service: None,
@@ -456,6 +464,7 @@ impl AgentLoop {
                 config,
                 approval_mode: codegg_core::approval::ApprovalMode::Interactive,
                 sandbox_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             lifecycle: TurnLifecycle::new(),
             state: AgentLoopState {
@@ -903,6 +912,10 @@ impl AgentLoop {
         self.services.sandbox_profile
     }
 
+    pub fn set_network_intent(&mut self, intent: codegg_core::approval::NetworkIntent) {
+        self.services.network_intent = intent;
+    }
+
     /// M003: capture the immutable effective execution-policy snapshot for
     /// the turn/accepted-tool-batch boundary. Mode changes after capture
     /// apply on the next boundary and cannot retroactively bless pending
@@ -919,6 +932,8 @@ impl AgentLoop {
             Some(format!("config:{:016x}", self.permission_version())),
             None,
         )
+        .with_network_intent(self.services.network_intent)
+        .expect("turn network intent remains within its immutable ceiling")
     }
 
     pub fn set_max_tool_calls(&mut self, max: Option<usize>) {

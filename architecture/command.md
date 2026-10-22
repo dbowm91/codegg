@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 167 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 168 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 167 hardcoded commands (highest priority)
+1. **Built-in commands**: 168 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -166,7 +166,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (159 variants, `src/tui/command.rs:112`).
+built-in executable operation (160 variants, `src/tui/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -253,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (167 total)
+### Built-in Commands (168 total)
 
 Representative built-ins:
 
@@ -392,7 +392,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 167**: Guarded by
+- **Built-in count is 168**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -413,7 +413,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-167 count stays in sync with this documentation.
+168 count stays in sync with this documentation.
 
 ## Related Docs
 
@@ -426,19 +426,19 @@ Verified 2026-10-13 against `src/tui/command.rs` and `src/command/mod.rs`,
 re-verified 2026-10-19 after C007 added `/subagent-send`, and re-verified
 2026-10-20 after Eggwork M002 added `/nodes`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1209`) asserts 167, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 167 (the three
-former's matches are on lines 15, 23, and 256; the latter's on line 394).
-Also verified the 167 built-in registry length, `BuiltinSlashAction`
-(159 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
+(`command.rs:1217`) asserts 168, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 168 (the three
+former's matches are on lines 15, 23, and 256; the latter's on line 395).
+Also verified the 168 built-in registry length, `BuiltinSlashAction`
+(160 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction`
-(5, `command.rs:309`), the TUI `Command` struct fields
-(`command.rs:318`), `CommandRegistry` (`command.rs:496`), core `Command`
+(5, `command.rs:313`), the TUI `Command` struct fields
+(`command.rs:322`), `CommandRegistry` (`command.rs:500`), core `Command`
 (`src/command/mod.rs:39`), `ProcessCommandSpec`
 (`src/command/mod.rs:12`), `execute_command_template`
 (`src/command/mod.rs:320`), `CommandConfig`
-(`crates/codegg-config/src/schema.rs:1493`), and that `/checkpoint` is
+(`crates/codegg-config/src/schema.rs:1821`), and that `/checkpoint` is
 absent from the registry (its only remaining occurrence is the
 `CommandDomain::Execution` keyword list).
 
@@ -454,9 +454,13 @@ distinct wrong figure these pins have carried (156 at the 2026-10-13 pass, 157
 before C007, 158 after) and no guard saw any of them:
 `command_docs_count_matches_registry` matches only `(\d+)\s+(hardcoded|built-in|total)`
 and `[Cc]ount is (\d+)`, so a `N variants` claim is invisible to it.
-`command_docs_enum_variant_counts_match_source` now covers it.
+`command_docs_builtin_slash_action_variant_count_matches_source` now covers
+it. (The name was wrong until 2026-10-21: this paragraph credited a guard
+called `command_docs_enum_variant_counts_match_source`, which does not exist
+in the tree — the two `N variants` claims were, in fact, uncovered until
+`command_docs_builtin_slash_action_variant_count_matches_source` was added.)
 
-The **159** is the fourth distinct figure these pins have carried, and the
+The **159** was the fourth distinct figure these pins have carried, and the
 158 was not merely stale: Eggwork M002 added `/nodes` to the
 `BuiltinSlashAction` enum and to the registry, but omitted it from
 `all_builtin_variants()`. The registry therefore referenced 159 distinct
@@ -470,6 +474,17 @@ does not read it. Corrected on 2026-10-20 while closing Eggwork M004:
 two `N variants` claims in this document were corrected to 159 against the
 enum. The lesson repeats the one above — a count that is only asserted
 against a *different* count is not a count that is checked.
+
+Re-verified 2026-10-21 after this branch was rebased onto `main`. The merged
+tree holds **168** built-in commands and **160** `BuiltinSlashAction` variants,
+one more than either side alone: `main` registered `/nodes` and this branch
+registered `/network`, and each side's pin had reached 167 commands and 159
+variants on its own. The two `N variants` claims in this document are therefore
+corrected to 160, and the five source anchors above are re-read against the
+merged tree — `CommandAction` moved from `command.rs:309` to `:313`, the TUI
+`Command` struct from `:318` to `:322`, `CommandRegistry` from `:496` to
+`:500`, the count test from `:1209` to `:1217`, and `CommandConfig` from
+`schema.rs:1493` to `:1821`.
 
 Corrected this pass: the paragraph above previously carried three mutually
 inconsistent figures ("asserts 157", "resolves to 157", "150 variants")

@@ -180,6 +180,8 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                 cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
                 scope: Some(resolved.scope_label),
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             }) {
                 Ok(payload) => payload,
                 Err(e) => {

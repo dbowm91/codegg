@@ -44,8 +44,9 @@ impl SidePanel for SessionPanel {
             .render_with_title(area, buf, &title, ctx.focused);
     }
 
-    /// The session panel has no input mode of its own, so `Esc` and `q`
-    /// always return to the composer.
+    /// The session panel has no input mode of its own, so it never claims the
+    /// host's exit key: `Shift+Q` returns to the composer. `Esc` is the mode
+    /// switch and leaves the panel where it is.
     fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
         false
     }

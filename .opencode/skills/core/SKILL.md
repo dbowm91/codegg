@@ -40,9 +40,9 @@ implement local affinity caching. See `architecture/agent.md` and
 handling is physically decomposed by family; do not add a new generic
 coordinator, service bus, or DI framework:
 
-`DaemonRequestFamily` has 16 variants; 12 are dispatched by the family
-router in `handle_request_with_client`, and 4 (chat, team, interactive,
-work orders) return earlier through their own pre-router arms.
+`DaemonRequestFamily` has 18 variants; 13 are dispatched by the family
+router in `handle_request_with_client`, and 5 (chat, team, interactive,
+human shell, work orders) return earlier through their own pre-router arms.
 
 | Family | Handler | Module |
 |---|---|---|
@@ -58,8 +58,10 @@ work orders) return earlier through their own pre-router arms.
 | documents | `handle_document_request` | `src/core/daemon_documents.rs` |
 | project initialization | `handle_project_init_request` | `src/core/daemon_project_init.rs` |
 | lsp | `handle_lsp_request` | `src/core/daemon_lsp.rs` |
+| scratch | `handle_scratch_request` | `src/core/daemon_scratch.rs` |
 | chat | `handle_chat_request` | `src/core/daemon.rs` |
 | team | `handle_team_request` | `src/core/daemon_team.rs` |
+| human shell | `handle_human_shell_request` | `src/core/daemon_human_shell.rs` |
 | work orders | `handle_work_order_request` | `src/core/daemon_work_orders.rs` |
 | interactive | `run_interactive_request` | `src/core/daemon.rs` |
 
@@ -300,3 +302,34 @@ the hidden-flag contract. Added the `Initialize`-is-unhandled fact, the
 `PROTECTED_GLOBS` scope of the cwd guard, a `## Testing` section, and a
 `## See Also` section. No stale claims were found in the existing body
 of this file.
+
+Third pass (2026-10-21) against `src/core/daemon.rs`,
+`src/core/daemon_family.rs`, `crates/codegg-protocol/src/core.rs`, and the
+`src/core/daemon_*.rs` files, after M006 (the scratch usage census) and M007
+(the scratch retention sweep) landed. The two earlier passes above are left
+as they were written; this pass records what had drifted since. Every count
+was re-measured against the source on this tree rather than copied forward.
+
+- **The family count was stale: 16 variants → 18.** The enum now holds
+  `Assets`, `Providers`, `Sessions`, `Turns`, `Jobs`, `Projects`, `Goals`,
+  `Projection`, `Ops`, `Chat`, `Team`, `Interactive`, `HumanShell`,
+  `WorkOrders`, `Documents`, `ProjectInitialization`, `Lsp`, and `Scratch`.
+  `HumanShell` had been added without updating this file, and M006 added
+  `Scratch`.
+- **The dispatch split was stale: 12 dispatch / 4 pre-router → 13 / 5.** The
+  router dispatches **13** families; **5** return earlier through their own
+  pre-router arms — chat, team, interactive, human shell, and work orders.
+  Verified by reading the match arm in `src/core/daemon.rs`, which routes
+  exactly those five before the family match. The old text named only chat
+  and interactive as pre-router families.
+- **The family table was missing two rows.** Neither `human shell` nor
+  `scratch` appeared, so the table did not list every family the paragraph
+  above it counted. Both rows are added, with the handler and owner module
+  each one actually uses.
+
+Confirmed accurate on this tree: `DaemonRequestFamily::of` and
+`owner_module` remain the only request-to-owner routing table and module
+map; the two sub-handler modules (`daemon_control.rs`,
+`daemon_workspace_dashboard.rs`) remain sub-handlers rather than routed
+families; and the `Box::pin`-per-family discipline and the
+`CoreRuntimeDeps` field list are unchanged.

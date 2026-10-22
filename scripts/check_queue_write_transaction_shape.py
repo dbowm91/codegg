@@ -42,7 +42,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUEUE_STORE = REPO_ROOT / "crates" / "codegg-core" / "src" / "session" / "user_prompt_queue.rs"
 # The shared home of the pattern. The queue store established it; the scratch
-# retention sweep reuses it.
+# retention sweep reuses it. C002 extracted it out of the queue store so the
+# new writer-permit store could use the same mechanism instead of forking a
+# subtle one — and this guard follows it, because the rollback contract is a
+# property of the *primitive*, not of whichever store happens to call it.
 IMMEDIATE_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "storage" / "immediate.rs"
 # The daemon's scratch retention sweep: it reads the durable session set and the
 # live-lease facts before it writes its reclaim decision.

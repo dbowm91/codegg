@@ -606,11 +606,10 @@ fn no_undispatched_or_undeliverable_verb_is_left_out_by_accident() {
     // documented exemptions — and that list is exact, so an arm added later
     // without a hint update fails here rather than shipping silent.
     //
-    //   `esc close` — `SidePanelHost::handle_key` claims `Esc`/`q` as the
-    //     universal panel exit and blurs before the panel is consulted
-    //     (`src/tui/panels/mod.rs`), and `HostPanel` does not override
-    //     `owns_exit_key`. In a column, `Esc` returns the keyboard to the
-    //     composer; it does not close anything.
+    //   `esc close` — `Esc` is the **mode switch**, so it means "close" in the
+    //     modal box and something else in a column (`src/tui/panels/mod.rs`).
+    //     In a column it does not close anything, and a hosted hint cannot
+    //     promise a key whose meaning the surface does not fix.
     //   `enter close` — it does reach the widget, but docking *popped* the box
     //     off the modal stack, so `TuiMsg::CloseDialog` runs `close_dialog()`
     //     against an empty stack and changes nothing. `Shift+←` is the way

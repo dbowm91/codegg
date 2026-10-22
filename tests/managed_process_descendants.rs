@@ -59,6 +59,8 @@ fn build_managed_argv_job(workspace: &WorkspaceId, argv: Vec<String>) -> NewJob 
         payload: JobPayload::ManagedArgv {
             argv,
             cwd: Some("/tmp".into()),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

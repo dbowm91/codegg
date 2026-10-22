@@ -626,6 +626,10 @@ impl CoreDaemon {
                     Some(session_id.clone()),
                     Default::default(),
                 );
+                // M005 corrective C005: the daemon-resolved root of this
+                // turn. The process admission policy is scoped to it, so the
+                // scope never comes from a request payload.
+                let turn_workspace_root = execution.workspace_root.clone();
                 // Pin the resolved root to the log: a turn whose tools
                 // all fail with "not a directory" is otherwise
                 // indistinguishable from a model looping on bad paths.
@@ -673,8 +677,8 @@ impl CoreDaemon {
                 // Interactive/WorkspaceWrite defaults. The snapshot is
                 // captured by the loop at the batch boundary so concurrent
                 // mode changes apply on the next turn, never retroactively.
-                let (approval_mode, sandbox_profile) = match self.pool.clone() {
-                    None => (None, None),
+                let (approval_mode, sandbox_profile, network_intent) = match self.pool.clone() {
+                    None => (None, None, None),
                     Some(pool) => {
                         let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
                         let principal = authority.principal_id().as_str().to_owned();
@@ -682,14 +686,15 @@ impl CoreDaemon {
                             Ok(Some(pref)) => (
                                 Some(pref.effective_approval_mode()),
                                 Some(pref.effective_sandbox_profile()),
+                                Some(pref.effective_network_intent()),
                             ),
-                            Ok(None) => (None, None),
+                            Ok(None) => (None, None, None),
                             Err(error) => {
                                 tracing::warn!(
                                     error = %error,
                                     "approval preference read failed; using defaults"
                                 );
-                                (None, None)
+                                (None, None, None)
                             }
                         }
                     }
@@ -739,12 +744,24 @@ impl CoreDaemon {
                     asset_pin,
                     approval_mode,
                     sandbox_profile,
+                    network_intent,
                     credential_observer,
                     // C001 daemon singletons: every turn shares one notifier
                     // + one watcher; closing a turn leaves watchers live.
                     shared_job_notification_service: self.deps.job_notification_service.clone(),
                     shared_ci_watch_service: self.deps.ci_watch_service.clone(),
                     credential_locator,
+                    // M005 corrective C005: the turn's process admission
+                    // policy. The scope is the daemon-resolved workspace
+                    // root of this turn — never a model-supplied path — and
+                    // the authority is the daemon's shared service, so the
+                    // turn cannot be handed a wider profile than the
+                    // checkout it is bound to.
+                    process_admission: super::process_admission::build_process_admission(
+                        Some(self.process_admission.clone()),
+                        &turn_workspace_root,
+                        None,
+                    ),
                 };
                 let turn_output = match self.deps.turn_runtime.run_turn(turn_input).await {
                     Ok(output) => output,

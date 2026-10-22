@@ -67,23 +67,79 @@ def self_test() -> list[str]:
             "ADR-0024-windows-two-stage-native-launch-and-mxc-requalification.md",
             "ADR-0025-windows-mxc-helper-diagnostic-corrective.md",
             "ADR-0026-windows-mxc-capture-and-handle-semantics-review.md",
+            "ADR-0027-windows-sandbox-capability-successors.md",
+            "ADR-0028-windows-broad-read-compatibility-profile.md",
+            "ADR-0029-windows-sandbox-capability-successors-renumbered.md",
+            "ADR-0030-windows-broad-read-profile-renumbered.md",
+            "ADR-0031-authenticated-idle-continuation-delegated-turn-admission.md",
+            "ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md",
+            "ADR-0033-directory-tied-project-identity-and-client-working-directory.md",
+            "ADR-0034-editor-syntax-tree-dependency.md",
+            "ADR-0035-durable-user-prompt-queue-ownership.md",
+            "ADR-0036-mid-turn-prompt-steering-delivery-contract.md",
+            "ADR-0037-idle-session-queue-mutation-authority.md",
+            "ADR-0038-queue-delivery-execution-authority.md",
+            "ADR-0039-queue-advancement-wakeup-authority.md",
+            "ADR-0040-evidence-based-agent-recovery-termination.md",
+            "ADR-0041-subagent-run-addressing-and-human-interaction-authority.md",
+            "ADR-0043-session-owned-subagent-lifecycle-projection.md",
+            "ADR-0045-command-syntax-and-execution-authority.md",
+            "ADR-0046-composable-linux-execution-isolation.md",
+            "ADR-0044-contained-git-live-objects-and-metadata-authority.md",
         ]
         for name in merged_names:
             (adrs / name).write_text(f"# {name}\n", encoding="utf-8")
         (root / "plans/active.md").write_text(
-            "See `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md`.\n",
+            "See `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md` and "
+            "`plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`, "
+            "and `plans/adrs/ADR-0046-composable-linux-execution-isolation.md`, "
+            "and `plans/adrs/ADR-0044-contained-git-live-objects-and-metadata-authority.md`.\n",
             encoding="utf-8",
         )
         (root / "plans/archive/windows-adr-id-aliases").mkdir(parents=True)
         (root / "plans/archive/windows-adr-id-aliases/ADR-0001-alias.md").write_text(
             "Historical `plans/adrs/ADR-9999-not-an-active-link.md`.\n", encoding="utf-8"
         )
+        (root / "plans/archive/linux-command-adr-id-aliases/ADR-0027-alias.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "plans/archive/linux-command-adr-id-aliases/ADR-0027-alias.md").write_text(
+            "Archived alias; see migration manifest.\n", encoding="utf-8"
+        )
         if check(root):
             failures.append("valid active ADR plus archived alias should pass")
+        active, active_errors = active_adrs(root)
+        expected = {
+            "0027",
+            "0028",
+            "0029",
+            "0030",
+            "0031",
+            "0032",
+            "0043",
+            "0044",
+            "0045",
+            "0046",
+        }
+        if active_errors or not expected.issubset(active):
+            failures.append("merged Windows/Linux/command ADR fixture should have unique identities")
         (adrs / "ADR-0023-second.md").write_text("# duplicate\n", encoding="utf-8")
         if not any("duplicate active ADR-0023" in error for error in check(root)):
             failures.append("duplicate active ADR number should fail")
         (adrs / "ADR-0023-second.md").unlink()
+        # The collision this line actually hit on 2026-10-21: two decisions
+        # claiming ADR-0043. The guard must reject it, or the fix that moved the
+        # Linux execution isolation record to ADR-0046 would be unenforced.
+        (adrs / "ADR-0043-composable-linux-execution-isolation.md").write_text(
+            "# duplicate linux isolation\n", encoding="utf-8"
+        )
+        if not any("duplicate active ADR-0043" in error for error in check(root)):
+            failures.append("duplicate ADR-0043 between two decisions should fail")
+        (adrs / "ADR-0043-composable-linux-execution-isolation.md").unlink()
+        (adrs / "ADR-0045-second.md").write_text("# duplicate command ID\n", encoding="utf-8")
+        if not any("duplicate active ADR-0045" in error for error in check(root)):
+            failures.append("duplicate command ADR identity should fail")
+        (adrs / "ADR-0045-second.md").unlink()
         (root / "plans/active.md").write_text(
             "See `plans/adrs/ADR-0027-missing.md`.\n", encoding="utf-8"
         )

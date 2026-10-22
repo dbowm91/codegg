@@ -23,11 +23,12 @@ enum Chrome {
 
 /// The verbs this box dispatches, for the panel host to reuse verbatim.
 ///
-/// `handle_key` also answers `↑/↓` and `Esc`, and neither survives docking:
-/// `SidePanelHost::handle_key` claims the arrows as panel directions and
-/// claims `Esc`/`q` as its universal exits *before* consulting the widget, so
-/// the old `" j/k scroll | Esc close "` footer advertised a pair a focused
-/// column can never deliver. The verbs moved to `keymap_hint`; see
+/// `handle_key` also answers `↑/↓` and `Esc`, and neither belongs in a hosted
+/// hint: `SidePanelHost::handle_key` claims the arrows as panel directions
+/// before consulting the widget, and `Esc` is the mode switch — it means
+/// "close" in the modal box and something else in a column. So the old
+/// `" j/k scroll | Esc close "` footer advertised a pair a focused column
+/// cannot deliver. The verbs moved to `keymap_hint`; see
 /// [`PluginDialog::render_body`] for why the scroll indicator did not.
 const HINT: &str = "j/k scroll";
 

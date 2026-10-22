@@ -129,6 +129,24 @@ pub async fn create_workspace(
         "workspace_register",
     )
     .await?;
+    // M005 corrective C004: creating a directory inside a checkout is a
+    // checkout write. Refuse it while the checkout is reserved by a live
+    // agent-run group, before the directory is created.
+    if let Some(daemon) = state.daemon.as_ref() {
+        daemon
+            .mediate_http_checkout_write(
+                &principal,
+                Some(context.project_id.clone()),
+                &context.workspace_root,
+                crate::core::checkout_mediation::CheckoutWriterSink::HttpWorkspaceCreate,
+            )
+            .await
+            .map_err(|conflict| {
+                crate::error::AppError::Storage(crate::error::StorageError::Conflict(
+                    conflict.to_string(),
+                ))
+            })?;
+    }
     let validated = sanitize_path_from_root(&context.workspace_root, &req.path)?;
 
     if !validated.exists() {

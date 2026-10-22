@@ -93,6 +93,35 @@ in a project that has never been opened.
 Sessions created by the TUI are persistent by default and can be resumed
 across restarts.
 
+### `launch`
+
+```bash
+codegg launch --project <project-id>                    # new session, fresh checkout
+codegg launch --project <project-id> --branch feature/x  # on a named branch
+codegg launch --project <project-id> --base main         # from a base branch or tag
+codegg launch --project <project-id> --fork <session-id> # fork history into a new checkout
+codegg launch --project <project-id> --worktree <worktree-id>  # use an existing checkout
+codegg launch --project <project-id> --idempotency-key k1      # retry-safe launch
+```
+
+`codegg launch` places a session in an **isolated managed checkout**. It
+goes through the daemon, because the daemon owns the durable launch
+record, the worktree service and the workspace registry.
+
+The launch is **idempotent**: a retry with the same `--idempotency-key`
+and the same request converges on the original launch instead of
+allocating a second checkout. A retry with the same key and a *different*
+request is refused. Without `--idempotency-key`, every invocation is a
+distinct launch.
+
+`--worktree new` (the default) allocates a fresh managed checkout;
+`--worktree <worktree-id>` adopts a checkout the caller is already
+authorized for. `--base` names a branch or tag to create the checkout
+from; `--branch` names the branch to create it on.
+
+Shared-checkout execution is not available: a launch always places the
+session in its own isolated checkout.
+
 ## Providers and credentials
 
 ```bash

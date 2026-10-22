@@ -409,12 +409,11 @@ impl Component for InfoDialog {
     /// panel is the only surface that reads it. `handle_key` has two further
     /// arms, and neither belongs here:
     ///
-    /// - `Esc` never arrives. `SidePanelHost::handle_key` claims `Esc`/`q` as
-    ///   the universal panel exit and drops focus before the panel is
-    ///   consulted, and a hosted panel does not override `owns_exit_key`. In a
-    ///   column `Esc` returns the keyboard to the composer; naming it here
-    ///   would teach that `Esc` closes the box, which is the one thing it does
-    ///   not do.
+    /// - `Esc` means two different things in the two surfaces. It is the mode
+    ///   switch now, so it reaches a hosted panel rather than being claimed by
+    ///   the host, but in a column it leaves the widget's own mode instead of
+    ///   closing the box. Naming it here would teach that `Esc` closes the
+    ///   box, which is the one thing it does not do there.
     /// - `Enter` does arrive, and closes nothing: docking *pops* the box off
     ///   the modal stack, so `TuiMsg::CloseDialog` runs `close_dialog()` against
     ///   an empty stack. `Shift+←` is the way back to a modal, and the host
@@ -746,10 +745,10 @@ mod tests {
     #[test]
     fn keymap_hint_never_names_a_verb_the_hosted_path_cannot_deliver() {
         // `Enter`/`Esc` reach this widget modally and are dispatched here, but
-        // neither belongs in the panel status line: `SidePanelHost::handle_key`
-        // claims `Esc`/`q` as the universal exit and blurs before the panel is
-        // consulted, and `Enter`'s `CloseDialog` runs against an empty modal
-        // stack because docking popped the box off it.
+        // neither belongs in the panel status line: `Esc` is the mode switch, so
+        // it means "close" modally and something else in a column, and
+        // `Enter`'s `CloseDialog` runs against an empty modal stack because
+        // docking popped the box off it.
         let hint = InfoDialog::new(Arc::new(Theme::dark()), InfoType::Logs, vec!["x".into()])
             .keymap_hint()
             .expect("a hint");

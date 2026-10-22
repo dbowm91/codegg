@@ -208,6 +208,7 @@ pub fn spawn_process_runtime(
     generation: u64,
     mut child: Child,
     stderr: tokio::process::ChildStderr,
+    status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
 ) -> (LspProcessRuntime, tokio::task::JoinHandle<()>) {
     let (intent_tx, intent_rx) = watch::channel(LspProcessIntent::Running);
     let (exit_tx, exit_rx) = watch::channel::<Option<LspProcessExitEvent>>(None);
@@ -305,6 +306,29 @@ pub fn spawn_process_runtime(
             };
             (code, sig, final_intent)
         };
+
+        if let Some(mut status_task) = status_task {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), &mut status_task).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => tracing::warn!(
+                    server = %server_id_for_owner,
+                    error,
+                    "contained LSP helper status did not close cleanly"
+                ),
+                Ok(Err(error)) => tracing::warn!(
+                    server = %server_id_for_owner,
+                    error = %error,
+                    "contained LSP helper status task failed"
+                ),
+                Err(_) => {
+                    status_task.abort();
+                    tracing::warn!(
+                        server = %server_id_for_owner,
+                        "contained LSP helper status did not reach EOF after child exit"
+                    )
+                }
+            }
+        }
 
         let stderr_tail = stderr_buffer_for_owner
             .lock()

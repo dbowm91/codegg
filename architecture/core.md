@@ -471,7 +471,7 @@ intentionally live outside it.
 ### Next Likely Extraction Target
 
 The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
-the `CoreDaemon` request dispatch into `core::daemon_family` plus 15
+the `CoreDaemon` request dispatch into `core::daemon_family` plus 16
 `core::daemon_*` family handler modules (and the two sub-handler modules
 `daemon_control` / `daemon_workspace_dashboard`); Residual M003 has separated
 construction, bootstrap/recovery, refresh, and shutdown into
@@ -501,14 +501,16 @@ transport from the underlying agent and session logic.
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
 | `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~6,000 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
-| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 234 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
+| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 261 variants to one family plus `owner_module()`. Chat, team, interactive, human shell, and work orders classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. Also owns `spawn_turn_reaper`, whose post-terminal hook is M003's queue-delivery wake, and `publish_queue_changed`. |
 | `core::daemon_queue_delivery` | `CoreDaemon::submit_queued_prompt_turn`, `reconcile_stranded_queue_deliveries`, `advance_due_queue_entries` | M003 (ADR-0038): the single daemon-internal queue-delivery entry, its bounded restart twin, and M007's bounded advance tick (ADR-0039, accepted). Restricted to three callers by `scripts/check_queue_delivery_callsites.py`. |
 | `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
 | `core::daemon_project_init` | `handle_project_init_request` | Bounded `/init` evidence preview and one-use, project-scoped guarded publication of root `AGENTS.md`. |
 | `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |
+| `core::daemon_scratch` | `handle_scratch_request` | The scratch usage census (M006) and the scratch retention sweep (M007): the daemon-held measurement of its own disposable scratch tree, and the bounded reclamation of that tree. |
 | `core::daemon_team` | `handle_team_request` | Team membership, principal, and device-token administration (team-collaboration M003). |
+| `core::daemon_human_shell` | `handle_human_shell_request` | The human shell family: the staged human command surface and its promotion model. |
 | `core::daemon_work_orders` | `handle_work_order_request` | Project work orders, occurrences, sequence lanes, and trigger management. |
 | `core::daemon_workspace_dashboard` | `handle_workspace_dashboard_request` | Workspace dashboard aggregates over daemon-owned workspace state. |
 | `core::daemon_providers` | `handle_providers_request` | Eggpool provisioning and provider-connection lifecycle over the daemon-owned provisioner. |
@@ -847,9 +849,9 @@ compatibility boundary.
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in
   `crates/codegg-protocol/src/core.rs:28`).
-- `CoreDaemon` spans `~6,000` lines in `daemon.rs` plus 15 `daemon_*`
-  family handler modules totaling ~12,600 lines, plus `daemon_family.rs`
-  (~420 lines), plus four `daemon_*` lifecycle modules totaling ~2,400
+- `CoreDaemon` spans `~6,800` lines in `daemon.rs` plus 16 `daemon_*`
+  family handler modules totaling ~17,400 lines, plus `daemon_family.rs`
+  (~560 lines), plus four `daemon_*` lifecycle modules totaling ~3,400
   lines. It holds daemon identity, runtime deps, event log, session/client
   registries, notification router, workspace registry,
   workspace services, eggpool provisioner, selection service, asset refresh
@@ -1040,3 +1042,57 @@ Second pass (2026-10-06) against `src/core/daemon.rs`,
   non-Linux-Unix fallback. The Windows entry was also vaguer than the source
   (`dirs::data_local_dir()` else `env::temp_dir()`). This is the same cascade
   the `.opencode/skills/core/SKILL.md` table already carried correctly.
+
+Third pass (2026-10-21) against `src/core/daemon.rs`,
+`src/core/daemon_family.rs`, `crates/codegg-protocol/src/core.rs`, and the
+`src/core/daemon_*.rs` files, after M006 (the scratch usage census) and M007
+(the scratch retention sweep) landed. The two earlier passes above are left
+as they were written; this pass records what had drifted since.
+
+Every count below was re-measured against the source on this tree rather than
+copied forward, and each is measured the way this document has always
+measured it: the enum bodies counted programmatically, the family modules
+read off `DaemonRequestFamily::owner_module`, and the line totals taken from
+the files themselves.
+
+- **The family-handler module count was stale: 15 → 16.** The extraction
+  paragraph said "plus 15 `core::daemon_*` family handler modules". The
+  `owner_module` table names **16** distinct family owner files:
+  `daemon_assets`, `daemon_documents`, `daemon_goals`, `daemon_human_shell`,
+  `daemon_jobs`, `daemon_lsp`, `daemon_ops`, `daemon_project_init`,
+  `daemon_projection`, `daemon_projects`, `daemon_providers`,
+  `daemon_scratch`, `daemon_sessions`, `daemon_team`, `daemon_turns`, and
+  `daemon_work_orders`. `daemon_human_shell` had been added without updating
+  this paragraph, and M006 added `daemon_scratch`.
+- **The `of(&CoreRequest)` variant count was stale: 234 → 261.**
+  `CoreRequest` now has **261** variants, counted programmatically from the
+  enum body — the method this document already used.
+- **The `DaemonRequestFamily` enum was stale: 15 variants → 18.** The enum
+  holds `Assets`, `Providers`, `Sessions`, `Turns`, `Jobs`, `Projects`,
+  `Goals`, `Projection`, `Ops`, `Chat`, `Team`, `Interactive`, `HumanShell`,
+  `WorkOrders`, `Documents`, `ProjectInitialization`, `Lsp`, and `Scratch`.
+- **The pre-router split was stale: 11 vs 4 → 13 vs 5.** The family router
+  dispatches **13** families. **5** return earlier through their own
+  pre-router arms — chat, team, interactive, human shell, and work orders —
+  verified by reading the match arm in `daemon.rs`, which routes exactly
+  those five before the family match. The old text named only chat and
+  interactive as pre-router families.
+- **The line totals were stale.** `daemon.rs` is **6,807** lines (the text
+  said `~6,000`); the 16 family handler modules total **17,422** lines (the
+  text said `~12,600`, and the earlier passes recorded 12,626 across 15);
+  `daemon_family.rs` is **559** lines (the text said `~420`, earlier passes
+  423); and the four lifecycle modules — `daemon_construct` (970),
+  `daemon_bootstrap` (1,053), `daemon_refresh` (1,268), `daemon_shutdown`
+  (151) — total **3,442** lines (the text said `~2,400`, earlier passes
+  2,391).
+- **The module inventory was missing two family modules.** Neither
+  `core::daemon_human_shell` nor `core::daemon_scratch` had a row, so the
+  inventory did not describe the dispatch it documented. Both rows are added.
+- The two sub-handler modules, `daemon_control` (1,671 lines) and
+  `daemon_workspace_dashboard` (547), total **2,218** lines. The earlier
+  passes' 2,391 was the *lifecycle* figure, not the sub-handler one.
+
+Verified accurate on this tree: the `Box::pin`-per-family discipline, the
+`DaemonRequestFamily::owner_module` mapping, the four lifecycle modules and
+their separated responsibilities, and the `CoreRequest`/`CoreResponse`
+variant counts of **261** and **171** respectively.

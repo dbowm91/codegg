@@ -22,6 +22,7 @@ logging, or persistence surfaces.
 | Typed workflow model | `crates/codegg-git/` | `GitOperation`, risk/parser/render/path/ref/sensitive types, portable `RepoSnapshot`/`StateDelta`/`MutationResult` workflow boundary |
 | Execution adapter | `src/git_service.rs` | `GitExecutionService` — maps typed operations to structured egggit reads and the generic process boundary |
 | Mutations | `src/git_mutations.rs` | `GitMutationExecutor` and repository snapshot/delta orchestration over `codegg_git::workflow` |
+| Index publication | `src/git_publication/` | Private-index staging, compare-and-swap publication under Git's own `index.lock`, crash reconciler; durable journal in `codegg-core::git_publication` |
 | Typed ops | `src/git_mutations_ops.rs` | Stage, commit, branch, restore, stash, merge, rebase, cherry-pick, revert, tag-delete |
 | Network | `src/git_network_ops.rs` | Fetch, pull, push, remote add/remove/set-url/rename, config get/set/unset, reset variants, clean |
 | Network policy | `src/git_network_policy.rs` | `NetworkEnvPolicy`, `NETWORK_ALLOWED_ENV_VARS`, `NetworkFailureKind`, URL credential redaction, `sanitize_argv_for_run_store` |
@@ -42,6 +43,7 @@ logging, or persistence surfaces.
 | Local Git process construction and environment hardening | `egggit::process` | all CodeGG-owned local Git subprocess callers |
 | Credential-safe remote process overlay and failure classification | root `git_network_policy` / `git_network_ops` | typed network mutation adapters; raw credentials remain ephemeral |
 | Commit, stage, restore, branch, stash, merge/rebase/cherry-pick/revert | root `git_mutations` + `git_mutations_ops` | GitTool and command routing |
+| Private index publication (stage → compare-and-swap → publish → recover) | root `git_publication` publisher; durable journal in `codegg-core::git_publication` | the `Add` arm of `GitMutationExecutor`, GitTool `stage_paths`, the commit tool, daemon bootstrap reconciler |
 | Worktree create/remove/list/validate and leases | `codegg-core::worktree_service` (durable lifecycle); generic facts in `egggit::worktree` | agent-run scheduler/worktree services |
 | Base/result commit relationships and integration | `codegg-core` agent-run/worktree services and root `agent::run_integration` | parent-side integration only |
 | Mutation provenance and rerun metadata | root `git_run_store` over `codegg_git::workflow` results | RunStore; future rerun vertical M005 |
@@ -91,6 +93,25 @@ Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
 exit code, and `ProjectionHints`.
 
+Object-reading trusted commands use a private object view without
+`objects/info`, so a repository alternate created after admission cannot
+redirect the command. The view contains copies, never hard links, and is held
+for the complete child lifetime. C011 caches up to four immutable views and 2
+GiB within the daemon process. Linux inotify invalidates a generation on
+loose or packed object changes, watch loss, or queue overflow; cache misses
+install watches before fingerprinting and copying, then reject a view if a
+change arrives during construction. Where inotify is unavailable, cache hits
+validate a SHA-256 inventory fingerprint. Active Git children retain a lease
+across eviction and daemon shutdown. Cache pressure uses a command-scoped
+snapshot and never falls back to mutable source objects. Static alternates
+remain typed unavailable. This read-only boundary does not admit object-
+writing Git mutations or remote operations.
+
+The cache lowers repeated Git-read preparation on ext4, but fragmented cold
+snapshots remain above the accepted M003 latency budget. C010 remains the
+governing no-production-admission decision until the complete performance and
+compatibility gates pass.
+
 ### Mutation path
 
 `GitMutationExecutor::execute` runs the full 8-step pipeline:
@@ -116,6 +137,82 @@ names as `BranchName`/`RefName`). Merge strategies are gated by
 
 `run_raw_mutation` handles variants the typed parser cannot model (e.g.
 `git add -A`, `git reset HEAD`) — same snapshot/policy pipeline.
+
+### Private index publication
+
+`GitOperation::Add` does not reach the in-place `git add` route. It is
+published through `src/git_publication/`, which stages into a **private** index
+and publishes it into the real repository index under Git's own `index.lock`.
+A plain `git add` has no compare-and-swap and no durable record of intent, so
+a concurrent writer can be silently overwritten and a crash leaves no evidence
+of what was intended.
+
+The path has four parts:
+
+1. **Private staging.** The daemon-pinned Git child runs under the M004
+   process/IPC tier and the M005 offline-network candidate. It writes into a
+   private gitdir in daemon-owned scratch: a private index seeded byte-for-byte
+   from the real index (so an already-staged change is not lost by staging)
+   and a private object database whose `alternates` points at the real one, so
+   existing objects resolve read-only while new blobs stay private.
+   `GIT_INDEX_FILE` is deliberately **not** used — `EnvironmentPolicy` denies
+   that variable, and the private gitdir already provides the property it
+   would have been used for.
+2. **Durable intent.** The intent (the gitdir identity, the index fingerprint
+   the staging observed, the staged fingerprint, the staged paths) is written
+   to the `git_index_publication` journal (`codegg-core::git_publication`,
+   migration v84) before anything is published. The journal's states are
+   `prepared`/`publishing` (non-terminal) and `committed`/`aborted`/`ambiguous`
+   (terminal); a transition out of a terminal state is refused, not merely
+   unused.
+3. **Compare-and-swap publication.** The real `index.lock` is taken by a
+   same-filesystem `hard_link` from a temp file written *in* the gitdir, so
+   the lock's content is correct from the instant it exists and a leftover
+   lock is attributable by content hash. Under the lock, the real index's
+   fingerprint is compared against the one the staging observed; a mismatch is
+   a typed conflict (`StaleIndex`, `GitDirIdentityChanged`) and writes nothing
+   at all. The daemon then imports the staged objects (content-addressed,
+   idempotent, byte-verified against their source) and replaces the real index
+   by an atomic rename inside the gitdir, followed by a directory fsync.
+4. **Crash recovery.** A daemon-start reconciler (bootstrap phase 5) resolves
+   any publication a prior generation left in flight, from the recorded
+   evidence alone, into exactly one of committed / aborted / ambiguous. It
+   removes a leftover `index.lock` only when the lock's content equals the
+   published fingerprint — an empty or foreign lock is never removed — and
+   discards the scratch only for a committed or aborted publication. An
+   ambiguous publication is escalated, never guessed at and never replayed.
+
+The published scope is the **index only** (`PublishedResourceScope::IndexOnly`):
+no ref is written and the worktree is not modified. Merge, rebase, checkout,
+reset, clean, fetch, push, and pull are out of scope.
+
+The receipt states the **obtained** network boundary explicitly
+(`ObtainedNetworkBoundary`), rather than leaving the caller to infer an omission.
+The boundary is copied verbatim from the staging step's own launch, so it states
+what the publication actually ran under:
+
+- `Enforced { backend }` — the staging child was observed inside a private
+  network namespace. On a qualified host the contained staging runs under
+  M004/M005, so the receipt states `enforced (bubblewrap-netns)`.
+- `Unrestricted` — the staging child ran and obtained no network namespace.
+- `NotReported` — the staging step does not run a contained child, so there is
+  no launch whose obtained boundary could be read. This is the truthful answer
+  for a test-supplied staging, and it is a *statement*, not an omission.
+
+The boundary is read off the launch's obtained fact
+(`ObtainedNetworkBoundary::from_launch`), never off the request, so a receipt
+cannot claim a boundary the staging did not obtain. See
+`architecture/security.md` for how the launch derives it.
+
+`Add` is **refused** when no publisher is configured
+(`GitMutationError::PublicationRefused`) rather than downgraded to the
+in-place route, which cannot be made compare-and-swap safe. Every caller that
+can reach an authorized `Add` is therefore given the backend: the `git` tool,
+the `commit` tool, and the **bash route** — a bash-routed `git add` is an
+authorized `Add` too, and without the backend it would be refused rather than
+published. `stage_all` and `stage_tracked` still use the legacy in-place
+route — they carry whole-tree `-A` / `-u` semantics that the path-scoped
+publisher does not model.
 
 ### Network path
 
@@ -279,7 +376,9 @@ action regardless of routing mode.
    vars), pins `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`,
    `GIT_SEQUENCE_EDITOR=true`, strips `EDITOR`/`VISUAL`, sets
    `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`; adds fixed Git config
-   overrides for executable repository settings; returns typed outcomes for
+   overrides for executable repository settings; pins `--work-tree` to the
+   canonical root supplied by the daemon, caps upward repository discovery at
+   its parent, and disables system/global Git configuration; returns typed outcomes for
    caller-supplied global config/repository redirects and capability needs
    before spawn. An unknown Git subcommand is classified as a contained
    repository-alias capability rather than sent to Git.
@@ -293,6 +392,13 @@ action regardless of routing mode.
    `codegg-git/src/process_policy.rs` is a re-export shim for
    compatibility. Both root crate and `codegg-core::worktree` consume
    the same lists.
+
+For commit-producing operations, the process boundary preserves normal Git
+identity precedence without loading arbitrary global configuration. It reads
+only missing `user.name` and `user.email` values from the selected repository's
+local config and the user's global config, then passes those values as bounded
+command-scoped data. Global hooks, aliases, helpers, and other settings remain
+disabled. Identity values are data; they do not enable executable metadata.
 
 ## Invariants & Gotchas
 
@@ -392,6 +498,40 @@ the canonical `git` surface.
 15. **Recovery not auto-resolved.** Conflicts are presented as typed
     data. The agent must edit files, `git add`, then `recover: continue`.
 
+16. **Staging is private; publication is compare-and-swap.**
+    `GitOperation::Add` no longer mutates the repository index in place. It
+    stages into a private index in daemon-owned scratch and publishes under
+    Git's own `index.lock` with a compare-and-swap against the index
+    generation the staging observed. Three rules follow:
+    - **No silent fallback.** With no publisher configured, `Add` is
+      *refused* (`GitMutationError::PublicationRefused`). Falling back to
+      the in-place `git add` would reintroduce exactly the silent overwrite
+      and unrecorded intent the vertical exists to remove.
+    - **`GIT_INDEX_FILE` stays denied.** `codegg_git::ALWAYS_STRIPPED_ENV_VARS`
+      refuses it by design; the private gitdir already provides the
+      isolation it would have been used for.
+    - **The receipt states one resource.** `PublishedResourceScope::IndexOnly`
+      — the index is published, no ref is written, and the worktree is not
+      modified. Merge/rebase/checkout and the whole-tree `stage_all` /
+      `stage_tracked` routes stay outside this vertical.
+
+17. **Ambiguity is not success.** A publication whose outcome cannot be
+    determined from the recorded evidence is reported `Ambiguous` and
+    escalated. It is never reported as published and never replayed: a
+    committed publication is not re-applied, and an abandoned one is not
+    re-staged. A leftover `index.lock` is removed only when its content
+    equals the published fingerprint — an empty or foreign lock is left
+    alone.
+
+18. **A receipt states its boundary, including "not reported".** The
+    publication receipt carries `ObtainedNetworkBoundary`, with a producer for
+    every variant: `Enforced` from a launch that observed its own sandbox
+    setup completing with the network namespace requested, `Unrestricted` from
+    a launch that obtained no network namespace, and `NotReported` from a
+    staging step that runs no contained child. A receipt that names no
+    boundary and a receipt that names a boundary it did not obtain are both
+    wrong; the first is silent, the second is a claim.
+
 ## Testing
 
 ### Narrowest commands
@@ -414,6 +554,9 @@ cargo test --test git_mutations_integration
 cargo test --test git_network_integration
 cargo test --test git_recovery_integration
 cargo test --test git_execution_origin_matrix
+
+# Private index publication (C007)
+cargo test -p codegg --locked --test git_index_publication
 ```
 
 ### Isolated delegated-run commits and integration
@@ -486,17 +629,23 @@ dirty/conflicted state, validation summary, and retention attention. It does
 not expose credentials, full diffs, or authority to integrate; integration
 remains an explicit parent-side typed Git operation.
 
-### Test counts (verified 2026-10-06)
+### Test counts (verified 2026-10-19)
+
+Measured from the compiled test binaries' own `--list` output, not from a
+source-text grep: `cargo test -p <crate> --lib -- --list` and
+`cargo test -p codegg --test <file> -- --list`, counting the `: test` lines. A
+grep undercounts, because a test attribute can share a line with others.
 
 | Module / file | #[test] + #[tokio::test] |
 |---------------|--------------------------|
-| `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 358 |
+| `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 362 |
 | `egggit/operation_state.rs` | 8 |
-| `egggit` (all `src/*.rs`) | 78 |
+| `egggit` (all `src/*.rs`) | 109 |
 | `egggit/conflict.rs` | 7 |
 | `tests/git_mutations_integration.rs` | 12 (tokio::test) |
 | `tests/git_network_integration.rs` | 29 |
 | `tests/git_recovery_integration.rs` | 19 |
+| `tests/git_index_publication.rs` | 22 (C007 private-index publication; 17 C007 + 5 shared secret-scan) |
 
 ### Key test categories
 
@@ -516,12 +665,28 @@ remains an explicit parent-side typed Git operation.
   progress, skip during rebase.
 - **git_execution_origin_matrix**: Track U routing — verifies
   `route_git_local_mutation` gate behavior.
+- **git_index_publication** (C007): the journal's typed state machine and its
+  refusal of a terminal transition; the three reconciled verdicts and their
+  idempotence across restarts; a concurrent **external** writer producing a
+  typed `StaleIndex` conflict without overwriting the writer's index; a held
+  `index.lock` producing a typed `IndexLockHeld` conflict; a failed staging
+  leaving the repository byte-identical; and the atomic replacement importing
+  the staged object. The **contained** staging step additionally needs a
+  qualified host — it is exercised by the hosted
+  `production_private_index_publisher_stages_and_publishes_under_containment`
+  test in `tests/linux_m004_process_ipc.rs`.
 - **policy_drift_tests** (root): Ensures canonical lists match Phase F
   entries. `root_and_core_share_canonical_lists` verifies root and
   codegg-core read from same source.
 
 ## Related Docs
 
+- `plans/implementation/linux-trusted-git-cost-corrective/007-production-private-index-publication-vertical.md`
+  — the C007 plan for the private-index publication vertical, including §9's
+  three recorded departures from the plan text.
+- `plans/closure/linux-trusted-git-cost-corrective/007-status.md` — the C007
+  closure: requirement-to-evidence matrix, the three deviations, and the open
+  items (the contained staging step is still unproven on a qualified host).
 - `architecture/git_phase_f_handoff.md` — Phase F review context
   (do not modify).
 - `architecture/git_polish_verification_handoff.md` — Verified state,

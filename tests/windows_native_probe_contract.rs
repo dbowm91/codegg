@@ -307,6 +307,12 @@ async fn execute(
     request.environment_policy = environment;
     let backend = if restricted {
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
             target: shell.clone(),
             args: args
                 .iter()

@@ -57,6 +57,9 @@ pub struct ResourceBudget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxLaunchRequest {
     pub filesystem: Dimension<FilesystemView>,
+    /// The protected mount view is a separate, explicit opt-in. Existing
+    /// callers continue to select the legacy Landlock helper.
+    pub protected_mount_view: bool,
     pub network: Dimension<NetworkIntent>,
     pub process: Dimension<ProcessScope>,
     pub syscalls: Dimension<SyscallConstraints>,
@@ -80,15 +83,40 @@ impl LinuxLaunchRequest {
                 requested: filesystem.clone(),
                 parent_ceiling: filesystem,
             },
+            protected_mount_view: spec.linux_protected_mount_view,
             network: Dimension {
-                demand: Demand::Disabled,
-                requested: NetworkIntent::LegacyUnrestricted,
-                parent_ceiling: NetworkIntent::LegacyUnrestricted,
+                demand: if spec.linux_offline_network {
+                    Demand::Required
+                } else {
+                    Demand::Disabled
+                },
+                requested: if spec.linux_offline_network {
+                    NetworkIntent::OfflineRequired
+                } else {
+                    NetworkIntent::LegacyUnrestricted
+                },
+                parent_ceiling: if spec.linux_offline_network {
+                    NetworkIntent::OfflineRequired
+                } else {
+                    NetworkIntent::LegacyUnrestricted
+                },
             },
             process: Dimension {
-                demand: Demand::Disabled,
-                requested: ProcessScope::Legacy,
-                parent_ceiling: ProcessScope::Legacy,
+                demand: if spec.linux_process_isolation {
+                    Demand::Required
+                } else {
+                    Demand::Disabled
+                },
+                requested: if spec.linux_process_isolation {
+                    ProcessScope::Namespaced
+                } else {
+                    ProcessScope::Legacy
+                },
+                parent_ceiling: if spec.linux_process_isolation {
+                    ProcessScope::Namespaced
+                } else {
+                    ProcessScope::Legacy
+                },
             },
             syscalls: Dimension {
                 demand: Demand::Disabled,
@@ -162,6 +190,8 @@ fn process_within_ceiling(requested: ProcessScope, ceiling: ProcessScope) -> boo
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinuxLaunchPlan {
     LegacyPrivateHelper,
+    ProtectedMountView,
+    ProtectedProcessIsolation,
     EnhancedUnavailable { dimensions: Vec<&'static str> },
 }
 
@@ -176,6 +206,50 @@ pub struct ProductionLinuxLaunchAdapter;
 impl LinuxLaunchAdapter for ProductionLinuxLaunchAdapter {
     fn plan(&self, request: &LinuxLaunchRequest) -> Result<LinuxLaunchPlan, String> {
         request.validate_parent_ceiling()?;
+        if request.protected_mount_view {
+            if request.process.requested == ProcessScope::Namespaced {
+                if !matches!(
+                    (request.network.demand, request.network.requested),
+                    (Demand::Disabled, NetworkIntent::LegacyUnrestricted)
+                        | (Demand::Required, NetworkIntent::OfflineRequired)
+                ) || request.syscalls.demand != Demand::Disabled
+                    || request.syscalls.requested != SyscallConstraints::default()
+                    || request.resources.demand != Demand::Disabled
+                    || request.resources.requested != ResourceBudget::default()
+                {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: requested_enhanced_dimensions(request),
+                    });
+                }
+                if probe_trusted_bubblewrap().state != ProbeState::Available {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: vec!["trusted-bubblewrap"],
+                    });
+                }
+                if super::landlock::probe_process_scopes().is_err() {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: vec!["process-ipc-landlock-abi-6"],
+                    });
+                }
+                if probe_seccomp_filter().state != ProbeState::Available {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: vec!["seccomp-filter"],
+                    });
+                }
+                return Ok(LinuxLaunchPlan::ProtectedProcessIsolation);
+            }
+            if request.requires_enhanced_backend() {
+                return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                    dimensions: requested_enhanced_dimensions(request),
+                });
+            }
+            if probe_trusted_bubblewrap().state == ProbeState::Available {
+                return Ok(LinuxLaunchPlan::ProtectedMountView);
+            }
+            return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                dimensions: vec!["protected-filesystem-mount-view"],
+            });
+        }
         if request.requires_enhanced_backend() {
             return Ok(LinuxLaunchPlan::EnhancedUnavailable {
                 dimensions: requested_enhanced_dimensions(request),
@@ -311,6 +385,13 @@ pub fn observe_legacy_outcome(
             Vec::new(),
             vec![reason.clone()],
         ),
+        super::SandboxLaunchOutcome::BubblewrapReady => (
+            ObtainedState::Failed,
+            None,
+            None,
+            Vec::new(),
+            vec!["unexpected Bubblewrap gate receipt on the legacy launch route".into()],
+        ),
     };
     Ok(LinuxObtainedEnforcement {
         filesystem,
@@ -375,14 +456,19 @@ fn probe_user_namespace_creation() -> ProbeFact {
 
 fn probe_seccomp_filter() -> ProbeFact {
     match std::fs::read_to_string("/proc/sys/kernel/seccomp/actions_avail") {
-        Ok(actions) if actions.split_whitespace().any(|action| action == "filter") => {
-            ProbeFact::available(
-                "kernel advertises seccomp filter action; child application unproven",
-            )
+        Ok(actions) if seccomp_filter_actions_available(&actions) => ProbeFact::available(
+            "kernel advertises ALLOW and ERRNO seccomp actions; child filter installation unproven",
+        ),
+        Ok(_) => {
+            ProbeFact::unavailable("kernel does not advertise both ALLOW and ERRNO seccomp actions")
         }
-        Ok(_) => ProbeFact::unavailable("kernel does not advertise seccomp filter action"),
         Err(error) => ProbeFact::unknown(format!("cannot inspect seccomp actions: {error}")),
     }
+}
+
+fn seccomp_filter_actions_available(actions: &str) -> bool {
+    let actions = actions.split_whitespace().collect::<BTreeSet<_>>();
+    actions.contains("allow") && actions.contains("errno")
 }
 
 fn probe_proc_mount_inputs() -> ProbeFact {
@@ -402,6 +488,18 @@ fn probe_proc_mount_inputs() -> ProbeFact {
 }
 
 fn probe_trusted_bubblewrap() -> ProbeFact {
+    match trusted_bubblewrap_path() {
+        Ok(path) => ProbeFact::available(format!(
+            "trusted system executable candidate at {}; Bubblewrap version and required option support are unqualified",
+            path.display()
+        )),
+        Err(reason) => ProbeFact::unavailable(reason),
+    }
+}
+
+/// Resolve Bubblewrap independently of PATH and caller-controlled cwd. The
+/// candidate is revalidated immediately before every protected launch.
+pub fn trusted_bubblewrap_path() -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -425,24 +523,25 @@ fn probe_trusted_bubblewrap() -> ProbeFact {
             if metadata.is_file()
                 && owner == 0
                 && mode & 0o022 == 0
+                // ADR-0031 explicitly rejects setuid helpers; accepting one
+                // here could turn a namespace setup path into a privilege
+                // transition even though the executable is root-owned.
+                && mode & 0o6000 == 0
                 && mode & 0o111 != 0
                 && secure_ancestors
             {
-                return ProbeFact::available(format!(
-                    "trusted system executable candidate at {} (version not invoked)",
-                    canonical.display()
-                ));
+                return Ok(canonical);
             }
-            return ProbeFact::unavailable(format!(
-                "{} or one of its parent directories is not root-owned, non-writable, and executable",
+            return Err(format!(
+                "{} or one of its parent directories is not root-owned, non-writable, free of setuid/setgid bits, and executable",
                 canonical.display()
             ));
         }
-        ProbeFact::unavailable("no trusted bubblewrap executable in fixed system locations")
+        Err("no trusted bubblewrap executable in fixed system locations".into())
     }
     #[cfg(not(unix))]
     {
-        ProbeFact::unavailable("bubblewrap is Linux-only")
+        Err("bubblewrap is Linux-only".into())
     }
 }
 
@@ -515,12 +614,27 @@ mod tests {
 
     fn legacy_request() -> LinuxLaunchRequest {
         LinuxLaunchRequest::legacy_filesystem(&super::super::SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
             target: PathBuf::from("/bin/true"),
             args: Vec::new(),
             read_paths: vec![PathBuf::from("/workspace")],
             write_paths: vec![PathBuf::from("/workspace")],
             deny_paths: vec![PathBuf::from("/workspace/.git")],
         })
+    }
+
+    #[test]
+    fn seccomp_probe_requires_filter_actions_not_a_nonexistent_filter_action() {
+        assert!(seccomp_filter_actions_available(
+            "kill_process kill_thread trap errno user_notif trace log allow"
+        ));
+        assert!(!seccomp_filter_actions_available("kill_process trap allow"));
+        assert!(!seccomp_filter_actions_available("filter"));
     }
 
     #[test]

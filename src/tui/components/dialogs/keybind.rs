@@ -35,7 +35,8 @@ enum Chrome {
 /// directions and are answered by `SidePanelHost::handle_key` before this box
 /// is ever consulted, so `export`/`import` are only reachable from a column
 /// through the lowercase spelling. `Esc`, `↑`/`↓` and `q` are absent for the
-/// same reason — they are the host's universal exits and directions.
+/// same reason — they are the host's directions and mode switch, and a hosted
+/// hint cannot promise a key whose meaning differs between the two surfaces.
 const HINT: &str = "j/k move · enter remap · r reset · e export · i import";
 
 #[derive(Clone)]
@@ -297,8 +298,8 @@ impl KeybindDialog {
     ///
     /// The three per-mode footers below used to be unconditional. A docked
     /// column never saw the key they named: `Esc` — the only verb either the
-    /// Export or the Import footer offered — is claimed by
-    /// `SidePanelHost::handle_key` as a universal exit, so those two footers
+    /// Export or the Import footer offered — is the mode switch, so in a
+    /// column it means something else, and those two footers
     /// spent a row in a column too narrow to wrap them onto a panel that
     /// taught a dead key. They are now `Chrome::Owned`, where they are still
     /// the way a modal tells a human what Esc does.
@@ -693,8 +694,8 @@ impl Component for KeybindDialog {
     ///
     /// [`KeybindMode::Export`] and [`KeybindMode::Import`] are exactly that
     /// case: their body is JSON to copy or paste, and the only key either one
-    /// dispatches is `Esc` — which `SidePanelHost::handle_key` claims as a
-    /// universal exit before this box is ever consulted. Naming a verb for them
+    /// dispatches is `Esc` — which is the mode switch, so it means "close"
+    /// modally and something else in a column. Naming a verb for them
     /// would advertise a key that cannot fire, so these two modes say nothing
     /// and let the host print its own line. The real defect is that a docked
     /// `/keybinds` cannot leave those modes at all, and that is a host-level

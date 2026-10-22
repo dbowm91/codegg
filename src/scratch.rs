@@ -168,6 +168,18 @@ impl TestScratchRoot {
     /// Point the scratch tree at `root` for the current thread.
     pub(crate) fn install(root: PathBuf) -> Self {
         std::fs::create_dir_all(&root).expect("create the test scratch root");
+        // The scratch subsystem refuses a group- or other-writable parent, so
+        // the test root must be private whatever the ambient umask is. A bare
+        // `create_dir_all` inherits it — under umask `0002` it creates `0775`,
+        // and the code under test then rejects its own test root with
+        // `WrongOwner`. The product path pins `0700` for the same reason
+        // (see `ensure_private_parent`); this is the test-side equivalent.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("make the test scratch root private");
+        }
         let previous = test_scratch_root_override::install(root);
         Self { previous }
     }
@@ -193,19 +205,9 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     // on macOS, which the Required sandbox correctly denies as a credential
     // root. Cache storage remains per-user and stable across normal daemon and
     // process restarts; the artifacts are explicitly disposable.
-    #[cfg(unix)]
-    let expected_uid = {
-        use std::os::unix::fs::MetadataExt;
-        let home = dirs::home_dir().ok_or(ScratchError::OwnerUnavailable)?;
-        std::fs::metadata(home)
-            .map_err(|_| ScratchError::OwnerUnavailable)?
-            .uid()
-    };
-    #[cfg(not(unix))]
-    let expected_uid = ();
+    let expected_uid = current_owner_uid()?;
     let cache_root = scratch_cache_root()?;
-    std::fs::create_dir_all(&cache_root)?;
-    ensure_private_parent(&cache_root, expected_uid)?;
+    ensure_private_cache_root(&cache_root, expected_uid)?;
     let vendor_root = cache_root.join(SCRATCH_VENDOR_NAME);
     let scratch_root = vendor_root.join(SCRATCH_ROOT_NAME);
     let sessions_root = scratch_root.join("sessions");
@@ -715,6 +717,55 @@ fn scoped_resource_dir(
     Ok(std::fs::canonicalize(path)?)
 }
 
+/// The uid every directory the scratch allocator owns must carry.
+///
+/// The home directory's owner is the authority: a scratch tree that another
+/// user owns is never usable, so the allocator refuses it instead of guessing.
+#[cfg(unix)]
+fn current_owner_uid() -> Result<u32, ScratchError> {
+    use std::os::unix::fs::MetadataExt;
+    let home = dirs::home_dir().ok_or(ScratchError::OwnerUnavailable)?;
+    std::fs::metadata(home)
+        .map_err(|_| ScratchError::OwnerUnavailable)
+        .map(|metadata| metadata.uid())
+}
+
+#[cfg(not(unix))]
+fn current_owner_uid() -> Result<(), ScratchError> {
+    Ok(())
+}
+
+/// Resolve the per-user cache root the scratch allocator depends on.
+///
+/// A cache root the product creates is created *private*. The process umask
+/// must never be able to produce a group- or world-writable root that the
+/// ownership check would then refuse: the allocator would otherwise reject
+/// the very directory it had just created, and whether the product could run
+/// at all would depend on the operator's umask instead of on the product. A
+/// cache root that already exists is only validated — the product never
+/// re-permissions a directory it does not own, so a cache root another user
+/// can write to is refused rather than silently tightened.
+fn ensure_private_cache_root(
+    path: &Path,
+    expected_uid: impl OwnerCheck,
+) -> Result<(), ScratchError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Ok(()) => {}
+        // A pre-existing path — including a dangling symlink — is validated
+        // below, which produces the typed refusal instead of a raw I/O error.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(ScratchError::Io(error)),
+    }
+    ensure_private_parent(path, expected_uid)
+}
+
 fn ensure_private_parent(path: &Path, expected_uid: impl OwnerCheck) -> Result<(), ScratchError> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|_| ScratchError::InvalidPath(path.to_path_buf()))?;
@@ -934,7 +985,12 @@ pub struct ScratchTreeUsage {
     /// The newest modification time observed, in milliseconds since the epoch.
     pub newest_modified_ms: Option<i64>,
     /// The reclaim validator's own verdict for this tree.
-    pub reclaimable: bool,
+    ///
+    /// `None` when the verdict could not be established: the walk was
+    /// truncated before the tree was fully read, or the tree vanished while
+    /// it was being read. A partial walk never yields `Some(true)` — a tree
+    /// the census only half-read is not a tree the validator has accepted.
+    pub reclaimable: Option<bool>,
     /// Which rule refused the tree, when it did.
     pub refusal: Option<ReclaimRefusal>,
     /// True when the daemon's owner record is present and is a regular file.
@@ -1087,7 +1143,7 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
         multiply_linked_count: 0,
         oldest_modified_ms: None,
         newest_modified_ms: None,
-        reclaimable: true,
+        reclaimable: None,
         refusal: None,
         owner_record_present: false,
         truncated: false,
@@ -1103,7 +1159,7 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
     };
     if let Some(reason) = classify_reclaim_entry(&metadata) {
         usage.refusal = Some(reason);
-        usage.reclaimable = false;
+        usage.reclaimable = Some(false);
         return usage;
     }
     if !metadata.is_dir() {
@@ -1177,7 +1233,15 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
             usage.non_regular_count += 1;
         }
     }
-    usage.reclaimable = usage.refusal.is_none();
+    // The verdict is the validator's own verdict — but only over the part of
+    // the tree the walk actually read. A truncated walk leaves the verdict
+    // unknown: an unread entry could be one the validator would refuse, so
+    // claiming reclaimability here would be a claim the census cannot make.
+    usage.reclaimable = if usage.truncated {
+        None
+    } else {
+        Some(usage.refusal.is_none())
+    };
     usage
 }
 
@@ -1347,7 +1411,7 @@ pub fn preview_session_scratch(digest_hex: &str) -> Result<ScratchTreeUsage, Scr
             multiply_linked_count: 0,
             oldest_modified_ms: None,
             newest_modified_ms: None,
-            reclaimable: true,
+            reclaimable: None,
             refusal: None,
             owner_record_present: false,
             truncated: false,
@@ -1400,7 +1464,7 @@ mod tests {
         );
         assert_eq!(usage.file_count, 2);
         assert_eq!(usage.directory_count, 1);
-        assert!(usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(true));
         assert_eq!(usage.refusal, None);
         assert!(usage.oldest_modified_ms.is_some());
         assert!(usage.newest_modified_ms.is_some());
@@ -1426,7 +1490,7 @@ mod tests {
         let usage = &report.trees[0];
         assert_eq!(usage.symlink_count, 1);
         assert_eq!(usage.refusal, Some(ReclaimRefusal::Symlink));
-        assert!(!usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(false));
         // The link was reported, never traversed: the outside file is intact
         // and its content appears nowhere in the report.
         assert!(outside_file.exists());
@@ -1450,7 +1514,7 @@ mod tests {
         // recursive edge, so it does not stop the reclaim path.
         assert_eq!(usage.multiply_linked_count, 1);
         assert_eq!(usage.refusal, None);
-        assert!(usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(true));
     }
 
     #[cfg(any(unix, windows))]
@@ -1525,6 +1589,13 @@ mod tests {
         assert!(usage.truncated);
         assert!(report.truncated);
         assert!(usage.file_count <= 3);
+        // A partially-read tree has no verdict. The entries the walk did not
+        // reach could be ones the validator would refuse, so the census must
+        // not claim the tree is reclaimable — nor claim it is not.
+        assert_eq!(
+            usage.reclaimable, None,
+            "a truncated tree must not carry a reclaim verdict"
+        );
     }
 
     #[cfg(unix)]
@@ -1540,7 +1611,7 @@ mod tests {
         let usage = &report.trees[0];
         assert_eq!(usage.non_regular_count, 1);
         assert_eq!(usage.refusal, Some(ReclaimRefusal::NonRegular));
-        assert!(!usage.reclaimable);
+        assert_eq!(usage.reclaimable, Some(false));
         // The FIFO was counted from metadata, never opened: opening one blocks
         // until a writer appears, which would hang the walk.
         assert!(fifo_path.exists());
@@ -1568,6 +1639,11 @@ mod tests {
         assert!(usage.vanished);
         assert_eq!(usage.file_count, 0);
         assert_eq!(usage.total_bytes, 0);
+        // A tree that vanished was never read, so it carries no verdict.
+        assert_eq!(
+            usage.reclaimable, None,
+            "a vanished tree must not carry a reclaim verdict"
+        );
     }
 
     /// A name, size, and mtime manifest of a tree.
@@ -1910,6 +1986,107 @@ mod tests {
             ensure_private_directory(&link, 0),
             Err(ScratchError::InvalidPath(_))
         ));
+    }
+
+    /// A cache-root path inside a temporary directory.
+    ///
+    /// The allocator refuses a path that has a symlinked component, and a
+    /// temporary directory's own ancestors can contain one (`/tmp` is a
+    /// symlink on macOS), so the fixture canonicalizes the way the product's
+    /// own scratch home does before it hands the path to the allocator.
+    #[cfg(unix)]
+    fn private_fixture_root(parent: &tempfile::TempDir) -> std::path::PathBuf {
+        std::fs::canonicalize(parent.path())
+            .expect("canonical fixture parent")
+            .join("cache-root")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_root_the_product_creates_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let cache_root = private_fixture_root(&parent);
+        let owner = current_owner_uid().unwrap();
+
+        ensure_private_cache_root(&cache_root, owner).unwrap();
+
+        let mode = std::fs::metadata(&cache_root).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            mode, 0o700,
+            "a cache root the product creates must be private rather than umask-dependent: {mode:04o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_writable_cache_root_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let cache_root = private_fixture_root(&parent);
+        std::fs::create_dir(&cache_root).unwrap();
+        std::fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let owner = current_owner_uid().unwrap();
+
+        let error = ensure_private_cache_root(&cache_root, owner).unwrap_err();
+        assert!(
+            matches!(&error, ScratchError::WrongOwner(path) if path == &cache_root),
+            "a group-writable cache root must be refused, not used: {error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_world_writable_cache_root_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let cache_root = private_fixture_root(&parent);
+        std::fs::create_dir(&cache_root).unwrap();
+        std::fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let owner = current_owner_uid().unwrap();
+
+        let error = ensure_private_cache_root(&cache_root, owner).unwrap_err();
+        assert!(
+            matches!(&error, ScratchError::WrongOwner(path) if path == &cache_root),
+            "a world-writable cache root must be refused, not used: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_session_root_lives_under_the_resolved_cache_root() {
+        let session_id = format!("scratch-cache-root-{}", uuid::Uuid::new_v4());
+        let root = session_scratch_dir(&session_id).unwrap();
+        let cache_root = dirs::cache_dir().expect("resolved cache root");
+        // `session_scratch_dir` returns a **canonicalized** path, and on
+        // Windows `canonicalize` yields the extended-length (`\\?\`) device
+        // form while `dirs::cache_dir()` yields the plain drive form. The two
+        // spell the same directory, so a raw comparison of one against the
+        // other fails on its own spelling rather than on its own claim — the
+        // containment check below has to compare like with like. Both sides
+        // are canonicalized, which is the form the product itself resolves
+        // and hands out.
+        let canonical_cache_root =
+            std::fs::canonicalize(&cache_root).expect("canonical resolved cache root");
+        assert!(
+            root.starts_with(&canonical_cache_root),
+            "the scratch root must live under the resolved cache root: {root:?} is not under {canonical_cache_root:?}"
+        );
+        // The check above must still be able to *fail*: a path that is
+        // genuinely outside the resolved cache root must not read as
+        // contained. Without this, a comparison that always holds would
+        // satisfy the assertion above.
+        let outside = canonical_cache_root
+            .parent()
+            .expect("the cache root has a parent")
+            .join("codegg-scratch-outside-the-cache-root");
+        assert!(
+            !outside.starts_with(&canonical_cache_root),
+            "a path outside the resolved cache root must not read as contained: {outside:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]

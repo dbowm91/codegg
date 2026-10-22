@@ -1,0 +1,154 @@
+name: Shared checkout macOS qualification
+
+# M005 C006 — the shared-checkout profile is platform-gated, and a platform
+# may only be enabled where the native write-confinement dimension is
+# qualified. Linux's dimension is Landlock's and is qualified by
+# `tests/linux_native_scratch_containment.rs`; macOS's is Seatbelt's and is
+# qualified by `tests/macos_native_shared_checkout_containment.rs`.
+#
+# This lane is the evidence: a native macOS runner that observes the real
+# helper enforcing the real profile against the real managed-process path.
+# A skipped qualification is indistinguishable from a passed one, so the
+# macOS fixture FAILS a host that cannot obtain Seatbelt rather than
+# skipping it.
+#
+# The lane is scoped to the three binaries that carry this contract. The
+# repository's CI economy policy forbids splitting CI into parallel jobs that
+# each compile the workspace (architecture/testing.md, "CI Structure"), so
+# this lane builds only what it runs.
+#
+# Windows is deliberately absent: it has no registered filesystem-enforcement
+# backend at all, so no run could produce this evidence. That is a capability
+# gap, not an evidence gap, and the profile stays disabled there.
+
+on:
+  push:
+    branches:
+      - main
+      - work/agent-workstream-m005-writer-audit
+    paths:
+      - '.github/workflows/shared-checkout-macos-qualification.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/codegg-core/src/run_placement.rs'
+      - 'crates/codegg-core/src/shared_checkout.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'src/managed_process.rs'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'tests/shared_checkout_c006.rs'
+      - 'tests/macos_native_shared_checkout_containment.rs'
+      - 'tests/sandbox_containment.rs'
+  pull_request:
+    paths:
+      - '.github/workflows/shared-checkout-macos-qualification.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/codegg-core/src/run_placement.rs'
+      - 'crates/codegg-core/src/shared_checkout.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'src/managed_process.rs'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'tests/shared_checkout_c006.rs'
+      - 'tests/macos_native_shared_checkout_containment.rs'
+      - 'tests/sandbox_containment.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-checkout-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 3
+
+jobs:
+  macos-qualification:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The host facts the evidence depends on: the OS release, the
+      # architecture, and the presence of the Seatbelt front end. A macOS
+      # release that removed `sandbox-exec` must fail this lane loudly
+      # rather than quietly turn the profile off.
+      - name: Record the native macOS host
+        run: |
+          sw_vers
+          uname -a
+          uname -m
+          rustc --version --verbose
+          ls -l /usr/bin/sandbox-exec
+          mkdir -p "$RUNNER_TEMP/shared-checkout-macos"
+
+      # The constrained launch resolves this managed sidecar from the target
+      # profile directory shared with its Cargo `deps` binaries.
+      - name: Build sandbox helper for the qualification
+        run: cargo build --locked --bin codegg-sandbox-helper
+
+      # The mediation: the placement, the group authorization, the permit's
+      # mutual exclusion, the C005 preflight, the profile narrowing and the
+      # platform gate, on a native macOS host.
+      - name: Shared checkout qualification suite
+        run: |
+          set -o pipefail
+          cargo test --locked -p codegg --test shared_checkout_c006 -- --nocapture --test-threads=1 \
+            | tee "$RUNNER_TEMP/shared-checkout-macos/shared_checkout_c006.log"
+
+      # The native dimension: Seatbelt obtained, and a confined process
+      # unable to write into a checkout outside its own roots.
+      - name: macOS native containment fixture
+        run: |
+          set -o pipefail
+          cargo test --locked -p codegg --test macos_native_shared_checkout_containment -- --nocapture --test-threads=1 \
+            | tee "$RUNNER_TEMP/shared-checkout-macos/macos_native_shared_checkout_containment.log"
+
+      # The mechanism-agnostic containment matrix on the same host, so the
+      # Seatbelt arms are exercised against the production helper rather
+      # than only against the qualification fixture.
+      - name: Sandbox containment suite
+        run: |
+          set -o pipefail
+          cargo test --locked -p codegg --test sandbox_containment -- --nocapture --test-threads=1 \
+            | tee "$RUNNER_TEMP/shared-checkout-macos/sandbox_containment.log"
+
+      - name: Record the qualification summary
+        if: always()
+        run: |
+          {
+            echo "## Shared checkout macOS qualification"
+            echo
+            echo "- run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "- head: ${{ github.sha }}"
+            echo "- runner: ${{ runner.os }} ${{ runner.arch }}"
+            sw_vers
+            echo
+            echo "### Shared checkout suite"
+            echo '```text'
+            cat "$RUNNER_TEMP/shared-checkout-macos/shared_checkout_c006.log" 2>/dev/null || echo "(not run)"
+            echo '```'
+            echo
+            echo "### macOS native containment fixture"
+            echo '```text'
+            cat "$RUNNER_TEMP/shared-checkout-macos/macos_native_shared_checkout_containment.log" 2>/dev/null || echo "(not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-checkout-macos-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/shared-checkout-macos
+          if-no-files-found: warn
+          retention-days: 30

@@ -2,7 +2,12 @@ use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
+use crate::tool::backend::ToolExecutionContext;
 use crate::tool::util::{canonicalize_path, validate_path};
+use crate::tool::writer_fence::{
+    acquire_writer_permit, settle_writer_fence, writer_fence_key, NativeEffectClass,
+    WriterFenceOutcome,
+};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use regex::Regex;
@@ -101,6 +106,34 @@ impl Tool for ReplaceTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_inner(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
+        let output = self.execute_inner(input, ctx.as_ref()).await?;
+        Ok(crate::tool::StructuredToolResult::legacy(
+            self.name(),
+            output,
+        ))
+    }
+}
+
+impl ReplaceTool {
+    /// The replace effect, with the checkout writer fence held across it.
+    ///
+    /// The fence is an *additional* refusal on top of the existing path
+    /// boundary: it never widens what this tool may write. A context without
+    /// a fence mints no permit, so the legacy path behaves exactly as
+    /// before.
+    async fn execute_inner(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let path_str = input["path"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?
@@ -124,7 +157,11 @@ impl Tool for ReplaceTool {
         let unrestricted = self.unrestricted;
         let path_for_read = path_str.clone();
 
-        let content = tokio::task::spawn_blocking(move || {
+        // The read resolves the target and reads it in one step. The resolved
+        // path is the one the fence names, and the write below re-resolves
+        // the same request through the same resolution — so the fenced path
+        // is the path the write lands on.
+        let (canonical_path, content) = tokio::task::spawn_blocking(move || {
             let path = Path::new(&path_for_read);
             let canonical = if unrestricted {
                 canonicalize_path(path)?
@@ -139,9 +176,10 @@ impl Tool for ReplaceTool {
                     canonical.display()
                 )));
             }
-            std::fs::read_to_string(&canonical).map_err(|e| {
+            let content = std::fs::read_to_string(&canonical).map_err(|e| {
                 ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e))
-            })
+            })?;
+            Ok::<_, ToolError>((canonical, content))
         })
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
@@ -183,28 +221,45 @@ impl Tool for ReplaceTool {
         let replacement_clone = replacement.clone();
         let expected_content = content.clone();
 
-        let (path_str_out, matches_len, old_content) = tokio::task::spawn_blocking(move || {
+        // The permit is taken after the path boundary and the preflight
+        // checks approved the replacement, and immediately before the write;
+        // it is held until the write has settled.
+        let targets = vec![canonical_path.clone()];
+        let permit = acquire_writer_permit(
+            ctx,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, ctx),
+        )
+        .await?;
+
+        let effect = match tokio::task::spawn_blocking(move || {
+            // Every failure below left the file untouched, so it is a
+            // `NoEffect`; only the write itself can land partially.
+            let no_effect = |error: ToolError| (error, WriterFenceOutcome::NoEffect);
+
             let path = Path::new(&path_str_clone);
 
             let canonical = if unrestricted {
-                canonicalize_path(path)?
+                canonicalize_path(path)
             } else if !allowed_root.to_string_lossy().is_empty() {
-                validate_path(path, &allowed_root)?
+                validate_path(path, &allowed_root)
             } else {
-                path.to_path_buf()
-            };
+                Ok(path.to_path_buf())
+            }
+            .map_err(no_effect)?;
 
             if !global {
-                return Err(ToolError::Execution(
+                return Err(no_effect(ToolError::Execution(
                     "non-global replacement not supported. Use 'global: true' or the 'edit' tool for single replacement.".to_string()
-                ));
+                )));
             }
 
             if pattern_clone.len() > MAX_PATTERN_SIZE {
-                return Err(ToolError::Execution(format!(
+                return Err(no_effect(ToolError::Execution(format!(
                     "pattern exceeds {} bytes",
                     MAX_PATTERN_SIZE
-                )));
+                ))));
             }
 
             // Compile once with the `whole` wrapper and validate group count
@@ -218,39 +273,50 @@ impl Tool for ReplaceTool {
             };
 
             let re = Regex::new(&regex_pattern)
-                .map_err(|e| ToolError::Execution(format!("invalid regex pattern: {}", e)))?;
+                .map_err(|e| no_effect(ToolError::Execution(format!(
+                    "invalid regex pattern: {}",
+                    e
+                ))))?;
             // Subtract the synthetic `whole` wrapper group.
             let group_count = re.capture_names().flatten().count().saturating_sub(1);
             if group_count > MAX_PATTERN_GROUPS {
-                return Err(ToolError::Execution(format!(
+                return Err(no_effect(ToolError::Execution(format!(
                     "too many capture groups (max {})",
                     MAX_PATTERN_GROUPS
-                )));
+                ))));
             }
 
             let metadata = std::fs::metadata(&canonical)
-                .map_err(|e| ToolError::Execution(format!("failed to read file metadata: {}", e)))?;
+                .map_err(|e| no_effect(ToolError::Execution(format!(
+                    "failed to read file metadata: {}",
+                    e
+                ))))?;
             if metadata.len() > MAX_FILE_SIZE as u64 {
-                return Err(ToolError::Execution(format!(
+                return Err(no_effect(ToolError::Execution(format!(
                     "file too large (max {} bytes): {}",
                     MAX_FILE_SIZE,
                     canonical.display()
-                )));
+                ))));
             }
 
-            let content = std::fs::read_to_string(&canonical)
-                .map_err(|e| ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e)))?;
+            let content = std::fs::read_to_string(&canonical).map_err(|e| {
+                no_effect(ToolError::Execution(format!(
+                    "read failed for '{}': {}",
+                    canonical.display(),
+                    e
+                )))
+            })?;
             if content != expected_content {
-                return Err(ToolError::Execution(
+                return Err(no_effect(ToolError::Execution(
                     "file changed while replace preflight was running; retry".to_string(),
-                ));
+                )));
             }
 
             let matches: Vec<_> = re.find_iter(&content).collect();
             if matches.is_empty() {
-                return Err(ToolError::Execution(
+                return Err(no_effect(ToolError::Execution(
                     "no matches found for pattern".to_string()
-                ));
+                )));
             }
 
             let new_content = re.replace_all(&content, replacement_clone.as_str()).to_string();
@@ -261,21 +327,61 @@ impl Tool for ReplaceTool {
             // stale-preflight overwrite into an explicit retry error in
             // the common interleaving.
             let current = std::fs::read_to_string(&canonical).map_err(|e| {
-                ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e))
+                no_effect(ToolError::Execution(format!(
+                    "read failed for '{}': {}",
+                    canonical.display(),
+                    e
+                )))
             })?;
             if current != content {
-                return Err(ToolError::Execution(
+                return Err(no_effect(ToolError::Execution(
                     "file changed while replace preflight was running; retry".to_string(),
-                ));
+                )));
             }
 
-            std::fs::write(&canonical, new_content.as_bytes())
-                .map_err(|e| ToolError::Execution(format!("write failed for '{}': {}", canonical.display(), e)))?;
+            // `fs::write` truncates before it writes, so a failure here can
+            // leave a partially written file behind: the effect is unproven,
+            // not absent.
+            std::fs::write(&canonical, new_content.as_bytes()).map_err(|e| {
+                let message = format!("write failed for '{}': {}", canonical.display(), e);
+                (
+                    ToolError::Execution(message.clone()),
+                    WriterFenceOutcome::Unproven(message),
+                )
+            })?;
 
-            Ok::<_, ToolError>((canonical.display().to_string(), matches.len(), content))
+            Ok::<_, (ToolError, WriterFenceOutcome)>((
+                canonical.display().to_string(),
+                matches.len(),
+                content,
+            ))
         })
         .await
-        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+        {
+            Ok(Ok(written)) => Ok(written),
+            Ok(Err(failure)) => Err(failure),
+            Err(join_error) => Err((
+                ToolError::Execution(format!("join error: {}", join_error)),
+                WriterFenceOutcome::Unproven(format!("join error: {}", join_error)),
+            )),
+        };
+
+        let (path_str_out, matches_len, old_content) = match effect {
+            Ok(written) => {
+                // The replacement landed and was observed, so the permit is
+                // released. A failure to release it is reported: the caller
+                // has to know the checkout was not handed on.
+                settle_writer_fence(permit, WriterFenceOutcome::Settled, false).await?;
+                written
+            }
+            Err((error, outcome)) => {
+                // Settle before the error propagates: a failed effect must
+                // still release (or park) the permit it held. The tool's own
+                // error is the one the caller sees.
+                settle_writer_fence(permit, outcome, true).await?;
+                return Err(error);
+            }
+        };
 
         GlobalEventBus::publish(AppEvent::FileChanged {
             path: path_str_out.clone(),

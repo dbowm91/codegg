@@ -58,6 +58,8 @@ fn build_job(workspace: &WorkspaceId, kind: JobKind) -> JobRecord {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "hi".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -102,7 +104,7 @@ fn admission_capacity_is_respected() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
 
@@ -135,7 +137,7 @@ fn exclusivity_keys_block_concurrent_jobs() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![format!("exclusive:{key}")],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     let a = controller.try_admit_arc(&dims_holder("run-tests"));
@@ -166,7 +168,7 @@ fn guard_drop_releases_capacity() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     let p1 = match controller.try_admit_arc(&dims) {
@@ -237,7 +239,7 @@ fn admission_budget_is_shared_across_workspaces() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     let mut held = Vec::new();
@@ -299,6 +301,8 @@ fn build_spec(workspace_id: WorkspaceId) -> NewJob {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "build".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -487,7 +491,7 @@ fn admission_blocks_when_only_exclusivity_is_held() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:test-only".into()],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     let other = PermitDimensions {
@@ -497,7 +501,7 @@ fn admission_blocks_when_only_exclusivity_is_held() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:test-only".into()],
-
+        keyed_quotas: Vec::new(),
         remote_node: None,
     };
     let first = controller.try_admit_arc(&key_holder);

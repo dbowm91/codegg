@@ -15,7 +15,7 @@ Long-term references:
 Related ADRs and predecessor authority:
 - `plans/adrs/ADR-0001-programmatic-tool-execution-authority.md`
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`
-- `plans/adrs/ADR-0028-command-syntax-and-execution-authority.md`
+- `plans/adrs/ADR-0045-command-syntax-and-execution-authority.md` (the command-authority decision; its canonical ID moved 0028 → 0032 → 0034 → 0042 → 0045 across the recorded identity migrations, and this path reference was corrected on 2026-10-20 when main's accepted composer decision took ADR-0042)
 - `plans/subsystems/tool-programs-roadmap.md` and `plans/subsystems/tool-programs-correctness-closure-addendum.md` (closed foundations; historical closure retained)
 - `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` (closed predecessor)
 - `plans/subsystems/search-eggsearch-pair-compatibility-post-closure-corrective-addendum.md` (v0.4.3 local-only private fixture passed)

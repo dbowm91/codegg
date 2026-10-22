@@ -69,7 +69,10 @@ pub fn decide_tool_retry(
     // consume the shared budget as if they were transient.
     if matches!(
         error,
-        ToolError::Permission(_) | ToolError::Disabled(_) | ToolError::NotFound(_)
+        ToolError::Permission(_)
+            | ToolError::Disabled(_)
+            | ToolError::BackendUnavailable(_)
+            | ToolError::NotFound(_)
     ) {
         return ToolRetryDecision::DoNotRetry {
             reason: "permanent denial; never retry",

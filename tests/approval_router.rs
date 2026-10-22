@@ -327,6 +327,7 @@ fn protocol_snapshot_is_additive_for_older_clients() {
     let full = codegg_protocol::core::ExecutionPolicySnapshotDto {
         approval_mode: codegg_protocol::core::ApprovalModeDto::Yolo,
         sandbox_profile: codegg_protocol::core::SandboxProfileDto::WorkspaceWrite,
+        network_intent: codegg_protocol::core::NetworkIntentDto::LegacyUnrestricted,
         principal_id: Some("local-owner".into()),
         session_id: Some("s".into()),
         agent_id: None,

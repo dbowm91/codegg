@@ -215,7 +215,9 @@ async fn run() -> Result<NodeServer, String> {
     phase("storage-ready");
     // `LocalProcessRunner` remains the node's canonical process owner. The
     // test harness builds the helper from this exact Eggwork revision and
-    // installs it as a trusted sibling, exercising the qualified backend.
+    // stages it as a trusted sibling — in a private directory, so the
+    // helper's trust does not depend on the mode cargo installed the
+    // build artifact with — exercising the qualified backend.
     let runner = Arc::new(LocalProcessRunner::new(
         TrustedLandlockSetup::discover_sibling(),
     ));

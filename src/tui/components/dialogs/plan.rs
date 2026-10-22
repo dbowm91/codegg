@@ -28,8 +28,8 @@ enum Chrome {
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
 /// `Enter` and `Esc` are deliberately absent even though `handle_key` answers
-/// them, and neither one is an oversight: `SidePanelHost::handle_key` claims
-/// `Esc` as a universal exit before the widget is consulted, and docking popped
+/// them, and neither one is an oversight: `Esc` is the mode switch, so it
+/// means one thing modally and another in a column, and docking popped
 /// this box off the modal stack (`dock_open_box` closes the dialog before
 /// handing the component to `adopt`), so `Enter`'s `TuiMsg::CloseDialog` runs
 /// against an empty stack and does nothing. **`j`/`k` are therefore the whole

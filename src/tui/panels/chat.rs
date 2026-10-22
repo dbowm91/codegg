@@ -33,7 +33,7 @@
 //! routes every key to whichever panel is active, and a chat panel that
 //! cannot act would otherwise swallow the composer's keystrokes.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -141,10 +141,16 @@ impl ChatPanel {
     fn route(&self, action: ChatKeyAction, ctx: &PanelCtx<'_>) -> PanelKey {
         match action {
             ChatKeyAction::Consumed => PanelKey::Consumed,
-            // The host claims `Esc`/`q` before a panel sees them, so this is
-            // unreachable in practice; consuming is the safe reading if it
-            // ever arrives.
-            ChatKeyAction::Exit => PanelKey::Consumed,
+            // The browser's `Exit` is the surface's own "leave" gesture: it
+            // closes the `/chat` window. Inside the panel it cannot mean
+            // that — `Esc` is the mode switch and never releases the panel —
+            // so it means the one thing `Esc` still means here: back out of
+            // the armed reply/edit context, keeping the typed text.
+            //
+            // The panel names the intent rather than reaching into the app's
+            // prompt state, so the browser stays the single owner of the
+            // keymap and the app stays the single owner of the context.
+            ChatKeyAction::Exit => PanelKey::Intent(TuiMsg::CancelChatComposer),
             ChatKeyAction::Intent(msg) => PanelKey::Intent(msg),
             ChatKeyAction::Compose(seed) => {
                 if seed.prefill.is_none() && !seed.is_contextual() {
@@ -388,6 +394,17 @@ impl SidePanel for ChatPanel {
         let Some(view) = self.view(ctx) else {
             return PanelKey::Consumed;
         };
+        // A bare `q` is the program's quit key and `Shift+Q` is the panel
+        // exit. A focused panel owns the keyboard, so `q` here must neither
+        // quit the program nor release the panel: it is inert, and the hint
+        // row names `Shift+Q` for leaving.
+        //
+        // The browser maps `q` to its own `Exit` so that the `/chat` window
+        // can be closed with it, which is why the panel filters the key out
+        // rather than inheriting a gesture meant for a different surface.
+        if key.code == KeyCode::Char('q') && key.modifiers.is_empty() {
+            return PanelKey::Consumed;
+        }
         let action = self.browser.handle_key(key, &view);
         let routed = self.route(action, ctx);
         // Reconcile after the move so a clamped cursor is what the caller

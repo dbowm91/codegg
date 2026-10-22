@@ -188,6 +188,7 @@ fn make_broker() -> (ToolBroker, ToolRegistry) {
 fn program_ctx() -> BrokerInvocationContext {
     let (_broker, registry) = make_broker();
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "prog-artifact-test".to_string(),
         },
@@ -215,6 +216,7 @@ fn program_ctx() -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -323,6 +325,7 @@ async fn broker_returns_structured_value_for_programmatic_calls() {
 async fn broker_returns_display_for_agent_calls() {
     let (broker, registry) = make_broker();
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: PathBuf::from("."),
         session_id: None,
@@ -350,6 +353,7 @@ async fn broker_returns_display_for_agent_calls() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let result = broker
         .execute(&registry, "read", json!({"path": "/tmp/test.txt"}), ctx)

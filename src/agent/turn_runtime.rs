@@ -158,6 +158,9 @@ pub struct TurnRunInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005: principal network intent, captured with the immutable turn
+    /// policy and passed to canonical process owners.
+    pub network_intent: Option<codegg_core::approval::NetworkIntent>,
     /// M010: runtime inference feedback bound to one concrete durable provider
     /// connection revision. `None` when the turn is not bound to a durable
     /// connection, in which case no credential verdict is inferred or
@@ -185,6 +188,13 @@ pub struct TurnRunInput {
     /// fallback in place, where several usable records for the turn's provider
     /// are refused as ambiguous rather than picked by file order.
     pub credential_locator: Option<crate::provider::TurnCredentialLocator>,
+    /// M005 corrective C005: the process admission policy for this turn.
+    ///
+    /// The policy is built by the daemon over the turn's daemon-resolved
+    /// workspace root. `None` means the turn is not under the restricted
+    /// shared profile, and processes behave exactly as they did before
+    /// C005.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Minimal output from a turn execution.
@@ -310,6 +320,40 @@ impl TurnRuntime for DefaultTurnRuntime {
     async fn run_turn(&self, input: TurnRunInput) -> Result<TurnRunOutput, AppError> {
         use crate::agent::agent_loop_factory::AgentLoopBuildInput;
 
+        let profile = input
+            .sandbox_profile
+            .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+        let m004_lsp_scope: Option<Arc<crate::lsp::m004::M004LspServiceScope>> = if profile
+            .requires_filesystem_containment()
+        {
+            #[cfg(target_os = "linux")]
+            {
+                match crate::lsp::m004::M004LspServiceScope::new_with_network_intent(
+                    profile,
+                    input.network_intent.unwrap_or_default(),
+                    input.execution.workspace_root.clone(),
+                    crate::lsp::config_lsp_to_egglsp(input.config.lsp.clone().unwrap_or_default()),
+                ) {
+                    Ok(scope) => Some(scope),
+                    Err(error) => {
+                        tracing::warn!(%error, "constrained LSP service could not be constructed");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
+        } else {
+            None
+        };
+        let lsp_service = if profile.requires_filesystem_containment() {
+            m004_lsp_scope.as_ref().map(|scope| scope.service())
+        } else {
+            input.lsp_service.clone()
+        };
+
         let TurnRunInput {
             session_id,
             agents_dto,
@@ -324,7 +368,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             memory_store,
             event_log,
             turn_id,
-            lsp_service,
+            lsp_service: _,
             document_service,
             lsp_context_input,
             plugin_service,
@@ -341,10 +385,12 @@ impl TurnRuntime for DefaultTurnRuntime {
             asset_pin,
             approval_mode,
             sandbox_profile,
+            network_intent,
             credential_observer,
             shared_job_notification_service,
             shared_ci_watch_service,
             credential_locator,
+            process_admission,
         } = input;
 
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
@@ -584,6 +630,11 @@ impl TurnRuntime for DefaultTurnRuntime {
                 memory_store: memory_store.clone(),
                 project_identity: memory_project_identity,
                 extension_catalog,
+                // M005 corrective C005: the turn's process admission policy.
+                // The registry carries it so the broker's final dispatch and
+                // every process-capable tool's own pre-spawn check consult
+                // the same authority.
+                process_admission: process_admission.clone(),
             },
         );
 
@@ -975,7 +1026,10 @@ impl TurnRuntime for DefaultTurnRuntime {
             ci_watch_service: Some(ci_watch_service),
             approval_mode,
             sandbox_profile,
+            network_intent,
             credential_observer,
+            // M005 corrective C005: the turn's process admission policy.
+            process_admission: process_admission.clone(),
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
@@ -1046,6 +1100,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         let event_log_for_spawn = event_log;
         let specialized_prepared_for_spawn = specialized_prepared;
         let run_control_for_spawn = run_control;
+        let m004_lsp_scope_for_spawn = m004_lsp_scope;
         let title_model = request.model.clone();
         tokio::spawn(async move {
             // A panic inside the agent-loop task must not vanish with the
@@ -1165,6 +1220,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                         }
                     }
                 }
+            }
+            if let Some(scope) = m004_lsp_scope_for_spawn {
+                scope.shutdown().await;
             }
         });
 

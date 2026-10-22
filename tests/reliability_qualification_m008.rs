@@ -131,6 +131,7 @@ fn make_grant(effect: &str) -> codegg_core::jobs::ToolAuthorityGrant {
 
 fn ctx_for(effect: &str, key: Option<String>) -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: PathBuf::from("."),
         session_id: Some("m008".to_string()),
@@ -153,6 +154,7 @@ fn ctx_for(effect: &str, key: Option<String>) -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

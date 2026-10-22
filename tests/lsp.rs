@@ -11,7 +11,7 @@ fn make_tool() -> codegg::tool::lsp::LspTool {
 
 fn make_live_tool() -> codegg::tool::lsp::LspTool {
     codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
-        codegg::lsp::config::LspConfig::default(),
+        codegg::lsp::config::LspConfig::Disabled(true),
     ))
     .with_allowed_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf())
 }
@@ -1721,7 +1721,7 @@ fn callHierarchy_requires_file_path_line_column() {
         let err = tool
             .execute(serde_json::json!({
                 "operation": "callHierarchy",
-                "file_path": "src/main.rs",
+                "file_path": "src/tool/mod.rs",
                 "line": 1
             }))
             .await
@@ -1900,7 +1900,7 @@ fn callHierarchy_invalid_direction_rejected() {
         let err = tool
             .execute(serde_json::json!({
                 "operation": "callHierarchy",
-                "file_path": "src/main.rs",
+                "file_path": "src/tool/mod.rs",
                 "line": 1,
                 "column": 1,
                 "direction": "invalid"
@@ -1923,7 +1923,7 @@ fn typeHierarchy_invalid_direction_rejected() {
         let err = tool
             .execute(serde_json::json!({
                 "operation": "typeHierarchy",
-                "file_path": "src/main.rs",
+                "file_path": "src/tool/mod.rs",
                 "line": 1,
                 "column": 1,
                 "direction": "bad"

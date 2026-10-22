@@ -116,6 +116,7 @@ impl ToolExecutionOutcome {
             crate::error::ToolError::NotFound(_)
             | crate::error::ToolError::Execution(_)
             | crate::error::ToolError::Disabled(_)
+            | crate::error::ToolError::BackendUnavailable(_)
             | crate::error::ToolError::Io(_)
             // A missing workspace root is deterministic: the call was refused
             // because it had no directory to act in, and re-running it cannot
@@ -123,6 +124,13 @@ impl ToolExecutionOutcome {
             // (rather than a transport fault) keeps it on the same recovery
             // path as any other refusal.
             | crate::error::ToolError::MissingWorkspaceRoot { .. }
+            // M005 C005: a refused process launch is a deterministic
+            // refusal, exactly like a missing workspace root: the call was
+            // not permitted by the checkout's profile, and the same call
+            // will be refused again while the reservation holds. It is not
+            // a transport fault, so it stays on the ordinary tool-error
+            // recovery path.
+            | crate::error::ToolError::ProcessDenied { .. }
             | crate::error::ToolError::Network(_) => ToolExecutionStatus::ToolError,
         };
         Self {

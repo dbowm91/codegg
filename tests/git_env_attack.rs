@@ -24,7 +24,7 @@ use codegg::git_mutations::{GitEnvPolicy, ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_
 mod common;
 
 /// Build a command for an allowed non-executable Git request.
-fn policy_command() -> std::process::Command {
+fn policy_command() -> egggit::process::GitSyncCommand {
     let argv = vec!["git".to_string(), "status".to_string()];
     GitEnvPolicy::default()
         .apply_sync(&argv, Path::new("/tmp"))

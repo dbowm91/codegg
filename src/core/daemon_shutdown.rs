@@ -28,6 +28,7 @@ use super::daemon::CoreDaemon;
 impl Drop for CoreDaemon {
     fn drop(&mut self) {
         self.abort_background_handles();
+        egggit::process::shutdown_object_view_cache();
     }
 }
 

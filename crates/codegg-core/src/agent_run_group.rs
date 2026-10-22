@@ -850,6 +850,19 @@ impl AgentRunGroupService {
         Ok(self.recompute_group_with_notification(group).await?.0)
     }
 
+    /// The durable record of one group, without recomputing its status.
+    ///
+    /// This is a read-only snapshot seam: it neither admits work nor alters
+    /// group state, so a caller that only needs to *read* a group — the
+    /// shared-checkout resolver, for example — does not mutate the record it
+    /// reads.
+    pub async fn group_record(
+        &self,
+        group_id: &AgentRunGroupId,
+    ) -> Result<Option<AgentRunGroupRecord>, AgentRunGroupError> {
+        self.groups.get(group_id).await
+    }
+
     /// Return groups that reference a run as owner or member. This is a
     /// read-only snapshot seam for projections and restart reconciliation;
     /// it does not admit work or alter group state.

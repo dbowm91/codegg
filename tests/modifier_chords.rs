@@ -156,6 +156,14 @@ fn chords_are_disjoint_from_their_bare_ctrl_twin() {
             "Ctrl+Alt+{letter} ({what}) must not alias its bare-Ctrl twin {twin_name}"
         );
     }
+
+    // Ctrl+N is reserved for panel-resize mode in the TUI. It must not be
+    // treated as NewSession (the bare `n` action in Normal mode).
+    assert_ne!(
+        press(KeyCode::Char('n'), KeyModifiers::CONTROL, InputMode::Insert,),
+        Some(InputAction::NewSession),
+        "Ctrl+n must not resolve to NewSession"
+    );
 }
 
 #[test]

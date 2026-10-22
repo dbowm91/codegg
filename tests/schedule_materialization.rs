@@ -53,6 +53,8 @@ fn local_template() -> codegg_core::jobs::JobTemplate {
         payload: JobPayload::ManagedArgv {
             argv: vec!["cargo".to_owned(), "build".to_owned()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         retry_policy: RetryPolicy::no_retry(),

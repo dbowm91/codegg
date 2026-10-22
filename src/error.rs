@@ -64,6 +64,10 @@ impl IntoResponse for AxumAppError {
             AppError::Config(ConfigError::Watch(_)) => StatusCode::INTERNAL_SERVER_ERROR,
 
             AppError::Storage(StorageError::NotFound(_)) => StatusCode::NOT_FOUND,
+            // M005 corrective C004: a checkout writer refused because the
+            // checkout is reserved by a live agent-run group is a conflict,
+            // not a server fault and not a missing resource.
+            AppError::Storage(StorageError::Conflict(_)) => StatusCode::CONFLICT,
             AppError::Storage(StorageError::Database(_))
             | AppError::Storage(StorageError::Migration(_))
             | AppError::Storage(StorageError::Import(_))
@@ -94,6 +98,13 @@ impl IntoResponse for AxumAppError {
             | AppError::Permission(PermissionError::Denied { .. }) => StatusCode::FORBIDDEN,
             AppError::Tool(ToolError::Timeout(_)) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Tool(ToolError::Disabled(_)) => StatusCode::FORBIDDEN,
+            // M005 C005: a shared checkout that admits no unqualified process
+            // is the same conflict the storage arm above maps to CONFLICT — a
+            // live agent-run group owns the checkout. It is a fact about the
+            // checkout, not a judgement about this caller, which is why the
+            // variant is deliberately distinct from `ToolError::Permission`.
+            AppError::Tool(ToolError::ProcessDenied { .. }) => StatusCode::CONFLICT,
+            AppError::Tool(ToolError::BackendUnavailable(_)) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Tool(ToolError::Execution(_))
             | AppError::Tool(ToolError::Format(_))
             | AppError::Tool(ToolError::Io(_))
@@ -154,13 +165,26 @@ impl IntoResponse for AxumAppError {
             tracing::warn!(error = ?self.0, http_status = status.as_u16(), "request rejected");
         }
 
-        let body = serde_json::json!({
-            "error": status
-                .canonical_reason()
-                .unwrap_or("Request failed")
-                .to_string(),
-            "code": status.as_u16(),
-        });
+        let body = match &self.0 {
+            // M005 corrective C004: a conflict carries its recovery path in
+            // the body. The message names no path and no other run's
+            // content, and the caller needs it to know it may retry.
+            AppError::Storage(StorageError::Conflict(message)) => serde_json::json!({
+                "error": status
+                    .canonical_reason()
+                    .unwrap_or("Conflict")
+                    .to_string(),
+                "code": status.as_u16(),
+                "message": message,
+            }),
+            _ => serde_json::json!({
+                "error": status
+                    .canonical_reason()
+                    .unwrap_or("Request failed")
+                    .to_string(),
+                "code": status.as_u16(),
+            }),
+        };
 
         let mut response = Json(body).into_response();
         *response.status_mut() = status;

@@ -36,6 +36,7 @@ use codegg_core::jobs::{
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
 use futures_util::FutureExt;
+use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::{mpsc, watch, Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -270,6 +271,13 @@ pub struct JobScheduler {
     job_kind_counts: Arc<AsyncMutex<BTreeMap<String, usize>>>,
     /// Total running count.
     running_total: Arc<AtomicU64>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// Set by the daemon. `None` means the daemon has no durable
+    /// reservation authority, so no checkout is ever reserved and the
+    /// scheduler never refuses a job on this ground.
+    process_admission:
+        ParkingRwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
     /// Total admit blocks recorded.
     admission_blocks: Arc<AtomicU64>,
     /// Admit-block counters by reason label.
@@ -348,6 +356,7 @@ impl JobScheduler {
             ready_counts,
             job_kind_counts,
             running_total: Arc::new(AtomicU64::new(0)),
+            process_admission: ParkingRwLock::new(None),
             admission_blocks: Arc::new(AtomicU64::new(0)),
             admission_block_reasons: Arc::new(AsyncMutex::new(BTreeMap::new())),
             admission_impossible: Arc::new(AtomicU64::new(0)),
@@ -392,6 +401,19 @@ impl JobScheduler {
 
     /// Synchronous install for daemon construction (which runs before the
     /// scheduler loop is spawned). A failed `try_lock` is a wiring error.
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    ///
+    /// The scheduler hands the authority to every executor's execution
+    /// context, so the final executor can refuse a process-class job whose
+    /// checkout became reserved after the job was admitted.
+    pub fn set_process_admission(
+        &self,
+        service: std::sync::Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        *self.process_admission.write() = Some(service);
+    }
+
     pub fn set_job_notification_service_sync(
         &self,
         service: std::sync::Arc<super::job_notifications::JobNotificationService>,
@@ -596,6 +618,7 @@ impl JobScheduler {
             agent_runs,
             run_control,
             None,
+            None,
         )
     }
 
@@ -605,6 +628,7 @@ impl JobScheduler {
         agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
         run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
         worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
+        authority: Option<crate::scheduler::executors::SubagentAuthority>,
     ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
         use crate::scheduler::executors::{
             AgentTurnExecutor, ManagedArgvExecutor, PythonJobExecutor, SubagentJobExecutor,
@@ -649,6 +673,10 @@ impl JobScheduler {
                     ),
                 },
                 None => SubagentJobExecutor::new(pool),
+            };
+            let executor = match authority {
+                Some(authority) => executor.with_authority(authority),
+                None => executor,
             };
             registry.register(Arc::new(executor))?;
         }
@@ -1287,6 +1315,8 @@ impl JobScheduler {
                 attempt_id: attempt.attempt_id.clone(),
             }),
             resources: permit,
+            // M005 corrective C005: the final executor's authority.
+            process_admission: self.process_admission.read().clone(),
         };
 
         // Capture at the scheduler-owned workspace boundary, before any
@@ -1374,6 +1404,25 @@ impl JobScheduler {
             run_id: None,
         })
         .await;
+
+        // M007: the coarse, scheduler-owned status the group projection
+        // publishes. Emitted after admission — the point at which the
+        // job holds its permit and is about to execute.
+        self.emit_event(SchedulerEvent::JobStatus {
+            job_id: job.job_id.to_string(),
+            attempt_id: attempt.attempt_id.clone(),
+            phase: "running".to_string(),
+        })
+        .await;
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::JobStatusObserved {
+                session_id: job.session_id.clone().unwrap_or_default(),
+                turn_id: job.turn_id.clone(),
+                job_id: job.job_id.to_string(),
+                kind: job.kind.as_str().to_string(),
+                phase: "running".to_string(),
+            },
+        );
 
         // Dispatch via the already-validated executor; record completion.
         let me = self.clone();
@@ -1567,6 +1616,49 @@ impl JobScheduler {
                 // duplicate terminal rows are produced.
                 match persist_completion(&store, &attempt_id, &completion).await {
                     Ok(terminal_job) => {
+                        // M007: the terminal phase, published only after
+                        // the terminal state is durably accepted — the
+                        // event must describe a real transition.
+                        {
+                            let guard = event_tx.lock().await;
+                            if let Some(tx) = guard.as_ref() {
+                                let _ = tx
+                                    .send(SchedulerEvent::JobStatus {
+                                        job_id: terminal_job.job_id.to_string(),
+                                        attempt_id: attempt_id.clone(),
+                                        phase: match completion.status {
+                                            ExecutorStatus::Completed => "completed",
+                                            ExecutorStatus::Failed => "failed",
+                                            ExecutorStatus::Cancelled => "cancelled",
+                                            ExecutorStatus::TimedOut => "timed_out",
+                                            ExecutorStatus::Interrupted => "interrupted",
+                                        }
+                                        .to_string(),
+                                    })
+                                    .await;
+                            }
+                        }
+                        // M007: the coarse group-visible status. It
+                        // carries only the job identity, the typed kind
+                        // and the phase — never the command line, the
+                        // environment, the logs, the cache contents or
+                        // an artifact path.
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::JobStatusObserved {
+                                session_id: terminal_job.session_id.clone().unwrap_or_default(),
+                                turn_id: terminal_job.turn_id.clone(),
+                                job_id: terminal_job.job_id.to_string(),
+                                kind: terminal_job.kind.as_str().to_string(),
+                                phase: match completion.status {
+                                    ExecutorStatus::Completed => "completed",
+                                    ExecutorStatus::Failed => "failed",
+                                    ExecutorStatus::Cancelled => "cancelled",
+                                    ExecutorStatus::TimedOut => "timed_out",
+                                    ExecutorStatus::Interrupted => "interrupted",
+                                }
+                                .to_string(),
+                            },
+                        );
                         if let Some(emitter) = audit_emitter_for_task.as_ref() {
                             super::job_complete_audit::emit_terminal_completion(
                                 emitter,
@@ -2209,6 +2301,9 @@ fn build_permit_dimensions(job: &JobRecord) -> PermitDimensions {
         io_weight: job.resource_request.io_weight,
         network_slots: job.resource_request.network_slots,
         exclusivity_keys: job.resource_request.exclusivity_keys.clone(),
+        // M007: the keyed quota scopes travel with the job, so a job
+        // that was admitted under a scope releases exactly that scope.
+        keyed_quotas: job.resource_request.keyed_quotas.clone(),
         // A remotely targeted job is reserved against its node, not
         // against the controller's local CPU/memory/process budget.
         remote_node: job.target.eggwork_node_id().map(str::to_owned),
