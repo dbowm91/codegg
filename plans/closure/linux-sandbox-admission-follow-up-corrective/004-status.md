@@ -737,12 +737,19 @@ Its **own** sweep is green on all six workflows (`39771529333` attempt 2,
 its code-bearing ancestor. That tip's CI failed once first, on the
 jobs/scheduler flake §10.4 records; the re-run on the identical tree passed.
 
-The **closing head** is `a80d3b10c`, one documentation-only commit above
+The **last swept head** is `a80d3b10c`, one documentation-only commit above
 `afba68e7b` (`git diff --name-only afba68e7b..a80d3b10c` names this record
 only). Its sweep is green on all six workflows (`39792088911`,
 `39792088910`, `39792088931`, `39792088900`, `39792088985`,
 `39792089048`), with the same filter counts as every other green head and
 **16,061 tests run, 16,061 passed, 9 skipped** on the default sweep.
+
+**The branch tip may sit one documentation-only commit above that**, because
+the attribution rule above is what makes the sweep travel with the branch:
+any commit above `99f15e180` that touches only `plans/**` leaves the swept
+code untouched, so the sweep already qualifies it. `git diff --name-only
+99f15e180..HEAD` is the check that proves this for whichever head the branch
+tip is at the moment a reviewer looks.
 
 ### 5.0 The base moved under this branch
 
@@ -834,10 +841,11 @@ the evidence that the sweep is doing work.
 | `39792088985` | `a80d3b10c` | Windows process launcher | **success** |
 | `39792089048` | `a80d3b10c` | Shared checkout macOS qualification | **success** |
 
-**All five milestone workflows are green on the closing head `99f15e180`**, and
-so is the sixth, `main`'s macOS shared-checkout lane. The branch tip
-`659e9324a` — a documentation-only child of that head — is green on all six
-as well, after the one failure §10.4 records. The failures above are
+**All five milestone workflows are green on the code-bearing head
+`99f15e180`**, and so is the sixth, `main`'s macOS shared-checkout lane. Every
+documentation-only head above it is green on all six as well — `659e9324a`,
+`afba68e7b` and `a80d3b10c` — after the one failure §10.4 records. The
+failures above are
 the earlier heads, and each one found a defect that is now fixed and guarded —
 they are recorded here rather than hidden, because they are the evidence that
 the sweep is doing work. Two of them are of a different kind and are recorded
