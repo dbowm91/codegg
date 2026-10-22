@@ -560,9 +560,23 @@ See §5.
 
 ## 5. Hosted evidence on the corrective head
 
-**Corrective head:** `259794bb9` — the merge of this branch with `main`@`47f5572b1`.
+**Code-bearing head:** `259794bb9` — the merge of this branch with `main`@`47f5572b1`.
 **Branch:** `plans/linux-sandbox-c004-evidence-and-review-pack`.
 **Pull request:** #159.
+
+**How the attribution terminates.** The sweep below is measured on the
+**code-bearing** head. Everything above it on this branch is a
+**documentation-only** commit: it touches this record and the sibling review
+pack, and moves no source, no test, no workflow and no guard. So the sweep
+qualifies the branch tip's code file for file, and no further attribution
+commit is needed when a documentation-only commit lands on top. This is the
+same property the C001 line's baseline claims, and it is verified by
+`git diff --name-only` rather than asserted.
+
+Concretely: the branch tip when this record was written is `d85c402a9` —
+`259794bb9` plus one documentation-only commit — and its own sweep is green
+on all five workflows (`39748205888`, `39748205822`, `39748205948`,
+`39748205831`, `39748205884`).
 
 ### 5.0 The base moved under this branch
 
@@ -621,6 +635,11 @@ the evidence that the sweep is doing work.
 | `39740206639` | `f82c1f980` | Linux Git object snapshot CoW qualification | **success** |
 | `39740206635` | `f82c1f980` | Windows process launcher | **success** |
 | `39740206655` (attempt 2) | `f82c1f980` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
+| `39748205888` | `d85c402a9` | `CI` — the default sweep | **success** — 16,061 tests run, 16,061 passed, 9 skipped |
+| `39748205822` | `d85c402a9` | Linux M004 process and IPC qualification | **success** — `restricted-userns-fails-closed` **success**, `process-ipc` **success**, `git-cost-pilot` skipped |
+| `39748205948` | `d85c402a9` | Linux C006 protected mount qualification | **success** |
+| `39748205831` | `d85c402a9` | Linux Git object snapshot CoW qualification | **success** |
+| `39748205884` | `d85c402a9` | Windows process launcher | **success** |
 
 **All five workflows are green on the closing head.** The failures above are
 the earlier heads, and each one found a defect that is now fixed and guarded —
@@ -697,8 +716,16 @@ estimate, and not a count the guard assumed.
 | `39740206612` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
 | `39740206639` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
 | `39740206635` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
+| `39748205888` | `CI` | `Workspace tests` | **16,061 tests run, 16,061 passed**, 9 skipped | — | none |
+| `39748205822` | M004 | 7 single-test filter steps | **1 each** | **1 each** | none |
+| `39748205822` | M004 | Protected mount and Git regressions — `protected_mount_` | **11 executed** | **11** | none |
+| `39748205822` | M004 | Protected mount and Git regressions — `trusted_git` | **20 executed** | **17** | none |
+| `39748205948` | C006 | ManagedProcessService protected-mount qualification | **11 executed** | **11** | none |
+| `39748205948` | C006 | Trusted Git repository-config qualification | **20 executed** | **17** | none |
+| `39748205831` | Git CoW | Prove CoW snapshot isolation from source mutation | **1 executed** | **1** | none |
+| `39748205884` | Windows | 6 dispatchable filter steps | **1, 3, 1, 6, 5, 6 executed** | 1, 3, 1, 6, 5, 6 | none |
 
-**Every security-filter count is identical on all three green heads**: the same
+**Every security-filter count is identical on all four green heads**: the same
 executed count, the same witness set, and the same absence of self-skip markers
 on every job. That is the reproducibility claim made concrete, and it holds
 exactly where it is claimed — on the filter steps, which are this milestone's
@@ -726,9 +753,9 @@ requires. The registry's list is the *required* set, not the exhaustive one.
 ### 5.3 The platform scope, stated honestly
 
 * The **Windows** process-launcher job was run and **passed** on the
-  corrective head (`39740206635`, and again on the two preceding heads
-  `39735856171` and `39731707127`). The final result is recorded from the run
-  rather than inferred.
+  corrective head (`39748205884`, and again on the three preceding heads
+  `39740206635`, `39735856171` and `39731707127`). The final result is
+  recorded from the run rather than inferred.
 * The **macOS** target compile was **not run** on this head. It is recorded
   as *not run*, not as a pass.
 * The plan's WP5 asks to "await the native and macOS jobs only for the
