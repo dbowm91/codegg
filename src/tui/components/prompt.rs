@@ -1330,7 +1330,7 @@ mod tests {
     fn the_visual_row_motion_moves_the_caret_down_one_visual_row() {
         let mut widget = composer("alpha beta gamma delta epsilon zeta");
         widget.set_wrap_width(10);
-        let layout = widget.layout_at(10);
+        let layout = widget.layout_at(10).clone();
         assert!(
             layout.row_count() > 1,
             "the text must wrap onto more than one row"
@@ -1379,7 +1379,7 @@ mod tests {
     fn the_visual_row_motion_clamps_at_the_last_visual_row() {
         let mut widget = composer("alpha beta gamma delta");
         widget.set_wrap_width(10);
-        let layout = widget.layout_at(10);
+        let layout = widget.layout_at(10).clone();
         let last_row = layout.row_count() - 1;
         widget.set_cursor(
             layout
@@ -1425,7 +1425,7 @@ mod tests {
         for width in [8u16, 11, 20] {
             let mut widget = composer(text);
             widget.set_wrap_width(width);
-            let layout = widget.layout_at(width);
+            let layout = widget.layout_at(width).clone();
             assert!(
                 layout.row_count() > 1,
                 "the text must wrap onto more than one row at width {width}"
@@ -1491,7 +1491,8 @@ mod tests {
             widget.content_overflows(),
             "{rows} rows of content do not fit in a {visible_rows}-row box"
         );
-        widget.set_cursor(widget.layout_at(10).byte_at(0, 0).expect("a first cell"));
+        let first_cell = widget.layout_at(10).byte_at(0, 0).expect("a first cell");
+        widget.set_cursor(first_cell);
         // The layout pass scrolls the window to the caret, so the window
         // starts at the first row.
         widget.ensure_cursor_visible_with_width(visible_rows, 10);

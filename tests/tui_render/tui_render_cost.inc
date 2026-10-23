@@ -140,6 +140,19 @@ fn the_cached_composer_draws_the_same_rows_as_a_fresh_one() {
                 warm, buffer,
                 "text {text:?} at width {width}: the cached frame drew something else"
             );
+
+            // A different width is a different layout, so the cache must not
+            // serve the one it wrapped at the old width.
+            let narrower_width = width.saturating_sub(3).max(4);
+            let narrower = Rect::new(0, 0, narrower_width, 8);
+            let mut narrower_buffer = Buffer::empty(narrower);
+            (&widget).render(narrower, &mut narrower_buffer);
+            assert_eq!(
+                composer_buffer(text, narrower_width),
+                narrower_buffer,
+                "text {text:?}: the frame at width {narrower_width} drew \
+                 something else"
+            );
         }
     }
 }
