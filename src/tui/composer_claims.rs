@@ -14,35 +14,30 @@
 //!
 //! A reserved claim still **owns** the key — the fallthrough rule is the whole
 //! point — so a reserved `d` cannot quietly become `OpenDiff` while
-//! delete-selection is pending. What is pending is the *behaviour*. `i` is the
-//! app's **only** route back to Insert mode, so a reserved `i` would strand
-//! the user in Normal mode with no way to type at all.
+//! delete-selection is pending. `i` is the app's **only** route back to
+//! Insert mode, so a reserved `i` would strand the user in Normal mode.
 //!
 //! # Scope
 //!
-//! The table applies to the **main buffer's Normal mode** only. It does not
-//! apply to the side-panel composers, the chat box, the Workspace dashboard's
-//! filter, the dialogs, or the project picker, and it does not apply in
-//! Insert mode. The claim is live only when the composer holds the keyboard
-//! (see `App::composer_holds_keyboard`) and the *resolved* mode is Normal (see
-//! `App::composer_input_mode`) — never when the raw `UiState::input_mode`
-//! field says Normal.
+//! The table applies to the **main buffer's Normal mode** only — not the
+//! side-panel composers, the chat box, the Workspace dashboard's filter, the
+//! dialogs, or the project picker — and not Insert mode. The claim is live
+//! only when the composer holds the keyboard (`App::composer_holds_keyboard`)
+//! and the *resolved* mode is Normal (`App::composer_input_mode`), never when
+//! the raw `UiState::input_mode` field says Normal.
 //!
 //! # The one conditional claim
 //!
 //! `j` and `k` are claimed only when the composer's **content does not fit
 //! its box**. The measure is the **fitted** content — the wrapped row count
-//! against the visible row count — and not the buffer's newline count: a
-//! composer whose text wraps to three rows in a three-row box *fits*, and a
-//! composer whose text wraps to four rows in a three-row box does not.
+//! against the visible row count — and not the buffer's newline count.
 //!
 //! The fit is a **cached layout fact**. The gate runs at key dispatch, before
 //! the render pass, so the numbers come from the last layout pass rather than
-//! from a second computation at dispatch time — two computations of one fact
-//! are two answers to it, and the gate and the box must not be able to
-//! disagree. A composer that has never been laid out has no measurement, and
-//! an unmeasured fit does not hold the claim: the key falls through rather
-//! than being swallowed in a state the user cannot see.
+//! from a second computation — two computations of one fact are two answers
+//! to it, and the gate and the box must not disagree. A composer that has
+//! never been laid out has no measurement, and an unmeasured fit does not
+//! hold the claim: the key falls through.
 //!
 //! # The static guard
 //!

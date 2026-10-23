@@ -45,10 +45,7 @@
 //! `queue_resize` and drained by `flush_terminal_resize`. Sizing it from the
 //! outer terminal instead — which is what `terminal_viewport_size` does for the
 //! initial box — leaves the program wrapping to columns this column cannot
-//! show, so the reader sees the left edge of a much wider screen. Reflowing is
-//! the cost: a resize re-wraps what the program believes it has, which is the
-//! same trade every terminal makes and the only one that leaves the output
-//! legible.
+//! show, so the reader sees the left edge of a much wider screen.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{

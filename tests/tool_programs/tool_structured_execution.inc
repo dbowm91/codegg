@@ -5,7 +5,7 @@
 //! These tests intentionally do not require network, LSP servers,
 //! or running MCP servers. They are pure in-process tests that
 //! lock down the contract documented in
-//! `plans/native_tool_runtime_correctness.md` Phase 6.
+//! `architecture/native_crates.md`.
 //!
 //! See also: `architecture/native_crates.md` and
 //! `architecture/tool.md`.

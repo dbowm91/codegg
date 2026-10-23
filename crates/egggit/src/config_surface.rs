@@ -1,50 +1,37 @@
 //! Bounded, read-only detection of a repository's hostile Git configuration.
 //!
-//! A Git *read* can execute code. `git status` consults the clean/smudge
-//! filter machinery, and a repository that declares
-//! `filter.<name>.process` selects a **long-running filter process** whenever
-//! an attribute in the worktree names that filter. The same is true for a
-//! user-level `core.attributesFile`, which can select a filter without the
-//! repository having to name it.
+//! A Git *read* can execute code: `git status` consults the clean/smudge
+//! filter machinery, and a repository that declares `filter.<name>.process`
+//! selects a **long-running filter process** whenever an attribute in the
+//! worktree names that filter.
 //!
 //! The trusted read route in [`crate::process`] neutralises a *list* of
 //! repository-controlled config surfaces by injecting `-c key=value` overrides
 //! that beat every config file, and by scrubbing `GIT_*` environment
-//! variables. That list is not general: an override beats the keys it names
-//! and nothing else. Two gaps follow, and this module exists to close them:
+//! variables. An override beats the keys it names and nothing else, so two
+//! gaps follow and this module closes them:
 //!
-//! 1. **The content of an included file is still parsed by Git.** A
+//! 1. **The content of an included file is still parsed by Git.** An
 //!    `include.path` or `includeIf.<condition>.path` directive names another
-//!    config file whose keys Git honours. A dangerous key hidden inside such a
-//!    file applies, and the override list does not name it.
+//!    config file whose keys Git honours, and the override list does not name
+//!    them.
 //! 2. **The override list is a property of the publisher's private gitdir,
-//!    not of a live read of the repository's own configuration.** The
-//!    mediation must be derived from the repository's own config files,
-//!    whatever they contain.
+//!    not of a live read of the repository's own configuration.**
 //!
 //! This module is a **detector**, not an enforcer: it reads the repository's
 //! configuration, follows the include graph, and reports which dangerous
-//! surfaces the repository declares. The caller decides what to do with the
-//! report.
+//! surfaces the repository declares.
 //!
 //! ## What this module guarantees
 //!
 //! * **It never executes anything.** The configuration is parsed here, in
-//!   Rust. It does not shell out to `git config` — that command would honour
-//!   includes and could consult helpers — and it never runs a filter, driver,
-//!   pager, editor, or helper of any kind.
+//!   Rust; it never runs a filter, driver, pager, editor, or helper.
 //! * **It never leaks a value.** The report carries *surface names*, not
-//!   values. A `credential.<url>.helper` value can contain a password and an
-//!   `url.<base>.insteadOf` base can contain a URL with credentials, so the
-//!   summary only ever names the key **template** (`credential.<url>.helper`)
-//!   and never the resolved subsection or the value.
+//!   values, so the summary only ever names the key **template**.
 //! * **It never panics on a hostile file.** A malformed configuration is
-//!   reported as [`HostileConfigSurface::InspectionTruncated`]: the file
-//!   could not be vouched for, so the inspection is incomplete.
+//!   reported as [`HostileConfigSurface::InspectionTruncated`].
 //! * **It is bounded.** See [`MAX_INCLUDE_DEPTH`], [`MAX_CONFIG_FILES`],
-//!   [`MAX_CONFIG_FILE_BYTES`] and [`MAX_TOTAL_CONFIG_BYTES`]. A bound that
-//!   is exceeded stops the walk and is reported; it never turns into an
-//!   unbounded read.
+//!   [`MAX_CONFIG_FILE_BYTES`] and [`MAX_TOTAL_CONFIG_BYTES`].
 //!
 //! ## What this module does not guarantee
 //!
@@ -53,8 +40,7 @@
 //!
 //! * **Time-of-check to time-of-use.** The repository's configuration can
 //!   change between the inspection and the Git invocation it was meant to
-//!   guard. A detector cannot close that window on its own; the caller has to
-//!   treat the report as advisory or re-check.
+//!   guard; treat the report as advisory or re-check.
 //! * **Includes outside the bounded root set.** An `include.path` that
 //!   resolves outside the bounded root set is reported as
 //!   [`HostileConfigSurface::OutOfBoundsInclude`]. Its content is still
@@ -65,6 +51,8 @@
 //! The report therefore distinguishes "the repository declares no dangerous
 //! surface" from "the repository's configuration could not be fully
 //! inspected". [`HostileConfigReport::is_clean`] is true only for the former.
+//!
+//! See `architecture/git.md` for the full contract.
 
 use std::collections::BTreeSet;
 use std::fmt;

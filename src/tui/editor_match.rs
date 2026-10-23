@@ -44,13 +44,10 @@
 //! The plan names the crate helpers `leading_byte` / `next_char_boundary` as
 //! the byte-stepping primitives. Those operate on `DocumentSnapshot`, and
 //! using them here would make this module depend on the editor's document
-//! type — which this work package forbids, because the module has to stay
-//! dependency-free to be unit-testable in isolation and to land in parallel
-//! with the other work packages. This module therefore does its own UTF-8
-//! character-boundary stepping: forward with `str::chars()`, and backward with
-//! the UTF-8 continuation-byte rule (`0b10xxxxxx`). The two agree — both land
-//! on the same character boundaries — so a call site may use either. The
-//! call-site concern is recorded here so it is not rediscovered.
+//! type — which this work package forbids. This module therefore does its own
+//! UTF-8 character-boundary stepping: forward with `str::chars()`, and
+//! backward with the UTF-8 continuation-byte rule (`0b10xxxxxx`). The two
+//! agree, so a call site may use either.
 
 use std::ops::Range;
 

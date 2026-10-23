@@ -5,9 +5,7 @@
 //! This module is the smallest trustworthy substrate for causal tool-menu
 //! experiments. It changes **no runtime disclosure behavior**: nothing here
 //! filters provider definitions, alters broker authorization, or widens
-//! execution authority. The causal frontier is a visibility-only planning
-//! layer evaluated offline in M002 against the frozen benchmark preregistered
-//! in M001.
+//! execution authority.
 //!
 //! # Closed ontology
 //!
@@ -40,8 +38,7 @@
 //!
 //! [`CausalStateSnapshot`] stores booleans, capped counts, and bounded typed
 //! ids only. It never copies raw tool output, prompts, file content, secrets,
-//! or transcript history. Counts are capped and ids truncated so the
-//! snapshot is bounded by construction.
+//! or transcript history.
 //!
 //! # Contract integrity
 //!

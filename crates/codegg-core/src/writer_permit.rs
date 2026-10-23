@@ -11,14 +11,11 @@
 //! - a claim that any particular writer has been mediated. C002 builds the
 //!   *authority*; C003 and C004 are what route writers through it.
 //!
-//! # What it is not, precisely
-//!
 //! # The state machine
 //!
-//! `Releasing` exists so that a crash *between* the holder declaring it is done
-//! and the permit actually being freed is distinguishable from a holder that is
-//! still working. Both are unsafe, but only one of them is *known* to be
-//! mid-release, and reconciliation reports them differently.
+//! `Releasing` exists so that a crash *between* the holder declaring it is
+//! done and the permit actually being freed is distinguishable from a holder
+//! that is still working, and reconciliation reports them differently.
 //!
 //! `Quarantined` is terminal until an operator releases it explicitly. A
 //! quarantine is never cleared by a timer: **a lease deadline is never enough to

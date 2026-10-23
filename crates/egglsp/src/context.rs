@@ -546,17 +546,14 @@ impl std::fmt::Display for AgentContextSource {
 /// # Relationship to `SemanticContextPacket`
 ///
 /// The tool-local [`SemanticContextPacket`] (defined in
-/// `src/tool/lsp.rs`) is a *separate, tool-facing* DTO that drives
-/// the `semanticContext` tool operation and carries extra fields
-/// specific to that tool (source excerpt, call/type hierarchy,
-/// overlay summary, source-action hints). It is not the canonical
-/// context packet. Tool output for `semanticContext` continues to
-/// flow through `SemanticContextPacket`; richer agent/review
-/// contexts flow through `LspContextPacket` via the
+/// `src/tool/lsp.rs`) is a *separate, tool-facing* DTO that drives the
+/// `semanticContext` tool operation and carries extra fields specific to that
+/// tool (source excerpt, call/type hierarchy, overlay summary, source-action
+/// hints). It is not the canonical context packet. Tool output for
+/// `semanticContext` continues to flow through `SemanticContextPacket`;
+/// richer agent/review contexts flow through `LspContextPacket` via the
 /// `ServiceLspEvidenceProvider` defined in
-/// `crates/egglsp/src/evidence_adapter.rs`. The two are bridged by
-/// `SemanticContextPacket::into_lsp_context_packet` when callers
-/// want to fold a tool response into the canonical packet.
+/// `crates/egglsp/src/evidence_adapter.rs`.
 ///
 /// # Drift guardrails (Pass 4)
 ///

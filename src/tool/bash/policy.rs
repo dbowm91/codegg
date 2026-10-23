@@ -55,7 +55,7 @@ pub(crate) struct RoutingMetric {
     pub(crate) fallback: bool,
 }
 
-/// Compatibility helper for older tests/callers. The canonical family
+/// Compatibility helper for older test callers. The canonical family
 /// mapping is owned by `command_intent::plan`.
 #[cfg(test)]
 pub(crate) fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {
