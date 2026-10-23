@@ -251,7 +251,27 @@ $ python3 scripts/rust_test_scan.py --validate
 # The routine subset: rustfmt, the generated-asset checks, the guard
 # scripts, and a workspace check.
 $ scripts/verify.sh quick
+==> Quick verification passed.
+
+# The touched modules' own unit tests.
+$ CARGO_BUILD_JOBS=3 cargo test -p codegg --lib -- tui::components::prompt \
+    tui::composer_geometry tui::composer_text tui::editor_highlight \
+    tui::components::messages tui::app::state::tasks
+test result: ok. 178 passed; 0 failed; 0 ignored; 0 measured; 7261 filtered out
 ```
+
+`scripts/verify.sh scoped HEAD~5` was **started** and did not finish inside
+the milestone's budget: a change in the root package widens the selection to
+every transitive dependent's full surface, which is the documented cost of
+`scoped` on this tree. What it would have added over `quick` is the affected
+**tests** beyond the family, and those were run directly: the whole
+`tui_render` family (1064 tests ✅), the eight new member tests ✅, and the
+touched modules' 178 unit tests ✅. `scripts/verify.sh full` — the clippy
+sweep — was **not** run: the milestone was developed on a machine shared with
+a sibling milestone, and the plan records that the macOS lint set already
+fails for reasons C005 owns. The change adds no lint finding: the only
+clippy-visible change is `bounded`'s new generic bound, which is exercised by
+both call shapes.
 
 The baseline capture of §2.1 is itself a verification command, and it is
 reproducible from the commit: `git checkout 626a1abbb -- <production files>`,
