@@ -126,7 +126,7 @@ fn the_caret_stays_visible_when_the_composer_is_scrolled() {
     assert!(widget.scroll > 0, "the composer is scrolled");
     let cell = widget.caret_cell(area).expect("the caret is on screen");
     assert!(
-        cell.1 >= area.y + 1 && cell.1 < area.y + 10,
+        cell.1 > area.y && cell.1 < area.y + 10,
         "the caret's cell is inside the text window: {cell:?}"
     );
 }

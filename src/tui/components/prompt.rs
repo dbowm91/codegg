@@ -1389,7 +1389,10 @@ mod tests {
         let rows = widget.layout_at(10).row_count();
         let visible_rows = 6;
         widget.ensure_cursor_visible_with_width(visible_rows, 10);
-        assert!(widget.content_overflows(), "the content overflows the box");
+        assert!(
+            widget.content_overflows(),
+            "{rows} rows of content do not fit in a {visible_rows}-row box"
+        );
         widget.set_cursor(widget.layout_at(10).byte_at(0, 0).expect("a first cell"));
         // The layout pass scrolls the window to the caret, so the window
         // starts at the first row.
