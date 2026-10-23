@@ -2,7 +2,7 @@
 //!
 //! Centralizes ownership and shutdown semantics for TUI-side background tasks.
 //! Tracks spawned tasks so they can be counted, cancelled, and reaped on
-//! shutdown or dialog close. See `plans/tui_phase_7_background_task_lifecycle.md`.
+//! shutdown or dialog close. See `architecture/tui.md`.
 //!
 //! ## Cancellation semantics
 //!

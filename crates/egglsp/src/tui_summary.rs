@@ -2132,16 +2132,10 @@ mod tests {
         assert!(!summary.supports_code_actions);
     }
 
-    // -----------------------------------------------------------------------
-    // Phase 9 hardening: lifecycle/root/status correctness tests
-    // (Workstream 3 of plans/lsp_phase_9_12_hardening_plan.md)
-    //
-    // Covers degraded/edge-state rendering for server status, capability
-    // snapshots, error/health output, and root diagnosis. The pre-existing
-    // tests cover only the happy path; these tests prove that the
-    // renderers do not overclaim capabilities and correctly surface
-    // non-ready operational states.
-    // -----------------------------------------------------------------------
+    // Lifecycle/root/status correctness: degraded and edge-state rendering
+    // for server status, capability snapshots, error/health output, and root
+    // diagnosis. The renderers must not overclaim capabilities, and must
+    // surface non-ready operational states.
 
     use crate::capability::LspCapabilitySnapshot;
     use crate::health::{LspOperationalHealthSnapshot, LspOperationalState};

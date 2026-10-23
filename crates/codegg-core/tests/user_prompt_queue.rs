@@ -275,7 +275,7 @@ async fn user_prompt_queue_v80_migration_creates_table_index_and_layout() {
     // Provenance is therefore asserted where it is still observable, by staging
     // **v81** and running only v82:
     // `v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel` in
-    // `tests/storage_migrations.rs`. What this test can still say is that the
+    // `tests/core_daemon/storage_migrations.inc`. What this test can still say is that the
     // column is now part of the schema, nullable, and added after the fact.
     let run_at_type: Option<String> = sqlx::query_scalar(
         "SELECT type FROM pragma_table_info('user_prompt_queue_entry') WHERE name = 'run_at_ms'",

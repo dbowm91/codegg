@@ -5,7 +5,7 @@
 //! consumed by `ToolRegistry::with_options()`. It fills defaults,
 //! validates values, and emits warnings for suspicious configurations.
 //!
-//! See `plans/eggsearch-eggsact-phase-06-backend-config-policy.md`.
+//! See `architecture/native_crates.md` for the backend-selection policy.
 
 use crate::config::schema::Config;
 

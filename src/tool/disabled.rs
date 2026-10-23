@@ -14,7 +14,7 @@
 //! call silently routing somewhere else. Use `ToolRegistry::backend_report`
 //! (and `/tool-backends`) to diagnose disabled domains.
 //!
-//! See `plans/native_tool_crates_hardening.md` Phase 4 for context.
+//! See `architecture/tool.md` for the registry's contract.
 
 use crate::error::ToolError;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};

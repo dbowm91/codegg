@@ -1,9 +1,7 @@
 //! Shell command output projection model.
 //!
-//! Phase 1 of the shell output projection roadmap
-//! (`plans/shell_output_projection_phase_01_command_event_model.md`)
-//! and the substrate for Phase 2
-//! (`plans/shell_output_projection_phase_02_projection_trait.md`).
+//! The command-event substrate of the shell output projection pipeline; see
+//! `architecture/human_shell.md` for the pipeline's contract.
 //!
 //! This module introduces a structured command event that is the foundation
 //! for the projection pipeline. Every shell command run produces a

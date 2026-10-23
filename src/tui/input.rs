@@ -744,7 +744,7 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
 /// `K`/`L` are otherwise unbound in Normal mode, and `is_normal_only` keeps
 /// Insert mode treating them as text. This is the same legacy-encoding hazard
 /// that made every `Ctrl+Shift+X` chord undecodable — see
-/// `tests/modifier_chords.rs`.
+/// `tests/tui_render/modifier_chords.inc`.
 fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
     for (key_code, action) in [
         (KeyCode::Left, InputAction::DirectionLeft),
@@ -981,7 +981,7 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // `Ctrl+Alt+<letter>` has no such collision: legacy encoding sends `ESC`
     // followed by the single control byte, so crossterm reports CONTROL|ALT
     // and the pair is unambiguous against both bare `Ctrl+W` and bare
-    // `Alt+W`. `tests/modifier_chords.rs` asserts the whole set stays
+    // `Alt+W`. `tests/tui_render/modifier_chords.inc` asserts the whole set stays
     // disjoint from their unshifted twins.
     //
     // Sidebar focus keeps a reachable chord now that space is help.
@@ -1021,7 +1021,7 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // typed slash command land as text. Removing it took away "type
     // `/panels` from Normal mode and press Enter" — the only way back into
     // the panel manager from a focused panel, which owns every key by
-    // contract (`tests/tui_side_panels.rs`).
+    // contract (`tests/tui_render/tui_side_panels.inc`).
     //
     // The focus-prompt **capability** moved to `Ctrl+Alt+E` in both maps, and
     // the vim map's `i` spelling is gone, which is the spelling the ADR

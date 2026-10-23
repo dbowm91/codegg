@@ -12,8 +12,8 @@
 //! confined process can write only inside its own roots.
 //!
 //! On Linux that mechanism is Landlock's, and it is qualified by
-//! `tests/linux_native_scratch_containment.rs`. On macOS it is Seatbelt's,
-//! and this file is that qualification.
+//! `tests/security_permission/linux_native_scratch_containment.inc`. On macOS
+//! it is Seatbelt's, and this file is that qualification.
 //!
 //! This file is a whole-file `cfg(target_os = "macos")` fixture on purpose: a
 //! qualification that cannot run on the target platform must not exist as a

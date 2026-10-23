@@ -1368,13 +1368,10 @@ pub async fn publish_changed_diagnostics(
 /// Diagnostics are keyed by URI, but the protocol reports workspace-relative
 /// paths so a client can join them to its own file list.
 ///
-/// This resolves the **full** relative path, not the file name. It used to
-/// keep only `path.file_name()`, so `src/lib.rs` and `tests/lib.rs` were the
-/// same key and the second silently overwrote the first in the tracker — the
-/// client was shown one file's diagnostics under the other file's name. A
-/// URI outside `root` is skipped rather than reported under a fabricated
-/// path, because a wrong-but-present path is worse for a client than an
-/// absent one.
+/// This resolves the **full** relative path, not the file name: two files
+/// that differ only by directory must not collide as one tracker key. A URI
+/// outside `root` is skipped rather than reported under a fabricated path,
+/// because a wrong-but-present path is worse for a client than an absent one.
 fn diagnostics_relative_path(uri: &str, root: &Path) -> Option<String> {
     url::Url::parse(uri)
         .ok()

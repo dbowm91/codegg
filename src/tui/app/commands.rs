@@ -566,7 +566,7 @@ pub enum TuiCommand {
     /// enrichment run. The handler in `src/tui/mod.rs` awaits
     /// `run_security_review_background` and surfaces the result via the
     /// message timeline + a toast. See
-    /// `plans/security_review_async_dispatch.md`.
+    /// `architecture/security.md`.
     ///
     /// Kept for backward compatibility with any older dispatchers; new
     /// code should use the spawn-and-finished path via

@@ -581,7 +581,7 @@ mod tests {
         // against it, so the only state that could go stale is gone. Keeping the
         // test as the assertion that the fields the constructor still takes are
         // the fields it has — the compile-time half of the contract. The
-        // rendered half lives in `tests/tui_theme_source_of_truth.rs` for the
+        // rendered half lives in `tests/tui_render/tui_theme_source_of_truth.inc` for the
         // dockable boxes.
         let body = make_text_node("hello");
         let dialog = UiNodeDialog::new("id".into(), "Title".into(), body);

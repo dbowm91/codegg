@@ -1,7 +1,7 @@
 //! Shell command output projectors.
 //!
-//! Phase 2 of the shell output projection roadmap
-//! (`plans/shell_output_projection_phase_02_projection_trait.md`).
+//! The projection abstraction of the shell output pipeline; see
+//! `architecture/human_shell.md`.
 //!
 //! This module introduces the projection abstraction that converts raw
 //! command artifacts into explicit model-facing and TUI-facing views. The
