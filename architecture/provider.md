@@ -62,15 +62,15 @@ durable-connection entries.
 
 Two entry points exist:
 
-**`register_builtin(registry)`** (`provider_core.rs:533`) — registers 15
+**`register_builtin(registry)`** (`provider_core.rs:632`) — registers 15
 providers, each gated on its environment variable. No config dependency.
 
-**`register_builtin_with_config(registry, config)`** (`provider_core.rs:1023`)
+**`register_builtin_with_config(registry, config)`** (`provider_core.rs:1122`)
 — the primary production path. Registers 17 providers by checking config
 first, then falling back to env vars per-provider. Uses three helper
 functions with a single credential resolution path, each wired to an
 explicit `CredentialCapability` from `credential_capability_for`
-(`provider_core.rs:618`):
+(`provider_core.rs:717`):
 
 1. `register_config_provider` (`ApiKeyOnly`) — for providers with
    base_url override (anthropic, openai, google, openrouter)
@@ -120,7 +120,7 @@ so the caller gets an actionable state instead of a silent pick.
 ### Credential Resolution
 
 `resolve_provider_credential(provider_id, cfg, env_var, store, pins)`
-(`provider_core.rs:660`) is the single resolution path. It builds a
+(`provider_core.rs:759`) is the single resolution path. It builds a
 `ResolverContext` with `capability = credential_capability_for(provider_id)`
 and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 `ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
@@ -761,22 +761,22 @@ run-scoped value, and standalone operations create one invocation-scoped
 value at their boundary. Providers consume this context but never generate
 or persist it.
 
-### Message (`provider_core.rs:280`)
+### Message (`provider_core.rs:379`)
 
 Tagged enum (`#[serde(tag = "role")]`): `System`, `User` (Vec<ContentPart>),
 `Assistant` (Vec<ContentPart> + tool_calls), `Tool` (tool_call_id + content).
 
-### ContentPart (`provider_core.rs:345`)
+### ContentPart (`provider_core.rs:444`)
 
 Untagged enum: `Text { text }`, `Image { image_url }`, `Reasoning { text, visibility }`.
 `Reasoning` is `#[serde(skip)]` — never serialized on the wire. Max 256KB.
 
-### ChatEvent (`provider_core.rs:392`)
+### ChatEvent (`provider_core.rs:491`)
 
 Streaming response events: `TextDelta`, `ReasoningDelta`, `ToolCall`,
 `ToolResult`, `Finish { stop_reason, usage }`, `Error`.
 
-### ToolDefinition (`provider_core.rs:434`)
+### ToolDefinition (`provider_core.rs:533`)
 
 ```rust
 pub struct ToolDefinition {
@@ -790,7 +790,7 @@ pub struct ToolDefinition {
 Methods: `to_openai()`, `to_anthropic()` — convert to provider-specific
 wire format. Both handle `defer_loading`.
 
-### ModelInfo (`provider_core.rs:482`)
+### ModelInfo (`provider_core.rs:581`)
 
 ```rust
 pub struct ModelInfo {
@@ -805,7 +805,7 @@ pub struct ModelInfo {
 }
 ```
 
-### ProviderRegistry (`provider_core.rs:493`)
+### ProviderRegistry (`provider_core.rs:592`)
 
 ```rust
 pub struct ProviderRegistry {
@@ -822,7 +822,7 @@ order, which is reseeded per process, so "the first provider" changed on
 every launch, silently routing turns to whichever backend hashed first.
 Sorted keys make the catalog stable.
 
-### ProviderCapabilities::for_provider (`provider_core.rs:180`)
+### ProviderCapabilities::for_provider (`provider_core.rs:217`)
 
 Returns provider-specific capabilities. Anthropic: `supports_defer_loading`,
 `supports_tool_references`, `max_tools_per_request: None`. The direct OpenAI
@@ -924,7 +924,7 @@ Open->HalfOpen after timeout, HalfOpen->Closed after success threshold.
 
 ## Registration Summary
 
-### 15 Env-Var Providers (`register_builtin()`, `provider_core.rs:533`)
+### 15 Env-Var Providers (`register_builtin()`, `provider_core.rs:632`)
 
 Registered if the corresponding env var is set:
 
@@ -946,16 +946,16 @@ Registered if the corresponding env var is set:
 | `VENICE_API_KEY` | Venice |
 | `MINIMAX_API_KEY` | MiniMax |
 
-### 17 Config+Env Providers (`register_builtin_with_config()`, `provider_core.rs:1023`)
+### 17 Config+Env Providers (`register_builtin_with_config()`, `provider_core.rs:1122`)
 
 Same 15 plus `opencode_go` (`OPENCODE_GO_API_KEY`) and `generalcompute`
 (`GENERALCOMPUTE_API_KEY`). Each checks config first, then its own env var.
 **Per-provider independence**: adding one via config does NOT suppress the
 others. `register_builtin()` is only called as a fallback
-(`provider_core.rs:1317-1319`) if the registry is empty after all
+(`provider_core.rs:1416-1418`) if the registry is empty after all
 config-based attempts — a redundant safety net, not the mechanism.
 
-`builtin_registration_order()` (`provider_core.rs:627`) lists the same 17 ids
+`builtin_registration_order()` (`provider_core.rs:726`) lists the same 17 ids
 in registration order. The setup catalog
 (`crates/codegg-providers/src/setup_catalog.rs:235`) carries **20** entries:
 those 17 plus `eggpool` (`EGGPOOL_PRESET_ID`), `custom`
@@ -1719,7 +1719,7 @@ Standalone mode uses the same sequence in `src/main.rs`.
 
 The provider-owned configuration keys live under `[provider.<id>]` in the
 config file (`codegg_config::schema::ProviderConfig`,
-`crates/codegg-config/src/schema.rs:1424`):
+`crates/codegg-config/src/schema.rs:1612`):
 
 | Key | Meaning |
 |-----|---------|
@@ -1985,8 +1985,8 @@ Corrections made in this pass:
   paths, and added `crypto.md`, `retry.md`, and `model-adapters.md`.
 
 Confirmed correct as written: the 15 env-var providers in
-`register_builtin` (`provider_core.rs:533`) and the 17 in
-`builtin_registration_order()` (`:627`); the `ProviderCapabilities` 15-field
+`register_builtin` (`provider_core.rs:632`) and the 17 in
+`builtin_registration_order()` (`:726`); the `ProviderCapabilities` 15-field
 set and its helper predicates
 `can_host_programs()` / `full_hosted_support()`; the `ChatRequest`,
 `ProviderRequestContext` (2 fields), `ProviderWirePolicy` (7 fields),

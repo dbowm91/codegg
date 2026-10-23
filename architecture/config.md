@@ -134,7 +134,7 @@ containing all thirteen and asserts each survives), plus
 all-`Option` section with its own `merge()`, so it is the eleventh such
 section today.
 
-### ProviderConfig Merge (`schema.rs:1462`)
+### ProviderConfig Merge (`schema.rs:1650`)
 
 `decision_engine` is a simple optional override. Its schema defaults to
 disabled, uses `reference` or `ollama` as an explicit compatibility profile,
@@ -180,7 +180,7 @@ has `base_url`, merged result has both.
 
 ## Key Types & APIs
 
-### Config (`schema.rs:218`)
+### Config (`schema.rs:406`)
 
 ```rust
 pub struct Config {
@@ -256,7 +256,7 @@ pub struct Config {
 }
 ```
 
-### ProviderConfig (`schema.rs:1424`)
+### ProviderConfig (`schema.rs:1612`)
 
 ```rust
 pub struct ProviderConfig {
@@ -300,13 +300,13 @@ pub enum AuthConfig {
 }
 ```
 
-### ProviderConnectionsConfig (`schema.rs:403`)
+### ProviderConnectionsConfig (`schema.rs:591`)
 
 Daemon-owned provider-connection refresh policy. Defaults:
 `background_refresh=false`, `max_concurrent_refreshes=1`,
 `global_refresh_cap=4`, `health_stale_after_ms=300000`.
 
-### ServerConfig (`schema.rs:1376`)
+### ServerConfig (`schema.rs:1564`)
 
 ```rust
 pub struct ServerConfig {
@@ -378,7 +378,7 @@ if no explicit or managed key exists and the protected store is genuinely
 fresh, CodeGG atomically bootstraps the managed key. Read/decrypt paths never
 create one.
 
-### ModelProfileConfig (`schema.rs:112`)
+### ModelProfileConfig (`schema.rs:293`)
 
 Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `max_output_tokens`, `tool_call_reliability`, `instruction_adherence`,
@@ -430,7 +430,7 @@ Gated active context policy. First use: tool-palette reduction driven
 by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
 `Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-### SearchConfig (`schema.rs:1120`)
+### SearchConfig (`schema.rs:1308`)
 
 Web search/fetch backend: `backend` (Eggsearch/Disabled),
 `expose_raw_mcp_tools`, output caps per domain, and the `eggsearch`
@@ -648,8 +648,9 @@ Verified 2026-10-06 against `crates/codegg-config/{schema.rs,paths.rs,watcher.rs
 - Corrected 10 stale `file.rs:line` refs. `SearchConfig` had drifted the
   furthest (`461`→`739`), followed by `ContextPolicyConfig` (`366`→`644`),
   `ServerConfig` (`741`→`985`), `ProviderConfig` (`789`→`1033`), and
-  `ProviderConnectionsConfig` (`339`→`350`). `ProviderConfig::merge` is at
-  `schema.rs:1106`, not `827`.
+  `ProviderConnectionsConfig` (`339`→`350`). `ProviderConfig::merge` is a method on `ProviderConfig`, not the
+  struct; its current line is carried by the `ProviderConfig Merge`
+  heading above.
 - Confirmed correct as written: `merge_configs` (`paths.rs:164`) and
   `ConfigWatcher` (`watcher.rs:12`).
 
@@ -679,7 +680,7 @@ throwaway crate built against `codegg-config`:
   comparison that proves it. `theme` is now correctly described as whole-value
   replace.
 - **Loading flow was wrong.** It listed `decrypt_provider_keys()` as step 5 and
-  omitted `migrate()`. `Config::load()` (`schema.rs:2447`) has an explicit
+  omitted `migrate()`. `Config::load()` (`schema.rs:3260`) has an explicit
   comment that decryption is a delegated no-op; `decrypt_provider_keys` and
   `encrypt_provider_keys` are themselves no-ops (`encryption.rs:544`/`:549`).
   Rewrote the flow and the encryption/invariants sections.
@@ -691,10 +692,10 @@ throwaway crate built against `codegg-config`:
   `tool_advisor`, `decision_engine`, `orchestration`, `eggwork`. All five type
   names verified against `schema.rs`.
 - Confirmed accurate as written: `merge_configs` (`paths.rs:164`),
-  `ConfigWatcher` (`watcher.rs:12`), `Config::migrate` (`schema.rs:2739`),
+  `ConfigWatcher` (`watcher.rs:12`), `Config::migrate` (`schema.rs:3587`),
   `CONFIG_VERSION` (`schema.rs:5`), `AuthConfig` (`schema.rs:16`),
   `ModelProfileConfig` (`schema.rs:112`), `ProviderConfig::merge`
-  (`schema.rs:1106`), the master-key resolution chain, and every listed
+  (`schema.rs:1650`), the master-key resolution chain, and every listed
   validation bound (`log_level`, `share`, model format, `port >= 1024`,
   agent `mode`/`color`, `tool_timeout_seconds` 1-3600,
   `max_parallel_tools` 1-100, `compaction.threshold` 0.1-1.0,

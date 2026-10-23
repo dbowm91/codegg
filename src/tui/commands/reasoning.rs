@@ -315,7 +315,7 @@ pub(crate) fn apply_preference_loaded(
 ) {
     if let Some(error) = error {
         // A read failure is not worth a toast at startup: the selection is
-        // simply not known yet, and the working strip shows "default"
+        // simply not known yet, and the footer status bar shows "default"
         // rather than a wrong value.
         tracing::debug!(target: "codegg::tui::reasoning", %error, "reasoning preference read failed");
         app.ui_state.reasoning_request.fail(request_id, error);
