@@ -128,6 +128,10 @@ run_guards() {
     (cd "$REPO_ROOT" && python3 scripts/check_no_nested_runtime_block_on.py --self-test)
     echo "==> python3 scripts/check_no_nested_runtime_block_on.py"
     (cd "$REPO_ROOT" && python3 scripts/check_no_nested_runtime_block_on.py)
+    echo "==> python3 scripts/check_command_argument_contract.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_command_argument_contract.py --self-test)
+    echo "==> python3 scripts/check_command_argument_contract.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_command_argument_contract.py)
 
     echo "==> python3 scripts/check_daemon_listing_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)

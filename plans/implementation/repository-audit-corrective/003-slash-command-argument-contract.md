@@ -1,6 +1,21 @@
 # Repository Audit Corrective Milestone C003 — Slash-Command Argument Contract
 
-Status: ready for handoff
+Status: implemented — closure record at `plans/closure/repository-audit-corrective/003-status.md`
+
+> **Scope re-derivation (2026-10-23, implementation).** WP1 re-derived the
+> affected set from the code over all 161 dispatcher arms and found **twelve**
+> defective arms, not the six this plan recorded. The plan's six are among
+> them. Six more were found: `/open`, `/memory-list`, `/habits` and
+> `/security-review` used the whole typed line as their argument; `/loop`
+> split the line and took the **first** part — the command name — as the
+> duration; and `/review-change` stripped `"/review "`, a spelling that is
+> not its own. The plan's §14 stop condition fired; the scope was
+> re-derived, re-registered in the roadmap and the registry, and the
+> derivation and the eleven behaviour changes are recorded in the closure
+> record. The plan's claim that "`/loop` splits the line and takes the
+> second part" was falsified by the re-derivation: it takes the second part
+> as the *message* and the command name as the *duration*.
+
 
 Repository baseline: `d5be7acd05dc999888430b7ad23420d554359fec` (`origin/main`)
 Audit evidence was gathered at `04536eeeb`; every file this workstream cites is

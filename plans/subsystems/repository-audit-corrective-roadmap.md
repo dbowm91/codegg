@@ -217,6 +217,8 @@ User or operator value: `/search foo` searches for `foo`; `/task-del 5` deletes 
 
 Exit conditions: every registered command with an argument receives it; a single argument-extraction point exists; the six known-defective commands are covered by tests that fail on the baseline; the `Dialog::is_open` predicate covers every dialog variant.
 
+Scope re-derivation (2026-10-23, implementation): the milestone's affected set was re-derived from the code over all 161 dispatcher arms, and it is **twelve** arms, not the six the plan recorded. The plan's six are among them. Six more were found: `/open` and `/memory-list` and `/habits` and `/security-review` used the whole typed line as their argument; `/loop` split the line and took the **first** part — the command name — as the duration, so it always answered "Invalid interval"; and `/review-change` stripped `"/review "`, a spelling that is not its own, so its candidate id was always empty. `/security-review`'s observable result does not change (its flag parser ignores unknown tokens), so it is a mechanism-only migration. The re-derivation, the twelve arms and the eleven behaviour changes are recorded in `plans/closure/repository-audit-corrective/003-status.md`.
+
 Deferred work: splitting the 161-arm dispatcher is not in scope.
 
 ### Milestone C004 — Job-state terminality and status projection
@@ -350,10 +352,10 @@ The roadmap is closed when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | not started | `plans/implementation/repository-audit-corrective/001-nested-runtime-panic-removal.md` | — | — |
+| C001 | **closed** | `plans/implementation/repository-audit-corrective/001-nested-runtime-panic-removal.md` | `plans/closure/repository-audit-corrective/001-status.md` | — |
 | C002 | **closed** | `plans/implementation/repository-audit-corrective/002-destructive-delete-classification-coverage.md` | `plans/closure/repository-audit-corrective/002-status.md` | — |
-| C003 | not started | `plans/implementation/repository-audit-corrective/003-slash-command-argument-contract.md` | — | — |
-| C004 | not started | `plans/implementation/repository-audit-corrective/004-job-state-terminality-and-status-projection.md` | — | — |
+| C003 | **closed** | `plans/implementation/repository-audit-corrective/003-slash-command-argument-contract.md` | `plans/closure/repository-audit-corrective/003-status.md` | — |
+| C004 | **closed** | `plans/implementation/repository-audit-corrective/004-job-state-terminality-and-status-projection.md` | `plans/closure/repository-audit-corrective/004-status.md` | — |
 | C005 | not started | `plans/implementation/repository-audit-corrective/005-verification-surface-and-dead-code.md` | — | C001–C004 closed |
 | C006 | not started | `plans/implementation/repository-audit-corrective/006-tui-render-path-and-transcript-cost.md` | — | C001, C003 closed |
 | C007 | not started | `plans/implementation/repository-audit-corrective/007-comment-corpus-reduction-and-drift-guard.md` | — | C001–C006 closed |
