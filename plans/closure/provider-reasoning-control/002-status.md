@@ -12,7 +12,7 @@ Source subsystem roadmap:
 
 Source decision:
 
-- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` (accepted)
+- `plans/adrs/ADR-0049-open-provider-scoped-reasoning-control-vocabulary.md` (accepted)
 
 Repository baseline reviewed: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5`
 
@@ -46,7 +46,7 @@ called at all three dropped paths, and persists it in
 principal derived from transport authority.
 
 Because the protocol's serialized shape changed, the milestone also lands the
-capability negotiation ADR-0048 requires: the daemon advertises that it
+capability negotiation ADR-0049 requires: the daemon advertises that it
 accepts an open vocabulary in the established `*Capabilities` family, a client
 consults that advertisement before sending a non-enumerated label, and a
 daemon that has not advertised it refuses such a label with a typed error

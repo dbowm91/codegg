@@ -204,7 +204,7 @@ Known mutating operations identified by the typed parser include: `add`,
 type and flags (e.g., `--hard` on `reset`, `-f` on `clean`).
 
 **Polish-pass provenance parity:** The execution-origin matrix in
-`tests/git_execution_origin_matrix.rs` (12 tests, rows 1-10) asserts that
+`tests/command_git/git_execution_origin_matrix.inc` (12 tests, rows 1-10) asserts that
 every origin — native typed read/mutation, native raw git subcommand, Bash
 simple git read/mutation, managed git argv fallback, raw shell with
 `|`/`&&`/`;`, TUI git action, daemon git action, replay/rerun — has

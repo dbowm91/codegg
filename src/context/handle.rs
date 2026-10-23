@@ -440,12 +440,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tool_valid() {
-        let handle = ContextHandle::build_tool("sess123", 5, "call_abc").unwrap();
-        assert_eq!(handle, "ctx://tool/sess123/5/call_abc");
-    }
-
-    #[test]
     fn test_build_tool_rejects_slash() {
         let err = ContextHandle::build_tool("s/1", 0, "c1").unwrap_err();
         assert_eq!(

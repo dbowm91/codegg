@@ -221,7 +221,7 @@ impl fmt::Debug for CreateEggpoolConnectionRequest {
 /// The status of one reasoning-capability dimension.
 ///
 /// Mirrors the five statuses of the per-model capability record
-/// (ADR-0049) so a client can tell "nobody has published a contract for
+/// (ADR-0050) so a client can tell "nobody has published a contract for
 /// this dimension" ([`ReasoningCapabilityAxis::Unknown`]) from "the model
 /// refuses this" ([`ReasoningCapabilityAxis::Unsupported`]).
 ///

@@ -349,9 +349,9 @@ the newer 1.2.5 utility tools.
 
 - Each crate has self-contained unit tests in `crates/<name>/src/*.rs`.
 - Codegg wrapper tests snapshot model-facing JSON schemas.
-- `tests/tool_registry.rs` locks down tool surface: required names,
+- `tests/tool_programs/tool_registry.inc` locks down tool surface: required names,
   categories, disabled/missing behavior across backend configs.
-- `tests/tool_structured_execution.rs` locks down structured execution
+- `tests/tool_programs/tool_structured_execution.inc` locks down structured execution
   and definition-visibility contracts.
 - Failure paths tested at dispatch layer
   (`tool::backend::report_tests`).

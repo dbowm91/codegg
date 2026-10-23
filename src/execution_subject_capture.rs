@@ -70,6 +70,7 @@ pub async fn capture_attempt_revision(
             return (None, Some(ExecutionSubjectUnavailableReason::CaptureFailed));
         }
     };
+    let native = native.into_value();
     let eggplan_digest = capture_eggplan_compatible_digest(workspace_root, &native);
     let revision = ExecutionSubjectRevision {
         schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,

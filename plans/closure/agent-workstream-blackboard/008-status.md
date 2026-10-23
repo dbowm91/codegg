@@ -103,24 +103,24 @@ read in that tree:
 |---|---|---|
 | A — freeze the contract matrix; every named capability has a production consumer | `architecture/blackboard_contract_matrix.md`; `scripts/check_blackboard_contract_matrix.py` and its self-test | pass |
 | A — enumerate the supported CLI/TUI/daemon/agent paths | The matrix's "User-reachable path" column; the `codegg launch` CLI at `src/main.rs:2281`, the TUI worktree actions, and the `task` tool's `placement` parameter at `src/tool/task.rs:2325` | pass |
-| S0 — one capable agent stays operational and pays nothing for the blackboard | `tests/blackboard_trajectory_m008.rs::s0_a_single_agent_performs_no_blackboard_work_at_all` | pass |
-| S1 — two independently mutating children on separate worktrees do not cross before integration | `tests/blackboard_trajectory_m008.rs::s1_two_children_in_separate_worktrees_do_not_see_each_others_edits` | pass |
+| S0 — one capable agent stays operational and pays nothing for the blackboard | `tests/agent_loop/blackboard_trajectory_m008.inc::s0_a_single_agent_performs_no_blackboard_work_at_all` | pass |
+| S1 — two independently mutating children on separate worktrees do not cross before integration | `tests/agent_loop/blackboard_trajectory_m008.inc::s1_two_children_in_separate_worktrees_do_not_see_each_others_edits` | pass |
 | S2/S3 — observations attribute the actual peer action, in source order, coalesced | `tests/agent_loop_harness.rs::m008_peer_observation_contract::peer_observations_arrive_in_source_order_and_duplicates_are_coalesced` | pass |
 | S2/S3 — a peer payload never becomes an instruction | `tests/agent_loop_harness.rs::m008_peer_observation_contract::a_hostile_peer_payload_is_carried_as_data_and_never_becomes_an_instruction` | pass |
 | S0/S2 — the optional no-blackboard path stays free | `tests/agent_loop_harness.rs::m008_peer_observation_contract::a_single_agent_outside_the_peers_group_receives_no_peer_observation_at_all` | pass |
-| S3 — a claim race has exactly one owner and never widens a scope | `tests/blackboard_trajectory_m008.rs::s3_a_claim_race_has_exactly_one_owner_and_never_widens_a_scope` | pass |
-| S3 — a replayed request never creates a second owner | `tests/blackboard_trajectory_m008.rs::s3_replaying_a_claim_request_never_creates_a_second_owner` | pass |
-| S3 — an outsider's claim is refused with a typed error | `tests/blackboard_trajectory_m008.rs::s3_a_claim_by_an_outsider_is_refused_with_a_typed_error` | pass |
-| B — observations stay bounded through cancel | `tests/blackboard_trajectory_m008.rs::s3_a_cancelled_member_board_is_explicitly_unavailable` | pass |
-| B — source fact ordering | `tests/blackboard_trajectory_m008.rs::s3_claim_events_are_ordered_and_bounded` | pass |
-| C — explicit integration of disjoint work leaves a clean checkout | `tests/blackboard_trajectory_m008.rs::an_explicit_integration_of_disjoint_work_leaves_a_clean_checkout` | pass |
-| C — an overlapping integration returns an actionable conflict, not an automatic success | `tests/blackboard_trajectory_m008.rs::an_overlapping_integration_returns_an_actionable_conflict` | pass |
-| S4 — two children on one shared checkout serialize their writes | `tests/blackboard_trajectory_m008.rs::s4_two_children_on_one_shared_checkout_serialize_their_writes` | pass on Linux; qualified on macOS by the C006 native-containment lane; **unrun on Windows** |
-| S4 — the platform gate is exactly the qualified table | `tests/blackboard_trajectory_m008.rs::the_shared_profile_is_available_exactly_on_the_qualified_platforms` | pass |
-| E — the group notification is claimed exactly once across a restart | `tests/blackboard_trajectory_m008.rs::e_a_group_notification_is_claimed_once_across_a_restart` | pass |
-| E — the group delivers its members in a stable ordinal order | `tests/blackboard_trajectory_m008.rs::e_the_group_delivers_its_members_in_a_stable_ordinal_order` | pass |
-| D — a measured comparison with published denominators, resource costs and negative cases | `tests/blackboard_economics_m008.rs::the_configuration_comparison_publishes_its_denominators` | pass (opt-in; §6) |
-| D — at least one Rust target-dir contention measurement | `tests/blackboard_economics_m008.rs::the_rust_target_dir_contention_is_measured_and_published` | pass (opt-in; §6) |
+| S3 — a claim race has exactly one owner and never widens a scope | `tests/agent_loop/blackboard_trajectory_m008.inc::s3_a_claim_race_has_exactly_one_owner_and_never_widens_a_scope` | pass |
+| S3 — a replayed request never creates a second owner | `tests/agent_loop/blackboard_trajectory_m008.inc::s3_replaying_a_claim_request_never_creates_a_second_owner` | pass |
+| S3 — an outsider's claim is refused with a typed error | `tests/agent_loop/blackboard_trajectory_m008.inc::s3_a_claim_by_an_outsider_is_refused_with_a_typed_error` | pass |
+| B — observations stay bounded through cancel | `tests/agent_loop/blackboard_trajectory_m008.inc::s3_a_cancelled_member_board_is_explicitly_unavailable` | pass |
+| B — source fact ordering | `tests/agent_loop/blackboard_trajectory_m008.inc::s3_claim_events_are_ordered_and_bounded` | pass |
+| C — explicit integration of disjoint work leaves a clean checkout | `tests/agent_loop/blackboard_trajectory_m008.inc::an_explicit_integration_of_disjoint_work_leaves_a_clean_checkout` | pass |
+| C — an overlapping integration returns an actionable conflict, not an automatic success | `tests/agent_loop/blackboard_trajectory_m008.inc::an_overlapping_integration_returns_an_actionable_conflict` | pass |
+| S4 — two children on one shared checkout serialize their writes | `tests/agent_loop/blackboard_trajectory_m008.inc::s4_two_children_on_one_shared_checkout_serialize_their_writes` | pass on Linux; qualified on macOS by the C006 native-containment lane; **unrun on Windows** |
+| S4 — the platform gate is exactly the qualified table | `tests/agent_loop/blackboard_trajectory_m008.inc::the_shared_profile_is_available_exactly_on_the_qualified_platforms` | pass |
+| E — the group notification is claimed exactly once across a restart | `tests/agent_loop/blackboard_trajectory_m008.inc::e_a_group_notification_is_claimed_once_across_a_restart` | pass |
+| E — the group delivers its members in a stable ordinal order | `tests/agent_loop/blackboard_trajectory_m008.inc::e_the_group_delivers_its_members_in_a_stable_ordinal_order` | pass |
+| D — a measured comparison with published denominators, resource costs and negative cases | `tests/agent_loop/blackboard_economics_m008.inc::the_configuration_comparison_publishes_its_denominators` | pass (opt-in; §6) |
+| D — at least one Rust target-dir contention measurement | `tests/agent_loop/blackboard_economics_m008.inc::the_rust_target_dir_contention_is_measured_and_published` | pass (opt-in; §6) |
 | B — group/child and worktree lifecycle may not leak permits or overwrite unrelated filesystem state | the S4 arm's permit is taken and settled, never leaked; the integration tests assert a clean `git status --porcelain` after every merge and abort, and the worktrees live outside the repository so the assertion measures the integration rather than the fixture | pass |
 
 ## 5. The fault/replay coverage that already existed (work package B)
@@ -142,7 +142,7 @@ added on top:
 | process-tree kill | `tests/managed_process*.rs`, the C005 process-denial suite | — (C005's scope) |
 | oversize model context | `src/agent/follow_up.rs::oversized_peer_observation_is_item_truncated_without_breaking_json` | — |
 | duplicate events / conflicting modified files | `tests/workstream_claim_m003.rs` | the overlapping-integration conflict test |
-| sandbox approval reduction | `tests/process_denial_c005.rs`, `scripts/check_process_denial.py` | — (C005's scope) |
+| sandbox approval reduction | `tests/security_permission/process_denial_c005.inc`, `scripts/check_process_denial.py` | — (C005's scope) |
 | direct-parent messaging | `src/agent/follow_up.rs`, the M004/M009 closures | — |
 
 ## 6. The measured comparison (work package D)
@@ -331,8 +331,8 @@ M008's evidence supports, and each is a limit the plan itself names.
 |---|---|---|
 | `architecture/blackboard_contract_matrix.md` | document | the frozen contract matrix |
 | `scripts/check_blackboard_contract_matrix.py` | guard | the guard that keeps it frozen, with a self-test |
-| `tests/blackboard_trajectory_m008.rs` | test | the S0–S4 functional arms, the explicit-integration conflict case, the group member order and the notification durability |
-| `tests/blackboard_economics_m008.rs` | test | the opt-in measured comparison and the target-dir contention arm |
+| `tests/agent_loop/blackboard_trajectory_m008.inc` | test | the S0–S4 functional arms, the explicit-integration conflict case, the group member order and the notification durability |
+| `tests/agent_loop/blackboard_economics_m008.inc` | test | the opt-in measured comparison and the target-dir contention arm |
 | `tests/common/blackboard.rs` | test support | the shared fixture both M008 suites use, so the arms measure and assert against the same state |
 | `tests/agent_loop_harness.rs` | test | the three peer-observation contract tests, in the harness that owns the scripted provider |
 | `scripts/verify.sh`, `.github/workflows/ci.yml` | wiring | the guard runs in `verify.sh quick` and in the CI `verify` job |

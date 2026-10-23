@@ -113,9 +113,11 @@ impl AgentRunIntegrationService {
                 "integration target is not the source repository".into(),
             ));
         }
+        // Precondition probe, not a generation-bound consumer: the class is dropped.
         let target_status = egggit::status_v2::rich_repo_status(target.as_path())
             .await
-            .map_err(|e| AgentRunIntegrationError::Precondition(e.to_string()))?;
+            .map_err(|e| AgentRunIntegrationError::Precondition(e.to_string()))?
+            .into_value();
         if target_status.head.as_deref() != Some(base_commit.as_str()) {
             return Err(AgentRunIntegrationError::Precondition(
                 "parent repository moved since the child base was captured".into(),

@@ -52,16 +52,87 @@ Both modes set `CARGO_BUILD_JOBS=2` by default. Test execution runs
 under nextest profile `ci` (see below); plain `cargo test` broad runs
 keep `--test-threads=1`.
 
+## Test-suite totals
+
+The suite's size is **measured**, not estimated, and the measurement is
+reproducible:
+
+```bash
+python3 scripts/rust_test_scan.py --validate
+```
+
+That command parses every `.rs` and `.inc` file in `tests/`, `src/`, and
+`crates/` with a Rust-aware scanner — one that handles lifetimes, raw and
+byte strings, character literals, nested block comments, and `async fn` —
+and asserts that the number of parsed test functions equals the number of
+`#[test]` / `#[tokio::test]` attributes in every file, and that the
+scanner's comment-and-literal-stripped mask preserves the original's
+newline count exactly. A regex scan is **not** an acceptable substitute: on
+this tree it undercounts `tests/` by 76%, because `&'a T` reads as a
+character literal.
+
+As of **2026-10-21**, after the CI/test-throughput recovery M006 and M007
+milestones:
+
+| Tree | Test functions | Test attributes |
+|------|---------------|-----------------|
+| `tests/` | 4,946 | 4,946 |
+| `src/` | 7,387 | 7,388 (one `macro_rules!` test template) |
+| `crates/` | 3,586 | 3,586 |
+| **Total** | **15,919** | **15,920** |
+
+The M007 milestone's 84 removals reconcile exactly against its decision
+table, `docs/test-duplication.toml`:
+
+| Tree | Before | Removed | After |
+|------|--------|---------|-------|
+| `tests/` | 4,980 | 34 | 4,946 |
+| `src/` | 7,433 | 46 | 7,387 |
+| `crates/` | 3,590 | 4 | 3,586 |
+| **Total** | **16,003** | **84** | **15,919** |
+
+Two guards enforce the properties these numbers express, and both run in
+`verify.sh quick` and in CI:
+
+- `scripts/check_test_assertion_quality.py` — every test body either
+  asserts a checkable property, delegates to a named helper that does, or
+  is recorded in `docs/test-assertion-quality.toml` with the reason it
+  asserts nothing.
+- `scripts/check_test_duplication.py` — no two test bodies assert the same
+  thing twice, unless `docs/test-duplication.toml` records the survivor.
+
+### Pass and skip accounting
+
+A test that skips **before** any assertion reports *passed* having proved
+nothing. Every such body must be listed in
+`docs/test-assertion-quality.toml` with its class, the condition that
+triggers it, and the workflow that satisfies it — silence is not a reason.
+
+Measured on 2026-10-21 with `scripts/rust_test_scan.py`:
+
+| Class | Bodies | Meaning |
+|---|---|---|
+| `opt-in-gated` | 20 | The body runs only under an explicit environment opt-in (`CODEGG_REGENERATE_ASSETS`, `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP`, `CODEGG_RUN_LINUX_CGROUP_V2_PROBE`, and the Linux sandbox opt-ins) |
+| `environment-absent` | 13 | The body runs only when a tool or a kernel capability the machine may not have is present — LSP server binaries, a spawnable helper shell, Landlock |
+| `unconditional` | **0** | A skip that fires on every machine |
+
+The guard's `--self-test` rejects an entry that names no satisfying
+workflow, so the list cannot rot into a list of excuses.
+
+Two of the twenty opt-ins — `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP` and
+`CODEGG_RUN_LINUX_CGROUP_V2_PROBE` — are set by **no** workflow. They are
+manual probes, and their entries say so explicitly.
+
 ## Test Resource Classes
 
 | Class | Description | Parallelism | Examples |
 |-------|-------------|-------------|----------|
 | `fast` | Pure/unit, parsing, config | Safe | `egggit::diff`, `eggsentry::profile` |
 | `storage` | SQLite pool ops, CRUD | Serial or low | `tests/session_crud.rs` |
-| `process-heavy` | Fake LSP stdio, daemon | Serial | `tests/lsp_composite_stdio.rs` |
-| `plugin-heavy` | Wasmtime runtime | Serial | `tests/plugin.rs` |
-| `adversarial` | Routing, sandbox, projection | Serial | `tests/command_routing_adversarial.rs` |
-| `workspace` | Workspace isolation | Serial | `tests/workspace_isolation.rs` |
+| `process-heavy` | Fake LSP stdio, daemon | Serial | `tests/lsp_test_support/lsp_composite_stdio.inc` |
+| `plugin-heavy` | Wasmtime runtime | Serial | `tests/agent_loop/plugin.inc` |
+| `adversarial` | Routing, sandbox, projection | Serial | `tests/command_git/command_routing_adversarial.inc` |
+| `workspace` | Workspace isolation | Serial | `tests/agent_loop/workspace_isolation.inc` |
 | `real-lsp` | Actual server smoke | Manual | `crates/egglsp/tests/real_server_smoke.rs` |
 | `release-full` | Conservative full validation for main/tags | Serial | `scripts/verify.sh full` |
 
@@ -228,12 +299,12 @@ ACL or network enforcement.
 
 The same Windows workflow also builds the restricted service path with the
 release-disabled `windows-sandbox-test-support` feature and runs
-`tests/windows_restricted_managed_process.rs`. That target verifies owned
+`tests/windows_sandbox_test_support/windows_restricted_managed_process.inc`. That target verifies owned
 stdin/stdout/stderr, private status despite forged stdout markers, token and Job
 checks before resume, timeout cleanup, and a non-`Enforced` test-only result.
 The workflow also runs an AppContainer control launch with the service's
 profile-local environment block and the status-frame rejection tests. It does
-The same workflow runs `tests/windows_acl_lease.rs` and the ACL lease unit
+The same workflow runs `tests/windows_sandbox_test_support/windows_acl_lease.inc` and the ACL lease unit
 tests. They verify AppContainer read/write on a runner-owned disposable root,
 read-only grants, denial on an empty sibling root, exact descriptor restoration
 after normal exit and cancellation, simulated parent-crash recovery, and refusal
@@ -329,9 +400,478 @@ Historical post-tuning steady state was ~19 min green (2026-09-25:
 tests). Final M001-M005 state is 17m17s on main/live run
 `36196068239` attempt 3 (7m51s test build, 362.537s execution,
 11,726 passed / 1 skipped, live Eggwork included) with
-`CARGO_BUILD_JOBS=4` and 84 root integration-test binaries after
-M003/M004 consolidation (historical 100 pre-consolidation, 11,781
-pre-consolidation). Steps in order:
+`CARGO_BUILD_JOBS=4`. The **test-function** counts in that record
+(11,726 passed / 1 skipped; 11,781 pre-consolidation) stand. The
+**binary** counts in the same sentence do not: it reads "84 root
+integration-test binaries after M003/M004 consolidation (historical 100
+pre-consolidation)", but the tree at the revision that recorded them
+(`99117577f`) holds **208** top-level `tests/*.rs` files and 8 declared
+`[[test]]` entries — roughly 2.5x the recorded figure — so those counts
+are not reproducible from the tree and are treated here as unverified.
+The successor roadmap (`plans/subsystems/ci-test-throughput-recovery-roadmap.md`
+§4.4) records the drift; its M004 milestone arms a guard that keeps the
+recorded target count and the real one in agreement.
+
+Current root test-target count, measured 2026-10-21 at `2c1953347`:
+**288** root test targets — 286 top-level `tests/*.rs` files plus 2
+directory-based consolidated targets (`projection_replay`,
+`session_family`) — of which **13** are gated behind `required-features`:
+4 on `lsp-test-support`, 5 on `server`, 2 on `windows-sandbox-test-support`,
+2 on `linux-git-test-support`. Workspace-wide the count is **314**. Method:
+`cargo metadata --no-deps --format-version 1`, counting targets of kind
+`test` per package.
+
+After the M004 family consolidation (same day, same baseline), the root
+package has **21** test targets and the workspace has **47**: the 286
+top-level files became 19 families (plus the 2 pre-existing directory
+targets), and the 13 gated targets became 4 gated families. The target
+topology is described under "Root integration-test families" below.
+
+After the fifth merge (2026-10-22, at `f4019a410`), the root package has
+**24** test targets and the workspace has **52**: `main`'s sixteen new
+top-level files were absorbed into the families that owned their subject,
+thirteen of them, and the three that stay top-level are named by a hosted
+qualification lane. `codegg-core`'s two (`session_launch` and `writer_permit`)
+are counted in the workspace figure and are outside the root package's family
+mechanism. Method: `cargo metadata --no-deps --format-version 1`, counting
+targets of kind `test` per package — the same method as the two figures
+above.
+
+### Known macOS-local failures
+
+On **macOS** the workspace suite has six failures that are **not** regressions.
+Each was proved pre-existing by checking out the baseline commit `2c1953347`
+into a separate worktree and running the same tests there; the baseline probe
+is recorded in `plans/closure/ci-test-throughput-recovery/004-status.md` §8.1.
+
+| Test | Why it fails on macOS |
+|---|---|
+| `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs` | The test registers `/tmp` as a workspace root, and the workspace registry rejects a **symlinked** root. On macOS `/tmp` is a symlink to `/private/tmp`. |
+| `core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances` | Same cause. |
+| `managed_process::tests::offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn` | The `OfflineRequired` network intent needs a Linux sandbox, so the refusal arrives earlier than the test expects. |
+| `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace` | The standalone shell's output does not arrive within the test's own wait. |
+| `scratch_cache_root_contract::the_default_cache_root_is_the_home_directory_cache` | The test expects `$HOME/.cache`; macOS's cache directory is `$HOME/Library/Caches`. |
+| `scratch_cache_root_contract::an_explicit_cache_home_is_the_root_the_allocator_uses` | Same convention mismatch. |
+
+Do not "fix" these by editing the assertions — they are testing the Linux
+contract on a platform that does not provide it. When a *new* failure appears
+next to these, it is real: check it against the baseline before assuming the
+same class.
+
+### Root integration-test families
+The root package's integration tests are **families**: a directory under
+`tests/` whose `mod.rs` is one Cargo test executable and whose members are
+`.inc` files included with `#[path]`. Two cargo behaviours make this
+necessary:
+
+- cargo does **not** auto-discover `tests/<dir>/mod.rs`, so every family is
+  declared explicitly in the root `Cargo.toml`;
+- cargo **does** auto-discover `tests/<dir>/*.rs` as separate test targets,
+  so the members carry a `.inc` extension and are never auto-discovered.
+
+This is the pattern the M003 `projection_replay` pilot established; M004
+applied it across the root package. The root package's test-target count
+fell from **288 to 21**, and the number of root test executables linked per
+run fell from 288 to 21.
+
+Consequences worth knowing:
+
+- **A test's id changed** from `member::test_name` to
+  `family::member::test_name`. The test body and every assertion are
+  unchanged. Anything that filters by full test path — `cargo test -- --exact
+  <path>`, a libtest substring filter — must use the new path.
+- **`cargo test --test <member>` no longer selects a single member.** The
+  unit of selection is the family. `cargo test --test <family> -- <member>`
+  still narrows to one member, because libtest's filter is a substring match
+  on the full test path.
+- **The `ci` profile's whole-binary exclusions still resolve.** The six
+  binaries that reserve the runner for themselves
+  (`eggwork_remote_execution_live`, `interactive_process_attach_resume`,
+  `interactive_process_sessions`, `interactive_terminal_tui`,
+  `scheduler_cancellation`, `causal_observe_replay`) are each a family of
+  one and keep their exact target name. Their flake rationale stays attached
+  to the binary that flaked, not to the family.
+- **`tests/common/` is a helper tree, not a target.** It is bound once per
+  family that uses it, through `#[path = "../common/mod.rs"]`, and the
+  members reach it with `use super::common;`.
+- The manifest `docs/test-ownership.toml` and the filters in
+  `.config/nextest.toml` and `.github/workflows/ci.yml` name these targets,
+  and `scripts/check_test_target_references.py` fails if any of them names a
+  target that does not exist — a renamed target would otherwise make a
+  filter silently stop reserving the runner for it.
+
+### The families after the fifth merge (2026-10-22)
+
+`origin/main` never received M004's consolidation: it still carries its root
+integration tests as top-level `tests/*.rs` files, and its advance to
+`f4019a410` added **sixteen** more of them. The fifth merge therefore had to
+reconcile two *shapes* — `main`'s top-level files against this branch's
+families — rather than two values.
+
+Sixteen of those files arrived as top-level cargo targets. **Thirteen** were
+absorbed into the family that already owned their subject, and **three** stayed
+top-level because a hosted qualification lane names them:
+
+| Absorbed file | Family | Member |
+|---|---|---|
+| `tests/blackboard_economics_m008.rs` | `agent_loop` | `blackboard_economics_m008.inc` |
+| `tests/blackboard_trajectory_m008.rs` | `agent_loop` | `blackboard_trajectory_m008.inc` |
+| `tests/build_quota_admission.rs` | `scheduler_jobs` | `build_quota_admission.inc` |
+| `tests/checkout_reservation_c004.rs` | `core_daemon` | `checkout_reservation_c004.inc` |
+| `tests/checkout_reservation_c004_http.rs` | `server_feature` | `checkout_reservation_c004_http.inc` |
+| `tests/git_fixture_isolation.rs` | `command_git` | `git_fixture_isolation.inc` |
+| `tests/host_admission_manifest.rs` | `security_permission` | `host_admission_manifest.inc` |
+| `tests/process_denial_c005.rs` | `security_permission` | `process_denial_c005.inc` |
+| `tests/session_launch_service.rs` | `core_daemon` | `session_launch_service.inc` |
+| `tests/tool_program_c002_delegated_ceiling.rs` | `tool_programs` | `tool_program_c002_delegated_ceiling.inc` |
+| `tests/writer_disposition_guards.rs` | `tool_programs` | `writer_disposition_guards.inc` |
+| `tests/writer_fence_c003.rs` | `core_daemon` | `writer_fence_c003.inc` |
+| `tests/writer_permit_service.rs` | `core_daemon` | `writer_permit_service.inc` |
+
+The three that stayed top-level are named by a hosted qualification lane, and
+**a target a CI lane names keeps its own target** — the rule M004 already
+applied to the branch's own six "family of one" targets:
+
+| Target | Named by |
+|---|---|
+| `shared_checkout_c006` | `.github/workflows/shared-checkout-macos-qualification.yml` |
+| `macos_native_shared_checkout_containment` | the same macOS lane |
+| `contained_worktree_c008` | `.github/workflows/linux-m004-native.yml` |
+
+The root package's test-target count therefore falls from **37** to **24** (21
+families + 3), and the workspace's from **65** to **52** — the root's 13
+absorbed targets plus `codegg-core`'s two (`session_launch` and `writer_permit`,
+which M004 deliberately left outside the root package's family mechanism). (At
+that merge; the sixth pass below re-measured both.)
+
+Three consequences follow from the move, and each is a change a reader has to
+know about:
+
+- **A member reaches the shared helper with `use super::common::…`, not
+  `use common::…`.** A standalone test file declares `mod common;` because
+  `tests/common/` is its sibling directory; inside a family the helper is one
+  level up, so the family binds it with `#[path = "../common/mod.rs"]` and the
+  member imports the helper's items directly. The `security_permission` family
+  gained that binding for this merge, because `process_denial_c005` uses
+  `common::checkout_reservation`.
+- **`crate::` in an integration test means the test crate root, not the
+  library.** `crate::scheduler_admission_service(…)` resolved through the
+  standalone file's own crate-root import; as a family member it has to name
+  the helper directly.
+- **A member that re-invokes its own test binary must use the qualified
+  path.** `git_fixture_isolation` re-executes `current_exe() --exact <name>`,
+  and `--exact` matches the *full* path, which is now
+  `git_fixture_isolation::child_prints_its_own_process_unique_fixture_path`. A
+  bare test name selects nothing, and the parent reads the empty child report
+  as a failure to derive a fixture path.
+
+### The families after the sixth merge (2026-10-22)
+
+`main` advanced again, to `7d3c6ed09` (PR #166, the Linux trusted-Git C008
+contained worktree), so this line reconciled with it a **sixth** time. The
+advance added **one** top-level root integration-test file,
+`tests/composed_two_agent_race_m011.rs`, and no family member.
+
+**That file stays top-level, and the reason is a shared global rather than a
+lane.** The composed two-agent race drives two live agents against one
+checkout, and the agent-loop harness suites **drain the process-global event
+bus** and assert that nothing was left pending on it
+(`agent_loop_harness::temp_root_write_following_the_offer_needs_no_human`
+counts `AppEvent::PermissionPending` on a global broadcast receiver). A second
+agent on that same bus turns that assertion into a cross-test race: absorbing
+the file into `agent_loop` made the harness fail with *"no attempt may reach
+the human when the model follows the offer"* — `left: 1, right: 0` — while the
+file passed in its own binary. **A test that observes a process-global cannot
+share a binary with the tests that observe it too.** So the file keeps its own
+target, the way `main` shipped it, and it gets its own ownership-manifest
+group.
+
+The root package's test-target count is therefore **25** (21 families + 4) and
+the workspace's **53**; the root integration-test *module* count rises
+318 → **319** (4 top-level + 315 members).
+
+Two consequences of this merge are worth naming, because neither is a textual
+conflict:
+
+- **A `#[path]` attribute is relative to the file that carries it.** `main`'s
+  edit to the agent-loop harness included a shared helper with
+  `#[path = "common/scripted_provider.rs"]`. The harness had moved into
+  `tests/agent_loop/`, so that path resolved to `tests/agent_loop/common/`,
+  which does not exist — the merged tree did not compile, and no merge tool
+  reported it, because the two sides touched different paths and git paired
+  them by rename. The family already binds the shared tree as `common`, so the
+  harness reaches the provider through `use super::common::scripted_provider::…`
+  and the private include is gone. **A move that changes a file's directory
+  can break a path inside it that nothing else mentions.**
+- **A standalone test file declares `mod common;`; a family member does not.**
+  `tests/common/` is a standalone file's sibling directory, so it declares the
+  tree itself. Inside a family the root already binds that tree, so a second
+  declaration would compile it twice; the member reaches it with
+  `use super::common::…` instead.
+- **Every binder of the shared helper tree binds it `pub`.** The tree's items
+  are `pub`. Most files in the tree carry their own per-file
+  `#[allow(dead_code)]`, but `tests/common/secret_scan.rs` deliberately carries
+  **none** — that suppression was removed on purpose, so the lint keeps its
+  teeth in a file whose whole purpose is to be checked. A *private* `mod
+  common;` makes those items unreachable from the binding crate root, and
+  rustc reports every one of them as dead code: a hosted clippy failure under
+  `-D warnings`, and one that only a **Linux** runner sees, because this tree's
+  macOS build fails earlier on unrelated findings. `origin/main` still carries
+  the blanket suppression in that file, which is why a private binding is
+  harmless there and fatal here. `scripts/check_test_common_binding.py`
+  enforces it for every binder of the root package's tree.
+- **A member that observes a process-global must scope what it observes.** The
+  consolidation puts a member in a binary — and a process — with its
+  siblings. The agent-loop harness subscribes to the **process-global** event
+  bus, and one of its assertions counted *every* `PermissionPending` on that
+  bus with no session filter; in a family of thirty that assertion is a
+  cross-test race, and it fired. A member that reads a global must filter it
+  by what it owns — the file's own `EventCollector` helper already filters by
+  session id, and the assertion that bypassed it now filters the same way.
+  **The hosted `CI` job cannot see this class:** the `ci` nextest profile runs
+  **one process per test**, so two tests never share a process-global. A plain
+  `cargo test`, which runs a binary's tests as threads in one process, does.
+
+### The families after the seventh merge (2026-10-22)
+
+`main` advanced a third time, to `726f3c645` (PR #167, the Linux trusted-Git
+C008 contained worktree), so this line reconciled with it a **seventh** time.
+**The advance is documentation only** — four records, and no code and no
+coverage — so the family topology is unchanged: the root package's test-target
+count stays **25** (21 families + 4), the workspace's **53**, and the root
+integration-test *module* count stays **319** (4 top-level + 315 members).
+
+Both sides edited `plans/registry.md`, which is exactly where a documentation
+merge can quietly overwrite one side's row, so the merge was checked rather
+than assumed: the row the branch owns is byte-identical to its pre-merge copy,
+the row `main` owns is byte-identical to `origin/main`'s, and the file both
+sides edited (`architecture/blackboard_contract_matrix.md`) differs from
+**both** parents.
+
+One fixture implementation changed during the **sixth** merge and is worth
+naming, because it is the kind of change a reviewer would look for: the C008
+suite's `FakeMode::LinkedWorktree` arm stopped carrying its own inline copy of
+the linked-worktree creation and now calls the shared helper
+`common::linked_worktree::LinkedWorktreeCreator`. Git took that change
+automatically — only `main` had edited the region since the merge base — and
+it is **not** a loss of coverage: the helper runs the same three Git operations
+in the same order (`branch`, `worktree add --detach`, `symbolic-ref HEAD`), and
+nothing in the suite asserts on the two fields that differ (`backend` and
+`network_enforced`).
+
+### The measured link cost (M005)
+
+The family consolidation was justified by a **projection** (M004's closure
+record: a ~41 % workspace-compile saving, computed from the baseline's
+median link time applied to the new target count). M005 **measured** it
+instead, on the same machine, in the same session, with the same command.
+
+**Method.** A *fresh* `CARGO_TARGET_DIR` — a warm tree reports the cost of
+*checking*, not of linking — and then:
+
+```bash
+CARGO_TARGET_DIR="$(mktemp -d)" cargo test --workspace --locked --no-run --timings
+```
+
+The emitted report is parsed from the `const UNIT_DATA = [...]` block with
+`re.S`. **`--timings=json` and `--timings-dir` are not usable here**: they
+are unstable on cargo 1.89. The parse command, the raw unit data and the
+per-family table are in
+`plans/validation/ci-test-throughput-recovery/measurement-record.md` §3.
+
+**Machine (recorded because unit-seconds are only comparable within a
+machine).** 14 cores / 24 GiB, aarch64-apple-darwin, cargo and rustc
+1.89.0, Apple clang 21.0.0, **no `mold`** — the hosted runner has `mold`
+and this machine does not, so the *hosted* numbers below are not
+comparable to these local ones, and are not mixed with them.
+
+**The result.**
+
+| | before (`2c1953347`) | after (`3dfeb6e2f`) | change |
+|---|---:|---:|---:|
+| Root integration-test executables linked | 275 | 17 | **−93.8 %** |
+| Linked test executables, whole workspace | 305 | 47 | **−84.6 %** |
+| Total compilation units | 988 | 730 | **−26.1 %** |
+| Aggregate unit-seconds, whole workspace | 4,300.8 | 2,618.9 | **−39.1 %** |
+| Aggregate unit-seconds, root integration bucket | 2,123.6 | 423.0 | **−80.1 %** |
+
+**M004's ~41 % projection reproduces within 1.9 percentage points**
+(−39.1 % measured). The candidate was repeated twice in the same session;
+the two runs agreed to within ±0.6 % on the aggregate and ±5.5 % on the
+17-unit root bucket.
+
+**What this measurement does not show.** The aggregate carries a
+contention-mediated component — the two sides' unrelated buckets disagree
+in opposite directions, and the baseline's build-script executions alone
+were 724.1 s against the candidate's ~115 s. M004's closure record's own
+§4.1 table (271 targets / 4,040.1 s / 9,155.6 s total) does **not**
+reproduce on this machine. The `pub mod` repair that M005's candidate
+carries makes the candidate's link work marginally *higher*, so the saving
+above is the conservative reading.
+
+**The per-family cost.** A family's cost is dominated by the size of the
+code it links, not by the number of test files it holds: `core_daemon` at
+51.7 s carries the daemon and its server wiring, while `command_git` at
+24.6 s carries the Git policy surface. The baseline's median was **13.9 s
+per *file*** across 271 separate executables; the candidate's is **24.7 s
+per *family*** across 17 — a family costs more than a file because it links
+more code into one binary, and 17 of them replace 275. The full 47-row
+table is in the measurement record §3.5; the root package's families are
+the 21 `codegg` rows of it.
+
+### The hosted two-phase wall-clock (M005)
+
+The link cost above is a **local** measurement. The hosted CI job is
+where the change was meant to pay off, so the same claim was measured
+there too, against a preregistered method.
+
+**Method.** Two refs, each pinned, each dispatched through the same
+`ci.yml`: `ci-baseline/2c1953347` (the before side) and
+`m005/candidate-3dfeb6e2f` (the after side). The job's two phases are
+recovered from the run log rather than from a new step — the last
+`Finished … in X` line of the `test` profile is the **build phase** and
+nextest's `Summary [ Xs]` line is the **execution phase** — because
+adding a build step would change the job being measured. The preregistration
+is `plans/validation/ci-test-throughput-recovery/measurement-preregistration.md`;
+the run-by-run record is the measurement record §4.
+
+**Machine and cache state.** Every run is `ubuntu-24.04` with `mold`
+present. **Every run on both sides is warm-cache** (a rust-cache hit),
+which is a property of the workflow rather than a choice: the cache key
+is shared across refs with an identical lockfile, so a cold sample is
+not obtainable unilaterally.
+
+| | before median (n = 4) | after median (n = 3) | ratio | threshold | verdict |
+|---|---:|---:|---:|---|---|
+| build phase (T2) | 683.000 s | 359.000 s | **52.6 %** | ≤ 60 % | **PASS** |
+| execution phase (T3) | 487.818 s | 377.692 s | **77.4 %** | ≥ 90 % | **FAIL** |
+
+**Raw values, both sides, all warm-cache.**
+
+| side | build phase (s) | execution phase (s) | `Workspace tests` step (s) | job total (s) |
+|---|---|---|---|---|
+| before | 615.0, 646.0, 720.0, 744.0 | 436.888, 470.185, 505.452, 527.888 | 1060, 1124, 1232, 1282 | 1495, 1542, 1705, 1775 |
+| after | 308.0, 359.0, 433.0 | 360.489, 377.692, 527.838 | 672, 740, 964 | 1125, 1215, 1594 |
+
+**The wall-clock is reported with its dispersion and is not quoted as a
+precise effect size.** The after side's execution phase spans 167 s
+(360.489 → 527.838), and its `after-4` is the slowest execution phase on
+either side — slower than three of the four before-side runs. The
+**host-speed term is the same order as the effect being measured**: one
+test whose source is **byte-identical** on both sides
+(`response_budget_trims_trailing_nodes_with_a_reason`) took 61.1 / 84.3 /
+82.6 / 81.8 s on the before side and **38.7 / 82.1 / 43.9 s** on the
+after side — a **2.13× spread within the after side alone**, on
+identical code. The after side's *internal* dispersion therefore exceeds
+the whole before-vs-after difference the execution phase reports (a
+1.29× ratio), and it also explains the after side's dispersion directly:
+`after-4`'s host ran that test as slowly as the before side's hosts did.
+A hosted wall-clock difference of that size cannot be separated from a
+difference in the runners' speed, and the number above is the
+measurement's *direction and magnitude class*, not a figure to quote to
+one decimal place.
+
+**Why T3 does not hold, and why that is not a defect.** T3 expected the
+execution phase to be roughly unchanged. It is materially **shorter**, for
+two reasons of very different kinds: 313 fewer test executions ran (real,
+intended, and exactly reconciled — every one attributed to a recorded
+removal), and the same executions ran faster on the after side. The
+threshold's *purpose* — that the workstream did not silently drop
+assertions — is discharged instead by **invariant I1**, which is a
+counting check rather than a timing one, and which holds with zero
+unexplained losses. The measurement record §4.4 carries the full
+argument.
+
+**The countable claim is the one that carries the milestone.** The
+hosted nextest binary count fell **308 → 50** (−83.8 %) — the
+preregistered prediction of 50, reconciled exactly against the observed
+308 — and the linked root test-executable count fell **288 → 21**. The
+wall-clock above is corroboration with its dispersion attached, not the
+claim.
+
+### Change-scoped verification (`scripts/verify.sh scoped`)
+
+`scoped` is a **developer-local** affordance: it runs only the tests a change
+can affect. It is additive to the guard set — every `quick` guard still runs,
+in the same order — and it never changes what the hosted CI job runs.
+
+```bash
+scripts/verify.sh scoped              # base: origin/main
+scripts/verify.sh scoped HEAD~3       # any base ref
+```
+
+**How the scope is computed.** `scripts/scoped_selection.py` resolves the
+changed files against the base ref using **merge-base** semantics
+(`git merge-base <base> HEAD`), so a branch that has already been merged into
+the base is still compared against the commit it forked from. Uncommitted work
+— staged, unstaged, and untracked — is included: a developer asking "what
+does my change affect?" means everything in their tree. A changed file inside
+a member's source root marks that member affected; the longest matching member
+root wins. The affected member contributes its library test target **always**,
+plus the integration targets of every group in `docs/test-ownership.toml`
+whose source pattern matches.
+
+**Dependency pull-in.** A member that **depends on** an affected member is
+affected too, and it contributes its **full** surface — its library test target
+and every integration target it owns. The pull-in is transitive.
+
+This is not a refinement; it is the difference between a correct scope and a
+wrong one. The root package depends on all eleven other workspace crates and
+re-exports several of them (`codegg::security::*` is `eggsentry`,
+`codegg::lsp::*` is `egglsp`, `codegg::scheduler::config::*` is
+`codegg-config`). A change to `crates/eggsentry/src/command.rs` therefore
+changes the behaviour of `codegg::security::scanner::inspect_text`, which the
+root package's security tool calls, which the root package's integration tests
+call — across seven files in three families, plus the root's inline
+`src/tool/security.rs` tests. The coupling runs **through the dependent's own
+source**, so a path-to-target rule cannot see it: the test file that calls the
+security tool never names `eggsentry`.
+
+The dependency edges are declared in `docs/test-ownership.toml`'s
+`[[dependencies]]` section, and `scripts/check_test_ownership.py` compares
+that set against `cargo metadata`'s workspace-local edges. An edge the
+workspace has and the manifest does not is a **guard failure**, not a silent
+under-selection.
+
+The price is stated plainly: a change to any non-root crate widens the scope
+to the root package's whole integration surface, because the root package
+depends on every other crate. A change confined to the root package's own
+`src/` — the common case — stays precise, because the root package has no
+dependents.
+
+**Feature gates.** A selected target that is gated behind `required-features`
+cannot be built without its features, so the mode enables exactly the features
+its selected targets are gated on and prints them. Naming a gated target
+without enabling its feature is a cargo error, not a silent skip.
+
+**What it does when it cannot be precise.** It never silently skips.
+
+| Situation | Action |
+|---|---|
+| A changed file inside a member, matching a group | That group's targets, plus the member's library test target. |
+| A changed file inside a member, matching **no** group | The whole member is widened to its full surface: every integration target it owns, plus its library test target. |
+| A changed file in a crate another crate **depends on** | Every transitive dependent is affected, and each contributes its full surface. |
+| A changed file **outside** every member (a script, a doc, a workflow, an asset) | The scope widens to the **whole workspace**, and the mode says which file caused it. |
+| The diff cannot be computed (unknown base ref, shallow clone with no merge base) | The mode **fails loudly** and exits non-zero. It never falls back to "no tests". |
+
+The out-of-member rule is deliberately conservative. The repository's
+change-trigger routing classifies those files for the *guards* — and the
+guards still run in full — but no test target can be *ruled out* for them, so
+the safe scope is the entire workspace.
+
+**What it prints.** The changed files it considered, the files outside every
+member, the files inside a member that no group covers, the members and
+targets it selected, and the reason for each. A scope that is invisible is a
+scope that cannot be trusted.
+
+**Its limits.** It selects *tests*, not *coverage*: it is a superset of what
+the change actually affects, and it says so. It does not narrow Clippy or
+`cargo check` — those remain workspace-wide. It does not change the hosted
+job's scope in any way. `docs/test-ownership.toml` is its only input, and
+`scripts/check_test_ownership.py` is what keeps that input honest.
+
+The mode is **not** a way to skip work in CI, and it is not a substitute for
+`full` before a handoff. Steps in order:
 1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
@@ -358,7 +898,7 @@ example, LSP, and cross-platform checks remain local.
 
 ### Live Eggwork fixture trust
 
-The live qualification (`tests/eggwork_remote_execution_live.rs`) starts a
+The live qualification (`tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc`) starts a
 real Eggwork node as a bounded subprocess. The pinned node resolves its
 sandbox helper as a sibling of its own executable and **refuses a helper it
 cannot trust**: the helper must be executable, owned by the invoking user,
@@ -423,6 +963,58 @@ Do not generalize these: intra-binary `--test-threads` stays 1 — test
 code mutates process-global env vars (audited, not assumed) — and
 splitting CI into parallel jobs that each compile the workspace
 duplicates the dominant cost instead of removing it.
+
+### Cargo profile alignment — one compiled dependency graph
+
+Cargo hashes the **resolved** profile into every compilation unit's identity.
+The `dev` profile (used by `cargo build`, `cargo check`, `cargo clippy`) and
+the `test` profile (used by `cargo test` / `cargo nextest run`) are therefore
+two different builds of the same source — and any field that differs between
+them makes the same crate compile **twice**.
+
+`strip` was the only differing field: `[profile.dev]` kept debuginfo,
+`[profile.test]` stripped it. The cost was a full second compile of the
+third-party dependency graph *and* of the root library rlib in every
+verification invocation:
+
+- the hosted job's `cargo build --locked --bin codegg-sandbox-helper` step
+  built the whole graph under `dev`, and `cargo nextest run` then rebuilt it
+  under `test`;
+- the local `cargo build` → `cargo test` loop paid the same double compile.
+
+Both profiles now set `strip = "debuginfo"`, so they resolve identically and
+the graph is compiled once. The `strip = "debuginfo"` intent for test
+artifacts is preserved — it is what keeps the root integration-test
+executables at 135-208 MB each and the root library rlib at 855 MB, and
+unstripping them is not an option (the hosted runner does not have the disk).
+
+`scripts/check_cargo_profile_alignment.py` guards the property: it resolves
+both profiles the way cargo does (`test` inherits `dev`) and fails when any
+hashed field — or any per-package override — differs. Its `--self-test`
+injects each violation class and proves the guard rejects it. The guard is
+wired into `scripts/verify.sh quick` and into the `CI / verify` job.
+
+**Recovering full debuginfo.** `strip = "debuginfo"` removes DWARF but keeps
+the symbol table, so a panic backtrace still names its frames and shows the
+panic location. For full debuginfo in a single invocation, override the
+profile on the command line:
+
+```bash
+cargo build --config 'profile.dev.strip="none"'
+cargo test  --config 'profile.test.strip="none"'
+```
+
+`RUSTFLAGS="-C debuginfo=2"` does **not** do this: the profile's `strip`
+still applies, so the debuginfo is removed again. The `--config` override
+replaces the profile setting itself.
+
+The one place that needs the unstripped binary is the desktop bundle, which
+ships the root daemon: `.github/workflows/desktop-e2e.yml` builds it with
+`--config 'profile.dev.strip="none"'` so crash symbolication is preserved.
+That workflow runs no test suite, so it has no double compile to reclaim.
+
+Release artifacts are unaffected: `[profile.release]` already had
+`strip = true`, and it is a separate profile.
 
 ### Build/link vs execution diagnostics (M001 recipe)
 
@@ -497,7 +1089,7 @@ workspace package and validated package features through typed fields;
 | Feature | Crate | Enabled by | Why |
 |---|---|---|---|
 | `lsp-test-support` | `egglsp` | root feature flags | Fake-LSP harness; real-server tests stay out of default sweeps. |
-| `capture-test-support` | `codegg-providers` | root `[dev-dependencies]` **only** | Origin override for `tests/opencode_go_connection_trajectory.rs`. |
+| `capture-test-support` | `codegg-providers` | root `[dev-dependencies]` **only** | Origin override for `tests/agent_loop/opencode_go_connection_trajectory.inc`. |
 
 `capture-test-support` is deliberately a **dev-dependency** feature rather than
 a root feature. Under resolver 2 that keeps it out of `cargo build`, out of the

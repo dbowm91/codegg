@@ -1,3 +1,5 @@
+use crate::consistency::GitReadFact;
+use crate::process::GitCommandOutput;
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -10,10 +12,7 @@ pub struct WorktreeInfo {
     pub is_detached: bool,
 }
 
-async fn run_git_async(
-    root: PathBuf,
-    args: Vec<String>,
-) -> Result<std::process::Output, EgggitError> {
+async fn run_git_async(root: PathBuf, args: Vec<String>) -> Result<GitCommandOutput, EgggitError> {
     crate::process::run(&args, &root).await
 }
 
@@ -52,7 +51,12 @@ fn push_parsed_worktree(
 }
 
 /// List worktrees in a repository (read-only).
-pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn.
+pub async fn list_worktrees(
+    git_root: &Path,
+) -> Result<GitReadFact<Vec<WorktreeInfo>>, EgggitError> {
     let output = run_git_async(
         git_root.to_path_buf(),
         vec!["worktree".into(), "list".into(), "--porcelain".into()],
@@ -63,6 +67,7 @@ pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, Egggit
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
+    let consistency = output.consistency;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
@@ -109,7 +114,7 @@ pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, Egggit
         current_is_detached,
     );
 
-    Ok(worktrees)
+    Ok(GitReadFact::new(worktrees, consistency))
 }
 
 /// Walk up the directory tree to find a git root.
@@ -143,6 +148,7 @@ pub fn is_git_worktree(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consistency::GitReadConsistency;
     use std::process::Command;
 
     fn init_repo(dir: &Path) {
@@ -172,13 +178,19 @@ mod tests {
     #[test]
     fn find_git_root_returns_none_for_nonexistent_path() {
         // Walking up from a non-existent path can still find a real git
-        // ancestor. The function should not crash and should return
-        // *some* result. We only assert it doesn't panic and returns
-        // the codegg workspace git root (since the test runs from there).
+        // ancestor, so the result depends on the machine. The invariant
+        // that always holds is the one the implementation promises: a
+        // returned root always carries a git marker. This used to assert
+        // nothing at all.
         let fake = std::path::PathBuf::from("/this/path/does/not/exist/xyz");
-        // The result is non-deterministic depending on whether the test is
-        // running inside the codegg workspace. We only assert no panic.
-        let _ = find_git_root(&fake);
+        let root = find_git_root(&fake);
+        if let Some(root) = root.as_ref() {
+            let marker = root.join(".git");
+            assert!(
+                marker.exists() || is_git_file(&marker),
+                "find_git_root returned {root:?}, which carries no git marker"
+            );
+        }
     }
 
     #[test]
@@ -201,9 +213,29 @@ mod tests {
     async fn list_worktrees_for_repo() {
         let dir = tempfile::TempDir::new().unwrap();
         init_repo(dir.path());
-        let list = list_worktrees(dir.path()).await.unwrap();
+        let list = list_worktrees(dir.path()).await.unwrap().into_value();
         // There is at least the main worktree.
         assert!(!list.is_empty());
         assert!(list[0].is_current);
+    }
+
+    /// A worktree listing consults the object store, so its read observed
+    /// an object generation and the carried class says so.
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_worktrees_carries_a_generation_consistent_class() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo(dir.path());
+
+        let fact = list_worktrees(dir.path()).await.unwrap();
+        assert_ne!(
+            fact.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "a worktree listing consults the object store"
+        );
+        assert!(
+            fact.class().is_generation_consistent(),
+            "a worktree listing must report a generation-consistent class, got {}",
+            fact.class()
+        );
     }
 }

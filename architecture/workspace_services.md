@@ -304,7 +304,7 @@ introduce any UI-, server-, plugin-, or auth-crate dependencies. The
 
 ## Tests
 
-- `tests/workspace_services_isolation.rs` — eleven tests covering:
+- `tests/agent_loop/workspace_services_isolation.inc` — eleven tests covering:
   - Two-workspace bundle isolation (different `RunStore` and lock-table
     instances, separate activations).
   - Concurrent acquire producing exactly one bundle despite N racers.
@@ -325,7 +325,7 @@ introduce any UI-, server-, plugin-, or auth-crate dependencies. The
 - `crates/codegg-core/src/workspace_services.rs` inline tests — cover
   `acquire`, `activate` (existing + new bundle paths), `reload_config`,
   `shutdown_all` (with and without active leases).
-- `tests/project_activation.rs` — catalog-list probe-free behavior, owner
+- `tests/core_daemon/project_activation.inc` — catalog-list probe-free behavior, owner
   lease idempotency, runtime-asset refresh on activation, two-project
   isolation, and restart hydration without eager reactivation.
 - `crates/codegg-core/src/migration.rs` inline tests — cover

@@ -794,7 +794,7 @@ impl AgentLoop {
     /// and budget must never both be set (the wire encoder picks its mode from
     /// whichever is present, so leaving both would silently prefer budget).
     ///
-    /// The effort label is **open and provider-scoped** (ADR-0048): it is
+    /// The effort label is **open and provider-scoped** (ADR-0049): it is
     /// carried verbatim, never normalized, lower-cased, or mapped onto a
     /// closed level set.
     fn apply_reasoning_choice(

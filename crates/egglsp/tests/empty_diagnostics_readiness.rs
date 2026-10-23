@@ -25,11 +25,12 @@
 
 use std::time::Duration;
 
-use common::ProductionClientHarness;
 use egglsp::LspClientOptions;
+use production_harness::ProductionClientHarness;
 use serde_json::json;
 
-mod common;
+#[path = "common/production_harness.rs"]
+mod production_harness;
 
 /// Build a scenario JSON that the scripted fake LSP server
 /// will execute. The server publishes a `publishDiagnostics`

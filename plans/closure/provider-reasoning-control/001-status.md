@@ -12,7 +12,7 @@ Source subsystem roadmap:
 
 Source decision:
 
-- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` (accepted)
+- `plans/adrs/ADR-0049-open-provider-scoped-reasoning-control-vocabulary.md` (accepted)
 
 Repository baseline reviewed: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5`
 
@@ -424,7 +424,7 @@ It is **not** a property of the merged tree, because M002 replaces the closed
 `ReasoningEffort` enum with an open provider-scoped label — a deliberate,
 separately-recorded protocol change. The two milestones must be read
 separately: M001 did not change the wire protocol's shape; M002 did, on purpose,
-under ADR-0048's capability-negotiation requirement.
+under ADR-0049's capability-negotiation requirement.
 
 ## 12. Roadmap disposition
 

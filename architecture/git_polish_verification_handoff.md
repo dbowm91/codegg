@@ -102,7 +102,7 @@ scripts/
 
 ## Execution-origin matrix
 
-The full matrix is asserted by `tests/git_execution_origin_matrix.rs`
+The full matrix is asserted by `tests/command_git/git_execution_origin_matrix.inc`
 (19 tests, all green). Summary:
 
 | # | Origin | Planned backend | Actual backend | Env policy | Redaction boundary | RunStore ownership |
@@ -346,7 +346,7 @@ cross-platform behavior:
   pure data (valid env-var identifiers), Windows overlays are
   documented but gated, Unix canonical list excludes Windows vars.
 - **D4 (repository resolution edge cases)** — 7 new tests in
-  `tests/git_execution_origin_matrix.rs`: outer path, nested dir,
+  `tests/command_git/git_execution_origin_matrix.inc`: outer path, nested dir,
   nested independent repo, non-repo, nonexistent path, symlinked
   working dir, stability across calls. Total test file size grew from
   19 to 26 tests.
@@ -356,11 +356,11 @@ cross-platform behavior:
   Threat #15 added for the rerun secret lifecycle, accepted
   limitations reclassified as L1/L2 with regression test references).
 - **F2 (quadratic behavior guards)** — 3 size-scaled tests in
-  `tests/git_credential_cross_path.rs`: long-stderr redaction
+  `tests/command_git/git_credential_cross_path.inc`: long-stderr redaction
   (<250 ms on 1 MiB), large-argv sanitization (<100 ms on 10k
   tokens), many-URL redaction (<250 ms on 1 MiB / 1000 URLs).
 - **F3 (truncation-after-redaction invariant)** — 1 test in
-  `tests/git_credential_cross_path.rs`: proves
+  `tests/command_git/git_credential_cross_path.inc`: proves
   `sanitize_truncate_for_result` redacts credentials that fall after
   the truncation boundary.
 - **G1 (architecture doc reconciliation)** —
@@ -391,14 +391,14 @@ verified 2026-10-06:
 |---|---|---|
 | `GitOperation` enum, **47** variants (line 39) | **54** | `crates/codegg-git/src/operation.rs` |
 | `cargo test -p codegg-git` — "354 + 7 ignored + new B4 tests" | **358** test functions; **0** `#[ignore]` attributes remain in the crate | `crates/codegg-git/src/*.rs` |
-| `git_execution_origin_matrix` — 19 tests, then 26 after D4 delta (lines 106, 241, 247, 352) | **23** | `tests/git_execution_origin_matrix.rs` |
-| `git_closure_matrix` — "141+ passed (10 original + 4 new)" | **34** | `tests/git_closure_matrix.rs` |
+| `git_execution_origin_matrix` — 19 tests, then 26 after D4 delta (lines 106, 241, 247, 352) | **23** | `tests/command_git/git_execution_origin_matrix.inc` |
+| `git_closure_matrix` — "141+ passed (10 original + 4 new)" | **34** | `tests/command_git/git_closure_matrix.inc` |
 | TUI `RunRerun` placeholder at `src/tui/app/mod.rs:3615` (lines 174, 310) | No `RunRerun` symbol remains; the rerun path is now the `/shell-rerun` command at `src/tui/app/mod.rs:6142`, which resolves a real id and emits `ShellRerun { id }` (not `id: 0`) | `src/tui/app/mod.rs` |
 | B4 — "3 new in-module tests in `crates/codegg-git/src/process_policy.rs`" (line 345) | **0** tests there; the file is now a bare re-export shim. The canonical policy and its single `policy_tables_are_disjoint_and_unique` test live in `crates/egggit/src/process.rs` | `crates/codegg-git/src/process_policy.rs`, `crates/egggit/src/process.rs:249` |
 | Env-policy ownership — "Single source of truth: `codegg_git::process_policy`" (line 137) | Inverted: `egggit::process` is canonical; `codegg_git::process_policy` is documented as a compatibility re-export | `crates/codegg-git/src/process_policy.rs:1`-`:6` |
 | crate module maps (lines 37-101) | Now also contain `crates/codegg-git/src/workflow.rs`, `crates/egggit/src/process.rs`, and `crates/egggit/src/subject.rs` | `ls crates/codegg-git/src crates/egggit/src` |
 | `cargo test -p codegg-core` — "119" (line 253) | **826** test functions crate-wide (`crates/codegg-core/src/**`); the as-of-close figure's filter scope is not stated, so it is not directly comparable | `crates/codegg-core/src/` |
-| `git_credential_cross_path` — "14" after F2/F3 (lines 239, 360, 363) | **9** | `tests/git_credential_cross_path.rs` |
+| `git_credential_cross_path` — "14" after F2/F3 (lines 239, 360, 363) | **9** | `tests/command_git/git_credential_cross_path.inc` |
 
 All counts above are `#[test]` / `#[tokio::test(…)]` attribute counts, not
 `cargo test` output — no build or test run was performed. They measure test

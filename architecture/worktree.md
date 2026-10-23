@@ -221,7 +221,7 @@ cargo test -p codegg-core worktree         # core unit tests
 cargo test --test worktree                  # integration tests (14 tests)
 ```
 
-The 14 integration tests in `tests/worktree.rs` cover: struct creation,
+The 14 integration tests in `tests/command_git/worktree.inc` cover: struct creation,
 detached state, `find_git_root` with a `.git` dir and with a `.git` file,
 `list_worktrees` on a non-git dir, porcelain parsing with current/detached
 detection, create+remove round-trip, `is_git_worktree` with a `.git` dir /
@@ -239,8 +239,8 @@ prefix, and two symlink-detection cases (`list_worktrees_symlink_detection`,
 
 Verified 2026-10-06 against `crates/codegg-core/src/worktree.rs`,
 `crates/codegg-core/src/worktree_service.rs`, `crates/egggit/src/worktree.rs`,
-`tests/worktree.rs`, and `src/lib.rs`. Confirmed the prior review's test-count
-claim: `tests/worktree.rs` holds **14** `#[test]`/`#[tokio::test]` functions,
+`tests/command_git/worktree.inc`, and `src/lib.rs`. Confirmed the prior review's test-count
+claim: `tests/command_git/worktree.inc` holds **14** `#[test]`/`#[tokio::test]` functions,
 not 11, and the coverage list is now enumerated by name. Confirmed the prior
 review's function-line corrections as already applied and accurate
 (`list_worktrees` `:31`, `create_worktree` `:38`, `remove_worktree` `:83`).

@@ -1043,7 +1043,8 @@ impl GitTool {
         _timeout_secs: u64,
     ) -> Result<String, ToolError> {
         let state = egggit::detect_operation_state_for_root(workdir)
-            .map_err(|e| ToolError::Execution(format!("operation-state probe failed: {e}")))?;
+            .map_err(|e| ToolError::Execution(format!("operation-state probe failed: {e}")))?
+            .into_value();
         let available_actions: Vec<&'static str> = state
             .available_actions()
             .into_iter()
@@ -1118,7 +1119,7 @@ impl GitTool {
         // Phase F: detect the family BEFORE the action so we can label
         // the projection accurately even when the action is a no-op.
         let family = egggit::detect_operation_state_for_root(workdir)
-            .map(|s| s.family().label().to_string())
+            .map(|fact| fact.into_value().family().label().to_string())
             .unwrap_or_else(|_| "none".to_string());
         let persisted_run_id = crate::git_run_store::persist_recovery(
             &self.run_store,

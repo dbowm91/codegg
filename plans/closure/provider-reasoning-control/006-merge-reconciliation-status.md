@@ -22,22 +22,32 @@ Historical closure records this record supplements and does **not** rewrite:
 - `plans/closure/provider-reasoning-control/004-status.md` (M004, closed)
 - `plans/closure/provider-reasoning-control/005-status.md` (M005, closed)
 
-Repository baseline reconciled: `origin/main` at `8cee65934` ("fix(server):
-map the process-denial refusal to 409, not an unhandled variant"), which is
+Repository baseline reconciled: `origin/main` at `f1b83a7a7`, reached in
+**three** stages. The first merge was against `8cee65934` ("fix(server): map
+the process-denial refusal to 409, not an unhandled variant"), which is
 **439 commits** ahead of this branch's merge-base `c93211542` ("Merge pull
 request #153 from dbowm91/docs/core-family-counts-m006"). The branch head at
 merge was `6d36a1888`.
 
-Changed-file surface: the branch carried 90 changed files against the
-merge-base, and **eight files were changed on both sides**.
+Changed-file surface, per stage: the branch carried 90 changed files against
+the merge-base, and **eight files** were changed on both sides in the first
+stage. In the third stage — the one against the `origin/main` the pull request
+targets — the branch's side of the merge-base was 92 files and `main`'s was
+585, with **eleven files** changed on both sides.
 
-**The reconciliation took two stages, because `main` moved while it was in
-flight.** The first merge was against `8cee65934`. During the merged tree's
-qualification — which, on this host, took hours — `main` advanced a further
-**six commits** to `47f5572b1` (the agent-workstream blackboard's M008:
-`3477bc589`, `4d327add9`, `3549d9216`, `e1b898cb8`, `2a797c86c`,
+**The reconciliation took three stages, because `main` moved twice while it
+was in flight.** The first merge was against `8cee65934`. During the merged
+tree's qualification — which, on this host, took hours — `main` advanced a
+further **six commits** to `47f5572b1` (the agent-workstream blackboard's
+M008: `3477bc589`, `4d327add9`, `3549d9216`, `e1b898cb8`, `2a797c86c`,
 `47f5572b1`). The second merge brought that in, and is recorded in §2a and
-§4a.
+§4a. `main` then advanced a further **79 commits** to `f1b83a7a7`, carrying
+the CI/test-throughput recovery workstream and its M004 root-test-target
+family consolidation. The third merge brought that in, and is recorded in §2b,
+§4b and §7.6.
+
+The third merge is the one that makes this line publishable: it is the
+reconciliation against the `origin/main` the pull request is opened against.
 
 ## 1. Executive finding
 
@@ -59,6 +69,18 @@ line allocates by number had already been allocated by `main`:
    renumbering note saying so. 68 references across 24 files were updated,
    and `scripts/check_adr_integrity.py` confirms the active ADR IDs are
    unique and their local paths resolve.
+
+   **The third stage collided again, and the rule applied a second time.**
+   `main` published its own **ADR-0048** (contained Git execution for
+   managed-worktree creation) while this line was qualifying, so this line's
+   two numbers yield *again* — ADR-0048 → **ADR-0049** and ADR-0049 →
+   **ADR-0050**. The decision content, `Status: accepted`, the acceptance
+   date and the accepting authority are unchanged; only the identifier and
+   the file name move, with a dated renumbering note added to each record.
+   Measured after the second renumbering, **28 files** carry the current
+   identifiers, at **134** occurrences in total. `main`'s ADR index also
+   carried **no entry for its own ADR-0048**; that gap is filled in the same
+   pass, so the index is contiguous again.
 2. **The migration number collided.** `main` had published v84 (the additive
    network-intent preference), v85 (the private index publication journal),
    v86 (the durable checkout writer permit) and v87, and
@@ -120,6 +142,52 @@ conflict.
 No other file conflicted, and no reasoning-control file was among them: the
 second merge touched the counts, the CI matrix, the guard registry and the
 plan registry, none of which this line's contract depends on.
+
+## 2b. The third stage: `main` advanced by 79 commits, and published its own ADR-0048
+
+The second merge was against `47f5572b1`. Before this line could be
+published, `main` advanced a further **79 commits** to `f1b83a7a7`. The
+advance carries the **CI/test-throughput recovery workstream** and, with it,
+**M004's root-test-target family consolidation**: the root integration test
+*modules* moved out of `tests/*.rs` into family directories as `.inc`
+includes, behind `tests/<family>/mod.rs`. **296 root test files** were
+renamed this way, into **23 family directories** — `agent_loop` (33 `.inc`),
+`causal_observe_replay` (1), `command_git` (20), `config_provider` (12),
+`core_daemon` (42), `eggwork_remote_execution_live` (1), `ide_protocols` (5),
+`interactive_process_attach_resume` (1), `interactive_process_sessions` (1),
+`interactive_terminal_tui` (1), `linux_git_test_support` (2),
+`lsp_test_support` (4), `projection_replay` (11), `scheduler_cancellation` (1),
+`scheduler_jobs` (33), `security_permission` (21), `server_feature` (6),
+`session_family` (5), `tool_programs` (74), `tui_render` (41) and
+`windows_sandbox_test_support` (2) — and the tree also gained ten new guards.
+After the consolidation the root `tests/` directory holds **4** top-level
+`tests/*.rs` and **317** `tests/*/*.inc`.
+
+`git merge origin/main` on top of the merged tree produced **two conflicted
+files**; the other nine files both sides had touched — `.github/workflows/ci.yml`,
+`.opencode/skills/tui/SKILL.md`, `CHANGELOG.md`, `architecture/agent.md`,
+`architecture/provider.md`, `architecture/session.md`, `architecture/storage.md`,
+`architecture/tui.md`, `scripts/verify.sh` — **auto-merged** without conflict.
+
+| File | Conflict | Resolution |
+|---|---|---|
+| `architecture/overview.md` | The two file-count rows of the Verified-counts table: this branch's 300 / 71 against `main`'s 321 / 76 | **Re-measured in the newly merged tree**, never picked: **321** integration test modules and **80** CI guard scripts. `main`'s row had also changed its **Source** — see §4b — so the number and the Source both had to be resolved, not only the number |
+| `plans/registry.md` | Both sides inserted a subsystem row at the same slot: this line's *Provider reasoning control* row against `main`'s *CI and test throughput recovery* row | **Both rows kept.** `main`'s row keeps its exact position; this line's row follows it. Neither side's row was dropped or rewritten |
+
+Two renames were resolved by git's rename detection, and **this line's two
+edits to the moved files survived intact**: `tests/model_preference_convergence.rs`
+→ `tests/core_daemon/model_preference_convergence.inc` and
+`tests/connect_tui_restoration.rs` → `tests/tui_render/connect_tui_restoration.inc`.
+Both edits are the same one-line addition — `reasoning_capability: None` on a
+`ProviderModelDto` literal — and both are present in the merged tree at the
+new paths. No reasoning-control *source* file conflicted in this stage.
+
+**A second ADR collision had to be resolved in this stage**, and it is
+recorded in §1: `main`'s new contained-Git decision took **ADR-0048**, which
+this line had yielded to it in the first stage. Under the same rule, both of
+this line's numbers yield again — ADR-0048 → **ADR-0049** and ADR-0049 →
+**ADR-0050** — and `plans/adrs/README.md` gains the index entry `main`'s
+ADR-0048 never had.
 
 ## 3. The indicator's re-landing
 
@@ -213,6 +281,39 @@ merge-base, **298** at `8cee65934` (all eighteen of the additions `main`'s),
 **300** at `47f5572b1`, and **300** in the merged tree — this line adds
 nothing to it. The table above carries the corrected attribution.
 
+## 4b. The third stage's re-measurement — a row's *Source* changed, and another row was stale on `main`
+
+The third stage changed a Verified-counts row's **Source**, not merely its
+number, so the row had to be resolved on both axes.
+
+| Row | Before | After | Source | Why |
+|---|---|---|---|---|
+| Integration test files | 300 | **321** | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded | `main`'s M004 family consolidation moved the root test *modules* into family directories as `.inc` includes, so `ls tests/*.rs` alone now reports **4** and no longer measures the suite. Measured in the merged tree: 4 `tests/*.rs` + 317 `tests/*/*.inc` = **321** |
+| CI guard scripts | 71 | **80** | `scripts/check_*` | `main`'s tree carries **76** (ten new guards from the CI/test-throughput workstream), and this chain contributes four: `check_reasoning_intent_fidelity.py`, `check_reasoning_vocabulary_open.py`, `check_model_profile_capability_mirror.py`, `check_tui_reasoning_surface.py` |
+| Tool source files | 83 | **84** | `src/tool/**.rs` (incl. `bash/`) | **Stale on `main`, and corrected rather than incremented.** `main` added `src/tool/bash/tests/git_fixture.rs` without re-measuring the row, so the row read 83 against a tree of 84. Measured in the merged tree: **84** |
+
+Every other row was **confirmed unchanged** by measurement against its own
+listed `Source` — architecture docs **91**, tool registrations **67** (54
+`register` + 13 `register_boxed`), distinct production tool names **61**, LSP
+server definitions **39**, `codegg-core` modules **54**, `AppEvent` variants
+**61**, `CoreRequest` variants **266** (240 struct + 26 unit), `CoreResponse`
+variants **174** (173 struct + 1 unit), `CoreEvent` variants **92**,
+`ProjectionEvent` variants **47**, authorized operations **260**, identity
+newtypes **19**, built-in slash commands **168**, built-in agents **10**,
+bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
+`mod.rs`), database tables **95 statements / 91 tables**, storage layout
+version **88**, Git operation variants **54**, Git risk classes **11**, and
+workspace member crates **11** (+ root).
+
+**This line contributes no root integration test file, and the merge is why
+that is still true.** Its overlay suite lives under
+`crates/codegg-core/tests/reasoning_overlay_narrowing.rs`, which the row's
+`Source` does not count, and the two root test files it edited were *moved*
+by `main`'s consolidation rather than added — so the merge kept both edits
+without adding a file. The row's movement is entirely `main`'s, which is the
+same attribution correction the second stage forced, now confirmed against a
+different tree shape.
+
 ## 5. What was *not* changed
 
 - The reasoning contract itself: the open label vocabulary, the
@@ -235,9 +336,9 @@ Required in `plans/registry.md` and
 
 - register this supplemental record against the `provider-reasoning-control`
   line, with no new milestone;
-- record the ADR renumbering (ADR-0044 → **ADR-0048**, ADR-0045 →
-  **ADR-0049**) and the migration renumbering (v84 → **v88**, layout
-  87 → 88) so a later reader does not read the numbers as a collision;
+- record the ADR renumbering (ADR-0044 → **ADR-0048** → **ADR-0049**, ADR-0045
+  → **ADR-0049** → **ADR-0050**) and the migration renumbering (v84 → **v88**,
+  layout 87 → 88) so a later reader does not read the numbers as a collision;
 - record the indicator's move from the working strip to the footer status
   bar.
 
@@ -396,3 +497,65 @@ it is the concrete reason this record exists rather than being folded into the
 milestone closures.
 
 
+## 7.6 The third stage's qualification
+
+The third merge was qualified **as a tree**, for the same reason the first
+two were: a merge can break what each side proved on its own. The tree
+qualifies cleanly, and the findings it produced are all **`main`'s**, proved
+rather than assumed.
+
+| Check | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked` | **pass** — exit 0, zero errors (2 m 55 s) |
+| `cargo fmt --check --all` | **clean** |
+| Every guard invoked by `scripts/verify.sh quick` (51 scripts) | **all pass** |
+| Every guard's `--self-test` | **all pass**, except one — see below |
+| `cargo clippy -p codegg-core -p codegg-config -p codegg-protocol -p codegg-providers -p codegg-client --all-targets --locked -- -D warnings` | **pass** — exit 0, zero findings |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | **7 findings** in the `codegg` lib and 8 in its lib test — **identical on clean `origin/main`**, at the same locations |
+| `cargo nextest run -p codegg-core --profile ci -E 'test(reasoning) or binary(reasoning_overlay_narrowing)'` | **22 passed**, including all 6 overlay-narrowing cases and both compare-and-swap cases |
+| `scripts/check_adr_integrity.py` | **pass** — active ADR IDs unique, local paths resolve |
+
+**The one new guard violation the third stage produced, and its fix.** `main`
+added `scripts/check_test_ownership.py` and `docs/test-ownership.toml` with
+its CI/test-throughput workstream — a manifest that maps source paths to the
+test targets that cover them, and a guard that refuses a test target **no
+group owns**, because an unowned target can never be selected and a scoped run
+would silently stop covering it. This line's cross-crate proof,
+`crates/codegg-core/tests/reasoning_overlay_narrowing.rs`, was **unowned**:
+the guard failed on the merged tree, exactly as it should have. The fix is
+ownership, not a suppression — the target is added to the existing
+`core_context_decision` group, which already covers
+`crates/codegg-core/src/model_profile/**`, the resolution function the proof
+drives. The overlay *parsing* the proof exercises lives in `codegg-providers`
+(`eggpool.rs`), and a change there pulls `codegg-core` in as a dependent and
+therefore contributes this target as part of that member's **full** surface,
+so neither side of the path is left uncovered.
+
+**The self-test that fails is `main`'s.** `scripts/check_provider_multi_surface_dispatch.py --self-test`
+reports `self-test could not inject regression: direct Responses routed
+through the hosted subsystem` — and the **identical** message appears on a
+clean checkout of `origin/main` at `f1b83a7a7`. The guard's own other five
+injected regressions are caught on both trees. The self-test is stale against
+`main`'s own new hosted-Responses route; this line did not touch that guard,
+that route, or any file it inspects.
+
+**The clippy findings are `main`'s, and they are macOS-only.** All seven live
+in `src/interactive_process.rs`, `src/managed_process.rs`, `src/lsp/m004.rs`
+and `src/security/sandbox.rs` — **files this line did not touch** — and a
+clean checkout of `origin/main` at `f1b83a7a7` produces the **same seven**
+findings with the **same messages**. They are dead-code and unused-variable
+lints on Linux-gated code paths; the hosted Linux runner never compiles the
+other side of those `cfg` pairs, so CI is green while a macOS
+`--all-targets` clippy is not. The merge introduces **zero** new clippy
+findings.
+
+**Four change-triggered guards fail on the merged tree, and on `main` too.**
+`check_execution_subject_ownership.py`, `check_policy_surface.py`,
+`check_sandbox_policy_wiring.py` and `check_tool_broker_boundary.py` are
+change-triggered guards that `scripts/verify.sh quick` and the hosted CI job
+do not invoke. Each produces **byte-identical output** on the merged tree and
+on a clean checkout of `origin/main`, and each points at files this line did
+not touch (`src/managed_process.rs`, `src/tool_batch.rs`,
+`src/scheduler/executors.rs`, `src/permission/reviewer.rs`,
+`src/tool/extension.rs`, `src/tool/git_read.rs`, `src/tool/verify.rs`). They
+are `main`'s open items, not this line's.

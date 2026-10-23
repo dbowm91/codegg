@@ -207,7 +207,7 @@ impl CoreDaemon {
     ///
     /// The policy is the kernel's fail-closed default
     /// (`unsupported → Reject`, `unknown → Reject`, `mixed → WarnDrop`),
-    /// which is the disposition set ADR-0049 decided. A dimension nobody
+    /// which is the disposition set ADR-0050 decided. A dimension nobody
     /// has published a contract for is refused at admission rather than
     /// forwarded optimistically.
     ///
@@ -3685,7 +3685,7 @@ mod tests {
         );
     }
 
-    /// Provider reasoning control M003: ADR-0049's fail-closed-on-absence
+    /// Provider reasoning control M003: ADR-0050's fail-closed-on-absence
     /// rule. A family with no capability baseline declares no record, so
     /// every dimension of it is `Unknown` — and a selection on an unknown
     /// dimension is refused at admission rather than forwarded optimistically.

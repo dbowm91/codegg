@@ -154,6 +154,16 @@ pub fn compile(
                     read_only_metadata.insert(canonical);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if spec.expected_created_git_pointers.contains(&metadata_path) {
+                        // The child is expected to create this pointer file: a
+                        // linked worktree's `.git` names the parent
+                        // repository's `worktrees/` administration directory.
+                        // It is not repository metadata the child controls,
+                        // and the grant that named it was checked when the
+                        // launch description was built — it is the top-level
+                        // `.git` of a write root this child was granted.
+                        continue;
+                    }
                     future_git_paths.insert(metadata_path);
                 }
                 Err(error) => {

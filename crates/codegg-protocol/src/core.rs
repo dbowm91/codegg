@@ -3973,7 +3973,7 @@ pub enum CoreRequest {
 /// The request preparation layer carries that distinction to the provider wire,
 /// where an explicit disable is a different shape from "no preference".
 ///
-/// The effort label is **open and provider-scoped** (ADR-0048). It is not a
+/// The effort label is **open and provider-scoped** (ADR-0049). It is not a
 /// level on a fixed enum: an arbitrary vendor label is carried verbatim, and
 /// the known convenience labels in [`KNOWN_REASONING_EFFORT_LABELS`] are a
 /// convenience set for the fallback ordering only.
@@ -5614,7 +5614,7 @@ mod tests {
 
     #[test]
     fn an_open_reasoning_label_is_carried_verbatim() {
-        // ADR-0048: the vocabulary is open and provider-scoped. A vendor
+        // ADR-0049: the vocabulary is open and provider-scoped. A vendor
         // label is preserved exactly — not folded onto a known level, not
         // lower-cased, not rejected.
         let selection = ReasoningOverride::Effort {

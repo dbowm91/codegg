@@ -88,7 +88,7 @@
       }
     },
 
-    // What a model accepts on the reasoning dimensions (ADR-0045). The four
+    // What a model accepts on the reasoning dimensions (ADR-0050). The four
     // dimensions are independent and each carries its own status:
     //   supported | unsupported | unknown | mixed | conflicting
     // "unknown" means nobody has published a contract for that dimension,

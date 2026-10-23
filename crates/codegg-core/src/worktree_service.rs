@@ -321,6 +321,89 @@ pub trait WorktreeOwnerResolver: Send + Sync {
     async fn is_terminal(&self, owner: &AgentRunId) -> Result<bool, String>;
 }
 
+/// Default bound for one contained worktree creation.
+///
+/// A contained child launches a sandbox, a namespace setup and a Git checkout.
+/// The bound is generous enough for a large checkout on a cold cache and
+/// short enough that a stuck child cannot hold the repository lock open
+/// indefinitely.
+pub const DEFAULT_CONTAINED_WORKTREE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
+/// What one contained worktree creation is asked to produce.
+///
+/// ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
+/// grants exactly one operation shape: `git worktree add <path>
+/// <existing-branch>` inside an OS-contained child. The **branch belongs to
+/// the daemon** — the creator must create it before the child runs, so the
+/// child attaches to a branch that already exists and writes no ref. The
+/// grant is what enforces that, not an intention: the child's writable set
+/// excludes the repository's refs, so a child that tried to create a branch
+/// would fail closed.
+#[derive(Debug, Clone)]
+pub struct ContainedWorktreeRequest {
+    /// The source repository's working tree — the directory the daemon's own
+    /// typed Git path operates in.
+    pub repository_root: PathBuf,
+    /// The repository's **Git directory** — where the objects, refs, index and
+    /// the `worktrees/` administration directory live. The source working
+    /// tree is deliberately not named in the child's grant: a contained child
+    /// that creates a linked worktree does not need it, and not granting it
+    /// keeps the grant as narrow as the operation admits.
+    pub repository_gitdir: PathBuf,
+    /// The checkout to create. It must not exist yet.
+    pub worktree_path: PathBuf,
+    /// The branch the checkout must be attached to. The creator creates it
+    /// before the contained child runs.
+    pub branch: String,
+    /// The immutable base commit the branch is created from.
+    pub base_commit: String,
+    /// The bound for the contained child.
+    pub timeout: std::time::Duration,
+}
+
+/// What one contained worktree creation produced.
+///
+/// The outcome reports the containment the launch **obtained**, not the
+/// containment it requested: a request is a hope, and only the launch's own
+/// fact is evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainedWorktreeOutcome {
+    /// The administration directory the child wrote, inside the repository's
+    /// `worktrees/` directory.
+    pub administration_dir: PathBuf,
+    /// The sandbox backend that reported obtained enforcement.
+    pub backend: String,
+    /// The backend's reported ABI or version, when it has one.
+    pub abi: Option<u32>,
+    /// Whether the launch obtained the offline-network boundary.
+    pub network_enforced: bool,
+}
+
+/// The creation seam for a managed worktree.
+///
+/// `codegg-core` owns the worktree record, its states and its lease, but it
+/// must not own process spawning or the sandbox. The daemon supplies this
+/// adapter; the core service prefers it over the in-process Git path when it
+/// is configured.
+///
+/// A configured creator is **authoritative**: when it fails, the failure is
+/// final. There is no fallback to an uncontained creation, because an
+/// uncontained creation would be a weaker guarantee presented as a stronger
+/// one.
+#[async_trait]
+#[allow(clippy::double_must_use)]
+pub trait ContainedWorktreeCreator: Send + Sync {
+    /// Create the checkout and return what the launch obtained.
+    ///
+    /// Implementations must fail — not degrade — when the containment cannot
+    /// be obtained or the grant cannot be expressed.
+    async fn create(
+        &self,
+        request: &ContainedWorktreeRequest,
+    ) -> Result<ContainedWorktreeOutcome, WorktreeServiceError>;
+}
+
 #[derive(Default)]
 struct MemoryWorktreeState {
     records: HashMap<WorktreeId, WorktreeRecord>,
@@ -749,6 +832,7 @@ pub struct WorktreeService {
     locks: Arc<WorkspaceLockTable>,
     managed_root: PathBuf,
     owner_resolver: Option<Arc<dyn WorktreeOwnerResolver>>,
+    contained_creator: Option<Arc<dyn ContainedWorktreeCreator>>,
 }
 
 impl WorktreeService {
@@ -762,6 +846,7 @@ impl WorktreeService {
             locks,
             managed_root,
             owner_resolver: None,
+            contained_creator: None,
         })
     }
 
@@ -774,6 +859,26 @@ impl WorktreeService {
             locks: self.locks.clone(),
             managed_root: self.managed_root.clone(),
             owner_resolver: Some(owner_resolver),
+            contained_creator: self.contained_creator.clone(),
+        })
+    }
+
+    /// Install the contained creation path.
+    ///
+    /// A configured creator is authoritative: `create_reserved` uses it, and
+    /// its failure is final. There is no fallback to the in-process Git path,
+    /// because the in-process path cannot obtain the containment a linked
+    /// worktree's checkout requires.
+    pub fn with_contained_creator(
+        self: Arc<Self>,
+        contained_creator: Arc<dyn ContainedWorktreeCreator>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            store: self.store.clone(),
+            locks: self.locks.clone(),
+            managed_root: self.managed_root.clone(),
+            owner_resolver: self.owner_resolver.clone(),
+            contained_creator: Some(contained_creator),
         })
     }
 
@@ -824,7 +929,8 @@ impl WorktreeService {
         let base_path = canonical_or_self(base_path);
         let status = egggit::status_v2::rich_repo_status(&base_path)
             .await
-            .map_err(|e| WorktreeServiceError::Git(e.to_string()))?;
+            .map_err(|e| WorktreeServiceError::Git(e.to_string()))?
+            .into_value();
         let base_commit = request.base_commit.clone().or(status.head).ok_or_else(|| {
             WorktreeServiceError::Git("repository has no commit to use as a base".into())
         })?;
@@ -841,7 +947,8 @@ impl WorktreeService {
                         WorktreeServiceError::InvalidInput(format!(
                             "cannot resolve base ref {base_ref}: {e}"
                         ))
-                    })?;
+                    })?
+                    .into_value();
                 ObjectId::new(&resolved).map_err(|e| {
                     WorktreeServiceError::InvalidInput(format!("invalid base commit from Git: {e}"))
                 })?;
@@ -939,6 +1046,9 @@ impl WorktreeService {
         transition(&mut record, ManagedWorktreeState::Preparing)?;
         self.store.save(record.clone()).await?;
         let _guard = self.locks.acquire_repository(&record.repository_root).await;
+        if let Some(creator) = self.contained_creator.clone() {
+            return self.create_reserved_contained(creator, record).await;
+        }
         let result = tokio::task::spawn_blocking({
             let root = record.repository_root.clone();
             let path = record.path.clone();
@@ -961,6 +1071,81 @@ impl WorktreeService {
             record.health = WorktreeHealth::GitError;
             self.store.save(record).await?;
             return Err(WorktreeServiceError::Git(error.to_string()));
+        }
+        let listed = crate::worktree::list_worktrees(&record.repository_root)
+            .await
+            .map_err(|e| WorktreeServiceError::Git(e.to_string()))?;
+        let registered = listed.iter().any(|tree| {
+            canonical_or_self(Path::new(&tree.path)) == canonical_or_self(&record.path)
+                && tree.branch == record.branch.clone().unwrap_or_default()
+        });
+        if !registered || !crate::worktree::is_git_worktree(&record.path) {
+            transition(&mut record, ManagedWorktreeState::Orphaned)?;
+            record.health = WorktreeHealth::GitError;
+            self.store.save(record).await?;
+            return Err(WorktreeServiceError::Git(
+                "created worktree failed post-create verification".into(),
+            ));
+        }
+        transition(&mut record, ManagedWorktreeState::Ready)?;
+        record.health = WorktreeHealth::Clean;
+        self.store.save(record.clone()).await?;
+        Ok(record)
+    }
+
+    /// Create the checkout through the contained seam.
+    ///
+    /// The record's branch is the **daemon's**: the creator creates it before
+    /// the contained child runs, and the child attaches to a branch that
+    /// already exists. The child's grant excludes the repository's refs, so
+    /// the child cannot create a branch even by accident — a creation attempt
+    /// fails closed rather than writing a ref.
+    ///
+    /// The registration check below is the same one the in-process path
+    /// applies: Git must report the checkout at the recorded path **on the
+    /// recorded branch**, and it must be a real linked worktree. A detached
+    /// checkout reports `(detached HEAD)`, which is not the recorded branch,
+    /// so it is not accepted.
+    async fn create_reserved_contained(
+        &self,
+        creator: Arc<dyn ContainedWorktreeCreator>,
+        mut record: WorktreeRecord,
+    ) -> Result<WorktreeRecord, WorktreeServiceError> {
+        let branch = record.branch.clone().unwrap_or_default();
+        if branch.is_empty() {
+            transition(&mut record, ManagedWorktreeState::Orphaned)?;
+            record.health = WorktreeHealth::GitError;
+            self.store.save(record).await?;
+            return Err(WorktreeServiceError::InvalidInput(
+                "the reserved worktree has no branch to attach to".into(),
+            ));
+        }
+        let repository_root = record.repository_root.clone();
+        let repository_gitdir = match crate::worktree::git_dir_for(&repository_root) {
+            Some(gitdir) => gitdir,
+            None => {
+                transition(&mut record, ManagedWorktreeState::Orphaned)?;
+                record.health = WorktreeHealth::GitError;
+                self.store.save(record).await?;
+                return Err(WorktreeServiceError::Git(format!(
+                    "the repository at {} has no Git directory",
+                    repository_root.display()
+                )));
+            }
+        };
+        let request = ContainedWorktreeRequest {
+            repository_root: repository_root.clone(),
+            repository_gitdir,
+            worktree_path: record.path.clone(),
+            branch,
+            base_commit: record.base_commit.clone(),
+            timeout: DEFAULT_CONTAINED_WORKTREE_TIMEOUT,
+        };
+        if let Err(error) = creator.create(&request).await {
+            transition(&mut record, ManagedWorktreeState::Orphaned)?;
+            record.health = WorktreeHealth::GitError;
+            self.store.save(record).await?;
+            return Err(error);
         }
         let listed = crate::worktree::list_worktrees(&record.repository_root)
             .await
@@ -1306,7 +1491,10 @@ async fn inspect_health(record: &WorktreeRecord) -> (WorktreeHealth, bool) {
     if !registered || !crate::worktree::is_git_worktree(&record.path) {
         return (WorktreeHealth::GitError, registered);
     }
-    match egggit::status_v2::rich_repo_status(&record.path).await {
+    match egggit::status_v2::rich_repo_status(&record.path)
+        .await
+        .map(|fact| fact.into_value())
+    {
         Ok(status)
             if !status.conflicted.is_empty()
                 || status.operation_state.is_some()

@@ -1,6 +1,6 @@
 # C003 — Git Live-Read Consistency and Hostile-Metadata Pre-Admission Corrective
 
-Status: **ready for non-promoting type/test/review work**; production dispatch blocked
+Status: **conditionally closed** — the slice's exit criteria are met; the condition is the maintainer's ADR-0044 decision; production dispatch remains blocked
 Source: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md` C003; `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md` C005; `plans/closure/linux-trusted-git-cost-corrective/006-status.md` (ADR review), C007 `007-status.md`; Linux C010 `plans/closure/linux-execution-isolation/018-status.md` / C012 `020-status.md`.
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `d251b11cd7fa5b89ca008e45d80a28a4ac3aea9f`, 2026-10-20.
 Closure target: `plans/closure/linux-sandbox-admission-follow-up-corrective/003-status.md`.

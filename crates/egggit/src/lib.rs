@@ -22,7 +22,9 @@
 //! outside this crate.
 
 pub mod blame;
+pub mod config_surface;
 pub mod conflict;
+pub mod consistency;
 pub mod diff;
 pub mod log;
 pub mod operation_state;
@@ -38,6 +40,10 @@ pub use conflict::{
     buffer_contains_conflict_markers, classify_conflict_code, default_actions_for, looks_binary,
     ConflictEntry, ConflictKind, ConflictObjectId, ConflictReport, ConflictShape,
     RecommendedConflictAction,
+};
+pub use consistency::{
+    admit_generation_consistent, GenerationConsistent, GitConsistencyRefusal, GitReadConsistency,
+    GitReadFact, LiveReadCapability,
 };
 pub use diff::{
     changed_files, diff_summary, diff_text, file_diff, validate_patch, ChangedFile, DiffMode,

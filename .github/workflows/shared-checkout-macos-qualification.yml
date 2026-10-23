@@ -115,10 +115,15 @@ jobs:
       # The mechanism-agnostic containment matrix on the same host, so the
       # Seatbelt arms are exercised against the production helper rather
       # than only against the qualification fixture.
+      #
+      # `sandbox_containment` is a member of the `security_permission` family
+      # (M004 consolidated the root integration tests into families), so the
+      # target is the family and the member name is the filter. The filter
+      # keeps the lane's scope to the one member it names.
       - name: Sandbox containment suite
         run: |
           set -o pipefail
-          cargo test --locked -p codegg --test sandbox_containment -- --nocapture --test-threads=1 \
+          cargo test --locked -p codegg --test security_permission sandbox_containment -- --nocapture --test-threads=1 \
             | tee "$RUNNER_TEMP/shared-checkout-macos/sandbox_containment.log"
 
       - name: Record the qualification summary

@@ -1,6 +1,6 @@
 # Provider Reasoning Control Milestone 002 — Open reasoning vocabulary and daemon-owned selection
 
-Status: closed (M001 closed; ADR-0048 accepted 2026-10-21; closure record `plans/closure/provider-reasoning-control/002-status.md`)
+Status: closed (M001 closed; ADR-0049 accepted 2026-10-21; closure record `plans/closure/provider-reasoning-control/002-status.md`)
 
 Repository baseline: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5` (branch `feat/auto-20261021-d6b5ffc5`)
 
@@ -16,7 +16,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` (§4 the open vocabulary, §5 the daemon-owned selection)
+- `plans/adrs/ADR-0049-open-provider-scoped-reasoning-control-vocabulary.md` (§4 the open vocabulary, §5 the daemon-owned selection)
 
 Primary class: capability
 
@@ -32,7 +32,7 @@ Either outcome alone leaves the control broken: an open vocabulary with a fronte
 ## 2. Why this milestone is ready
 
 - **Hard dependency:** M001 closed. M001 restores the wire-intent fidelity this milestone's open labels depend on; without it, a new label would still be dropped at the encoder on the surfaces that cannot express effort.
-- **ADR:** ADR-0048 accepted, and specifically its §5 (daemon-owned selection). See §14.
+- **ADR:** ADR-0049 accepted, and specifically its §5 (daemon-owned selection). See §14.
 - **Interface dependencies, both already stable in the repository:**
   - `runtime_preferences` (`crates/codegg-core/src/approval.rs`, table created at migration v58, extended additively at v62) is an existing daemon-owned, principal-scoped, durable, revision-gated preference store with an established store API and an established protocol seam. This milestone adds a column and a store method to an existing table; it does not introduce a new store.
   - The daemon's `*Capabilities` request family (`ProjectionCapabilities`, `AuditCapabilities`, `ChatCapabilities`, and the others in `src/core/daemon_family.rs`) is the established capability-negotiation pattern, and the canonical specification requires capability-negotiated protocol behaviour.
@@ -358,7 +358,7 @@ Do not claim commands that were not actually run in the closure record. The repo
 The agent must stop and report rather than improvise when:
 
 - **M001 has not closed.** This milestone's open labels depend on M001's faithful wire intent; without it, a new label still vanishes at the encoder on effort-inexpressible surfaces.
-- **ADR-0048 is not `accepted`**, or it was amended in a way that changes the daemon-ownership decision in its §5.
+- **ADR-0049 is not `accepted`**, or it was amended in a way that changes the daemon-ownership decision in its §5.
 - The additive migration cannot be made safely — for example if the `runtime_preferences` table's shape differs from the baseline evidence in §3, or if the contiguous-chain requirement of the project-catalog invariants guard cannot be satisfied. The agent reports the actual shape rather than forcing a migration.
 - The capability-negotiation mechanism cannot be expressed through the established `*Capabilities` family. A new negotiation channel is an architecture decision and is not this milestone's to make.
 - The `runtime_preferences` revision semantics would have to change to accommodate the selection. That would alter the existing approval/sandbox contract and is out of scope.

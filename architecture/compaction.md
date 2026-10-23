@@ -20,7 +20,7 @@ fallback.
 | `src/agent/context_frame.rs` | `ContextFrame`, `ContextLedgerState` — post-compaction context snapshot |
 | `src/agent/context_runtime.rs` | `compact_if_needed()` — integration point called each turn |
 | `crates/codegg-config/src/schema.rs` | `CompactionConfig`, `CompactionModeConfig`, `CompactionPolicyConfig` |
-| `tests/compaction.rs` | Module-level integration tests |
+| `tests/agent_loop/compaction.inc` | Module-level integration tests |
 
 ## How It Works
 
@@ -431,10 +431,10 @@ steering are never reset.
 
 ## Testing
 
-- `tests/compaction.rs` — extensive module tests
-- `tests/context_continuity_m004.rs` — eight-compaction trajectory,
+- `tests/agent_loop/compaction.inc` — extensive module tests
+- `tests/agent_loop/context_continuity_m004.inc` — eight-compaction trajectory,
   stable digests, transaction/cancellation/restart/strategy/security matrix
-- `tests/context_epoch_handoff.rs` — M004 WorkPlan provenance, policy
+- `tests/agent_loop/context_epoch_handoff.inc` — M004 WorkPlan provenance, policy
   matrix, fresh reconstruction/single-frame, phase/repeated/steering,
   restart/race/contention/security/migration guards
 - Narrowest run:

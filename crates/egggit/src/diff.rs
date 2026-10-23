@@ -1,3 +1,4 @@
+use crate::consistency::{GitReadConsistency, GitReadFact};
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -74,7 +75,7 @@ async fn capture_diff(
     root: &Path,
     base: Option<&str>,
     args: &[&str],
-) -> Result<String, EgggitError> {
+) -> Result<GitReadFact<String>, EgggitError> {
     let mut full: Vec<String> = Vec::with_capacity(args.len() + 2);
     // args typically start with "diff". Insert base right after the subcommand.
     let mut inserted_base = false;
@@ -97,11 +98,40 @@ async fn capture_diff(
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(GitReadFact::new(stdout, output.consistency))
 }
 
-pub async fn diff_summary(root: &Path, base: Option<&str>) -> Result<DiffSummary, EgggitError> {
+/// Fold the classes of a multi-spawn read into the composite class.
+///
+/// The composite is the **weakest** class among the contributing reads: a
+/// read assembled from several spawns is only as strong as its weakest
+/// part. A contributing read that produced no result at all observed no
+/// object generation, so it contributes
+/// [`GitReadConsistency::NoObjectGeneration`].
+fn composite_class(contributions: &[Option<GitReadConsistency>]) -> GitReadConsistency {
+    let mut composite: Option<GitReadConsistency> = None;
+    for contribution in contributions {
+        let class = contribution.unwrap_or(GitReadConsistency::NoObjectGeneration);
+        composite = Some(match composite {
+            Some(accumulated) => accumulated.weaker(class),
+            None => class,
+        });
+    }
+    composite.unwrap_or(GitReadConsistency::NoObjectGeneration)
+}
+
+/// Summarize the diff between `base` (or `HEAD`) and the working tree.
+///
+/// The summary is assembled from two Git spawns (`--numstat` and
+/// `--shortstat`), so the carried class is the weaker of the two.
+pub async fn diff_summary(
+    root: &Path,
+    base: Option<&str>,
+) -> Result<GitReadFact<DiffSummary>, EgggitError> {
     let out = capture_diff(root, base, &["diff", "--numstat"]).await?;
+    let numstat_class = out.class();
+    let out = out.into_value();
     let mut summary = DiffSummary::default();
     for line in out.lines() {
         if let Some(file) = parse_numstat_line(line) {
@@ -109,6 +139,8 @@ pub async fn diff_summary(root: &Path, base: Option<&str>) -> Result<DiffSummary
         }
     }
     let stat = capture_diff(root, base, &["diff", "--shortstat"]).await?;
+    let shortstat_class = stat.class();
+    let stat = stat.into_value();
     let trimmed = stat.trim().to_string();
     if !trimmed.is_empty() {
         let mut tokens = trimmed.split_whitespace();
@@ -121,7 +153,8 @@ pub async fn diff_summary(root: &Path, base: Option<&str>) -> Result<DiffSummary
     if summary.files_changed == 0 {
         summary.files_changed = summary.files.len();
     }
-    Ok(summary)
+    let composite = composite_class(&[Some(numstat_class), Some(shortstat_class)]);
+    Ok(GitReadFact::new(summary, composite))
 }
 
 /// What slice of the working tree a diff should cover.
@@ -156,7 +189,10 @@ impl DiffMode {
 /// against `HEAD` (default), staged changes only, or an explicit
 /// base ref. The returned text is the raw output of `git diff` for
 /// the requested slice.
-pub async fn diff_text(root: &Path, mode: DiffMode) -> Result<String, EgggitError> {
+///
+/// The result carries the consistency class of the single contributing
+/// Git spawn.
+pub async fn diff_text(root: &Path, mode: DiffMode) -> Result<GitReadFact<String>, EgggitError> {
     let extras = mode.extra_args();
     let base = match mode {
         DiffMode::Base(b) => Some(b),
@@ -178,7 +214,7 @@ pub async fn diff_text(root: &Path, mode: DiffMode) -> Result<String, EgggitErro
     run_diff(root, &refs).await
 }
 
-async fn run_diff(root: &Path, args: &[&str]) -> Result<String, EgggitError> {
+async fn run_diff(root: &Path, args: &[&str]) -> Result<GitReadFact<String>, EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
@@ -189,7 +225,8 @@ async fn run_diff(root: &Path, args: &[&str]) -> Result<String, EgggitError> {
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(GitReadFact::new(stdout, output.consistency))
 }
 
 fn count_after(haystack: &str, needle: &str) -> usize {
@@ -202,25 +239,37 @@ fn count_after(haystack: &str, needle: &str) -> usize {
     0
 }
 
+/// List the files changed against `base` (or `HEAD`).
+///
+/// The class is the composite class of the underlying
+/// [`diff_summary`] read.
 pub async fn changed_files(
     root: &Path,
     base: Option<&str>,
-) -> Result<Vec<ChangedFile>, EgggitError> {
+) -> Result<GitReadFact<Vec<ChangedFile>>, EgggitError> {
     let summary = diff_summary(root, base).await?;
-    Ok(summary.files)
+    Ok(summary.map(|summary| summary.files))
 }
 
+/// Capture the diff of one file against `base` (or `HEAD`).
+///
+/// The class is the class of the single contributing Git spawn.
 pub async fn file_diff(
     root: &Path,
     path: &Path,
     base: Option<&str>,
-) -> Result<FileDiff, EgggitError> {
+) -> Result<GitReadFact<FileDiff>, EgggitError> {
     let rel = path.to_string_lossy().to_string();
     let out = capture_diff(root, base, &["diff", "--", &rel]).await?;
-    Ok(FileDiff {
-        path: rel,
-        patch: out,
-    })
+    let consistency = out.class();
+    let out = out.into_value();
+    Ok(GitReadFact::new(
+        FileDiff {
+            path: rel,
+            patch: out,
+        },
+        consistency,
+    ))
 }
 
 pub async fn validate_patch(root: &Path, patch: &str) -> Result<PatchValidation, EgggitError> {
@@ -311,7 +360,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let s = repo_status(dir.path()).await.unwrap();
+        let s = repo_status(dir.path()).await.unwrap().into_value();
         assert_eq!(s.branch, "main");
         assert!(!s.is_dirty);
         assert!(s.commit_hash.is_some());
@@ -334,7 +383,7 @@ mod tests {
             .unwrap();
         std::fs::write(dir.path().join("a.txt"), "changed").unwrap();
 
-        let s = repo_status(dir.path()).await.unwrap();
+        let s = repo_status(dir.path()).await.unwrap().into_value();
         assert!(s.is_dirty);
     }
 
@@ -360,7 +409,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let s = diff_summary(dir.path(), None).await.unwrap();
+        let s = diff_summary(dir.path(), None).await.unwrap().into_value();
         assert_eq!(s.files.len(), 1);
         assert_eq!(s.files[0].path, "a.txt");
     }
@@ -388,7 +437,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let files = changed_files(dir.path(), None).await.unwrap();
+        let files = changed_files(dir.path(), None).await.unwrap().into_value();
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"a.txt"));
         assert!(paths.contains(&"b.txt"));
@@ -413,7 +462,8 @@ mod tests {
 
         let d = file_diff(dir.path(), std::path::Path::new("a.txt"), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_value();
         assert_eq!(d.path, "a.txt");
         assert!(d.patch.contains("hello") || d.patch.contains("world"));
     }
@@ -474,7 +524,10 @@ mod tests {
         // Unstaged edit.
         std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
 
-        let text = diff_text(dir.path(), DiffMode::Head).await.unwrap();
+        let text = diff_text(dir.path(), DiffMode::Head)
+            .await
+            .unwrap()
+            .into_value();
         assert!(
             text.contains("-one"),
             "expected -one in unstaged diff, got:\n{text}"
@@ -506,12 +559,69 @@ mod tests {
             .output()
             .unwrap();
 
-        let text = diff_text(dir.path(), DiffMode::Staged).await.unwrap();
+        let text = diff_text(dir.path(), DiffMode::Staged)
+            .await
+            .unwrap()
+            .into_value();
         assert!(text.contains("a.txt"), "staged diff should include a.txt");
         // b.txt is unstaged so it should not be in the staged slice.
         assert!(
             !text.contains("b.txt"),
             "staged diff should not include b.txt"
+        );
+    }
+
+    /// A diff read on an ordinary repository must report a class a
+    /// generation-bound consumer can admit.
+    ///
+    /// A diff consults the object store through the private object view, so
+    /// the bytes it served came from one captured generation: the carried
+    /// class is generation-consistent.
+    #[tokio::test(flavor = "current_thread")]
+    async fn diff_reads_carry_a_generation_consistent_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello world").unwrap();
+
+        let summary = diff_summary(dir.path(), None).await.unwrap();
+        assert!(
+            summary.class().is_generation_consistent(),
+            "a diff summary must report a generation-consistent class, got {}",
+            summary.class()
+        );
+
+        let text = diff_text(dir.path(), DiffMode::Head).await.unwrap();
+        assert!(
+            text.class().is_generation_consistent(),
+            "a diff text must report a generation-consistent class, got {}",
+            text.class()
+        );
+
+        let files = changed_files(dir.path(), None).await.unwrap();
+        assert!(
+            files.class().is_generation_consistent(),
+            "changed files must report a generation-consistent class, got {}",
+            files.class()
+        );
+
+        let file = file_diff(dir.path(), std::path::Path::new("a.txt"), None)
+            .await
+            .unwrap();
+        assert!(
+            file.class().is_generation_consistent(),
+            "a file diff must report a generation-consistent class, got {}",
+            file.class()
         );
     }
 

@@ -27,7 +27,7 @@ WHAT THIS GUARD DOES
 
 WHAT THIS GUARD DELIBERATELY DOES NOT DO
     It does not prove that any capability *works*. That is the fixture suite's
-    job (``tests/blackboard_trajectory_m008.rs`` and the per-milestone
+    job (``tests/agent_loop/blackboard_trajectory_m008.inc`` and the per-milestone
     closures). This guard proves the wiring is still there, which is the
     failure mode a static check can honestly see.
 

@@ -380,6 +380,71 @@ files)" becomes 286. The remaining rows were re-measured and did not move. The
 enum-variant measure was calibrated against the tree those values were
 published against before it was applied, as in the pass above.
 
+The row for integration test files was then **remeasured on 2026-10-21**,
+after the CI/test-throughput recovery M004 milestone consolidated the root
+package's integration-test executables into families. That milestone changed
+the row's **measure**, not only its value, so both were re-derived rather than
+carried over. The previous measure counted `tests/*.rs` — the top-level
+integration test files — and read **286**. The new measure counts the root
+integration test *modules*, which are now `tests/*.rs` plus the `.inc`
+members inside each family directory, with the `tests/common/` helper tree
+excluded because it holds no test: `tests/*.rs` (now **0** — every root
+integration test file moved into a family) plus `tests/*/*.inc` (**301**),
+which is **301**.
+
+The count moved from 286 to 301 for two reasons that cancel in opposite
+directions, and both are counted rather than estimated: one file was deleted
+(`tests/test_util.rs`, a helper with no test functions and no reference — it
+was an auto-discovered cargo target that compiled 63 lines of dead code into
+its own executable), while 16 files that the old measure could not see became
+visible — the 11 `tests/projection_replay/*.inc` members and the 5
+`tests/session_family/*.inc` members, which the M003 consolidation had
+already moved out of `tests/*.rs` but which the old measure therefore never
+counted. 286 − 1 + 16 = 301.
+
+The measure is now pinned in the row's `Source` column and is checked by
+`scripts/check_test_target_references.py`, so a later consolidation that
+moves or adds a module cannot leave the recorded count stale.
+
+The two rows the CI/test-throughput recovery **M005** milestone could affect
+were **remeasured again on 2026-10-22**, at the measured candidate
+`3dfeb6e2f`. Each was re-measured against its own listed `Source`, not
+carried over, and **neither moved**: integration test files stayed at
+**302** (`tests/*.rs` is 0 and `tests/*/*.inc` is 302, `tests/common/`
+excluded) and CI guard scripts stayed at **68** (`scripts/check_*`; M005
+added no guard script). The remaining rows were re-measured and did not
+move either — M005 changed no product source, no `codegg-core` module, no
+protocol enum, no table, and no migration.
+
+M005's own measurements — the linked root test-executable count (288 → 21),
+the measured per-family link cost, and the hosted two-phase wall-clock —
+are **not** rows of this table. They are owned by
+`architecture/testing.md`, which holds the method and the totals, and their
+sources are
+`plans/validation/ci-test-throughput-recovery/measurement-record.md`. This
+table stays the single source of truth for *counts*; the two documents do
+not copy a number from each other without naming where it came from.
+
+Two rows were **remeasured again on 2026-10-21**, after the CI/test-throughput
+recovery M006 and M007 milestones. Each was re-measured against its own
+listed `Source`, not carried over:
+
+- **Integration test files** 301 → **302**. M007 removed 84 test *functions*
+  but no integration-test *module*; M007's work package D added one member,
+  `tests/command_git/secret_scan_self_tests.inc`, which now carries the five
+  `secret_scan` self-tests that used to live in the shared helper tree. The
+  measure is unchanged.
+- **CI guard scripts** 62 → **68**. The previous value predated this
+  workstream's guard work: M001 added `check_cargo_profile_alignment.py`,
+  M003 added `check_test_ownership.py`, M004 added
+  `check_test_target_references.py`, M006 added
+  `check_test_assertion_quality.py` and `check_tool_program_parse_only.py`,
+  and M007 added `check_test_duplication.py`. Six new scripts, 62 + 6 = 68.
+  (`scripts/rust_test_scan.py` and `scripts/scoped_selection.py` do not match
+  the row's `scripts/check_*` measure and are not counted.)
+
+The remaining rows were re-measured and did not move.
+
 `main` then advanced to `2c1953347` (the Linux sandbox admission and ADR
 cleanup, PR #149) — **323 commits** — and the branch was reconciled with it by
 a fourth merge on 2026-10-21. That advance is not count-neutral, and it also
@@ -428,6 +493,59 @@ files, 83 tool source files, 91 architecture docs and 67 guard scripts on this
 branch, 286 / 80 / 87 / 62 on `main` — before it was applied to the merged
 tree.
 
+`main` then advanced to `f4019a410` (PR #162, the Linux trusted-git C008
+contained managed-worktree work) — five commits past `23987df2f` — and the
+branch was reconciled with it by a fifth merge on 2026-10-22.
+
+That advance is not count-neutral for the root integration tests, and this
+reconciliation is not a rebase: `main` still carries its integration tests as
+top-level `tests/*.rs` files, while this branch consolidated them into 21
+families (M004). The two sides had to be reconciled as two *shapes*, not two
+values. `main`'s advance added sixteen top-level root integration-test files
+(286 → 302) and no family members.
+
+Two rows moved. The **integration test files** row keeps the M004 measure —
+`tests/*.rs` plus `tests/*/*.inc`, with the `tests/common/` helper tree
+excluded — and read **318** on that merged tree: **3** top-level files plus
+**315** family members. (The sixth pass, below, re-measured it.) Thirteen of
+`main`'s sixteen new top-level files were
+absorbed into the families that already owned their subject, which moves a file
+without moving the count: 16 + 302 = 318 before the absorption, and 3 + 315 =
+318 after it. The three that stay top-level are named by a hosted qualification
+lane — `shared_checkout_c006` and `macos_native_shared_checkout_containment`
+by the macOS shared-checkout lane, `contained_worktree_c008` by the Linux M004
+lane — and a target a CI lane names keeps its own target, which is the rule
+M004 already applied to the branch's own six "family of one" targets. The
+directory tree's "Integration tests (318 files)" follows.
+
+The **CI guard scripts** row moved 68 → **74**: six guards came from `main`
+(`check_blackboard_contract_matrix.py`, `check_network_intent_owner_wiring.py`,
+`check_process_denial.py`, `check_shared_checkout.py`,
+`check_test_filter_execution.py` and `check_writer_disposition.py`), and the
+branch's own six are already counted. It then moved 74 → **76** with
+`check_test_self_reexec_paths.py`, which the merge's own hosted lanes showed
+to be needed: moving a test into a family changes the path cargo knows it by,
+and a self-re-exec test that names the old bare path selects **zero** tests
+while still exiting **0** — and with
+`check_test_common_binding.py`, which the merge's own hosted clippy step
+showed to be needed: a binder of the shared helper tree that binds it
+privately makes the tree's `pub` items unreachable from its crate root, and
+the tree carries no blanket dead-code suppression.
+
+The remaining rows were re-measured against their own listed `Source` and did
+not move: `codegg-core` modules **54**, `CoreRequest` variants **263** (239
+struct + 24 unit), `CoreResponse` variants **172** (171 struct + 1 unit),
+`CoreEvent` variants **92**, `ProjectionEvent` variants **47**, `AppEvent`
+variants **61**, tool registrations **67** (54 `register` + 13
+`register_boxed`), distinct production tool names **61** (66 production
+`impl Tool for` blocks, 5 of which resolve their name at runtime, less the 7
+test-only mock impls under `#[cfg(test)]`), tool source files **83**, authorized
+operations **257** (247 representative requests), identity newtypes **19**,
+built-in slash commands **168**, built-in agents **10**, bundled themes **50**,
+TUI state modules **33** (34 `.rs` files), database tables **95 statements / 91
+tables**, storage layout version **87**, Git operation variants **54**, Git risk
+classes **11**, LSP server definitions **39**, architecture docs **91**, and
+workspace member crates **11 (+ root)**.
 
 Two rows were **remeasured on 2026-10-21** for the provider-reasoning-control
 milestone, each against its own listed `Source` rather than copied from
@@ -486,12 +604,48 @@ bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
 `mod.rs`), database tables **95 statements / 91 tables**, Git operation variants
 **54**, Git risk classes **11**, and workspace member crates **11** (+ root).
 
+Three rows moved again on **2026-10-23**, when the provider-reasoning-control
+milestone chain was reconciled with `main` for the third time — `main` had
+advanced by 79 commits, carrying the CI/test-throughput recovery workstream
+and its M004 root-test-target family consolidation. The **integration test
+files** row changed its **Source**, not just its number: `main` consolidated
+the root integration test *modules* into family directories, so `ls tests/*.rs`
+alone now reports 4 and no longer measures the suite. The row's Source is
+therefore `tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper
+tree excluded, and the count is **321** (4 `tests/*.rs` plus 317
+`tests/*/*.inc`). The **CI guard scripts** row is **80** (`ls scripts/check_*`
+— `main`'s tree carries 76, and this chain contributes four:
+`check_reasoning_intent_fidelity.py`, `check_reasoning_vocabulary_open.py`,
+`check_model_profile_capability_mirror.py` and `check_tui_reasoning_surface.py`).
+The **tool source files** row was **stale on `main` and is corrected rather
+than incremented**: it read 83, but `main` added
+`src/tool/bash/tests/git_fixture.rs` without re-measuring the row, so
+re-measured against its own listed `Source` (`src/tool/**.rs`, incl. `bash/`)
+it is **84**. This chain contributes **no** root integration test file of its
+own — `crates/codegg-core/tests/reasoning_overlay_narrowing.rs` is outside the
+row's Source, and the two root test files it edited
+(`tests/model_preference_convergence.rs` and `tests/connect_tui_restoration.rs`)
+were *moved* by `main`'s consolidation into
+`tests/core_daemon/model_preference_convergence.inc` and
+`tests/tui_render/connect_tui_restoration.inc`, so the merge kept both edits
+without adding a file. Every other row was **confirmed unchanged** by
+measurement: architecture docs **91**, tool registrations **67** (54 `register`
++ 13 `register_boxed`), distinct production tool names **61**, LSP server
+definitions **39**, `codegg-core` modules **54**, `AppEvent` variants **61**,
+`CoreRequest` variants **266** (240 struct + 26 unit), `CoreResponse` variants
+**174** (173 struct + 1 unit), `CoreEvent` variants **92**, `ProjectionEvent`
+variants **47**, authorized operations **260**, identity newtypes **19**, built-in
+slash commands **168**, built-in agents **10**, bundled themes **50**, TUI state
+modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements
+/ 91 tables**, storage layout version **88**, Git operation variants **54**, Git
+risk classes **11**, and workspace member crates **11** (+ root).
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 91 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 67 (54 `register` + 13 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
 | Distinct production tool names | 61 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (66 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 7 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`) |
-| Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`) |
+| Tool source files | 84 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 54 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
@@ -510,8 +664,8 @@ bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 300 | `tests/*.rs` |
-| CI guard scripts | 71 | `scripts/check_*` |
+| Integration test files | 321 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| CI guard scripts | 80 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -780,7 +934,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (296 files)
+├── tests/                      # Integration tests (321 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -813,13 +967,13 @@ Full `check_*` inventory lives in `scripts/` (70 guards) and additionally covers
 
 The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
 
-The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **268** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is four test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002, `tests/tui_composer_motions.rs` from M004, `tests/tui_composer_selection.rs` from M005) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
+The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **268** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is four test files (`tests/tui_render/tui_composer_cursor.inc` from M001, `tests/tui_render/tui_composer_claims.inc` from M002, `tests/tui_render/tui_composer_motions.inc` from M004, `tests/tui_render/tui_composer_selection.inc` from M005) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
 
-The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/managed_scratch_job_admission.rs` and `tests/linux_native_scratch_containment.rs`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
+The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/scheduler_jobs/managed_scratch_job_admission.inc` and `tests/security_permission/linux_native_scratch_containment.inc`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
 
 Every row was **remeasured on 2026-10-20** against its listed `Source` when the TUI editor Helix parity workstream (M001–M013, M015–M020) was reconciled with `main`. Sixteen rows had drifted: architecture docs **87**, tool registrations **65** (`registry.register` / `registry.register_boxed` inside `with_options()`), distinct production tool names **61**, tool source files **80**, `CoreRequest` variants **258** (234 struct + 24 unit), `CoreResponse` variants **168**, `CoreEvent` variants **92**, authorized operations **252** (distinct `OperationDescriptor::new` names), identity newtypes **19**, built-in slash commands **166** (the count `built_in_command_count_matches_release_docs` asserts), TUI state modules **32** (33 `.rs` files incl. `mod.rs`), database tables **92** (`CREATE TABLE` occurrences), storage-layout version **83**, integration test files **269**, and CI guard scripts **62**. Four methods were ambiguous and were pinned by re-running them at the commits that originally recorded each value — `541a1c84`, `3f8ecc48`, `ac4d5962` and `fc53d0af` — so the rows keep the counting method the table has always used rather than a new one. The tool-name row's exclusion note was corrected too: there are now **7** test-only `impl Tool for` mocks, not 5 — `disabled.rs` and `broker.rs` joined `program_manifest.rs`, `catalog.rs` and `tool_search.rs`. The counts on both sides of the `main` merge were individually correct for their own tree (58 guard scripts each, 268 test files on `main`, 244 on the branch); the merged tree is the union, so the two file-count rows moved again, and the sixteen code-count rows had been drifting on `main` and on this branch independently.
 
-The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_composer_motions.rs` (M004), `tests/tui_composer_selection.rs` (M005), `tests/tui_composer_undo.rs` and `tests/tui_composer_insert_transitions.rs` (M006), and `tests/tui_composer_keymap_consistency.rs` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
+The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_render/tui_composer_motions.inc` (M004), `tests/tui_render/tui_composer_selection.inc` (M005), `tests/tui_render/tui_composer_undo.inc` and `tests/tui_render/tui_composer_insert_transitions.inc` (M006), and `tests/tui_render/tui_composer_keymap_consistency.inc` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
 
 Two rows moved again on **2026-10-20** when the M005 writer-containment corrective closed C005 (process and persistent-service deny contract): `codegg-core` modules are **51** (`pub mod` in `crates/codegg-core/src/lib.rs` — the count moved by one, the new `process_admission` module that owns the authoritative process admission state and the live persistent-process registry) and integration test files are **282** (`ls tests/*.rs` — the count moved by one, `tests/process_denial_c005.rs`). CI guard scripts are **64** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_process_denial.py`). The immediately preceding row's C004 measurement (`codegg-core` **50**, test files **281**, guard scripts **63**) was correct for its own tree and is superseded here.
 
@@ -830,6 +984,23 @@ Three rows moved again on **2026-10-22** when the agent-workstream blackboard cl
 Two file-count rows moved again on **2026-10-22**, when the provider-reasoning-control line was reconciled with `main` a second time: `main` had advanced past `8cee65934` to `47f5572b1` (the agent-workstream blackboard's M008) while the reconciliation was still in flight. The two rows are the **union of both sides' contributions**, each measured in the merged tree rather than carried over from either side: integration test files are **300** (`ls tests/*.rs` — `main` contributes the two new `tests/blackboard_trajectory_m008.rs` and `tests/blackboard_economics_m008.rs`, and **this line contributes none**: its new suite, `crates/codegg-core/tests/reasoning_overlay_narrowing.rs`, lives under that crate's own `tests/` directory, which the root `tests/*.rs` Source does not count — the same distinction the M008 pass drew for `tests/common/blackboard.rs`); CI guard scripts are **71** (`ls scripts/check_*` — `main`'s 67 plus this line's four). The architecture-doc row is **91** and is `main`'s alone: this line adds no architecture document. Every code-count row is unchanged and was re-checked against its own listed `Source` rather than assumed.
 
 Every other row was re-checked against its listed `Source` and is unchanged.
+
+One row moved on **2026-10-22** when the Linux trusted Git cost corrective opened C008 (contained managed-worktree creation): integration test files are **301** (`ls tests/*.rs` — the count moved by one, `tests/contained_worktree_c008.rs`). C008 added one production source file (`src/git_contained_worktree.rs`) but **no** new `codegg-core` module (the new items live in the existing `worktree_service` and `worktree` modules), **no** schema migration, **no** new `GitOperation` variant, **no** new tool, **no** new request/response/event variant and **no** new guard script — so every code-count row is unchanged, each re-checked against its own listed `Source` rather than assumed. The **architecture docs** row is unchanged at **91** (`architecture/*.md`): C008 extended `git.md` and `session_launch.md` rather than adding a document. The `git` module's own deep dive covers the new contained route; see [git.md](git.md) §"Contained managed-worktree creation".
+
+**Amended 2026-10-22 (same row, no count moved).** The contained operation was **measured** to be two steps rather than one: `git worktree add <path> <existing-branch>` locks and rewrites `refs/heads/<branch>` even when the value is unchanged, so it cannot run inside a grant that excludes `refs`. ADR-0048 was **amended** accordingly — the operation is `git worktree add --detach <path> <commit>` followed by `git symbolic-ref HEAD refs/heads/<branch>`, both inside the same containment. The writable set did not widen, no code-count row moved, and no new module, variant, tool or guard was added.
+
+One row moved on **2026-10-22** when the CI/test-throughput recovery line reconciled with `main` and absorbed `main`'s integration tests into the recovery families: CI guard scripts are **75** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_test_self_reexec_paths.py`). The **integration test files** row is unchanged at **318** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded): the absorption moved files between families without adding or removing one. The new guard exists because the absorption changed the path cargo knows a moved test by — a family member's path is `<member>::<test_fn>`, a standalone target's is `<test_fn>` — and a self-re-exec test that keeps the old bare path selects **zero** tests while still exiting **0**, so the child does no work and the parent reads that empty success as evidence. The hosted Windows and Linux M004 lanes showed both consequences: a fixture child that published no PID, and an interrupted-publication recovery scenario that was never exercised. Every code-count row was re-checked against its own listed `Source` and is unchanged.
+
+One row moved again on **2026-10-22** when the same line reconciled with `main` a **sixth** time, at `7d3c6ed09` (PR #166, the Linux trusted-Git C008 contained worktree): integration test files are **319** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved by one, the new `tests/composed_two_agent_race_m011.rs`). That file **stays top-level**: it drives two live agents, and the agent-loop harness suites drain the process-global event bus and assert that nothing was left pending on it, so sharing a binary with them turns that assertion into a cross-test race. The root package's test-target count is therefore **25** (21 families + 4) and the workspace's **53**.
+
+The same merge also produced a tree that **did not compile**, and no merge tool reported it: `main`'s edit to the agent-loop harness included a shared helper with `#[path = "common/scripted_provider.rs"]`, and a `#[path]` attribute is relative to **the file that carries it** — the harness had moved into `tests/agent_loop/`, so the path resolved to a directory that does not exist. The two sides touched different paths, git paired them by rename, and the break was silent; `cargo check --workspace --all-targets` on the merged tree is what found it. The merged family reaches the shared tree through the binding its root already declares, so the private include was both broken and redundant.
+
+CI guard scripts are now **76** (`ls scripts/check_*`): `main`'s advance added
+no guard, and this line's two guards are the ones it did — `check_test_self_reexec_paths.py` and `check_test_common_binding.py`. Every code-count row was re-checked against its own listed `Source` and is unchanged.
+
+One row moved on **2026-10-23** when the Linux sandbox admission follow-up corrective opened C003 (typed Git live-read consistency and hostile-metadata review): integration test files are **321** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved by two, C003's new `tests/command_git/git_read_consistency.inc` and `tests/command_git/git_hostile_metadata.inc`). Both new members live inside the consolidated `command_git` family, so the root package's **test-target** count did not move: it is still **25** (21 families + 4) and the workspace's **53**. Only the integration-test *file* count moved, and only because two files were added.
+
+No row moved again on **2026-10-22** when the same line reconciled with `main` a **seventh** time, at `726f3c645` (PR #167, the Linux trusted-Git C008 contained worktree). That advance is **documentation only** — four records (`architecture/blackboard_contract_matrix.md`, `plans/closure/agent-workstream-blackboard/011-status.md`, `plans/registry.md`, `plans/subsystems/agent-workstream-blackboard-roadmap.md`) and no code — so the counts stand unchanged: integration test files **319**, CI guard scripts **76**, root package test targets **25** (21 families + 4), workspace test targets **53**. Both sides edited `plans/registry.md`, so the merge was checked rather than assumed: the row the branch owns is byte-identical to its pre-merge copy, the row `main` owns is byte-identical to `origin/main`'s, and the file both sides edited differs from **both** parents.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 

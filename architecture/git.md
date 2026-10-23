@@ -77,7 +77,9 @@ kill_on_drop). stdout/stderr pass through
 The trusted process policy also pins repository-controlled execution settings
 with Git `-c` options: hooks, fsmonitor, external diff, credential helpers,
 SSH command overrides, signing programs and pagers are disabled; diff/show/log
-also receive `--no-ext-diff --no-textconv`. `classify_git_request` returns a
+also receive `--no-ext-diff --no-textconv`. The environment additionally sets
+`GIT_NO_REPLACE_OBJECTS=1`, so a repository-declared `refs/replace/*` cannot
+substitute one object for another on a read. `classify_git_request` returns a
 typed `GitExecutionPolicyOutcome` before command construction. It distinguishes
 trusted non-executable requests, requests requiring contained execution or
 additional authorization, explicit authority changes, and malformed requests.
@@ -89,9 +91,109 @@ their subcommand names alone are not treated as the security boundary.
 remain available. This policy does not protect writable `.git` metadata or
 claim network isolation; those are separate Linux execution-isolation gates.
 
+**Pinned keys are not enough on their own.** A `-c` override beats the keys
+it *names*, in every configuration file the child reads — so an included file
+cannot smuggle a named key past it. It cannot beat a key it does not name,
+and two of those keys are named by the *repository*: `filter.<name>.clean`
+and `diff.<name>.command`. `git status` and `git diff` are on the trusted
+read route and both compare the working tree against the index *through the
+clean filter*, so a repository that declares a filter and ships an attribute
+that selects it gets that command executed by an ordinary read. This was
+reproduced on this host before it was fixed.
+
+`crates/egggit/src/config_surface.rs` therefore inspects the repository's
+configuration surface before the trusted route spawns. It parses the
+configuration itself (it never shells out to `git config`, which would honour
+includes and could run helpers), follows `include.path` and
+`includeIf.<condition>.path`, and is bounded on include depth, file count,
+per-file size and total bytes. It reports the dangerous **surfaces** it finds
+and never a configuration **value**, so a credential helper whose value embeds
+a password cannot leak through the report. The trusted route refuses when the
+surface declares something it cannot neutralise:
+
+| Surface | Disposition |
+|---|---|
+| `filter.<name>.process` / `.clean` / `.smudge` | refused — reachable from an ordinary `git status` or `git diff` |
+| `diff.<name>.command` | refused — a repository-chosen diff driver |
+| an inspection that was truncated | refused — "we could not check" is not "we checked and found nothing" |
+| `core.attributesFile`, `core.alternateRefsCommand`, `core.gitProxy`, `core.pager`, `core.editor`, `sequence.editor` | neutralised by the pinned override table |
+| `url.*.insteadOf`, `credential.<url>.helper`, `core.sshCommand` | reachable only from a remote operation, which the trusted route refuses |
+| `merge.<name>.driver` | reachable only from a merge operation, which the trusted route refuses |
+
+The refusal reuses the existing typed vocabulary
+(`RequiresContainedExecution` with `CleanSmudgeFilter` or
+`ExternalDiffOrTextconv`, which the route's gate turns into
+`BackendUnavailable`). No new outcome shape was invented and **no Git
+authorization was widened**: the trusted read route can now do less, not
+more.
+
+Two limits of the inspection are recorded rather than papered over. It is a
+pre-flight, so it cannot close the window between the check and the spawn.
+And it follows `includeIf` conditions **unconditionally**, because
+`onbranch:`, `gitdir:` and `hasconfig:` cannot be evaluated faithfully at
+inspection time — so it over-reports relative to what the child will
+actually read, which is the safe direction.
+
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
-exit code, and `ProjectionHints`.
+exit code, `ProjectionHints`, and the **consistency class** the read was
+obtained under (see "Read consistency" below).
+
+### Read consistency
+
+A Git read is only as trustworthy as the object generation it observed, and a
+consumer that needs one stable generation has to be able to *say* so at the
+type level rather than in prose. `crates/egggit/src/consistency.rs` owns that
+vocabulary:
+
+- **`GitReadConsistency`** is the closed class a read carries:
+  `ImmutableGeneration` (one materialized object generation), `CapturedNotCurrent`
+  (a capture that was immutable when taken and may now be stale),
+  `LiveMutable` (bytes read from a concurrently mutable repository; the
+  observation may be torn), and `NoObjectGeneration` (the read consulted no
+  object store).
+- **`GitReadFact<T>`** is a read result *together with* its class. The class
+  travels with the value, so a consumer cannot receive the bytes and forget
+  what it was allowed to assume about them. Eighteen typed `egggit` read
+  functions return it.
+- **`GenerationConsistent<T>`** is the only shape a generation-bound consumer
+  may accept, and `admit_generation_consistent` is the only way to obtain
+  one. A live-class read is **refused**, not warned about.
+- **`LiveReadCapability`** is the authority a consumer must **hold** to use a
+  live-class read — on the same footing as `DestructiveRepositoryChange` gates
+  a destructive mutation. Its only constructor is compiled out unless
+  `egggit`'s `git-live-read-test-support` feature is enabled, and the shipped
+  binary does not enable it. **A production build therefore cannot obtain the
+  capability at all.**
+- `GitReadConsistency::weaker` is the composite rule: a read assembled from
+  several Git invocations carries the **weakest** class among them.
+
+Two boundaries of the class are worth stating plainly:
+
+- **The class describes the object store only.** The private object view
+  covers the object database; refs, the index and the worktree are always read
+  live. A read that consults no object store reports `NoObjectGeneration`
+  rather than borrowing a class it did not earn.
+- **`CapturedNotCurrent` is not a weaker kind of `ImmutableGeneration`.** The
+  preparation cache is a best-effort mechanism with eviction, not a durability
+  boundary, so a cache-served read reports `CapturedNotCurrent`. It is still
+  admissible to a generation-bound consumer, because such a consumer needs
+  the *internal consistency* of the bytes; currency is a separate question
+  that the publisher's compare-and-swap answers.
+
+The root crate's fence is `src/git_consistency.rs`. `admit_generation_bound`
+maps a refusal onto the typed `GitServiceError::Consistency` variant, so a
+caller that ignores the fence still cannot turn a refusal into a payload.
+`live_read_capability()` returns `None` in every build: that is the single
+place a live route would have to change, and changing it is a reviewed
+decision rather than a build convenience.
+
+The **publication** boundary records the class too. `PreparedPrivateIndex`
+carries the class of the index generation the publication is based on, and
+`GitIndexPublicationReceipt` carries the class it was committed from. A
+live-class staging is refused before the lock is taken and before the journal
+is written: a live read may be torn by an outside writer, and a torn
+generation has no fingerprint to compare and swap against.
 
 Object-reading trusted commands use a private object view without
 `objects/info`, so a repository alternate created after admission cannot
@@ -111,6 +213,87 @@ The cache lowers repeated Git-read preparation on ext4, but fragmented cold
 snapshots remain above the accepted M003 latency budget. C010 remains the
 governing no-production-admission decision until the complete performance and
 compatibility gates pass.
+
+### Contained managed-worktree creation
+
+`WorktreeService::create_reserved` reaches `git worktree add`, which
+`classify_git_request` classifies as requiring `CleanSmudgeFilter`
+containment: a linked worktree writes the branch's files through the
+repository's smudge filter, and a smudge filter is arbitrary code. The
+capability is not satisfiable by neutralizing configuration, because a filter
+*command* lives under a name the caller cannot enumerate, so a `-c` override
+cannot disable an unknown filter. Containment, not policy, is what keeps
+repository-controlled code from the host.
+
+`src/git_contained_worktree.rs` is the contained route, authorized by
+ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`).
+It grants **exactly one operation**, carried out in two steps:
+
+```text
+git --git-dir=<gitdir> worktree add --detach <checkout> <commit>
+git --git-dir=<administration-dir> symbolic-ref HEAD refs/heads/<branch>
+```
+
+The attached form of `worktree add` is deliberately **not** used. Measured on
+Git 2.43.0 and 2.55.0: `git worktree add <path> <existing-branch>` locks and
+rewrites `refs/heads/<branch>` even though the value is unchanged, so it fails
+closed against this grant with `cannot lock ref 'HEAD'`. The detached form
+writes **no ref at all**, and attaching the branch afterwards is a write to the
+administration directory the grant already names. Both steps run inside the
+same grant and the same containment.
+
+Three properties carry the contract:
+
+- **The branch is the daemon's.** The daemon creates it first through the
+  existing typed, policy-allowed `git branch` path, so the child attaches to a
+  branch that already exists and writes **no ref**. The grant is what
+  enforces this: `refs` is read-only to the child, so a child that tried to
+  create a branch would fail closed rather than write one.
+- **The attach step runs last, with the daemon's target.** The administration
+  directory is inside the child's grant, so repository-controlled code could
+  write that directory's `HEAD` and point the worktree at a branch of its
+  choosing. The attach is the child's final step and its target is fixed by
+  the daemon's argv, so such a write is overwritten rather than trusted. The
+  registration check then reads the end state back through Git itself.
+- **The grant is the administration directory and nothing else.** The child may
+  write the new checkout, the daemon scratch, and
+  `<common-gitdir>/worktrees/` — the linked worktree's own administration
+  directory, which Git always places inside the common Git directory
+  (`git worktree add` has no separate-git-dir option). Every other path under
+  the Git directory — `refs`, `objects`, `index`, `config`, `hooks`,
+  `packed-refs` — is read-only to the child. The child runs with the Git
+  directory as its working directory and never sees the source working tree.
+- **Containment is asserted, not requested.** The launch's *obtained*
+  enforcement is read after the launch; a request is a hope. The grant itself
+  is asserted against the built launch description, not against the
+  configuration that was requested.
+
+Two mechanisms make that grant expressible:
+
+- `SandboxConfig::with_read_only_paths` grants a path for reading without
+  granting it for writing, so a directory that is immutable except for one
+  writable subdirectory can be described.
+- `SandboxConfig::with_expected_created_git_pointers` exempts exactly one
+  path from the protected mount view's "hide a `.git` that does not exist yet"
+  rule. The child has to write the checkout's `.git` **pointer file**, because
+  Git refuses to create a worktree in a non-empty directory. The exemption
+  names only the top-level `.git` of a granted write root; a nested path is
+  refused when the launch description is built. Afterwards the daemon
+  verifies that the result is a pointer file naming the expected
+  administration directory — a nested repository is a failure, not a success.
+
+The child is still **untrusted code**. The repository's own configuration may
+define filters, hooks, merge drivers, fsmonitor hooks and credential helpers;
+the sandbox, not the absence of that configuration, is what keeps them from
+the host. The checkout's *contents* are untrusted content, and no claim is
+made about them.
+
+No other Git operation is affected. `git add`, `git merge`, `git rebase`,
+`git stash`, `git am`, `git bisect` and remote transport keep their existing
+classification, and `git worktree add` keeps its classification too — the
+contained route is a separate, explicitly named path, not a change to what
+the ordinary process boundary allows. ADR-0044 remains proposed and owns the
+mutable object-read and metadata-promotion classes; neither is granted here.
 
 ### Mutation path
 
@@ -629,7 +812,7 @@ dirty/conflicted state, validation summary, and retention attention. It does
 not expose credentials, full diffs, or authority to integrate; integration
 remains an explicit parent-side typed Git operation.
 
-### Test counts (verified 2026-10-19)
+### Test counts (verified 2026-10-19; the C003 rows re-verified 2026-10-23)
 
 Measured from the compiled test binaries' own `--list` output, not from a
 source-text grep: `cargo test -p <crate> --lib -- --list` and
@@ -639,13 +822,28 @@ grep undercounts, because a test attribute can share a line with others.
 | Module / file | #[test] + #[tokio::test] |
 |---------------|--------------------------|
 | `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 362 |
-| `egggit/operation_state.rs` | 8 |
-| `egggit` (all `src/*.rs`) | 109 |
+| `egggit/operation_state.rs` | 11 |
+| `egggit` (all `src/*.rs`) | 165 |
 | `egggit/conflict.rs` | 7 |
-| `tests/git_mutations_integration.rs` | 12 (tokio::test) |
-| `tests/git_network_integration.rs` | 29 |
-| `tests/git_recovery_integration.rs` | 19 |
-| `tests/git_index_publication.rs` | 22 (C007 private-index publication; 17 C007 + 5 shared secret-scan) |
+| `tests/command_git/git_mutations_integration.inc` | 12 (tokio::test) |
+| `tests/command_git/git_network_integration.inc` | 29 |
+| `tests/command_git/git_recovery_integration.inc` | 19 |
+| `tests/command_git/git_index_publication.inc` | 21 (C007 private-index publication; 17 C007 + 4 C003 regressions) |
+| `tests/command_git/git_read_consistency.inc` | 16 (C003 read-consistency contract and fence) |
+| `tests/command_git/git_hostile_metadata.inc` | 6 (C003 hostile-configuration surface) |
+
+The `egggit` rows rose from 109 and 8 on the C003 head: the typed
+consistency contract, the configuration-surface detector, and the
+trusted-route pre-flight tests are in that crate. The
+`git_index_publication` row rose from 17: C003 added the regression tests for
+the three C007 invariants that were claimed but untested, plus the
+live-class staging refusal.
+
+These rows count the **member** of the consolidated `command_git` family, so
+they are smaller than the pre-consolidation per-file counts for the members
+that share the family's `common` helper: the 5 shared secret-scan tests live
+once in `tests/command_git/secret_scan_self_tests.inc` and are counted
+there, not in each member.
 
 ### Key test categories
 
@@ -674,7 +872,7 @@ grep undercounts, because a test attribute can share a line with others.
   the staged object. The **contained** staging step additionally needs a
   qualified host — it is exercised by the hosted
   `production_private_index_publisher_stages_and_publishes_under_containment`
-  test in `tests/linux_m004_process_ipc.rs`.
+  test in `tests/linux_git_test_support/linux_m004_process_ipc.inc`.
 - **policy_drift_tests** (root): Ensures canonical lists match Phase F
   entries. `root_and_core_share_canonical_lists` verifies root and
   codegg-core read from same source.

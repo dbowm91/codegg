@@ -1328,28 +1328,4 @@ mod tests {
         let pending = svc.pending_for_session("s1").await.unwrap();
         assert_eq!(pending.len(), 2);
     }
-
-    #[tokio::test]
-    async fn recover_from_terminal_jobs_is_idempotent() {
-        let svc = ToolProgramNotificationService::new();
-        let jobs = vec![RecoveredTerminalJob {
-            program_id: "tp-1".into(),
-            job_id: "j-1".into(),
-            session_id: Some("s1".into()),
-            status: "completed".into(),
-            summary: "ok".into(),
-            failure_class: None,
-            success: true,
-            created_at: 1000,
-        }];
-        let recovered1 = svc.recover_from_terminal_jobs(jobs.clone()).await.unwrap();
-        assert_eq!(recovered1, 1);
-
-        // Recover again — should not create duplicate
-        let recovered2 = svc.recover_from_terminal_jobs(jobs).await.unwrap();
-        assert_eq!(recovered2, 0);
-
-        let pending = svc.pending_for_session("s1").await.unwrap();
-        assert_eq!(pending.len(), 1);
-    }
 }

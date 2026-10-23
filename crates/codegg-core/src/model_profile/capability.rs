@@ -1,5 +1,5 @@
 //! The per-model reasoning capability record, its resolution, and the
-//! local admission policy that applies it (ADR-0049).
+//! local admission policy that applies it (ADR-0050).
 //!
 //! The record itself is a schema type, so it lives in `codegg-config`
 //! (the crate both the configuration surface and the core profile share)
@@ -363,7 +363,7 @@ pub fn merge_capability(
 
 /// Resolve the effective reasoning capability for one model.
 ///
-/// ADR-0049 §1's authority order: operator/config override ▸ adapter
+/// ADR-0050 §1's authority order: operator/config override ▸ adapter
 /// baseline ▸ discovery overlay ▸ unknown.
 ///
 /// The resolution is **read-only**: it never mutates the baseline, the

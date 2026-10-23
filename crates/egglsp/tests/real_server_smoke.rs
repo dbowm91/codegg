@@ -8074,13 +8074,37 @@ fn check_name_formatting_does_not_affect_closure() {
 
 #[test]
 fn check_name_advertised_is_removed() {
-    // Pass 4 — the string-inference helper is gone. Verify
-    // by checking the file's symbol table. The check
-    // itself is a compile-time guard: if the helper is
-    // re-introduced, the test is updated to assert the
-    // new contract.
+    // Pass 4 — the string-inference helper is gone. The harness no
+    // longer maps check names back to capabilities; the typed
+    // `LspOperationCompatibility` record carries the `advertised` field
+    // directly.
     //
-    // The harness no longer maps check names back to
-    // capabilities; the typed `LspOperationCompatibility`
-    // record carries the `advertised` field directly.
+    // This is the falsifiable form of that contract. Two evaluations of
+    // the *same* check carry the *same* name, and their outcomes differ
+    // only because of the typed `advertised` flag — so the name cannot be
+    // what decided the outcome. If a name-based inference is ever
+    // reintroduced, the names stop matching or the statuses stop
+    // differing, and this test fails.
+    let location = lsp_types::Location {
+        uri: lsp_types::Uri::from_str("file:///tmp/advertised-contract.rs").expect("valid uri"),
+        range: lsp_types::Range {
+            start: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: lsp_types::Position {
+                line: 0,
+                character: 1,
+            },
+        },
+    };
+    let advertised = compatibility::evaluate_references_check(true, &[location], 1);
+    let not_advertised = compatibility::evaluate_references_check(false, &[], 1);
+
+    assert_eq!(advertised.status, CompatibilityCheckStatus::Passing);
+    assert_eq!(not_advertised.status, CompatibilityCheckStatus::Unsupported);
+    assert_eq!(
+        advertised.name, not_advertised.name,
+        "the check name must not decide the outcome; the typed `advertised` flag must"
+    );
 }

@@ -13,9 +13,12 @@ scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/des
                           # config-merge-coverage, no-hardcoded-models, provider
                           # wire/catalog/resilience +
                           # OpenAI endpoint, Eggwork target routing,
-                          # writer-disposition, cargo check workspace
+                          # cargo-profile-alignment, test-ownership,
+                          # test-target-references, writer-disposition,
+                          # cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
+scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
 ```
 
@@ -78,12 +81,24 @@ cargo nextest run --workspace --locked --profile ci  # capped full suite (needs 
                           # give the sweep a private cache root so its result is a
                           # property of the product, not of the host:
                           #   XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci
+scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the change can affect
 ```
 
 - New `#[tokio::test]`s default to `current_thread`; use
   `flavor = "multi_thread", worker_threads = 2` only for real concurrency/subprocesses.
 - Storage tests: `isolated_pool()` (migrations run inside; never add extra `migrate()`).
-- Test profile strips debuginfo; restore backtraces with `RUSTFLAGS=-C debuginfo=2 cargo test …`.
+- Test profile strips debuginfo; restore backtraces with
+  `cargo test --config 'profile.dev.strip="none"' …`. **`RUSTFLAGS=-C debuginfo=2`
+  does not work** — the profile's `strip` still applies, so the artifact comes
+  out byte-identical with no DWARF sections.
+- The root package's integration tests are **families** (one executable per
+  subject area, under `tests/<family>/`). `cargo test --test <member>` no
+  longer selects a single member; use `cargo test --test <family> -- <member>`.
+- `scripts/verify.sh scoped` selects tests from `docs/test-ownership.toml`. A
+  change in a crate **another crate depends on** widens to every transitive
+  dependent's full surface — the root package depends on all eleven other
+  crates and re-exports several, so the coupling runs through the root's own
+  source and no path rule can see it.
 - Plugin SDKs test separately: `examples/plugins/sdk-rust` (cargo),
   `examples/plugins/sdk-python` (`python3 -m unittest discover`).
 - Full taxonomy, pool strategy, nextest profiles: `architecture/testing.md`.
@@ -145,6 +160,37 @@ change-triggered (`ls scripts/check_*` for the full list):
   projection
   transport → `check_projection_*.py` +
   `check_websocket_bounds.py`; provider lifecycle → `check_provider_connections_*.sh`
+- Test bodies → `python3 scripts/check_test_assertion_quality.py` (every body must
+  assert a checkable property, delegate to a named helper that does, or be recorded
+  in `docs/test-assertion-quality.toml` with the reason it asserts nothing) and
+  `python3 scripts/check_test_duplication.py` (no two bodies may assert the same
+  thing twice unless `docs/test-duplication.toml` records the survivor). Both
+  are in `scripts/verify.sh quick` and in CI. Both are built on
+  `scripts/rust_test_scan.py`, the shared Rust-aware scanner — **never** scan
+  Rust with a regex: a regex scan misreads lifetimes as character literals and
+  undercounts `tests/` by 76%. `rust_test_scan.py --validate` is the ground
+  truth; `check_test_assertion_quality.py --self-test` and
+  `check_test_duplication.py --self-test` prove each guard is not vacuous.
+- A test that **re-executes its own binary** → `python3 scripts/check_test_self_reexec_paths.py`
+  (every `--exact` argument must be the full path of a test function defined in that same
+  file). `--exact` matches the whole test path, and that path is `<member>::<test_fn>` for a
+  family member but a bare `<test_fn>` for a standalone target — so moving a file into a
+  family silently invalidates the bare name it used to carry. A name that matches nothing
+  selects **zero** tests and still exits **0**, so the child does no work and the parent
+  reads an empty success as evidence: the fixture prints nothing, the interrupted publisher
+  never creates its lock, and the recovery scenario is never exercised while the test stays
+  green. In `scripts/verify.sh quick` and in CI.
+- A binder of the **shared integration-test helper tree** → `python3 scripts/check_test_common_binding.py`
+  (every binder of the root package's `tests/common/` must bind it with `pub mod common;`). The
+  tree's items are `pub` and it carries **no** blanket `#[allow(dead_code)]` — that suppression was
+  removed on purpose — so a *private* `mod common;` makes them unreachable from the binding crate
+  root and rustc reports every one of them as dead code: a hosted clippy failure under
+  `-D warnings`, visible only on a **Linux** runner, because this tree's macOS build fails earlier
+  on unrelated findings. In `scripts/verify.sh quick` and in CI.
+- Tool Program parse-only invariant → `python3 scripts/check_tool_program_parse_only.py`
+  (rejects a `pyo3` dependency, a `pyo3` import, a process spawn, or a Python FFI
+  link in `crates/codegg-core/src/tool_program/`). The three test functions that
+  used to "enforce" it could not fail; the guard replaced them.
 
 ## Gotchas
 

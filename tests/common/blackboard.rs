@@ -2,8 +2,8 @@
 
 //! The shared blackboard fixture for the M008 comparison suites.
 //!
-//! Both `tests/blackboard_trajectory_m008.rs` (the functional arms) and
-//! `tests/blackboard_economics_m008.rs` (the measured arms) need the same
+//! Both `tests/agent_loop/blackboard_trajectory_m008.inc` (the functional arms) and
+//! `tests/agent_loop/blackboard_economics_m008.inc` (the measured arms) need the same
 //! three things: a real Git repository with real linked worktrees, a
 //! migrated SQLite database with a live group and member runs, and the
 //! durable claim store over that database. This module is that fixture, so

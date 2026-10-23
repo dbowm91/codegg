@@ -139,7 +139,7 @@ pub const MAX_REASONING_CAPABILITY_LABELS: usize = 32;
 /// The largest accepted length of one reasoning-effort label, in bytes.
 pub const MAX_REASONING_CAPABILITY_LABEL_BYTES: usize = 64;
 
-/// The per-model reasoning capability record (ADR-0049).
+/// The per-model reasoning capability record (ADR-0050).
 ///
 /// Every dimension is independent and carries its own status, so an
 /// undeclared dimension stays `Unknown` instead of collapsing into

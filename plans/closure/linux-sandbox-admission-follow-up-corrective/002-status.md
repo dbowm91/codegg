@@ -636,7 +636,7 @@ Ubuntu 24.04 runner whose Landlock ABI 6 process scopes qualify and which
 already sets `CODEGG_RUN_M005_OFFLINE_NATIVE=1`:
 
 - `delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner`
-  in `tests/linux_m004_process_ipc.rs` builds the delegated child's payload
+  in `tests/linux_git_test_support/linux_m004_process_ipc.inc` builds the delegated child's payload
   with the production builder, reads its axes back the way the scheduler
   executor reads them, launches through the owner with the production
   profile-derived launcher, and asserts the child is denied host IPv4 TCP and

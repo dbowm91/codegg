@@ -1,6 +1,6 @@
 # Provider Reasoning Control Milestone 005 — Discovery overlay from provider catalog metadata
 
-Status: closed (M003 closed; ADR-0049 accepted 2026-10-21; closure record `plans/closure/provider-reasoning-control/005-status.md`; the overlay machinery has **no live source** at this baseline and the daemon-side install site is deliberately not wired)
+Status: closed (M003 closed; ADR-0050 accepted 2026-10-21; closure record `plans/closure/provider-reasoning-control/005-status.md`; the overlay machinery has **no live source** at this baseline and the daemon-side install site is deliberately not wired)
 
 Repository baseline: `c932115421c4f26ca3c9c76ff134754ae4a6ceb5` (branch `feat/auto-20261021-d6b5ffc5`)
 
@@ -15,12 +15,12 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0049-per-model-reasoning-capability-authority.md` (§1 the authority order — the overlay is the third source and may only narrow; §5 no storage change).
-- `plans/adrs/ADR-0048-open-provider-scoped-reasoning-control-vocabulary.md` — the open vocabulary the overlay constrains.
+- `plans/adrs/ADR-0050-per-model-reasoning-capability-authority.md` (§1 the authority order — the overlay is the third source and may only narrow; §5 no storage change).
+- `plans/adrs/ADR-0049-open-provider-scoped-reasoning-control-vocabulary.md` — the open vocabulary the overlay constrains.
 
 Primary class: infrastructure
 
-Amendment (2026-10-21, after ADR-0049's acceptance): the milestone's **decision**
+Amendment (2026-10-21, after ADR-0050's acceptance): the milestone's **decision**
 is unchanged — a provider-published overlay may only narrow the compiled baseline,
 it is applied at M003's single resolution point, malformed content degrades to
 `Unknown` per dimension, and the overlay is absent for every direct provider
@@ -30,7 +30,7 @@ in §2 and §3 is a design document in the pinned upstream, not an implemented w
 contract, and the pinned `/v1/models` response carries no capability block at all.
 The deliverable is therefore forward-compatible narrowing machinery with **no live
 source** at this baseline, and §13 now carries the disclosure criterion that says
-so. See §3 and ADR-0049's amendment note.
+so. See §3 and ADR-0050's amendment note.
 
 ## 1. Objective
 
@@ -41,7 +41,7 @@ This is **infrastructure**, not a user-visible capability: M003's compiled basel
 ## 2. Why this milestone is ready
 
 - **Interface dependency, not a hard one:** M003 closed. M003's resolution function already accepts an absent overlay — the case for every direct provider connection — so this milestone is not on M003's critical path and M003 does not wait for it. It needs M003's record shape and its narrowing rule, which are stable.
-- **ADRs:** ADR-0049 accepted (its §1 overlay position and its "may only narrow" rule). See §14.
+- **ADRs:** ADR-0050 accepted (its §1 overlay position and its "may only narrow" rule). See §14.
 - **Interface dependency — the catalog probe and its digest.** `crates/codegg-providers/src/eggpool.rs` holds the bounded catalog probe: `parse_compatible_models_response` returns `Vec<EggpoolModelSummary>`, and `digest_models` computes the catalog revision by hashing each model's `id` and `name` only.
 - **The upstream contract does not exist yet — verified 2026-10-21.** The
   `eggpool.capabilities.thinking.control_contract.accepted_efforts` path this
@@ -136,7 +136,7 @@ and the parse reduces each catalog entry to exactly that pair before the probe s
 
 ### Explicitly out of scope
 
-- **Persisting the overlay.** ADR-0049 §5 defers it to a separate decision with its own evidence requirement. This milestone adds no column, no table, and no migration.
+- **Persisting the overlay.** ADR-0050 §5 defers it to a separate decision with its own evidence requirement. This milestone adds no column, no table, and no migration.
 - **Requiring an EggPool connection.** Direct provider connections keep the compiled baseline and no overlay.
 - **The frontend option surface.** M004's subject; the overlay only changes what the daemon resolves.
 - **The capability record and the admission policy.** M003's subject.
@@ -356,12 +356,12 @@ Do not claim commands that were not actually run in the closure record. The repo
 
 The agent must stop and report rather than improvise when:
 
-- **M003 has not closed**, or **ADR-0049 is not `accepted`**.
+- **M003 has not closed**, or **ADR-0050 is not `accepted`**.
 - Folding the capability into the existing catalog digest would be the only way to expose it, and the implementation cannot keep the digest's inputs unchanged. The agent reports the digest conflict rather than invalidating stored model preferences.
 - The published contract's shape cannot be parsed defensively — that is, a malformed contract cannot be made to yield `Unknown` per dimension without failing the whole catalog probe. The agent reports that rather than making a malformed provider response break discovery.
 - The overlay would need to be persisted for the milestone to be meaningful. Persistence is explicitly deferred to a separate decision; the agent records the limitation instead.
 - **The overlay's source would require a new provider endpoint.** The only capability shape upstream exposes at runtime rides the integrations-profile route, which CodeGG does not call. Adding a provider surface is a different roadmap's business; the agent records the gap and the route in the closure record instead of adding an endpoint call.
-- The overlay would need to **widen** the baseline to be useful. That is forbidden by ADR-0049; the agent records the gap and leaves the baseline standing.
+- The overlay would need to **widen** the baseline to be useful. That is forbidden by ADR-0050; the agent records the gap and leaves the baseline standing.
 - The always-reasons property would need to come from the provider's advertisement rather than the compiled baseline. The baseline owns it.
 - Direct provider connections would be required to gain an overlay, or an EggPool process would become a runtime requirement.
 - Repository evidence contradicts a canonical invariant in §4.
