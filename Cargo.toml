@@ -473,14 +473,6 @@ name = "interactive_process_attach_resume"
 path = "tests/interactive_process_attach_resume/mod.rs"
 
 [[test]]
-name = "interactive_process_sessions"
-path = "tests/interactive_process_sessions/mod.rs"
-
-[[test]]
-name = "interactive_terminal_tui"
-path = "tests/interactive_terminal_tui/mod.rs"
-
-[[test]]
 name = "scheduler_cancellation"
 path = "tests/scheduler_cancellation/mod.rs"
 

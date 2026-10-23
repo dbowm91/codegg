@@ -421,8 +421,30 @@ def _self_test() -> int:
         )
         return False
 
-    def drop_first_group(manifest: dict) -> None:
-        manifest["groups"] = manifest["groups"][1:]
+    def drop_the_group_that_owns_a_target_alone(manifest: dict) -> None:
+        """Remove a group whose test target no other group owns.
+
+        Dropping *the first* group only orphans a target when that group is
+        the only one that owns it, and that is no longer guaranteed: a
+        consolidated family legitimately answers to several source areas, so
+        several groups can name the same target. An injection that removes a
+        group whose target another group still owns proves nothing, so this
+        one picks a group that owns its target **alone** — which is what
+        "an unowned test target" actually means.
+        """
+        owners: dict[str, int] = {}
+        for group in manifest["groups"]:
+            for pattern in group.get("targets", []) or []:
+                owners[pattern] = owners.get(pattern, 0) + 1
+        for index, group in enumerate(manifest["groups"]):
+            patterns = group.get("targets", []) or []
+            if patterns and all(owners.get(pattern, 0) == 1 for pattern in patterns):
+                del manifest["groups"][index]
+                return
+        # No group owns a target alone, so removing one would orphan
+        # nothing. Removing every group orphans every target, which the same
+        # check must catch.
+        manifest["groups"] = []
 
     def unknown_member(manifest: dict) -> None:
         manifest["groups"][0]["member"] = "not-a-member"
@@ -459,7 +481,7 @@ def _self_test() -> int:
         )
 
     cases = [
-        (drop_first_group, "an unowned test target"),
+        (drop_the_group_that_owns_a_target_alone, "an unowned test target"),
         (unknown_member, "a group naming an unknown member"),
         (unknown_target, "a group naming a nonexistent test target"),
         (unmatched_path, "a source pattern that matches no file"),
