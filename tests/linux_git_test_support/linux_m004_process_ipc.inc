@@ -1027,12 +1027,18 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         operation: &codegg_git::GitOperation,
         label: &str,
     ) -> Result<ManagedProcessResult, codegg::managed_process::ManagedProcessError> {
-        typed
+        let fact = typed
             .execute_contained_live_read_test_only(operation, repository, git, label, false)
             .await
             .map_err(|error| {
                 codegg::managed_process::ManagedProcessError::SandboxFailed(error.to_string())
-            })
+            })?;
+        assert_eq!(
+            fact.class(),
+            egggit::GitReadConsistency::LiveMutable,
+            "the contained live pilot reads an original object database an outside writer may still mutate, so it cannot claim a captured or immutable generation"
+        );
+        Ok(fact.into_value())
     }
 
     let typed = TypedGitExecutionService::new();

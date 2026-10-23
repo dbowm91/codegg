@@ -425,10 +425,16 @@ async fn contained_live_git(
     repository: &Path,
     label: &str,
 ) -> ManagedProcessResult {
-    let result = service
+    let fact = service
         .execute_contained_live_read_test_only(operation, repository, git, label, true)
         .await
         .expect("required contained Git must run or fail closed");
+    assert_eq!(
+        fact.class(),
+        egggit::GitReadConsistency::LiveMutable,
+        "the contained live pilot reads an original object database an outside writer may still mutate, so it cannot claim a captured or immutable generation"
+    );
+    let result = fact.into_value();
     assert!(
         result.exit_status.success(),
         "contained Git read failed: {}",
