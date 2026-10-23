@@ -9,6 +9,31 @@ use crate::protocol::core::{CoreRequest, CoreResponse};
 
 use super::daemon::CoreDaemon;
 
+/// The daemon's under-lock checkout-reservation re-check.
+///
+/// M005 corrective C008 §6.5. The LSP applier takes the repository lock
+/// itself, so the re-check that closes the lock-wait window runs **inside**
+/// it. The daemon owns the authority and the refusal context, so the daemon
+/// supplies the check and the applier calls it while it holds the lock.
+struct DaemonUnderLockReservationCheck<'a> {
+    daemon: &'a CoreDaemon,
+    context: crate::core::daemon::CheckoutRefusalContext<'a>,
+}
+
+#[async_trait::async_trait]
+impl crate::lsp::mutation::UnderLockReservationCheck for DaemonUnderLockReservationCheck<'_> {
+    async fn recheck(&self, root: &std::path::Path) -> Result<(), String> {
+        self.daemon
+            .recheck_checkout_reservation(
+                &self.context,
+                crate::core::checkout_mediation::CheckoutWriterSink::LspPreviewApply,
+                root,
+            )
+            .await
+            .map_err(|conflict| conflict.to_string())
+    }
+}
+
 impl CoreDaemon {
     pub(crate) async fn handle_goals_request(
         &self,
@@ -18,7 +43,11 @@ impl CoreDaemon {
         authority: codegg_core::transport_auth::RequestAuthorityContext,
         authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
-        let _ = (request_id, trusted_client_id, &authority, &authz_decision);
+        let _ = trusted_client_id;
+        // M005 corrective C008: the under-lock re-check records the refusal
+        // against the request that asked for the write, so the audit chain
+        // keeps its session attribution.
+        let audit_request = request.clone();
         match request {
             CoreRequest::GoalSet {
                 session_id,
@@ -821,6 +850,31 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&record.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap, so a
+                // writer that queued behind another writer may find the
+                // checkout reserved by the time its turn comes.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::EditCheckpointUndo,
+                        &record.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
                     pool,
                     record.canonical_root.clone(),
@@ -871,6 +925,31 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&record.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap, so a
+                // writer that queued behind another writer may find the
+                // checkout reserved by the time its turn comes.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::EditCheckpointUndoLatest,
+                        &record.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
                     pool,
                     record.canonical_root.clone(),
@@ -922,6 +1001,31 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&record.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap, so a
+                // writer that queued behind another writer may find the
+                // checkout reserved by the time its turn comes.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::EditCheckpointReapply,
+                        &record.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
                     pool,
                     record.canonical_root.clone(),
@@ -972,6 +1076,31 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&record.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap, so a
+                // writer that queued behind another writer may find the
+                // checkout reserved by the time its turn comes.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::EditCheckpointReapplyLatest,
+                        &record.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
                     pool,
                     record.canonical_root.clone(),
@@ -1049,6 +1178,24 @@ impl CoreDaemon {
                         })
                     }
                 };
+                // M005 corrective C008: the LSP applier acquires the
+                // repository lock itself, inside
+                // `crate::lsp::mutation::apply_preview`, so the under-lock
+                // re-check belongs there — this handler cannot hold the
+                // lock and hand it over, because the applier would wait on
+                // a mutex it already holds. The pre-dispatch gate remains
+                // the fast pre-filter for this sink; the applier calls back
+                // into the daemon **while it holds the lock**, which is the
+                // only point at which the answer is current.
+                let reservation_check = DaemonUnderLockReservationCheck {
+                    daemon: self,
+                    context: crate::core::daemon::CheckoutRefusalContext {
+                        authority: &authority,
+                        decision: &authz_decision,
+                        request_id,
+                        request: &audit_request,
+                    },
+                };
                 match crate::lsp::mutation::apply_preview(
                     request,
                     record.canonical_root.clone(),
@@ -1056,10 +1203,20 @@ impl CoreDaemon {
                     pool,
                     Some(self.documents.clone()),
                     self.deps.lsp_service.clone(),
+                    Some(&reservation_check),
                 )
                 .await
                 {
                     Ok(result) => Ok(CoreResponse::LspPreviewApplyResult { result }),
+                    // M005 corrective C008: a reservation refusal is a
+                    // **conflict**, not an authorization failure — the same
+                    // disposition every other mediated sink gives it.
+                    Err(crate::lsp::mutation::LspMutationApplyError::CheckoutReserved(message)) => {
+                        Ok(CoreResponse::Error {
+                            code: "checkout_reserved".into(),
+                            message,
+                        })
+                    }
                     Err(error) => Ok(CoreResponse::Error {
                         code: "lsp_preview_apply_failed".into(),
                         message: error.to_string(),

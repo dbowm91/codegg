@@ -132,21 +132,33 @@ pub async fn create_workspace(
     // M005 corrective C004: creating a directory inside a checkout is a
     // checkout write. Refuse it while the checkout is reserved by a live
     // agent-run group, before the directory is created.
-    if let Some(daemon) = state.daemon.as_ref() {
-        daemon
-            .mediate_http_checkout_write(
-                &principal,
-                Some(context.project_id.clone()),
-                &context.workspace_root,
-                crate::core::checkout_mediation::CheckoutWriterSink::HttpWorkspaceCreate,
-            )
-            .await
-            .map_err(|conflict| {
-                crate::error::AppError::Storage(crate::error::StorageError::Conflict(
-                    conflict.to_string(),
-                ))
-            })?;
-    }
+    //
+    // M005 corrective C008: a missing daemon is a **refusal**, not a skip.
+    // C004 mediated this route only when a daemon was present, so a server
+    // without one created the directory ungated — the exact failure the
+    // gate exists to prevent. The route now requires the mediation
+    // authority: without it the write is refused with the same conflict
+    // disposition the daemon side uses.
+    let daemon = state.daemon.as_ref().ok_or_else(|| {
+        crate::error::AppError::Storage(crate::error::StorageError::Conflict(
+            "checkout mediation is unavailable: the server has no daemon, so the checkout \
+             reservation cannot be established"
+                .to_owned(),
+        ))
+    })?;
+    daemon
+        .mediate_http_checkout_write(
+            &principal,
+            Some(context.project_id.clone()),
+            &context.workspace_root,
+            crate::core::checkout_mediation::CheckoutWriterSink::HttpWorkspaceCreate,
+        )
+        .await
+        .map_err(|conflict| {
+            crate::error::AppError::Storage(crate::error::StorageError::Conflict(
+                conflict.to_string(),
+            ))
+        })?;
     let validated = sanitize_path_from_root(&context.workspace_root, &req.path)?;
 
     if !validated.exists() {

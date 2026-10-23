@@ -513,6 +513,26 @@ paths = [
 ]
 targets = ["shared_checkout_c006"]
 
+# M005 corrective C009 — the agent-loop writer fence's completeness. The
+# suite covers the tool registry's fail-closed arms, the daemon's
+# team-policy principal fallback, and the nested-subagent dispatch's fence
+# forwarding. It is a standalone target because the permit state it observes
+# is process-global: a suite that shares a binary with another suite that
+# observes the same state cannot isolate either.
+[[groups]]
+id = "root_writer_fence_completeness_c009"
+member = "codegg"
+paths = [
+  "src/tool/mod.rs",
+  "src/core/writer_fence.rs",
+  "src/core/writer_permit.rs",
+  "src/tool/writer_fence.rs",
+  "src/tool/task.rs",
+  "src/agent/worker.rs",
+  "crates/codegg-core/src/writer_permit.rs",
+]
+targets = ["writer_fence_c009"]
+
 # The macOS native containment fixture for the shared checkout: Seatbelt
 # obtained, and a confined process unable to write outside its own roots.
 # It stays a standalone target for the same reason as the lane above.

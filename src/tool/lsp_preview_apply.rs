@@ -253,6 +253,14 @@ impl LspPreviewApplyTool {
             self.pool.clone(),
             self.document_service.clone(),
             Some(self.lsp_service.clone()),
+            // M005 corrective C008 §6.5: the under-lock checkout-reservation
+            // re-check is a **daemon** mediation — it needs the transport
+            // authority and the authorization decision to record a refusal.
+            // This tool path has already taken the writer permit above,
+            // which is the authority the fence grants it, so the re-check is
+            // not repeated here: the permit is the stronger claim, and it
+            // was taken against the same checkout the apply writes to.
+            None,
         )
         .await;
 

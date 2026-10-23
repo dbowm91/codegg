@@ -219,8 +219,9 @@ C008 added the contained route that the classification demands.
 ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
 authorizes exactly one operation, in two steps — `git worktree add --detach
 <path> <commit>` and then `git symbolic-ref HEAD refs/heads/<branch>` — inside
-an OS-contained child whose writable grant is the linked worktree's own
-administration directory and nothing else. The attached form of `worktree add`
+an OS-contained child whose writable grant is the **shared** administration
+root `<common-gitdir>/worktrees/` and nothing else: the parent of every linked
+worktree's own administration directory. The attached form of `worktree add`
 is not used: it rewrites the branch ref, which the grant forbids. See
 `architecture/git.md` §"Contained managed-worktree creation".
 

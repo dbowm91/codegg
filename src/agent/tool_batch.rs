@@ -407,6 +407,67 @@ impl AgentLoop {
         resolve_tool_timeout(self.get_tool_timeout(tool_name), arguments)
     }
 
+    /// M005 corrective C009: restore the transport-bound principal for this
+    /// turn's writes.
+    ///
+    /// The daemon records the request's transport-bound principal as a
+    /// durable turn-scope origin attribution at the admission boundary
+    /// (`OriginAttribution::from_authority`, from the request's transport
+    /// authority and its authorization decision). Restoring that row here is
+    /// lossless restoration of already-admitted durable attribution — the
+    /// principal never comes from the model, from a tool argument, or from
+    /// anything the model can influence.
+    ///
+    /// `None` means this run has no attributed transport principal: an
+    /// in-process run, a delegated child whose dispatching turn was never
+    /// admitted through the daemon, or a turn with no recorded attribution.
+    /// The write then stays unattributed, which the shared-checkout fence
+    /// refuses on a daemon with a team policy.
+    async fn resolve_transport_execution_audit(
+        &self,
+    ) -> Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
+        let turn_id = self.turn_id.as_deref()?;
+        let pool = self.services.todo_pool.clone()?;
+        let store = codegg_core::authorization::OriginAttributionStore::new(pool);
+        let attribution = match store.get("turn", turn_id).await {
+            Ok(Some(attribution)) => attribution,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    turn_id = %turn_id,
+                    "turn origin attribution lookup failed; writes stay unattributed"
+                );
+                return None;
+            }
+        };
+        // The legacy marker records work that predates attribution. It names
+        // no team identity, so it must not be promoted into one.
+        if attribution.is_legacy() {
+            return None;
+        }
+        let principal = crate::tool::factory::principal_from_origin_attribution(&attribution);
+        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+            attribution.decision_id.clone(),
+            attribution.correlation_id.clone(),
+            attribution.policy.as_str(),
+            None,
+        );
+        let chain = codegg_core::audit_instrumentation::AuditChainContext {
+            correlation_id: Some(attribution.correlation_id.clone()),
+            session_id: Some(self.session_id.clone()),
+            turn_id: Some(turn_id.to_owned()),
+            ..Default::default()
+        };
+        Some(
+            codegg_core::audit_instrumentation::TrustedExecutionAuditContext::new(
+                &principal,
+                &provenance,
+                chain,
+            ),
+        )
+    }
+
     pub(super) fn build_tool_execution_context(
         &self,
         tc: &ToolCall,
@@ -415,6 +476,7 @@ impl AgentLoop {
         receipt: &PermissionDecisionReceipt,
         snapshot: &ExecutionPolicySnapshot,
         command_preflight: Option<crate::tool::authorization::CommandPreflightResult>,
+        execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
     ) -> crate::tool::backend::ToolExecutionContext {
         let backend = self.resolve_native_backend(&tc.name);
         let agent_id = self.state.current_agent.clone();
@@ -528,7 +590,12 @@ impl AgentLoop {
             // M001: daemon-threaded trusted audit context travels here
             // when the turn boundary supplies one; never synthesized
             // from principal strings or tool payloads.
-            execution_audit: None,
+            //
+            // M005 corrective C009: the loop resolves the transport-bound
+            // principal from the turn's durable origin attribution, so a
+            // write that reaches the shared-checkout fence names the
+            // principal that actually dispatched it.
+            execution_audit,
             // M002: shared bounded emitter travels with the trusted
             // context; tools emit only when both are present.
             audit_emitter: None,
@@ -1693,6 +1760,10 @@ impl AgentLoop {
         let agent_workspace_id = self.workspace_id.as_ref().map(ToString::to_string);
         let agent_id = self.state.current_agent.clone();
         let batch_snapshot_for_ctx = batch_snapshot.clone();
+        // M005 corrective C009: resolve the turn's transport-bound principal
+        // once per batch, so every tool in the batch carries the same
+        // attributed actor into the shared-checkout writer fence.
+        let transport_execution_audit = self.resolve_transport_execution_audit().await;
         for (orig_idx, tc, receipt, command_preflight) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
@@ -1716,6 +1787,7 @@ impl AgentLoop {
                 &receipt,
                 &batch_snapshot_for_ctx,
                 command_preflight,
+                transport_execution_audit.clone(),
             );
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);

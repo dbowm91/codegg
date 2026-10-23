@@ -1,7 +1,8 @@
 # M005 Writer-Containment Corrective C007 — Shared-Checkout Placement Correctness
 
-Status: ready for handoff
-Repository baseline: `f1b83a7a7` (`origin/main`, 2026-10-23)
+Status: closed — C007 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/007-status.md`). **This milestone discharged M005's strict-closure condition.** The group-level placement now reaches the child in the parsed form; the shared lease belongs to the group and is held for the group's lifetime; a store read error during the group's checkout resolution is a typed refusal; and a shared placement that cannot be honoured is refused rather than dropped into the parent's workspace.
+Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
+Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§9, 16–17, 26–29; `plans/001-terminology-and-domain-model.md` §§5, 7–8
 Applicable ADRs: ADR-0002 (agent run worktree isolation and control, accepted), ADR-0032 (agent workstream coordination and shared checkout ownership, accepted), ADR-0047 (restricted agent shared checkout writer contract, accepted option B)

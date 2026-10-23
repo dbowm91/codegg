@@ -111,6 +111,44 @@ jobs:
       - name: Execution ownership guard
         run: python3 scripts/check_execution_ownership.py
 
+      # The trusted Git route owns every CodeGG-owned Git child. The
+      # hostile-metadata detector is the mediation that refuses a
+      # repository which declares a configuration surface the route cannot
+      # neutralise, and the diff-consumer guard keeps every diff read
+      # fenced by the generation-bound consistency contract. Both run with
+      # their self-tests: a guard which is not run automatically cannot
+      # protect anything, and a guard that cannot be shown to fail on an
+      # injected defect is not evidence.
+      - name: Git forbidden-pattern guard (self-test)
+        run: python3 scripts/check_git_forbidden_patterns.py --self-test
+
+      - name: Git forbidden-pattern guard
+        run: python3 scripts/check_git_forbidden_patterns.py
+
+      - name: Git consistency-consumer guard (self-test)
+        run: python3 scripts/check_git_consistency_consumers.py --self-test
+
+      - name: Git consistency-consumer guard
+        run: python3 scripts/check_git_consistency_consumers.py
+
+      - name: Contained worktree grant guard (self-test)
+        run: python3 scripts/check_contained_worktree_grant.py --self-test
+
+      - name: Contained worktree grant guard
+        run: python3 scripts/check_contained_worktree_grant.py
+
+      - name: Writer-fence completeness guard (self-test)
+        run: python3 scripts/check_writer_fence_completeness.py --self-test
+
+      - name: Writer-fence completeness guard
+        run: python3 scripts/check_writer_fence_completeness.py
+
+      - name: Checkout-mediation authority guard (self-test)
+        run: python3 scripts/check_checkout_mediation_authority.py --self-test
+
+      - name: Checkout-mediation authority guard
+        run: python3 scripts/check_checkout_mediation_authority.py
+
       - name: TUI project authority guard
         run: python3 scripts/check_tui_project_authority.py
 

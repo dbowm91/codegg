@@ -6,7 +6,10 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
-                          # boundaries, sandbox, execution-ownership, TUI authority,
+                          # boundaries, sandbox, execution-ownership, git-route,
+                          # git-consistency-consumers, contained-worktree-grant,
+                          # writer-fence-completeness, checkout-mediation-authority,
+                          # TUI authority,
                           # http-route-disposition, audit-coverage,
                           # queue-delivery-callsites, queue-write-transaction-shape,
                           # scheduler-bypass,
@@ -106,14 +109,55 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset. CI (`.github/workflows/ci.yml`) is one bounded
-`verify` job: agent schema, core-boundary, sandbox, execution-ownership, tui-authority,
-http-route-disposition, audit-coverage, queue-delivery-callsites,
-queue-write-transaction-shape, scheduler-bypass, config-merge-coverage, fmt,
-clippy, workspace tests.
+`verify` job: agent schema, core-boundary, sandbox, execution-ownership, git-route,
+git-consistency-consumers, contained-worktree-grant, writer-fence-completeness,
+checkout-mediation-authority, tui-authority, http-route-disposition, audit-coverage,
+queue-delivery-callsites, queue-write-transaction-shape, scheduler-bypass,
+config-merge-coverage, fmt, clippy, workspace tests.
 CI is a strict **subset** of `quick` — it omits the client/desktop boundaries and the
 provider wire/catalog/resilience, OpenAI endpoint, and Eggwork routing guards, so a
 green CI run does not imply a green `quick`. Everything outside both is
-change-triggered (`ls scripts/check_*` for the full list):
+change-triggered (`ls scripts/check_*` for the full list).
+
+The trusted Git route's guards are **automatic**, not change-triggered:
+`python3 scripts/check_git_forbidden_patterns.py` (hostile Git metadata: the pinned
+override table, the route obligations, and the bounded hostile-config detector's
+*call* from both trusted child-construction paths) and
+`python3 scripts/check_git_consistency_consumers.py` (every diff consumer fences its
+read through `admit_generation_bound`, so no consumer discards the consistency class
+with a bare `.into_value()`). Both run in `scripts/verify.sh quick` and in CI, each
+with its `--self-test`. The reason is the one that decided the classification:
+**a guard which is not run automatically cannot protect anything**. The
+forbidden-patterns guard was change-triggered, so it ran only when somebody
+remembered it — and the review that mutation-tested it found that deleting *both*
+detector call sites produced **zero** findings, because the guard did not assert
+the calls in the first place. A guard obligation without a matching injection is a
+claim, not a check, so each obligation now carries a `--self-test` injection that
+removes it and proves the guard rejects the removal.
+
+Three more guards are **automatic** for the same reason — the defects they
+cover fail *silently*, so a guard that only runs when somebody remembers it
+protects nothing:
+
+- `python3 scripts/check_contained_worktree_grant.py` — the contained
+  worktree child's writable grant is the **shared** administration root
+  `<common-gitdir>/worktrees/`, and ADR-0048, the code comments and the
+  containment test must all name that same single path. The guard derives the
+  expected path from the ADR's own text, so it cannot drift from it.
+- `python3 scripts/check_writer_fence_completeness.py` — every mutating tool
+  has a `None` arm that **refuses** (the `commit` tool was the one that did
+  not), the daemon's team-policy principal fallback is derived from the team
+  state rather than a literal `true`, and the nested-subagent dispatch
+  forwards the parent's fence instead of silently downgrading to a
+  containment-only one.
+- `python3 scripts/check_checkout_mediation_authority.py` — the reservation
+  authority must not resolve a path through a **capped** list (a 512-row
+  oldest-first list fails open once the catalog grows), the HTTP routes must
+  refuse rather than skip the gate when no daemon is attached, and the gate
+  and the effect must resolve the workspace identifier by the same rule.
+
+Each runs in `scripts/verify.sh quick` and in CI, each with a `--self-test`
+that injects the defect and proves the guard rejects it.
 
 - `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`
 - Daemon-internal admission surfaces → `python3 scripts/check_queue_delivery_callsites.py`
@@ -145,7 +189,7 @@ change-triggered (`ls scripts/check_*` for the full list):
   `python3 scripts/generate_subagent_names.py` into
   `src/agent/subagent_names/generated.rs`, whose sibling `mod.rs` is hand-written
   and must not be handed to the builtins generator.
-- Git risk/policy → `check_git_forbidden_patterns.py`; storage layout →
+- Storage layout →
   `check_project_catalog_invariants.py` (`STORAGE_LAYOUT_VERSION` must track the
   highest migration in `crates/codegg-core/src/session/schema.rs`); adding or
   changing any model list → `check_no_hardcoded_models.py` (CodeGG ships **no**

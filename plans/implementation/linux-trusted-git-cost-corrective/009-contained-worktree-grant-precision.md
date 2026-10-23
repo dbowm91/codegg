@@ -1,7 +1,8 @@
 # Linux Trusted Git Cost Corrective C009 — Contained Worktree Grant Precision
 
-Status: ready for handoff
-Repository baseline: `f1b83a7a7` (`origin/main`, 2026-10-23)
+Status: closed — C009 closed (`plans/closure/linux-trusted-git-cost-corrective/009-status.md`). ADR-0048, the two code comments and the containment test now all name the shared administration root; the obtained-root check compares paths for equality; and the new guard rejects an injected divergence in either direction. The amendment records the consequence that the child can write another linked worktree's `HEAD` and records the maintainer's disposition as **not chosen** — narrowing the grant would need a new ADR.
+Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
+Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§9, 16–17, 26–29; `plans/001-terminology-and-domain-model.md` §§5, 7–8
 Applicable ADRs: ADR-0048 (contained Git execution for managed worktree creation, **accepted**), ADR-0002 (agent run worktree isolation and control, accepted)

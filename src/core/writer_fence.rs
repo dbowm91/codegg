@@ -490,11 +490,30 @@ pub struct DaemonWriterFenceFactory {
     /// principal. A daemon with a team policy leaves this off, so a write
     /// that arrives without a bound actor is refused rather than written
     /// anonymously.
+    ///
+    /// M005 corrective C009: this is the *single-user* default. It is only
+    /// the effective answer when the daemon has no team state at all; when a
+    /// team store is bound, the effective answer is derived from that
+    /// durable state — see [`Self::effective_local_principal_fallback`].
     local_principal_fallback: bool,
+    /// M005 corrective C009: the daemon's durable team state.
+    ///
+    /// `None` means the daemon owns no team model, so it is single-user and
+    /// the fallback above stands. `Some` means the daemon owns a durable
+    /// team store, and the effective fallback follows the principals that
+    /// store names — so a daemon that gains a team member stops
+    /// attributing shared-checkout writes to a synthetic local owner
+    /// without needing a restart.
+    team_store: Option<Arc<codegg_core::team::TeamStore>>,
 }
 
 impl DaemonWriterFenceFactory {
-    /// Build the factory.
+    /// Build the factory with the local-principal fallback stated outright.
+    ///
+    /// Prefer [`Self::with_team_state`] in production: it derives the same
+    /// answer from the daemon's durable team state instead of asserting it.
+    /// This constructor exists for the callers that state the daemon's shape
+    /// deliberately (the harness).
     pub fn new(
         permit: Arc<WriterPermitService>,
         worktrees: Arc<WorktreeService>,
@@ -508,7 +527,70 @@ impl DaemonWriterFenceFactory {
             runs,
             groups,
             local_principal_fallback,
+            team_store: None,
         })
+    }
+
+    /// Build the factory bound to the daemon's durable team state.
+    ///
+    /// M005 corrective C009. The local-principal fallback is **derived** from
+    /// that state instead of being asserted by the caller: a daemon whose
+    /// team store names any principal other than the local owner has a team
+    /// policy, installs no fallback, and therefore refuses a shared-checkout
+    /// write that arrives without a bound actor. A daemon with no team store
+    /// at all is single-user and keeps the fallback, so its own writes stay
+    /// attributable and are not refused.
+    ///
+    /// The state is read at fence time rather than at construction time, so
+    /// the answer survives a restart and follows a membership change without
+    /// a restart.
+    pub fn with_team_state(
+        permit: Arc<WriterPermitService>,
+        worktrees: Arc<WorktreeService>,
+        runs: Arc<dyn AgentRunStore>,
+        groups: Option<Arc<AgentRunGroupService>>,
+        team_store: Option<Arc<codegg_core::team::TeamStore>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            permit,
+            worktrees,
+            runs,
+            groups,
+            local_principal_fallback: true,
+            team_store,
+        })
+    }
+
+    /// The effective local-principal fallback for this daemon, right now.
+    ///
+    /// A daemon with no team state is single-user: the fallback stands. A
+    /// daemon with a team store installs the fallback only while that store
+    /// names nothing but the local owner.
+    ///
+    /// An unreadable team state is read as "has a team policy" — that is,
+    /// the fallback is withheld. The failure mode is deliberately the
+    /// refusing one: reading an unreadable team state as "single-user"
+    /// would restore exactly the synthetic attribution this milestone
+    /// removes.
+    async fn effective_local_principal_fallback(&self) -> bool {
+        let Some(store) = self.team_store.as_ref() else {
+            return self.local_principal_fallback;
+        };
+        match store.list_principals().await {
+            // The fallback stands only while every principal the store names
+            // is the local owner — the principal a single-user daemon
+            // bootstraps for itself.
+            Ok(principals) => principals
+                .iter()
+                .all(|principal| principal.kind == codegg_core::team::PrincipalKind::LocalOwner),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "team policy probe failed; unattributed shared-checkout writes are refused"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -556,7 +638,7 @@ impl crate::tool::writer_fence::WriterFenceFactory for DaemonWriterFenceFactory 
             request.attempt_id.clone(),
             request.cancellation.clone(),
         );
-        if self.local_principal_fallback {
+        if self.effective_local_principal_fallback().await {
             fence = fence.with_principal_fallback(local_principal());
         }
         Ok(Some(Arc::new(fence)))

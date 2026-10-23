@@ -3,8 +3,9 @@
 //! The milestone's claim is narrow and is asserted in four places:
 //!
 //! 1. **The grant** names exactly the checkout, the daemon scratch and the
-//!    linked worktree's own administration directory — and the repository's Git
-//!    directory is readable and immutable to the child.
+//!    **shared** administration root — the parent of every linked worktree's
+//!    own administration directory — and the repository's Git directory is
+//!    readable and immutable to the child.
 //! 2. **The seam** turns a reserved worktree into a real linked worktree, and
 //!    every failure path fails closed.
 //! 3. **The contained child** cannot write outside its grant, even when the
@@ -23,8 +24,8 @@ use std::sync::{Arc, Mutex};
 pub mod common;
 
 use codegg::git_contained_worktree::{
-    build_worktree_grant, ContainedGitWorktreeCreator, WorktreeChildPaths, WorktreeChildStep,
-    WorktreeLaunchTiers,
+    build_worktree_grant, obtained_write_root_is_present, ContainedGitWorktreeCreator,
+    WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
 };
 // The native proof is the only consumer of the child-launch composition, and
 // it is Linux-only, so the import carries the same gate. Without it the
@@ -159,10 +160,11 @@ fn child_paths(
 // ── 1. The grant ──────────────────────────────────────────────────────────
 
 /// The child's writable set is exactly the checkout, the daemon scratch and
-/// the linked worktree's own administration directory — and the repository's
-/// Git directory is readable and immutable.
+/// the **shared** administration root — the parent of every linked worktree's
+/// own administration directory — and the repository's Git directory is
+/// readable and immutable.
 #[test]
-fn the_grant_names_only_the_administration_directory() {
+fn the_grant_names_only_the_shared_administration_root() {
     let workspace = tempfile::tempdir().expect("workspace");
     let repository = workspace.path().join("repo");
     init_repository(&repository);
@@ -233,9 +235,10 @@ fn the_grant_names_only_the_administration_directory() {
         "the source working tree was granted writable"
     );
 
-    // Nothing under the Git directory is writable except the administration
-    // directory. This is what makes branch creation by the child impossible
-    // rather than merely unintended.
+    // Nothing under the Git directory is writable except the shared
+    // administration root. This is what makes branch creation by the child
+    // impossible rather than merely unintended: the child's own `refs` live
+    // under `<common-gitdir>/refs`, not under the administration root.
     for write in &spec.write_paths {
         if write.starts_with(&gitdir) {
             assert_eq!(
@@ -298,6 +301,138 @@ fn the_grant_names_only_the_administration_directory() {
             "unexpected refusal: {error}"
         );
     }
+}
+
+/// The grant's writable roots under the repository's Git directory are exactly
+/// **one** path, and it is the shared administration root.
+///
+/// The per-path equality check above would still pass if the grant added a
+/// *second* root under the Git directory — `hooks`, say — because it only
+/// compares the roots it knows about. The **count** is what catches that, and
+/// the count is the property ADR-0048 clause 3 states and
+/// `scripts/check_contained_worktree_grant.py` enforces statically.
+#[test]
+fn the_grant_writes_exactly_one_path_under_the_git_directory() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let repository = workspace.path().join("repo");
+    init_repository(&repository);
+    let checkout = workspace.path().join("checkout");
+    std::fs::create_dir_all(&checkout).expect("checkout directory");
+    let scratch = workspace.path().join("scratch");
+    std::fs::create_dir_all(&scratch).expect("scratch directory");
+    let base = run_git_output(&repository, &["rev-parse", "HEAD"]);
+
+    let paths = child_paths(
+        &repository,
+        &checkout,
+        &scratch,
+        "codegg/worktree/c009-git-directory-root",
+        &base,
+    );
+
+    let spec = build_worktree_grant(
+        &paths,
+        WorktreeChildStep::Create,
+        WorktreeLaunchTiers::PRODUCTION,
+    )
+    .expect("the contained worktree grant");
+
+    let gitdir = paths.gitdir.clone();
+    let administration_root = paths.administration_root.clone();
+    let administration_dir = paths.administration_dir.clone();
+
+    // The device nodes are writable under every profile — they hold no
+    // persistent state — so they are not part of the grant.
+    let devices: Vec<PathBuf> = codegg::security::sandbox::policy::device_write_allowances()
+        .into_iter()
+        .filter(|path| path.exists())
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    let under_gitdir = spec
+        .write_paths
+        .iter()
+        .filter(|write| !devices.contains(write))
+        .filter(|write| write.starts_with(&gitdir))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        under_gitdir.len(),
+        1,
+        "the grant produced {} writable roots under the repository's Git directory, \
+         expected exactly one: {under_gitdir:?}",
+        under_gitdir.len()
+    );
+    assert_eq!(
+        under_gitdir[0], &administration_root,
+        "the grant's only writable root under the repository's Git directory is not the \
+         shared administration root"
+    );
+
+    // The granted root is the **shared** one: it is the parent of the linked
+    // worktree's own administration directory, and it is not that directory.
+    assert!(
+        administration_dir.starts_with(&administration_root),
+        "the linked worktree's own administration directory is not under the shared \
+         administration root: {administration_dir:?} vs {administration_root:?}"
+    );
+    assert_ne!(
+        administration_dir, administration_root,
+        "the shared administration root and the linked worktree's own administration \
+         directory are the same path"
+    );
+}
+
+/// The obtained-root check compares whole paths, not substrings.
+///
+/// ADR-0048 clause 4 is "containment is asserted, not requested": the launch's
+/// *obtained* scope is the evidence, and the check that reads it must not be
+/// satisfied by a root that merely shares a prefix with the required one.
+/// `/repo/.git/worktrees-old` contains `/repo/.git/worktrees`, so a substring
+/// test accepted a root the child did not obtain.
+///
+/// The comparison is by **membership**, so a backend that reports its roots in
+/// a different order, or reports extra roots alongside the required one, still
+/// passes: the question is whether the required root is *among* the obtained
+/// roots, not whether the obtained list matches it exactly.
+#[test]
+fn the_obtained_root_check_compares_paths_and_not_substrings() {
+    let required = Path::new("/repo/.git/worktrees");
+
+    // A prefix-sharing root is not the required root.
+    let prefix_sharing =
+        vec!["writable grant roots: /repo/.git/worktrees-old, /repo/checkout".to_string()];
+    assert!(
+        !obtained_write_root_is_present(&prefix_sharing, required),
+        "a root that merely shares a prefix satisfied the obtained-root check"
+    );
+
+    // The exact path passes.
+    let exact = vec!["writable grant roots: /repo/.git/worktrees, /repo/checkout".to_string()];
+    assert!(
+        obtained_write_root_is_present(&exact, required),
+        "the exact administration root did not satisfy the obtained-root check"
+    );
+
+    // Order does not matter, and extra roots do not fail the check.
+    let reordered = vec![
+        "writable grant roots: /repo/checkout, /repo/.git/worktrees, /repo/scratch".to_string(),
+    ];
+    assert!(
+        obtained_write_root_is_present(&reordered, required),
+        "the obtained-root check became order-sensitive"
+    );
+
+    // A launch that obtained no writable root at all does not pass.
+    let empty: Vec<String> = Vec::new();
+    assert!(
+        !obtained_write_root_is_present(&empty, required),
+        "a launch that obtained no writable root satisfied the obtained-root check"
+    );
+    let read_only = vec!["read-only grant roots: /repo/.git".to_string()];
+    assert!(
+        !obtained_write_root_is_present(&read_only, required),
+        "a read-only root satisfied the obtained-root check"
+    );
 }
 
 // ── 2. The seam ───────────────────────────────────────────────────────────

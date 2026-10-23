@@ -215,6 +215,48 @@ pub struct CoreDaemon {
 // retains the struct, thin request router, auth/audit preamble, chat and
 // interactive pre-routers, shared `pub(crate)` helpers, and existing tests.
 
+/// M005 corrective C008: the checkout a non-broker writer targets, or the
+/// reason the gate could not resolve one.
+///
+/// The gate is a fail-closed authority, so it distinguishes three outcomes.
+/// A request that is not a checkout writer at all is not mediated. A request
+/// whose target resolves is mediated against that target. A request whose
+/// target does not resolve — an identifier the workspace registry does not
+/// know — is **refused**: a gate that skipped it would admit the writer
+/// without ever asking the authority.
+#[derive(Debug, Clone)]
+enum CheckoutWriteTargetResolution {
+    /// The request is not a mediated checkout writer.
+    NotAWriter,
+    /// The request names a checkout the daemon resolved.
+    Resolved(
+        super::checkout_mediation::CheckoutWriterSink,
+        super::checkout_mediation::CheckoutWriteTarget,
+    ),
+    /// The request names an identifier the workspace registry cannot resolve.
+    Unresolvable(super::checkout_mediation::CheckoutWriterSink, String),
+}
+
+/// M005 corrective C008: the audit context a checkout refusal is recorded
+/// against.
+///
+/// The under-lock re-check has to record its refusal with the same durable
+/// evidence the pre-dispatch gate records, so the caller's authority, the
+/// authorization decision, the request id and the request itself travel
+/// together. They travel as one value because a refusal that cannot name its
+/// request is not evidence.
+#[derive(Clone, Copy)]
+pub(crate) struct CheckoutRefusalContext<'a> {
+    /// The transport-bound authority that asked for the write.
+    pub authority: &'a codegg_core::transport_auth::RequestAuthorityContext,
+    /// The authorization decision the write was admitted under.
+    pub decision: &'a codegg_core::authorization::AuthorizationDecision,
+    /// The transport request id.
+    pub request_id: &'a str,
+    /// The request that asked for the write.
+    pub request: &'a CoreRequest,
+}
+
 impl CoreDaemon {
     // M003 seam: construction/bootstrap/refresh/shutdown methods live in
     // `daemon_construct`, `daemon_bootstrap`, `daemon_refresh`, and
@@ -1008,79 +1050,119 @@ impl CoreDaemon {
     ///
     /// The mediation resolves the target checkout through the daemon's
     /// workspace registry, never through a path in a request payload.
+    ///
+    /// M005 corrective C008: the identifier rule is the **effect side's**
+    /// rule (`WorkspaceId::new_unchecked`), so the gate is never stricter
+    /// than the effect. A stricter gate is a gate that silently stops
+    /// mediating: an identifier the effect can resolve must reach the
+    /// mediation too. `None` means the workspace registry does not know the
+    /// identifier at all, which the caller turns into a typed refusal.
     async fn workspace_root_for(&self, workspace_id: &str) -> Option<std::path::PathBuf> {
-        let id = codegg_core::workspace::WorkspaceId::parse(workspace_id).ok()?;
+        let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.to_owned());
         let workspace = self.workspaces.resolve(&id).await?;
         Some(workspace.canonical_root.clone())
     }
 
-    /// M005 corrective C004: the checkout a non-broker writer targets.
+    /// M005 corrective C008: the checkout a non-broker writer targets, or
+    /// the reason it could not be resolved.
     ///
     /// The target is resolved from durable identities — the workspace the
     /// request names, or the workspace that owns the document — never from
     /// a path in the payload. A request that names no checkout writer
-    /// resolves to `None` and is not mediated at all.
-    async fn checkout_write_target(
-        &self,
-        request: &CoreRequest,
-    ) -> Option<(
-        super::checkout_mediation::CheckoutWriterSink,
-        super::checkout_mediation::CheckoutWriteTarget,
-    )> {
-        use super::checkout_mediation::{CheckoutWriteTarget, CheckoutWriterSink};
+    /// resolves to `NotAWriter` and is not mediated at all.
+    ///
+    /// An identifier the workspace registry cannot resolve resolves to
+    /// `Unresolvable`, which the gate refuses. It is never silently
+    /// dropped: a gate that skips an unresolvable identifier is a gate
+    /// that admits the writer.
+    async fn checkout_write_target(&self, request: &CoreRequest) -> CheckoutWriteTargetResolution {
+        use super::checkout_mediation::CheckoutWriterSink;
         match request {
-            CoreRequest::DocumentCreate { workspace_id, .. } => Some((
-                CheckoutWriterSink::DocumentCreate,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::DocumentSave { document_id, .. } => {
-                let workspace_id = self.documents.workspace_id_for(document_id).await?;
-                Some((
-                    CheckoutWriterSink::DocumentSave,
-                    CheckoutWriteTarget::Root(self.workspace_root_for(&workspace_id).await?),
-                ))
+            CoreRequest::DocumentCreate { workspace_id, .. } => {
+                self.root_write_target(CheckoutWriterSink::DocumentCreate, workspace_id)
+                    .await
             }
-            CoreRequest::DocumentDelete { workspace_id, .. } => Some((
-                CheckoutWriterSink::DocumentDelete,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::ProjectInitPublish { workspace_id, .. } => Some((
-                CheckoutWriterSink::ProjectInitPublish,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::LspPreviewApply { request } => Some((
-                CheckoutWriterSink::LspPreviewApply,
-                CheckoutWriteTarget::Root(self.workspace_root_for(&request.workspace_id).await?),
-            )),
-            CoreRequest::EditCheckpointUndo { workspace_id, .. } => Some((
-                CheckoutWriterSink::EditCheckpointUndo,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::EditCheckpointUndoLatest { workspace_id, .. } => Some((
-                CheckoutWriterSink::EditCheckpointUndoLatest,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::EditCheckpointReapply { workspace_id, .. } => Some((
-                CheckoutWriterSink::EditCheckpointReapply,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::EditCheckpointReapplyLatest { workspace_id, .. } => Some((
-                CheckoutWriterSink::EditCheckpointReapplyLatest,
-                CheckoutWriteTarget::Root(self.workspace_root_for(workspace_id).await?),
-            )),
-            CoreRequest::ManagedWorktreeCleanup { worktree_id, .. } => Some((
-                CheckoutWriterSink::ManagedWorktreeCleanup,
-                CheckoutWriteTarget::Worktree(
-                    codegg_core::identity::WorktreeId::parse(worktree_id).ok()?,
-                ),
-            )),
-            CoreRequest::ManagedWorktreeArchive { worktree_id, .. } => Some((
-                CheckoutWriterSink::ManagedWorktreeArchive,
-                CheckoutWriteTarget::Worktree(
-                    codegg_core::identity::WorktreeId::parse(worktree_id).ok()?,
-                ),
-            )),
-            _ => None,
+            CoreRequest::DocumentSave { document_id, .. } => {
+                let Some(workspace_id) = self.documents.workspace_id_for(document_id).await else {
+                    // The document itself is unknown. The effect refuses it
+                    // with its own typed error; there is no checkout to
+                    // mediate against.
+                    return CheckoutWriteTargetResolution::NotAWriter;
+                };
+                self.root_write_target(CheckoutWriterSink::DocumentSave, &workspace_id)
+                    .await
+            }
+            CoreRequest::DocumentDelete { workspace_id, .. } => {
+                self.root_write_target(CheckoutWriterSink::DocumentDelete, workspace_id)
+                    .await
+            }
+            CoreRequest::ProjectInitPublish { workspace_id, .. } => {
+                self.root_write_target(CheckoutWriterSink::ProjectInitPublish, workspace_id)
+                    .await
+            }
+            CoreRequest::LspPreviewApply { request } => {
+                self.root_write_target(CheckoutWriterSink::LspPreviewApply, &request.workspace_id)
+                    .await
+            }
+            CoreRequest::EditCheckpointUndo { workspace_id, .. } => {
+                self.root_write_target(CheckoutWriterSink::EditCheckpointUndo, workspace_id)
+                    .await
+            }
+            CoreRequest::EditCheckpointUndoLatest { workspace_id, .. } => {
+                self.root_write_target(CheckoutWriterSink::EditCheckpointUndoLatest, workspace_id)
+                    .await
+            }
+            CoreRequest::EditCheckpointReapply { workspace_id, .. } => {
+                self.root_write_target(CheckoutWriterSink::EditCheckpointReapply, workspace_id)
+                    .await
+            }
+            CoreRequest::EditCheckpointReapplyLatest { workspace_id, .. } => {
+                self.root_write_target(
+                    CheckoutWriterSink::EditCheckpointReapplyLatest,
+                    workspace_id,
+                )
+                .await
+            }
+            CoreRequest::ManagedWorktreeCleanup { worktree_id, .. } => {
+                match codegg_core::identity::WorktreeId::parse(worktree_id) {
+                    Ok(id) => CheckoutWriteTargetResolution::Resolved(
+                        CheckoutWriterSink::ManagedWorktreeCleanup,
+                        super::checkout_mediation::CheckoutWriteTarget::Worktree(id),
+                    ),
+                    // The by-id resolution is unchanged: an identifier that is
+                    // not a worktree identity is not a checkout write.
+                    Err(_) => CheckoutWriteTargetResolution::NotAWriter,
+                }
+            }
+            CoreRequest::ManagedWorktreeArchive { worktree_id, .. } => {
+                match codegg_core::identity::WorktreeId::parse(worktree_id) {
+                    Ok(id) => CheckoutWriteTargetResolution::Resolved(
+                        CheckoutWriterSink::ManagedWorktreeArchive,
+                        super::checkout_mediation::CheckoutWriteTarget::Worktree(id),
+                    ),
+                    Err(_) => CheckoutWriteTargetResolution::NotAWriter,
+                }
+            }
+            _ => CheckoutWriteTargetResolution::NotAWriter,
+        }
+    }
+
+    /// M005 corrective C008: the write target for a request that names a
+    /// workspace directly.
+    async fn root_write_target(
+        &self,
+        sink: super::checkout_mediation::CheckoutWriterSink,
+        workspace_id: &str,
+    ) -> CheckoutWriteTargetResolution {
+        use super::checkout_mediation::CheckoutWriteTarget;
+        match self.workspace_root_for(workspace_id).await {
+            Some(root) => {
+                CheckoutWriteTargetResolution::Resolved(sink, CheckoutWriteTarget::Root(root))
+            }
+            None => CheckoutWriteTargetResolution::Unresolvable(
+                sink,
+                format!("workspace {workspace_id} is not registered"),
+            ),
         }
     }
 
@@ -1108,8 +1190,27 @@ impl CoreDaemon {
         use super::checkout_mediation::CheckoutConflict;
         use codegg_core::checkout_reservation::CheckoutReservation;
 
-        let Some((sink, target)) = self.checkout_write_target(request).await else {
-            return Ok(());
+        let (sink, target) = match self.checkout_write_target(request).await {
+            CheckoutWriteTargetResolution::NotAWriter => return Ok(()),
+            CheckoutWriteTargetResolution::Resolved(sink, target) => (sink, target),
+            CheckoutWriteTargetResolution::Unresolvable(sink, reason) => {
+                // M005 corrective C008: the gate could not resolve the
+                // target. It refuses, rather than letting the write proceed
+                // unmediated: an unmediated write is exactly the failure this
+                // gate exists to prevent.
+                let conflict = CheckoutConflict {
+                    sink,
+                    worktree_id: String::new(),
+                    group_id: String::new(),
+                    owner_run_id: String::new(),
+                    lookup_failure: Some(reason),
+                };
+                self.emit_checkout_refusal(
+                    authority, decision, request_id, request, sink, &conflict,
+                )
+                .await;
+                return Err(conflict);
+            }
         };
         let reservation = match &target {
             super::checkout_mediation::CheckoutWriteTarget::Root(root) => {
@@ -1152,6 +1253,59 @@ impl CoreDaemon {
         };
         self.emit_checkout_refusal(authority, decision, request_id, request, sink, &conflict)
             .await;
+        Err(conflict)
+    }
+
+    /// M005 corrective C008: re-check the reservation with the repository
+    /// lock held, immediately before the write.
+    ///
+    /// The gate's answer is a fast pre-filter. The window between the gate
+    /// and the write is the **lock wait**, not the instruction gap: a writer
+    /// that waits behind another writer on the same repository may find the
+    /// checkout reserved by the time its turn comes. So the answer that
+    /// counts is the one taken with the lock held.
+    ///
+    /// The repeated check uses the same authority and the same refusal
+    /// disposition as the first: a conflict, recorded as a durable
+    /// `checkout_writer_refusal` event, with the caller's own authority
+    /// untouched. It takes no lock of its own — the caller already holds the
+    /// repository lock — so it cannot invert the lock order.
+    pub(crate) async fn recheck_checkout_reservation(
+        &self,
+        context: &CheckoutRefusalContext<'_>,
+        sink: super::checkout_mediation::CheckoutWriterSink,
+        root: &std::path::Path,
+    ) -> Result<(), super::checkout_mediation::CheckoutConflict> {
+        use super::checkout_mediation::CheckoutConflict;
+        use codegg_core::checkout_reservation::CheckoutReservation;
+
+        let reservation = self.checkout_mediator.reservation_for_root(root).await;
+        let conflict = match reservation {
+            Ok(CheckoutReservation::Unreserved) => return Ok(()),
+            Ok(CheckoutReservation::Reserved(claim)) => CheckoutConflict {
+                sink,
+                worktree_id: claim.worktree_id.to_string(),
+                group_id: claim.group_id.to_string(),
+                owner_run_id: claim.owner_run_id.to_string(),
+                lookup_failure: None,
+            },
+            Err(error) => CheckoutConflict {
+                sink,
+                worktree_id: String::new(),
+                group_id: String::new(),
+                owner_run_id: String::new(),
+                lookup_failure: Some(error.to_string()),
+            },
+        };
+        self.emit_checkout_refusal(
+            context.authority,
+            context.decision,
+            context.request_id,
+            context.request,
+            sink,
+            &conflict,
+        )
+        .await;
         Err(conflict)
     }
 
@@ -4486,10 +4640,24 @@ impl CoreDaemon {
                 .await
             }
             super::daemon_family::DaemonRequestFamily::Documents => {
-                Box::pin(self.handle_document_request(payload, trusted_client_id)).await
+                Box::pin(self.handle_document_request(
+                    payload,
+                    &owned_request_id,
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await
             }
             super::daemon_family::DaemonRequestFamily::ProjectInitialization => {
-                Box::pin(self.handle_project_init_request(payload, trusted_client_id)).await
+                Box::pin(self.handle_project_init_request(
+                    payload,
+                    &owned_request_id,
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await
             }
             // M006-B: LSP read authority only. `LspPreviewApply` is routed to
             // `Goals` above and is not reachable here.

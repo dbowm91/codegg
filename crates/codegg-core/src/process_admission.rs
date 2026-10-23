@@ -358,6 +358,15 @@ impl PersistentProcessRegistry {
     /// The comparison is on canonical identities, so an alias path — a
     /// symlinked parent, a trailing `..` — resolves to the same checkout.
     pub fn live_under(&self, root: &Path) -> Vec<PersistentProcessEntry> {
+        // M005 corrective C008: a relative root has no identity this crate
+        // may derive. Resolving it against the process working directory
+        // would target an unrelated tree — the daemon's working directory is
+        // wherever it was launched — and rooting it at `/` instead would
+        // match nothing, which is the **fail-open** direction: the caller
+        // would see no live process and admit a launch. The scope is
+        // therefore treated as unresolved, and every live process is
+        // reported, so the caller refuses.
+        let unresolved_root = !root.is_absolute();
         let canonical_root = canonical_identity(root);
         let inner = match self.inner.lock() {
             Ok(inner) => inner,
@@ -366,6 +375,9 @@ impl PersistentProcessRegistry {
         let mut live: Vec<PersistentProcessEntry> = inner
             .values()
             .filter(|entry| {
+                if unresolved_root {
+                    return true;
+                }
                 let entry_root = canonical_identity(&entry.checkout_root);
                 entry_root == canonical_root || entry_root.starts_with(&canonical_root)
             })

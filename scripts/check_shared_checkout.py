@@ -123,7 +123,11 @@ CONTRACT_LANDMARKS: list[tuple[str, tuple[str, ...]]] = [
         "src/core/daemon_construct.rs",
         (
             "SharedCheckoutCoordinator::new",
-            "DaemonWriterFenceFactory::new",
+            # M005 corrective C009: the daemon's production site derives the
+            # local-principal fallback from its durable team state. The
+            # landmark names the *derived* constructor, because a site that
+            # asserted the flag outright is exactly the defect C009 removed.
+            "DaemonWriterFenceFactory::with_team_state",
         ),
     ),
 ]

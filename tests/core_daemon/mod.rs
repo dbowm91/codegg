@@ -30,6 +30,9 @@ pub mod checked_restore_integration;
 #[path = "checkout_reservation_c004.inc"]
 pub mod checkout_reservation_c004;
 
+#[path = "checkout_mediation_authority_c008.inc"]
+pub mod checkout_mediation_authority_c008;
+
 #[path = "collaboration_m001_chat.inc"]
 pub mod collaboration_m001_chat;
 

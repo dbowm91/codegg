@@ -167,10 +167,15 @@ serves every backend.
 
 **Read-only grants and the Git-pointer exemption.** A *read-only grant* is a
 path the child can see and cannot change. It exists because some operations
-need a directory that is immutable except for one writable subdirectory — a
-linked worktree's administration directory lives inside the repository's Git
-directory, and the repository's Git directory must stay read-only except for
-that one path. It is a grant, not a weaker write grant.
+need a directory that is immutable except for one writable subdirectory — the
+**shared** administration root `<common-gitdir>/worktrees/` lives inside the
+repository's Git directory, and the repository's Git directory must stay
+read-only except for that one path. It is a grant, not a weaker write grant.
+The shared root is the parent of every linked worktree's own administration
+directory, so a child granted it can also write another linked worktree's
+`HEAD`; ADR-0048's amendment records that consequence as an open capability
+question rather than an accepted narrowing. See `architecture/git.md`
+§"Contained managed-worktree creation".
 
 The **Git-pointer exemption** is narrower. The protected mount view hides a
 `.git` entry that does not exist yet inside a writable root, because a child

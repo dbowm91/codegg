@@ -10,17 +10,42 @@ use codegg_core::workspace_services::{WorkspaceServicePolicy, WorkspaceServiceRe
 
 struct DurableWorktreeOwnerResolver {
     runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    /// The durable run-group service, when the daemon has one.
+    ///
+    /// M005 corrective C007 §6.2: a run that ends while it still holds a
+    /// checkout **on behalf of a live group** is not finished with that
+    /// checkout. The group's other members are still writing under that
+    /// lease, so the reconcile path must not release it.
+    groups: Option<Arc<codegg_core::agent_run_group::AgentRunGroupService>>,
 }
 
 #[async_trait::async_trait]
 impl codegg_core::worktree_service::WorktreeOwnerResolver for DurableWorktreeOwnerResolver {
     async fn is_terminal(&self, owner: &codegg_core::identity::AgentRunId) -> Result<bool, String> {
-        Ok(self
+        let run_terminal = self
             .runs
             .get_run(owner)
             .await
             .map_err(|error| error.to_string())?
-            .is_some_and(|run| run.status.is_terminal()))
+            .is_some_and(|run| run.status.is_terminal());
+        if !run_terminal {
+            return Ok(false);
+        }
+        // The run is terminal. It may still hold the group's shared checkout
+        // on the group's behalf, in which case the lease stays: the
+        // surviving members are the ones writing under it.
+        if let Some(groups) = self.groups.as_ref() {
+            let live = groups
+                .groups_for_run(owner)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .any(|group| !group.status.is_terminal());
+            if live {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -445,6 +470,7 @@ impl CoreRuntimeDeps {
         )
         .with_owner_resolver(Arc::new(DurableWorktreeOwnerResolver {
             runs: agent_run_store.clone(),
+            groups: Some(run_group_service.clone()),
         }));
         // C008: the daemon owns the contained managed-worktree creation path.
         //

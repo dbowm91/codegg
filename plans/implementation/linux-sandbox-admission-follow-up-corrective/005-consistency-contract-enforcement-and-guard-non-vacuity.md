@@ -1,7 +1,8 @@
 # Linux Sandbox Admission C005 — Git Consistency Contract Enforcement and Guard Non-Vacuity
 
-Status: ready for handoff
-Repository baseline: `f1b83a7a7` (`origin/main`, 2026-10-23)
+Status: closed — C005 closed (`plans/closure/linux-sandbox-admission-follow-up-corrective/005-status.md`). The guard now asserts the hostile-config detector's **call** in both the async and the sync path, and its `--self-test` deletes each call in turn and proves the rejection; the guard runs in `verify.sh quick` and CI with its self-test; and the security-review surface's two diff reads now go through `admit_generation_bound`.
+Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
+Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§9, 16–17, 26–29; `plans/001-terminology-and-domain-model.md` §§5, 7–8
 Applicable ADRs: ADR-0044 (contained Git live objects and metadata authority, **proposed — NOT accepted**), ADR-0048 (contained Git execution for managed worktree creation, accepted)

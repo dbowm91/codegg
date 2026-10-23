@@ -537,12 +537,25 @@ impl CoreDaemon {
             );
             let writer_fences: Option<Arc<dyn crate::tool::writer_fence::WriterFenceFactory>> =
                 deps.writer_permit_service.as_ref().map(|permit| {
-                    crate::core::writer_fence::DaemonWriterFenceFactory::new(
+                    // M005 corrective C009: the local-principal fallback is
+                    // no longer asserted here. It is derived from the
+                    // daemon's durable team state: a daemon whose team store
+                    // names a principal other than the local owner has a
+                    // team policy and installs no fallback, so a
+                    // shared-checkout write that arrives without a bound
+                    // actor is refused instead of being written
+                    // anonymously as the synthetic `codegg-writer-fence`
+                    // owner. A daemon with no team store is single-user and
+                    // keeps the fallback, so its own writes stay
+                    // attributable.
+                    crate::core::writer_fence::DaemonWriterFenceFactory::with_team_state(
                         permit.clone(),
                         worktree_service.clone(),
                         deps.agent_run_store.clone(),
                         Some(deps.run_group_service.clone()),
-                        true,
+                        deps.pool
+                            .clone()
+                            .map(|pool| Arc::new(codegg_core::team::TeamStore::new(pool))),
                     ) as Arc<dyn crate::tool::writer_fence::WriterFenceFactory>
                 });
             let subagent_authority = crate::scheduler::executors::SubagentAuthority {

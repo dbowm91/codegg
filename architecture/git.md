@@ -134,6 +134,20 @@ And it follows `includeIf` conditions **unconditionally**, because
 inspection time — so it over-reports relative to what the child will
 actually read, which is the safe direction.
 
+**Where the detector is invoked.** The inspection is not advisory prose: it is
+called by the trusted route itself, and the route's guard asserts the call
+rather than a mention. `ensure_repository_config_surface_is_contained` is
+invoked from **both** child-construction paths in
+`crates/egggit/src/process.rs` — `GitEnvPolicy::apply` (the async path) and
+`GitEnvPolicy::apply_sync` (the synchronous path). A child spawned through
+either path is therefore mediated. The guard
+`scripts/check_git_forbidden_patterns.py` asserts both calls: it matches a
+**call** (the detector name followed by `(` in a comment-stripped method
+body), not a mention, so a comment that names the detector does not satisfy
+the obligation. Its `--self-test` deletes each call in turn, and deletes both
+together, and proves the guard rejects each — a guard obligation without a
+matching injection is a claim, not a check.
+
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
 exit code, `ProjectionHints`, and the **consistency class** the read was
@@ -255,14 +269,25 @@ Three properties carry the contract:
   choosing. The attach is the child's final step and its target is fixed by
   the daemon's argv, so such a write is overwritten rather than trusted. The
   registration check then reads the end state back through Git itself.
-- **The grant is the administration directory and nothing else.** The child may
+- **The grant is the shared administration root and nothing else.** The child may
   write the new checkout, the daemon scratch, and
-  `<common-gitdir>/worktrees/` — the linked worktree's own administration
-  directory, which Git always places inside the common Git directory
+  `<common-gitdir>/worktrees/` — the **shared** administration root, which is
+  the parent of every linked worktree's own administration directory and the
+  directory Git always places inside the common Git directory
   (`git worktree add` has no separate-git-dir option). Every other path under
   the Git directory — `refs`, `objects`, `index`, `config`, `hooks`,
   `packed-refs` — is read-only to the child. The child runs with the Git
   directory as its working directory and never sees the source working tree.
+  Because the granted root is the shared **parent** rather than the linked
+  worktree's own directory, the child can also write another linked
+  worktree's `HEAD`; `git worktree add` runs the repository's `post-checkout`
+  hook, and the child's argv does not pin `core.hooksPath`. ADR-0048's
+  amendment records that consequence as an **open capability question**: the
+  maintainer has not chosen a disposition, so the milestone stops at the
+  documentation correction. Narrowing the grant to the linked worktree's own
+  directory would need a new ADR. See
+  `scripts/check_contained_worktree_grant.py`, which asserts that the ADR,
+  the code comments, and the delivered grant name the same single path.
 - **Containment is asserted, not requested.** The launch's *obtained*
   enforcement is read after the launch; a request is a hope. The grant itself
   is asserted against the built launch description, not against the

@@ -268,6 +268,39 @@ pub enum LspMutationApplyError {
     Stale(String),
     #[error("LSP preview apply failed: {0}")]
     Apply(String),
+    /// M005 corrective C008 §6.5: the checkout was reserved by a live
+    /// agent-run group while this write waited for the repository lock.
+    ///
+    /// The window this closes is the **lock wait**, not the instruction gap:
+    /// a writer that queued behind another writer may find the checkout
+    /// reserved by the time its turn comes.
+    #[error("checkout_reserved: {0}")]
+    CheckoutReserved(String),
+}
+
+/// The under-lock checkout-reservation re-check.
+///
+/// M005 corrective C008 §6.5. This applier takes the repository lock
+/// itself, so the re-check that closes the lock-wait window belongs
+/// **inside** the applier, not before it: a check taken before the lock
+/// answers a question about a moment that has already passed. The daemon
+/// owns the authority and the refusal context, so the daemon supplies the
+/// check and the applier calls it while it holds the lock.
+///
+/// A caller with no daemon — a test harness, an in-process applier — passes
+/// `None`, and the re-check is skipped. That is the caller's explicit
+/// choice, not a silent downgrade.
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
+#[async_trait::async_trait]
+pub trait UnderLockReservationCheck: Send + Sync {
+    /// Re-check the reservation for `root` under the held repository lock.
+    ///
+    /// `Err` carries the refusal message. The daemon emits the refusal row
+    /// before returning, so a refusal is evidence either way.
+    async fn recheck(&self, root: &Path) -> Result<(), String>;
 }
 
 /// Failure taxonomy for the trusted session/workspace binding seam used by
@@ -327,6 +360,7 @@ pub async fn apply_preview(
     pool: sqlx::SqlitePool,
     documents: Option<Arc<crate::document_service::DocumentService>>,
     lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    under_lock_reservation_check: Option<&dyn UnderLockReservationCheck>,
 ) -> Result<LspPreviewApplyResultDto, LspMutationApplyError> {
     validate_request_shape(&request)?;
 
@@ -401,6 +435,15 @@ pub async fn apply_preview(
     }
 
     let _guard = locks.acquire_repository(&canonical_root).await;
+    // M005 corrective C008 §6.5: the re-check runs **under** the lock, so it
+    // answers the question the lock wait creates. A pre-dispatch gate
+    // answered it before the wait and could not see the reservation that
+    // appeared while this writer queued.
+    if let Some(check) = under_lock_reservation_check {
+        if let Err(message) = check.recheck(&canonical_root).await {
+            return Err(LspMutationApplyError::CheckoutReserved(message));
+        }
+    }
     if let Some(service) = &lsp_service {
         for (path, _) in &normalized {
             if service.is_managed_document_dirty(path).await {
@@ -870,6 +913,46 @@ mod tests {
         );
     }
 
+    /// M005 corrective C008 §6.5: the under-lock re-check runs **inside** the
+    /// applier, so a reservation that appeared while this writer queued for
+    /// the repository lock is seen and the apply is refused.
+    #[tokio::test]
+    async fn a_reservation_found_under_the_lock_refuses_the_apply() {
+        struct Refusing;
+        #[async_trait::async_trait]
+        impl UnderLockReservationCheck for Refusing {
+            async fn recheck(&self, _root: &Path) -> Result<(), String> {
+                Err("the checkout is reserved by a live agent-run group".to_owned())
+            }
+        }
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("main.rs");
+        let original = "old\n";
+        std::fs::write(&path, original).expect("write original");
+        let request = request(root.path(), &path, original);
+        let error = apply_preview(
+            request,
+            root.path().to_path_buf(),
+            Arc::new(WorkspaceLockTable::new()),
+            pool().await,
+            None,
+            None,
+            Some(&Refusing),
+        )
+        .await
+        .expect_err("a reservation found under the lock must refuse the apply");
+        assert!(
+            matches!(error, LspMutationApplyError::CheckoutReserved(_)),
+            "the refusal must be a reservation conflict, got {error:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "the file must be untouched: the refusal precedes the write"
+        );
+    }
+
     #[tokio::test]
     async fn applies_preview_records_checkpoint_and_supports_checked_undo() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -883,6 +966,7 @@ mod tests {
             root.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
             pool.clone(),
+            None,
             None,
             None,
         )
@@ -926,6 +1010,7 @@ mod tests {
             root.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
             pool().await,
+            None,
             None,
             None,
         )
@@ -982,6 +1067,7 @@ mod tests {
             pool().await,
             Some(documents),
             None,
+            None,
         )
         .await
         .expect_err("dirty editor target must reject disk preview");
@@ -1005,6 +1091,7 @@ mod tests {
             root.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
             pool().await,
+            None,
             None,
             None,
         )
@@ -1032,6 +1119,7 @@ mod tests {
             root.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
             pool().await,
+            None,
             None,
             None,
         )

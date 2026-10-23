@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use super::agent_run_group::AgentRunGroupService;
 use crate::identity::{AgentRunGroupId, AgentRunId, WorktreeId};
-use crate::worktree_service::{WorktreeQuery, WorktreeRecord, WorktreeService};
+use crate::worktree_service::{WorktreeRecord, WorktreeService};
 
 /// The claim a live agent-run group holds over a checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +111,14 @@ pub enum CheckoutReservationError {
     /// The durable state backing the lookup could not be read.
     #[error("checkout reservation lookup failed: {0}")]
     Lookup(String),
+    /// The path could not be given an absolute identity.
+    ///
+    /// M005 corrective C008: a relative path has no identity this crate may
+    /// derive. Resolving it against the process working directory would
+    /// target an unrelated tree, because a user-scoped daemon's working
+    /// directory is wherever it was launched.
+    #[error("checkout reservation refused a relative path: {0}")]
+    RelativePath(String),
 }
 
 /// The authoritative checkout reservation service.
@@ -187,14 +195,23 @@ impl CheckoutReservationService {
     /// The match is by **canonical containment**: the target resolves inside
     /// the worktree's canonical root. A path outside every managed checkout
     /// is not a managed checkout at all, so it is never reserved.
+    ///
+    /// M005 corrective C008: the candidate set is the **unbounded** authority
+    /// read, not the capped `list` surface. The catalog is user-scoped — one
+    /// database holds every project the user ever opened — and archived rows
+    /// never leave the non-removed set, so the capped list eventually drops
+    /// the newest rows. A newly created, currently reserved checkout is
+    /// exactly one of the rows it drops, and a lookup that cannot see a
+    /// reserved checkout reports it as unreserved: the gate admits the
+    /// writer, silently.
     pub async fn record_for_path(
         &self,
         path: &Path,
     ) -> Result<Option<WorktreeRecord>, CheckoutReservationError> {
-        let target = canonical_identity(path);
+        let target = canonical_identity_absolute(path)?;
         let records = self
             .worktrees
-            .list(WorktreeQuery::default())
+            .list_authority_candidates()
             .await
             .map_err(|error| CheckoutReservationError::Lookup(error.to_string()))?;
         let mut best: Option<(usize, WorktreeRecord)> = None;
@@ -257,16 +274,38 @@ impl CheckoutReservationService {
 /// yet still resolves to the same identity as its parent. Symlinked parents
 /// and redundant `..` components collapse, so two spellings of the same
 /// checkout resolve to one identity.
+///
+/// M005 corrective C008: this never consults the process working directory.
+/// A relative path is anchored at the filesystem root instead — a
+/// user-scoped daemon's working directory is wherever it was launched, so
+/// resolving a relative path against it would silently retarget the lookup
+/// into an unrelated tree. The reservation authority does not use this
+/// spelling for a relative path at all: it refuses it, through
+/// [`canonical_identity_absolute`].
 pub fn canonical_identity(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("/"))
-            .join(path)
+        PathBuf::from("/").join(path)
     };
     let normalized = lexical_normalize(&absolute);
     canonicalize_existing_prefix(&normalized)
+}
+
+/// M005 corrective C008: the canonical identity of a path that must be
+/// absolute.
+///
+/// A relative path is refused with a typed error instead of being resolved
+/// against the process working directory. Every caller of the reservation
+/// authority passes an absolute path, so the refusal is inert for correct
+/// callers and fails closed for the rest.
+pub fn canonical_identity_absolute(path: &Path) -> Result<PathBuf, CheckoutReservationError> {
+    if !path.is_absolute() {
+        return Err(CheckoutReservationError::RelativePath(
+            path.display().to_string(),
+        ));
+    }
+    Ok(canonical_identity(path))
 }
 
 /// Fold redundant `.` and `..` components out of an absolute path.
@@ -326,6 +365,7 @@ fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worktree_service::WorktreeStore;
 
     #[test]
     fn canonical_identity_collapses_redundant_components() {
@@ -340,6 +380,85 @@ mod tests {
         let base = std::env::temp_dir();
         let missing = base.join("codegg-c004-missing").join("file.txt");
         assert!(canonical_identity(&missing).ends_with("file.txt"));
+    }
+
+    /// M005 corrective C008: a relative path has no identity this crate may
+    /// derive. Resolving it against the process working directory would
+    /// target an unrelated tree — the daemon's working directory is wherever
+    /// it was launched — so the authority refuses it.
+    #[test]
+    fn a_relative_path_is_refused_by_the_authority() {
+        let error = canonical_identity_absolute(Path::new("relative/checkout"))
+            .expect_err("a relative path must be refused");
+        assert!(
+            matches!(error, CheckoutReservationError::RelativePath(_)),
+            "the refusal must be typed, got {error:?}"
+        );
+    }
+
+    /// M005 corrective C008: the refusal is inert for correct callers.
+    #[test]
+    fn an_absolute_path_still_resolves() {
+        let base = std::env::temp_dir();
+        let resolved = canonical_identity_absolute(&base.join("a").join("..").join("a"))
+            .expect("an absolute path resolves");
+        assert_eq!(resolved, canonical_identity(&base.join("a")));
+    }
+
+    /// M005 corrective C008: the deepest containing root still wins, so a
+    /// linked worktree inside a managed root resolves to itself.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_deepest_containing_root_wins() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let outer = root.path().join("outer");
+        let inner = outer.join("inner");
+        std::fs::create_dir_all(&inner).expect("create the nested checkout");
+        let store = Arc::new(crate::worktree_service::InMemoryWorktreeStore::new());
+        let now = chrono::Utc::now().timestamp_millis();
+        let (project, repository, workspace) = (
+            crate::identity::ProjectId::new(),
+            crate::identity::RepositoryId::new(),
+            crate::workspace::WorkspaceId::new(),
+        );
+        for path in [outer.clone(), inner.clone()] {
+            store
+                .insert_reserved(WorktreeRecord {
+                    worktree_id: WorktreeId::new(),
+                    project_id: project.clone(),
+                    repository_id: repository.clone(),
+                    workspace_id: workspace.clone(),
+                    node_id: None,
+                    repository_root: root.path().to_path_buf(),
+                    path,
+                    branch: Some("codegg/worktree/x".into()),
+                    base_commit: "a".repeat(40),
+                    managed: true,
+                    state: crate::worktree_service::ManagedWorktreeState::InUse,
+                    health: crate::worktree_service::WorktreeHealth::Clean,
+                    lease_generation: 0,
+                    owner_run_id: None,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await
+                .expect("insert the managed checkout");
+        }
+        let service = WorktreeService::with_store(
+            store,
+            root.path().join("managed"),
+            Arc::new(crate::workspace_services::WorkspaceLockTable::new()),
+        );
+        let reservations = CheckoutReservationService::new(service, None);
+        let record = reservations
+            .record_for_path(&inner.join("file.txt"))
+            .await
+            .expect("resolve the containing checkout")
+            .expect("a managed checkout contains the path");
+        assert_eq!(
+            record.path.canonicalize().expect("canonical"),
+            inner.canonicalize().expect("canonical"),
+            "the deepest containing root wins"
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # M005 Writer-Containment Corrective C009 — Agent-Loop Writer Fence Completeness
 
-Status: ready for handoff
-Repository baseline: `f1b83a7a7` (`origin/main`, 2026-10-23)
+Status: closed — C009 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/009-status.md`). The commit tool takes the fail-closed `None` arm; the daemon's team-policy principal fallback is derived from durable team state at fence time; and the nested-subagent dispatch forwards the parent's fence. One named item remains open in the closure record: a delegated child's own transport principal is unbound, so its write on a team daemon is refused — the fail-closed direction — rather than attributed to a live principal.
+Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
+Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§9, 16–17, 26–29; `plans/001-terminology-and-domain-model.md` §§5, 7–8
 Applicable ADRs: ADR-0002 (agent run worktree isolation and control, accepted), ADR-0032 (agent workstream coordination and shared checkout ownership, accepted), ADR-0047 (restricted agent shared checkout writer contract, accepted option B)

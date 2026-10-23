@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::git_consistency::{GitConsistencyRefusal, GitReadFact};
+use crate::git_service::GitServiceError;
+
 use super::context::*;
 use super::diff::*;
 use super::enrichment::*;
@@ -115,10 +118,82 @@ pub fn plan_security_review_from_diff(diff: &str, _repo_root: &Path) -> Security
 // Target discovery from diff (async, egggit-backed)
 // ---------------------------------------------------------------------------
 
+/// Why a security-review diff read could not be produced.
+///
+/// The security review is a **generation-bound** consumer: the diff it
+/// reviews must describe one object generation, so both of its diff reads
+/// are admitted through [`crate::git_consistency::admit_generation_bound`]
+/// before their content is used.
+///
+/// The refusal is typed rather than a bare string, because the two failure
+/// modes are not the same fact: a consistency refusal says the read was
+/// *not admissible* (it was live and the caller held no live-read
+/// capability, or it observed no object generation at all), while a read
+/// error says the Git command itself did not produce a result. A caller
+/// cannot mistake one for the other, and neither of them produces a report
+/// built from an unfenced read.
+#[derive(Debug, thiserror::Error)]
+pub enum SecurityReviewReadError {
+    /// The read was refused by the generation-bound consistency fence.
+    #[error("git read consistency refusal: {0}")]
+    Consistency(#[source] GitConsistencyRefusal),
+    /// The Git read failed before it could be admitted.
+    #[error("git read failed: {0}")]
+    Read(String),
+}
+
+impl From<GitServiceError> for SecurityReviewReadError {
+    /// Keep a consistency refusal typed all the way to the caller.
+    ///
+    /// The fence reports refusals as [`GitServiceError::Consistency`], so
+    /// this mapping must not flatten that variant into a string: the
+    /// refusal's stable machine name is what tells a caller *why* the read
+    /// was inadmissible.
+    fn from(error: GitServiceError) -> Self {
+        match error {
+            GitServiceError::Consistency(refusal) => Self::Consistency(refusal),
+            other => Self::Read(other.to_string()),
+        }
+    }
+}
+
+impl From<SecurityReviewReadError> for String {
+    /// Flatten the typed refusal for the surfaces that report an error as
+    /// text.
+    ///
+    /// The typed shape is kept at the security-review boundary; the
+    /// surfaces above it (`prepare_security_review`, the command handlers)
+    /// report a message, and the refusal's message names the consistency
+    /// class it was refused for.
+    fn from(error: SecurityReviewReadError) -> Self {
+        error.to_string()
+    }
+}
+
+/// Admit a diff read fact for the security review, and take its content.
+///
+/// The security review is a generation-bound consumer, so every diff read
+/// goes through this one door: the fact is admitted with the crate's fence,
+/// and only an admitted fact yields content. A refusal is typed and
+/// propagates — there is no path from a refused read to a report.
+fn admit_diff_read<T>(fact: GitReadFact<T>) -> Result<T, SecurityReviewReadError> {
+    let admitted = crate::git_consistency::admit_generation_bound(
+        fact,
+        crate::git_consistency::live_read_capability(),
+    )?;
+    Ok(admitted.into_value())
+}
+
 /// Discover security review targets from a git diff.
 ///
 /// Uses `egggit::diff_summary` and `egggit::file_diff` to get changed
 /// files, parse hunks, and create targets with the appropriate preset.
+///
+/// Both reads are **generation-bound**: they are admitted through
+/// [`crate::git_consistency::admit_generation_bound`] before their content
+/// is used, so a read whose consistency class is inadmissible produces a
+/// typed [`SecurityReviewReadError::Consistency`] instead of a diff that
+/// quietly dropped its class.
 ///
 /// This is a read-only operation — it does not mutate the worktree.
 pub async fn discover_targets_from_diff(
@@ -130,12 +205,12 @@ pub async fn discover_targets_from_diff(
         Vec<ChangedHunk>,
         HashMap<PathBuf, String>,
     ),
-    String,
+    SecurityReviewReadError,
 > {
-    let summary = egggit::diff_summary(root, base)
+    let summary_fact = egggit::diff_summary(root, base)
         .await
-        .map_err(|e| e.to_string())?
-        .into_value();
+        .map_err(|e| SecurityReviewReadError::Read(e.to_string()))?;
+    let summary = admit_diff_read(summary_fact)?;
 
     let mut all_hunks = Vec::new();
     let mut file_level_paths: Vec<(PathBuf, Option<String>)> = Vec::new();
@@ -154,10 +229,10 @@ pub async fn discover_targets_from_diff(
 
         let content_hint = std::fs::read_to_string(root.join(&path)).ok();
 
-        let file_diff = egggit::file_diff(root, &path, base)
+        let file_diff_fact = egggit::file_diff(root, &path, base)
             .await
-            .map_err(|e| e.to_string())?
-            .into_value();
+            .map_err(|e| SecurityReviewReadError::Read(e.to_string()))?;
+        let file_diff = admit_diff_read(file_diff_fact)?;
 
         let patch_text = file_diff.patch.clone();
         let hunks = parse_changed_hunks_for_file(&file_diff.patch, &path);
@@ -429,7 +504,7 @@ pub async fn run_security_review_workflow(
         SecurityReviewOutput,
         Option<HunkSourceContextExecutionStats>,
     ),
-    String,
+    SecurityReviewReadError,
 > {
     // Phase 1: Discover targets from diff
     let (targets, parsed_hunks, real_patches) = discover_targets_from_diff(root, base).await?;
@@ -603,7 +678,7 @@ pub async fn run_security_review_workflow_with_lsp_enrichment<
         SecurityReviewOutput,
         Option<HunkSourceContextExecutionStats>,
     ),
-    String,
+    SecurityReviewReadError,
 > {
     // Stage 1: deterministic review (enrichment disabled in options for this pass)
     let stage1_options = SecurityReviewWorkflowOptions {
@@ -1456,6 +1531,7 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_consistency::GitReadConsistency;
     use crate::lsp::config::LspConfig;
     use crate::lsp::service::LspService;
     use crate::tool::lsp::LspTool;
@@ -1504,6 +1580,69 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "api_key = \"sk-xyz789\";\n")
             .expect("write fixture change");
         (dir, root)
+    }
+
+    /// An inadmissible diff read must produce a typed error, not content.
+    ///
+    /// The security review is a generation-bound consumer: its diff reads
+    /// are admitted through one door, and a read whose consistency class is
+    /// inadmissible is refused there. The refusal is typed — a caller can
+    /// tell "the read was live and no live-read capability was held" from
+    /// "the read observed no object generation" — and it is an error rather
+    /// than a report built from bytes whose class was never checked.
+    #[test]
+    fn inadmissible_diff_read_is_refused_with_a_typed_error() {
+        let refused = admit_diff_read(GitReadFact::new(
+            "torn diff".to_string(),
+            GitReadConsistency::LiveMutable,
+        ))
+        .expect_err("a live-class read must not be admitted for a generation-bound consumer");
+
+        assert!(
+            matches!(
+                refused,
+                SecurityReviewReadError::Consistency(
+                    GitConsistencyRefusal::LiveClassWithoutCapability { class }
+                ) if class == GitReadConsistency::LiveMutable
+            ),
+            "expected a typed live-class refusal, got {refused:?}"
+        );
+    }
+
+    /// A read that observed no object generation is refused as well, and it
+    /// is refused as its own kind of refusal rather than as a live read.
+    #[test]
+    fn generationless_diff_read_is_refused_with_a_typed_error() {
+        let refused = admit_diff_read(GitReadFact::new(
+            "no generation".to_string(),
+            GitReadConsistency::NoObjectGeneration,
+        ))
+        .expect_err("a read without an object generation must not be admitted");
+
+        assert!(
+            matches!(
+                refused,
+                SecurityReviewReadError::Consistency(GitConsistencyRefusal::NoObjectGeneration)
+            ),
+            "expected a typed no-object-generation refusal, got {refused:?}"
+        );
+    }
+
+    /// An admissible read is consumed unchanged.
+    ///
+    /// The fence decides admissibility; it does not alter what it admits.
+    /// A captured generation carries the content through byte for byte.
+    #[test]
+    fn admissible_diff_read_is_consumed_unchanged() {
+        let payload = "one captured generation".to_string();
+
+        let admitted = admit_diff_read(GitReadFact::new(
+            payload.clone(),
+            GitReadConsistency::CapturedNotCurrent,
+        ))
+        .expect("a captured-generation read must be admitted");
+
+        assert_eq!(admitted, payload);
     }
 
     #[tokio::test]

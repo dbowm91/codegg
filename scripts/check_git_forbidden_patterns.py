@@ -15,6 +15,12 @@ polish/maintainability/verification plan (Workstream E2):
   * Hostile Git metadata that could reach code execution through the
     trusted read route: a dangerous configuration key that is not
     neutralised, or that is carried in a form that lets it run.
+  * Hostile Git metadata mediation that is declared but never invoked:
+    the trusted route must CALL the bounded hostile-config detector from
+    every child-construction path — the async one and the sync one. A
+    comment that names the detector is documentation, not a call, and
+    asserting only one of the two call sites would let the other be
+    deleted while this guard stayed green.
 
 Exits 0 when all checks pass, 1 otherwise. Each finding includes the
 file, line, and a one-line rationale.
@@ -28,7 +34,8 @@ Usage:
 injects one defect at a time, and asserts that each injected defect is
 rejected. A guard that cannot be shown to fail on an injected defect is
 not accepted as evidence, so the self-test fails loudly (exit 1) when an
-injected defect slips through.
+injected defect slips through. Every injection is reported by name, so
+the self-test's own output says which defect it exercised.
 
 The script is deliberately strict — every false positive should be
 either fixed or added to the explicit allowlist at the bottom of this
@@ -723,6 +730,25 @@ _OVERRIDE_ENTRY_RE = re.compile(r'\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.
 _STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _CONFIG_KEY_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[A-Za-z0-9_.-]+)+$")
 
+# The bounded hostile-config detector, and the trusted-route methods that must
+# invoke it.
+#
+# The detector is the mediation that refuses a repository which declares a
+# configuration surface the trusted route cannot neutralise. Declaring it is
+# not the same as calling it: a route that builds a Git child without ever
+# calling the detector builds a child against an unbounded repository
+# configuration, and every other check in this file still passes — the
+# override table is still pinned, the dangerous keys are still absent from
+# it. So the *call* is asserted here, in both child-construction paths.
+#
+# The pattern matches a call, not a mention: the trailing `(` is required, the
+# name may not be part of a longer identifier, and the body it is searched in
+# has its line comments stripped first, so a comment that names the detector
+# cannot satisfy the obligation.
+DETECTOR_NAME = "ensure_repository_config_surface_is_contained"
+DETECTOR_CALL_RE = re.compile(rf'(?<![\w"]){re.escape(DETECTOR_NAME)}\s*\(')
+DETECTOR_ROUTE_METHODS: Tuple[str, ...] = ("apply", "apply_sync")
+
 
 def _strip_line_comments(text: str) -> str:
     """Remove `//` comments while leaving string literals intact."""
@@ -787,6 +813,54 @@ def _function_body(text: str, name: str) -> Optional[str]:
     return text[open_at : open_at + close.end()]
 
 
+def _impl_block(text: str, name: str) -> Optional[Tuple[str, int]]:
+    """Return the body of `impl <name> { ... }` and the line it starts on.
+
+    The body opens on the `impl` line and closes on the first line that is
+    exactly `}` at column 0, which is how a top-level item ends in this
+    crate. Returning None is a finding, never a pass: a route the guard
+    cannot read is a route it cannot vouch for.
+    """
+    match = re.search(rf"^impl {re.escape(name)}\s*\{{", text, re.MULTILINE)
+    if match is None:
+        return None
+    open_at = text.find("\n", match.start())
+    if open_at == -1:
+        return None
+    close = re.search(r"^\}$", text[open_at:], re.MULTILINE)
+    if close is None:
+        return None
+    body = text[match.start() : open_at + close.end()]
+    line = text.count("\n", 0, match.start()) + 1
+    return body, line
+
+
+def _method_body(block: str, name: str) -> Optional[Tuple[str, int]]:
+    """Return the body of a method inside an impl block, and its line.
+
+    The method is located by its `fn` line, and its body ends on the first
+    line that closes it: the same indentation as the `fn` line, holding a
+    single `}`. Returning None is a finding, never a pass.
+    """
+    match = re.search(
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?fn {re.escape(name)}\s*\(",
+        block,
+        re.MULTILINE,
+    )
+    if match is None:
+        return None
+    line_start = match.start()
+    indent_match = re.match(r"[ \t]*", block[line_start:])
+    indent = len(indent_match.group(0)) if indent_match else 0
+    close_pattern = "^" + re.escape(" " * indent) + r"\}\s*$"
+    close = re.search(close_pattern, block[match.end() :], re.MULTILINE)
+    if close is None:
+        return None
+    body = block[line_start : match.end() + close.end()]
+    line = block.count("\n", 0, line_start) + 1
+    return body, line
+
+
 def _override_table_span(body: str) -> Optional[Tuple[int, int]]:
     """Locate the `for (key, value) in [ ... ]` override table in a body."""
     match = re.search(r"for\s*\(\s*key\s*,\s*value\s*\)\s*in\s*\[", body)
@@ -814,7 +888,7 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
     """Repository-controlled Git metadata must not reach code execution.
 
     The trusted read route is the only place a CodeGG-owned Git child is
-    constructed, so this check asserts three things about it:
+    constructed, so this check asserts four things about it:
 
       1. every dangerous configuration key is neutralised — by a pinned
          `-c key=value` override, by an environment pin Git prefers over the
@@ -826,7 +900,11 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
          table;
       3. the `GIT_CONFIG_COUNT` injection path carries only the commit
          identity keys, so a dangerous key cannot be smuggled through the
-         environment instead of the override table.
+         environment instead of the override table;
+      4. the bounded hostile-config detector is actually *called* from every
+         trusted child-construction path — the async one and the sync one.
+         A route that stops calling it keeps every override and every
+         environment pin, so no other check in this file can see the loss.
     """
     root = ROOT if root is None else root
     rel = "crates/egggit/src/process.rs"
@@ -1054,6 +1132,70 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
                 )
             )
 
+    # 5. The bounded hostile-config detector is invoked from every trusted
+    #    child-construction path.
+    #
+    #    The detector is the mediation: it refuses a repository that declares
+    #    a configuration surface the route cannot neutralise. Every other
+    #    check in this file describes what the route *carries*, and a route
+    #    that never calls the detector carries all of it correctly while
+    #    still building a child against an unbounded repository
+    #    configuration. So the call itself is asserted — in the async path
+    #    and in the sync path, because a route that mediates only one of
+    #    them is half-moderated, not moderated.
+    #
+    #    The assertion matches a call, not a mention: line comments are
+    #    stripped from the body first, and the pattern requires the name to
+    #    be followed by `(`.
+    policy = _impl_block(text, "GitEnvPolicy")
+    if policy is None:
+        findings.append(
+            Finding(
+                rule="hostile-git-metadata-detector-call-missing",
+                file=rel,
+                line=1,
+                message=(
+                    "the trusted Git route policy (impl GitEnvPolicy) could not be located; "
+                    f"the {DETECTOR_NAME}() call sites cannot be verified"
+                ),
+            )
+        )
+    else:
+        policy_body, policy_line = policy
+        for method in DETECTOR_ROUTE_METHODS:
+            found = _method_body(policy_body, method)
+            if found is None:
+                findings.append(
+                    Finding(
+                        rule="hostile-git-metadata-detector-call-missing",
+                        file=rel,
+                        line=policy_line,
+                        message=(
+                            f"the trusted Git route method {method}() could not be located; "
+                            f"the {DETECTOR_NAME}() call site cannot be verified"
+                        ),
+                    )
+                )
+                continue
+            method_body, method_line = found
+            if not DETECTOR_CALL_RE.search(_strip_line_comments(method_body)):
+                findings.append(
+                    Finding(
+                        rule="hostile-git-metadata-detector-call-missing",
+                        file=rel,
+                        # The method's line is counted from the impl block, so
+                        # the file's line is the block's line plus the
+                        # method's offset from the block's first line.
+                        line=policy_line + method_line - 1,
+                        message=(
+                            f"the trusted Git route method {method}() no longer calls "
+                            f"{DETECTOR_NAME}(); the detector is the mediation that refuses a "
+                            "repository-controlled configuration surface, and a comment naming "
+                            "it is not a call"
+                        ),
+                    )
+                )
+
     return findings
 
 
@@ -1079,6 +1221,35 @@ def _delete_line(text: str, needle: str) -> str:
             del lines[index]
             return "".join(lines)
     raise AssertionError(f"fixture line not found: {needle!r}")
+
+
+def _delete_nth_line(text: str, needle: str, occurrence: int) -> str:
+    """Delete the `occurrence`-th (1-based) line that contains `needle`.
+
+    The detector is called from two places with identical text, so deleting
+    "the async call" and deleting "the sync call" are different defects and
+    need different fixtures.
+    """
+    lines = text.splitlines(keepends=True)
+    seen = 0
+    for index, line in enumerate(lines):
+        if needle in line:
+            seen += 1
+            if seen == occurrence:
+                del lines[index]
+                return "".join(lines)
+    raise AssertionError(
+        f"fixture line not found: {needle!r} (occurrence {occurrence}; saw {seen})"
+    )
+
+
+def _delete_all_lines(text: str, needle: str) -> str:
+    """Delete every line that contains `needle`."""
+    lines = text.splitlines(keepends=True)
+    kept = [line for line in lines if needle not in line]
+    if len(kept) == len(lines):
+        raise AssertionError(f"fixture line not found: {needle!r}")
+    return "".join(kept)
 
 
 def _insert_override(text: str, entry: str) -> str:
@@ -1305,6 +1476,36 @@ def _self_test_cases() -> List[Tuple[str, Callable[[str], Optional[str]], str]]:
             lambda text: "",
             "hostile-git-metadata-source-empty",
         ),
+        (
+            "the trusted route stops calling the hostile-config detector in the async path",
+            lambda text: _delete_nth_line(
+                text, "ensure_repository_config_surface_is_contained(&worktree)?;", 1
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route stops calling the hostile-config detector in the sync path",
+            lambda text: _delete_nth_line(
+                text, "ensure_repository_config_surface_is_contained(&worktree)?;", 2
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route stops calling the hostile-config detector at all",
+            lambda text: _delete_all_lines(
+                text, "ensure_repository_config_surface_is_contained(&worktree)?;"
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a comment",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                "// ensure_repository_config_surface_is_contained(&worktree)?;",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
     ]
 
 
@@ -1361,13 +1562,19 @@ def self_test() -> int:
             reported += check_trusted_git_execution_policy(work)
             if not reported:
                 failures.append(f"{description}: the guard did not reject the injected defect")
-            elif expected_rule and not any(
+                continue
+            if expected_rule and not any(
                 finding.rule == expected_rule for finding in reported
             ):
                 failures.append(
                     f"{description}: the guard rejected the injected defect, but not with the "
                     f"check that owns it (no finding had rule {expected_rule!r}): {reported}"
                 )
+                continue
+            # The self-test names the injection it exercised, so its own
+            # output is the evidence that this defect — and not some other
+            # one — is the thing the guard rejects.
+            print(f"  ok   {description} (rejected by {expected_rule})")
 
     if failures:
         for failure in failures:
