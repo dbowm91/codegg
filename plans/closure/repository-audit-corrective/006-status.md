@@ -111,6 +111,21 @@ uncached path is the baseline's own behaviour. They are not supposed to fail
 on the baseline — a render-comparison test that failed on the baseline would
 be comparing against the wrong thing.
 
+**The render comparison is shown capable of detecting a difference.** The
+composer's cache was perturbed so that it ignored the **width** — one line
+of `PromptWidget::layout_at` — and the comparison failed:
+
+```
+---- tui_render_cost::the_cached_composer_draws_the_same_rows_as_a_fresh_one ----
+assertion `left == right` failed: text "a line that is much wider than the
+row it is wrapped at": the frame at width 5 drew something else
+  left: Buffer {
+ right: Buffer {
+```
+
+The perturbation was reverted immediately afterwards, and the comparison
+passes on the shipped tree.
+
 The baseline capture is reproducible: the production files were reverted with
 `git checkout 626a1abbb -- <files>`, the instrument was re-applied, the
 member was run, and the tree was restored with `git checkout HEAD -- <files>`.
