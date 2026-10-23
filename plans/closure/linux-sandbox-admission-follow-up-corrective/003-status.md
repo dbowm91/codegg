@@ -4,6 +4,7 @@ Status: **conditionally closed** — the slice's own exit criteria are met; the 
 Source implementation plan: `plans/implementation/linux-sandbox-admission-follow-up-corrective/003-git-live-read-consistency-and-metadata-review.md`
 Source subsystem roadmap: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md` (C003)
 Repository baseline: `f4019a410` (`main` at the start of the milestone), merged forward with `3ee32e839` (`main`) when the branch was prepared for review
+Landed: `f1b83a7a7` (merge commit on `main`, 2026-10-23); the landing was repaired by `a3b6116e8` (PR #173) — see §8.5 and §12.5
 Branch: `plans/linux-sandbox-c003-git-consistency-metadata-review`
 ADR packet: `plans/closure/linux-sandbox-admission-follow-up-corrective/003-adr-0044-packet.md`
 Predecessor review: `plans/closure/linux-trusted-git-cost-corrective/006-status.md` §8 (the blocking items this milestone answers)
@@ -363,7 +364,7 @@ below are the merged head's.
 |---|---|
 | `cargo fmt --all -- --check` | clean |
 | `cargo check -p codegg --locked --all-targets` | clean, no errors and no warnings |
-| `cargo check -p codegg --locked --tests` | clean (every integration test target compiles) |
+| `cargo check -p codegg --locked --tests` | clean — every integration test target **this command enables** compiles. It does not enable `linux-git-test-support`, so the `linux_git_test_support` target is **not** among them; see §12.5 |
 | `git diff --check` | clean |
 
 ### 8.2 The focused test targets
@@ -461,6 +462,32 @@ footnote.
    because both new members live inside the consolidated family.
 4. **Passed** on the merged head.
 
+### 8.5 The landing
+
+| Item | Result |
+|---|---|
+| PR | [#169](https://github.com/dbowm91/codegg/pull/169) — "C003: typed Git read-consistency contract, consumer fence, and hostile-config mediation" |
+| Merge commit | `f1b83a7a7` — a **merge commit**, not a squash. The four milestone SHAs (`f00d10e0d`, `86a9b372f`, `5188e227f`, `3f1ca3323`) and the merge-forward `f69622924` are all reachable from `main`. |
+| Hosted `CI` job on the merge commit | `verify` **passed** |
+| Hosted Linux M004 qualification on the merge commit | `process-ipc` and `restricted-userns-fails-closed` **failed to compile** — see §12.5 |
+
+The landing therefore needed a follow-up repair: PR #173
+(`fix/c003-linux-git-test-support-call-sites`), merged as `a3b6116e8`, which
+adapted the three call sites in the feature-gated `linux-git-test-support`
+family to C003's typed live-read result.
+
+| Hosted lane on PR #173 | Result |
+|---|---|
+| `verify` | **passed** (26m28s) |
+| `process-ipc` | **passed** (33m20s) — including the step "C007 private-index publication under containment", which is the step that failed to compile on the merge commit |
+| `restricted-userns-fails-closed` | **passed** (9m30s) |
+
+Both jobs that failed on the merge commit pass on the repair, and the step
+that failed to compile now runs and passes.
+
+The repair does not change this milestone's disposition: C003 remains
+**conditionally closed** on the ADR-0044 decision (§11).
+
 ## 9. What this milestone does not establish
 
 1. **ADR-0044 is not accepted.** Its status is unchanged.
@@ -544,3 +571,37 @@ finding a silently rewritten document.
    are **not** rewritten: `main` relocated that file into the consolidated
    family while this milestone was in flight, and those records are pinned to
    their own evidence. This note is the correction's home instead.
+
+5. **The landing broke the feature-gated Linux qualification, and this
+   milestone's own baseline did not see it.** C003 changed
+   `GitExecutionService::execute_contained_live_read_test_only` to return
+   `GitReadFact<ManagedProcessResult>`, so that the contained live pilot's
+   consistency class travels with the value instead of being a separate fact.
+   The three call sites in the feature-gated `linux-git-test-support` family
+   were not adapted, so the `linux_git_test_support` test target no longer
+   compiled. On merge commit `f1b83a7a7` the hosted Linux M004 lane failed
+   **both** of its jobs with that compile error.
+
+   The cause is structural, not incidental. `scripts/verify.sh:347-349`
+   records that the `windows-sandbox-test-support` and `linux-git-test-support`
+   families are qualified by the platform-specific workflows and not by the
+   routine gates, and neither `cargo check --workspace --all-targets` nor the
+   CI `verify` job enables those features. **The routine gates cannot see this
+   class of change.** §8.1's "`cargo check -p codegg --locked --tests` — every
+   integration test target compiles" was therefore **false** for the gated
+   family, and is corrected above. The Linux workflow caught the break, which
+   is that safety net working as designed; the fault was that this milestone
+   did not compile the gated target locally before landing.
+
+   The repair is PR #173, merged as `a3b6116e8`. It is not a weakening: no test
+   was skipped, excluded, or timed out, and the two repaired helpers now
+   assert `GitReadConsistency::LiveMutable`, so the live pilot's honesty is
+   observable at its own call sites rather than being discarded at the
+   unwrap. A second commit in the same PR fixed five pre-existing
+   `needless_borrow` findings that `cargo clippy` reports in the same file;
+   they predate C003 and were found only because the repair is the first time
+   the gated target has been linted at all.
+
+   **What is still not established:** the routine gates still do not compile
+   the gated families. Putting the gated targets inside a routine compile
+   check is a separate decision, and it is not made here.
