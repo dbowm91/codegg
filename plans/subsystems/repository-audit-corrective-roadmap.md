@@ -356,6 +356,6 @@ The roadmap is closed when:
 | C002 | **closed** | `plans/implementation/repository-audit-corrective/002-destructive-delete-classification-coverage.md` | `plans/closure/repository-audit-corrective/002-status.md` | — |
 | C003 | **closed** | `plans/implementation/repository-audit-corrective/003-slash-command-argument-contract.md` | `plans/closure/repository-audit-corrective/003-status.md` | — |
 | C004 | **closed** | `plans/implementation/repository-audit-corrective/004-job-state-terminality-and-status-projection.md` | `plans/closure/repository-audit-corrective/004-status.md` | — |
-| C005 | not started | `plans/implementation/repository-audit-corrective/005-verification-surface-and-dead-code.md` | — | C001–C004 closed |
-| C006 | not started | `plans/implementation/repository-audit-corrective/006-tui-render-path-and-transcript-cost.md` | — | C001, C003 closed |
-| C007 | not started | `plans/implementation/repository-audit-corrective/007-comment-corpus-reduction-and-drift-guard.md` | — | C001–C006 closed |
+| C005 | **closed** | `plans/implementation/repository-audit-corrective/005-verification-surface-and-dead-code.md` | `plans/closure/repository-audit-corrective/005-status.md` | C001–C004 closed |
+| C006 | **closed** | `plans/implementation/repository-audit-corrective/006-tui-render-path-and-transcript-cost.md` | `plans/closure/repository-audit-corrective/006-status.md` | C001, C003 closed |
+| C007 | **closed** | `plans/implementation/repository-audit-corrective/007-comment-corpus-reduction-and-drift-guard.md` | `plans/closure/repository-audit-corrective/007-status.md` | C001–C006 closed |

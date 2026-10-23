@@ -564,7 +564,7 @@ pub struct App {
     /// starts, used to reject late output after navigation changes context.
     pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
     /// Durable command-run store for the projection pipeline
-    /// (Phase 1 of `plans/shell_output_projection_phase_01_command_event_model.md`).
+    /// (`architecture/human_shell.md`, "CommandOutputStore").
     /// Populated alongside `shell_store` so the projection seam has raw
     /// stdout/stderr available without rerunning commands.
     pub command_run_store: crate::shell::CommandOutputStore,
