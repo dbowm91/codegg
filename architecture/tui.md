@@ -221,6 +221,48 @@ stale-generation protection.
 See `src/tui/async_cmd.rs` for `spawn_tui_task` and
 `spawn_registered_tui_task`.
 
+### Blocking on a runtime handle
+
+A command handler may not block on a runtime handle from inside the runtime.
+
+The event loop is awaited inside `#[tokio::main(flavor = "multi_thread")]`
+(`src/main.rs`), so the loop's future is polled with the runtime context
+**entered**. `tokio::runtime::Handle::block_on` enters the runtime again, and
+a nested entry panics with *"Cannot start a runtime from within a runtime"*.
+`App::on_key` is synchronous and the event loop's only `catch_unwind` wraps
+rendering rather than key handling, so that panic took the whole process
+down. The `/lsp-*` command arms and the `/worktree` arm in
+`src/tui/app/mod.rs` all waited this way, and so did the `McpCommand::Debug`
+arm in `src/mcp/cli.rs` — the MCP CLI is reached from the same `main`.
+
+The wait therefore goes through `tokio::task::block_in_place`, which leaves
+the runtime context before the inner `block_on` re-enters it:
+
+```rust
+let text = tokio::task::block_in_place(|| {
+    tokio::runtime::Handle::current().block_on(lsp_tool.lsp_doctor(path_arg))
+});
+```
+
+`block_in_place` requires a multi-threaded runtime, and `src/main.rs`
+declares one. The command's visible result is unchanged: the same string, on
+the same surface.
+
+**Why the existing unit test could not catch it.** The `lsp_doctor` tests in
+`src/tui/app/mod.rs` entered the runtime with `Runtime::new()` plus
+`rt.enter()`. `Runtime::enter` sets the current *handle* and the enter depth,
+but it does **not** set the entered flag — only `context::enter_runtime` sets
+that, and only a real `Runtime::block_on` calls it. The nested `block_on`
+therefore found no entered context in the test and succeeded, while the same
+call in production panicked. A regression test has to enter the runtime the
+way production does: the driving future must be polled by a real
+`Runtime::block_on`. `tests/tui_render/nested_runtime_command_dispatch.inc`
+does that, driving the command through `App::on_key`.
+
+`scripts/check_no_nested_runtime_block_on.py` fails the build when a
+`Handle::block_on` appears outside a `block_in_place` in the production Rust
+trees. It runs in `scripts/verify.sh quick` and in the hosted CI guard step.
+
 ### AsyncUiRequestState
 
 `AsyncUiRequestState` (`src/tui/app/state/async_request.rs:20`) is a
@@ -7023,6 +7065,25 @@ Confirmed accurate, no change needed:
   composer, `Esc` as the mode switch, the composer naming exactly one
   destination, the single directional dispatcher, and the one-time docking
   gesture interception gated on `Component::docks_as_viewer()`.
+
+Verified 2026-10-23 (repository audit corrective C001) against
+`src/tui/app/mod.rs`, `src/mcp/cli.rs`, `src/main.rs`,
+`tests/tui_render/nested_runtime_command_dispatch.inc`, and the vendored
+`tokio` 1.52.3 sources (`runtime/context/runtime.rs`,
+`runtime/context/runtime_mt.rs`, `runtime/scheduler/multi_thread/mod.rs`,
+`runtime/handle.rs`). Confirmed: `src/main.rs` declares
+`#[tokio::main(flavor = "multi_thread")]`, and that is the runtime the TUI
+event loop and `codegg mcp debug` both run on; `context::enter_runtime` is the
+only thing that sets `EnterRuntime::Entered`, and `Runtime::enter()` does not
+call it — which is why the existing `lsp_doctor` unit tests could not
+reproduce the nested-entry panic; `Handle::block_on` and `Runtime::block_on`
+both call `enter_runtime` and both panic when the context is already entered;
+and `block_in_place` clears the entered flag (`exit_runtime`) around the
+closure, so the inner `block_on` re-enters rather than nests. The 21 call
+sites are now `tokio::task::block_in_place` waits, and
+`scripts/check_no_nested_runtime_block_on.py` fails the build on any
+`Handle::block_on` outside one.
+
 ### Editor LSP presentation (M006-C)
 
 The editor consumes the daemon-owned `LspDiagnosticsGet` and `LspReadGet`
