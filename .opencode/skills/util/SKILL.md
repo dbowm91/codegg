@@ -40,12 +40,12 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), AppError>;
 pub fn read_from_clipboard() -> Option<String>;
 ```
 
-**Feature Gate**: `arboard` is a **default** feature (`Cargo.toml:329-330`),
-so it is on unless you build with `--no-default-features`. Both functions
-exist either way — the `#[cfg(not(feature = "arboard"))]` twins return
-`Err(AppError::Clipboard(...))` and `None` respectively
-(`clipboard.rs:12`, `:26`). The dependency is declared
-`default-features = false` (`Cargo.toml:196`), so it is the text-only API.
+**Feature Gate**: `arboard` is a **default** feature (`Cargo.toml:356`,
+`default = ["arboard"]`), so it is on unless you build with
+`--no-default-features`. Both functions exist either way — the
+`#[cfg(not(feature = "arboard"))]` twins return `Err(AppError::Clipboard(...))`
+and `None` respectively (`clipboard.rs:13`, `:27`). The dependency is declared
+`default-features = false` (`Cargo.toml:197`), so it is the text-only API.
 
 ### fuzzy.rs
 
@@ -152,10 +152,13 @@ let truncated = truncate_bytes("very long text...", 10);
 
 | Location | Usage |
 |----------|-------|
-| `src/tui/app/mod.rs` | Uses `fuzzy_score` for item filtering (`:3206`, `:9380`) and `clipboard::copy_to_clipboard` for export/share (`:8699`) |
+| `src/tui/app/mod.rs` | Uses `fuzzy_score` for subagent-name and item filtering, and `clipboard::copy_to_clipboard` for export/share/copy actions |
 | `src/tui/command.rs` | Uses `fuzzy_score` for slash command matching |
 | `src/tui/components/completion_overlay.rs` | Uses `fuzzy_score` for completion filtering |
 | `src/tui/components/dialogs/share.rs` | Uses `clipboard` for URL copying |
+
+Prefer naming the call site over pinning its line number: `src/tui/app/mod.rs`
+is a large, frequently-churned file, so a line reference there drifts fast.
 
 ## Testing
 
@@ -179,3 +182,29 @@ Tests include:
 
 - `architecture/util.md` — authoritative contract, key-type line refs, invariants
 - `.opencode/skills/tui/SKILL.md` — the heaviest consumer (`fuzzy_score`, clipboard)
+
+## Source verification
+
+Verified 2026-10-23 against `src/util/{clipboard,fuzzy,truncate,interner,
+metrics,pricing,mod}.rs`, `Cargo.toml`, `src/tui/app/mod.rs`,
+`src/tui/command.rs`, `src/tui/components/completion_overlay.rs`, and
+`src/tui/components/dialogs/share.rs`. Confirmed: `fuzzy_match` /
+`fuzzy_score` (`src/util/fuzzy.rs:3,12`); `truncate_lines` / `truncate_bytes` /
+`truncate_prefix` / `truncate_suffix` (`src/util/truncate.rs:1,19,32,46`) and
+their re-export at `src/util/mod.rs:8`; `gauge_dec_saturates_at_zero`
+(`src/util/metrics.rs:150`); the `arboard` default feature (`Cargo.toml:356`)
+and its `default-features = false` declaration (`Cargo.toml:197`); the
+`#[cfg(not(feature = "arboard"))]` twins (`src/util/clipboard.rs:13,27`);
+and the `strsim` / `parking_lot` / `arboard` dependencies.
+
+Corrected: the `arboard` default feature was cited as `Cargo.toml:329-330`
+(actually `:356`, a ~27-line drift that pointed at unrelated `rustls` config);
+the `default-features = false` declaration was `:196` (actually `:197`); the
+clipboard twins were `:12`/`:26` (the `cfg` attributes are at those lines but
+the stubs are at `:13`/`:27`); and the three `src/tui/app/mod.rs` line
+references (`:3206`, `:9380`, `:8699`) had drifted by more than a thousand
+lines — `fuzzy_score` is now called at `:12434` and `:12501`, and
+`copy_to_clipboard` at `:9136`, `:11625`, `:11654`, and `:16364`. Those three
+refs were replaced with behaviour-level descriptions, because that file
+churns too fast for a line number to stay true.
+

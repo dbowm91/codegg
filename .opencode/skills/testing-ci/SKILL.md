@@ -81,9 +81,61 @@ Both run in `verify.sh quick` and in CI, and both are built on
   `docs/test-duplication.toml` records which one is the survivor and why.
   The duplicate detector is **content-preserving**: a literal is replaced by
   a marker derived from its content, so two calls that differ only in a
-  string argument stay distinct. Blanking literals instead reports 456
-  groups where the true figure is 89.
+  string argument stay distinct. Blanking literals instead would report
+  every pair that merely shares a call shape as a duplicate — a much larger
+  and much less useful number than the true one.
 
 When you add a test, run `python3 scripts/rust_test_scan.py --validate` for
 the ground-truth function counts. **Never scan Rust with a regex**: a regex
 scan reads `&'a T` as a character literal and undercounts `tests/` by 76%.
+
+## See Also
+
+- `architecture/testing.md` — authoritative test taxonomy, pool strategy, and
+  nextest profiles
+- `architecture/overview.md` — the `## Verified counts` table, including the
+  integration-test-file count
+- `docs/test-ownership.toml` — the scoped-selection manifest
+- `docs/test-assertion-quality.toml` — recorded no-assertion exceptions
+- `docs/test-duplication.toml` — recorded duplicate-group survivors
+- `scripts/verify.sh` — the `quick` / `full` / `scoped` entry points
+- `scripts/scoped_selection.py` — the scoped-mode selection algorithm
+- `scripts/rust_test_scan.py` — the Rust-aware scanner (the only correct way
+  to count test functions)
+- `.opencode/skills/tool-execution/SKILL.md` — the ownership rules that decide
+  which tests a change must run
+- `.opencode/skills/architecture-review/SKILL.md` — how the architecture
+  counts this skill relies on are kept honest
+
+## Source verification
+
+Verified 2026-10-23 against `scripts/verify.sh`, `scripts/scoped_selection.py`,
+`scripts/check_test_ownership.py`, `scripts/check_test_target_references.py`,
+`scripts/check_test_assertion_quality.py`, `scripts/check_test_duplication.py`,
+`scripts/rust_test_scan.py`, `docs/test-ownership.toml`,
+`docs/test-assertion-quality.toml`, `docs/test-duplication.toml`, and
+`architecture/testing.md`.
+
+Confirmed: the `quick` / `full` / `scoped` modes and their guard sets
+(`scripts/verify.sh:40-41,459`); the scoped mode's default base
+`origin/main` (`scripts/verify.sh:383`, `scripts/scoped_selection.py:80`);
+its merge-base comparison point (`scoped_selection.py:108`); that
+uncommitted work is included — unstaged, staged, and untracked files are all
+folded into the changed set (`scoped_selection.py:122-129`); that the
+ownership manifest is the scoped mode's input (`verify.sh:377-378,398`); and
+that `scripts/check_test_target_references.py` checks `.config/nextest.toml`,
+`.github/workflows/ci.yml`, and `architecture/overview.md`'s recorded
+integration-test count — **not** the skill docs, which is why the stale
+`--test <member>` examples this pass corrected elsewhere were not caught by
+the guard.
+
+Dropped: the "456 groups where the true figure is 89" pair. Neither number
+is traceable to any file in the tree — `docs/test-duplication.toml` records
+364 historical `[[groups]]` entries, and the guard reports the current tree
+as clean — so the figures were unverifiable historical notes. The
+substantive claim (the detector is content-preserving, and blanking literals
+over-reports) was kept.
+
+Confirmed by execution, not by reading: `python3 scripts/check_test_duplication.py
+--self-test` passes all seven cases, including "the real tree passes".
+

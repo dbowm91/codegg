@@ -75,14 +75,16 @@ Discovery is bounded by `AssetDiscoveryConfig` (max file size 256 KiB, max front
 
 ### Global roots are parent directories
 
-`resolve_source_roots` (`registry.rs:250-303`) appends `<vendor>/skills` to every
+`resolve_source_roots_with_home` (`registry.rs:249`) appends `<vendor>/skills`
+to every
 global root it is given, so a global root is the **config directory itself**,
 not the skills directory. Pass `default_global_discovery_root()`
 (`src/agent/asset_context.rs`), which is exactly `dirs::config_dir()`.
 
 Passing an already-joined path silently discovers nothing: the root resolves to
 `<config>/codegg/skills/codegg/skills`, which does not exist, and
-`resolve_source_roots` skips a root whose path is not a directory without
+`resolve_source_roots_with_home` skips a root whose path is not a directory
+without
 emitting a diagnostic. There is no user-visible symptom other than global
 skills simply never appearing. `already_joined_global_root_discovers_nothing`
 in `registry.rs` pins this failure mode.
@@ -251,8 +253,78 @@ honor the parent-directory contract above.
 
 See `architecture/skills.md` for the authoritative module contract.
 
+## See Also
+
+- `architecture/skills.md` — authoritative module contract
+- `architecture/agent.md` — the asset snapshot and the system-prompt assembly
+  that surface skills to the model
+- `architecture/config.md` — `skills.paths` / `skills.enabled` / the
+  `skills.urls` removal
+- `.opencode/skills/documentation/SKILL.md` — keeping the agent-facing skill
+  index in `AGENTS.md` and `README.md` honest
+- `.opencode/skills/agent/SKILL.md` — the turn loop the `skill` tool runs in
+
 ## Source verification
 
-Re-verified 2026-10-06 against `src/skills/{mod,registry,parser,source,publish,promotion,compat}.rs`, `src/agent/asset_context.rs`, `src/core/daemon_refresh.rs:187-191`, `src/tool/skill.rs`, `src/tool/skill_proposal.rs`, `src/tui/app/mod.rs:4482-4489,4641-4652`, and `ls -la .skills .agents/skills`. Corrected: the global-root contract, which was documented only for the daemon path — `AssetRegistry::build` appends `<vendor>/skills` to each root (`registry.rs:250-303`), but `src/tui/app/mod.rs` (two sites), `src/tool/skill.rs`, `src/tool/skill_proposal.rs`, and `src/skills/compat.rs` each passed an already-joined `…/codegg/skills` path, resolving to `…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips missing directories silently, global skills were dropped with no diagnostic in every one of those paths. `default_global_skills_root()` was replaced by `default_global_discovery_root()` (exactly `dirs::config_dir()`) and all five call sites now pass the parent directory; `already_joined_global_root_discovers_nothing` and `global_discovery_root_is_the_unjoined_config_dir` pin both halves of the contract. Note `src/skills/compat.rs` previously took `.parent()` of the already-joined path, landing on `<config>/codegg` and still double-joining. The integration-points table previously listed only the daemon, tool, and snapshot call sites and omitted these four.
+Re-verified 2026-10-06 against `src/skills/{mod,registry,parser,source,publish,promotion,compat}.rs`,
+`src/agent/asset_context.rs`, `src/core/daemon_refresh.rs:187-191`,
+`src/tool/skill.rs`, `src/tool/skill_proposal.rs`,
+`src/tui/app/mod.rs:4482-4489,4641-4652`, and `ls -la .skills .agents/skills`.
+Corrected: the global-root contract, which was documented only for the daemon
+path — `AssetRegistry::build` appends `<vendor>/skills` to each root
+(`registry.rs:250-303`), but `src/tui/app/mod.rs` (two sites),
+`src/tool/skill.rs`, `src/tool/skill_proposal.rs`, and `src/skills/compat.rs`
+each passed an already-joined `…/codegg/skills` path, resolving to
+`…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips missing
+directories silently, global skills were dropped with no diagnostic in every
+one of those paths. `default_global_skills_root()` was replaced by
+`default_global_discovery_root()` (exactly `dirs::config_dir()`) and all five
+call sites now pass the parent directory;
+`already_joined_global_root_discovers_nothing` and
+`global_discovery_root_is_the_unjoined_config_dir` pin both halves of the
+contract. Note `src/skills/compat.rs` previously took `.parent()` of the
+already-joined path, landing on `<config>/codegg` and still double-joining.
+The integration-points table previously listed only the daemon, tool, and
+snapshot call sites and omitted these four.
 
-Also corrected earlier and still confirmed: the Agents/OpenCode/Claude global roots resolve under the daemon-registered config directory rather than `$HOME`; the daemon integration path is `src/core/daemon_refresh.rs`, not `src/core/daemon.rs`; and the native `.md` fallback name is the file stem (`parser.rs:105-110`), not the directory name. Claims without a traceable source were removed rather than guessed.
+Also corrected earlier and still confirmed: the Agents/OpenCode/Claude global
+roots resolve under the daemon-registered config directory rather than `$HOME`;
+the daemon integration path is `src/core/daemon_refresh.rs`, not
+`src/core/daemon.rs`; and the native `.md` fallback name is the file stem
+(`parser.rs:105-110`), not the directory name. Claims without a traceable
+source were removed rather than guessed.
+
+Re-verified 2026-10-23 against `src/skills/{mod,registry,parser,source,publish,promotion,compat,candidate,resource,diagnostic}.rs`,
+`src/agent/asset_context.rs`, `src/agent/asset_snapshot_builder.rs`,
+`src/core/daemon_refresh.rs`, `src/tool/skill.rs`,
+`src/tool/skill_proposal.rs`, `src/tui/app/mod.rs`, `src/skills/compat.rs`,
+and `ls -la .skills .agents/skills`.
+
+Confirmed unchanged: all ten `src/skills/` modules listed in the structure
+table; `SourceKind` having **23** variants with the ranks in the precedence
+table (`src/skills/source.rs:7-37` — including `Plugin = 35` and
+`Configured = 90`); the `CopilotProject = 26` rank mapping to `.github/skills`
+(`src/skills/registry.rs:264`), which is why the table's rank-26 row reads
+`.github/skills/`; the discovery bounds — max skill file size 256 KiB, max
+frontmatter 64 KiB, max 256 skills per root, max 64 resources per skill
+(`src/skills/source.rs:190-193`); the native `.md` fallback name being the
+file stem (`src/skills/parser.rs:108-113`); the `already_joined_global_root_discovers_nothing`
+pin; the `allowed-tools` is metadata-only rule; the publication boundary
+(project writes only to `<project>/.codegg/skills/<name>/SKILL.md`, global only
+to `<config>/codegg/skills/<name>/SKILL.md`); and `SkillTool`
+(`src/tool/skill.rs`) returning name, description, body, and resources with
+resource enumeration inside `render_skill()`.
+
+Corrected: the root-resolution function is named
+`resolve_source_roots_with_home` (`src/skills/registry.rs:249`) — there is no
+bare `resolve_source_roots`; the body now names the real function. The
+2026-10-06 note's integration-point line references had drifted badly —
+`src/core/daemon_refresh.rs:187-191` is now job-store ordering code; the
+skills registry construction (the `dirs::config_dir()` parent-root comment
+and `with_global_root(config_dir)`) is at `src/core/daemon_refresh.rs:314-320`.
+`src/tui/app/mod.rs:4482-4489,4641-4652` are now docking-gesture and
+dialog-close code; `/skill-promote` is parsed at `src/tui/app/mod.rs:6800` and
+`/skill-proposal` at `:6897`.
+
+Added the missing `## See Also` section, naming the authoritative
+`architecture/skills.md` that the body already pointed at.

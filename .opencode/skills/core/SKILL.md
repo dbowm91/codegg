@@ -83,7 +83,7 @@ turns family) and `daemon_workspace_dashboard.rs`
   as `pub(crate)`; lifecycle helpers live canonically in their owning
   lifecycle modules below, not in request handlers.
 - Only `Initialize` is genuinely unhandled: `DaemonRequestFamily::of` maps it
-  to `Turns` (`daemon_family.rs:292`) but `daemon_turns.rs` has no arm for
+  to `Turns` (`daemon_family.rs:345`) but `daemon_turns.rs` has no arm for
   it, so it hits the family `_ =>` `unimplemented` response. Everything else,
   including `Subscribe` (a `current_seq` probe) and `Resume` (replay or
   `ResyncRequired`), is really handled.
@@ -219,7 +219,8 @@ server-side capability structs in `crates/codegg-protocol/src/frames.rs`;
 
 ### Static Guard
 
-`scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
+See "Static Guard" below — the cwd guard is described once, for the whole
+module.
 
 See `architecture/core.md` "Workspace Registry and Execution Context (Phase 2)" and `crates/codegg-core/src/workspace.rs` for the full contract.
 
@@ -227,12 +228,16 @@ See `architecture/core.md` "Workspace Registry and Execution Context (Phase 2)" 
 
 `CoreRuntimeDeps` (`src/core/runtime_deps.rs`) is the daemon dependency bundle.
 The legacy three-argument constructor is `CoreRuntimeDeps::new(pool,
-subagent_pool, memory_store)`; the struct itself carries far more:
+subagent_pool, memory_store)`; the struct itself carries far more — 28
+fields today:
 `pool`, `memory_store`, `legacy_agent`, `agent_run_store`, `run_control`,
 `run_group_service`, `convergence_store`, `turn_runtime`, `lsp_service`,
-`workspace_services`, `worktree_service`, `workspace_service_policy`,
-`job_store`, `schedule_store`, `recovery_policy`, `daemon_generation`,
-`scheduler`, `submission`, `scheduler_config`, and `connection_manager`.
+`workspace_services`, `worktree_service`, `writer_permit_service`,
+`session_launch_service`, `workspace_service_policy`, `job_store`,
+`schedule_store`, `recovery_policy`, `daemon_generation`, `scheduler`,
+`submission`, `job_notification_service`, `ci_watch_service`,
+`continuation_service`, `ci_watch_driver`, `scheduler_config`,
+`remote_target_policy`, `connection_manager`, `node_telemetry`.
 `turn_runtime` is always present and defaults to
 `DefaultTurnRuntime`; override via `with_turn_runtime()`.
 
@@ -331,5 +336,36 @@ Confirmed accurate on this tree: `DaemonRequestFamily::of` and
 `owner_module` remain the only request-to-owner routing table and module
 map; the two sub-handler modules (`daemon_control.rs`,
 `daemon_workspace_dashboard.rs`) remain sub-handlers rather than routed
-families; and the `Box::pin`-per-family discipline and the
-`CoreRuntimeDeps` field list are unchanged.
+families; and the `Box::pin`-per-family discipline are unchanged.
+
+Fourth pass (2026-10-23): re-verified against `src/core/daemon_family.rs`,
+`src/core/daemon.rs`, `src/core/daemon_*.rs`, `src/core/instance.rs`,
+`src/core/runtime_deps.rs`, `src/core/transport/{socket,stdio}.rs`,
+`crates/codegg-client/src/paths.rs`, `crates/codegg-protocol/src/frames.rs`,
+`crates/codegg-core/src/workspace.rs`, and `crates/codegg-core/src/storage/mod.rs`.
+
+Confirmed unchanged: the 18 `DaemonRequestFamily` variants and the
+13-dispatch / 5-pre-router split (chat, team, interactive, human shell, work
+orders); both sub-handler modules; the four lifecycle entry-point groups;
+the `CoreRuntimeDeps::new(pool, subagent_pool, memory_store)` legacy
+three-argument constructor; the daemon-root filenames and the
+`XDG_RUNTIME_DIR` → `XDG_DATA_HOME` → `$HOME/.local/share` → `/tmp` cascade;
+and `STORAGE_LAYOUT_VERSION` living in
+`crates/codegg-core/src/storage/mod.rs`.
+
+Corrected: the `Initialize`-is-unhandled reference was cited at
+`src/core/daemon_family.rs:292` — the `CoreRequest::Initialize => Self::Turns`
+arm is at `:345` (`:292` is the `ChatPolicyList` arm). The
+`CoreRuntimeDeps` field list was 20 of the struct's **28** fields; it now
+lists all 28, adding `writer_permit_service`, `session_launch_service`,
+`job_notification_service`, `ci_watch_service`, `continuation_service`,
+`ci_watch_driver`, `remote_target_policy`, and `node_telemetry`. The
+third pass's closing sentence "the `CoreRuntimeDeps` field list are
+unchanged" was therefore no longer true and has been corrected.
+
+Merged the two `check_daemon_cwd_usage.py` descriptions. The file carried a
+`### Static Guard` subsection under "Workspace Registry and Execution
+Context" and a `## Static Guard` section later; the subsection now
+cross-references the single description, which is the more complete of the
+two. No claim changed.
+

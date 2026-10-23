@@ -141,16 +141,6 @@ shells. Windows raw-shell calls get a unique temporary directory through
 access. Shell selection and policy path checks must not be described as Windows
 enforcement.
 
-Raw model-shell text is compiled to platform-specific execution inputs (`sh -c`
-on Unix; an absolute Windows PowerShell, `cmd.exe`, Git Bash, or WSL executable
-on Windows). `cmd.exe` uses a dedicated raw-command field because its command
-line parser differs from standard Windows argv parsing; that field is accepted
-only with the selected absolute `cmd.exe`. Structured argv continues to bypass
-shells. Windows raw-shell calls get a unique temporary directory through
-`TEMP`/`TMP`, cleaned after completion; that does not restrict filesystem
-access. Shell selection and policy path checks must not be described as Windows
-enforcement.
-
 Before editing, read:
 
 - `architecture/agent.md` for tool dispatch and broker ownership.
@@ -164,3 +154,49 @@ Before editing, read:
 Verify process-spawning changes with `python3 scripts/check_execution_ownership.py`; scheduler changes also require
 `python3 scripts/check_scheduler_bypass.py`. Keep the ownership manifest in
 sync. Skills describe contracts; they do not grant execution permission.
+
+## See Also
+
+- `architecture/agent.md` — tool dispatch and broker ownership
+- `architecture/jobs.md` and `architecture/scheduler.md` — durable admission
+  and execution
+- `architecture/writer_permit.md` — the checkout writer permit, the process
+  deny contract, and the shared-checkout profile (C006)
+- `architecture/process-tool-execution-ownership.md` — managed-process
+  lifecycle, including the Windows Job Object boundary
+- `docs/execution-ownership.md` and `docs/execution-ownership.toml` — the
+  process-spawning inventory and its guard
+- `docs/writer-disposition.toml` — the disposition every writer surface needs
+- `.opencode/skills/scheduler/SKILL.md` — the scheduler's own ownership rules
+- `.opencode/skills/permission/SKILL.md` — approval and sandbox boundaries
+
+## Source verification
+
+Verified 2026-10-23 against `src/tool/broker.rs`,
+`src/tool/process_capability.rs`, `src/tool/process_admission.rs`,
+`src/tool/bash.rs`, `src/scheduler/submission.rs`,
+`src/scheduler/tool_program_executor.rs`, `src/managed_process.rs`,
+`crates/codegg-core/src/process_admission.rs`,
+`crates/codegg-core/src/writer_permit.rs`,
+`crates/codegg-core/src/run_placement.rs`,
+`docs/execution-ownership.toml`, `docs/writer-disposition.toml`,
+`scripts/check_process_denial.py`, `scripts/check_shared_checkout.py`, and
+`scripts/check_execution_ownership.py`.
+
+Confirmed unchanged: `src/tool/process_capability.rs` as the
+effective-runtime-effect classification table; `docs/writer-disposition.toml`
+as the writer-surface disposition manifest; the existence and role of
+`scripts/check_process_denial.py` (fails when either the capability table or
+the disposition manifest is missing an entry) and
+`scripts/check_shared_checkout.py`; the C006 shared-checkout contract
+described in `architecture/writer_permit.md`; the Windows Job Object boundary
+as **process supervision only, not filesystem enforcement**; and the C010
+test-only ACL lease fixture's explicit non-activation of the production
+daemon-owned journal and the Windows constrained backend.
+
+Removed: a verbatim duplicate of the raw-model-shell compilation paragraph.
+The block beginning "Raw model-shell text is compiled to platform-specific
+execution inputs" appeared twice, byte-identical (verified by diff), once
+before and once after the Windows raw-shell paragraph. One copy was removed;
+no claim changed.
+

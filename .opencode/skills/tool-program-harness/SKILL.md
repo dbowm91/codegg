@@ -3,6 +3,11 @@ name: tool-program-harness
 description: Reusable harness for evaluating, testing, and validating Tool Programs across deterministic, live-model, and ACP transport modes
 version: 1.1.0
 process: any
+tags:
+  - tool-programs
+  - harness
+  - testing
+  - evidence
 ---
 
 # Skill: Tool Program Harness
@@ -29,10 +34,10 @@ Load this skill when:
 
 ```bash
 # Run all M010 scenario tests
-cargo test --test tool_program_scenarios
-cargo test --test tool_program_chaos
-cargo test --test tool_program_resource_convergence
-cargo test --test tool_program_model_behavior
+cargo test --test tool_programs -- tool_program_scenarios
+cargo test --test tool_programs -- tool_program_chaos
+cargo test --test tool_programs -- tool_program_resource_convergence
+cargo test --test tool_programs -- tool_program_model_behavior
 
 # Run the external harness
 python3 scripts/e2e/tool_program_harness.py --mode scripted --scenario all
@@ -40,6 +45,12 @@ python3 scripts/e2e/tool_program_harness.py --mode scripted --scenario all
 # Exercise the real-process production path (daemon failpoints, restart, replay)
 python3 scripts/e2e/tool_program_harness.py --mode native
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. All five tool-program
+members live in the `tool_programs` family, so the correct form is
+`cargo test --test tool_programs -- <member>`.
 
 ### Live Eggpool Mode
 
@@ -70,7 +81,7 @@ protocol remains the baseline headless transport for harness evidence.
 ## Native source and inspection artifacts
 
 `--mode native` is a thin client: it shells out to
-`cargo test -p codegg --test tool_program_m015_daemon_failpoints`
+`cargo test -p codegg --test tool_programs -- tool_program_m015_daemon_failpoints`
 (`scripts/e2e/tool_program_harness.py:280`), the bounded real-process
 production suite. `--mode scripted` runs that native step too, after the
 four deterministic binaries. The older inline core-stdio client (SHA-256
@@ -157,6 +168,20 @@ When running for closure evidence:
 | `tests/tool_programs/tool_program_m015_daemon_failpoints.inc` | Real-process production suite run by `--mode native` |
 | `scripts/e2e/tool_program_harness.py` | External harness runner (scripted/native/eggpool/acp) |
 
+## See Also
+
+- `architecture/tool_programs.md` — the domain, storage, and execution contract
+  this harness exercises
+- `architecture/tool_program_language.md` — the restricted-Python surface a
+  scenario source may use
+- `architecture/testing.md` — the test-family taxonomy the `--test` forms below
+  depend on
+- `.opencode/skills/tool-execution/SKILL.md` — the process and writer-permit
+  surfaces a program reaches through
+- `.opencode/skills/agent/SKILL.md` — the agent loop that dispatches programs
+- `.opencode/skills/testing-ci/SKILL.md` — how to run the narrowest covering
+  test
+
 ## Source verification
 
 Verified 2026-10-06 against `scripts/e2e/tool_program_harness.py`,
@@ -178,3 +203,46 @@ unreachable after the `return` at
 bullet (it is a test name, not a `ResourceSnapshot` field) and the
 `.gitignore` "captured response files" claim (the harness writes nothing
 outside `.codegg/`, which `.gitignore` already excludes wholesale).
+
+Second pass (2026-10-23): re-verified against
+`scripts/e2e/tool_program_harness.py`,
+`tests/tool_programs/{tool_program_scenarios,tool_program_chaos,tool_program_resource_convergence,tool_program_model_behavior,tool_program_m015_daemon_failpoints}.inc`,
+`src/tool/tool_program_source.rs`, `src/tool/tool_program_ledger.rs`,
+`crates/codegg-protocol/src/projection/dto.rs`, `src/acp.rs`, and
+`architecture/tool_programs.md`.
+
+Confirmed unchanged: the four test counts in the Test Files table — 13
+(`tool_program_scenarios`), 13 (`tool_program_chaos`), 10
+(`tool_program_resource_convergence`), 14 (`tool_program_model_behavior`) —
+measured by counting test attributes; `ResourceSnapshot` at
+`tests/tool_programs/tool_program_resource_convergence.inc:19`; the ledger's
+bounded-call directory at `src/tool/tool_program_ledger.rs:94`
+(`.codegg/tool_program_calls`); the native shell-out at
+`scripts/e2e/tool_program_harness.py:280`; the unreachable legacy inline
+client after the `return` at `:288-292`; the `run_acp_mode` SKIPPED
+placeholder; and the distinction between the tool-program harness transport
+and the separate `codegg acp` frontend (`src/acp.rs`,
+`architecture/acp.md`).
+
+Corrected: all four `cargo test --test <member>` commands and the
+`cargo test -p codegg --test tool_program_m015_daemon_failpoints` reference
+named targets that do not exist — the five members live in the
+`tool_programs` family, so the old form selected zero tests and exited 0.
+They now read `cargo test --test tool_programs -- <member>`. Added the
+missing `## See Also` section and a `tags` list to the frontmatter (the
+guard checks `name` and `description`; `tags` keeps this file consistent with
+the other skills).
+
+Fixed 2026-10-23 (source side): the harness script itself built the stale
+command. `run_cargo_test` assembled
+`["cargo", "test", "-p", "codegg", "--test", test_name]`, which is exactly the
+family-member form this pass corrected in the skill — so every harness mode
+that shells out to cargo invoked a non-existent test target. Confirmed against
+the live toolchain: `cargo test -p codegg --test tool_program_scenarios`
+fails immediately with `error: no test target named 'tool_program_scenarios'
+in 'codegg' package`, because `--test` names the **target** and the only
+declared target is the `tool_programs` family. The command now names the
+family and filters by member —
+`cargo test -p codegg --test tool_programs -- <member> --test-threads=1` —
+with the target held in a named `TOOL_PROGRAM_TEST_TARGET` constant so the
+family/target split is explicit at the call site.
