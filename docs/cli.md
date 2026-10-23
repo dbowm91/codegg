@@ -21,6 +21,7 @@ Run `codegg --help` for the current top-level surface and
 - [Research](#research)
 - [Shell completions](#shell-completions)
 - [Upgrade](#upgrade)
+- [Tool advisor](#tool-advisor)
 - [Hidden compatibility spellings](#hidden-compatibility-spellings)
 
 ## Running without a subcommand
@@ -218,6 +219,8 @@ codegg daemon start                 # run the daemon (BLOCKS - see below)
 codegg daemon stop                  # stop it
 codegg daemon attach                # attach the TUI to it
 codegg daemon attach --new          # attach with a new session
+codegg daemon scratch-usage         # measure the daemon-owned scratch cache
+codegg daemon scratch-reclaim --tree <digest>   # dispose of one scratch tree
 ```
 
 **`codegg daemon start` runs in the foreground.** It acquires the singleton
@@ -228,6 +231,23 @@ a message and exits 0 rather than starting a second instance.
 
 You rarely need to do this by hand: a plain `codegg` connects to an existing
 daemon or starts one automatically. See `docs/daemon.md`.
+
+### Scratch measurement and reclamation
+
+```bash
+codegg daemon scratch-usage                     # the daemon's last snapshot
+codegg daemon scratch-usage --refresh           # take a fresh measurement
+codegg daemon scratch-usage --json              # machine-readable report
+codegg daemon scratch-reclaim --tree <digest>   # dry run: reports, removes nothing
+codegg daemon scratch-reclaim --tree <digest> --apply   # actually remove it
+```
+
+`scratch-usage` reports the daemon's disposable scratch cache: tree count,
+total size, age, and whether the reclaim path would accept each tree. The
+daemon answers from its own snapshot unless `--refresh` asks for a fresh
+measurement. `scratch-reclaim` names a tree by the opaque digest that
+`scratch-usage` reports; without `--apply` it is a dry run that removes
+nothing. Both commands accept `--endpoint` and `--json`.
 
 ## Non-interactive use
 
@@ -376,6 +396,44 @@ Updates a managed prebuilt installation as a single verified transaction. It
 does not fetch or run `install.sh`. Source installs have no managed bundle to
 upgrade; use `cargo install` again instead. See `docs/install.md`.
 
+## Tool advisor
+
+The tool-selection advisor is a diagnostic surface, not a runtime switch. It
+reports the effective discovery policy and runs the offline corpus tooling.
+
+```bash
+codegg tool-advisor status                    # effective policy and decision backend
+codegg tool-advisor status --json
+codegg tool-advisor bench                     # keyword baseline over the corpus
+codegg tool-advisor bench --bm25 --json        # BM25 variant, machine-readable
+codegg tool-advisor bench --dataset <path>    # a specific JSONL dataset
+codegg tool-advisor lint --dataset <path>     # corpus floors and split coverage
+codegg tool-advisor inspect --model <path>    # an SDM local artifact
+codegg tool-advisor data status               # captured-training-data state
+codegg tool-advisor data inspect              # captured events as JSON
+codegg tool-advisor data export --output <file>
+codegg tool-advisor data purge
+```
+
+`tool-advisor bench` defaults to the reviewed repository corpus when no
+`--dataset` is given. `tool-advisor inspect` needs the optional
+`decision-runtime-sdm` Cargo feature and is refused without it. `data export`
+requires `--output`; `data purge` removes the locally captured events.
+
+## Remote server (feature-gated)
+
+Both of these exist only in a build with the `server` Cargo feature.
+
+```bash
+codegg server --host 127.0.0.1 --port 3000 --standalone-core
+codegg attach http://localhost:3000 --token <token>
+```
+
+`codegg server` refuses to start unless `--standalone-core` is given: the HTTP
+server does not proxy to the singleton daemon. `codegg attach` is the remote
+HTTP client; it takes a server URL and an optional `--token`. The local socket
+equivalent is `codegg daemon attach`, which is always available.
+
 ## Hidden compatibility spellings
 
 These still parse but are hidden from `--help`. They exist so existing scripts
@@ -395,3 +453,45 @@ and older configurations keep working; prefer the canonical spelling.
 `codegg attach` is a different command entirely — it is the feature-gated
 remote HTTP client, takes a server URL, and only exists in `server` builds.
 See `docs/daemon.md` and `architecture/server.md`.
+
+## Source verification
+
+Checked 2026-10-23 against the clap definitions in `src/main.rs` (the
+`Cli`, `Commands`, `ToolAdvisorCommand`, `ToolAdvisorDataCommand`,
+`AuthSubcommand`, `DoctorSubsystem`, `OutputFormat`, `CoreTransport`, and
+`DaemonCommand` types) and the MCP subcommand enum in `src/mcp/cli.rs`.
+
+- Top-level flags: `src/main.rs` `Cli` and `ExecutionPolicyArgs`
+  (`-c/--continue-session`, `-s/--session`, `--fork`, `--no-session`,
+  `-m/--model`, `-a/--agent`, `-p/--run`, `-f/--format` with the
+  `--output-format` alias, `-q/--quiet`, `--cwd`, `-v`, `--approval-mode`,
+  `--sandbox`, `--yolo`, `--standalone`).
+- Subcommands: `src/main.rs` `Commands` — `sessions`, `session`, `launch`,
+  `export`, `import`, `providers`, `models`, `upgrade`, `tool-advisor`,
+  `doctor`, `auth`, `validate`, `edit`, `exec`, `acp`, `completions`, `mcp`,
+  `research`, `daemon`, plus the `server`/`attach` pair that is gated on the
+  `server` Cargo feature.
+- `daemon start` foreground behaviour and the "already running" exit:
+  `src/main.rs` `run_daemon`.
+- `daemon stop` is Unix-only; `codegg server` refuses to start without
+  `--standalone-core` (exit code 2): `src/main.rs` `cmd_server`.
+- `daemon scratch-usage` / `scratch-reclaim` flags (`--refresh`, `--json`,
+  `--tree`, `--apply`, `--endpoint`): `src/main.rs` `DaemonCommand`.
+- `tool-advisor` subcommands and the `decision-runtime-sdm` refusal for
+  `inspect`: `src/main.rs` `cmd_tool_advisor`.
+- `doctor` subsystem list and the "exits 0 even when it reports problems"
+  behaviour: `src/main.rs` `cmd_doctor`.
+- `edit` target-path precedence, the `hx`/`vim`/`vi`/`nano` fallback order,
+  and "re-reads the file, does not change the exit status":
+  `src/main.rs` `edit_target_path` and `cmd_edit`.
+- `completions` supported shells (`bash`, `elvish`, `fish`, `powershell`,
+  `zsh`) and the per-shell output file names: `src/main.rs` `cmd_completions`.
+- `upgrade` behaviour (a managed-install transaction, not `install.sh`):
+  `src/upgrade/mod.rs`.
+- Session store path `<project>/.codegg/sessions.db`:
+  `crates/codegg-core/src/storage/mod.rs`.
+- `mcp` CLI verbs (`list`, `add`, `remove`, `enable`, `debug`) and the
+  `--server-type`, `-c`, `-a`, `-u` flags: `src/mcp/cli.rs`.
+- `research` flags and their defaults: `src/main.rs` `Commands::Research`.
+- There is no `codegg plugins` subcommand and no `codegg mcp servers`
+  spelling: `src/main.rs` `Commands`.

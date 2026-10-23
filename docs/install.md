@@ -209,3 +209,31 @@ For startup failures, permission problems, LSP and MCP issues, config that
 does not load, and daemon connection errors, see `docs/TROUBLESHOOTING.md`.
 
 For provider credentials and model selection, see `docs/providers.md`.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree and the upstream registry.
+
+- Rust 1.89+ and edition 2021: `Cargo.toml` (`rust-version`, `edition`).
+- `cargo install --locked --path .` installs both `codegg` and
+  `codegg-sandbox-helper`: the `[[bin]]` entries in `Cargo.toml`.
+- Default install directory `$HOME/.local/bin`, `CODEGG_VERSION`, and
+  `CODEGG_INSTALL_DIR`: `install.sh`.
+- Release target table (linux x86_64/aarch64, macOS x86_64/aarch64, Windows
+  x86_64) and the archive layout: `install.sh` and
+  `scripts/release/lib-release.sh`.
+- The eggsearch sidecar pin: version `0.4.4` at commit
+  `32f48bb57a43274d763c7f9ba919eab84d125edc` — `scripts/release/lib-release.sh`
+  (`CODEGG_EGGSEARCH_PINNED_VERSION`, `CODEGG_EGGSEARCH_UPSTREAM_COMMIT`),
+  `src/install.rs` (`PINNED_EGGSEARCH_VERSION`), `src/upgrade/managed.rs`, and
+  `.opencode/skills/upgrade/SKILL.md`. `RELEASING.md` still names 0.4.3; the
+  code and the release script agree on 0.4.4, so this page follows them.
+- "No published releases yet": the GitHub API releases listing for
+  `dbowm91/codegg` returned an empty array on 2026-10-23.
+- Feature names (`server`, `plugins`, `image`, `arboard`,
+  `decision-runtime-sdm`, `debug-logging`): the `[features]` table in
+  `Cargo.toml`.
+- `codegg doctor installation` as the post-install check: `src/main.rs`
+  `DoctorSubsystem::Installation`.
+- `autoupdate` is inert: it is parsed by
+  `crates/codegg-config/src/schema.rs` and read by no other production path.

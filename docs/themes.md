@@ -427,3 +427,24 @@ When codegg adds an iced GUI, do not parse Halloy themes into iced widget
 styles. Continue to parse Halloy into `SemanticTheme`, then project
 `SemanticTheme` into the GUI's style system. This keeps the TUI and GUI
 visually aligned and avoids a dependency on Halloy's IRC-specific schema.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- **50** bundled Halloy themes: `assets/themes/halloy/` (one TOML per theme);
+  the id list in the table matches the file names.
+- The default theme id `cyber-red`:
+  `src/theme/registry.rs` (`DEFAULT_THEME_ID`).
+- The theme target is a single flat module: `src/theme/target.rs`, with
+  `src/theme/registry.rs`, `native.rs`, `halloy.rs`, `color.rs`, `schema.rs`,
+  `validate.rs`, `error.rs` alongside it.
+- The selection is persisted to the SQLite `user_preferences` table:
+  `src/tui/app/mod.rs` and `crates/codegg-core/src/storage/preferences.rs`.
+- The `looks_like_halloy` heuristic and the derived `selection_text` /
+  `accent_text` colors: `src/theme/native.rs`.
+- The accent-contrast floor of 3.0:
+  `src/theme/registry.rs` (`MIN_ACCENT_CONTRAST`).
+- `/theme` accepts `list`, `use <name>`, `reload`, and `diagnostics`, and a
+  bare `<name>` is a shorthand for `use <name>`:
+  `src/tui/app/mod.rs` (`handle_theme_command`).

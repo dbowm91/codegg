@@ -246,3 +246,42 @@ whether it is `required` (the daemon refuses to submit when the node cannot
 enforce it) or `best_effort` (the node may decline, and the result says so).
 A job may ask for less than the ceiling, never more, and may never weaken a
 `required` limit — such a request is refused before the job is created.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Config layers and their order: `crates/codegg-config/src/paths.rs`
+  (`CODEGG_TUI_CONFIG`, `system_config_path`, `global_config_path`,
+  `find_project_config`).
+- System paths: macOS `/Library/Application Support/codegg/codegg.json`, other
+  Unix `/etc/codegg/codegg.json`, Windows `%ProgramData%\codegg\codegg.json`
+  (`crates/codegg-config/src/paths.rs`).
+- Global file candidates `codegg.jsonc`, `codegg.json`, `config.json`:
+  `crates/codegg-config/src/paths.rs`.
+- Project discovery (walk upward; `.codegg/codegg.jsonc`,
+  `.codegg/codegg.json`, `codegg/codegg.jsonc`, `codegg/codegg.json`):
+  `crates/codegg-config/src/paths.rs`.
+- The untagged-enum table: the seven `#[serde(untagged)]` sites in
+  `crates/codegg-config/src/schema.rs` — `autoupdate`, provider `timeout`,
+  `lsp`, `formatter`, `plugin`, and `PermissionRule` (action string or
+  all-string object).
+- The schema does not use `deny_unknown_fields`: no occurrence in
+  `crates/codegg-config/src/schema.rs`.
+- `shell.windows_shell` accepts `powershell`, `cmd`, `git-bash`, `wsl` and
+  rejects `bash`: `crates/codegg-config/src/schema.rs` (`WindowsShellKind`).
+- `model_routers` fields (`selector_model`, `default_model`, `routes`,
+  `sticky`, `affinity_ttl_s`, `selector_timeout_s`, `max_input_bytes`,
+  `repair_attempts`): `crates/codegg-config/src/schema.rs`.
+- `skills.paths` / `skills.enabled`: `crates/codegg-config/src/schema.rs`
+  (`SkillsConfig`).
+- `eggwork` node fields (`node_id`, `endpoint`, `ca_cert_path`,
+  `client_cert_path`, `client_key_path`, `required_capabilities`,
+  `isolation_policy`, `network_policy`, `resource_limits`,
+  `max_concurrent_executions`) and the daemon-level
+  `allowed_target_nodes` / `required_isolation_policy` /
+  `required_network_policy`: `crates/codegg-config/src/schema.rs`.
+- Remote resource limit dimensions and the `required` / `best_effort`
+  distinction: `crates/codegg-config/src/schema.rs`.
+- `${VAR}` interpolation and the JSON/JSONC/TOML/YAML frontmatter handling:
+  `crates/codegg-config/src/`.

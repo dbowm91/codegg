@@ -100,7 +100,7 @@ is recorded.
 **Symptoms:** Tool call hangs, no permission prompt.
 
 **Solutions:**
-1. Check TUI is running in foreground (not daemon mode)
+1. Run `/doctor` to confirm the daemon is reachable — the permission request is registered with the daemon, so the prompt cannot appear if the client cannot reach it
 2. Try pressing `Esc` to cancel, then retry
 3. Check the permissions store is writable — `<config dir>/codegg/permissions.json` (`~/Library/Application Support/codegg/permissions.json` on macOS, `~/.config/codegg/permissions.json` on Linux)
 4. Restart the application
@@ -320,3 +320,32 @@ cargo run --features debug-logging
 2. Enable debug logging and capture output
 3. Note your platform (`uname -a`)
 4. Include config (redact API keys)
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Permission dialog keys (`y`, `p`, `n`, `1`–`4`, `j`/`k`, `Esc`) and the
+  second-confirmation requirement for a standing grant:
+  `src/tui/components/dialogs/permission.rs`.
+- The `Approval was not delivered (<code>): <detail>` toast:
+  `src/tui/app/mod.rs`.
+- Permissions store path `<config dir>/codegg/permissions.json`:
+  `src/permission/mod.rs`.
+- `CODEGG_PERM_KEY` signature key: `src/permission/mod.rs`.
+- Plugin fuel ceiling of 10,000,000 instructions:
+  `src/plugin/runtime/wasm_cache.rs`.
+- `compaction.max_tokens` and `subagent.max_concurrent` config keys:
+  `crates/codegg-config/src/schema.rs`.
+- Project catalog path `<data dir>/codegg/codegg.db`:
+  `crates/codegg-core/src/storage/paths.rs` and
+  `crates/codegg-core/src/storage/mod.rs`.
+- `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
+- Slash commands referenced here (`/model`, `/new`, `/compact`, `/doctor`,
+  `/keybinds`, `/cost`, `/usage`, `/logs`, `/mcps`, `/files`, `/tasks`,
+  `/diff`, `/plan`, `/project-init`, `/security-review`, `/review`,
+  `/theme`, `/lsp-preview-apply`, `/skills`, `/reload`): `src/tui/command.rs`.
+- The "permission dialog not appearing" checklist: the daemon owns the
+  permission registry and the TUI is its client, so the actionable first step
+  is daemon reachability (`/doctor`), not a foreground/background mode choice.
+  The previous "not daemon mode" advice was stale and was replaced.

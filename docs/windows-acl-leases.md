@@ -29,3 +29,28 @@ path-based check is not qualified against replacement races. C011 remains
 blocked on the hosted existing-file read finding and its broader security
 matrix. Neither milestone enables a production backend until all required
 evidence is accepted.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- The feature name `windows-sandbox-test-support` and its debug-build
+  restriction: `Cargo.toml` and `src/lib.rs` (a `compile_error!` outside
+  debug builds).
+- Every ACL-lease site is gated on `#[cfg(all(windows,
+  feature = "windows-sandbox-test-support"))]`: `src/managed_process.rs` and
+  `src/managed_process/windows_acl_lease.rs`. There is no production caller.
+- The journal root `sandbox/acl-leases` under the per-user daemon root, and
+  the `CODEGG_DAEMON_HOME` override: `src/managed_process.rs` and
+  `crates/codegg-client/src/paths.rs`.
+- The "deny root must be empty" rule and the fail-closed error
+  (`Unsupported`, "ACL lease roots with existing entries are unsupported by
+  the root-only lease"): `src/managed_process/windows_acl_lease.rs`
+  (`validate_empty_lease_root`).
+- The lease image (owner SID, volume/file identity, original and expected
+  DACL) and the release/recovery identity checks:
+  `src/managed_process/windows_acl_lease.rs`.
+- The hosted run IDs and the C010/C011/C012 milestone state are historical
+  evidence and were cross-checked against
+  `plans/closure/windows-native-sandbox/012-status.md`; they were not
+  re-verified against a live Windows runner from this checkout.

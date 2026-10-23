@@ -252,3 +252,32 @@ The SSE stream is parsed with:
 - 1MB buffer limit to prevent unbounded memory
 - Event data extracted from `data:` lines
 - JSON parsed and stored in `sse_events` buffer
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Module layout (`mod.rs`, `local.rs`, `remote.rs`, `auth.rs`, `cli.rs`,
+  `protocol.rs`, `ide_server.rs`): `src/mcp/`.
+- `McpError` variants `Connection`, `Server`, `ToolCall`, `OAuth`,
+  `Encryption`, `Timeout`: `crates/codegg-core/src/error.rs`.
+- `McpExposurePolicy::hide_all()` as the default exposure and
+  `McpService::list_filtered_tools` as the filtered variant:
+  `src/mcp/mod.rs`.
+- The `mcp__<server>__<tool>` naming: `src/mcp/mod.rs`.
+- CLI verbs (`list`, `add`, `remove`, `enable`, `debug`) and their flags:
+  `src/mcp/cli.rs`. There is no `codegg plugins` subcommand:
+  `src/main.rs` `Commands`.
+- `McpConnectionManager` defaults (5 retries, 1 s base delay, 60 s max
+  delay): `src/mcp/remote.rs`.
+- Provider-level stream retry (3 attempts, 30 s max backoff): distinct from
+  MCP reconnection — `crates/codegg-providers/src/retry.rs` and
+  `src/agent/provider_turn.rs`.
+- The private `connect_sse_stream` helper, the 1 MB SSE buffer limit, and
+  `RemoteClient::take_sse_events()`: `src/mcp/remote.rs`.
+- `mcp` is keyed directly under the config root with no `servers` level, and
+  the `type`/`command`/`args`/`env`/`environment`/`url`/`headers`/`transport`/
+  `timeout`/`oauth`/`reconnect` fields: `crates/codegg-config/src/schema.rs`
+  (`McpEntry`, `McpServerConfig`).
+- The plugin-side `mcpServers` wrapper is a separate file format:
+  `assets/portable-plugins/playwright-mcp/mcp.json`.
