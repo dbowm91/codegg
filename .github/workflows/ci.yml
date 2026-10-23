@@ -250,6 +250,12 @@ jobs:
       - name: Shell policy test-safety guard
         run: python3 scripts/check_shell_policy_test_safety.py
 
+      - name: Destructive risk signal coverage guard
+        run: python3 scripts/check_destructive_risk_signal_coverage.py
+
+      - name: Destructive risk signal coverage guard self-test
+        run: python3 scripts/check_destructive_risk_signal_coverage.py --self-test
+
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py
 

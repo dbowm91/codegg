@@ -77,6 +77,44 @@ For that reason CodeGG follows the same direction the major agents took:
 Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
 `full_host`) plus Landlock, which a regex cannot emulate.
 
+### The destructive-command risk signal (operator note)
+
+The built-in destructive-command classification is **advisory**. It tells the
+truth about risk so the approval path can escalate a command for review; it
+does not guarantee that the effect cannot happen, it does not grant
+authority, and it never rejects an invocation on its own.
+
+What changed:
+
+- The signal now recognises the **effective** filesystem-root spellings, not
+  only the bare form. `rm -rf --no-preserve-root /` and
+  `rm -rf / --no-preserve-root` are the forms GNU coreutils actually executes
+  against the root; they previously read as ordinary commands and reached the
+  agent without a review prompt. `rm -rf /`, `rm -fr /`, `rm -rf /*`,
+  `rm -rf ~` and `rm -rf $HOME` are recognised as before.
+- A scoped removal is **not** a root delete. `rm -rf /tmp/build`,
+  `rm -rf ./build` and `rm -rf /home/user/project/cache` are classified as
+  ordinary scoped removals.
+- A target the text cannot resolve is reported as *not recognised*. The
+  classifier does not pretend to know what `rm -rf "$TARGET"` targets, and it
+  does not report it as proven-safe either.
+- **No configured rule changed.** Your `permission.bash_deny_patterns`,
+  `permission.bash_allow_patterns`, `permission.bash_ask_patterns`,
+  `security.denied_commands` and any saved approval are untouched, and the
+  built-in default blocked-command set remains empty.
+
+One behaviour change is operator-visible: in the human `!cmd` shell, a
+**scoped absolute path is no longer hard-blocked** as a root delete. A
+removal of the filesystem root itself is still refused there, and the refusal
+says plainly that it is a best-effort command-text rule.
+
+**Command syntax is not a security boundary.** The signal reads the text of
+one command; it cannot see a script, a wrapper, another tool, a variable that
+expands to the root, or a different spelling. Under `full_host` — and under
+`yolo`, which auto-approves escalations — nothing here stops a root removal
+that the text does not name. Containment comes from the sandbox profile and
+the workspace scope, not from these patterns.
+
 On Linux, host feature discovery for user namespaces, other namespace types,
 seccomp, proc, Bubblewrap, Landlock, cgroup v2, and active LSMs is diagnostic.
 It does not mean those dimensions were applied to a child. Network remains
