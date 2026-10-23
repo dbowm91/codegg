@@ -401,8 +401,8 @@ modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements
 risk classes **11**, and workspace member crates **11** (+ root).
 
 Three rows moved once more on **2026-10-23**, when the repository audit
-corrective workstream's C001, C002, C003, C004, C005 and C006 milestones
-landed. Each milestone added one thing of each kind, and every value was
+corrective workstream's C001, C002, C003, C004, C005, C006 and C007
+milestones landed. Each milestone added one thing of each kind, and every value was
 re-measured against its own listed `Source` with
 `python3 scripts/measure_overview_counts.py` rather than incremented by hand:
 **integration test files 327 → 334** (C001's
@@ -414,15 +414,16 @@ re-measured against its own listed `Source` with
 `tests/tui_render/dialog_dispatch_coverage.inc`, and C006's
 `tests/tui_render/tui_render_cost.inc` — all seven are members of
 **existing** families, so the root package's **test-target** count did not
-move), **guard scripts (all) 80 → 85** (the new
+move), **guard scripts (all) 80 → 86** (the new
 `scripts/check_no_nested_runtime_block_on.py`,
 `scripts/check_destructive_risk_signal_coverage.py`,
 `scripts/check_command_argument_contract.py`,
 `scripts/check_job_state_terminality_agreement.py` and
-`scripts/check_tui_render_cost.py` — C005 **repaired** the existing
+`scripts/check_tui_render_cost.py` and C007's
+`scripts/check_comment_budget.py` — C005 **repaired** the existing
 `scripts/check_tool_broker_boundary.py` in place rather than adding a file, so
-that row did not move for it), and **CI guard scripts 40 → 46** (those same
-five new guards plus the repaired broker guard, each wired into
+that row did not move for it), and **CI guard scripts 40 → 47** (those same
+six new guards plus the repaired broker guard, each wired into
 `scripts/verify.sh quick` and the hosted CI guard step; a guard's two
 `ci.yml` steps — the guard and its `--self-test` — are one distinct script).
 No row's **measure** changed. The remaining 21 rows were **confirmed
@@ -463,8 +464,8 @@ top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 334 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 85 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 46 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 86 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 47 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 
