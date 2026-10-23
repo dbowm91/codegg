@@ -53,10 +53,15 @@ const FILESYSTEM_ROOT_SPELLINGS: &[&str] = &[
 ];
 
 /// The scoped removals the classifier must not report as a root delete.
+///
+/// `rm -rf ~/docs` is a removal *inside* the home directory, not of the home
+/// directory: the baseline's `rm … (~|$HOME)` pattern had no end anchor, so it
+/// flagged every path that merely *started* with `~`.
 const SCOPED_REMOVALS: &[&str] = &[
     "rm -rf /tmp/build",
     "rm -rf ./build",
     "rm -rf /home/user/project/cache",
+    "rm -rf ~/docs",
 ];
 
 #[test]

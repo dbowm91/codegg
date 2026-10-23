@@ -59,7 +59,9 @@ DESTRUCTIVE_MODULE = "src/tool/destructive.rs"
 BASH_POLICY = "src/tool/bash/policy.rs"
 SHELL_POLICY = "src/shell/policy.rs"
 
-# The fixture set the C002 plan names. Every row must be covered.
+# The fixture set the C002 plan names. Every row must be covered. The last
+# row is the milestone's own addition: a removal *inside* the home directory,
+# which the baseline's unanchored `rm … (~|$HOME)` pattern mis-flagged.
 REQUIRED_SPELLINGS = (
     "rm -rf /",
     "rm -rf --no-preserve-root /",
@@ -71,6 +73,7 @@ REQUIRED_SPELLINGS = (
     "rm -rf /tmp/build",
     "rm -rf ./build",
     "rm -rf /home/user/project/cache",
+    "rm -rf ~/docs",
     'rm -rf "$TARGET"',
 )
 
