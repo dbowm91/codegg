@@ -398,7 +398,7 @@ Git risk classes 11, and workspace member crates 11 (+ root). In particular the
 `codegg-core` modules row is still **54**: C004's new
 `codegg-core/src/jobs/evidence.rs` is a **sub**module of `jobs`, not a
 top-level `pub mod` in the crate's `lib.rs`.
-### Third amendment — 2026-10-23, repository-audit corrective C005
+### Sixth amendment — 2026-10-23, repository audit corrective C005 + merge reconciliation
 
 Two rows moved, and both moved because this milestone **added** something
 rather than because a measure was wrong.
@@ -463,7 +463,9 @@ Git risk classes 11, and workspace member crates 11 (+ root).
 base as C001–C004 and re-measured these three rows in isolation, so it
 recorded its own single increment against the pre-merge base. The merged tree
 carries C005 as well, which adds its own guard and its own test member, so the
-merged values are one higher on each of the three rows than the values this
-record lists: integration test files **334**, guard scripts (all) **86** and
-CI guard scripts **46**. The rows are re-measured on the merged tree when it
+merged values are one higher on two of the three rows than the values this
+record lists: integration test files **334**, guard scripts (all) **85** and
+CI guard scripts **46**. (The *guard scripts* row is one higher, not two: C005
+**repaired** the existing `scripts/check_tool_broker_boundary.py` in place
+rather than adding a file, so that row counts files and C005 did not move it.) The rows are re-measured on the merged tree when it
 is cut, rather than carried over from either side.

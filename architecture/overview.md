@@ -401,38 +401,32 @@ modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements
 risk classes **11**, and workspace member crates **11** (+ root).
 
 Three rows moved once more on **2026-10-23**, when the repository audit
-corrective workstream's C001, C002, C003, C004 and C005 milestones landed. Each
-milestone added one thing of each kind, and every value was re-measured
-against its own listed `Source` with `python3 scripts/measure_overview_counts.py`
-rather than incremented by hand: **integration test files 327 → 333** (C001's
+corrective workstream's C001, C002, C003, C004, C005 and C006 milestones
+landed. Each milestone added one thing of each kind, and every value was
+re-measured against its own listed `Source` with
+`python3 scripts/measure_overview_counts.py` rather than incremented by hand:
+**integration test files 327 → 334** (C001's
 `tests/tui_render/nested_runtime_command_dispatch.inc`, C002's
-`tests/security_permission/destructive_delete_classification.inc`, and C004's
+`tests/security_permission/destructive_delete_classification.inc`, C004's
 `tests/core_daemon/job_state_terminality_c004.inc` and
-`tests/scheduler_jobs/job_status_projection_c004.inc`, and C005's
+`tests/scheduler_jobs/job_status_projection_c004.inc`, C005's
 `tests/security_permission/reviewer_broker_boundary.inc` and
-`tests/tui_render/dialog_dispatch_coverage.inc` — all six are members of
+`tests/tui_render/dialog_dispatch_coverage.inc`, and C006's
+`tests/tui_render/tui_render_cost.inc` — all seven are members of
 **existing** families, so the root package's **test-target** count did not
-move), **guard scripts (all) 80 → 84**
-(`scripts/check_no_nested_runtime_block_on.py`,
+move), **guard scripts (all) 80 → 85** (the new
+`scripts/check_no_nested_runtime_block_on.py`,
 `scripts/check_destructive_risk_signal_coverage.py`,
-`scripts/check_command_argument_contract.py` and
-`scripts/check_job_state_terminality_agreement.py`), and **CI guard scripts
-40 → 45** (those same four guards plus C005's repaired
-`scripts/check_tool_broker_boundary.py`, each wired into `scripts/verify.sh quick`
-and the hosted CI guard step; a guard's two `ci.yml` steps — the guard and its
-`--self-test` — are one distinct script). No row's **measure** changed. The
-remaining 21 rows were **confirmed unchanged** by measurement, not by
-assumption.
-
-The **C006** milestone (the TUI render path's cost) moved three rows and
-was re-measured the same way: **integration test files 331 → 332**
-(`tests/tui_render/tui_render_cost.inc`, a member of an **existing**
-family, so the root package's **test-target** count did not move),
-**guard scripts (all) 84 → 85**
-(`scripts/check_tui_render_cost.py`), and **CI guard scripts 44 → 45** (that
-same guard, wired into `scripts/verify.sh quick` and the hosted CI guard
-step; a guard's two `ci.yml` steps — the guard and its `--self-test` — are
-one distinct script). No row's **measure** changed.
+`scripts/check_command_argument_contract.py`,
+`scripts/check_job_state_terminality_agreement.py` and
+`scripts/check_tui_render_cost.py` — C005 **repaired** the existing
+`scripts/check_tool_broker_boundary.py` in place rather than adding a file, so
+that row did not move for it), and **CI guard scripts 40 → 46** (those same
+five new guards plus the repaired broker guard, each wired into
+`scripts/verify.sh quick` and the hosted CI guard step; a guard's two
+`ci.yml` steps — the guard and its `--self-test` — are one distinct script).
+No row's **measure** changed. The remaining 21 rows were **confirmed
+unchanged** by measurement, not by assumption.
 
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
@@ -468,9 +462,9 @@ top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 333 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 84 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 45 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 334 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 85 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 46 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 
@@ -670,7 +664,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (333 files)
+├── tests/                      # Integration tests (334 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
