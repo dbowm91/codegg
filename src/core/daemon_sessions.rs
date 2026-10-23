@@ -1329,13 +1329,13 @@ async fn reclaim_deleted_session_scratch_when_idle(
     let job_records = jobs
         .list_job_records(codegg_core::jobs::JobStoreQuery {
             session_id: Some(session_id.to_string()),
-            states: vec![
-                codegg_core::jobs::JobState::Scheduled,
-                codegg_core::jobs::JobState::Queued,
-                codegg_core::jobs::JobState::Running,
-                codegg_core::jobs::JobState::Interrupted,
-                codegg_core::jobs::JobState::Blocked,
-            ],
+            // The domain's own complement of terminality
+            // (`JobState::non_terminal_states`). An interrupted job is in
+            // it on purpose: the scheduler's recovery path requeues an
+            // interrupted job through the `Interrupted -> Queued` edge, so
+            // such a job may still run and its session's scratch must not be
+            // reclaimed.
+            states: codegg_core::jobs::JobState::non_terminal_states(),
             limit: Some(1),
             ..Default::default()
         })

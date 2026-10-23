@@ -52,6 +52,7 @@ use crate::workspace::WorkspaceId;
 /// with the exact active goal that authorized its submission.
 pub const GOAL_PROVENANCE_LABEL_KEY: &str = "goal_id";
 
+pub mod evidence;
 pub mod quota;
 pub mod schedule;
 pub mod schedule_store;
@@ -1064,6 +1065,56 @@ impl JobState {
                 | JobState::TimedOut
                 | JobState::Expired
         )
+    }
+
+    /// Every state of the enum, in declaration order.
+    ///
+    /// The domain's own enumeration of its states. Everything that needs a
+    /// *set* of job states derives it from this list and from
+    /// [`JobState::is_terminal`], so no projection outside the domain
+    /// hand-maintains one.
+    ///
+    /// `scripts/check_job_state_terminality_agreement.py` checks that this
+    /// list stays in step with the enum, so a new variant cannot be added
+    /// without the projections being updated.
+    pub const ALL: &'static [JobState] = &[
+        JobState::Scheduled,
+        JobState::Queued,
+        JobState::Running,
+        JobState::Completed,
+        JobState::Failed,
+        JobState::Cancelled,
+        JobState::TimedOut,
+        JobState::Interrupted,
+        JobState::Blocked,
+        JobState::Expired,
+    ];
+
+    /// The states the domain calls terminal.
+    ///
+    /// Derived from [`JobState::is_terminal`], so the list and the predicate
+    /// cannot disagree. A query that wants "the jobs that are finished" asks
+    /// for this and not for a hand-written list.
+    pub fn terminal_states() -> Vec<JobState> {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(|state| state.is_terminal())
+            .collect()
+    }
+
+    /// The states the domain does **not** call terminal.
+    ///
+    /// The exact complement of [`JobState::terminal_states`]. A job in one of
+    /// these states is not finished, and — because an interrupted attempt may
+    /// still be requeued — may still run: the scheduler's recovery path
+    /// requeues an interrupted job through the `Interrupted -> Queued` edge.
+    pub fn non_terminal_states() -> Vec<JobState> {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(|state| !state.is_terminal())
+            .collect()
     }
 }
 
@@ -2126,6 +2177,78 @@ fn _ensure_pathbuf_used(_p: PathBuf) {}
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn terminal_state_sets_agree_with_is_terminal_for_every_variant() {
+        let terminal = JobState::terminal_states();
+        let non_terminal = JobState::non_terminal_states();
+        for state in JobState::ALL {
+            assert_eq!(
+                terminal.contains(state),
+                state.is_terminal(),
+                "{state:?} is in the terminal set but the domain disagrees"
+            );
+            assert_eq!(
+                non_terminal.contains(state),
+                !state.is_terminal(),
+                "{state:?} is in the non-terminal set but the domain disagrees"
+            );
+        }
+        assert!(
+            terminal.iter().all(|state| state.is_terminal()),
+            "the terminal set must hold only states the domain calls terminal"
+        );
+        assert!(
+            non_terminal.iter().all(|state| !state.is_terminal()),
+            "the non-terminal set must hold only states the domain does not call terminal"
+        );
+    }
+
+    #[test]
+    fn the_two_state_sets_partition_every_variant() {
+        let terminal: HashSet<JobState> = JobState::terminal_states().into_iter().collect();
+        let non_terminal: HashSet<JobState> = JobState::non_terminal_states().into_iter().collect();
+        assert!(
+            terminal.is_disjoint(&non_terminal),
+            "a state cannot be both terminal and not terminal"
+        );
+        assert_eq!(
+            terminal.len() + non_terminal.len(),
+            JobState::ALL.len(),
+            "the two sets must cover every variant exactly once"
+        );
+        assert_eq!(
+            terminal.len(),
+            JobState::ALL
+                .iter()
+                .filter(|state| state.is_terminal())
+                .count(),
+            "the terminal set must be exactly the states the predicate names"
+        );
+    }
+
+    #[test]
+    fn the_domain_enumeration_covers_every_variant() {
+        let enumerated: HashSet<JobState> = JobState::ALL.iter().copied().collect();
+        let variants: HashSet<JobState> = [
+            JobState::Scheduled,
+            JobState::Queued,
+            JobState::Running,
+            JobState::Completed,
+            JobState::Failed,
+            JobState::Cancelled,
+            JobState::TimedOut,
+            JobState::Interrupted,
+            JobState::Blocked,
+            JobState::Expired,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            enumerated, variants,
+            "the domain's enumeration must cover exactly the enum's variants"
+        );
+    }
 
     #[test]
     fn typed_ids_roundtrip_through_strings() {

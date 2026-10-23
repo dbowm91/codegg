@@ -55,6 +55,20 @@ pub enum HostEvidenceStatus {
     Unavailable,
 }
 
+impl crate::jobs::evidence::EvidenceVerdict for HostEvidenceStatus {
+    fn passed() -> Self {
+        HostEvidenceStatus::Passed
+    }
+
+    fn failed() -> Self {
+        HostEvidenceStatus::Failed
+    }
+
+    fn in_progress() -> Self {
+        HostEvidenceStatus::InProgress
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GoalExecutionEvidence {
     /// Stable host-owned record identity, never derived from model text.

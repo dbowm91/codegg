@@ -32,6 +32,20 @@ impl HostEvidenceStatus {
     }
 }
 
+impl crate::jobs::evidence::EvidenceVerdict for HostEvidenceStatus {
+    fn passed() -> Self {
+        HostEvidenceStatus::Passed
+    }
+
+    fn failed() -> Self {
+        HostEvidenceStatus::Failed
+    }
+
+    fn in_progress() -> Self {
+        HostEvidenceStatus::InProgress
+    }
+}
+
 /// Bounded snapshot of canonical evidence resolutions.
 ///
 /// Keys are `"<kind>:<ref_id>"` with the closed kind string from

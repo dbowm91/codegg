@@ -6,7 +6,7 @@
 //! A ref whose target cannot be found is `Unavailable` — never satisfied.
 
 use codegg_core::jobs::{
-    ExecutionSubjectDisposition, ExecutionSubjectProvenance, JobAttempt, JobId, JobState, JobStore,
+    ExecutionSubjectDisposition, ExecutionSubjectProvenance, JobAttempt, JobId, JobStore,
     SqliteJobStore,
 };
 use codegg_core::work_plan::{
@@ -73,7 +73,7 @@ pub async fn assemble_resolved(
             _ => None,
         };
         if let Some(job) = job {
-            resolved.status = job_state_to_evidence(job.state);
+            resolved.status = codegg_core::jobs::evidence::job_success_evidence(job.state);
             resolved.native_job_id = Some(job.job_id.to_string());
             if let Some(attempt) = attempt_for_job(&store, &job.job_id).await {
                 resolved.native_attempt_id = Some(attempt.attempt_id.to_string());
@@ -136,25 +136,11 @@ pub async fn assemble_resolved(
     Ok(ResolvedWorkEvidenceSnapshot { entries })
 }
 
-fn job_state_to_evidence(state: JobState) -> HostEvidenceStatus {
-    match state {
-        JobState::Completed => HostEvidenceStatus::Passed,
-        JobState::Failed
-        | JobState::Cancelled
-        | JobState::TimedOut
-        | JobState::Interrupted
-        | JobState::Expired => HostEvidenceStatus::Failed,
-        JobState::Scheduled | JobState::Queued | JobState::Running | JobState::Blocked => {
-            HostEvidenceStatus::InProgress
-        }
-    }
-}
-
 async fn job_evidence_status(pool: &SqlitePool, ref_id: &str) -> HostEvidenceStatus {
     let job_id = JobId::new_unchecked(ref_id.to_string());
     let store = SqliteJobStore::new(pool.clone());
     match store.get_job(&job_id).await {
-        Ok(Some(record)) => job_state_to_evidence(record.state),
+        Ok(Some(record)) => codegg_core::jobs::evidence::job_success_evidence(record.state),
         Ok(None) => HostEvidenceStatus::Unavailable,
         Err(_) => HostEvidenceStatus::Unavailable,
     }
@@ -237,6 +223,16 @@ pub async fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codegg_core::jobs::JobState;
+
+    // The shared authority answers "does this job count as evidence that the
+    // work SUCCEEDED?" — a different question from whether the job is
+    // finished. The pinned test names that projection
+    // `job_state_to_evidence`, and this one-line delegation keeps the test
+    // body byte-identical to the one that pinned the fail-closed verdicts.
+    fn job_state_to_evidence(state: JobState) -> HostEvidenceStatus {
+        codegg_core::jobs::evidence::job_success_evidence(state)
+    }
 
     #[test]
     fn job_state_mapping_is_fail_closed() {

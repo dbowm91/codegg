@@ -253,6 +253,14 @@ jobs:
       - name: Tool Program parse-only guard self-test
         run: python3 scripts/check_tool_program_parse_only.py --self-test
 
+      # `JobState::is_terminal()` is the terminality authority; every
+      # projection of a job state has to agree with it.
+      - name: Job-state terminality agreement guard
+        run: python3 scripts/check_job_state_terminality_agreement.py
+
+      - name: Job-state terminality agreement guard self-test
+        run: python3 scripts/check_job_state_terminality_agreement.py --self-test
+
       - name: Shell policy test-safety guard
         run: python3 scripts/check_shell_policy_test_safety.py
 

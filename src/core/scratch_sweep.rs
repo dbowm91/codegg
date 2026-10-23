@@ -575,13 +575,13 @@ async fn session_tree_is_reclaimable(
     let job_records = jobs
         .list_job_records(JobStoreQuery {
             session_id: Some(session_id.to_string()),
-            states: vec![
-                JobState::Scheduled,
-                JobState::Queued,
-                JobState::Running,
-                JobState::Interrupted,
-                JobState::Blocked,
-            ],
+            // The domain's own complement of terminality
+            // (`JobState::non_terminal_states`). An interrupted job is in
+            // it on purpose: the scheduler's recovery path requeues an
+            // interrupted job through the `Interrupted -> Queued` edge, so
+            // such a job may still run and its session's scratch must not be
+            // reclaimed. This is the conservative reading.
+            states: JobState::non_terminal_states(),
             limit: Some(1),
             ..Default::default()
         })
@@ -788,7 +788,7 @@ mod tests {
     use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId};
     use codegg_core::jobs::{
         IdempotencyClass, InMemoryJobStore, JobKind, JobPriority, JobSource, NewJob,
-        ResourceRequest, RetryPolicy,
+        ResourceRequest, RetryPolicy, SqliteJobStore,
     };
     use codegg_core::session::{CreateSession, SessionStore};
     use codegg_core::workspace::WorkspaceId;
@@ -1113,6 +1113,51 @@ mod tests {
         assert_eq!(report.reclaimed_idle, 0, "report: {report:?}");
         assert_eq!(report.skipped_leased, 1, "report: {report:?}");
         assert!(root.exists(), "a tree with live work is not reclaimed");
+        let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
+    }
+
+    /// A session whose only job was interrupted keeps its scratch tree.
+    ///
+    /// The domain does not call an interrupted job terminal, and the
+    /// scheduler's recovery path requeues an interrupted job through the
+    /// `Interrupted -> Queued` edge, so such a job may still run. The sweep
+    /// therefore treats the session as holding live work and leaves its
+    /// scratch alone. This is the conservative reading: the reconciliation
+    /// of the session projection's terminality did not widen reclamation.
+    #[tokio::test]
+    async fn the_sweep_refuses_a_session_with_an_interrupted_job() {
+        let _root = scratch_root("the-sweep-refuses-an-int");
+        let pool = sweep_pool().await;
+        let runs = InMemoryAgentRunStore::new();
+        let jobs = SqliteJobStore::new(pool.clone());
+        let session_id = create_session(&pool).await;
+        let root = crate::scratch::session_scratch_dir(&session_id).expect("create the tree");
+        set_activity(&pool, &session_id, 30 * DAY_MS).await;
+        let record = jobs
+            .create_job(active_test_job(&session_id))
+            .await
+            .expect("create a job");
+        sqlx::query("UPDATE job SET state = 'interrupted' WHERE id = ?")
+            .bind(record.job_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("mark the job interrupted");
+
+        let report = sweep_scratch_once(
+            &pool,
+            &runs,
+            &jobs,
+            policy(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
+
+        assert_eq!(report.reclaimed_idle, 0, "report: {report:?}");
+        assert_eq!(report.skipped_leased, 1, "report: {report:?}");
+        assert!(
+            root.exists(),
+            "a tree with an interrupted job is not reclaimed"
+        );
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
