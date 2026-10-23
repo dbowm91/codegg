@@ -120,6 +120,15 @@ run_guards() {
     echo "==> python3 scripts/check_tui_composer_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py)
 
+    # A command handler may not block on a runtime handle from inside the
+    # runtime: the TUI event loop and the MCP CLI both run with the runtime
+    # context entered, so a nested `Handle::block_on` panics and takes the
+    # process down.
+    echo "==> python3 scripts/check_no_nested_runtime_block_on.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_no_nested_runtime_block_on.py --self-test)
+    echo "==> python3 scripts/check_no_nested_runtime_block_on.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_no_nested_runtime_block_on.py)
+
     echo "==> python3 scripts/check_daemon_listing_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)
 

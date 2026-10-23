@@ -308,9 +308,6 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
         }
 
         McpCommand::Debug { name, url } => {
-            use tokio::runtime::Handle;
-            let handle = Handle::current();
-
             println!("Testing MCP server connection...");
 
             let config = cli.load_current_config()?;
@@ -327,25 +324,27 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                                             if let Some(ref url) = inner.url {
                                                 let headers =
                                                     inner.headers.clone().unwrap_or_default();
-                                                let result = handle.block_on(async {
-                                                    let mut manager = crate::mcp::remote::McpConnectionManager::new(
-                                                        url,
-                                                        headers,
-                                                        inner.timeout.unwrap_or(30000),
-                                                    )?;
-                                                    manager.connect().await?;
-                                                    println!("Connection successful!");
-                                                    let tools = manager.discover_tools().await?;
-                                                    println!("Server '{}' has {} tools", server_name, tools.len());
-                                                    if let Err(error) =
-                                                        manager.disconnect().await
-                                                    {
-                                                        tracing::debug!(
-                                                            "MCP disconnect after debug probe failed: {}",
-                                                            error
-                                                        );
-                                                    }
-                                                    Ok::<(), AppError>(())
+                                                let result = tokio::task::block_in_place(|| {
+                                                    tokio::runtime::Handle::current().block_on(async {
+                                                        let mut manager = crate::mcp::remote::McpConnectionManager::new(
+                                                            url,
+                                                            headers,
+                                                            inner.timeout.unwrap_or(30000),
+                                                        )?;
+                                                        manager.connect().await?;
+                                                        println!("Connection successful!");
+                                                        let tools = manager.discover_tools().await?;
+                                                        println!("Server '{}' has {} tools", server_name, tools.len());
+                                                        if let Err(error) =
+                                                            manager.disconnect().await
+                                                        {
+                                                            tracing::debug!(
+                                                                "MCP disconnect after debug probe failed: {}",
+                                                                error
+                                                            );
+                                                        }
+                                                        Ok::<(), AppError>(())
+                                                    })
                                                 });
                                                 result?;
                                             } else {
@@ -391,37 +390,41 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                     }
                 }
                 (None, Some(test_url)) => {
-                    let result = handle.block_on(async {
-                        let mut manager = crate::mcp::remote::McpConnectionManager::new(
-                            &test_url,
-                            HashMap::new(),
-                            30000,
-                        )?;
-                        manager.connect().await?;
-                        println!("Connection to {} successful!", test_url);
-                        if let Err(error) = manager.disconnect().await {
-                            tracing::debug!("MCP disconnect after URL probe failed: {}", error);
-                        }
-                        Ok::<(), AppError>(())
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            let mut manager = crate::mcp::remote::McpConnectionManager::new(
+                                &test_url,
+                                HashMap::new(),
+                                30000,
+                            )?;
+                            manager.connect().await?;
+                            println!("Connection to {} successful!", test_url);
+                            if let Err(error) = manager.disconnect().await {
+                                tracing::debug!("MCP disconnect after URL probe failed: {}", error);
+                            }
+                            Ok::<(), AppError>(())
+                        })
                     });
                     result?;
                 }
                 (Some(_test_name), Some(test_url)) => {
-                    let result = handle.block_on(async {
-                        let mut manager = crate::mcp::remote::McpConnectionManager::new(
-                            &test_url,
-                            HashMap::new(),
-                            30000,
-                        )?;
-                        manager.connect().await?;
-                        println!("Connection to {} successful!", test_url);
-                        if let Err(error) = manager.disconnect().await {
-                            tracing::debug!(
-                                "MCP disconnect after named URL probe failed: {}",
-                                error
-                            );
-                        }
-                        Ok::<(), AppError>(())
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            let mut manager = crate::mcp::remote::McpConnectionManager::new(
+                                &test_url,
+                                HashMap::new(),
+                                30000,
+                            )?;
+                            manager.connect().await?;
+                            println!("Connection to {} successful!", test_url);
+                            if let Err(error) = manager.disconnect().await {
+                                tracing::debug!(
+                                    "MCP disconnect after named URL probe failed: {}",
+                                    error
+                                );
+                            }
+                            Ok::<(), AppError>(())
+                        })
                     });
                     result?;
                 }
@@ -433,4 +436,41 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod debug_runtime_entry_tests {
+    use super::*;
+
+    /// `codegg mcp debug` is reached from `#[tokio::main(flavor =
+    /// "multi_thread")]`, so the runtime context is **entered** when the
+    /// `Debug` arm runs. The arm must therefore wait with
+    /// `block_in_place`; a bare `Handle::block_on` there panicked with
+    /// *"Cannot start a runtime from within a runtime"* and terminated the
+    /// process before it printed anything.
+    ///
+    /// The probe is given a URL that cannot be parsed, so the failure comes
+    /// from inside the waited-on future — the same place the panic used to
+    /// happen — without reaching the network.
+    #[test]
+    fn mcp_debug_completes_inside_an_entered_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let outcome = runtime.block_on(async {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                exec_mcp_command(McpCommand::Debug {
+                    name: None,
+                    url: Some("not-a-valid-mcp-url".to_string()),
+                })
+            }))
+        });
+
+        let result = outcome.expect(
+            "the MCP debug command must not panic when the runtime context is already entered",
+        );
+        let error = result.expect_err("a malformed MCP URL must fail the debug probe");
+        assert!(
+            error.to_string().contains("invalid URL"),
+            "the failure must come from the MCP connection attempt, not from config loading: {error}"
+        );
+    }
 }

@@ -6717,13 +6717,15 @@ impl App {
                     let _ = send_tui(tx, TuiCommand::WorktreeList);
                 } else {
                     let git_root = self.active_workspace_root().unwrap_or_default();
-                    let trees = tokio::runtime::Handle::current().block_on(async {
-                        match crate::worktree::find_git_root(&git_root) {
-                            Some(root) => crate::worktree::list_worktrees(&root)
-                                .await
-                                .unwrap_or_default(),
-                            None => Vec::new(),
-                        }
+                    let trees = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            match crate::worktree::find_git_root(&git_root) {
+                                Some(root) => crate::worktree::list_worktrees(&root)
+                                    .await
+                                    .unwrap_or_default(),
+                                None => Vec::new(),
+                            }
+                        })
                     });
                     if trees.is_empty() {
                         self.messages_state.toasts.info("No worktrees found");
@@ -7732,8 +7734,9 @@ impl App {
             B::LspServers => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let detail = handle.block_on(lsp_tool.lsp_servers_detail());
+                    let detail = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_servers_detail())
+                    });
                     if let Some(text) = detail {
                         self.messages_state.toasts.info(&text);
                     } else {
@@ -7755,8 +7758,10 @@ impl App {
                         .toasts
                         .info("Usage: /lsp-capabilities <server-key>\nUse /lsp-servers to see available keys.");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.lsp_capabilities_for_key(key)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.lsp_capabilities_for_key(key))
+                    }) {
                         Some(text) => self.messages_state.toasts.info(&text),
                         None => self
                             .messages_state
@@ -7776,8 +7781,9 @@ impl App {
                         "Usage: /lsp-errors <server-key>\nUse /lsp-servers to see available keys.",
                     );
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.lsp_errors_for_key(key)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_errors_for_key(key))
+                    }) {
                         Some(text) => self.messages_state.toasts.info(&text),
                         None => self
                             .messages_state
@@ -7812,8 +7818,9 @@ impl App {
                         .toasts
                         .info("Usage: /lsp-doctor <file-path>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let text = handle.block_on(lsp_tool.lsp_doctor(path_arg));
+                    let text = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_doctor(path_arg))
+                    });
                     self.messages_state.toasts.info(&text);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -7831,8 +7838,10 @@ impl App {
                         .toasts
                         .info("Usage: /lsp-context-diagnostics <file-path>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let text = handle.block_on(lsp_tool.lsp_context_diagnostics(path_arg));
+                    let text = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.lsp_context_diagnostics(path_arg))
+                    });
                     self.messages_state.toasts.info(&text);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -7858,8 +7867,10 @@ impl App {
                         column: col,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7886,8 +7897,10 @@ impl App {
                         primary_path: Some(path),
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7912,8 +7925,10 @@ impl App {
                         primary_path: Some(arg.to_string()),
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7931,8 +7946,10 @@ impl App {
                         recipe: LspWorkflowRecipe::ReviewDiff,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7961,8 +7978,10 @@ impl App {
                         review_mode,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7990,8 +8009,10 @@ impl App {
                         column: col,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8020,8 +8041,10 @@ impl App {
                         failure_text,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8050,8 +8073,10 @@ impl App {
                         symbol,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8084,8 +8109,10 @@ impl App {
                         related_files,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8124,8 +8151,10 @@ impl App {
                         direction,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8145,8 +8174,9 @@ impl App {
                         "Usage: /lsp-restart <server-key>\nUse /lsp-servers to see available keys.",
                     );
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let result = handle.block_on(lsp_tool.lsp_restart_server(key));
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_restart_server(key))
+                    });
                     self.messages_state.toasts.info(&result);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -8157,13 +8187,15 @@ impl App {
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-stop ").unwrap_or("").trim();
                 if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
                     let key_opt = if arg.is_empty() || arg == "--all" {
                         None
                     } else {
                         Some(arg)
                     };
-                    let result = handle.block_on(lsp_tool.lsp_stop_server(key_opt));
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.lsp_stop_server(key_opt))
+                    });
                     self.messages_state.toasts.info(&result);
                 } else {
                     self.messages_state.toasts.info("LSP not available");

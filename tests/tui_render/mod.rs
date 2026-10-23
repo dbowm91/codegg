@@ -37,6 +37,9 @@ pub mod file_tree_trajectory;
 #[path = "modifier_chords.inc"]
 pub mod modifier_chords;
 
+#[path = "nested_runtime_command_dispatch.inc"]
+pub mod nested_runtime_command_dispatch;
+
 #[path = "presence_m002_collaborators.inc"]
 pub mod presence_m002_collaborators;
 

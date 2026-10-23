@@ -308,3 +308,26 @@ when the measure is narrower than the claim.
 Both the `architecture/overview.md` catalog table and `docs/tools.md`'s family
 table now name all 75, and the two sets are identical with no name in one and
 absent from the other.
+
+### Third amendment — 2026-10-23, repository audit corrective C001
+
+Three rows moved because the milestone added one thing of each kind. No row's
+**measure** changed, so no method decision is needed; the values were
+re-measured with `scripts/measure_overview_counts.py` and compared to the
+table row by row.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 327 | 328 | `tests/tui_render/nested_runtime_command_dispatch.inc`, a new `.inc` member of the existing `tui_render` family. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; the family already existed, so no new family directory and no `tests/*.rs` was added. |
+| Guard scripts (all) | 80 | 81 | `scripts/check_no_nested_runtime_block_on.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 40 | 41 | The same guard, wired into the hosted CI guard step. The measure (the distinct `scripts/check_*` names named in `.github/workflows/ci.yml`) is unchanged. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root).
