@@ -1,0 +1,9 @@
+# slowbuild body
+#
+# The body holds the payload the build ships. Every line below is copied
+# into the artifact unchanged, in this order.
+
+payload: greeting=hello
+payload: target=release
+payload: features=fast,quiet
+payload: checksum-source=slowbuild

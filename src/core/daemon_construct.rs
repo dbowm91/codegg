@@ -924,6 +924,7 @@ impl CoreDaemon {
                 deps.pool.clone(),
             )),
             deps,
+            reasoning_capabilities: crate::protocol::core::ReasoningCapabilitiesDto::current(),
             event_log,
             lsp_diagnostics: Arc::new(parking_lot::Mutex::new(
                 super::lsp_diagnostics_store::LspDiagnosticsStore::new(),

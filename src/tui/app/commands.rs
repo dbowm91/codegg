@@ -1515,6 +1515,28 @@ pub enum TuiCommand {
         snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto>,
         error: Option<String>,
     },
+    /// Provider reasoning control M004: completion of a
+    /// `ReasoningPreferenceSet` round-trip.
+    ///
+    /// `previous` is the selection the frontend displayed before the write,
+    /// so a refusal can put the daemon's last known value back. The daemon's
+    /// response wins over the local display; `preference` carries the
+    /// daemon-owned selection.
+    ReasoningPreferenceUpdated {
+        request_id: u64,
+        preference: Option<crate::protocol::core::RuntimePreferenceDto>,
+        previous: crate::protocol::core::ReasoningMode,
+        error: Option<String>,
+    },
+    /// Provider reasoning control M004: completion of a
+    /// `ReasoningPreferenceGet` read. The selection is daemon state, so a
+    /// frontend that reconnects receives it from the daemon rather than
+    /// from local state.
+    ReasoningPreferenceLoaded {
+        request_id: u64,
+        preference: Option<crate::protocol::core::RuntimePreferenceDto>,
+        error: Option<String>,
+    },
     /// Project Work Orders M003: scheduling-sheet prefetch completion
     /// (lanes, summary, capabilities, Task-model preference). Stale
     /// completions (newer prefetch, tab switch, rebind, reconnect) are

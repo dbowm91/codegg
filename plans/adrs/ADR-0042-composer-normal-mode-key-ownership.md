@@ -7,6 +7,12 @@ Date: 2026-10-19
 Amended: 2026-10-19 — accepted with one significant change. See
 [§ Amendment: the `space` chord and the copy verb](#amendment-the-space-chord-and-the-copy-verb).
 
+Amended: 2026-10-23 — part 4's `j`/`k` condition is generalised from the
+buffer's logical line count to the composer's **fitted content**, because the
+composer now word-wraps. See
+[§ Amendment: the wrapped visual row](#amendment-the-wrapped-visual-row).
+The original Decision text is unchanged; the amendment is appended.
+
 Decision owners: project maintainers
 
 Related specification sections:
@@ -18,6 +24,8 @@ Related specification sections:
 Affected subsystem roadmaps:
 
 - `plans/subsystems/tui-composer-helix-parity-roadmap.md`
+- `plans/subsystems/tui-composer-text-layout-roadmap.md` (owns the composer's
+  text layout and the `j`/`k` condition's implementation)
 - `plans/subsystems/tui-editor-helix-parity-roadmap.md` (interface dependency only — the editor owns a
   different buffer and a different key authority boundary)
 
@@ -409,6 +417,70 @@ opening route is carried into the widget by the caller — the same way the star
 is. A box that inferred the route from its own mode would be right today and wrong the day a
 `/help` typed from Normal mode opens the same mode, which is exactly the kind of accidental
 coupling this record exists to prevent.
+
+## Amendment: the wrapped visual row
+
+**Amended 2026-10-23.**
+
+The composer now **word-wraps** its content and grows its box to fit, up to a
+ten-row total cap, with the content beyond the cap reachable by scrolling. The
+record's part 4 resolved `j` and `k` against the composer's **logical** line
+count, and that condition cannot survive the change.
+
+### The change
+
+Part 4's `j` and `k` rows read: *"The composer claims `j` **only when the
+composer buffer has more than one line**. On a single-line buffer the key must
+fall through to transcript scroll unchanged."*
+
+After the wrap, a buffer with a **single** logical line can occupy more rows
+than the composer shows. A condition reading "more than one line" would leave
+that content unreachable: `j` and `k` would fall through to the transcript
+while the composer's own overflow sat behind the box.
+
+The condition therefore becomes: **the composer claims `j` and `k` when its
+content does not fit its box** — that is, when the wrapped row count exceeds
+the visible row count. The motions move the caret by one **visual row**.
+
+### Why this is an amendment and not a new decision
+
+The condition's **intent** is preserved exactly, and its letter could not be.
+The intent is that a composer whose content fits must not steal the
+transcript's scroll; that is still precisely what the amended condition
+says. What changes is the **measure** of "fits", from newline characters to
+rows.
+
+This record already established the form this change takes. Its `space`-chord
+amendment above is a dated section appended to the accepted record, with a
+table of what changes and what does not, and the original Decision text left
+intact. This amendment follows that precedent rather than superseding the
+record, because this record's own §Supersession says a supersession would
+require re-planning the composer's M002 — a cost that buys nothing for a
+one-clause change whose other seven parts, the unconditional-claim rule, the
+fall-through rule, the mode gate and the dual-encoding rule all stand.
+
+| Section | Before | After |
+|---|---|---|
+| Decision part 4, `j` and `k` rows | The composer claims `j`/`k` **only when the composer buffer has more than one line** | The composer claims `j`/`k` **when the composer's content does not fit its box** — the wrapped row count exceeds the visible row count |
+| Decision part 4, `j` and `k` rows (fall-through) | "On a single-line buffer the key must fall through to transcript scroll unchanged" | "On a composer whose content **fits**, the key must fall through to transcript scroll unchanged" |
+| The `j`/`k` motion | A logical-line motion | A **visual-row** motion |
+| Compatibility | The composer scrolls horizontally when a line exceeds the width | The composer **wraps** by words; the horizontal scroll survives only for a single token wider than the row |
+| Verification | `j` on a multi-line buffer moves the caret a line | `j` on a composer whose content overflows moves the caret a **visual row**, and `j` on a composer whose content fits falls through to transcript scroll |
+
+What the amendment does **not** change: Option A, the single mode axis, the
+unconditional-claim rule, the fall-through rule, the dual-encoding rule for
+uppercase letters, the static-guard requirement, the closed thirteen-letter
+claim set, the mode gate, and the composer's frontend-local-string boundary.
+The claim table still governs the composer's letters; `j` and `k` are still
+claimed by the composer, and they are now claimed on a different condition.
+
+One consequence worth stating plainly, because it is easy to get wrong in the
+implementation: the condition must be evaluated against the **fitted**
+content, not against the buffer's newline count. A composer whose text wraps
+to three rows in a three-row box **fits**, and `j` must fall through to the
+transcript; a composer whose text wraps to four rows in a three-row box does
+not fit, and `j` moves the caret a visual row. Reading "does it contain a
+newline" would be wrong in both directions.
 
 ## Supersession
 

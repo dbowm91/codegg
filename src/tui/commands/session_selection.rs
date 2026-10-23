@@ -214,6 +214,10 @@ async fn fetch_models(
                     supports_tools: m.supports_tools,
                     supports_vision: m.supports_vision,
                     catalog_revision: catalog_revision.clone(),
+                    // The capability rides along with the model: it is a
+                    // property of the model, not of the request that
+                    // listed it.
+                    reasoning_capability: m.reasoning_capability,
                 })
                 .collect())
         }
@@ -380,6 +384,7 @@ mod tests {
                     max_output_tokens: Some(8_192),
                     supports_tools: true,
                     supports_vision: false,
+                    reasoning_capability: None,
                 }],
             })
         }

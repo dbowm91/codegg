@@ -696,3 +696,46 @@ directory (`~/.local/share/codegg/plugins/` on Linux,
 `%LOCALAPPDATA%\codegg\plugins\` on Windows). See
 `architecture/plugin.md` for the canonical install paths and
 `/plugin-install` for the in-TUI installer.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Module layout: every file listed in "Architecture" exists in `src/plugin/`
+  (`mod.rs`, `loader.rs`, `hooks.rs`, `registry.rs`, `service.rs`,
+  `manifest.rs`, `install.rs`, `package.rs`, `contributions.rs`,
+  `event_bus.rs`, `tui.rs`, `api.rs`, `management.rs`, `marketplace.rs`,
+  `lifecycle.rs`, `permission.rs`, `management_ui.rs`, `playwright.rs`,
+  `activation.rs`, `policy.rs`), with `runtime/` holding `mod.rs`, `wasm.rs`,
+  `process.rs`, `builtin.rs`, `wasm_cache.rs` and `builtin/` holding
+  `poe.rs`, `gitlab.rs`, `copilot.rs`, `codex.rs`.
+- The 13 `HookType` variants: `src/plugin/hooks.rs`.
+- `MAX_PLUGIN_FUEL_BUDGET = 10_000_000` and the fuel reserve/return
+  behaviour: `src/plugin/runtime/wasm_cache.rs`.
+- `PolicyDecision` (`Allow`, `Deny`, `Degrade`) and the four `check_*`
+  functions: `src/plugin/permission.rs`.
+- `PLUGIN_PROTOCOL_VERSION = 1`: `crates/codegg-protocol/src/plugin.rs`.
+- Every `UiLimits` value in the size-limits table, in both `balanced()` and
+  `text_only()`: `crates/codegg-protocol/src/ui.rs`.
+- `PluginUiCapabilities::all_supported()` for the reference TUI client and
+  the `ClientCapabilities` flag names:
+  `crates/codegg-protocol/src/frames.rs`.
+- `UiEffectEnvelope`, `UiEffectSource`, `degrade_effect`, and
+  `degrade_node_to_text`: `crates/codegg-protocol/src/ui.rs`.
+- `App::apply_plugin_ui_envelope` as the canonical entry point:
+  `src/tui/app/plugin_ui.rs`.
+- `plugins_dir()` = `dirs::data_local_dir()/codegg/plugins`:
+  `src/plugin/install.rs`.
+- Plugin slash commands `/plugins`, `/plugin-info`, `/plugin-enable`,
+  `/plugin-disable`, `/plugin-doctor`, `/plugin-remove`, `/plugin-install`:
+  `src/tui/command.rs`.
+- Manifest detection set (`manifest.toml`, `plugin.json`,
+  `.claude-plugin/plugin.json`) and the rejection of `plugin.toml`:
+  `src/plugin/package.rs`.
+- The example plugin tree, including the three WASM examples and the two
+  `process-quota-*` examples: `examples/plugins/`.
+- SDK test counts: 24 Python tests in
+  `examples/plugins/sdk-python/tests/test_protocol.py`; 12 `#[test]` functions
+  in `examples/plugins/sdk-rust/tests/sdk_smoke.rs`, of which one
+  (`abi_invoke_requires_wasm_target`) is `#[ignore]`d, leaving 11 runnable.
+- `scripts/validate_plugin_ui.sh` exists.

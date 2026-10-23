@@ -227,6 +227,26 @@ run_guards() {
     echo "==> python3 scripts/check_provider_wire_cutover.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_wire_cutover.py)
 
+    echo "==> python3 scripts/check_reasoning_intent_fidelity.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_reasoning_intent_fidelity.py --self-test)
+    echo "==> python3 scripts/check_reasoning_intent_fidelity.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_reasoning_intent_fidelity.py)
+
+    echo "==> python3 scripts/check_reasoning_vocabulary_open.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_reasoning_vocabulary_open.py --self-test)
+    echo "==> python3 scripts/check_reasoning_vocabulary_open.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_reasoning_vocabulary_open.py)
+
+    echo "==> python3 scripts/check_model_profile_capability_mirror.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_model_profile_capability_mirror.py --self-test)
+    echo "==> python3 scripts/check_model_profile_capability_mirror.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_model_profile_capability_mirror.py)
+
+    echo "==> python3 scripts/check_tui_reasoning_surface.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_reasoning_surface.py --self-test)
+    echo "==> python3 scripts/check_tui_reasoning_surface.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_reasoning_surface.py)
+
     echo "==> python3 scripts/check_provider_qualification.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_qualification.py)
 
@@ -350,6 +370,9 @@ run_quick() {
     echo "==> Quick verification"
 
     run_guards
+
+    echo "==> python3 -m unittest discover -s dev/harness_lab/tests"
+    (cd "$REPO_ROOT" && python3 -m unittest discover -s dev/harness_lab/tests)
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)

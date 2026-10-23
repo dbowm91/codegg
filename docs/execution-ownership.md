@@ -176,3 +176,36 @@ disrupting the canonical subsystem ownership:
 
 These domains are tracked in the execution-ownership TOML manifest and
 documented in `architecture/`.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree and the guard script.
+
+- The manifest and its owner classes (`scheduler`, `interactive`,
+  `standalone_compat`, `definition_or_adapter`, `deferred_domain_executor`,
+  `test_only`, `forbidden_bypass`): `docs/execution-ownership.toml`.
+- The guard's canonical patterns (both `Command::new` spellings,
+  `StdCommand::new`, `JobStore::create_job`, the three `.spawner().send*`
+  forms, `BackgroundScheduler::spawn_loop`,
+  `test_runner::runner::resolve_and_run_test`, `executor_kind_for_job`,
+  `dispatch_to_test_runner`, `hardened_git_command`):
+  `scripts/check_execution_ownership.py`.
+- The two skipped scopes — every file under `src/scheduler/` and
+  `src/test_runner/`, and every `tests/` directory:
+  `scripts/check_execution_ownership.py`.
+- `src/scheduler/executors.rs` is listed in the guard's finite-command-surface
+  set but has no effect, because the whole `src/scheduler/` tree is skipped
+  first: `scripts/check_execution_ownership.py`.
+- `tests/scheduler_jobs/scheduler_authority_matrix.inc` exists and is a
+  separate runtime counterpart.
+- `ManagedProcessService` ownership: `src/managed_process.rs`.
+- The Eggwork executor and its companion guard: `src/scheduler/eggwork.rs`
+  and `scripts/check_eggwork_target_routing.py`.
+- The `[eggwork.nodes.<name>]` operator policy keys (`node_id`, `endpoint`,
+  `ca_cert_path`, `client_cert_path`, `client_key_path`, `isolation_policy`,
+  `network_policy`) and the `snake_case` policy enum spellings
+  (`none`/`required`, `unrestricted`/`disabled`):
+  `crates/codegg-config/src/schema.rs` (`EggworkNodeProfile`,
+  `EggworkIsolationPolicy`, `EggworkNetworkPolicy`).
+- `crates/eggwork-test-node` is workspace-excluded with its own lockfile:
+  `Cargo.toml` (`exclude`).

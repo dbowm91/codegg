@@ -21,7 +21,9 @@ apply_patch = "deny"
 lsp_preview_apply = "deny"
 bash = "deny"
 terminal = "deny"
-python = "deny"
+# The Python tool is `python_script` (`src/python_script/tool.rs`). There is no
+# tool named `python`; an earlier `python = "deny"` entry denied nothing and
+# read as though it did.
 python_script = "deny"
 git = "deny"
 commit = "deny"
@@ -30,7 +32,9 @@ goal_get = "deny"
 goal_update_progress = "deny"
 goal_request_completion = "deny"
 question = "deny"
-permission = "deny"
+# There is no tool named `permission`; the human-interaction tool is
+# `question`, denied above. The earlier `permission = "deny"` entry denied
+# nothing and read as though it did.
 test = "deny"
 repo_fetch = "deny"
 research = "deny"

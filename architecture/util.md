@@ -143,3 +143,12 @@ Verified 2026-10-06 against `src/util/` (7 modules: `clipboard.rs`, `fuzzy.rs`,
   `ModelPricing` (`pricing.rs:7`), `PricingService` (`pricing.rs:20`),
   `StringInterner` (`interner.rs:6`), `tool_interner()` (`interner.rs:41`),
   and the substring-containment pricing fallback (`pricing.rs:241`-`:250`).
+
+Re-verified 2026-10-23 against source; every line reference above still lands
+on the construct it names (`truncate.rs:32`/`:46`, `metrics.rs:115`/`:120`/
+`:126`/`:133`, `pricing.rs:241`-`:250`, `interner.rs:41`, `fuzzy.rs:37`,
+`clipboard.rs:19` and `:26`). The module set is unchanged — 7 modules under
+`src/util/` — and `arboard` remains a default-on optional dependency declared
+with `default-features = false` (text clipboard only, no image-data stack),
+with `strsim` supplying the Levenshtein distance behind `fuzzy_match`. No
+correction was required.

@@ -726,6 +726,10 @@ impl ProjectionReducer {
                 turn_id,
                 message,
                 failed_at,
+                // The failure class and the usage provenance are metadata
+                // for consumers of the event stream; the reducer's snapshot
+                // has no field for either and must not invent one.
+                ..
             } => {
                 let Some(turn) = snapshot.active_turn.as_mut() else {
                     return self.record_diagnostic(

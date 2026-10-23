@@ -1,0 +1,1903 @@
+{
+  "baseline_binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+  "baseline_budget": {
+    "cost_usd": null,
+    "exhausted_cap": null,
+    "input_tokens": 126395,
+    "output_tokens": 3562,
+    "provider_requests": 6,
+    "total_tokens": 129957
+  },
+  "candidate_binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+  "candidate_budget": {
+    "cost_usd": null,
+    "exhausted_cap": null,
+    "input_tokens": 131900,
+    "output_tokens": 3229,
+    "provider_requests": 6,
+    "total_tokens": 135129
+  },
+  "cases": [
+    {
+      "baseline": {
+        "agent": "build",
+        "binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 21392,
+          "output_tokens": 575,
+          "provider_requests": 1,
+          "total_tokens": 21967
+        },
+        "case_id": "read-search-patch-rust",
+        "daemon_stop_error": null,
+        "duration_ms": 19928,
+        "family": "read_search_patch",
+        "group_id": "read-search-patch-rust",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 21392,
+          "output_tokens": 575,
+          "reasoning_tokens": null,
+          "turn_id": "turn-c4d2545f-164b-4770-8143-f160e20d14a1"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "61c02077ba9f9ef802621b8c39edfa16a889c5e9",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 13,
+        "tool_calls": [
+          {
+            "arguments_sha256": "b84252d2febcb81aa20c5e993fde91bc2a0a8557a3cd3389567f88af6851e7b3",
+            "index": 0,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "24b74e521322db0447a11e2a8e29f810ba7726820380fa037d384bcc72f00d7a",
+            "index": 1,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "8751e402b6edd339a128a4c8c94a45c97ec8db29a8a70aa561888c7e85491624",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "c71661edb86d81faede4976c95153a030622d631ba05dfc0410cdf13ee9d6b31",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 4,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "b39107559ca61910cc97548ff5960f380a37e6ab82e8234c0863019a0a454473",
+            "index": 5,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "8751e402b6edd339a128a4c8c94a45c97ec8db29a8a70aa561888c7e85491624",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "2ced5aff0e325ff178081211afa29f131da4af780438bb842b15217a8b950962",
+            "index": 7,
+            "status": "completed",
+            "tool": "test"
+          },
+          {
+            "arguments_sha256": "3120bda1bc461af98742bc51b915448729d1b5356ef8474c6fb852da3b96ee65",
+            "index": 8,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "b1a61f0f5e8ef99f18b5b5e705d6f2e3491c2a4247b1f679f5e4518c74b50092",
+            "index": 9,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "80dff910b10d38fd46990795c1d40c93a1be7abf45267b623b9095d5f37272e3",
+            "index": 10,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "2802107e18ad707b3097dab165d135ad546cda3d89b65bffe4656a7cb78433bf",
+            "index": 11,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "687ebc8cfd7f594d56801b350cac30c2db4953a671b6db24e47b484856b07f50",
+            "index": 12,
+            "status": "completed",
+            "tool": "terminal"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 1672,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_given_files_were_not_edited (test_parser_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_the_hidden_contract_test_passes (test_parser_contract.RustCaseTests.test_the_hidden_contract_test_passes) ... ok\ntest_the_provided_test_passes (test_parser_contract.RustCaseTests.test_the_provided_test_passes) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 1.401s\n\nOK",
+          "tests_run": 3,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "candidate": {
+        "agent": "build",
+        "binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 21552,
+          "output_tokens": 666,
+          "provider_requests": 1,
+          "total_tokens": 22218
+        },
+        "case_id": "read-search-patch-rust",
+        "daemon_stop_error": null,
+        "duration_ms": 45185,
+        "family": "read_search_patch",
+        "group_id": "read-search-patch-rust",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 21552,
+          "output_tokens": 666,
+          "reasoning_tokens": null,
+          "turn_id": "turn-7e5e9435-f289-4cbc-8ffb-c29874725fab"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "e8cf1587ba714cb5dc8a0522b3985d72b8b447b5",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 14,
+        "tool_calls": [
+          {
+            "arguments_sha256": "b84252d2febcb81aa20c5e993fde91bc2a0a8557a3cd3389567f88af6851e7b3",
+            "index": 0,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "c71661edb86d81faede4976c95153a030622d631ba05dfc0410cdf13ee9d6b31",
+            "index": 1,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "3e1f333d35da041b2dee267f4702495bb34f57769d48bca2fa62fef33d048781",
+            "index": 2,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "24b74e521322db0447a11e2a8e29f810ba7726820380fa037d384bcc72f00d7a",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "8751e402b6edd339a128a4c8c94a45c97ec8db29a8a70aa561888c7e85491624",
+            "index": 4,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 5,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "80dff910b10d38fd46990795c1d40c93a1be7abf45267b623b9095d5f37272e3",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "b39107559ca61910cc97548ff5960f380a37e6ab82e8234c0863019a0a454473",
+            "index": 7,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "2ced5aff0e325ff178081211afa29f131da4af780438bb842b15217a8b950962",
+            "index": 8,
+            "status": "completed",
+            "tool": "test"
+          },
+          {
+            "arguments_sha256": "e5c3f8dba1360d357315ddc2242122428be9578c1b8a6e6adcdc6aae9850672e",
+            "index": 9,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "f1cc9a20bb04836af9e2f86c4422ad72d9d10f675bdd68cc0dd14f42259ee290",
+            "index": 10,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "8751e402b6edd339a128a4c8c94a45c97ec8db29a8a70aa561888c7e85491624",
+            "index": 11,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "5c440096f468fc349385a42067888b73da8ae76545e7965e43532afe0ed08af1",
+            "index": 12,
+            "status": "completed",
+            "tool": "verify"
+          },
+          {
+            "arguments_sha256": "bba7e6b0a03b0c2fffda7a71a05cb584abad79cf84ceb059987869ac5efb6d69",
+            "index": 13,
+            "status": "completed",
+            "tool": "bash"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 1859,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_given_files_were_not_edited (test_parser_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_the_hidden_contract_test_passes (test_parser_contract.RustCaseTests.test_the_hidden_contract_test_passes) ... ok\ntest_the_provided_test_passes (test_parser_contract.RustCaseTests.test_the_provided_test_passes) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 1.601s\n\nOK",
+          "tests_run": 3,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "case_id": "read-search-patch-rust",
+      "group_id": "read-search-patch-rust",
+      "protected": false,
+      "repeated_identical_failure": {
+        "baseline": false,
+        "candidate": false
+      }
+    },
+    {
+      "baseline": {
+        "agent": "build",
+        "binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 40716,
+          "output_tokens": 1174,
+          "provider_requests": 2,
+          "total_tokens": 41890
+        },
+        "case_id": "read-search-patch-python",
+        "daemon_stop_error": null,
+        "duration_ms": 26454,
+        "family": "read_search_patch",
+        "group_id": "read-search-patch-python",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 19324,
+          "output_tokens": 599,
+          "reasoning_tokens": null,
+          "turn_id": "turn-9340a729-73f0-4280-96e8-33f93c4ae8bd"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "61c02077ba9f9ef802621b8c39edfa16a889c5e9",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 9,
+        "tool_calls": [
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "691f1235c6e1c5088be22fa8ca4361a497de6457b6fe9057aed2a27f0a7a7de5",
+            "index": 1,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "a97669f78672bc0ba96724e5f072dc328efad4cb3496dce354c8f4b9ef93f7a8",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "143ca7c3e4836f6eb64087cb2229a5bd9865c340e5fe64e759646a23f7a16c86",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "0bcc255306e86540b418b37f6d106a37f3c8b31649f51c119b3091af5a768691",
+            "index": 4,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "629f41fb9f10f1ee45faddd9c8aaca5f495e7e3fa8f0aeee0c19490e6c8e22b7",
+            "index": 5,
+            "status": "completed",
+            "tool": "test"
+          },
+          {
+            "arguments_sha256": "10515ff6cde6fec8a2fb8c0fd08b935965fe6dae31feb0e52cf25718e34c477c",
+            "index": 6,
+            "status": "completed",
+            "tool": "python_script"
+          },
+          {
+            "arguments_sha256": "ebb0a731930e373ae13dcbeb8bc5047b0abf272149346776e3c19c482ba2b610",
+            "index": 7,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "arguments_sha256": "691f1235c6e1c5088be22fa8ca4361a497de6457b6fe9057aed2a27f0a7a7de5",
+            "index": 8,
+            "status": "completed",
+            "tool": "read"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 222,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_given_files_were_not_edited (test_parser_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_a_plain_record_keeps_every_field (test_parser_contract.ParserContractTests.test_a_plain_record_keeps_every_field) ... ok\ntest_a_trailing_empty_field_is_significant (test_parser_contract.ParserContractTests.test_a_trailing_empty_field_is_significant) ... ok\ntest_an_empty_record_is_one_empty_field (test_parser_contract.ParserContractTests.test_an_empty_record_is_one_empty_field) ... ok\ntest_an_interior_empty_field_is_kept (test_parser_contract.ParserContractTests.test_an_interior_empty_field_is_kept) ... ok\ntest_surrounding_whitespace_is_normalized (test_parser_contract.ParserContractTests.test_surrounding_whitespace_is_normalized) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.006s\n\nOK",
+          "tests_run": 6,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "candidate": {
+        "agent": "build",
+        "binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 42637,
+          "output_tokens": 1000,
+          "provider_requests": 2,
+          "total_tokens": 43637
+        },
+        "case_id": "read-search-patch-python",
+        "daemon_stop_error": null,
+        "duration_ms": 35848,
+        "family": "read_search_patch",
+        "group_id": "read-search-patch-python",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 21085,
+          "output_tokens": 334,
+          "reasoning_tokens": null,
+          "turn_id": "turn-360d5ccd-11a4-4712-83dc-3f79d2d81ae3"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "e8cf1587ba714cb5dc8a0522b3985d72b8b447b5",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 12,
+        "tool_calls": [
+          {
+            "arguments_sha256": "691f1235c6e1c5088be22fa8ca4361a497de6457b6fe9057aed2a27f0a7a7de5",
+            "index": 0,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "44edbfa317c25e171d1fb70e98898475cf8aaf6de8789d44d7a4344a63d7ce37",
+            "index": 1,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 2,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "a97669f78672bc0ba96724e5f072dc328efad4cb3496dce354c8f4b9ef93f7a8",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "143ca7c3e4836f6eb64087cb2229a5bd9865c340e5fe64e759646a23f7a16c86",
+            "index": 4,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "95d9ac09a16a8b32f347685b039863b4094f26c8f9224a93aa941e0d6fcdaba4",
+            "index": 5,
+            "status": "completed",
+            "tool": "apply_patch"
+          },
+          {
+            "arguments_sha256": "cb0b9389d88cc96e22fe4805deb6dec8acbee6fefa8c6c39ba2685e7a844c497",
+            "index": 6,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "6090a1d209f365888688fbcc4c42772c17b147f7e593acd3b21f3455fcee5270",
+            "index": 7,
+            "status": "completed",
+            "tool": "apply_patch"
+          },
+          {
+            "arguments_sha256": "691f1235c6e1c5088be22fa8ca4361a497de6457b6fe9057aed2a27f0a7a7de5",
+            "index": 8,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "73b9f1e7bbb31a0eb84d9aab3c66caf1c9918ccbd361a09f85bccffec4bbd8c1",
+            "index": 9,
+            "status": "completed",
+            "tool": "test"
+          },
+          {
+            "arguments_sha256": "539763a603ab099d4abf63eeffb4344fabd7b95d64cf0f1c6cfa3421da9d46f4",
+            "index": 10,
+            "status": "completed",
+            "tool": "python_script"
+          },
+          {
+            "arguments_sha256": "ea1c51458759c8956c4b85764151e344165b79667fd64782c4738d17f468b42e",
+            "index": 11,
+            "status": "completed",
+            "tool": "test"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 219,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_given_files_were_not_edited (test_parser_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_a_plain_record_keeps_every_field (test_parser_contract.ParserContractTests.test_a_plain_record_keeps_every_field) ... ok\ntest_a_trailing_empty_field_is_significant (test_parser_contract.ParserContractTests.test_a_trailing_empty_field_is_significant) ... ok\ntest_an_empty_record_is_one_empty_field (test_parser_contract.ParserContractTests.test_an_empty_record_is_one_empty_field) ... ok\ntest_an_interior_empty_field_is_kept (test_parser_contract.ParserContractTests.test_an_interior_empty_field_is_kept) ... ok\ntest_surrounding_whitespace_is_normalized (test_parser_contract.ParserContractTests.test_surrounding_whitespace_is_normalized) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.003s\n\nOK",
+          "tests_run": 6,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "case_id": "read-search-patch-python",
+      "group_id": "read-search-patch-python",
+      "protected": false,
+      "repeated_identical_failure": {
+        "baseline": false,
+        "candidate": false
+      }
+    },
+    {
+      "baseline": {
+        "agent": "build",
+        "binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 64337,
+          "output_tokens": 1577,
+          "provider_requests": 3,
+          "total_tokens": 65914
+        },
+        "case_id": "compile-debug-rust",
+        "daemon_stop_error": null,
+        "duration_ms": 65844,
+        "family": "compile_debug",
+        "group_id": "compile-debug-rust",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 23621,
+          "output_tokens": 403,
+          "reasoning_tokens": null,
+          "turn_id": "turn-2cac356a-6be7-41f7-ae93-449b0056154d"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "61c02077ba9f9ef802621b8c39edfa16a889c5e9",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 20,
+        "tool_calls": [
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "80dff910b10d38fd46990795c1d40c93a1be7abf45267b623b9095d5f37272e3",
+            "index": 1,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "b84252d2febcb81aa20c5e993fde91bc2a0a8557a3cd3389567f88af6851e7b3",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "53f65f7db6bd58bb025433a79c13c5a5dcf6636c2cce1ae8c959eb16b7da63e0",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "dd000bb4928f46b11c0dfae0d13a56ec87e496d128b8af295cbbce099d8d1947",
+            "index": 4,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "32d241d8c636de5ae89307f3381cf01de1d35aae0580a12209054e95b395e186",
+            "index": 5,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "757279061b5081554f4f616a77c49f50c602eec9740693b63a4d92009dd3a410",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "830761901b4829e504a27ada92a159fe1f337e893562099c1f6fcb05424ff746",
+            "index": 7,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "arguments_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "index": 8,
+            "status": "completed",
+            "tool": "goal_get"
+          },
+          {
+            "arguments_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "index": 9,
+            "status": "completed",
+            "tool": "work_plan_get"
+          },
+          {
+            "arguments_sha256": "6ee8c2a43e74d54822ee2420d626418993de57a4275add0a242ef8b6a9893f0e",
+            "index": 10,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "65b32f5a57979f450bd0fbd15224fde84b7dfbeab736389cd98544f4a38793c5",
+            "index": 11,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "cf35bacd5facb74c58147c1ba1f42c8b13ae80d23d47fda1740f281ca8ca4813",
+            "index": 12,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "888a8af42de47a56037c1d469e230e1ed4174298973695da9898739ba08772c7",
+            "index": 13,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "a938b4f2efd8389458d23a9bf2c076ed744510a811f276a74d938b30129525a2",
+            "index": 14,
+            "status": "completed",
+            "tool": "verify"
+          },
+          {
+            "arguments_sha256": "a8b3d769411814fd6f860ad8e0d1f460f10c2dd891e9ccc40194356ba70742f8",
+            "index": 15,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "arguments_sha256": "7aa8f64056438f7d29520bf4c2b5d5c202c9eed4ae6c788fed54a9e0b6f24920",
+            "index": 16,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "079c2cd1bb679226c6cc60f2803e05403c8cfd3f7a2dd4890ec0a6fba5529aeb",
+            "index": 17,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "7aa8f64056438f7d29520bf4c2b5d5c202c9eed4ae6c788fed54a9e0b6f24920",
+            "index": 18,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "19ffa800d82face330679ecd562e2960ea69aa9f1644a5396f7194952b74d23e",
+            "index": 19,
+            "status": "completed",
+            "tool": "git_query"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "verifier/verify.py"
+          ],
+          "duration_ms": 1382,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 3 tests\ntest clamp_into_picks_the_matching_bound_for_out_of_range_values ... ok\ntest inclusive_len_counts_both_endpoints_for_other_spans ... ok\ntest parse_spec_rejects_signed_and_non_numeric_bounds ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nPASS: the candidate crate compiles and honours the documented contract.",
+          "tests_run": null,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "candidate": {
+        "agent": "build",
+        "binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 71565,
+          "output_tokens": 1488,
+          "provider_requests": 3,
+          "total_tokens": 73053
+        },
+        "case_id": "compile-debug-rust",
+        "daemon_stop_error": null,
+        "duration_ms": 86605,
+        "family": "compile_debug",
+        "group_id": "compile-debug-rust",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 28928,
+          "output_tokens": 488,
+          "reasoning_tokens": null,
+          "turn_id": "turn-a567ed2d-7bc5-4c67-8f89-8d00b40ca309"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "e8cf1587ba714cb5dc8a0522b3985d72b8b447b5",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 23,
+        "tool_calls": [
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "80dff910b10d38fd46990795c1d40c93a1be7abf45267b623b9095d5f37272e3",
+            "index": 1,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "b84252d2febcb81aa20c5e993fde91bc2a0a8557a3cd3389567f88af6851e7b3",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "53f65f7db6bd58bb025433a79c13c5a5dcf6636c2cce1ae8c959eb16b7da63e0",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "dd000bb4928f46b11c0dfae0d13a56ec87e496d128b8af295cbbce099d8d1947",
+            "index": 4,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "32d241d8c636de5ae89307f3381cf01de1d35aae0580a12209054e95b395e186",
+            "index": 5,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "757279061b5081554f4f616a77c49f50c602eec9740693b63a4d92009dd3a410",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "149f90f6725a992bd48493a4c8f7b8152deb510d5775f1261ae740b11a64b7bf",
+            "index": 7,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "arguments_sha256": "5c440096f468fc349385a42067888b73da8ae76545e7965e43532afe0ed08af1",
+            "index": 8,
+            "status": "completed",
+            "tool": "verify"
+          },
+          {
+            "arguments_sha256": "eb51d8d2a64ff5c1095a27a8ebf76e8771e9582013d32cc50fd5bdda05be893b",
+            "index": 9,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "050447f6d3d3ad9b5288a46937b6f66d0d79b8264218d516232afdd27468d7af",
+            "index": 10,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "0d1327f9e2c3a18ba20dfa59a9bb8f1a57df8c04b1edca79ae6f82cb1d80c8e1",
+            "index": 11,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "ce5d1536281b5c39c08adce7e08f3563ca0a29ff82c4d6b0fbaec3067c28d39f",
+            "index": 12,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "cfea7a1491fc0e68f55f4f410b3d4030e195f02deb79c967a6498a95815b2d35",
+            "index": 13,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "ca34bd90ad28fc81658c870f2f1c9579ddcd6932b5468bfb99979823a8bc5ca3",
+            "index": 14,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "6ee8c2a43e74d54822ee2420d626418993de57a4275add0a242ef8b6a9893f0e",
+            "index": 15,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "9d27546725c8ef626a0c7c94e188707fc9fb4aad1f7f30eee375c914b399514c",
+            "index": 16,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "65a3f00283412daa3fd759e7694926b7140b227bb163fffaa47a70ffc54b5a37",
+            "index": 17,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "cf35bacd5facb74c58147c1ba1f42c8b13ae80d23d47fda1740f281ca8ca4813",
+            "index": 18,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "888a8af42de47a56037c1d469e230e1ed4174298973695da9898739ba08772c7",
+            "index": 19,
+            "status": "completed",
+            "tool": "edit"
+          },
+          {
+            "arguments_sha256": "86109bf5487dc7612f45e623df6d1a864ad63de568cd2017cb073baf7f18a56c",
+            "index": 20,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "07bfbe83fb07dd4b7d8debed5c0b5e15839928829af85491b879599935f190b3",
+            "index": 21,
+            "status": "completed",
+            "tool": "terminal"
+          },
+          {
+            "arguments_sha256": "5df9df3871fb5ab7f36c4eed982eaaf1275a91f9cb4fc793e97005987a4706f0",
+            "index": 22,
+            "status": "completed",
+            "tool": "terminal"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "verifier/verify.py"
+          ],
+          "duration_ms": 1592,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 3 tests\ntest parse_spec_rejects_signed_and_non_numeric_bounds ... ok\ntest clamp_into_picks_the_matching_bound_for_out_of_range_values ... ok\ntest inclusive_len_counts_both_endpoints_for_other_spans ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nPASS: the candidate crate compiles and honours the documented contract.",
+          "tests_run": null,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "case_id": "compile-debug-rust",
+      "group_id": "compile-debug-rust",
+      "protected": false,
+      "repeated_identical_failure": {
+        "baseline": false,
+        "candidate": false
+      }
+    },
+    {
+      "baseline": {
+        "agent": "build",
+        "binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 85454,
+          "output_tokens": 1997,
+          "provider_requests": 4,
+          "total_tokens": 87451
+        },
+        "case_id": "background-job-wait",
+        "daemon_stop_error": null,
+        "duration_ms": 126099,
+        "family": "background_job",
+        "group_id": "background-job-wait",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 21117,
+          "output_tokens": 420,
+          "reasoning_tokens": null,
+          "turn_id": "turn-3406d262-a261-4154-8c0a-59764d21c8b3"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "61c02077ba9f9ef802621b8c39edfa16a889c5e9",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 14,
+        "tool_calls": [
+          {
+            "arguments_sha256": "4ae486c3a48f8dc732af672b138b438a1d96960304cc334d46bbc2687d169cbb",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "5e4a26324177bf7e57dcc3f7feb6f238a648d7285e384bbc1350cdaca5e43908",
+            "index": 1,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "454ada977360982c24fcd67ba5d90f5493c03cc6a3aeb86eccb005477ebb8916",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "3e1f333d35da041b2dee267f4702495bb34f57769d48bca2fa62fef33d048781",
+            "index": 4,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "e43c68147693f7c2254738c320f573da4f73700e2c2dd0e4b6e1ab52794e7022",
+            "index": 5,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "9bea50e4d7deb6cbe34d90f498737991c3a94071efa31cc224c4fa9bf1e2f119",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "4f4a5f4ccf6e88675e952ea678369e447c8e76f5c7d50a74f2aea68191afd253",
+            "index": 7,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "3f36831d0820d1532b5dfc5b8600953ec91b7d978e24104325dec07c823c0d4d",
+            "index": 8,
+            "status": "completed",
+            "tool": "job"
+          },
+          {
+            "arguments_sha256": "53f859b43062b65ddb522243dc91ea7bb2477367e4aa211f2a7e6e08efca4ea7",
+            "index": 9,
+            "status": "completed",
+            "tool": "job"
+          },
+          {
+            "arguments_sha256": "4f00ba940b69500c63e7f207ce0ba24fee4f771a9fa1d4c5e5219ba329cf8e71",
+            "index": 10,
+            "status": "completed",
+            "tool": "job"
+          },
+          {
+            "arguments_sha256": "421de87a39c02f52776dee3409dd9758713a90357d3b08ec299784fe495f5b0c",
+            "index": 11,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "e0c1b25b69519e5d9f3a6a6746908dade73add4912fb91b863be77e3cf028bbb",
+            "index": 12,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "38d9383d0229244cf7eb8eb5da1e6322a82b66f157b3d6ec3313f8052e2bea64",
+            "index": 13,
+            "status": "completed",
+            "tool": "read"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 249,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_build_produced_its_result_artifact (test_background_job_contract.BuildArtifactTests.test_the_build_produced_its_result_artifact) ... ok\ntest_the_given_files_were_not_edited (test_background_job_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_the_agent_observed_the_background_job_with_the_job_tool (test_background_job_contract.TranscriptContractTests.test_the_agent_observed_the_background_job_with_the_job_tool) ... ok\ntest_the_build_was_started_with_a_shell_command (test_background_job_contract.TranscriptContractTests.test_the_build_was_started_with_a_shell_command) ... ok\ntest_the_slow_build_was_not_reported_as_a_stall (test_background_job_contract.TranscriptContractTests.test_the_slow_build_was_not_reported_as_a_stall) ... ok\ntest_the_trial_transcript_is_present_and_parsable (test_background_job_contract.TranscriptContractTests.test_the_trial_transcript_is_present_and_parsable) ... ok\ntest_the_waiting_time_was_used_to_read_the_project (test_background_job_contract.TranscriptContractTests.test_the_waiting_time_was_used_to_read_the_project) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.005s\n\nOK",
+          "tests_run": 7,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "candidate": {
+        "agent": "build",
+        "binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 93078,
+          "output_tokens": 2110,
+          "provider_requests": 4,
+          "total_tokens": 95188
+        },
+        "case_id": "background-job-wait",
+        "daemon_stop_error": null,
+        "duration_ms": 134102,
+        "family": "background_job",
+        "group_id": "background-job-wait",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 21513,
+          "output_tokens": 622,
+          "reasoning_tokens": null,
+          "turn_id": "turn-0967f8fc-909e-4b9e-b237-18d2b87f632e"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "e8cf1587ba714cb5dc8a0522b3985d72b8b447b5",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 15,
+        "tool_calls": [
+          {
+            "arguments_sha256": "4ae486c3a48f8dc732af672b138b438a1d96960304cc334d46bbc2687d169cbb",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "185b03d1cd318891aff7d2665d447fda44d6497958098e52df86420613ca977a",
+            "index": 1,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "454ada977360982c24fcd67ba5d90f5493c03cc6a3aeb86eccb005477ebb8916",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "3e1f333d35da041b2dee267f4702495bb34f57769d48bca2fa62fef33d048781",
+            "index": 4,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "e43c68147693f7c2254738c320f573da4f73700e2c2dd0e4b6e1ab52794e7022",
+            "index": 5,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "9bea50e4d7deb6cbe34d90f498737991c3a94071efa31cc224c4fa9bf1e2f119",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "4f4a5f4ccf6e88675e952ea678369e447c8e76f5c7d50a74f2aea68191afd253",
+            "index": 7,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "38d9383d0229244cf7eb8eb5da1e6322a82b66f157b3d6ec3313f8052e2bea64",
+            "index": 8,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "071820ccd80ad414bb66d7c49883edb932ea3e28071311641725bc4adf10de8e",
+            "index": 9,
+            "status": "completed",
+            "tool": "job"
+          },
+          {
+            "arguments_sha256": "1cd6c586a62a66d902507c636bb04855b94d724b583ab8aa2a0efb4e0cf5fec0",
+            "index": 10,
+            "status": "completed",
+            "tool": "job"
+          },
+          {
+            "arguments_sha256": "ef55437c5a08cec97a3ce2f971cd607e6f90861c859edc71686856c5830d9a7b",
+            "index": 11,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "063500971f9153d466d3c1f34e5c411dbb8c78afa80ad8fea7242e090abd96ac",
+            "index": 12,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "e0c1b25b69519e5d9f3a6a6746908dade73add4912fb91b863be77e3cf028bbb",
+            "index": 13,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "1841bafc640874928ccb1c6b9a5778ec2365270b90e84f87e453fc39bbfb82d5",
+            "index": 14,
+            "status": "completed",
+            "tool": "job"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 282,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_build_produced_its_result_artifact (test_background_job_contract.BuildArtifactTests.test_the_build_produced_its_result_artifact) ... ok\ntest_the_given_files_were_not_edited (test_background_job_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_the_agent_observed_the_background_job_with_the_job_tool (test_background_job_contract.TranscriptContractTests.test_the_agent_observed_the_background_job_with_the_job_tool) ... ok\ntest_the_build_was_started_with_a_shell_command (test_background_job_contract.TranscriptContractTests.test_the_build_was_started_with_a_shell_command) ... ok\ntest_the_slow_build_was_not_reported_as_a_stall (test_background_job_contract.TranscriptContractTests.test_the_slow_build_was_not_reported_as_a_stall) ... ok\ntest_the_trial_transcript_is_present_and_parsable (test_background_job_contract.TranscriptContractTests.test_the_trial_transcript_is_present_and_parsable) ... ok\ntest_the_waiting_time_was_used_to_read_the_project (test_background_job_contract.TranscriptContractTests.test_the_waiting_time_was_used_to_read_the_project) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.007s\n\nOK",
+          "tests_run": 7,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "case_id": "background-job-wait",
+      "group_id": "background-job-wait",
+      "protected": false,
+      "repeated_identical_failure": {
+        "baseline": false,
+        "candidate": false
+      }
+    },
+    {
+      "baseline": {
+        "agent": "build",
+        "binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 109036,
+          "output_tokens": 2833,
+          "provider_requests": 5,
+          "total_tokens": 111869
+        },
+        "case_id": "repeated-distinct-tool-calls",
+        "daemon_stop_error": null,
+        "duration_ms": 30868,
+        "family": "repeated_tool_calls",
+        "group_id": "repeated-tool-calls",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 23582,
+          "output_tokens": 836,
+          "reasoning_tokens": null,
+          "turn_id": "turn-215fe8b2-646b-432b-aa14-73c5f99dfbb4"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "61c02077ba9f9ef802621b8c39edfa16a889c5e9",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 9,
+        "tool_calls": [
+          {
+            "arguments_sha256": "4ae486c3a48f8dc732af672b138b438a1d96960304cc334d46bbc2687d169cbb",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "161e00cf7636bd8f9aa3c154787010c20065d7fc1705d4f38a160f9b51e3c85e",
+            "index": 1,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "arguments_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "index": 2,
+            "status": "completed",
+            "tool": "goal_get"
+          },
+          {
+            "arguments_sha256": "6af46d4fcaff2d2d1f50be703e438b751b0342bce2e6f56329c75844d77a6475",
+            "index": 3,
+            "status": "completed",
+            "tool": "tool_search"
+          },
+          {
+            "arguments_sha256": "408b3b6185bc0f9ebc99085bb3e3b78bca03b5ae7fb803af10826ba980fbec74",
+            "index": 4,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "03e4e9723ba82051a26b919f452febade3a15d6eee4e82a615cd97d00b46b4d1",
+            "index": 5,
+            "status": "completed",
+            "tool": "grep"
+          },
+          {
+            "arguments_sha256": "d0f72f0b89c5ed3ebc01d056b74dc89c96ba880e96beb5faa030bf75f2f4ffe9",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "2eb74ab037002786d37055d79ca1cfed6903396d55e3b2759c6c5cdecde757a6",
+            "index": 7,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "2ced5aff0e325ff178081211afa29f131da4af780438bb842b15217a8b950962",
+            "index": 8,
+            "status": "completed",
+            "tool": "test"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 220,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_given_files_were_not_edited (test_distinct_calls_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_no_single_call_was_attempted_more_than_twice (test_distinct_calls_contract.TranscriptCaseTests.test_no_single_call_was_attempted_more_than_twice) ... ok\ntest_the_transcript_is_present_and_parses (test_distinct_calls_contract.TranscriptCaseTests.test_the_transcript_is_present_and_parses) ... ok\ntest_the_trial_completed_instead_of_stopping_as_a_stall (test_distinct_calls_contract.TranscriptCaseTests.test_the_trial_completed_instead_of_stopping_as_a_stall) ... ok\ntest_the_trial_made_at_least_five_distinct_calls (test_distinct_calls_contract.TranscriptCaseTests.test_the_trial_made_at_least_five_distinct_calls) ... ok\ntest_the_trial_used_at_least_three_distinct_tools (test_distinct_calls_contract.TranscriptCaseTests.test_the_trial_used_at_least_three_distinct_tools) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.005s\n\nOK",
+          "tests_run": 6,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "candidate": {
+        "agent": "build",
+        "binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 114596,
+          "output_tokens": 2936,
+          "provider_requests": 5,
+          "total_tokens": 117532
+        },
+        "case_id": "repeated-distinct-tool-calls",
+        "daemon_stop_error": null,
+        "duration_ms": 63194,
+        "family": "repeated_tool_calls",
+        "group_id": "repeated-tool-calls",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": false,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 21518,
+          "output_tokens": 826,
+          "reasoning_tokens": null,
+          "turn_id": "turn-1a168b65-03a6-4bab-9b17-08f12e36f9d6"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": true,
+        "source_revision": "e8cf1587ba714cb5dc8a0522b3985d72b8b447b5",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 11,
+        "tool_calls": [
+          {
+            "arguments_sha256": "4ae486c3a48f8dc732af672b138b438a1d96960304cc334d46bbc2687d169cbb",
+            "index": 0,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "3e1f333d35da041b2dee267f4702495bb34f57769d48bca2fa62fef33d048781",
+            "index": 1,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+            "index": 2,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "d0f72f0b89c5ed3ebc01d056b74dc89c96ba880e96beb5faa030bf75f2f4ffe9",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "6c7521322171d4cbc2057b87ad485a2601e4f2097a26c2f039d42ea1e64a0e63",
+            "index": 4,
+            "status": "completed",
+            "tool": "grep"
+          },
+          {
+            "arguments_sha256": "4f593439b508b87a43c92619464db69299d3a1850eaf021d61729542e9dd0e90",
+            "index": 5,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "2eb74ab037002786d37055d79ca1cfed6903396d55e3b2759c6c5cdecde757a6",
+            "index": 6,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "ee2855d1c35a65ad48af32f1c737f0ef7b4f1dd8390f49156ab2ab309a158993",
+            "index": 7,
+            "status": "completed",
+            "tool": "test"
+          },
+          {
+            "arguments_sha256": "ebb0a731930e373ae13dcbeb8bc5047b0abf272149346776e3c19c482ba2b610",
+            "index": 8,
+            "status": "completed",
+            "tool": "bash"
+          },
+          {
+            "arguments_sha256": "c91023848e4680ccbd6a83cfa342452fd05e33c6d51f4f451136627b3bd068c1",
+            "index": 9,
+            "status": "completed",
+            "tool": "python_script"
+          },
+          {
+            "arguments_sha256": "4e670d7ad7dc783cf6cf1a140bc242296cfa8131a4fe2df2639824253d60efd0",
+            "index": 10,
+            "status": "completed",
+            "tool": "read"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 253,
+          "exit_code": 0,
+          "failure_summary": null,
+          "output_tail": "test_the_given_files_were_not_edited (test_distinct_calls_contract.FrozenFixtureTests.test_the_given_files_were_not_edited) ... ok\ntest_no_single_call_was_attempted_more_than_twice (test_distinct_calls_contract.TranscriptCaseTests.test_no_single_call_was_attempted_more_than_twice) ... ok\ntest_the_transcript_is_present_and_parses (test_distinct_calls_contract.TranscriptCaseTests.test_the_transcript_is_present_and_parses) ... ok\ntest_the_trial_completed_instead_of_stopping_as_a_stall (test_distinct_calls_contract.TranscriptCaseTests.test_the_trial_completed_instead_of_stopping_as_a_stall) ... ok\ntest_the_trial_made_at_least_five_distinct_calls (test_distinct_calls_contract.TranscriptCaseTests.test_the_trial_made_at_least_five_distinct_calls) ... ok\ntest_the_trial_used_at_least_three_distinct_tools (test_distinct_calls_contract.TranscriptCaseTests.test_the_trial_used_at_least_three_distinct_tools) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.005s\n\nOK",
+          "tests_run": 6,
+          "timed_out": false
+        },
+        "verifier_confirmed": true
+      },
+      "case_id": "repeated-distinct-tool-calls",
+      "group_id": "repeated-tool-calls",
+      "protected": false,
+      "repeated_identical_failure": {
+        "baseline": false,
+        "candidate": false
+      }
+    },
+    {
+      "baseline": {
+        "agent": "build",
+        "binary_sha256": "23fceecb77c0a22129d47cb52b48b5a5421544a254149a230ab17e57800083a0",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 126395,
+          "output_tokens": 3562,
+          "provider_requests": 6,
+          "total_tokens": 129957
+        },
+        "case_id": "repeated-identical-failure-stall",
+        "daemon_stop_error": null,
+        "duration_ms": 16241,
+        "family": "repeated_tool_calls",
+        "group_id": "repeated-tool-calls",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": true,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 17359,
+          "output_tokens": 729,
+          "reasoning_tokens": null,
+          "turn_id": "turn-c0665f22-460b-4395-915f-70674afeb6f0"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": false,
+        "source_revision": "61c02077ba9f9ef802621b8c39edfa16a889c5e9",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 4,
+        "tool_calls": [
+          {
+            "arguments_sha256": "037b16ad0a450db76220023fb657d8433baf0c33d373dab27bb64f2b7c5afe7e",
+            "index": 0,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 1,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "eb517f9a5278fecb8dc1ce085ad8f72d72ef4703ea4556bc23f19434deb5ce53",
+            "index": 2,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 226,
+          "exit_code": 1,
+          "failure_summary": "(failures=2)",
+          "output_tail": "        f\"the trial ended as {terminal!r}: the file the prompt names does \"\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        f\"not exist, so a completed trial credited an impossible task as \"\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        f\"solved\")\n        ^^^^^^^^^^\nAssertionError: 'completed' not found in ('failed', 'timeout', 'cancelled', 'stalled') : the trial ended as 'completed': the file the prompt names does not exist, so a completed trial credited an impossible task as solved\n\n----------------------------------------------------------------------\nRan 5 tests in 0.009s\n\nFAILED (failures=2)",
+          "tests_run": 5,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      "candidate": {
+        "agent": "build",
+        "binary_sha256": "c9f8f9ae41633072566be8e692b9194591284d8caf75844eba3f268aa12b2668",
+        "budget": {
+          "cost_usd": null,
+          "exhausted_cap": null,
+          "input_tokens": 131900,
+          "output_tokens": 3229,
+          "provider_requests": 6,
+          "total_tokens": 135129
+        },
+        "case_id": "repeated-identical-failure-stall",
+        "daemon_stop_error": null,
+        "duration_ms": 8298,
+        "family": "repeated_tool_calls",
+        "group_id": "repeated-tool-calls",
+        "model": "opencode_go/muse-spark-1.3-contributor",
+        "policy_receipt": {
+          "effective": {
+            "approvalMode": "yolo",
+            "revision": "1",
+            "sandbox": "workspace_write"
+          },
+          "requested": {
+            "approvalMode": "yolo",
+            "sandbox": "workspace_write"
+          }
+        },
+        "profile": "workspace-write",
+        "protected": true,
+        "provider_usage": {
+          "cached_tokens": null,
+          "input_tokens": 17304,
+          "output_tokens": 293,
+          "reasoning_tokens": null,
+          "turn_id": "turn-fa038f10-c25f-4773-aa31-be9248e76a05"
+        },
+        "repeated_identical_failure": false,
+        "schema_version": 1,
+        "solved": false,
+        "source_revision": "e8cf1587ba714cb5dc8a0522b3985d72b8b447b5",
+        "stop_reason": "end_turn",
+        "terminal": "completed",
+        "terminal_failure": null,
+        "tool_call_count": 4,
+        "tool_calls": [
+          {
+            "arguments_sha256": "037b16ad0a450db76220023fb657d8433baf0c33d373dab27bb64f2b7c5afe7e",
+            "index": 0,
+            "status": "completed",
+            "tool": "read"
+          },
+          {
+            "arguments_sha256": "a882010639b4186ec8f8988815fa25bd56d926099aec3096bb5b073f799d83e8",
+            "index": 1,
+            "status": "completed",
+            "tool": "list"
+          },
+          {
+            "arguments_sha256": "99650642c0c4e0c6e5a51913d314702433466f41fcc56ee3b53ebad1c1e2470b",
+            "index": 2,
+            "status": "completed",
+            "tool": "context_read"
+          },
+          {
+            "arguments_sha256": "1f2f5c09079d4214089318775bd5cbb72cd8a18170c844302648443f6cef67fb",
+            "index": 3,
+            "status": "completed",
+            "tool": "read"
+          }
+        ],
+        "usage_unavailable_reason": null,
+        "verification": {
+          "command": [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "verifier",
+            "-v"
+          ],
+          "duration_ms": 272,
+          "exit_code": 1,
+          "failure_summary": "(failures=2)",
+          "output_tail": "        f\"the trial ended as {terminal!r}: the file the prompt names does \"\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        f\"not exist, so a completed trial credited an impossible task as \"\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        f\"solved\")\n        ^^^^^^^^^^\nAssertionError: 'completed' not found in ('failed', 'timeout', 'cancelled', 'stalled') : the trial ended as 'completed': the file the prompt names does not exist, so a completed trial credited an impossible task as solved\n\n----------------------------------------------------------------------\nRan 5 tests in 0.010s\n\nFAILED (failures=2)",
+          "tests_run": 5,
+          "timed_out": false
+        },
+        "verifier_confirmed": false
+      },
+      "case_id": "repeated-identical-failure-stall",
+      "group_id": "repeated-tool-calls",
+      "protected": true,
+      "repeated_identical_failure": {
+        "baseline": false,
+        "candidate": false
+      }
+    }
+  ],
+  "comparison": {
+    "baseline_cases": 6,
+    "candidate_cases": 6,
+    "contract_version": 2,
+    "observations": {
+      "baseline": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "measured": true,
+          "value": 28661.0
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "measured": true,
+          "value": 0.0
+        }
+      ],
+      "candidate": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "measured": true,
+          "value": 54189.5
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "measured": true,
+          "value": 0.0
+        }
+      ]
+    },
+    "outcome": {
+      "decision": "rejected",
+      "objective": "none",
+      "protected_violations": [],
+      "reasons": [
+        "no_criterion_improved",
+        "secondary_criterion_regressed",
+        "weighted_score_below_baseline"
+      ],
+      "score": -26.08170914542729
+    },
+    "paired_case_ids": [
+      "background-job-wait",
+      "compile-debug-rust",
+      "read-search-patch-python",
+      "read-search-patch-rust",
+      "repeated-distinct-tool-calls",
+      "repeated-identical-failure-stall"
+    ],
+    "rescored_from_recorded_runs": true
+  },
+  "comparison_as_first_recorded": {
+    "baseline_cases": 6,
+    "candidate_cases": 6,
+    "observations": {
+      "baseline": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "measured": true,
+          "value": 28661.0
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "measured": true,
+          "value": 0.0
+        }
+      ],
+      "candidate": [
+        {
+          "criterion_id": "correctness.pass_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "reliability.success_rate",
+          "measured": true,
+          "value": 1.0
+        },
+        {
+          "criterion_id": "efficiency.duration_ms",
+          "measured": true,
+          "value": 54189.5
+        },
+        {
+          "criterion_id": "control.no_regression",
+          "measured": true,
+          "value": 0.0
+        }
+      ]
+    },
+    "outcome": {
+      "decision": "rejected",
+      "objective": "none",
+      "protected_violations": [],
+      "reasons": [
+        "no_criterion_improved",
+        "secondary_criterion_regressed",
+        "weighted_score_below_baseline"
+      ],
+      "score": -26.08170914542729
+    },
+    "paired_case_ids": [
+      "background-job-wait",
+      "compile-debug-rust",
+      "read-search-patch-python",
+      "read-search-patch-rust",
+      "repeated-distinct-tool-calls",
+      "repeated-identical-failure-stall"
+    ]
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "pairing_note": "Both sides ran the same six supported cases, in the same order, one private lane per case per side, on one approved route and one admitted budget. Each case's solver is the case's own independent verifier, which runs outside the agent's workspace and cannot be read or edited by the agent under test.",
+  "recorded_on": "2026-10-22",
+  "schema_version": 1,
+  "usage_note": "Token counts are the provider's own report for the turn, copied without adjustment. A route that reported no usable counts is recorded as the provider reported it \u2014 the observed total is then zero because nothing was observed, which is not a claim that the route used no tokens. Cost is null on every route: no provider cost field reached the harness, and no estimate is substituted."
+}

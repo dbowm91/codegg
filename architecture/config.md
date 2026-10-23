@@ -17,8 +17,9 @@ in `src/lib.rs`.
 | `crates/codegg-config/src/schema.rs` | Config struct, all type definitions |
 | `crates/codegg-config/src/paths.rs` | Discovery, loading, merging, env interpolation |
 | `crates/codegg-config/src/watcher.rs` | Hot-reload file watching with debounce |
-| `crates/codegg-config/src/encryption.rs` | Master key lookup, encrypt/decrypt provider keys |
+| `crates/codegg-config/src/encryption.rs` | Master key lookup; `encrypt_provider_keys` / `decrypt_provider_keys` are no-ops |
 | `crates/codegg-config/src/error.rs` | ConfigError, AppError types |
+| `crates/codegg-config/src/document.rs` | Document-level config helpers |
 
 ## How It Works
 
@@ -27,9 +28,15 @@ in `src/lib.rs`.
 1. `CODEGG_TUI_CONFIG` environment variable
 2. System config (`/Library/Application Support/codegg/codegg.json` on macOS,
    `/etc/codegg/codegg.json` on Unix, `%ProgramData%/codegg/codegg.json` on Windows)
-3. Global config (`~/.config/codegg/codegg.jsonc`, `codegg.json`, or `config.json`)
-4. Project config (searches upward from `$PWD` for `.codegg/codegg.{jsonc,json}`
-   or `codegg/codegg.{jsonc,json}`)
+3. Global config (`<config_dir>/codegg/codegg.jsonc`, `codegg.json`, or
+   `config.json` — `~/.config/codegg/…` on Linux,
+   `~/Library/Application Support/codegg/…` on macOS)
+4. Project config (searches upward from the process cwd for
+   `.codegg/codegg.{jsonc,json}` or `codegg/codegg.{jsonc,json}`)
+
+Only paths that exist are collected. The project search walks upward one
+parent at a time and tries `.codegg` then `codegg`, `jsonc` then `json`, at
+each level; the first hit wins.
 
 ### Loading Flow
 
@@ -50,36 +57,40 @@ the providers crate (`resolve_provider_credential`) and in the MCP auth store.
 (`encryption.rs:544`/`:549`) are no-ops that exist only for call-site
 compatibility.
 
-### Merge Strategies (`paths.rs:164`, `merge_configs`)
+### Merge Strategies (`paths.rs:172`, `merge_configs`)
 
 Different strategies per field type:
 
 - **Field-by-field**: `provider` (via `ProviderConfig::merge()`),
   `server` (via `ServerConfig::merge()`), `watcher`, `search`,
   `discovery`, `eggwork` (via `EggworkConfig::merge()` per node key,
-  mirroring the `provider` map merge), and the ten optional sections
+  mirroring the `provider` map merge), and the eleven optional sections
   `approval_reviewer`, `command_intent`, `daemon`, `human_shell`,
-  `preflight`, `research`, `scheduler`, `shell`, `tool_backends`,
-  `tool_deferral`, each via its own `merge(&mut self, other: &Self)` in
-  `schema.rs`
+  `preflight`, `research`, `scheduler`, `scratch`, `shell`,
+  `tool_backends`, `tool_deferral`, each via its own
+  `merge(&mut self, other: &Self)` in `schema.rs`
 - **Key replacement**: `agent`, `mcp`, `commands`, `mode`, `model_profile` (insert
   overwrites existing keys)
 - **Key replacement**: `model_routers` (each virtual model key from a later
   config layer replaces the earlier policy)
 - **Concatenation**: `instructions` (appended to list)
-- **Whole-value replace**: `theme`, plus `provider_connections`, `security`,
+- **Whole-value replace**: `theme`, `provider_connections`, `security`,
   and `deterministic_tools`. Those three are replace-only because every one
   of their fields is non-`Option`, so serde bakes the default into the
   struct and field-by-field combination cannot distinguish "unset" from
   "set to the default". See "Merge coverage is enforced" below.
-- **Simple override** (via `merge_option!`): `schema`, `version`, `log_level`,
+  (`security` has one exception: `gates.deny_critical_commands` is carried
+  forward from the layer beneath when the later layer leaves it unset, so
+  the critical-command gate is not silently lost.)
+- **Simple override** (via `merge_option!`, 41 fields):
+  `schema`, `version`, `log_level`,
   `model`, `small_model`, `medium_model`, `auto_route_models`, `default_agent`,
   `username`, `share`, `autoupdate`, `disabled_providers`,
   `enabled_providers`, `permission`, `compaction`, `subagent`, `skills`,
   `templates`, `layout`, `tools`, `formatter`, `lsp`, `lsp_semantic_cache`,
   `snapshot`, `snapshot_config`, `plugin`, `enterprise`, `experimental`,
-  `keybinds`, `vim_mode`, `panel_hotkeys`, `hooks`, `notifications`,
-  `catalog`, `context`,
+  `keybinds`, `vim_mode`, `panel_hotkeys`, `panel_placement`, `hooks`,
+  `notifications`, `catalog`, `context`,
   `context_packer`, `context_policy`, `tool_advisor`, `decision_engine`,
   `orchestration`
 
@@ -111,15 +122,19 @@ but the test is what pins the intended precedence.
 `command_intent`, `daemon`, `deterministic_tools`, `human_shell`, `preflight`,
 `provider_connections`, `research`, `scheduler`, `security`, `shell`,
 `tool_backends`, `tool_deferral` — had no arm at all and were dropped on every
-load, so those config sections were entirely inert. The ten optional sections
-got field-by-field `merge()` impls and the three default-backed sections got
-whole-value replace. Regression coverage is
+load, so those config sections were entirely inert. The ten all-`Option`
+sections got field-by-field `merge()` impls and the three default-backed
+sections got whole-value replace. Regression coverage is
 `test_merge_configs_preserves_single_layer_sections` (parses a single layer
 containing all thirteen and asserts each survives), plus
 `test_merge_configs_combines_optional_sections_field_by_field` and
 `test_merge_configs_replaces_default_backed_sections_whole`.
 
-### ProviderConfig Merge (`schema.rs:1106`)
+`scratch` was added later and follows the field-by-field shape — it is an
+all-`Option` section with its own `merge()`, so it is the eleventh such
+section today.
+
+### ProviderConfig Merge (`schema.rs:1650`)
 
 `decision_engine` is a simple optional override. Its schema defaults to
 disabled, uses `reference` or `ollama` as an explicit compatibility profile,
@@ -165,7 +180,7 @@ has `base_url`, merged result has both.
 
 ## Key Types & APIs
 
-### Config (`schema.rs:218`)
+### Config (`schema.rs:406`)
 
 ```rust
 pub struct Config {
@@ -211,9 +226,11 @@ pub struct Config {
     pub keybinds: Option<HashMap<String, String>>,
     pub vim_mode: Option<bool>,
     pub panel_hotkeys: Option<HashMap<String, String>>,
+    pub panel_placement: Option<String>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
+    pub scratch: Option<ScratchConfig>,
     pub scheduler: Option<SchedulerConfig>,
     pub catalog: Option<CatalogConfig>,
     pub discovery: Option<DiscoveryConfig>,
@@ -239,7 +256,7 @@ pub struct Config {
 }
 ```
 
-### ProviderConfig (`schema.rs:1068`)
+### ProviderConfig (`schema.rs:1612`)
 
 ```rust
 pub struct ProviderConfig {
@@ -250,7 +267,6 @@ pub struct ProviderConfig {
     pub enterprise_url: Option<String>,
     pub set_cache_key: Option<bool>,
     pub timeout: Option<ProviderTimeout>,
-    pub chunk_timeout: Option<u64>,
     pub whitelist: Option<Vec<String>>,
     pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
@@ -271,6 +287,14 @@ authority" in `architecture/provider.md`.
 `api_key(&self, prefix)` checks `{PREFIX}_API_KEY` env var first, then
 inline `api_key` field.
 
+**There is no per-provider chunk deadline, and none is configurable.**
+Per-chunk stream deadlines are owned by the agent layer, which already bounds
+a long stream (`STREAM_SETUP_TIMEOUT` of 120 s for the first event and
+`STREAM_IDLE_TIMEOUT` of 90 s between events). A provider-level deadline
+below the agent's own idle timeout fires first and reports a slow but valid
+stream as a provider error, so no provider sets one — and there is no
+configuration key that could reintroduce one.
+
 ### AuthConfig (`schema.rs:16`)
 
 ```rust
@@ -283,13 +307,13 @@ pub enum AuthConfig {
 }
 ```
 
-### ProviderConnectionsConfig (`schema.rs:385`)
+### ProviderConnectionsConfig (`schema.rs:591`)
 
 Daemon-owned provider-connection refresh policy. Defaults:
 `background_refresh=false`, `max_concurrent_refreshes=1`,
 `global_refresh_cap=4`, `health_stale_after_ms=300000`.
 
-### ServerConfig (`schema.rs:1020`)
+### ServerConfig (`schema.rs:1564`)
 
 ```rust
 pub struct ServerConfig {
@@ -334,6 +358,9 @@ Uses `notify` crate. Content hash deduplication avoids spurious reloads.
 
 ```rust
 pub fn get_master_key() -> Option<String>;
+pub fn get_or_create_master_key() -> Result<ManagedMasterKey, MasterKeyError>;
+pub fn get_or_create_master_key_for_store(fresh: bool) -> Result<ManagedMasterKey, MasterKeyError>;
+pub fn get_or_create_master_key_at(path: &Path, fresh: bool) -> Result<ManagedMasterKey, MasterKeyError>;
 pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
 pub fn decrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
 ```
@@ -344,18 +371,21 @@ the config crate owns master-key resolution only. Provider credential
 encryption is owned by the providers crate (`resolve_provider_credential`),
 and the MCP OAuth token store owns its own `TokenSet` encryption.
 
-Master key lookup order:
+Master key lookup order (`get_master_key`, read-only):
 1. `CODEGG_MASTER_KEY`
 2. `CODEGG_ENCRYPTION_KEY`
 3. `OPENCODE_ENCRYPTION_KEY`
 4. Existing CodeGG-managed key under the user config directory
+
+`CODEGG_MASTER_KEY_FILE` overrides the managed key's **path** (not its
+value).
 
 Protected-store write paths use the corresponding create-on-write resolver:
 if no explicit or managed key exists and the protected store is genuinely
 fresh, CodeGG atomically bootstraps the managed key. Read/decrypt paths never
 create one.
 
-### ModelProfileConfig (`schema.rs:112`)
+### ModelProfileConfig (`schema.rs:293`)
 
 Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `max_output_tokens`, `tool_call_reliability`, `instruction_adherence`,
@@ -366,13 +396,48 @@ Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `default_thinking_budget`, `max_parallel_tools`, `preferred_tools`,
 `disabled_tools`, `task_state_policy`.
 
-### ContextPolicyConfig (`schema.rs:679`)
+`default_reasoning_effort` is an **open, provider-scoped label** (ADR-0049),
+not a level on a closed enum: a vendor label such as `xhigh` or `max` is a
+legitimate value, and it now reaches the provider wire verbatim instead of
+being rejected as an unknown level. The four labels in
+`codegg_protocol::core::KNOWN_REASONING_EFFORT_LABELS` are a convenience set
+for the frontend's fallback cycling order only; they are not the accepted
+value set. The value is bounded (at most 64 bytes) and its shape is checked
+where it is persisted and where it reaches the wire. The effective selection
+for a turn is **explicit turn override ▸ persisted principal preference ▸
+agent / model-profile default**, so a configured label still loses to the
+user's own choice; see `architecture/provider.md`.
+
+`reasoning_capability` is the operator's **per-model reasoning capability
+override** (ADR-0050). It carries the four independent dimensions of the
+capability record — the accepted effort labels, whether reasoning can be
+disabled, whether a fixed thinking budget is accepted (and its bounds), and
+whether the model always reasons — each with a status in the kernel's
+vocabulary (`supported`, `unsupported`, `unknown`, `mixed`, `conflicting`).
+
+The override is authoritative for the dimensions it declares, but it may
+only **narrow** the compiled adapter baseline: the merged accepted-label
+set is the intersection of the two declared sets, so an override can never
+widen a dimension's accepted set beyond what the adapter declares. It may
+establish a dimension the adapter leaves undeclared — that is how an
+operator states what their own deployment accepts. A malformed override is
+refused rather than trusted, and a configuration that contradicts the
+baseline leaves the baseline standing.
+
+An undeclared dimension is `unknown`, not `unsupported`, and the local
+admission policy is **fail-closed**: a selection on a dimension nobody has
+published a contract for is refused at turn admission rather than
+forwarded optimistically. See `architecture/provider.md` for the record's
+shape and the admission policy, and `architecture/model-adapters.md` for
+the shipped baseline.
+
+### ContextPolicyConfig (`schema.rs:1025`)
 
 Gated active context policy. First use: tool-palette reduction driven
 by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
 `Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-### SearchConfig (`schema.rs:790`)
+### SearchConfig (`schema.rs:1308`)
 
 Web search/fetch backend: `backend` (Eggsearch/Disabled),
 `expose_raw_mcp_tools`, output caps per domain, and the `eggsearch`
@@ -590,8 +655,9 @@ Verified 2026-10-06 against `crates/codegg-config/{schema.rs,paths.rs,watcher.rs
 - Corrected 10 stale `file.rs:line` refs. `SearchConfig` had drifted the
   furthest (`461`→`739`), followed by `ContextPolicyConfig` (`366`→`644`),
   `ServerConfig` (`741`→`985`), `ProviderConfig` (`789`→`1033`), and
-  `ProviderConnectionsConfig` (`339`→`350`). `ProviderConfig::merge` is at
-  `schema.rs:1106`, not `827`.
+  `ProviderConnectionsConfig` (`339`→`350`). `ProviderConfig::merge` is a method on `ProviderConfig`, not the
+  struct; its current line is carried by the `ProviderConfig Merge`
+  heading above.
 - Confirmed correct as written: `merge_configs` (`paths.rs:164`) and
   `ConfigWatcher` (`watcher.rs:12`).
 
@@ -621,7 +687,7 @@ throwaway crate built against `codegg-config`:
   comparison that proves it. `theme` is now correctly described as whole-value
   replace.
 - **Loading flow was wrong.** It listed `decrypt_provider_keys()` as step 5 and
-  omitted `migrate()`. `Config::load()` (`schema.rs:2447`) has an explicit
+  omitted `migrate()`. `Config::load()` (`schema.rs:3260`) has an explicit
   comment that decryption is a delegated no-op; `decrypt_provider_keys` and
   `encrypt_provider_keys` are themselves no-ops (`encryption.rs:544`/`:549`).
   Rewrote the flow and the encryption/invariants sections.
@@ -633,10 +699,10 @@ throwaway crate built against `codegg-config`:
   `tool_advisor`, `decision_engine`, `orchestration`, `eggwork`. All five type
   names verified against `schema.rs`.
 - Confirmed accurate as written: `merge_configs` (`paths.rs:164`),
-  `ConfigWatcher` (`watcher.rs:12`), `Config::migrate` (`schema.rs:2739`),
+  `ConfigWatcher` (`watcher.rs:12`), `Config::migrate` (`schema.rs:3587`),
   `CONFIG_VERSION` (`schema.rs:5`), `AuthConfig` (`schema.rs:16`),
   `ModelProfileConfig` (`schema.rs:112`), `ProviderConfig::merge`
-  (`schema.rs:1106`), the master-key resolution chain, and every listed
+  (`schema.rs:1650`), the master-key resolution chain, and every listed
   validation bound (`log_level`, `share`, model format, `port >= 1024`,
   agent `mode`/`color`, `tool_timeout_seconds` 1-3600,
   `max_parallel_tools` 1-100, `compaction.threshold` 0.1-1.0,
@@ -672,3 +738,16 @@ Third pass (2026-10-06) — **the 13-field merge gap recorded above is fixed.**
 - **Regression coverage** proves the defect rather than the fix only: the
   three new tests in `paths.rs` were confirmed to fail against the pre-fix
   function and pass after.
+
+Re-verified 2026-10-23 against source, after the 2026-10-06 pass in this
+document. The `Config` struct listing, the discovery-path order
+(`codegg.jsonc`, `codegg.json`, `config.json`, then the per-user config dir
+fallback at `crates/codegg-config/src/paths.rs:66` and `:72`), the
+`merge_configs` field-by-field semantics, and the
+`scripts/check_config_merge_coverage.py` guard (wired into
+`scripts/verify.sh quick` and CI) were all confirmed against the current
+tree. The pass corrected the config file name in this document from
+`opencode.jsonc` to **`codegg.jsonc`** and recorded the `Config` struct's
+missing fields — `panel_placement` and `scratch` — so the field listing
+matches the struct the merge coverage guard derives from. No other correction
+was required.

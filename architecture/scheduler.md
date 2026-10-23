@@ -18,13 +18,26 @@ scheduler.
 |--------|---------|
 | `src/scheduler/scheduler.rs` | `JobScheduler`: main loop, reconcile, admit, dispatch, cancel, snapshot, shutdown |
 | `src/scheduler/submission.rs` | `JobSubmissionService`: durable create/enqueue boundary, payload validation, resource policy, idempotency |
-| `src/scheduler/admission.rs` | `AdmissionController`: atomic multi-dimension permit acquisition |
+| `src/scheduler/admission.rs` | `AdmissionController`: atomic multi-dimension permit acquisition (resources, exclusivity keys, keyed quota slots) |
+| `src/scheduler/permit.rs` | `ResourcePermitGuard`, `PermitDimensions`, `permit_from_request_with_quotas`: the reserved-resource lease returned by admission |
 | `src/scheduler/fair_queue.rs` | `FairJobQueue`: priority-class lanes, anti-starvation aging, workspace fairness |
-| `src/scheduler/config.rs` | `ResolvedSchedulerConfig`: validated resource budgets, queue caps, fairness weights |
-| `src/scheduler/executor.rs` | `JobExecutor` trait, `ExecutorRegistry`, `ExecutorKind`, `JobExecutionContext` |
-| `src/scheduler/executors.rs` | `TestJobExecutor`, `ManagedArgvExecutor`, `SubagentJobExecutor` |
+| `src/scheduler/config.rs` | `ResolvedSchedulerConfig`, `QuotaPolicy`: validated resource budgets, queue caps, fairness weights, quota limits |
+| `src/scheduler/executor.rs` | `JobExecutor` trait, `ExecutorRegistry`, `ExecutorKind`, `JobExecutionContext`, `executor_kind_for_job` |
+| `src/scheduler/executors.rs` | `TestJobExecutor`, `ManagedArgvExecutor`, `SubagentJobExecutor`, `PythonJobExecutor`, `AgentTurnExecutor` |
+| `src/scheduler/tool_program_executor.rs` | `ToolProgramExecutor`: Tool Program jobs and the `BrokerAdapter` child-job bridge |
 | `src/scheduler/events.rs` | `SchedulerEvent`, `WokeReason` |
 | `src/scheduler/snapshot.rs` | `SchedulerSnapshot`, per-workspace summaries, executor health |
+| `src/scheduler/eggwork.rs` | `EggworkExecutor`: fixed-target remote execution, `validate_remote_job` |
+| `src/scheduler/eggwork_limits.rs` | Remote resource-limit ceiling resolution, `cpu_quota_percent` |
+| `src/scheduler/eggwork_telemetry.rs` | `NodeTelemetryService`: read-only remote host telemetry, one cache per node |
+| `src/scheduler/job_notifications.rs` | `JobNotificationService`: one durable terminal notice per subscribed background job |
+| `src/scheduler/job_complete_audit.rs` | The M003 `job_complete` audit seam consumed at the durable terminal transition |
+| `src/scheduler/idle_continuation.rs` | Delegated idle-continuation intent state machine (ADR-0031) |
+| `src/scheduler/schedule_driver.rs` | Daemon-owned earliest-due wake loop that calls `ScheduleStore::claim_due` |
+| `src/scheduler/schedule_materializer.rs` | `ScheduleMaterializer` — the production `OccurrenceMaterializer` |
+| `src/scheduler/ci_watch.rs` | GitHub Actions watch records and bounded observation |
+| `src/scheduler/ci_watch_idle.rs` | `CiWatchIdleDriver`: the canonical earliest-due CI observation wake |
+| `src/scheduler/types.rs` | Fair-queue shared types: `QueueEntry`, `LaneInsert`, `QueueRemovalReason`, `QueueInsertError` |
 | `src/managed_process.rs` | Canonical managed argv process policy and provenance |
 
 ## How It Works
@@ -54,7 +67,7 @@ lease-generation, health, reconciliation, and cleanup state while the
 scheduler remains the machine-capacity/admission authority. No worktree
 operation bypasses the hardened Git environment policy.
 
-### Main loop (`scheduler.rs:840`)
+### Main loop (`JobScheduler::spawn_run` / `JobScheduler::run`)
 
 The scheduler loop runs until shutdown. Each iteration:
 1. Wait for reconcile interval, a wake signal, or cancellation
@@ -64,7 +77,7 @@ The scheduler loop runs until shutdown. Each iteration:
    inspecting up to `max_batch * 2` candidates so a temporarily blocked
    head job does not stall unrelated workspaces
 
-### Reconciliation (`scheduler.rs:614`)
+### Reconciliation (`JobScheduler::reconcile`)
 
 Reconcile pulls durable queued jobs in bounded batches
 (`config.queue.claim_batch`), deduplicates by `JobId`, and applies
@@ -72,7 +85,7 @@ aging. It also removes queue entries whose durable state is no longer
 `Queued` (confirmed via direct store read so valid queued jobs beyond
 the batch are never evicted).
 
-### Admission (`scheduler.rs:864`)
+### Admission (`JobScheduler::admit_and_dispatch_batch`)
 
 For each candidate, the scheduler:
 1. Pops from the fair queue
@@ -86,18 +99,21 @@ For each candidate, the scheduler:
 
 ### Key Types & APIs
 
-#### JobScheduler (`scheduler.rs:137`)
+#### JobScheduler (`src/scheduler/scheduler.rs`)
 
 ```rust
 pub struct JobScheduler { ... }
 ```
 
 Core fields: `store`, `workspaces`, `executors`, `admission`, `queue`,
-`running`, `completions`, `completion_signals`, `running_per_workspace`,
-`ready_counts`, `running_total`, `admission_blocks`, `queue_overflows`,
-`oldest_queued_age_secs`, `notify`, `shutdown`, `config`,
-`daemon_generation`, `event_tx`, `audit_emitter` (M001/M003 injected
-bounded emitter for live `job_complete`; no direct store ownership).
+`dispatch`, `running`, `running_tasks`, `completions`, `completions_seq`,
+`completion_signals`, `running_per_workspace`, `ready_counts`,
+`job_kind_counts`, `running_total`, `process_admission`,
+`admission_blocks`, `admission_block_reasons`, `admission_impossible`,
+`queue_overflows`, `oldest_queued_age_secs`, `notify`, `shutdown`,
+`config`, `daemon_generation`, `event_tx`, `agent_runs`, `audit_emitter`
+(M001/M003 injected bounded emitter for live `job_complete`; no direct
+store ownership), `job_notifications`.
 
 Two wake signals, deliberately not shared:
 
@@ -139,7 +155,7 @@ Key methods:
   `legacy-local` fallback, one deterministic event id per
   attempt/outcome, bounded outcome labels, best-effort failure policy.
 
-#### JobSubmissionService (`submission.rs:86`)
+#### JobSubmissionService (`src/scheduler/submission.rs`)
 
 ```rust
 pub struct JobSubmissionService { ... }
@@ -151,10 +167,17 @@ payload size, applies `ResourceRequest::for_kind` and exclusivity-key
 normalization, creates exactly one durable `JobRecord`, and wakes the
 scheduler.
 
-`SubmissionKey` (line 31) is a caller-provided opaque retry identity.
+`SubmissionKey` is a caller-provided opaque retry identity.
 Same key with same fingerprint → returns the original job. The
 in-memory idempotency index is scoped to one daemon generation; the
 durable job ID remains authoritative after restart.
+
+The submission boundary is also the **only** place the M007 resource
+class is bound to a scope: it drops any `exclusive:workspace-mutation`
+key and any caller-supplied quota in the same namespace, then pushes
+`KeyedQuotaRequest::for_workspace(class, &spec.workspace_id)`. The
+binding is unconditional — a caller that supplies its own
+`ResourceRequest` cannot opt out of the bound it is measured against.
 
 The daemon also attaches one bounded scheduler-event receiver for projection
 publication. `JobAdmitted`, resource-release, and queued-terminal events are
@@ -162,26 +185,65 @@ resolved against the durable store before an owner-scoped session event is
 published. A failed owner lookup is logged and dropped; snapshot reconstruction
 from `JobStore` heals missed live publication for a later subscriber.
 
-#### AdmissionController (`admission.rs:99`)
+#### AdmissionController (`src/scheduler/admission.rs`)
 
-Atomic admission decision. All requested dimensions and exclusivity
-keys are reserved together, or none:
+Atomic admission decision. All requested dimensions, exclusivity keys,
+and keyed quota slots are reserved together, or none:
 
 | Variant | Meaning |
 |---------|---------|
-| `Admitted(ResourcePermitGuard)` | All resources and keys reserved |
+| `Admitted(ResourcePermitGuard)` | All resources, keys, and quota slots reserved |
 | `TemporarilyBlocked(BlockReason)` | Resources temporarily unavailable; advance to next candidate |
 | `Impossible(UnschedulableReason)` | Request exceeds configured budget; never silently clamped |
 
-`BlockReason` variants: `InsufficientProcessSlots`,
+`BlockReason` variants (10): `InsufficientProcessSlots`,
 `InsufficientCpuWeight`, `InsufficientMemory`, `InsufficientIoWeight`,
-`InsufficientNetworkSlots`, `KeyContended`, `QueueFull`,
-`RemoteNodeCapacity`.
+`InsufficientNetworkSlots`, `KeyContended`, `QuotaContended`, `QueueFull`,
+`RemoteNodeCapacity`, `RemoteTransferCapacity`.
 
-`UnschedulableReason` variants: `ProcessSlotsExceedBudget`,
+`UnschedulableReason` variants (9): `ProcessSlotsExceedBudget`,
 `CpuWeightExceedsBudget`, `MemoryExceedsBudget`,
 `IoWeightExceedsBudget`, `NetworkSlotsExceedsBudget`,
-`RemoteNodeCapacityExceedsBudget`.
+`QuotaExceedsLimit`, `UnknownQuotaNamespace`,
+`RemoteNodeCapacityExceedsBudget`, `RemoteTransferCapacityExceedsBudget`.
+
+#### Keyed quota admission (M007)
+
+A quota is a **counted** bound, not a mutex. `AdmissionController`
+reserves it as its own dimension alongside CPU/memory/IO/network slots
+and exclusivity keys, and the permit guard releases the weighted slots
+when it drops — after the executor's process lifetime ends, so a
+cancelled job never returns its slots early. A job that is *waiting*
+for a slot holds **no** permit at all: the quota is checked before any
+other dimension is reserved.
+
+The resolution order for each `KeyedQuotaRequest` is fixed:
+
+1. A structurally invalid request (empty key, empty namespace,
+   oversized key, zero or out-of-range slot count) is
+   `Impossible(UnknownQuotaNamespace)`.
+2. A namespace the controller does not know is
+   `Impossible(UnknownQuotaNamespace)`. It is **refused, never
+   ignored** — an unenforced bound that was silently dropped would be a
+   lie, and a job would report a reservation it never held.
+3. A request for more slots than the scope's limit is
+   `Impossible(QuotaExceedsLimit)`. The limit is configuration-owned,
+   so this is an admin/config matter, not a transient one.
+4. A request that fits the limit but not the *currently available*
+   slots is `TemporarilyBlocked(QuotaContended)` — the fair queue
+   retries it later rather than clamping it.
+
+The limit comes from `AdmissionController::quota_limit`, which resolves
+`ResourceClass::Build`'s namespace (`build`) to
+`scheduler.quota.max_concurrent_builds_per_workspace`. The scope part
+of the key is the canonical `WorkspaceId`, so two unrelated workspaces
+never share a bucket. The scope is bound at the submission boundary
+before the job is durable — see `architecture/jobs.md` and
+`architecture/build_admission.md`.
+
+The queue caps (`max_total`, `max_per_workspace`) are **not** execution
+quotas: they bound the queue, not the concurrent execution of a
+workspace's build class.
 
 #### Local and remote budgets (M003)
 
@@ -242,7 +304,21 @@ from starving unrelated work.
 
 Keyed by `ExecutorKind` (`Test`, `ManagedArgv`, `Subagent`,
 `BashDispatch`, `Python`, `ToolProgram`, `AgentTurn`, `Synthetic`,
-`Eggwork`). Duplicate kinds are rejected. `for_job(&JobRecord)` resolves
+`Eggwork`). Duplicate kinds are rejected.
+
+**`ExecutorKind::BashDispatch` is currently unreachable.** `for_job` resolves
+through `executor_kind_for_job`, whose `(_, PayloadVariant::BashDispatch)` arm
+looks right but can never fire: `executor_variant` maps `JobPayload` to a
+`PayloadVariant` and has no `BashDispatch` arm — it returns `PayloadVariant::Other`
+for everything outside `Test`/`ManagedArgv`/`Subagent`/`Python`. There is no
+`JobPayload::BashDispatch` variant either (`JobPayload` carries `AgentTurn`,
+`Subagent`, `SubagentRun`, `Test`, `ManagedArgv`, `Shell`, `Python`, `Git`,
+`Research`, `ToolProgram`, `Maintenance`), and `Shell` payloads map to
+`ExecutorKind::ManagedArgv` instead. So `ExecutorKind::BashDispatch` and the
+`PayloadVariant::BashDispatch` arm are both dead: the variant survives only
+because `PayloadVariant` carries `#[allow(dead_code)]`. This is recorded here
+rather than fixed because removing a public enum variant is a product decision
+about whether the bash-dispatch path is planned to return. `for_job(&JobRecord)` resolves
 the best executor via `executor_kind_for_job`, which evaluates the
 durable `ExecutionTarget` before the job kind: `EggworkNode` targets
 always route to `Eggwork` (eligibility enforced by its `validate()` with
@@ -358,11 +434,18 @@ background_weight = 2
 maintenance_weight = 1
 max_high_priority_burst = 8
 aging_secs = 300
+
+[scheduler.quota]
+# M007: counted, workspace-scoped build-class bound. Must be > 0.
+# Configuration-owned: a job may ask for slots, never widen the bound.
+max_concurrent_builds_per_workspace = 1
 ```
 
 `ResolvedSchedulerConfig::from_input` validates and freezes these
 defaults. In daemon mode, `enabled = false` creates an explicit
-rejecting placeholder; it does not restore unscheduled execution.
+rejecting placeholder; it does not restore unscheduled execution. The
+quota limit is validated separately: `max_concurrent_builds_per_workspace
+== 0` is a configuration error, not a silently unbounded build class.
 
 The scheduler default is enabled and mandatory. Explicit
 `enabled = false` creates an introspection placeholder whose submission
@@ -371,7 +454,7 @@ process creation. `observe` and `active` remain accepted configuration
 labels for staged deployments and diagnostics, but they do not restore
 bypass execution.
 
-### Resource profiles (`codegg-core/src/jobs/mod.rs:713`)
+### Resource profiles (`ResourceRequest::for_kind`, `codegg-core/src/jobs/mod.rs`)
 
 Admission reserves soft CPU/memory/IO hints, process slots, network
 slots, and typed exclusivity keys. Hints are accounting inputs, not
@@ -403,7 +486,12 @@ serialized every build in every workspace, and it was not acquired by
 every AgentTurn writer, so it did not serialize arbitrary workspace
 mutations either. The build class now carries a **counted**,
 workspace-scoped quota whose limit is configuration-owned; see
-`architecture/build_admission.md`.
+`architecture/build_admission.md`. Three properties are load-bearing:
+the scope is the canonical `WorkspaceId`, so unrelated workspaces never
+share a bucket; the limit is configuration-owned, so a job can ask for
+slots but never widen the bound it is measured against; and the scope is
+bound at the **submission boundary** unconditionally, so a caller that
+supplies its own resource request cannot opt out.
 
 WorkOrder `shared`/`serialized` mutation still fails closed until all
 writers use a canonical checkout-scoped reservation — the scheduler
@@ -640,7 +728,7 @@ attempts. Managed-process cancellation kills the process session and
 descendants before the permit is released. A completion that races
 cancellation follows the durable store's terminal-state precedence.
 
-At startup, `recover_at_startup` (`scheduler.rs:1764`) calls
+At startup, `recover_at_startup` (`src/scheduler/scheduler.rs`) calls
 `JobStore::recover_generation` once and wakes the scheduler with
 `WokeReason::Reconciled` so the fair queue is rebuilt from durable
 state. Queue reconciliation rebuilds the in-memory fair queue from
@@ -749,7 +837,7 @@ materializer refuses is not recorded at all, so it stays retryable instead
 of being silently consumed. See `architecture/jobs.md` for the tick's
 three phases and the refusal semantics.
 
-### Shutdown (`scheduler.rs:1503`)
+### Shutdown (`JobScheduler::shutdown`)
 
 Three shutdown modes:
 - `DrainQueuedUntil(Duration)` — let admitted attempts finish, cancel
@@ -770,8 +858,8 @@ clients fetch full job and attempt records through protocol requests.
 `JobWait` returns a bounded completion summary and optional RunStore
 ID.
 
-`WokeReason` variants (`src/scheduler/events.rs:68`): `JobEnqueued`,
-`ExecutorCompleted`, `CancellationRequested`, `ScheduleTick`,
+`WokeReason` variants (`src/scheduler/events.rs`, 8 variants):
+`JobEnqueued`, `ExecutorCompleted`, `CancellationRequested`, `ScheduleTick`,
 `ScheduleClaimed`, `Manual`, `RetryRequested`, `Reconciled`.
 
 ### Remote node host telemetry (M002)
@@ -860,6 +948,9 @@ comprehensive runtime test suite:
   descendant cleanup (`tests/scheduler_jobs/managed_process_descendants.inc`)
 - **Resource profiles**: budget audit for all job kinds
   (`tests/scheduler_jobs/scheduler_resource_profiles.inc`)
+- **Build-class quota**: counted, workspace-scoped build admission; an
+  unknown namespace is refused and a waiting job holds no permit
+  (`tests/scheduler_jobs/build_quota_admission.inc`)
 - **Protocol consistency**: snapshot, JobWait, JobList, error taxonomy
   (`tests/scheduler_jobs/scheduler_protocol_consistency.inc`)
 - **Existing coverage**: unit behaviour, two-workspace fairness,
@@ -896,6 +987,7 @@ durable state before admitting new work.
 | Submission idempotency within daemon generation | `tests/scheduler_jobs/scheduler_submission_idempotency.inc` |
 | Multi-workspace fairness and starvation prevention | `tests/scheduler_jobs/scheduler_contention.inc` |
 | Resource budgets match declared profiles | `tests/scheduler_jobs/scheduler_resource_profiles.inc` |
+| Build-class quota is counted, workspace-scoped, and config-owned | `tests/scheduler_jobs/build_quota_admission.inc` |
 | Protocol snapshots consistent with queue state | `tests/scheduler_jobs/scheduler_protocol_consistency.inc` |
 | Stale attempts interrupted on restart | `tests/scheduler_jobs/scheduler_restart_recovery.inc` |
 | All process-spawn sites classified | `docs/execution-ownership.toml` |
@@ -907,39 +999,109 @@ python3 scripts/check_scheduler_bypass.py
 python3 scripts/check_execution_ownership.py
 cargo test -p codegg --lib scheduler
 cargo test -p codegg --lib managed_process
-cargo test --test scheduler_phase5
-cargo test --test durable_jobs_phase4
-cargo test --test scheduler_submission_idempotency
-cargo test --test scheduler_permit_lifecycle
-cargo test --test scheduler_cancellation
-cargo test --test scheduler_restart_recovery
-cargo test --test scheduler_contention
-cargo test --test scheduler_authority_matrix
-cargo test --test managed_process_descendants
-cargo test --test scheduler_resource_profiles
-cargo test --test scheduler_protocol_consistency
+cargo test --test scheduler_jobs -- scheduler_phase5
+cargo test --test scheduler_jobs -- durable_jobs_phase4
+cargo test --test scheduler_jobs -- scheduler_submission_idempotency
+cargo test --test scheduler_jobs -- scheduler_permit_lifecycle
+cargo test --test scheduler_cancellation -- scheduler_cancellation
+cargo test --test scheduler_jobs -- scheduler_restart_recovery
+cargo test --test scheduler_jobs -- scheduler_contention
+cargo test --test scheduler_jobs -- scheduler_authority_matrix
+cargo test --test scheduler_jobs -- managed_process_descendants
+cargo test --test scheduler_jobs -- scheduler_resource_profiles
+cargo test --test scheduler_jobs -- scheduler_protocol_consistency
+cargo test --test scheduler_jobs -- build_quota_admission
 ~~~
+
+The root package's integration tests are **families**: one executable
+per subject area, selected with `--test <family> -- <member>`. A bare
+`cargo test --test scheduler_phase5` selects zero tests and still exits
+0.
 
 ## Related Docs
 
 - `architecture/jobs.md` — Phase 4 durable job/schedule domain
+- `architecture/build_admission.md` — M007 counted, workspace-scoped quota
 - `architecture/overview.md` — full module map
 - `.opencode/skills/scheduler/SKILL.md` — skill reference
 
 ## Source verification
 
-Verified 2026-10-06 against `src/scheduler/*.rs`. Corrected the
-`JobScheduler` ref `scheduler.rs:135` → `:137` (confirmed the prior
-review's claim) and the rest of the stale refs: main loop `:809` → `:840`,
-reconcile `:583` → `:614`, admission `:833` → `:864`, shutdown `:1317` →
-`:1503`, `recover_at_startup` `:1529` → `:1764`; `Resource profiles`
-`mod.rs:648` → `codegg-core/src/jobs/mod.rs:713` (the old `mod.rs:648`
-ambiguously resolved to a scheduler-local file, but `for_kind` lives in
-`codegg-core`); `WokeReason` `events.rs:68` → `src/scheduler/events.rs:68`.
-Verified accurate: `JobSubmissionService` (`submission.rs:86`),
-`SubmissionKey` (`:31`), `AdmissionController` (`admission.rs:99`), the
-3-variant `AdmissionDecision`, 7 `BlockReason` variants, 5
-`UnschedulableReason` variants, 8 `WokeReason` variants, 9 `ExecutorKind`
-variants, and all `ResourceRequest::for_kind` resource rows. Expanded the
-admit-batch claim with the real `max_batch = 4` / `max_batch * 2`
-candidate-window detail from `scheduler.rs:871-876`.
+Verified 2026-10-23 against `src/scheduler/{scheduler,submission,admission,permit,config,executor,executors,events,snapshot,types,eggwork,eggwork_limits,eggwork_telemetry,job_notifications,job_complete_audit,idle_continuation,schedule_driver,schedule_materializer,ci_watch,ci_watch_idle,tool_program_executor}.rs`,
+`crates/codegg-core/src/jobs/{mod,quota}.rs`,
+`crates/codegg-config/src/schema.rs`, `crates/codegg-core/src/team.rs`,
+`tests/scheduler_jobs/mod.rs`, `tests/scheduler_cancellation/mod.rs`,
+and `Cargo.toml`.
+
+A 2026-10-06 pass had corrected a set of line references; those
+references have since drifted again, so every line-number reference in
+the body has been replaced with a **symbol name** — the durable fix.
+Current locations of the previously-cited symbols:
+`JobScheduler` (`src/scheduler/scheduler.rs:244`),
+`spawn_run` (`:1047`), `run` (`:1126`), `reconcile` (`:900`),
+`admit_and_dispatch_batch` (`:1150`, with `max_batch = 4` and the
+`max_batch * 2` candidate window at `:1156`/`:1161`),
+`try_dispatch_next` (`:1181`), `signal_job` (`:754`),
+`wait_for_completion` (`:804`), `mark_unschedulable` (`:1985`),
+`request_cancel` (`:2064`), `recover_at_startup` (`:2175`),
+`snapshot` (`:1785`), `shutdown` (`:1875`),
+`SchedulerShutdownMode` (`:95`), `SHUTDOWN_CLEANUP_GRACE` (`:59`, 5 s),
+`COMPLETION_RECHECK_INTERVAL` (`:69`, 250 ms),
+`COMPLETION_SIGNAL_CAPACITY` (`:74`, 1024),
+`JobSubmissionService` (`src/scheduler/submission.rs:120`),
+`SubmissionKey` (`:34`), `AdmissionController`
+(`src/scheduler/admission.rs:228`), `AdmissionDecision` (`:40`),
+`BlockReason` (`:55`), `UnschedulableReason` (`:111`),
+`WokeReason` (`src/scheduler/events.rs:88`),
+`ExecutorKind` (`src/scheduler/executor.rs:73`),
+`JobExecutionContext` (`:145`), `executor_kind_for_job` (`:440`),
+`ExecutorRegistry::for_job` (`:381`),
+`ResourcePermitGuard` (`src/scheduler/permit.rs:58`),
+`PermitDimensions` (`:28`), and
+`ResourceRequest::for_kind` (`crates/codegg-core/src/jobs/mod.rs:790`).
+
+Substantive corrections made in this pass:
+
+- **Enum counts were wrong and incomplete.** `BlockReason` has **10**
+  variants, not 7 — the missing ones are `QuotaContended` and
+  `RemoteTransferCapacity`. `UnschedulableReason` has **9**, not 5 —
+  the missing ones are `QuotaExceedsLimit`, `UnknownQuotaNamespace`,
+  and `RemoteTransferCapacityExceedsBudget`. Both lists are now
+  complete.
+- **The M007 quota admission path was entirely undocumented.** Added a
+  "Keyed quota admission (M007)" subsection recording the four-step
+  resolution order (invalid → `UnknownQuotaNamespace` → `QuotaExceedsLimit`
+  → `QuotaContended`), the fact that a waiting job holds **no** permit,
+  that the slots are released when the permit guard drops (after the
+  process lifetime ends), and that the limit is
+  `scheduler.quota.max_concurrent_builds_per_workspace`.
+- **`[scheduler.quota]` was missing from the configuration example.**
+  Added it, together with the `max_concurrent_builds_per_workspace == 0`
+  validation rule (`src/scheduler/config.rs`).
+- **Module table was incomplete.** Added `permit.rs`, `types.rs`,
+  `tool_program_executor.rs`, `eggwork.rs`, `eggwork_limits.rs`,
+  `eggwork_telemetry.rs`, `job_notifications.rs`, `job_complete_audit.rs`,
+  `idle_continuation.rs`, `schedule_driver.rs`, `schedule_materializer.rs`,
+  `ci_watch.rs`, and `ci_watch_idle.rs`; corrected the
+  `executors.rs` row, which also owns `PythonJobExecutor` and
+  `AgentTurnExecutor`.
+- **`JobScheduler` field list was incomplete.** Added `dispatch`,
+  `running_tasks`, `completions_seq`, `job_kind_counts`,
+  `process_admission`, `admission_block_reasons`, `admission_impossible`,
+  `agent_runs`, and `job_notifications`.
+- **Test commands were wrong.** `cargo test --test <member>` selects zero
+  tests: the root package's integration tests are families. All commands
+  now use `--test <family> -- <member>`, and
+  `tests/scheduler_jobs/build_quota_admission.inc` was added to the
+  runtime-proof and invariant tables.
+
+Confirmed accurate and left unchanged: the 3-variant
+`AdmissionDecision`, the 8 `WokeReason` variants, the 9 `ExecutorKind`
+variants, the 3 `SchedulerShutdownMode` variants, the `max_batch = 4` /
+`max_batch * 2` dispatch window, `ResourceRequest::for_kind` resource
+rows, the `RemoteTargetPolicy` per-node ceiling
+(`[eggwork.nodes.<id>].max_concurrent_executions`, falling back to the
+controller's process-slot budget), the separate
+`max_remote_transfers` budget, duplicate-executor rejection, the
+executor `workspace_root` bindings table, and every referenced file
+path (all present).

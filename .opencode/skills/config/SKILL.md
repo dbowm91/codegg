@@ -55,10 +55,10 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
 - **Every config struct is `#[serde(default)]`.** Existing user files must keep
   loading when you add a field. Do not make a new field required.
 - **`CONFIG_VERSION` is `"1"`** (`schema.rs:5`) and `Config::migrate()`
-  (`schema.rs:2739`) upgrades `"0"` → `"1"`. Do not bump it without a migration
+  (`schema.rs:3386`) upgrades `"0"` → `"1"`. Do not bump it without a migration
   branch and a test.
 - **A new `Config` field is invisible until `merge_configs` handles it.**
-  `merge_configs` (`paths.rs:164`) is an explicit whitelist, not a derived
+  `merge_configs` (`paths.rs:172`) is an explicit whitelist, not a derived
   merge: `merge_option!` for scalar/`Option` fields, then hand-written arms
   for maps and nested structs. It is the **only** path from a parsed file to
   `Config` — `Config::load` and `ConfigWatcher::reload_config`
@@ -71,11 +71,14 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
   the same change, plus a `paths.rs` test assertion pinning the intended
   precedence. Match the existing strategy for the field's shape:
   - all-`Option` section → a `merge(&mut self, other: &Self)` field-by-field
-    impl (ten sections do this);
-  - section whose fields are **all non-`Option`** (`security`,
-    `provider_connections`, `deterministic_tools`) → whole-value replace, since
-    serde bakes the default into the struct and a `bool`/`usize` cannot be
-    distinguished from "explicitly set to the default";
+    impl (twelve sections do this);
+  - section whose fields are **all non-`Option`** (`provider_connections`,
+    `deterministic_tools`) → whole-value replace, since serde bakes the
+    default into the struct and a `bool`/`usize` cannot be distinguished from
+    "explicitly set to the default";
+  - `security` is whole-value replace **with one carry-forward**: the later
+    layer's `gates.deny_critical_commands` survives when the later layer does
+    not set it (`paths.rs:460-468`);
   - within a field-by-field section, a **nested block replaces wholesale** —
     a later `[scheduler.queue]` overrides the whole `queue` block.
 - **Inert-but-retained fields stay.** `[autoupdate]` (`schema.rs:236`) is
@@ -147,3 +150,30 @@ because their non-`Option` fields cannot express "unset". Added
 CI) so the defect class cannot recur; verified it reports exactly the
 historical 13 against the pre-fix `paths.rs`. The three new `paths.rs` tests
 were confirmed to fail before the fix and pass after.
+
+Fourth pass (2026-10-23): re-verified every discovery-order line reference
+against `crates/codegg-config/src/paths.rs` — `resolve_config_paths` (`:12`),
+the `CODEGG_TUI_CONFIG` probe (`:15`), `find_project_config_from` (`:46`),
+`global_config_path` (`:64`), `system_config_path` (`:75`), and
+`ConfigWatcher::reload_config` calling `merge_configs`
+(`crates/codegg-config/src/watcher.rs:154`) — and confirmed `CONFIG_VERSION`
+(`schema.rs:5`), the inert `autoupdate` field (`schema.rs:236`), the
+`encrypt_provider_keys` / `decrypt_provider_keys` no-ops
+(`encryption.rs:549`, `:544`), `parse_yaml` (`document.rs:92`), the
+`serde_norway` 0.9.42 pin (`crates/codegg-config/Cargo.toml:14`), and the
+`WindowsShellKind` variant set (`powershell`, `cmd`, `git-bash`, `wsl`;
+`schema.rs:3919-3932`).
+
+Corrected: `merge_configs` was cited at `paths.rs:164` (actually `:172`); and
+`Config::migrate()` was cited at `schema.rs:2739` (actually `:3386` — the
+cited line is inside a section `merge()` impl). The whole-value-replace list
+was `security`, `provider_connections`, `deterministic_tools`; `security` is
+in fact a whole-value replace **with a carry-forward** of
+`gates.deny_critical_commands` (`paths.rs:460-468`), so it is now described
+separately from the two pure replaces. The field-by-field section count was
+"ten" — there are now **twelve** `merge(&mut self, other: &Self)` impls
+(`ApprovalReviewerConfig`, `DaemonConfig`, `ScratchRetentionSettings`,
+`SchedulerConfig`, `DiscoveryConfig`, `ToolDeferralConfig`, `ResearchConfig`,
+`ToolBackendConfigSchema`, `ShellConfig`, `HumanShellConfig`,
+`CommandIntentConfig`, `PreflightConfig`).
+

@@ -16,12 +16,23 @@ pub use paths::{
 pub use schema::{
     AuthConfig, Config, DiscoveryConfig, DiscoveryMode, DiscoveryRootConfig, EggworkConfig,
     EggworkIsolationPolicy, EggworkNetworkPolicy, EggworkNodeProfile, ModelProfileConfig,
-    ModelRouteConfig, ModelRouterConfig, OrchestrationConfig, OrchestrationTier, SchedulerConfig,
-    SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig,
-    ScratchConfig, ScratchRetentionSettings, SymlinkPolicy, ToolAdvisorConfig,
-    ToolAdvisorRemoteConfig, ToolAdvisorTrainingDataConfig, SCRATCH_ORPHAN_GRACE_HOURS_DEFAULT,
+    ModelRouteConfig, ModelRouterConfig, OrchestrationConfig, OrchestrationTier,
+    ReasoningCapabilityRecord, ReasoningCapabilityStatus, SchedulerConfig, SchedulerFairnessConfig,
+    SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig, ScratchConfig,
+    ScratchRetentionSettings, SymlinkPolicy, ToolAdvisorConfig, ToolAdvisorRemoteConfig,
+    ToolAdvisorTrainingDataConfig, MAX_REASONING_CAPABILITY_LABELS,
+    MAX_REASONING_CAPABILITY_LABEL_BYTES, SCRATCH_ORPHAN_GRACE_HOURS_DEFAULT,
     SCRATCH_ORPHAN_GRACE_HOURS_FLOOR, SCRATCH_RETENTION_DAYS_DEFAULT, SCRATCH_RETENTION_DAYS_FLOOR,
     SCRATCH_SWEEP_INTERVAL_MINUTES_DEFAULT, SCRATCH_SWEEP_INTERVAL_MINUTES_FLOOR,
     VIRTUAL_MODEL_PREFIX,
 };
 pub use watcher::ConfigWatcher;
+
+/// Process-wide lock for the tests that mutate the environment.
+///
+/// The environment is process-global, so two tests that set or remove a
+/// variable must not overlap — not even when they set different variables,
+/// because the environment block is shared. Every env-mutating test in this
+/// crate takes this lock.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

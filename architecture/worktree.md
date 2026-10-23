@@ -20,10 +20,10 @@ domain service, not a replacement Git executor.
 |-------|------|------|
 | Core facade | `crates/codegg-core/src/worktree.rs` | Public API: `list_worktrees`, `create_worktree`, `remove_worktree`, `find_git_root`, `is_git_worktree`, `is_git_file` |
 | Read-only engine | `crates/egggit/src/worktree.rs` | Async `list_worktrees` (porcelain parser), `find_git_root`, `is_git_file`, `is_git_worktree` |
-| Root re-export | `src/lib.rs:12` | `pub use codegg_core::worktree;` |
+| Root re-export | `src/lib.rs:23` | `pub use codegg_core::worktree;` |
 | Mutation executor | `src/git_mutations.rs` | All other git mutations (worktree add/remove are in codegg-core) |
 | Durable service | `crates/codegg-core/src/worktree_service.rs` | SQLite records, leases, reconciliation, health, and safe cleanup |
-| Durable schema | `crates/codegg-core/src/session/schema.rs` | M003 migration 39: managed worktrees and lease history |
+| Durable schema | `crates/codegg-core/src/session/schema.rs` | M003 migration 39 (`migrate_v39`, `:2113`): managed worktrees and lease history |
 
 The `src/worktree/` directory referenced in older docs **does not exist**.
 All worktree code lives in codegg-core, re-exported for root-crate callers.
@@ -57,6 +57,20 @@ the provided `git_root`, including symlink-safe resolution.
 The canonical policy and command builder live in `egggit::process` and are
 re-exported from codegg-git/codegg-core for compatibility as
 `POLICY_ALLOWED_ENV_VARS` / `POLICY_ALWAYS_STRIPPED_ENV_VARS`.
+
+**The mutating path is policy-gated, not merely hardened.** `hardened_git_command`
+does not return a `Command`: it returns
+`Result<GitSyncCommand, GitExecutionPolicyOutcome>`, because the canonical
+policy classifies the argv *before* the subprocess is built.
+`git worktree add` and `git worktree remove` both require the
+`CleanSmudgeFilter` capability (`crates/egggit/src/process.rs:641`-`:664`),
+because a linked worktree writes the branch's files through the repository's
+smudge filter and a filter *command* is arbitrary code. Without a contained
+backend the call is **refused** — `AppError::Worktree("Git backend unavailable
+for [CleanSmudgeFilter]")` — and no subprocess is spawned. The durable
+contained route is `WorktreeService::create_reserved_contained`
+(`crates/codegg-core/src/worktree_service.rs:1109`); see
+`architecture/git.md` "Contained managed-worktree creation" and ADR-0048.
 
 ### Durable managed lifecycle
 
@@ -132,11 +146,21 @@ WorkOrders currently materialize the mutation-capable `build` agent. Its
 mutation classification is independent of the requested placement: `shared`
 and `serialized` never make that job read-only. Auto-isolated Git work uses a
 managed worktree; read-only work may share the project checkout. Mutation in a
-shared or serialized checkout records `NeedsAttention` because the daemon does
-not yet have one checkout-scoped writer reservation covering every AgentTurn
-and other mutation surface. The older global scheduler key is not evidence of
+shared or serialized checkout is still **refused** and recorded as
+`NeedsAttention`. The older global scheduler key is not evidence of
 serialization and is not attached to WorkOrder AgentTurns. Select
-`auto_isolated` until a common reservation contract is implemented.
+`auto_isolated`, or place the run explicitly with the shared placement on a
+qualified platform.
+
+The refusal is not the absence of a reservation — the checkout-scoped writer
+permit and the checkout reservation authority **do** exist (corrective
+C002–C004) and native writers are routed through them. What is still missing
+is a production path that places a WorkOrder on a group's shared checkout, and
+the shared profile itself is opt-in and platform-gated (corrective C006:
+`codegg_core::run_placement::RunPlacement`, default `Auto` = isolated). The
+daemon states exactly this in its own diagnostic
+(`crates/codegg-core/src/work_order/coordinator.rs:304`):
+`shared_mutation_unavailable`.
 
 ### Utility functions
 
@@ -164,8 +188,8 @@ pub struct Worktree {
 
 Note: `is_locked` and `is_main` are **not implemented**.
 
-### WorktreeInfo (egggit:6)
-Internal type in egggit (`crates/egggit/src/worktree.rs:6`). Converted to
+### WorktreeInfo (egggit:8)
+Internal type in egggit (`crates/egggit/src/worktree.rs:8`). Converted to
 legacy `Worktree` via `into_legacy()` at codegg-core:22.
 
 ### Public functions (codegg-core)
@@ -173,15 +197,16 @@ legacy `Worktree` via `into_legacy()` at codegg-core:22.
 | Function | Line | Signature |
 |----------|------|-----------|
 | `list_worktrees` | :31 | `async fn(git_root: &Path) -> Result<Vec<Worktree>, AppError>` |
-| `create_worktree` | :38 | `fn(git_root, path, branch, create_branch) -> Result<(), AppError>` |
-| `create_worktree_at` | :51 | `fn(git_root, path, branch, create_branch, base) -> Result<(), AppError>` |
-| `remove_worktree` | :83 | `fn(git_root, path, force) -> Result<(), AppError>` |
-| `hardened_git_command` | :113 | `fn(args, git_root) -> Command` (private) |
-| `find_git_root` | :120 | `fn(start: &Path) -> Option<PathBuf>` |
-| `is_git_file` | :124 | `fn(git_path: &Path) -> bool` |
-| `is_git_worktree` | :128 | `fn(dir: &Path) -> bool` |
+| `create_worktree` | :39 | `fn(git_root, path, branch, create_branch) -> Result<(), AppError>` |
+| `create_worktree_at` | :52 | `fn(git_root, path, branch, create_branch, base) -> Result<(), AppError>` |
+| `remove_worktree` | :85 | `fn(git_root, path, force) -> Result<(), AppError>` |
+| `hardened_git_command` | :116 | `fn(args, git_root) -> Result<GitSyncCommand, GitExecutionPolicyOutcome>` (private) |
+| `find_git_root` | :126 | `fn(start: &Path) -> Option<PathBuf>` |
+| `is_git_file` | :130 | `fn(git_path: &Path) -> bool` |
+| `is_git_worktree` | :134 | `fn(dir: &Path) -> bool` |
+| `git_dir_for` | :152 | `fn(root: &Path) -> Option<PathBuf>` — the Git **directory** (objects, refs, index, `worktrees/` admin dir), resolved through a `.git` pointer file; `None` for a non-repository or a malformed pointer |
 
-### Policy re-exports (codegg-core:9-11)
+### Policy re-exports (codegg-core:9-12)
 ```rust
 pub use egggit::process::{
     ALLOWED_ENV_VARS as POLICY_ALLOWED_ENV_VARS,
@@ -193,19 +218,19 @@ pub use egggit::process::{
 
 | Location | How Used |
 |----------|----------|
-| `src/core/daemon_projects.rs:13` (`handle_projects_request`) | `find_git_root` + `list_worktrees` for workspace/project discovery |
-| `src/tui/app/mod.rs:4282` | `/worktree` command handler (`B::Worktree`) |
-| `src/tui/commands/git_sidebar.rs:113` | Git sidebar worktree listing |
+| `src/core/daemon_projects.rs:71` (`handle_projects_request`) | `find_git_root` + `list_worktrees` for workspace/project discovery |
+| `src/tui/app/mod.rs:6612` | `/worktree` command handler (`B::Worktree`) |
+| `src/tui/commands/git_sidebar.rs:143` | Git sidebar worktree listing |
 | `src/tui/commands/tasks.rs:550` | `start_worktree_list` async task |
-| `src/git_service.rs:721` | Git tool `worktree` subcommand (read-only dispatch; rendered at `src/tool/git_read.rs:335`) |
-| `src/agent/turn_runtime.rs:984` | `egggit::worktree::find_git_root` for workspace root resolution |
+| `src/git_service.rs:1124` (`execute_worktrees`) | Git tool `worktree` subcommand (read-only dispatch; rendered at `src/tool/git_read.rs:336`) |
+| `src/agent/turn_runtime.rs:1272` | `egggit::worktree::find_git_root` for workspace root resolution |
 
 ## Invariants & Gotchas
 
 - **Shared env policy**: `hardened_git_command` and `GitEnvPolicy::apply`
   both consume `egggit::process` constants. A drift-guard
   unit test (`worktree_uses_canonical_policy`,
-  `crates/codegg-core/src/worktree.rs:142`) ensures codegg-core stays
+  `crates/codegg-core/src/worktree.rs:188`) ensures codegg-core stays
   synchronized with the canonical source.
 - **Sync vs async**: `create_worktree`/`remove_worktree` are synchronous
   (blocking `std::process::Command`); `list_worktrees` is async
@@ -224,9 +249,12 @@ cargo test --test worktree                  # integration tests (14 tests)
 The 14 integration tests in `tests/command_git/worktree.inc` cover: struct creation,
 detached state, `find_git_root` with a `.git` dir and with a `.git` file,
 `list_worktrees` on a non-git dir, porcelain parsing with current/detached
-detection, create+remove round-trip, `is_git_worktree` with a `.git` dir /
-`.git` file / non-git dir, `is_git_file` with and without the `gitdir:`
-prefix, and two symlink-detection cases (`list_worktrees_symlink_detection`,
+detection, the **contained-backend refusal** for `create_worktree` /
+`remove_worktree` (both are refused with `Git backend unavailable` /
+`CleanSmudgeFilter` and leave no worktree behind),
+`is_git_worktree` with a `.git` dir / `.git` file / non-git dir,
+`is_git_file` with and without the `gitdir:` prefix, and two
+symlink-detection cases (`list_worktrees_symlink_detection`,
 `list_worktrees_symlink_worktree_path`).
 
 ## Related Docs
@@ -237,7 +265,62 @@ prefix, and two symlink-detection cases (`list_worktrees_symlink_detection`,
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/worktree.rs`,
+### Pass of 2026-10-23
+
+Re-verified against `crates/codegg-core/src/worktree.rs`,
+`crates/codegg-core/src/worktree_service.rs`, `crates/egggit/src/worktree.rs`,
+`crates/egggit/src/process.rs`, `crates/codegg-core/src/session/schema.rs`,
+`tests/command_git/worktree.inc`, and `src/lib.rs`. No build or test run was
+performed; every count is a source-level measurement.
+
+- **Filled a real gap.** The "Mutating path" section described
+  `create_worktree` / `remove_worktree` as plain hardened subprocess builders.
+  They are in fact **policy-gated**: `hardened_git_command` returns
+  `Result<GitSyncCommand, GitExecutionPolicyOutcome>`, `worktree add` and
+  `worktree remove` require the `CleanSmudgeFilter` capability, and the call
+  is refused with `Git backend unavailable for [CleanSmudgeFilter]` when no
+  contained backend is available. The section now says so, names the
+  contained route (`WorktreeService::create_reserved_contained`), and the
+  Testing section's "create+remove round-trip" entry is corrected to the
+  refusal it actually asserts.
+- **Corrected a stale "not yet" claim.** The M001 section said the daemon
+  "does not yet have one checkout-scoped writer reservation". The writer
+  permit and the checkout reservation authority do exist (C002–C004) and
+  native writers are routed through them; what is missing is a production path
+  that places a WorkOrder on a group's shared checkout, and the shared profile
+  is opt-in and platform-gated (C006). The section now matches the daemon's
+  own `shared_mutation_unavailable` diagnostic
+  (`crates/codegg-core/src/work_order/coordinator.rs:304`).
+- **Re-anchored every stale ref**: `src/lib.rs:12` → `:23`;
+  `create_worktree` `:38` → `:39`; `create_worktree_at` `:51` → `:52`;
+  `remove_worktree` `:83` → `:85`; `hardened_git_command` `:113` → `:116`;
+  `find_git_root` `:120` → `:126`; `is_git_file` `:124` → `:130`;
+  `is_git_worktree` `:128` → `:134`; `WorktreeInfo`
+  `crates/egggit/src/worktree.rs:6` → `:8`; policy re-exports `:9-11` → `:9-12`;
+  `worktree_uses_canonical_policy` `worktree.rs:142` → `:188`;
+  `migrate_v39` `schema.rs:2036` → `:2113`.
+- **Re-anchored every consumer ref**: `src/core/daemon_projects.rs:13` → `:71`;
+  `src/tui/app/mod.rs:4282` → `:6612`;
+  `src/tui/commands/git_sidebar.rs:113` → `:143`;
+  `src/git_service.rs:721` → `:1124` (`execute_worktrees`; the read-only
+  dispatch is `GitOperation::WorktreeList` at `:346`);
+  `src/tool/git_read.rs:335` → `:336`;
+  `src/agent/turn_runtime.rs:984` → `:1272`.
+  `src/tui/commands/tasks.rs:550` was already accurate.
+- **Added a missing public API.** `git_dir_for` (`:152`) resolves the Git
+  *directory* (objects, refs, index, and the `worktrees/` administration
+  directory) through a `.git` pointer file, and is what a contained child
+  needs instead of the source working tree. It was absent from the public
+  function table.
+- **Confirmed correct as written**: `Worktree` (`:15`), `into_legacy()`
+  (`codegg-core:22`), `list_worktrees` (`:31`), the seven-step hardened
+  environment, the durable lifecycle state machine, the managed-path
+  determinism claim, `tests/command_git/worktree.inc` = **14** test functions,
+  and the M003 durable schema claim (`migrate_v39`).
+
+### Pass of 2026-10-06
+
+Verified against `crates/codegg-core/src/worktree.rs`,
 `crates/codegg-core/src/worktree_service.rs`, `crates/egggit/src/worktree.rs`,
 `tests/command_git/worktree.inc`, and `src/lib.rs`. Confirmed the prior review's test-count
 claim: `tests/command_git/worktree.inc` holds **14** `#[test]`/`#[tokio::test]` functions,
@@ -258,3 +341,6 @@ Confirmed correct as written: `Worktree` (`:15`), `WorktreeInfo`
 `is_git_worktree`/`hardened_git_command` lines, the `src/lib.rs:12`
 re-export, `worktree_service.rs` existence, and the M003 durable schema claim
 (`migrate_v39`, `crates/codegg-core/src/session/schema.rs:2036`).
+
+Every line ref in the 2026-10-06 list has since moved again; the 2026-10-23
+pass above carries the current anchors.

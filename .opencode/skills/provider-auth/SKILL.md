@@ -24,7 +24,7 @@ to violate.
 | Setup catalog + durable builders | `crates/codegg-providers/src/setup_catalog.rs` | Pre-credential `ProviderDefinition` catalog (endpoint policy, capability, construction/probe strategy); `build_durable_provider` shared by `ProviderConnectionFactory` and the generic provisioner; Eggpool is a `ProxyPreset`, `custom` the generic compatible entry |
 | Backends | `anthropic.rs`, `openai.rs`, `google.rs`, `openrouter.rs`, `opencode_zen.rs`, `opencode_go.rs`, `provider_profile.rs`, `additional.rs`, `openai_compatible.rs`, `azure.rs`, `vertex.rs`, `bedrock.rs`, `copilot.rs`, `cloudflare.rs`, `gitlab.rs`, `eggpool.rs` | Per-provider request/stream/models mapping; `provider_profile.rs` owns the shared-profile adapter and `opencode_go.rs` the multi-surface dispatch |
 | Auth types | `crates/codegg-providers/src/auth_types.rs` | `AuthConfig`, `Credential`, `CredentialKind`, `CredentialCapability`, `CredentialStore`, `AuthResolver`, `AuthError`; `ExternalCommand` unsupported |
-| Auth CLI | `src/auth/cli.rs`, `src/auth/mod.rs` | `codegg auth set-key/status/logout`; the clap `AuthSubcommand` enum lives in `src/main.rs:508`, the handlers are `AuthCli` (`status`/`set_key`/`logout`, `cli.rs:93`,`:124`,`:161`) in `src/auth/cli.rs`; `src/auth` re-exports providers types |
+| Auth CLI | `src/auth/cli.rs`, `src/auth/mod.rs` | `codegg auth set-key/status/logout`; the clap `AuthSubcommand` enum lives in `src/main.rs:582`, the handlers are `AuthCli` (`status`/`set_key`/`logout`, `cli.rs:106`,`:137`,`:174`) in `src/auth/cli.rs`; `src/auth` re-exports providers types |
 | Crypto | `crates/codegg-providers/src/crypto.rs`, `codegg_config::encryption` | AES-256-GCM + Argon2id; master key via `get_master_key()` (`CODEGG_MASTER_KEY`) |
 | Resilience | `circuit.rs`, `fallback.rs`, `cache.rs`, `discovery.rs`, `provider_profile.rs` | `CircuitBreaker`, `FallbackProvider`, response cache, SQLite discovery cache, profile-driven models endpoint. **No shipped model catalog** — `models.rs`/`catalog.rs` were removed; see `architecture/provider.md` "Model discovery authority" |
 | Streaming | `wire.rs`, `responses_api.rs`, `text_tool_parser.rs` | Shared `eggpool-wire` kernel bridge (canonical request encode + stream decode), Responses API adapter, bounded textual tool-call repair |
@@ -177,6 +177,49 @@ to violate.
     `x-api-key`. A surface never receives the other's credential header, and
     profile-supplied static headers may not collide with the transport-owned
     credential, session, or content-type headers.
+11. **The reasoning label is open, provider-scoped, and verbatim.** The
+    effort selection is a free-form label, not a level on a closed enum: a
+    vendor label (`xhigh`, `max`, `none`, `default`) is legitimate and reaches
+    the wire unchanged. Never normalize, lower-case, translate, or fold a
+    label onto a fixed level set — folding `xhigh` into `high` silently
+    changes what the model is asked to do. The four labels in
+    `codegg_protocol::core::KNOWN_REASONING_EFFORT_LABELS` are a convenience
+    set for the frontend's fallback cycling order only, not an accepted value
+    set. `scripts/check_reasoning_vocabulary_open.py` guards this, and
+    `scripts/check_reasoning_intent_fidelity.py` guards the bridge: no
+    `explicit_disable: false` literal and no closed effort enum in the
+    provider crate. The daemon owns the durable selection and resolves it at
+    turn admission as **explicit turn override ▸ persisted principal
+    preference ▸ agent / model-profile default**; a daemon that has not
+    advertised the open vocabulary refuses a non-enumerated label with a
+    typed error rather than mis-decoding it.
+12. **A reasoning selection the model cannot accept is refused locally, not
+    forwarded.** The open vocabulary says a label may be *sent*; it says
+    nothing about whether the model behind it accepts that label. The
+    per-model capability record answers that, and it has four independent
+    dimensions — the accepted effort labels, whether reasoning can be
+    disabled, whether a fixed thinking budget is accepted (and its bounds),
+    and whether the model always reasons — each carrying a status in the
+    kernel's vocabulary (`Supported | Unsupported | Unknown | Mixed |
+    Conflicting`). An **undeclared** dimension is `Unknown`, never
+    `Unsupported`: "nobody published a contract for this" is not the same
+    claim as "the model refuses this". Never fabricate a label, never turn
+    a depth label into a token budget, and never mark a dimension
+    `Unsupported` because it is simply unknown. The effective capability is
+    resolved in the order **operator/config override ▸ adapter baseline ▸
+    discovery overlay ▸ unknown**, and every source may only **narrow**:
+    the merged accepted-label set is the intersection of the declared sets,
+    and an overlay that introduces a label, a bound, or an always-reasons
+    value the effective record does not carry is rejected in full and the
+    rejection is reported. The admission policy is the kernel's
+    **fail-closed** default (`unsupported → Reject`, `unknown → Reject`,
+    `mixed → WarnDrop`): a selection the model does not accept is refused
+    at turn admission with a typed error naming the model and the
+    dimension, and no provider request is dispatched. A dropped dimension
+    is recorded as a notice that says what was dropped — a silently dropped
+    dimension is the defect this contract exists to remove. The kernel's
+    neutral capability type is status-only: it never validates a label, so
+    the accepted-label set stays in CodeGG's record.
 
 ## Static Guards
 
@@ -186,6 +229,9 @@ bash scripts/check_provider_connections_tombstone_compat.sh  # tombstone compat
 python3 scripts/check_provider_qualification.py             # catalog != credential verification
 python3 scripts/check_provider_wire_boundary.py             # only neutral eggpool contracts
 python3 scripts/check_provider_multi_surface_dispatch.py    # one surface per request, fails closed
+python3 scripts/check_reasoning_intent_fidelity.py         # the bridge keeps every reasoning mode
+python3 scripts/check_reasoning_vocabulary_open.py         # open label vocabulary + daemon-owned selection
+python3 scripts/check_model_profile_capability_mirror.py  # the runtime profile and the build.rs mirror agree
 ```
 
 ## Testing
@@ -193,10 +239,16 @@ python3 scripts/check_provider_multi_surface_dispatch.py    # one surface per re
 ```bash
 cargo test -p codegg-providers
 cargo test -p codegg --lib core::eggpool::tests   # qualification semantics
-cargo test -p codegg --test opencode_go_connection_trajectory  # durable -> wire end to end
+cargo test -p codegg --test agent_loop -- opencode_go_connection_trajectory  # durable -> wire end to end
 codegg providers          # against real config, not a static list
 codegg models -p openai
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The OpenCode Go trajectory
+is a member of the `agent_loop` family, so the correct form is
+`cargo test --test agent_loop -- opencode_go_connection_trajectory`.
 
 The cross-layer trajectory redirects the OpenCode Go **origin** onto a loopback
 capture server so a real inference request can be observed. That redirect lives
@@ -209,8 +261,12 @@ env-reachable endpoint override to make a test pass.
 ## See Also
 
 - `architecture/provider.md`, `architecture/auth.md`, `architecture/crypto.md`
+- `architecture/model-adapters.md` — the per-model capability record, the
+  shipped baseline, and the merge and resolution rules
 - `.opencode/skills/agent/SKILL.md` — per-turn provider object + semantic router bounds
 - `.opencode/skills/core/SKILL.md` — provider/model selection helpers on the core facade
+- `.opencode/skills/session-storage/SKILL.md` — the durable, principal-scoped
+  reasoning selection (`runtime_preferences.reasoning_selection`)
 
 ## Source verification
 
@@ -227,7 +283,7 @@ Verified 2026-10-06 against `architecture/provider.md`,
 `src/main.rs`, and `scripts/`. Corrected the streaming row (`sse_parser.rs`
 was retired; the shared `eggpool-wire` kernel bridge `wire.rs` now owns
 canonical encode and stream decode), the `CredentialCapability` attribution
-(defined in `auth_types.rs:84` and re-exported from `provider_core.rs:17` as
+(defined in `auth_types.rs:102` and re-exported from `provider_core.rs:16` as
 `ProviderCredentialCapability`; `credential_capability_for` is the
 provider-side entry point), and the truncated test name
 `catalog_covers_builtin_registration_order` →
@@ -235,16 +291,47 @@ provider-side entry point), and the truncated test name
 
 **Corrected a materially wrong invariant.** The skill previously claimed
 that one config-declared provider suppresses the whole env-var sweep.
-Disproved by `provider_core.rs:890-1091`: the config-first path makes 17
+Disproved by `provider_core.rs:1023-1317`: the config-first path makes 17
 explicit per-provider registration calls (each config-then-env-var), and the
-`if registry.list().is_empty()` guard at `provider_core.rs:1088` is a
+`if registry.list().is_empty()` guard at `provider_core.rs:1317` is a
 redundant fallback. `architecture/provider.md:82-86` and `:471-477` already
 stated the correct per-provider independence; the skill now matches both the
 source and that doc. Counts confirmed empirically: 17 entries in
-`builtin_registration_order()` (`provider_core.rs:592`) and 17 registration
+`builtin_registration_order()` (`provider_core.rs:627`) and 17 registration
 calls in `register_builtin_with_config`, versus 15 env vars in
-`register_builtin` (`provider_core.rs:498-563`).
+`register_builtin` (`provider_core.rs:533-626`).
 Claims without a traceable source were removed rather than guessed.
+
+**Added the per-model reasoning capability contract (2026-10-21).** Rule 12
+is new. Verified against `crates/codegg-config/src/schema.rs`
+(`ReasoningCapabilityRecord`, `ReasoningCapabilityStatus`),
+`crates/codegg-core/src/model_profile/capability.rs` (the merge rule, the
+resolution order, and `evaluate_reasoning_selection`),
+`crates/codegg-core/build.rs` (the `Profile` and `ReasoningCapability`
+mirrors), `crates/codegg-providers/src/capability.rs` (the kernel's
+capability machinery reached through the single `eggpool-wire`
+declaration), `src/core/daemon_turns.rs` (`admit_reasoning_capability`),
+the shipped adapter assets under
+`crates/codegg-core/assets/model-adapters/`, and
+`scripts/check_model_profile_capability_mirror.py`. The rule,
+`architecture/provider.md`, `architecture/config.md` and
+`architecture/model-adapters.md` were updated in the same change, because
+the provider doc previously described no per-model capability contract at
+all — an unsupported selection was forwarded and came back as silence.
+
+**Added the open reasoning vocabulary contract (2026-10-21).** Rule 11 is new.
+Verified against `crates/codegg-protocol/src/core.rs`
+(`KNOWN_REASONING_EFFORT_LABELS`, `ReasoningOverride::Effort { level: String }`,
+`ReasoningCapabilitiesDto`), `crates/codegg-providers/src/wire.rs`
+(`reasoning_intent` carries the label verbatim),
+`crates/codegg-core/src/approval.rs` (the durable selection and its
+validation), `src/core/daemon_turns.rs`
+(`resolve_reasoning_selection`, `check_reasoning_label`), and
+`scripts/check_reasoning_vocabulary_open.py`. The rule and
+`architecture/provider.md` were updated in the same change, because the
+provider doc previously described the per-turn field as frontend-local and
+never persisted, which stopped being true once the daemon took ownership of
+the selection.
 
 **Added the turn credential-authority and pruning contracts (2026-10-15).**
 Rules 1, 4a, and 6c are new; `architecture/provider.md` was corrected in the
@@ -260,3 +347,45 @@ derivation from the selected connection), and `src/core/eggpool.rs`
 (`prune_superseded_credential`, `credential_account_referenced`). The
 `provider_core.rs` line numbers in rules 1, 4 and in the older verification
 note below were dropped rather than re-pinned, since this change moved them.
+
+Second pass (2026-10-23): re-verified against
+`crates/codegg-providers/src/{provider_core,auth_types,setup_catalog,wire,circuit,fallback,cache,discovery,provider_profile,qualification}.rs`,
+`crates/codegg-config/src/encryption.rs`, `src/auth/{cli,mod}.rs`,
+`src/main.rs`, `src/core/{eggpool,daemon_turns,provider_qualification}.rs`,
+`src/agent/{turn_runtime,provider_qualification}.rs`, `scripts/`, and the
+`agent_loop` test family.
+
+Confirmed unchanged: the **17** built-ins in `builtin_registration_order()`
+(`crates/codegg-providers/src/provider_core.rs:627` — anthropic, openai,
+google, openrouter, opencode_zen, mistral, groq, deepinfra, cerebras, cohere,
+together, perplexity, xai, venice, minimax, opencode_go, generalcompute) and
+the **15** env vars in the `register_builtin` sweep
+(`provider_core.rs:533-626` — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `OPENCODE_ZEN_API_KEY`,
+`MISTRAL_API_KEY`, `GROQ_API_KEY`, `DEEPINFRA_API_KEY`, `CEREBRAS_API_KEY`,
+`COHERE_API_KEY`, `TOGETHERAI_API_KEY`, `PERPLEXITY_API_KEY`, `XAI_API_KEY`,
+`VENICE_API_KEY`, `MINIMAX_API_KEY`); the redundant
+`if registry.list().is_empty()` fallback; `models.rs` and `catalog.rs` being
+absent from `crates/codegg-providers/src/`; `CredentialCapability` living in
+`auth_types.rs` and re-exported from `provider_core.rs`; `ExternalCommand`
+being unsupported; `TurnRunInput::credential_locator`
+(`src/agent/turn_runtime.rs:190`) and the locator derivation in
+`src/core/daemon_turns.rs:261`; `prune_superseded_credential`
+(`src/core/eggpool.rs:1814`) and `credential_account_referenced` (`:1850`);
+and the five provider guard scripts.
+
+Corrected: the `AuthSubcommand` enum was cited at `src/main.rs:508` (actually
+`:582`), and the `AuthCli` handlers at `src/auth/cli.rs:93`/`:124`/`:161`
+(actually `status` `:106`, `set_key` `:137`, `logout` `:174`). The
+`provider_core.rs` line numbers in the 2026-10-06 note had drifted —
+`builtin_registration_order()` `:592` → `:627`, `register_builtin`
+`:498-563` → `:533-626`, `register_builtin_with_config` `:890-1091` →
+`:1023-1317`, the empty-registry guard `:1088` → `:1317` — and
+`auth_types.rs:84` → `:102`, `provider_core.rs:17` → `:16`.
+
+Corrected: the OpenCode Go trajectory command named a target that does not
+exist. `opencode_go_connection_trajectory.inc` is a member of the
+`agent_loop` family, so `cargo test -p codegg --test
+opencode_go_connection_trajectory` selected zero tests and exited 0; it now
+reads `cargo test -p codegg --test agent_loop -- opencode_go_connection_trajectory`.
+

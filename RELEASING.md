@@ -413,9 +413,12 @@ executable, renamed to a CodeGG-owned name so a managed install never
 resolves an unrelated PATH `eggsearch`:
 
 - source: `https://github.com/eggstack/eggsearch`
-- pinned version: `0.4.3` (tag `v0.4.3`, commit
-  `5e7b853e7eebf29c58f84959805c8774279d7ea4`; authoritative version, tag, and
-  commit are recorded in `scripts/release/lib-release.sh`)
+- pinned version: `0.4.4` (commit
+  `32f48bb57a43274d763c7f9ba919eab84d125edc`; the authoritative version and
+  commit are recorded in `scripts/release/lib-release.sh` as
+  `CODEGG_EGGSEARCH_PINNED_VERSION` and `CODEGG_EGGSEARCH_UPSTREAM_COMMIT`).
+  The pin is a **commit** reference, not a release tag — the upstream project
+  has no `v0.4.4` tag to check out, so build from the commit itself)
 - license: MIT, as published upstream; redistributed under upstream terms
 - stable contract: upstream MCP tool surface and CLI. Do not compile
   CodeGG against eggsearch's internal Rust modules to ease packaging.
@@ -439,12 +442,12 @@ step before packaging, for example:
 ```bash
 # Option A: build upstream from the pinned tag.
 git clone https://github.com/eggstack/eggsearch.git /tmp/eggsearch
-git -C /tmp/eggsearch checkout v0.4.3
+git -C /tmp/eggsearch checkout 32f48bb57a43274d763c7f9ba919eab84d125edc
 cargo build --release --manifest-path /tmp/eggsearch/Cargo.toml
-/tmp/eggsearch/target/release/eggsearch --version  # must report eggsearch 0.4.3
+/tmp/eggsearch/target/release/eggsearch --version  # must report eggsearch 0.4.4
 
 # Option B: reuse an already-built pinned binary and validate it the same way.
-eggsearch --version  # must report eggsearch 0.4.3
+eggsearch --version  # must report eggsearch 0.4.4
 ```
 
 When eggsearch redistribution requires license attribution, pass a
@@ -466,7 +469,7 @@ path is NOT self-contained and must never be described as such.
 - The supported self-contained contract is the prebuilt installer bundle
   from this document.
 - Source developers provide the pinned eggsearch sidecar themselves: build
-  or fetch eggsearch `0.4.3` per the provenance section above and place
+  or fetch eggsearch `0.4.4` per the provenance section above and place
   the resulting executable as `codegg-eggsearch` next to the built
   `codegg` (alongside `codegg-sandbox-helper` from `cargo build`), or
   configure an explicit `[search.eggsearch].command` / `[mcp.eggsearch]`
@@ -502,7 +505,7 @@ target/x86_64-unknown-linux-gnu/release/codegg --version
 # ... repeat per target on the host that built it, including the helper
 # identity probe and the pinned eggsearch version:
 target/x86_64-unknown-linux-gnu/release/codegg-sandbox-helper 2>&1 | head -1
-/tmp/eggsearch/target/release/eggsearch --version  # must report eggsearch 0.4.3
+/tmp/eggsearch/target/release/eggsearch --version  # must report eggsearch 0.4.4
 
 # 4. Package each target's bundle with an explicit target label (never
 #    guessed). Every target needs its codegg binary, its
@@ -625,7 +628,7 @@ Each smoke run must show:
 - `installed: <dir>/codegg-sandbox-helper` (executable, refuses a bare
   invocation like the packaged helper);
 - `installed: <dir>/codegg-eggsearch` plus a matching
-  `eggsearch 0.4.3` version line;
+  `eggsearch 0.4.4` version line;
 - PATH guidance only when the destination is not discoverable;
 - no privilege escalation, shell-profile edit, or daemon/service change.
 

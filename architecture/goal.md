@@ -313,6 +313,15 @@ pub struct GoalUsageUpdate {
 - `read_checkpoint_tail()` / `checkpoint_tail_of()` (M002) — bounded latest tail of the append-only journal with UTF-8-safe char slicing
 - `append_checkpoint_update()` — append progress updates
 
+`append_checkpoint_update()` flushes before it returns, so an appended update
+is readable by the next reader of the journal. `tokio::fs::File` buffers
+writes and hands them to the operating system on flush, not on write: without
+the explicit flush the bytes are still in flight when the handle is dropped,
+and a reader that runs immediately after the append — the model-facing
+`goal_update_progress` path, the daemon goal path, or the turn-start tail
+read — observes a truncated journal and silently loses the newest update. The
+sibling index append in `run_store.rs` flushes for the same reason.
+
 The Markdown journal is a user-facing historical journal, not canonical
 current-state authority. Typed `Goal` fields (objective, phase,
 progress, next action, open questions, revision) provide current state;
@@ -442,9 +451,33 @@ against `model.rs:52`), `GoalStatus` (`:8`, 7 variants), `is_terminal`
 variants), `create_checkpoint_file` (`checkpoint.rs:9`), all three
 `render.rs` helpers, `MAX_CONSECUTIVE_NOPROGRESS_BEFORE_AWAITING_USER = 3`
 (`progress.rs:45`), `MAX_CONTINUATIONS = 32`
-(`src/agent/turn_completion.rs:183`), and the schema claim (goal table in
-`migrate_v16` at `schema.rs:894`; `goal.revision` in `migrate_v45` at
-`schema.rs:2184`).
+(`src/agent/turn_completion.rs:221`), and the schema claim (goal table in
+`migrate_v16` at `schema.rs:971`; `goal.revision` in `migrate_v45` at
+`schema.rs:2261`, the `ALTER TABLE goal ADD COLUMN revision` statement at
+`:2264`).
 Refuted the prior review's "8 of 12 `GoalStore` line refs are stale by 3-90
 lines" claim: 10 of the 12 were accurate, and the single stale one
 (`clear_active_for_session`) was off by 55 lines, not up to 90.
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: three line anchors had drifted. `MAX_CONTINUATIONS = 32` is
+  now `src/agent/turn_completion.rs:221` (was `:183`); the goal table's
+  `migrate_v16` is `crates/codegg-core/src/session/schema.rs:971` (was
+  `:894`); and `goal.revision` is added by `migrate_v45` at `schema.rs:2261`
+  with the `ALTER TABLE goal ADD COLUMN revision` statement at `:2264` (was
+  `:2184`).
+- **Verified accurate**: `crates/codegg-core/src/goal/` still holds exactly the
+  8 files named above; the 20-field `Goal` struct; `GoalStatus` (7 variants);
+  `GoalBudget` (4 axes); `GoalUsage` (5 fields); `GoalRuntimeOutcome` (3
+  variants); `GoalStore` at `store.rs:57` and `GoalUsageUpdate` at `store.rs:12`;
+  `ContinuationDecision` at `runtime.rs:147`; every `GoalStore` method line
+  (`create_active`:160, `active_for_session`:212, `get`:225,
+  `update_status`:234, `complete_if_active`:263, `update_status_if_revision`:289,
+  `clear_active_for_session`:316, `update_progress`:333,
+  `update_progress_if_revision`:345, `increment_usage`:451,
+  `enforce_budget`:514, `set_budget`:530, `latest_paused_for_session`:560);
+  `MAX_CONSECUTIVE_NOPROGRESS_BEFORE_AWAITING_USER = 3` (`progress.rs:45`);
+  `maybe_continue_goal` (`turn_completion.rs:204`); the three
+  `src/tool/goal.rs` structs (`GoalGetTool`:10, `GoalUpdateProgressTool`:80,
+  `GoalRequestCompletionTool`:204).

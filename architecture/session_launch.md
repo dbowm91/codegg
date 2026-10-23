@@ -371,3 +371,25 @@ launch that allocates a checkout.
 - It does not make the checkout's branch the session's branch policy. The
   target branch is what the checkout is created on; nothing here decides
   what a later merge should do.
+
+## Source verification
+
+Verified 2026-10-23 against source. This document previously carried no
+dated verification section; this pass adds one.
+
+Confirmed unchanged: the owning module
+`crates/codegg-core/src/session_launch.rs` and its seven-stage
+`SessionLaunchStage` (`:124`) — `Accepted`, `CheckoutReserved`,
+`CheckoutReady`, `SessionCreated`, `Bound`, `Completed`, `NeedsAttention` —
+mirroring the durable `stage` values the `session_launch` table's own
+`CHECK` constraint admits (`accepted`, `checkout_reserved`,
+`checkout_ready`, `session_created`, `bound`, `completed`,
+`needs_attention`; `crates/codegg-core/src/session/schema.rs:3655-3670`);
+the migration that creates that table, **`migrate_v87`** — the current
+`STORAGE_LAYOUT_VERSION` (87); the two non-atomic resources the milestone
+exists to reconcile, `WorktreeService::reserve`
+(`crates/codegg-core/src/worktree_service.rs:920`) and `SessionStore::fork`
+(`crates/codegg-core/src/session/store.rs:1192`); and the managed-checkout
+binding path this milestone depends on,
+`ProjectStorage::bind_checkout_workspace` and `record_workspace_worktree`
+(`crates/codegg-core/src/project_storage.rs`).

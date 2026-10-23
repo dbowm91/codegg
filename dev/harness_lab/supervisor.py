@@ -8,16 +8,44 @@ from pathlib import Path
 import platform
 import re
 import selectors
+import shutil
 import signal
 import subprocess
 import tempfile
 import time
-from typing import Any
+from typing import Any, Optional
 import uuid
 
 
 MAX_FRAME_BYTES = 1024 * 1024
 LOG_TAIL_BYTES = 64 * 1024
+
+#: Stable, secret-safe failure categories the native ACP adapter may report on
+#: the `-32010` error payload. Mirrors `TurnFailureCategory` in
+#: `crates/codegg-protocol/src/core.rs`. A value outside this set is NOT
+#: coerced into a known category: an unrecognized category is recorded as
+#: absent rather than silently relabelled as `native_failure_unspecified`.
+FAILURE_CATEGORIES = (
+    "provider_transport",
+    "provider_auth",
+    "provider_rate_limit",
+    "provider_timeout",
+    "provider_api",
+    "cancelled",
+    "daemon_restarted",
+    "agent_internal",
+    "native_failure_unspecified",
+)
+
+#: Why provider usage is present or absent on a terminal event. Mirrors
+#: `UsageAvailability` in `crates/codegg-protocol/src/core.rs`.
+USAGE_AVAILABILITY = (
+    "reported",
+    "not_observed",
+    "not_provided",
+    "lost_at_projection",
+    "unspecified",
+)
 
 
 class HarnessError(RuntimeError):
@@ -29,7 +57,71 @@ class HarnessTimeout(HarnessError):
 
 
 class HarnessTurnFailure(HarnessError):
-    pass
+    """A native turn reached a failure terminal.
+
+    Carries the redacted failure evidence projected by the native adapter on
+    the `-32010` JSON-RPC error `data` payload. The evidence is deliberately
+    narrow: an allowlisted category and provider usage with an explicit
+    provenance. It never carries the provider's error text.
+    """
+
+    def __init__(self, message: str, *, category: Optional[str] = None,
+                 usage: Optional[dict[str, Any]] = None,
+                 usage_reason: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.category = category
+        self.usage = usage
+        self.usage_reason = usage_reason
+
+    @property
+    def usage_unavailable_reason(self) -> Optional[str]:
+        """Named reason the provider usage is absent, or ``None`` when measured.
+
+        A missing measurement is never reported as zero usage: when the native
+        side could not observe usage, this names why.
+        """
+        if self.usage is not None:
+            return None
+        return self.usage_reason or "unspecified"
+
+
+def _optional_token_count(value: Any) -> Optional[int]:
+    """Return a provider token count, keeping "absent" distinct from zero."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def decode_turn_failure(data: Any) -> HarnessTurnFailure:
+    """Decode the native `-32010` error `data` payload into redacted evidence.
+
+    Unknown or malformed fields degrade to "unknown" rather than being
+    coerced into a known category or a zero token count.
+    """
+    payload = data if isinstance(data, dict) else {}
+    raw_category = payload.get("codeggFailureCategory")
+    category = raw_category if raw_category in FAILURE_CATEGORIES else None
+
+    raw_usage = payload.get("codeggUsage")
+    usage: Optional[dict[str, Any]] = None
+    if isinstance(raw_usage, dict):
+        usage = {
+            "turn_id": payload.get("turnId") if isinstance(payload.get("turnId"), str) else None,
+            "input_tokens": _optional_token_count(raw_usage.get("inputTokens")),
+            "output_tokens": _optional_token_count(raw_usage.get("outputTokens")),
+            "cached_tokens": _optional_token_count(raw_usage.get("cachedTokens")),
+            "reasoning_tokens": _optional_token_count(raw_usage.get("reasoningTokens")),
+        }
+
+    raw_reason = payload.get("codeggUsageReason")
+    usage_reason = raw_reason if raw_reason in USAGE_AVAILABILITY else None
+    if usage is not None and usage_reason is None:
+        usage_reason = "reported"
+    if usage is None and usage_reason is None:
+        usage_reason = "unspecified"
+    return HarnessTurnFailure(
+        "ACP reported a terminal native turn failure",
+        category=category, usage=usage, usage_reason=usage_reason)
 
 
 def sha256_file(path: Path) -> str:
@@ -38,6 +130,29 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+#: The platform limit on a bound Unix socket path.
+#:
+#: ``sun_path`` is 104 bytes on macOS and 108 on Linux. The daemon binds its
+#: control socket at ``<lane>/daemon/core.sock``, so a lane root whose full
+#: socket path exceeds the limit cannot start a daemon at all. macOS's
+#: per-user temporary directory is long enough on its own to break that, so
+#: every lane is placed under a short root instead.
+SUN_PATH_LIMIT = 96
+
+
+def lane_root(name: str) -> Path:
+    """Return a private lane root whose control socket path fits the platform.
+
+    The lane lives under the user's home so the path stays short and contains
+    no symlinked component: the daemon refuses a managed scratch path whose
+    components are symlinks, and ``/var`` is a symlink on macOS.
+    """
+    root = Path.home() / ".codegg-harness-lanes" / name
+    if len(str(root / "daemon" / "core.sock").encode()) >= SUN_PATH_LIMIT:
+        root = Path("/tmp") / name
+    return root
 
 
 @dataclass(frozen=True)
@@ -159,19 +274,76 @@ class AcpClient:
                 raise HarnessError(f"ACP emitted invalid JSON-RPC: {error}") from error
             if value.get("id") != request_id:
                 if "method" in value and "id" not in value:
-                    value["_received_elapsed_ms"] = int((time.monotonic() - self._started_monotonic) * 1000)
-                    self.notifications.append(value)
-                    params = value.get("params", {})
-                    update = params.get("update", {}) if isinstance(params, dict) else {}
-                    self.frame_summaries.append({"method": value.get("method"), "sessionUpdate": update.get("sessionUpdate") if isinstance(update, dict) else None})
+                    self._absorb_frame(value)
                 continue
             if "error" in value:
                 error = value.get("error", {})
                 if isinstance(error, dict) and error.get("code") == -32010:
-                    raise HarnessTurnFailure("ACP reported a terminal native turn failure")
+                    raise decode_turn_failure(error.get("data"))
                 raise HarnessError(f"ACP {method} failed: {value['error']}")
             self.frame_summaries.append({"response_id": value.get("id"), "method": method, "result_keys": sorted(value.get("result", {}).keys()) if isinstance(value.get("result"), dict) else []})
             return value.get("result", {})
+
+    def _absorb_frame(self, value: dict[str, Any]) -> None:
+        """Absorb one non-response JSON-RPC frame as a notification."""
+        value["_received_elapsed_ms"] = int((time.monotonic() - self._started_monotonic) * 1000)
+        self.notifications.append(value)
+        params = value.get("params", {})
+        update = params.get("update", {}) if isinstance(params, dict) else {}
+        self.frame_summaries.append({"method": value.get("method"),
+                                     "sessionUpdate": update.get("sessionUpdate") if isinstance(update, dict) else None})
+
+    def drain(self, timeout: float = 1.0) -> int:
+        """Read every notification that is already in flight, then stop.
+
+        A tool call is reported by two notifications: the ``tool_call`` start
+        and the ``tool_call_update`` finish. The ACP server can deliver the
+        last of them *after* the ``session/prompt`` response, so counting the
+        notification stream the moment the response arrives can miss the tail
+        of the turn. A trial that counted fewer tool calls than the agent
+        actually made read as a stalled turn, and the same trial could read
+        differently on the next run — the count depended on how the two
+        streams interleaved.
+
+        The drain reads until the stream is quiet for a short idle window, so
+        the counts describe the turn rather than the scheduling.
+        """
+        assert self.process.stdout
+        deadline = time.monotonic() + timeout
+        absorbed = 0
+        while time.monotonic() < deadline:
+            line = self._read_line(deadline)
+            if line is None:
+                break
+            try:
+                value = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if "method" in value and "id" not in value:
+                self._absorb_frame(value)
+                absorbed += 1
+        return absorbed
+
+    def _read_line(self, deadline: float) -> bytes | None:
+        """Read one newline-terminated frame, or None when the stream is idle."""
+        assert self.process.stdout
+        while True:
+            newline = self._stdout_buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self._stdout_buffer[:newline])
+                del self._stdout_buffer[:newline + 1]
+                return line
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            if not self._selector.select(min(remaining, 0.05)):
+                # The stream went quiet: the turn is over as far as the
+                # notification stream is concerned.
+                return None
+            chunk = os.read(self.process.stdout.fileno(), 65536)  # type: ignore[union-attr]
+            if not chunk:
+                return None
+            self._stdout_buffer.extend(chunk)
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         assert self.process.stdin
@@ -197,6 +369,14 @@ class AcpClient:
                     self.process.wait(timeout=2)
         self._selector.close()
         self._stderr_thread.join(timeout=1)
+        # The child's pipes are file objects of this process: leaving them open
+        # leaks a descriptor per trial and reports a ResourceWarning.
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
 
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
@@ -388,6 +568,17 @@ def _stop_daemon(spec: SubjectSpec, timeout: float) -> None:
     raise HarnessError(f"lane {spec.lane_id} daemon did not exit gracefully; no unverified signal sent")
 
 
+def stop_lane_daemon(spec: SubjectSpec, timeout: float = 15.0) -> None:
+    """Stop the lane's daemon and refuse to leave an unverified one behind.
+
+    A lane that leaves its daemon running keeps a socket, a lock and a process
+    alive after the trial ends. The stop is verified against the lane's own
+    recorded identity, so the harness never signals a process it cannot prove
+    it owns.
+    """
+    _stop_daemon(spec, timeout)
+
+
 def run_smoke(binary: Path, subjects: int = 2, timeout: float = 20.0, output_dir: Path | None = None, unattended_profile: str | None = None) -> dict[str, Any]:
     if os.name != "posix" or platform.system() not in {"Linux", "Darwin"}:
         raise HarnessError("real multi-daemon smoke currently supports macOS and Linux only")
@@ -500,7 +691,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    expected_file: str = "tool-receipt.txt",
                    expected_exists: bool | None = None, cancel_task: bool = False,
                    expected_terminal: str = "passed", timeout_task: bool = False,
-                   context_text: str | None = None, expected_tool_failures: int = 0) -> dict[str, Any]:
+                   context_text: str | None = None, expected_tool_failures: int = 0,
+                   fail_after_tools: bool = False, fault_kind: str = "transport",
+                   agent_steps: int | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -508,9 +701,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         raise HarnessError("profile must be full-host or workspace-write")
     trial_started = time.monotonic()
     binary = binary.resolve()
-    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-") as temp:
-        root = Path(temp).resolve() / "lane"
-        root.mkdir()
+    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
+        root = lane_root("tool-" + uuid.uuid4().hex[:8])
+        root.mkdir(parents=True, exist_ok=True)
         workspace = root / "workspace"
         workspace.mkdir()
         target = (workspace / expected_file).resolve(strict=False)
@@ -538,7 +731,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             return value
         tool_sequence = bind_workspace(tool_sequence)
         provider = FixtureProvider(tool_sequence, stall_after_tools=cancel_task or timeout_task,
-                                   require_context_text=context_text).start()
+                                   require_context_text=context_text,
+                                   fail_after_tools=fail_after_tools,
+                                   fault_kind=fault_kind).start()
         spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
         env = spec.environment()
         config = {
@@ -550,6 +745,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             "permission": {"bash": "deny" if deny_bash else "ask", "bash_ask_patterns": ["*"]},
             "agent": {"build": {"permission": {"write": "ask"}}},
         }
+        if agent_steps is not None:
+            # The hard turn budget, made reachable inside one scripted trial.
+            # ADR-0040 Option B bounds a repeated cycle with the run/turn
+            # limits, not with a recovery stall, so a trial that must observe
+            # that bound has to set it explicitly.
+            if isinstance(agent_steps, bool) or not isinstance(agent_steps, int) or agent_steps < 1:
+                raise HarnessError("agent step budget must be a positive integer")
+            config["agent"]["build"]["steps"] = int(agent_steps)
         config_path = Path(env["CODEGG_TUI_CONFIG"])
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -596,6 +799,11 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                     result = prompt_result
             else:
                 result = client.request("session/prompt", prompt_params, timeout=timeout)
+            # The tool notifications that close the turn can arrive after the
+            # prompt response. Counting them before the stream is quiet made
+            # the same trial report a different number of tool calls from run
+            # to run, and the terminal it recorded followed from that count.
+            client.drain(timeout=min(2.0, max(0.2, timeout / 10)))
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
             tool_updates = [item.get("params", {}).get("update", {}) for item in updates]
             starts = [item for item in tool_updates if item.get("sessionUpdate") == "tool_call"]
@@ -692,6 +900,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                     case_sha256=case_sha256, trace=trace,
                     terminal_override=("cancelled" if expected_terminal == "cancelled" else
                                        "execution_failed" if bounded_stall else None),
+                    expected_terminal=expected_terminal,
                 )
             return result
         except (HarnessError, OSError, subprocess.TimeoutExpired) as error:
@@ -717,6 +926,13 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         for item in client.notifications),
                     "failure_type": type(error).__name__,
                 }
+                if isinstance(error, HarnessTurnFailure):
+                    # The native adapter projects a redacted category and the
+                    # usage observed before the failure. A missing measurement
+                    # is recorded with its named reason, never as zero usage.
+                    failed_receipt["failure_category"] = error.category
+                    failed_receipt["codegg_usage"] = error.usage
+                    failed_receipt["usage_unavailable_reason"] = error.usage_unavailable_reason
                 terminal = ("timeout" if isinstance(error, (HarnessTimeout, subprocess.TimeoutExpired))
                             else "execution_failed" if isinstance(error, HarnessTurnFailure)
                             else "infrastructure_error")
@@ -725,7 +941,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                        expected_text=expected_text, expected_exists=expected_exists if expected_exists is not None else not deny_bash,
                        timeout_seconds=timeout, repeat=repeat, suite_sha256=suite_sha256,
                        case_sha256=case_sha256, terminal_override=terminal,
-                       failure_class=type(error).__name__)
+                       failure_class=type(error).__name__,
+                       expected_terminal=expected_terminal)
                 failures_match = (failed_receipt["tool_failures"] >= expected_tool_failures
                                   if expected_terminal == "execution_failed"
                                   else failed_receipt["tool_failures"] == expected_tool_failures)
@@ -750,6 +967,314 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             provider.close()
             if _owned_daemon_pids(spec):
                 raise HarnessError("verified subject daemon remains after cleanup")
+            shutil.rmtree(root, ignore_errors=True)
+
+
+#: Evidence that a headless tool call was refused or failed.
+#:
+#: The headless contract reports neither a per-tool status nor a per-tool
+#: output: its JSON result carries only the tools the model called, the turn
+#: result, and the usage. A refusal is therefore read from the child's own
+#: output when the child prints one, and from the missing artifact when it
+#: does not. The markers are deliberately generic: a candidate that words its
+#: refusal differently must still be caught.
+EXEC_TOOL_REFUSAL_MARKERS = (
+    "permission denied",
+    "non-retryable error",
+    "missing workspace path policy",
+    "tool error:",
+    "tool_permission",
+    "permission_error",
+)
+
+#: The headless child names the refused tool when it reports one.
+EXEC_TOOL_REFUSAL_PATTERN = re.compile(r"Tool '([^']+)'[^\n]*non-retryable error", re.IGNORECASE)
+
+
+def _exec_tool_refused(name: str, refused_tools: list[str], tool_failures: int,
+                        tools_used: list[str]) -> bool:
+    """True when the observed tool call is the one that failed.
+
+    A refusal the child named is attributed to that tool. A refusal the child
+    did not name is attributed to the last tool it reported, because the
+    headless contract reports the called tools and nothing else.
+    """
+    if name in refused_tools:
+        return True
+    return bool(tool_failures) and not refused_tools and bool(tools_used) and name == tools_used[-1]
+
+
+def _parse_exec_payload(text: str) -> Optional[dict[str, Any]]:
+    """Return the headless child's JSON result object, or ``None``.
+
+    The child prints exactly one JSON object on stdout. A tolerant fallback
+    scans the trailing lines so a stray banner cannot hide the result, and an
+    unparseable stdout is reported as absent rather than guessed at.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
+    for line in reversed(stripped.splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def run_exec_trial(binary: Path, profile: str, timeout: float, *,
+                   ledger_root: Optional[Path] = None, candidate: str = "current",
+                   task_id: str = "headless-exec-write", group_id: str = "headless-exec",
+                   repeat: int = 0, suite_sha256: str = "", case_sha256: str = "",
+                   content: str = "harness-lab-tool-ok",
+                   expected_text: Optional[str] = "harness-lab-tool-ok",
+                   expected_file: str = "tool-receipt.txt",
+                   expected_exists: Optional[bool] = None,
+                   expected_terminal: str = "passed",
+                   expected_tool_failures: int = 0,
+                   tool_sequence: Optional[list[dict[str, Any]]] = None,
+                   initial_files: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """Run one headless ``codegg exec`` turn against the local deterministic fixture.
+
+    The headless adapter is measured the same way the native ACP adapter is,
+    with one difference that decides the whole trial: the headless contract
+    reports no per-tool status. A turn can complete with every tool refused
+    and still print ``success: true``, so the artifact and the child's own
+    output decide the outcome — never the child's success flag alone.
+
+    The trial never raises for an observed failure. It records the failure and
+    returns the receipt, so a score sees a failure terminal instead of an
+    aborted evaluation.
+    """
+    from .provider_fixture import FixtureProvider
+    if profile not in {"full-host", "workspace-write"}:
+        raise HarnessError("profile must be full-host or workspace-write")
+    trial_started = time.monotonic()
+    binary = binary.resolve()
+    root = lane_root("exec-" + uuid.uuid4().hex[:8])
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = root / "workspace"
+    workspace.mkdir()
+    provider = None
+    try:
+        target = (workspace / expected_file).resolve(strict=False)
+        if not target.is_relative_to(workspace.resolve()):
+            raise HarnessError("fixture verifier path escapes its private workspace")
+        for relative, value in (initial_files or {}).items():
+            path = (workspace / relative).resolve(strict=False)
+            if not path.is_relative_to(workspace.resolve()) or not isinstance(value, str) or len(value.encode()) > 65536:
+                raise HarnessError("fixture initial file path or content is invalid")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value, encoding="utf-8")
+        if tool_sequence is None:
+            tool_sequence = [{"name": "write", "arguments": {"path": expected_file, "content": content}}]
+        if not isinstance(tool_sequence, list) or not 1 <= len(tool_sequence) <= 8:
+            raise HarnessError("fixture tool sequence must contain 1-8 calls")
+        def bind_workspace(value: Any) -> Any:
+            if isinstance(value, str):
+                return value.replace("{workspace}", str(workspace))
+            if isinstance(value, list):
+                return [bind_workspace(item) for item in value]
+            if isinstance(value, dict):
+                return {key: bind_workspace(item) for key, item in value.items()}
+            return value
+        tool_sequence = bind_workspace(tool_sequence)
+        provider = FixtureProvider(tool_sequence).start()
+        spec = SubjectSpec.create("exec-trial", binary, workspace, root, Path.cwd())
+        env = spec.environment()
+        config = {
+            "provider": {"openai": {
+                "api_key": "local-fixture-only",
+                "base_url": provider.base_url,
+                "models": {"harness-fixture": {"name": "Harness Fixture"}},
+            }},
+            "permission": {"bash": "ask", "bash_ask_patterns": ["*"]},
+            "agent": {"build": {"permission": {"write": "ask"}}},
+        }
+        config_path = Path(env["CODEGG_TUI_CONFIG"])
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        request = json.dumps({
+            "prompt": f"Complete this deterministic local task using the supplied tool sequence: {task_id}.",
+            "model": "openai/harness-fixture",
+            "agent": "build",
+        })
+        argv = [str(binary), "exec", "--json", request, "--format", "json",
+                "--approval-mode", "yolo", "--sandbox", profile]
+        process = subprocess.Popen(argv, cwd=workspace, env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=(os.name == "posix"))
+        timed_out = False
+        try:
+            stdout_bytes, stderr_bytes = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _signal_owned_group(process, signal.SIGKILL)
+            try:
+                stdout_bytes, stderr_bytes = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                stdout_bytes, stderr_bytes = b"", b""
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+        payload = _parse_exec_payload(stdout_text)
+        combined = f"{stdout_text}\n{stderr_text}"
+        tools_used: list[str] = []
+        child_success = False
+        child_error: Optional[str] = None
+        child_code: Optional[str] = None
+        tokens_used: Optional[int] = None
+        if payload is not None:
+            raw_tools = payload.get("toolsUsed")
+            if isinstance(raw_tools, list):
+                tools_used = [str(item) for item in raw_tools]
+            child_success = payload.get("success") is True
+            raw_error = payload.get("error")
+            child_error = raw_error if isinstance(raw_error, str) else None
+            raw_code = payload.get("code")
+            child_code = raw_code if isinstance(raw_code, str) else None
+            tokens_used = _optional_token_count(payload.get("tokensUsed"))
+        observed_exists = target.is_file()
+        observed_text = target.read_text(encoding="utf-8", errors="replace") if observed_exists else None
+        expected_exists_resolved = True if expected_exists is None else bool(expected_exists)
+        artifact_matches = observed_exists and (expected_text is None or observed_text == expected_text)
+        # The same verdict the ledger's own verifier reaches: a missing
+        # artifact fails the case that expects one, and an artifact whose
+        # content differs fails it too.
+        verification_passed = ((not observed_exists and not expected_exists_resolved)
+                                or (expected_exists_resolved and artifact_matches))
+        refused_tools = sorted(set(EXEC_TOOL_REFUSAL_PATTERN.findall(combined)))
+        marker_hits = [marker for marker in EXEC_TOOL_REFUSAL_MARKERS if marker in combined.lower()]
+        tool_failures = len(refused_tools)
+        if tool_failures == 0 and marker_hits:
+            # The child reported a refusal without naming the tool.
+            tool_failures = 1
+        if tool_failures == 0 and tools_used and expected_exists_resolved and not artifact_matches:
+            # The child reported a tool call and the artifact never appeared:
+            # the tool did not do its work, whatever the child called the turn.
+            tool_failures = len(tools_used)
+        failures_match = (tool_failures >= expected_tool_failures if expected_terminal == "execution_failed"
+                          else tool_failures == expected_tool_failures)
+        if timed_out:
+            stop_reason = "timeout"
+        elif payload is None:
+            stop_reason = "indeterminate"
+        elif child_success:
+            stop_reason = "end_turn"
+        else:
+            stop_reason = "execution_failed"
+        if timed_out:
+            error_text = f"headless child exceeded the {timeout}s budget and was killed"
+        elif payload is None:
+            error_text = "headless child did not emit a parseable JSON result"
+        elif not child_success:
+            error_text = child_error or "headless child reported a failed turn"
+        else:
+            error_text = None
+        if timed_out or payload is None or not child_success:
+            ok = False
+        elif expected_terminal == "execution_failed":
+            ok = failures_match
+        elif expected_terminal == "assertion_failed":
+            ok = (not verification_passed) and failures_match
+        else:
+            ok = verification_passed and failures_match
+        usage = None
+        if tokens_used is not None:
+            # The headless contract reports one total and never splits it into
+            # input/output counts. A missing total stays missing: it is never
+            # reported as zero tokens.
+            usage = {"turn_id": None, "input_tokens": None, "output_tokens": None,
+                     "cached_tokens": None, "reasoning_tokens": None,
+                     "total_tokens": tokens_used}
+        receipt: dict[str, Any] = {
+            "ok": ok,
+            "task_id": task_id,
+            "repeat": repeat,
+            "profile": profile,
+            "provider": "local-openai-fixture",
+            "model": "openai/harness-fixture",
+            "agent": "build",
+            "tool_started": len(tools_used),
+            "tool_finished": max(len(tools_used) - tool_failures, 0),
+            "tool_failures": tool_failures,
+            "tool_outcomes": [{"tool": name,
+                               "status": "failed" if _exec_tool_refused(name, refused_tools, tool_failures, tools_used) else "completed"}
+                              for name in tools_used],
+            "tool_selection": tools_used,
+            "codegg_usage": usage,
+            "usage_unavailable_reason": "not_provided",
+            "tool_receipt_created": observed_exists,
+            "provider_calls": provider.calls,
+            "wall_time_ms": int((time.monotonic() - trial_started) * 1000),
+            "stop_reason": stop_reason,
+            "error": error_text,
+            "error_code": child_code,
+            "workspace": str(workspace),
+            "expected_file": expected_file,
+            # The headless path runs in-process: there is no daemon to prove.
+            "daemon": {},
+            # The headless contract exposes no policy receipt in its result.
+            "policy": None,
+            "session_id": None,
+        }
+        if ledger_root is not None:
+            from .ledger import record
+            trace = []
+            scripted: dict[str, Any] = {}
+            for call in tool_sequence:
+                name = call.get("name")
+                if isinstance(name, str) and name not in scripted:
+                    scripted[name] = call.get("arguments")
+            for name in tools_used:
+                arguments = scripted.get(name)
+                digest = (hashlib.sha256(json.dumps(arguments, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                          if arguments is not None else None)
+                trace.append({"kind": "tool_started", "tool": name,
+                              "arguments_sha256": digest, "elapsed_ms": None})
+                trace.append({"kind": "tool_finished", "tool": name,
+                              "status": "failed" if _exec_tool_refused(name, refused_tools, tool_failures, tools_used) else "completed",
+                              "elapsed_ms": None})
+            trace.append({"kind": "turn_terminal", "status": stop_reason})
+            override = None
+            if timed_out:
+                override = "timeout"
+            elif expected_terminal == "execution_failed" and failures_match:
+                # The case asked for a failed turn and the tool failures match:
+                # the recorded terminal names that failure rather than the
+                # missing artifact.
+                override = "execution_failed"
+            elif payload is not None and not child_success:
+                # The headless turn itself failed. The recorded terminal names
+                # the failed execution instead of the missing artifact, so the
+                # reliability criterion sees it as the avoidable failure it is.
+                override = "execution_failed"
+            try:
+                receipt["ledger_manifest"] = record(
+                    ledger_root, receipt, task_id=task_id, group_id=group_id,
+                    candidate=candidate, workspace=workspace, expected_file=expected_file,
+                    expected_text=expected_text, expected_exists=expected_exists_resolved,
+                    timeout_seconds=timeout, repeat=repeat, suite_sha256=suite_sha256,
+                    case_sha256=case_sha256, trace=trace, terminal_override=override,
+                    expected_terminal=expected_terminal)
+            except (ValueError, OSError) as error:
+                receipt["ledger_error"] = f"{type(error).__name__}: {error}"
+                receipt["ok"] = False
+        return receipt
+    finally:
+        if provider is not None:
+            provider.close()
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _default_daemon_fingerprint(binary: Path, timeout: float) -> tuple[str, str] | None:

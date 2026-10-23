@@ -554,23 +554,23 @@ then re-run recover: continue").
 
 | Type | File | Purpose |
 |------|------|---------|
-| `GitExecutionService` | `git_service.rs:232` | Unified read+raw executor |
-| `GitPayload` (13 variants) | `git_service.rs:42` | Structured read payloads |
-| `GitMutationExecutor` | `git_mutations.rs:477` | Mutation executor with snapshot/delta; M002 emits one structural `git_operation` per executed transition via the injected `execution_audit` + `audit_emitter` pair (silent without it). Typed, network, and recovery paths funnel through `execute`; unparsed variants emit in `run_raw_mutation`. Labels/digests via `git_audit_op_label`/`git_audit_ref_digest` (ref/remote-name only, never URLs/messages/paths); see `architecture/audit.md` "Live execution hooks (M002)" |
-| `GitEnvPolicy` | `git_mutations.rs:49` (re-export of `egggit::process::GitEnvPolicy`) | `apply()` (async) / `apply_sync()` (sync) |
+| `GitExecutionService` | `git_service.rs:282` | Unified read+raw executor |
+| `GitPayload` (13 variants) | `git_service.rs:92` | Structured read payloads |
+| `GitMutationExecutor` | `git_mutations.rs:504` | Mutation executor with snapshot/delta; M002 emits one structural `git_operation` per executed transition via the injected `execution_audit` + `audit_emitter` pair (silent without it). Typed, network, and recovery paths funnel through `execute`; unparsed variants emit in `run_raw_mutation`. Labels/digests via `git_audit_op_label`/`git_audit_ref_digest` (ref/remote-name only, never URLs/messages/paths); see `architecture/audit.md` "Live execution hooks (M002)" |
+| `GitEnvPolicy` | `git_mutations.rs:50` (re-export of `egggit::process::GitEnvPolicy`) | `apply()` (async) / `apply_sync()` (sync) |
 | `RepoSnapshot` | `codegg-git/src/workflow.rs:15` | Pre/post state capture |
 | `StateDelta` | `codegg-git/src/workflow.rs:30` | Diff between snapshots |
 | `MutationOutcome` (5 variants) | `codegg-git/src/workflow.rs:64` | Completed/NoOp/FastForward/Conflict/Rejected |
 | `MutationResult` | `codegg-git/src/workflow.rs:86` | Full mutation record |
-| `GitMutationError` (7 variants) | `git_mutations.rs:219` | Detailed error with `ExecutionContext` |
-| `NetworkEnvPolicy` | `git_network_ops.rs:46` | Extends base env with network vars |
-| `PushForce` (3 variants) | `git_network_ops.rs:187` | Normal/ForceWithLease/Force |
-| `PushRequest` | `git_network_ops.rs:228` | Push parameters |
-| `PullStrategy` (3 variants) | `git_network_ops.rs:135` | Merge/Rebase/FastForwardOnly |
-| `CleanRequest`, `CleanPreview` | `git_network_ops.rs:713,694` | Clean operation types |
+| `GitMutationError` (11 variants) | `git_mutations.rs:220` | Detailed error with `ExecutionContext` |
+| `NetworkEnvPolicy` | `git_network_ops.rs:45` | Extends base env with network vars |
+| `PushForce` (3 variants) | `git_network_ops.rs:190` | Normal/ForceWithLease/Force |
+| `PushRequest` | `git_network_ops.rs:231` | Push parameters |
+| `PullStrategy` (3 variants) | `git_network_ops.rs:138` | Merge/Rebase/FastForwardOnly |
+| `CleanRequest`, `CleanPreview` | `git_network_ops.rs:716,697` | Clean operation types |
 | `NetworkFailureKind` (7 variants) | `git_network_policy.rs:72` | Failure classification |
 | `RecoveryOutcome` (5 variants) | `git_recovery.rs:28` | Recovery result classification |
-| `GitTool` | `tool/git.rs:23` | Model-facing tool with 42 mutation actions |
+| `GitTool` | `tool/git.rs:27` | Model-facing tool with 42 mutation actions |
 
 ## Configuration Surface
 
@@ -929,7 +929,7 @@ there, not in each member.
 - `architecture/command_intent.md` — Command intent classification and
   routing.
 - `architecture/command_routing.md` — Active routing mode.
-# Execution source subject capture
+## Execution source subject capture
 
 `egggit::capture_git_source_subject` is the read-only, governed Git owner for
 execution provenance. It captures exact HEAD and a deterministic SHA-256
@@ -940,7 +940,69 @@ callers must not downgrade to a weaker status-only identity.
 
 ## Source Verification
 
-Verified 2026-10-06 against `crates/codegg-git/src/`, `crates/egggit/src/`,
+### Pass of 2026-10-23
+
+Re-verified against `crates/codegg-git/src/`, `crates/egggit/src/`, the root
+`src/git_*.rs` / `src/tool/git.rs` modules, `src/git_publication/`, and
+`crates/codegg-core/src/{worktree.rs,worktree_service.rs,git_publication.rs}`.
+No build or test run was performed; every count below is a source-level
+measurement.
+
+- **Corrected a wrong count.** `GitMutationError` has **11** variants, not 7
+  (`src/git_mutations.rs:220`). The "Key Types & APIs" row said 7, and so did
+  the 2026-10-06 pass's "Confirmed correct as written" list — that entry has
+  been struck from the historical pass below so the record does not assert a
+  count it was wrong about.
+- **Re-anchored 11 stale `file.rs:line` refs** in "Key Types & APIs":
+  `GitExecutionService` `232`→`282`, `GitPayload` `42`→`92`,
+  `GitMutationExecutor` `477`→`504`, `GitEnvPolicy` `49`→`50`,
+  `GitMutationError` `219`→`220`, `NetworkEnvPolicy` `46`→`45`,
+  `PushForce` `187`→`190`, `PushRequest` `228`→`231`,
+  `PullStrategy` `135`→`138`, `CleanRequest`/`CleanPreview` `713,694`→`716,697`,
+  `GitTool` `23`→`27` (all in the root crate unless the file is qualified).
+- **Corrected a heading level.** "Execution source subject capture" was an
+  `#` (h1) heading inside the body; it is now `##`, matching the rest of the
+  document.
+- **Re-anchored the mutation-enum ref** to its current home: the schema
+  `mutation.enum` is at `src/tool/git.rs:179`-`:192` and holds exactly 42
+  entries; `mutation_enum_includes_phase_f_recovery_aliases`
+  (`src/tool/git.rs:1460`) cross-checks them.
+- **Confirmed correct as written**: `GitOperation` 54 variants
+  (`crates/codegg-git/src/operation.rs`), `GitRiskClass` 11 (`risk.rs`),
+  `ALLOWED_ENV_VARS` 21 and `ALWAYS_STRIPPED_ENV_VARS` 28
+  (`crates/egggit/src/process.rs:33` / `:60`),
+  `NETWORK_ALLOWED_ENV_VARS` 21 (`src/git_network_policy.rs:41`),
+  `ALLOWED_MERGE_STRATEGIES` 6 (`src/git_mutations_ops.rs:418`),
+  `GitPayload` 13, `NetworkFailureKind` 7, `RecoveryOutcome` 5,
+  `MutationOutcome` 5, `ConflictKind` 8, `RepositoryOperationState` 9,
+  `OperationFamily` 9, `PushForce` 3, `PullStrategy` 3, and the
+  `crates/codegg-git/src/workflow.rs` refs (`:15`, `:30`, `:64`, `:86`).
+- **Confirmed the "Eighteen typed `egggit` read functions" claim**: exactly 18
+  *public* `egggit` functions return `GitReadFact<T>`; six further
+  `GitReadFact` returns are private helpers.
+- **Confirmed the `GitReadConsistency` vocabulary** in
+  `crates/egggit/src/consistency.rs`, including that
+  `src/git_consistency.rs::live_read_capability` returns `None` in every
+  build.
+- **Confirmed the C007 publication path**: the `git_index_publication` journal
+  is created by `migrate_v85` (`crates/codegg-core/src/session/schema.rs:3925`);
+  the durable type is `codegg_core::git_publication`.
+- **Confirmed the C008 contained-worktree path**: `src/git_contained_worktree.rs`
+  exists, `plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`
+  exists, `WorktreeService::create_reserved`
+  (`crates/codegg-core/src/worktree_service.rs:1041`) and
+  `create_reserved_contained` (`:1109`) are the two entry points, and
+  `SandboxConfig::with_read_only_paths` / `with_expected_created_git_pointers`
+  (`src/security/sandbox.rs:462` / `:472`) are the two grant mechanisms named
+  in the text.
+- **Test-count table note**: the `git_read_consistency` row (16) and the
+  `egggit/operation_state.rs` row (11) were measured from a compiled
+  `--list` on a non-Linux host. Each file contains one `cfg`-gated
+  mutually-exclusive pair, so a Linux host lists one more in each.
+
+### Pass of 2026-10-06
+
+Verified against `crates/codegg-git/src/`, `crates/egggit/src/`,
 and the root `src/git_*.rs` / `src/tool/git.rs` modules.
 - Corrected the `GitTool` mutation count **40 → 42** (both occurrences).
   The schema `mutation.enum` at `src/tool/git.rs:140`-`:155` holds exactly 42
@@ -959,8 +1021,11 @@ and the root `src/git_*.rs` / `src/tool/git.rs` modules.
 - Confirmed correct as written: `GitOperation` 54 variants, `GitRiskClass` 11,
   `ALLOWED_ENV_VARS` 21, `ALWAYS_STRIPPED_ENV_VARS` 28,
   `NETWORK_ALLOWED_ENV_VARS` 21, `ALLOWED_MERGE_STRATEGIES` 6 (`src/git_mutations_ops.rs:418`),
-  `GitPayload` 13, `GitMutationError` 7, `NetworkFailureKind` 7,
+  `GitPayload` 13, `NetworkFailureKind` 7,
   `RecoveryOutcome` 5, `MutationOutcome` 5, `ConflictKind` 8,
   `RepositoryOperationState` 9, `OperationFamily` 9, `PushForce` 3,
   `PullStrategy` 3, and the `codegg-git/src/workflow.rs` refs (`:15`, `:30`,
   `:64`, `:86`).
+
+The 2026-10-06 `GitMutationError` figure of 7 was wrong and is corrected in the
+2026-10-23 pass above; every line ref in that list has since moved again.

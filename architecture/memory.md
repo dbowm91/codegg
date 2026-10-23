@@ -15,8 +15,9 @@ re-discovering them each session.
 - **Core types & store**: `crates/codegg-core/src/memory/mod.rs`
 - **Habit observation & candidate store**: `crates/codegg-core/src/memory/habit.rs`
 - **Pattern detection**: `crates/codegg-core/src/memory/patterns.rs`
-- **TUI commands**: `src/tui/commands/` (slash commands like
-  `/memory`, `/memory-remember`, etc.)
+- **TUI commands**: registered in `src/tui/command.rs` (the `/memory`,
+  `/memory-search`, `/memory-list`, `/memory-remember`, `/memory-forget`,
+  `/memory-consolidate` entries) and implemented in `src/tui/commands/memory.rs`
 
 This is a **core crate** module — no UI, server, or plugin
 dependencies.
@@ -336,3 +337,16 @@ importance default `0.5`, and the habit bounds
 `validate_portable_document` (`src/skills/parser.rs:171`), `PublishedSkillRef`
 (`src/skills/promotion.rs:141`), `REQUEST_TTL_MS = 15 * 60 * 1000`
 (`promotion.rs:26`), and `src/tool/skill_proposal.rs`.
+
+Re-verified 2026-10-23 against source. Corrected the command-location
+reference: the `/memory*` slash commands are **registered** in
+`src/tui/command.rs` (`:674`-`:684`), not in `src/tui/commands/`; that
+directory holds the *implementations* (`src/tui/commands/memory.rs`).
+
+Confirmed unchanged: the three core modules (`mod.rs`, `habit.rs`,
+`patterns.rs`); the storage root built from
+`dirs::config_dir().join("codegg").join("memory")`
+(`crates/codegg-core/src/memory/mod.rs:162-164`); the `flock()` advisory
+locking around save (`mod.rs:518`, with `flock_lock`/`flock_unlock` at
+`:712`/`:723`); the YAML frontmatter format (`mod.rs:564`); and the
+`namespace_to_path` split on `/` (`:152`).

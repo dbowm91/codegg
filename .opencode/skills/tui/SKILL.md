@@ -77,11 +77,11 @@ the daemon remains responsible for containment and `file.read` authorization.
 Do not build a workspace path from a display basename or open an LSP URI.
 
 - **`dispatch_tui_command` is `pub(crate) async fn`**
-  (`src/tui/runtime/command_dispatch.rs:84`). The match is overwhelmingly
+  (`src/tui/runtime/command_dispatch.rs:87`). The match is overwhelmingly
   synchronous, but it contains five `.await` points, all of the same shape:
   `match core_client.request(req).await` inside the durable-editor arms
   (`EditUndoLatest`, `EditReapplyLatest`, `EditUndo`, `EditReapply`,
-  `EditCheckpointList`, at lines 2109/2160/2214/2268/2320). Those arms await
+  `EditCheckpointList`, at lines 2687/2738/2792/2846/2898). Those arms await
   an in-process `CoreClient` round trip and return a completion `TuiCommand`.
   Every other arm is non-async.
 - High-latency work uses the **spawn-and-complete** pattern instead:
@@ -1010,12 +1010,74 @@ Three rules, each of which was a defect first:
 - **Viewport click and viewport drag share one press.** Inside the message
   viewport, `Down` arms a selection, `Drag` extends it, and `Up` decides:
   release on the anchor cell is a *click* and reaches `on_click` (whose
-  viewport arm expands reasoning, then tool output); release elsewhere is a
-  *drag* and copies. Resolving on `Down` — which the text-selection feature
+  viewport arm expands the **part** that owns the clicked row — the tool call
+  or the reasoning block, whichever it is); release elsewhere is a *drag* and
+  copies. Resolving on `Down` — which the text-selection feature
   briefly did — makes every click a selection and leaves click-to-expand
   unreachable, because the viewport click arm is the only thing that expands
   a message. All other surfaces keep immediate press behaviour through the
-  shared `dispatch_click`.
+  shared `dispatch_click`. What an expanded tool call shows is a **display**
+  projection: the input pretty-printed, the output as an outline for the
+  web-search style tools and as pretty JSON otherwise, and the external-content
+  trust banner **left out** — the banner is text for the model, and
+  `src/search_backend/framing.rs` is unchanged, so the frame the model receives
+  is still byte for byte the same.
+- **The transcript's disclosures are collapsed by default, and a collapsed tool
+  call is one row.** The tool-call arm renders no preview row and no `"(+N
+  more lines)"` hint while the call is collapsed; the transcript's one
+  remaining `"(+N more lines, click or toggle to expand)"` hint belongs to the
+  separate `MsgPart::ShellCell` part, which keeps its own preview rows. The
+  header is `"  " + icon + " " + name` + the **ellipsized target** + the
+  summary + the hidden-output counter + the affordance, and the ellipsis lands
+  on the **target alone** — the icon, the name and the affordance are never
+  ellipsized, and the target's budget is
+  `header_width − (name + summary + counter + toggle) − 1`. The old 400-column
+  target ceiling (`TOOL_TARGET_MAX_WIDTH`) is gone from the tree; the row's
+  remaining width is the only ceiling. The hidden-output count moves into the
+  header as ` (+N lines)` and is **dropped when expanded**; it is counted from
+  the **drawn body** (`output_line_count`), so it describes what the expansion
+  would draw, and the daemon-side summary's own `output_lines` entry is
+  suppressed while the call is collapsed so a row never shows two line
+  counts. Two exceptions, both deliberate: a pending or running call with no
+  output yet draws **one more row** (the status row is the backup way back
+  into a dismissed approval), and the **summary yields at narrow widths** so
+  the name, the counter and the affordance survive. Reasoning blocks default
+  to **collapsed** — `collapsed: true` at all five construction sites, four in
+  `messages.rs` and one in `src/tui/commands/sessions.rs` — and the collapsed
+  header reads `Thinking` or `Thought for <duration>`. The global
+  `show_thinking` hides the reasoning **body** but still draws that one-line
+  header. **Model prose is never collapsed.**
+- **A clicked row resolves to the part that owns it, not to the message.**
+  `src/tui/components/messages/layout.rs` records the boundaries:
+  `RowPart::{ToolCall, Reasoning}` and `PartSpan { part, start, count }`, with
+  `MessageLayoutCache::part_offsets` holding `(msg_idx, part, first row, row
+  count)` per expandable part, in row order. The **one** row producer pushes
+  the spans — `build_message_rows` returns them, and its assistant branch
+  `build_assistant_parts_lines` pushes one per reasoning block and one per
+  tool call — and `push_message` translates them through the blank-collapse, so
+  a part's recorded range is the range of what is **drawn**.
+  `find_part_at_line` binary-searches `part_offsets` the way
+  `find_message_at_line` does `message_offsets`, and
+  `MessagesWidget::part_at_viewport_line` is the entry point. The click
+  handler toggles **that** part: a tool-call row toggles the tool call, a
+  reasoning row toggles the reasoning block, and a row that belongs to
+  **neither** toggles **nothing** — an explicit no-op, never a fallback to the
+  message-level toggle. The old ordering asked "has reasoning?" before "has
+  tool output?", so the reasoning arm won every time and a message carrying
+  both could never reach its tool call by clicking.
+- **The expand-all gesture is `Ctrl+Alt+O`; `Ctrl+Shift+O` cannot be
+  decoded.** `InputAction::ExpandAllDisclosures` (also an `ActionKey`, so it
+  is rebindable and appears in the keybind editor) is bound to
+  `(CONTROL | ALT, Char('o'))` in **both** maps; `Ctrl+O` keeps the workspace
+  dashboard in both. The chord is `Ctrl+Alt` and not `Ctrl+Shift` because the
+  app never pushes keyboard-enhancement flags — in legacy xterm encoding a
+  `Ctrl+Shift+O` keystroke arrives indistinguishable from `Ctrl+O` and fires
+  the dashboard — which is the same rule the rest of the chord family
+  follows. The palette command `/expand-all` (aliases `expand-disclosures`,
+  `collapse-all`) dispatches to the same handler, so the toast is the same:
+  `all details expanded` / `all details collapsed`. It covers every tool call
+  and every reasoning block; model prose is untouched, because it is never
+  collapsed and so has nothing to expand.
 - **There is no working strip, and the row above the composer is situational.**
   The strip used to draw one status row plus one row per advertised subagent
   between the transcript and the composer. It cost a row of vertical space to
@@ -1051,6 +1113,34 @@ Three rules, each of which was a defect first:
   interrupted mid-sentence. Route genuine turn failures through it only; shell,
   clipboard, and `/theme` errors would otherwise claim a turn failure that never
   happened. The full text stays in the toast and `/logs` keeps 50.
+- **The reasoning indicator is status-bar content, and the daemon owns the
+  value.** The footer status bar's activity chain carries the extended-thinking
+  selection (`reasoning: high`, `reasoning: off`, `reasoning: budget 2048`),
+  next to the daemon-resolved approval and sandbox policy. Three properties are
+  load-bearing. It is **content in an existing chain**, never a condition on a
+  surface's presence — the chip is pushed unconditionally in
+  `build_status_summary`, and `status_bar.rs` must not mention the reasoning
+  state at all, so the bar's height and width budget cannot become a function
+  of the selection. It adds **no second spinner and no second cadence**: there
+  is one frame table, one `ActivityPhase` enum, and one 100 ms cadence, and
+  the indicator is static text in a bar the one frame already redraws. And it
+  reads the **daemon-owned** selection, never a frontend-local field —
+  the daemon resolves the selection at every turn-admission path, so a local
+  copy is a projection, not an authority. `/reasoning` therefore writes
+  through `CoreRequest::ReasoningPreferenceSet` with the daemon's preference
+  revision as the compare-and-set, and the local display is corrected from
+  the daemon's **response** rather than from the option the user just picked.
+  A refused write puts the daemon's last known value back and surfaces the
+  typed refusal (`preference_conflict`, `invalid_reasoning_selection`,
+  `reasoning_vocabulary_unsupported`, `reasoning_capability_unsupported`) —
+  the last two are different conditions and must not collapse into one
+  message. `scripts/check_tui_reasoning_surface.py` guards all of it.
+  **The indicator's surface moved once already**: it was introduced in the
+  working strip's reserved row 0, and `main` deleted the working strip as
+  part of its buffer-chrome roadmap, so it lives in the status bar now. The
+  property that survived the move is the one that mattered — the indicator is
+  content, and no surface's presence or height is a function of the
+  reasoning state.
 - **One approval on screen; the rest queue, and the queued row is the way back.**
   `show_permission_dialog` used to assign straight into `permission_dialog`, so
   the second `PermissionPending` of a batch destroyed the first *along with its
@@ -1267,7 +1357,15 @@ Three rules, each of which was a defect first:
   so a token costs one message, not the buffer. Any new output path must wrap
   to `width - TOOL_OUTPUT_INDENT`: the widget paints no `Paragraph::wrap` and
   has no horizontal scroll, so an unwrapped line is not merely clipped, it is
-  unreachable.
+  unreachable. Model-authored text wraps through the shared **styled,
+  word-aware** primitive in `src/tui/wrap.rs`
+  (`wrap_styled_spans_by_word_rows` / `wrap_styled_spans_by_word`): it breaks
+  at whitespace, keeps each word's style, reports the source byte range behind
+  every row and every slice, and treats a terminal control sequence as one
+  atomic zero-width token — so an OSC-8 hyperlink is never cut in half and the
+  URL in its parameters costs no columns. **Fenced code blocks and the `read`
+  tool's output stay character-aware** (`wrap_code_spans`): a code block broken
+  mid-word is normal, and code must not be re-flowed at word boundaries.
 - **`/chat` and the chat panel are one implementation, not two.**
   `src/tui/chat_browser.rs` owns the cursor, the keymap, row rendering, the
   viewport anchor, and the hints; each surface owns only its composer. They
@@ -1465,9 +1563,17 @@ Three rules, each of which was a defect first:
   Workspace view and the editor route are all consulted first. The gate is
   the *resolved* mode plus `App::composer_holds_keyboard`, never the raw
   `UiState::input_mode`. A condition on a claim must be written on the entry
-  (`j`/`k` are the one conditional pair): an implicit conditional is how a
-  leak reappears. A claimed **capital** answers to both encodings
-  (`Char('U')` with `SHIFT` and with `NONE`), like the app's
+  (`j`/`k` are the one conditional pair, and the condition is
+  `ClaimCondition::ContentOverflowsBox` — the composer claims them when its
+  **content does not fit its box**, the wrapped row count against the visible
+  row count, measured in the layout pass and cached on the widget as
+  `ComposerFit::Unknown` / `ComposerFit::Measured { row_count, visible_rows }`
+  so the gate and the layout cannot disagree): an implicit conditional is how a
+  leak reappears. The **exact-fit** case is the one that is easy to get
+  backwards: three rows in a three-row box *fits* and `j`/`k` fall through to
+  the transcript; four rows does not fit, and the composer takes the keys and
+  moves the caret one **visual row**. A claimed **capital** answers to both
+  encodings (`Char('U')` with `SHIFT` and with `NONE`), like the app's
   `insert_panel_direction_bindings`; a lowercase claim is the bare key only.
 - **A consumed claim that does nothing is a dead key — never claim a letter
   the app needs to keep working.** `i` is the app's **only** route back to
@@ -1491,10 +1597,14 @@ Three rules, each of which was a defect first:
   with the motion; and the selection has **one** byte range
   (`ComposerText::selection_range`, the editor's rule term for term) that
   delete, copy and the renderer all read. A second range is how "copy" and
-  "delete" stop meaning the same thing. The word and vertical **targets** come
-  from `src/tui/text_geometry.rs`, so the composer and the editor land on the
+  "delete" stop meaning the same thing. The word **targets** come from
+  `src/tui/text_geometry.rs`, so the composer and the editor land on the
   same offset for the same text; a composer with its own word rule would be
-  two answers to one question.
+  two answers to one question. The **vertical** targets are a different
+  question and a different module: `src/tui/composer_geometry.rs` owns the
+  visual-row geometry (`VisualLayout::new`, `cell_of_byte`, `byte_at`,
+  `caret_position`, `row_count`), because a wrapped row is not a logical
+  line and a caret's cell is the cell of its **byte**, not of its line.
 - **An edit that changes the buffer's length drops the held selection, and the
   undo history never evicts its last entry.** The selection's points are byte
   offsets into the text the edit replaces, so the rule lives in
@@ -1692,6 +1802,24 @@ Three rules, each of which was a defect first:
   explicit retry must not duplicate the already-visible user message. Tab
   switch/close, reconnect, and shutdown invalidate the continuation.
 
+## See Also
+
+- `architecture/tui.md` — authoritative TUI module contract
+- `architecture/theme.md` — the theming surface the render layer consumes
+- `architecture/command.md` — the command-intent classification the slash
+  commands and key chords share
+- `architecture/permission.md` — the approval dialog and escalation rules the
+  permission queue implements
+- `architecture/project.md` — the project/workspace authority the
+  project-authority guard enforces
+- `.opencode/skills/agent/SKILL.md` — the turn that the TUI drives
+- `.opencode/skills/core/SKILL.md` — the core facade the TUI sends commands to
+- `.opencode/skills/lsp-ide/SKILL.md` — the editor LSP leaves and the
+  preview-apply path
+- `.opencode/skills/human-shell/SKILL.md` — the `/shell-*` commands and the
+  `ShellCell` widget
+- `.opencode/skills/testing-ci/SKILL.md` — running the `tui_render` family
+
 ## Static Guards
 
 Every guard in the table below fails `verify.sh quick` and the CI `verify` job.
@@ -1702,7 +1830,7 @@ invariants above.
 |---|---|
 | `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
-| `python3 scripts/check_tui_composer_key_authority.py` | Reads the composer's claim table (`src/tui/composer_claims.rs`) and the two binding maps, and fails when a letter is claimed twice, when a claimed letter can still reach an app-level action, when a re-spelled chord is missing from a map, when a re-spelled action has no chord to reach it by or still answers to a claimed key, when a capital claim misses an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only` entry. Carries a `--self-test` that injects each violation class. |
+| `python3 scripts/check_tui_composer_key_authority.py` | Reads the composer's claim table (`src/tui/composer_claims.rs`) and the two binding maps, and fails when a letter is claimed twice, when a claimed letter can still reach an app-level action, when a claim carries a condition the guard does not know (its known set is `Always` and `ContentOverflowsBox`), when a **chord-bound** action is missing from a map, when a chord-bound action has no chord to reach it by or still answers to a claimed key, when a capital claim misses an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only` entry. "Chord-bound" is the union of the actions that *moved* off a claimed letter and the actions that were **born** as a chord (the expand-all gesture has no bare spelling, so its chord is its only route); the guard's chord model is five chords. Carries a `--self-test` that injects each violation class. |
 | `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
 | `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
 | `python3 scripts/check_tui_editor_leaf_authority.py` | Polices the editor's **leaf tables**: no duplicated glyph inside one table, every glyph printable ASCII, one glyph per prefix across that prefix's tables, no leaf behind a guard-block chord, and no table no prefix binds. Reads the guard-block chords through the key-authority guard. `--self-test` runs nine synthetic cases through the same analysis the real check uses. |
@@ -1726,8 +1854,14 @@ session event subscription.
 
 ```bash
 cargo test --test tui_render        # rendering integration tests
-cargo test --test tui               # behavior tests
+cargo test --test tui_render -- tui  # behavior tests
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The behaviour members live
+in the `tui_render` family (`tests/tui_render/tui.inc`), so the correct form
+is `cargo test --test tui_render -- <member>`.
 
 Rendering tests assert on buffer contents; keep widget output deterministic
 (no wall-clock times without injection seams).
@@ -1736,8 +1870,8 @@ Rendering tests assert on buffer contents; keep widget output deterministic
 
 Re-verified 2026-10-06 against `architecture/tui.md` and source. Re-confirmed
 accurate: `dispatch_tui_command` is `pub(crate) async fn` at
-`runtime/command_dispatch.rs:84` with exactly five `.await` points at
-2109/2160/2214/2268/2320, all `match core_client.request(req).await` inside
+`runtime/command_dispatch.rs:87` with exactly five `.await` points at
+2687/2738/2792/2846/2898, all `match core_client.request(req).await` inside
 the `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
 `EditCheckpointList` arms (verified by grep, not by reading the match);
 `spawn_tui_task` / `spawn_registered_tui_task` in `src/tui/async_cmd.rs`;
@@ -1750,14 +1884,14 @@ the `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
 `ActionKey::all()` as the exhaustive configurable list with `InputAction::Char`
 the non-configurable exception; `MsgPart::ShellCell` in
 `components/messages.rs`; `/shell-*` registered in `command.rs` and handled in
-`commands/shell.rs`; both `--test tui_render` and `--test tui` targets.
+`commands/shell.rs`; and the `tui_render` family target.
 
 Corrected this pass: the remote-protocol bullet claimed the `/tui`
 WebSocket "speaks the `TuiCommand` enum". `TuiCommand` derives only
-`Debug, Clone` (`app/commands.rs:14`) and appears nowhere in `src/server/` or
+`Debug, Clone` (`app/commands.rs:55`) and appears nowhere in `src/server/` or
 `crates/codegg-protocol/`; the wire type is
 `codegg_protocol::tui::TuiMessage` (`#[serde(tag = "type")]`,
-`crates/codegg-protocol/src/tui.rs:16-19`), which `src/server/ws.rs:23`
+`crates/codegg-protocol/src/tui.rs:16-20`), which `src/server/ws.rs:23`
 imports and serializes. Replaced with the wire-enum name.
 
 Added: a `## Static Guards` section naming
@@ -1769,3 +1903,52 @@ each one actually rejects (both scripts confirmed present and wired into
 Re-verified 2026-10-10 for C003: focused Esc is forwarded to the PTY, Ctrl-]
 leaves focus, and the screen renderer uses bounded VT state with resize and
 degraded-history handling. Terminal output remains outside model context.
+
+Third pass (2026-10-23): re-verified against `src/tui/`, `src/tui/app/`,
+`src/tui/commands/`, `src/tui/runtime/`, `src/tui/components/`,
+`src/tui/panels/`, `src/tui/ui_builders/`,
+`crates/codegg-protocol/src/tui.rs`, `src/server/ws.rs`,
+`scripts/verify.sh`, `.github/workflows/ci.yml`, and `tests/tui_render/`.
+
+Confirmed unchanged: every path in the Layout table exists — all twenty-two
+listed files and directories, including the five `src/tui/app/state/`
+helpers (`execution_context.rs`, `async_request.rs`, `routing.rs`,
+`work_orders.rs`, `workspace_dashboard.rs`), `src/tui/commands/{primary_projection,agent_editor,work_orders,workspace_dashboard}.rs`,
+`src/tui/panels/agents.rs`, and the three `src/tui/ui_builders/` modules.
+`dispatch_tui_command` is `pub(crate) async fn`; the five `.await` points are
+all `match core_client.request(req).await` and sit in the five named
+durable-editor arms. `spawn_tui_task` (`src/tui/async_cmd.rs:20`) and
+`spawn_registered_tui_task` (`:52`); `UiRouteToken` (`app/state/routing.rs:66`);
+`DialogType` (`components/component.rs:22`); `FocusManager`
+(`components/component/focus.rs`); `MAX_TOAST_LINES = 3`
+(`src/tui/app/modal.rs:95`); `MsgPart::ShellCell`
+(`src/tui/components/messages.rs:124`); `ActionKey::all()`
+(`src/tui/input.rs:361`); `requeue_open_permission`
+(`src/tui/app/mod.rs:10063`), `show_permission_dialog` (`:15561`),
+`mount_permission_dialog` (`:15598`), `report_turn_error` (`:1950`), and
+`is_ws_attach_transport` (`:2593`); `DialogState::permission_queue`
+(`src/tui/app/state/dialog.rs:36`); `EXIT_ARM_WINDOW`
+(`src/tui/app/state/prompt.rs:82`); and that `Dialog::Info` does not exist in
+`src/tui/app/types.rs` while `src/tui/components/dialogs/info.rs` does.
+
+Confirmed the Static Guards table's claim that every listed guard fails
+`verify.sh quick` **and** the CI `verify` job: all eleven
+`check_tui_*` scripts appear in `scripts/verify.sh:86-121` and in
+`.github/workflows/ci.yml:115-151`.
+
+Corrected: `dispatch_tui_command` was cited at
+`src/tui/runtime/command_dispatch.rs:84` (actually `:87`), and the five
+`.await` points at 2109/2160/2214/2268/2320 (actually
+**2687/2738/2792/2846/2898** — a drift of ~580 lines). `TuiCommand`'s derive
+was cited at `app/commands.rs:14` (actually `:55`; `:14` is
+`ShellPromotionStageResult`'s derive) and the wire enum at
+`crates/codegg-protocol/src/tui.rs:16-19` (`:16-20`).
+
+Corrected: `cargo test --test tui` named a target that does not exist — the
+behaviour member is `tests/tui_render/tui.inc`, a member of the `tui_render`
+family, so the old form selected zero tests and exited 0. It now reads
+`cargo test --test tui_render -- tui`.
+
+Added the missing `## See Also` section, naming the authoritative
+`architecture/tui.md` that this skill's intro already points at.
+

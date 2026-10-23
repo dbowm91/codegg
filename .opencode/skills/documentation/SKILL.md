@@ -54,8 +54,9 @@ Several config keys are untagged enums with `#[serde(default)]` and no
 Two distinct failure modes, both seen in this repo:
 
 - **Hard failure** — the wrong shape makes serde error, discarding the *entire*
-  config file. Example: `lsp.servers.<id>.command` as a string instead of an
-  object.
+  config file. Example: `lsp.<id>.command` as a string instead of an array of
+  strings (`LspRule::Active` requires `command: Vec<String>`, and `LspConfig`
+  is an untagged enum, so the failure takes the whole `lsp` block with it).
 - **Silent no-op** — the block parses as something valid but wrong. Example: a
   `permission` block using allow/deny arrays when permission is per-tool; an
   `mcp` block nesting servers under a `servers` key, which registers one phantom
@@ -127,3 +128,31 @@ that adds guidance.
 - `.opencode/skills/architecture-review/SKILL.md` — the batch process for auditing
   `architecture/` against source
 - `AGENTS.md` — the agent-facing index this skill helps keep honest
+
+## Source verification
+
+Verified 2026-10-23 against `AGENTS.md`, `README.md`,
+`architecture/overview.md`, `architecture/testing.md`, `architecture/skills.md`,
+`codegg.example.jsonc`, `crates/codegg-config/src/schema.rs`,
+`assets/agents/*.toml`, `assets/prompts/agents/`, `docs/validation/`,
+`docs/dependency-maintenance.md`, `docs/security-semantics.md`,
+`plans/registry.md`, `plans/closure/`, `plans/archive/`, and
+`scripts/generate_builtin_agents.py`. Confirmed: the `codegg validate
+--config` subcommand (`src/main.rs:384,1811`); the generated-agent pipeline
+(`assets/agents/*.toml` → `src/agent/builtins/generated.rs`); the
+`docs/validation/`, `plans/closure/`, and `plans/archive/` frozen-evidence
+directories; and the README's "No GitHub release has been published yet"
+callout, which is still present at `README.md:21` and still true.
+
+Corrected: the hard-failure config example named `lsp.servers.<id>.command`
+as "a string instead of an object". There is no `servers` level — `LspConfig`
+is an untagged enum whose `Rules` variant is a flat `HashMap<String, LspRule>`
+(`crates/codegg-config/src/schema.rs:1906-1911`) — and `command` is a
+`Vec<String>` (`:1992`), not an object. The example now reads
+`lsp.<id>.command` as a string instead of an array of strings. The other two
+failure-mode examples were checked and are accurate as written: `permission`
+is per-tool (`read`/`edit`/`glob`/`grep`/`list`/`bash`/`task`/…,
+`schema.rs:1612-1632`) and `mcp` is a flat `HashMap<String, McpEntry>`
+(`schema.rs:245`), so a `servers` key registers one phantom server named
+`servers`.
+

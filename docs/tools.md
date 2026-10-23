@@ -82,12 +82,23 @@ system; see `docs/security-semantics.md`.
 
 | Family | Tools | What it covers |
 |--------|-------|----------------|
-| Read files | `read`, `list`, `glob`, `grep`, `codesearch`, `diff` | Inspecting the workspace |
-| Write files | `write`, `edit`, `apply_patch`, `replace` | Creating and changing files |
-| Shell | `bash`, `terminal`, `python_script`, `tool_program` | Shell commands, capability-controlled Python, and read-only Tool Programs. Interactive terminals are a TUI/daemon surface, not a tool |
-| Git | `git_query` (model-facing), `git_read` (program-only) | Typed read-only repository facts |
-| Git mutation | `git`, `commit` | Mutating operations, routed through the risk-classified mutation executor |
-| Test and verify | `test`, `verify` | Running the project's test suite, and bounded offline `check`/`build`/`lint`/`typecheck`/`format_check` passes |
+| Filesystem | `read`, `write`, `edit`, `apply_patch`, `replace`, `diff`, `glob`, `grep`, `list` | Inspecting and changing the workspace |
+| Shell and execution | `bash`, `terminal`, `test`, `batch`, `python_script`, `verify` | Shell commands, capability-controlled Python, test runs, and bounded offline `check`/`build`/`lint`/`typecheck`/`format_check` passes. Interactive terminals are a TUI/daemon surface, not a tool |
+| Programmatic and meta | `tool_program`, `tool_search`, `question`, `skill`, `skill_proposal`, `image`, `context_read`, `invalid` | Read-only Tool Programs, tool discovery, human questions, skills, and image/context reads |
+| Source intelligence | `lsp`, `lsp_read`, `lsp_preview_apply`, `codesearch`, `repo_map`, `ci_watch` | Diagnostics, definitions, references, impact, repair |
+| Version control | `git`, `git_query`, `git_read`, `commit` | Typed repository facts. `git_read` is program-only; `git` and `commit` are mutating operations, routed through the risk-classified mutation executor |
+| Research and evidence | `research`, `research_search`, `repo_search`, `repo_fetch`, `security_search`, `batch_fetch`, `evidence_bundle`, `websearch`, `webfetch` | Evidence-backed external lookups |
+| Planning and tasks | `task`, `job`, `todoread`, `todowrite`, `plan_enter`, `plan_exit`, `goal_get`, `goal_request_completion`, `goal_update_progress`, `work_order`, `work_plan_get`, `work_plan_update_item` | Delegation, planning, and progress |
+| Review and quality | `review`, `security`, plus 13 `eggsact`-backed deterministic validators: `text_equal`, `text_diff_explain`, `text_replace_check`, `text_inspect`, `text_fingerprint`, `text_security_inspect`, `validate_json`, `validate_toml`, `path_normalize`, `identifier_inspect`, `structured_data_compare`, `command_preflight`, `config_preflight` | Deterministic text, config, and identifier checking |
+| Extension and resources | `mcp_resource_read`, `mcp_resource_search`, `extension_search`, `extension_install_request`, `memory_get`, `memory_search` | MCP resources and extensions, and durable memory |
+
+The table lists all **75** distinct production tool names. 62 of them come from
+a `Tool` impl whose `name()` returns a literal; the 13 `eggsact` deterministic
+validators resolve their name at runtime from `self.codegg_name`, so a
+literal-name scan cannot see them — they are counted at their
+`EggsactTool::new()` call sites in `src/tool/deterministic.rs`. The
+`eggsact` family is split 8 always-visible / 5 deferred; the deferred half is
+discoverable through `tool_search`.
 
 `verify` defaults to an offline workspace check. Rust lint does not enable every
 workspace feature by default. For a bounded package run, pass `scope: "package"`
@@ -95,10 +106,6 @@ and a workspace `package` name; `features` selects validated Cargo feature names
 for that package. `all_features: true` is an explicit package-only opt-in and
 can enable optional or real-server test dependencies. Unsupported project types and unknown
 workspace packages return a specific error; `verify` does not accept shell text.
-| Code intelligence | LSP-backed tools, `lsp_preview_apply` | Diagnostics, definitions, references, impact, repair |
-| Deterministic | 13 `eggsact`-backed validators | Text, config, and identifier checking |
-| Web and research | `websearch`, `webfetch`, `repo_search`, `repo_fetch`, `repo_map`, `security_search`, `research`, `research_search`, `batch_fetch`, `evidence_bundle` | Evidence-backed external lookups |
-| Higher-level workflows | `review`, `security`, `skill`, `task`, `work_order`, `goal_get`, `goal_update_progress`, `goal_request_completion`, `plan_enter`, `plan_exit`, `todowrite`, `memory_search`, `question`, `tool_search` | Delegation, planning, and discovery |
 
 Run `codegg doctor` for the live state of the subsystems behind these.
 
@@ -440,3 +447,44 @@ Inside the TUI, `/tool-backends` reports which tools are disabled and why, and
 - `docs/security-semantics.md` — the security pipeline and its gates
 - `docs/agents-skills.md` — narrowing a tool surface with an agent
 - `docs/configuration.md` — the full config schema
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Tool names: every `fn name()` implementation under `src/tool/`, plus
+  `src/context/read_tool.rs` (`context_read`), `src/tool/tool_program.rs`,
+  `src/tool/task.rs`, `src/tool/todo.rs` (`todowrite`, `todoread`),
+  `src/tool/memory.rs` (`memory_search`, `memory_get`),
+  `src/tool/goal.rs`, `src/tool/plan.rs`, `src/tool/work_order.rs`,
+  `src/tool/work_plan.rs` (`work_plan_get`, `work_plan_update_item`), and
+  `src/tool/mcp_resource.rs`. The family table was reconciled with
+  `architecture/overview.md` §"Tools and capabilities at a glance"; the 75
+  distinct production tool names it lists are the same 75.
+- Tool counts: 67 registry registrations and 75 distinct production tool names
+  per `architecture/overview.md`'s verified-counts table (62 literal + the 13
+  runtime-named `eggsact` validators).
+- Deterministic tools: `src/tool/deterministic.rs` — 8 always-visible
+  (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`,
+  `validate_toml`, `command_preflight`, `path_normalize`,
+  `text_security_inspect`) and 5 deferred (`text_inspect`,
+  `config_preflight`, `identifier_inspect`, `structured_data_compare`,
+  `text_fingerprint`), and `crates/codegg-config/src/schema.rs`
+  `DeterministicToolsConfig` defaults (`enabled`, `backend`, `profile`,
+  `model_audience`, `harness_audience`, `expose_expert_tools`,
+  `max_output_chars`).
+- `eggsact` version 1.2.5 (`Cargo.toml`), `eggsearch` 0.4.4
+  (`src/install.rs`, `src/upgrade/managed.rs`, `scripts/release/lib-release.sh`).
+- Search output caps and the 60,000 ms provider timeout: the `[search]`
+  defaults in `crates/codegg-config/src/schema.rs` and
+  `src/search_backend/bootstrap.rs`.
+- `verify` scope/package/features/all_features behaviour:
+  `src/tool/verify.rs`.
+- `tool_search` paging (default 10, maximum 50): `src/tool/tool_search.rs`.
+- `task` `run_id` / `task_id` / `group_id` split: `src/tool/task.rs`.
+- `scratch.retention_days` default 14 and the scratch sweep:
+  `crates/codegg-config/src/schema.rs`, `src/shell/`, `src/scratch.rs`.
+- `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
+- `/tool-backends` and `/tool-contracts`: `src/tui/command.rs`.
+- `search.backend` / `fallback_to_builtin` migration errors:
+  `crates/codegg-config/src/schema.rs` and `crates/codegg-config/src/paths.rs`.

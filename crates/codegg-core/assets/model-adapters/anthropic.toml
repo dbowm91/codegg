@@ -21,6 +21,21 @@ patch_reliability = "high"
 supports_late_system_messages = true
 max_parallel_tools = 10
 
+[profile.reasoning_capability]
+# Claude's extended thinking is a fixed token budget, not an effort label:
+# the Messages API has no `reasoning_effort` parameter, so an effort
+# selection is refused locally instead of travelling as a request that
+# carries no reasoning field at all.
+#
+# The documented minimum budget is 1024 tokens. The maximum is
+# model-dependent and is therefore not declared here.
+effort_status = "unsupported"
+disable_status = "supported"
+budget_status = "supported"
+min_thinking_budget = 1024
+always_reasons_status = "unsupported"
+always_reasons = false
+
 [tools]
 format = "anthropic_tool"
 tool_choice = "auto"

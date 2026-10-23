@@ -244,9 +244,9 @@ iterations are rejected (TP012).
 Diagnostics include:
 
 - Error code (e.g., `TP001`)
-- Human-readable message
-- Source span: byte offset and length (capped at 200 bytes of
-  surrounding context)
+- Human-readable message, truncated to 200 bytes on a UTF-8 boundary
+  (`truncate_message`, `crates/codegg-core/src/tool_program/parser.rs:942`)
+- Source span: byte offset and length (`SourceSpan { start, length }`)
 - Never echo full source bodies or secret-sized content
 
 ## IR Versioning and Compatibility Policy
@@ -357,9 +357,14 @@ def foo():             # TP001: function def not allowed
     pass
 [x**2 for x in range(10)]  # TP001: comprehension not allowed
 lambda x: x + 1       # TP001: lambda not allowed
-call({"tool": "exec", "cmd": rm -rf /})  # TP011: dangerous tool not in manifest
+call({"tool": "exec"})  # TP011: call descriptor without a "tool" key
 result = something.method()  # TP006: arbitrary attribute access
 ```
+
+A syntactically valid call naming a tool outside the frozen manifest is
+not a language error — it is a manifest rejection
+(`RejectionReason::NotFound`, `src/tool/program_manifest.rs:31`),
+rejected before the program is ever queued.
 
 ## Dependency Review
 
@@ -372,7 +377,7 @@ Parser: `rustpython-parser` 0.4.0
 | Features used | `all-nodes-with-ranges`, `malachite-bigint` (default features disabled) |
 | Parse-only | Yes — parser produces AST, does not execute |
 | Source spans | Yes — `TextRange` and `SourceRange` on all nodes |
-| Fuzz posture | Upstream fuzz corpus exists; Codegg adds adversarial corpus |
+| Fuzz posture | Upstream fuzz corpus exists; the in-repo targets are harness-only — no checked-in corpus directory and no fuzz CI job |
 | Dependency weight | ~15 transitive crates; no network/filesystem/async deps |
 
 No `pyo3` or CPython bindings. The frontend does not use RustPython's
@@ -386,8 +391,16 @@ Compile-time and module-level guards prevent CPython execution:
 - No `std::process::Command::new("python3")` in `tool_program/` module
 - No `eval()`/`exec()`/`compile()` on user source
 - `guards.rs` module documents invariants and provides
-  `assert_parse_only!()` macro
-- `cargo deny` / `cargo audit` in CI verifies no CPython dependencies
+  `assert_parse_only!()` macro (`crates/codegg-core/src/tool_program/guards.rs:37`)
+  and `cpython_execution_is_forbidden()` (`:64`)
+- `scripts/check_tool_program_parse_only.py` enforces the parse-only
+  invariant mechanically. Its four rules are `pyo3-dependency`,
+  `pyo3-import`, `process-spawn`, and `python-ffi`; it strips comments and
+  string literals before searching, because the module's own documentation
+  names `std::process::Command` and `pyo3`. The guard runs in
+  `scripts/verify.sh quick` and in CI, and its `--self-test` mode proves
+  each rule rejects an injected violation. It replaced three test
+  functions in `guards.rs` that could not fail.
 
 ## Fuzz Targets
 
@@ -417,6 +430,55 @@ cargo test -p codegg-core --lib tool_program::ir_verifier
 - `architecture/tool_broker.md` — Tool Broker pipeline
 
 ## Source Verification
+
+Verified 2026-10-23 against source. Corrected:
+
+- The Static Guards section claimed "`cargo deny` / `cargo audit` in CI
+  verifies no CPython dependencies". There is no `deny.toml` and no
+  `cargo-deny` / `cargo-audit` step in `.github/workflows/`. The claim
+  was replaced with the guard that actually enforces the invariant:
+  `scripts/check_tool_program_parse_only.py` (four rules —
+  `pyo3-dependency`, `pyo3-import`, `process-spawn`, `python-ffi`; runs
+  in `scripts/verify.sh quick` and CI with a `--self-test` that proves
+  each rule rejects an injected violation).
+- The Source-Span Diagnostics bullet said the span is "capped at 200 bytes
+  of surrounding context". The 200-byte cap is on the diagnostic
+  **message** (`truncate_message`,
+  `crates/codegg-core/src/tool_program/parser.rs:942-943`); the span
+  itself is an unbounded byte offset plus length
+  (`SourceSpan { start, length }`), and `SourceSpan::context_range` has no
+  caller in the tree.
+- The dependency table claimed "Codegg adds adversarial corpus". There is
+  no corpus directory under `crates/codegg-core/fuzz/` (only `Cargo.toml`
+  and `fuzz_targets/`) and no fuzz job in `.github/workflows/ci.yml`.
+- The "Rejected" example annotated `call({"tool": "exec", "cmd": rm -rf /})`
+  as "TP011: dangerous tool not in manifest". That snippet is not valid
+  Python, so it cannot reach the descriptor check; and a tool outside the
+  frozen manifest is a **manifest** rejection
+  (`RejectionReason::NotFound`, `src/tool/program_manifest.rs:31`), not
+  a language diagnostic. The example and the surrounding note now say so.
+
+Added: the `guards.rs` symbol locations
+(`assert_parse_only!()` at `guards.rs:37`,
+`cpython_execution_is_forbidden()` at `:64`).
+
+Verified accurate: `IrOp` 39 opcodes at `ir.rs:93` with every name in the
+category table matching the enum (6 constants, 2 locals, 3 collections,
+3 operators, 3 logic, 8 stack, 5 control, 2 tool calls, 2 parallel,
+1 child job, 4 terminal = 39); all 21 diagnostic codes
+(`TP001`–`TP018`, `TP998`, `TP999`) and their names at
+`diagnostics.rs:56-75`; the 12 `ALLOWED_METHODS` entries at
+`validator.rs:17`; the 5 reserved built-ins at `validator.rs:14`; the
+`RuntimeLimits` field count (14) and names at `interpreter.rs:359-374`;
+`MAX_SOURCE_BYTES` = 1 MiB (`parser.rs:15`), `MAX_AST_NODES` = 10,000
+(`:17`), `MAX_STRING_LENGTH` = 10,000 (`:21`), `MAX_COLLECTION_ELEMENTS`
+= 1,000 (`:23`); the static-bound defaults
+(`static_bounds.rs:16-25`: parallel width 10, parallel depth 2, nesting
+depth 20, call sites 100, dynamic calls 1,000, value growth 10,000,
+steps 1,000,000); the `rustpython-parser` 0.4.0 dependency with
+`all-nodes-with-ranges` + `malachite-bigint`
+(`crates/codegg-core/Cargo.toml:55`); the three fuzz targets
+(`crates/codegg-core/fuzz/fuzz_targets/`); and the grammar productions.
 
 Verified 2026-10-06 against source. Corrected: the runtime-limit table listed
 13 of `RuntimeLimits`' 14 fields — `max_bytes` (per-value byte bound) was

@@ -1,6 +1,6 @@
 # TUI Buffer Chrome, Exit Protocol, and Files Panel Navigation Roadmap
 
-Status: active (M001–M004)
+Status: closed (M001–M004)
 
 Long-term references:
 
@@ -167,3 +167,11 @@ switch and never takes the keyboard away from a panel.
 M001–M004 are implemented in the working tree of
 `feat/auto-20261020-513a8ce6`. The verification evidence is recorded in the
 closure records under `plans/closure/tui-buffer-chrome-and-panel-navigation/`.
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- Closure records `plans/closure/tui-buffer-chrome-and-panel-navigation/001-status.md` through `004-status.md` each carry `Status: closed`.
+- `plans/registry.md` already reads *closed (M001–M004)* for this roadmap; the header here was the stale copy.
+- The milestone bodies were not touched — only the status line and this note.

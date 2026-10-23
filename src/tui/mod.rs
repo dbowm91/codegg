@@ -109,6 +109,7 @@ pub mod command;
 pub mod commands;
 pub mod components;
 pub mod composer_claims;
+pub mod composer_geometry;
 pub mod composer_text;
 pub mod file_diff;
 pub mod file_icons;
@@ -2087,6 +2088,8 @@ mod async_cmd_tests {
             session_id: "s1".into(),
             turn_id: Some("t1".into()),
             message: "provider stream framing or decoding failed".into(),
+            category: None,
+            usage: None,
         });
 
         assert!(changed, "a turn failure must trigger a redraw");

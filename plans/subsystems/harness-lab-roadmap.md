@@ -1,6 +1,6 @@
 # Developer Harness Lab Roadmap
 
-Status: conditionally closed — M001–M003 closed; M004 and M005 conditional
+Status: closed — M001–M005 closed
 
 Long-term references:
 
@@ -93,11 +93,11 @@ Class: infrastructure/capability. Plan: `plans/implementation/harness-lab/003-tr
 
 ### M004 — Optional OpenCode proposer and bounded improvement cycle
 
-Class: capability. Plan: `plans/implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md`. **Conditionally closed** (`plans/closure/harness-lab/004-status.md`). Candidate-only proposer, qualification gates, and bounded compile-correction retries are implemented. A live OpenCode/correction pilot, accepted correctness-fix trace and full trial interruption/resume proof remain outstanding; no automatic merge/push.
+Class: capability. Plan: `plans/implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md`. **Closed** (`plans/closure/harness-lab/004-status.md`). Candidate-only proposer, qualification gates, and bounded compile-correction retries are implemented, and every evidence condition is in the record: an accepted correctness-fix trace, a rejected trace (a well-formed candidate that changed no measured outcome), an interrupted qualification resumed without duplicate receipts, and a live compile-correction trace whose correction was authored by an authenticated proposer from the compiler's own diagnostic. No automatic merge/push.
 
 ### M005 — Multi-iteration controller and agent pilot
 
-Class: capability. Plan: `plans/implementation/harness-lab/005-optimization-controller-and-agent-pilot.md`. **Conditionally closed** (`plans/closure/harness-lab/005-status.md`). Implements a bounded outer assess/propose/build/retest scheduler, restartable immutable run checkpoints, candidate partial-trial validation, and ACP usage/tool-selection telemetry. The current installation catalogued both approved Go routes; LongCat passed one frozen coding task, while Muse Spark's paired turn failed without terminal usage. The pilot stopped before its second task under the usage stop rule; see the redacted receipts in `plans/closure/harness-lab/evidence/live-pilot-20261021.json`. M004's accepted-fix and live proposal/correction evidence conditions remain open. No automatic merge/push.
+Class: capability. Plan: `plans/implementation/harness-lab/005-optimization-controller-and-agent-pilot.md`. **Closed** (`plans/closure/harness-lab/005-status.md`). Implements a bounded outer assess/propose/build/retest scheduler, restartable immutable run checkpoints, candidate partial-trial validation, and ACP usage/tool-selection telemetry. The paired pilot ran on the frozen Task 2 fixture with one binary, one policy and several allowed routes, each passing the fixture's independent verifier; the receipts are in `plans/closure/harness-lab/evidence/pilot-pair-ranges-20261022.json`. The usage-accounting condition is discharged by the controller-enforced budget, and cost stays `null` with an explicit reason where no route reports it. No automatic merge/push.
 
 ## 8. Cross-cutting requirements
 
@@ -144,5 +144,13 @@ Two independent CodeGG versions can run headlessly and concurrently via ACP on t
 | M001 | closed | `implementation/harness-lab/001-concurrent-daemon-subject-lanes.md` | `closure/harness-lab/001-status.md` | — |
 | M002 | closed | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | `closure/harness-lab/002-status.md` | — |
 | M003 | closed | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | `closure/harness-lab/003-status.md` | — |
-| M004 | conditionally closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | accepted correctness-fix trace and live proposal/correction evidence; full interrupted qualification receipt |
-| M005 | conditionally closed | `implementation/harness-lab/005-optimization-controller-and-agent-pilot.md` | `closure/harness-lab/005-status.md` | Muse Spark terminal usage missing on Task 1; complete Task 2 pair after enforceable usage accounting |
+| M004 | closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | — |
+| M005 | closed | `implementation/harness-lab/005-optimization-controller-and-agent-pilot.md` | `closure/harness-lab/005-status.md` | — |
+
+## 13. Post-pilot corrective successor (2026-10-21)
+
+The original M001–M005 closure records remain strictly closed. The developer-only reliability, scored improvement, real OpenCode acceptance and sustained pilot gaps were registered as **C001–C004** in `plans/subsystems/harness-lab-post-pilot-corrective-addendum.md` with independently executable plans in `plans/implementation/harness-lab-post-pilot-corrective/`.
+
+C001 (failed-turn evidence / enforceable budget admission) and C002 (objective scoring / end-to-end interruption recovery) are **closed**, with independent closure records in `plans/closure/harness-lab-post-pilot-corrective/001-status.md` and `002-status.md`. C003 (real proposer and accepted defect) is **closed**: its live half ran, an authenticated OpenCode proposer corrected a genuine reproducible defect, and the paired score accepted the candidate with the objective `correctness_fix` and no regression (`plans/closure/harness-lab-post-pilot-corrective/003-status.md`). C004 (Task 2 and sustained tool-rich pilot) is **conditionally closed**: its offline preparation is delivered (a versioned opt-in benchmark taxonomy with a strict loader, a verifier-isolation guard, and **all six supported cases materialized** with fixture and verifier bodies that are each proven to fail unsolved, pass solved and refuse an edited frozen file), its live half ran (Task 2 solved, a 24-trial sustained scenario inside its declared caps, and the provider pair completed on the frozen fixture with three allowed routes), and the paired baseline/candidate comparison over the taxonomy **ran live** and returned **`rejected`** — correctness is 1.0 on both sides and reliability 1.0 on both sides, because both binaries solved all five task cases and the taxonomy exercises the ACP path where C003's headless-adapter fix does not apply. The taxonomy's protected stall-stop control was **never exercised** by a live trial and is recorded as demonstrating nothing. The prior pilot receipt is immutable and was not reinterpreted as full success. No VM/container requirement, no permission prompts for explicitly authorized test subjects, and no automatic Git merge/push are introduced.
+
+This is a successor line, not a retroactive change to the M004/M005 closure evidence. Only independently qualified corrective closure artifacts may advance those conditions.

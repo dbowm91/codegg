@@ -115,6 +115,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Extended thinking now takes any reasoning label your provider uses, and
+  the daemon remembers the one you chose.** The thinking control used to offer
+  exactly four levels — `minimal`, `low`, `medium`, `high` — so a provider
+  that names its own depth (`xhigh`, `max`, `none`, `default`) could not be
+  asked for it at all: the label you wanted was rejected before it left the
+  daemon. The vocabulary is open now, and the label you pick is carried
+  verbatim to the provider instead of being folded onto one of the four. The
+  four known levels are still there as a convenience order for cycling.
+- **Your reasoning choice is now a durable setting rather than a per-keystroke
+  one.** It used to live only in the frontend for the turn you were sending,
+  so it silently did not apply to a prompt submitted through the API, to a
+  prompt you had queued for later, or to a delegated follow-up turn — the
+  same request behaved three different ways depending on how it arrived. The
+  daemon owns that choice now, stores it against your own account, and
+  applies it on every path that starts a turn. A choice you make for a single
+  turn still wins over the stored one.
+- **A client and the daemon now agree on which reasoning labels are
+  accepted.** Because the label set changed shape, a client asks the daemon
+  what it accepts before sending a label the daemon might not understand, and
+  a daemon that does not accept an open label refuses the request with a
+  clear error rather than quietly running the model at a different depth.
+- **A reasoning choice the model cannot honour is refused at the door.** The
+  thinking control takes any label your provider uses, but nothing said
+  whether *this* model accepted it — so a selection the model refused was
+  forwarded anyway and came back as silence: the request looked honoured and
+  the model reasoned at whatever depth it liked. Every model family now
+  carries a compiled record of what it accepts (which effort labels, whether
+  reasoning can be turned off, whether a fixed thinking budget is accepted,
+  and whether the model always reasons), and the daemon checks the turn's
+  resolved selection against that record before the request leaves. An
+  unsupported selection is refused with a typed error that names the model
+  and the dimension, and no request is sent. A dimension that is only partly
+  supported is dropped, and the drop is recorded as a notice that says what
+  was dropped. The check is deliberately fail-closed: a model whose contract
+  nobody has published refuses an explicit reasoning selection rather than
+  forwarding it optimistically. See `architecture/provider.md` for the
+  record's shape and `architecture/model-adapters.md` for the families that
+  carry one today.
+- **A stored reasoning choice that cannot be read is now reported instead of
+  quietly dropped.** If the daemon could not read your saved reasoning setting,
+  it fell back to the default without saying so — so the turn you sent ran at a
+  different depth with no sign that your choice had gone. The turn still runs on
+  the default, because a setting that cannot be read is not a setting, but the
+  loss is now announced as a notice that says what was lost and carries the
+  underlying error.
+- **A provider's published thinking contract is no longer thrown away.** When
+  a provider lists its models, the catalog response may also carry what those
+  models accept on the reasoning dimensions — which effort labels, whether
+  reasoning can be turned off, whether a fixed thinking budget is accepted.
+  CodeGG used to read the response and drop all of it, keeping only the
+  model's name. That contract is now retained, and it can only ever **take
+  options away**: it may narrow what a model accepts, and an overlay that
+  claims a label or a bound the compiled record does not already carry is
+  rejected whole rather than partly applied. The content is bounded before it
+  is used — at most 32 effort labels of at most 64 bytes each, and a thinking
+  budget range that has to run low-to-high — and anything malformed or
+  oversized falls back to "unknown" for that one dimension instead of
+  breaking model discovery. The contract is kept **out** of the catalog
+  digest on purpose, so the revision your stored model preferences are keyed
+  against does not move; a capability change is detectable through a separate
+  revision of its own. **No provider publishes this contract today**, so the
+  effective behaviour is unchanged: this is forward-compatible groundwork,
+  not a behaviour change. See `architecture/provider.md` for the details.
+- **The thinking control now offers the choices your model actually accepts.**
+  `/reasoning` used to cycle a fixed ladder of four levels whatever the model
+  was, so a model that always reasons was offered an "off" that would have
+  been refused, and a model that takes a thinking budget but not a named depth
+  was offered depths it cannot express. The command now walks the selected
+  model's own options: a model that always reasons has no off switch, a model
+  that refuses an off says so instead of appearing broken, and a model whose
+  provider has published no contract falls back to the familiar labels and
+  says that too. The current selection is shown in the footer status bar, so you
+  can see what a turn will run at without running it, and the choice is
+  written to the daemon — the frontend no longer keeps its own copy.
+
 - **The rename and format previews are now reachable from the keyboard.**
   Until now they existed only inside the language-server protocol: the daemon
   could answer them and the editor could display them, but no key asked for

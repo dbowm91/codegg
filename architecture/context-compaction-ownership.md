@@ -113,17 +113,18 @@ remains the canonical fallback/default path; unsupported profiles
 
 ## Source Verification
 
-Verified 2026-10-06 against `src/context/`, `src/agent/compaction.rs`, and
-`crates/codegg-core/src/session/`. This document's ownership claims are all
-load-bearing and all held — no correction was needed.
+First verified 2026-10-06 against `src/context/`, `src/agent/compaction.rs`, and
+`crates/codegg-core/src/session/`. Re-verified 2026-10-23 against tree
+`12999178a` (static grep and file reads only; no build or test run).
 
-Confirmed accurate, no change:
-- `CompactionStatus` (`src/context/compaction.rs:832`) has exactly the 7
+Re-checked on 2026-10-23:
+- `CompactionStatus` (`src/context/compaction.rs:832`) still has exactly the 7
   variants listed above: `Ready`, `CompactionRequired`, `Compacted`,
   `InsufficientCapacity`, `ProviderFailure`, `InvalidHistoryOrBudget`,
   `Cancelled`.
 - The `ContextCompactionRequest` → `ContextCompactionResult` boundary is real
-  (`compaction.rs:844`, `:889`), with `compact_context` at `:950`.
+  (`compaction.rs:845`, `:889`), with `compact_context` at `:950` and
+  `compact_with_policy` at `:2821`.
 - `src/agent/compaction.rs` is a **7-line pure re-export**
   (`pub use crate::context::compaction::*;`) with **zero** `pub fn` /
   `pub async fn` definitions — it contains no implementation, as documented.
@@ -133,5 +134,31 @@ Confirmed accurate, no change:
   `CONTINUATION_CHECKPOINT_MAX_PAYLOAD_BYTES = 128 * 1024`
   (`crates/codegg-core/src/session/continuation.rs:51`) and the
   `continuation_checkpoint` table is created by `migrate_v57`
-  (`crates/codegg-core/src/session/schema.rs:2491`, dispatched at `:297`),
+  (`crates/codegg-core/src/session/schema.rs:2568`, dispatched at `:354`),
   matching the doc's `continuation_checkpoint` (v57) reference.
+- The M004 handoff symbols all exist: `assemble_continuation_snapshot`
+  (`src/context/continuation.rs:167`), `validate_replacement_messages`
+  (`src/context/rollover.rs:306`), `count_continuation_frames`
+  (`src/context/compaction.rs:2496`), `build_fresh_epoch_messages`
+  (`src/context/epoch.rs:264`), `decide_epoch`
+  (`crates/codegg-core/src/work_plan/epoch_policy.rs:215`), and the four
+  `AgentLoop` adapter methods in `src/agent/context_runtime.rs`
+  (`inject_installed_continuation_for_turn` at `:773`, `compact_if_needed` at
+  `:827`, `finish_prepared_install` at `:1640`, `try_start_fresh_epoch` at
+  `:1752`).
+- `codegg-core::work_plan::checkpoint` bounds both the actionable and the
+  blocked summary lists at `MAX_CHECKPOINT_WORK_ITEMS = 5`
+  (`crates/codegg-core/src/work_plan/checkpoint.rs:26`), matching the
+  "max 5 actionable + 5 blocked" claim.
+- `ContextCompacted` is the durable commit-marker event
+  (`crates/codegg-core/src/session/continuation.rs:354-366`), and
+  `context_epoch:started` is `AppEvent::ContextEpochStarted`
+  (`crates/codegg-core/src/bus/events.rs:167`, named at `:510`).
+
+Corrected on 2026-10-23:
+- `migrate_v57` was cited at `crates/codegg-core/src/session/schema.rs:2491`
+  with its dispatch at `:297`; both had drifted. The function is at `:2568` and
+  the `57 => migrate_v57(...)` dispatch arm is at `:354`.
+- `ContextCompactionRequest` was cited at `compaction.rs:844`; it is at `:845`.
+
+No ownership claim in this document needed to change.

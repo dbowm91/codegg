@@ -1,0 +1,19 @@
+# The fixture crate for the `read-search-patch-rust` autonomy case.
+#
+# The package is deliberately dependency-free: the verifier compiles
+# `src/lib.rs` with plain `rustc` (no cargo, no registry, no network), so a
+# dependency here could not be resolved. The empty `[workspace]` table keeps
+# this package out of the surrounding CodeGG workspace, exactly like the
+# other standalone fixture crates in this repository.
+#
+# The crate name is `candidate`: the verifier always links the crate under
+# that name, whatever the candidate renames its own package to.
+
+[package]
+name = "candidate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[workspace]

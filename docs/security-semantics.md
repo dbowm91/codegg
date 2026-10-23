@@ -176,3 +176,31 @@ The `security-review` agent can be invoked via `/agent security-review` or `@sec
 - Can use the `security` tool for deterministic findings
 - Cannot write/edit files
 - Produces concrete, patchable recommendations
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- The four modes `off`, `ambient`, `strict`, `review` and the `ambient`
+  default: `crates/codegg-config/src/schema.rs` (`SecurityMode`).
+- The `security` config block and every default shown in the example
+  (`enabled`, `mode`, `prompt_hints`, `max_findings_in_prompt`, `gates`,
+  `profiles`, `sensitive_paths`, `allowed_network_domains`,
+  `denied_commands`, `auto_invoke_review_agent`), plus the gate defaults
+  (`ask_on_high_risk_command` true, `deny_critical_commands` unset,
+  `ask_on_network_exfiltration` true, `ask_on_secret_exposure` true,
+  `ask_on_dependency_risk` false, `enforce_in_exec_mode` false) and the
+  profile defaults: `crates/codegg-config/src/schema.rs`
+  (`SecurityConfig`, `SecurityGateConfig`, `SecurityProfileConfig`).
+- The `security` tool's four actions (`classify_command`, `inspect_text`,
+  `inspect_file`, `run_profile`): `src/tool/security.rs`.
+- The `SandboxProfile` names: `codegg_core::approval::SandboxProfile`
+  (`read_only`, `workspace_write`, `full_host`; the parser also accepts the
+  hyphenated spellings).
+- `permission.bash_allow_patterns`, `permission.bash_ask_patterns`,
+  `permission.bash_deny_patterns`: `crates/codegg-config/src/schema.rs`
+  (`PermissionConfig`).
+- The escalation order in "Permission Escalation":
+  `src/permission/`, `src/security/`.
+- The `security-review` agent's role, mode, and read-only permission table:
+  `assets/agents/security-review.toml`.

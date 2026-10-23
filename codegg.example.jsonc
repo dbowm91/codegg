@@ -86,6 +86,30 @@
         "inject_after_compaction": true,
         "subagent_todo_access": "none"
       }
+    },
+
+    // What a model accepts on the reasoning dimensions (ADR-0050). The four
+    // dimensions are independent and each carries its own status:
+    //   supported | unsupported | unknown | mixed | conflicting
+    // "unknown" means nobody has published a contract for that dimension,
+    // which is NOT the same claim as "unsupported" (the model refuses this).
+    //
+    // An operator override is authoritative but narrowing-only: it may remove
+    // an option the adapter baseline allows, never add one. The label set is
+    // an open, provider-scoped string set - one vendor's ladder is not
+    // another's - so a vendor label is never fabricated or snapped.
+    //
+    // "always_reasons: true" means the model has no off switch, so
+    // "disable_status" may not be "supported".
+    "minimax/minimax-m3.1": {
+      "reasoning_capability": {
+        "effort_status": "supported",
+        "accepted_effort_labels": ["low", "medium", "high", "xhigh", "max"],
+        "disable_status": "unsupported",
+        "budget_status": "unknown",
+        "always_reasons_status": "supported",
+        "always_reasons": true
+      }
     }
   },
 

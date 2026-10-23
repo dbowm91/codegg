@@ -147,12 +147,14 @@ Central registry holding `HashMap<String, McpServer>` and an
 | Method | Description |
 |--------|-------------|
 | `connect_stdio` | Spawn local server via stdio |
+| `connect_stdio_host_scoped` | Spawn a local server with an authenticated host-local scope |
 | `connect_http` | Connect to remote server via HTTP |
 | `connect_from_config` | Dispatch canonical `local`/`remote` config types to stdio/HTTP |
 | `disconnect` | Gracefully disconnect one server |
 | `shutdown_all` | Disconnect all servers |
 | `call_tool` | String-only tool call |
 | `call_tool_structured` | Tool call retaining `structuredContent` |
+| `call_tool_structured_host_scoped` | Tool call carrying a host-local scope |
 | `list_tools` | All MCP tools as `ToolDefinition` |
 | `list_filtered_tools` | Tools filtered through `McpExposurePolicy` |
 | `handle_tool_list_changed` | Re-discover tools for a server |
@@ -167,6 +169,20 @@ wrappers use the resolved `McpService` view, retain configured/plugin origin
 provenance, and never accept an arbitrary server/URI pair. Text is truncated
 at the host byte ceiling; blob content is returned as metadata rather than
 unbounded base64.
+
+The ceilings live in `src/mcp/mod.rs` and are the only knob the wrappers
+read:
+
+| Constant | Value | Bounds |
+|----------|-------|--------|
+| `MAX_RESOURCE_RESULTS` | 10 | `mcp_resource_search` `limit` maximum |
+| `MAX_RESOURCE_TEXT_BYTES` | 64 KiB | `mcp_resource_read` `max_chars` maximum |
+| `MAX_RESOURCE_ENTRIES` | 8 | content entries returned per read |
+| `MAX_RESOURCE_DESCRIPTOR_BYTES` | 2 KiB | descriptor truncation in the local/remote clients |
+
+`mcp_resource_read` accepts only a handle it minted earlier in the turn
+(`mcpres:v1:<server>:<sha256-hex>`); a handle that is not admitted is
+refused rather than resolved against the live catalog.
 
 Prompts are different from resources: `McpService::invoke_user_selected_prompt`
 is an explicit host/user activation seam. It validates the prompt descriptor
@@ -205,8 +221,21 @@ readable evidence before display caps are applied.
 
 ### Eggsearch 0.4.4 compatibility policy
 
-The stable eggsearch facade is audited against eggsearch `0.4.4` at immutable
-commit `32f48bb57a43274d763c7f9ba919eab84d125edc`.
+The stable eggsearch facade is audited against eggsearch `0.4.4`. **Two
+different commits of 0.4.4 are pinned in the tree**, and they do not agree:
+
+| Pin site | Constant | Commit |
+|---|---|---|
+| `scripts/test-eggsearch-pair.sh:6` | `EXPECTED_COMMIT` | `13fcac0b7ac0125d38e4e9775ebe1d62028fda72` |
+| `src/install.rs:24` | `PINNED_EGGSEARCH_COMMIT` | `32f48bb57a43274d763c7f9ba919eab84d125edc` |
+
+Both pins agree on the **version** (`0.4.4` — `EXPECTED_VERSION` in the
+script, `PINNED_EGGSEARCH_VERSION` in `install.rs`), and `install.rs` is the
+installation-owned authority: it is what the prebuilt release bundle is
+built from and what `check_eggsearch_version_output` enforces at startup.
+The pair gate builds from its own commit. Treat the commit disagreement as
+an open divergence, not as a single pin; the version is the stable fact.
+
 CodeGG exposes the provider-neutral additive controls that fit its ownership
 boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
 its bounded extraction controls, and fetch `cache_policy` plus the
@@ -227,6 +256,25 @@ with an explicit remote provider hint. The gate does not enforce OS-level
 network containment. Historical v0.4.1/v0.4.2 local-search behavior remains
 documented in C001's immutable closure and is not used for current
 qualification.
+
+#### Host-scoped local retrieval
+
+CodeGG can start a **managed** local eggsearch child with an authenticated
+host-local scope (`connect_stdio_host_scoped`). The scope is carried as a
+`codegg/host-local-scope` metadata object (root + token) on the tool call,
+and the service keeps the per-server token in `McpService::host_scope_tokens`.
+
+Two rules bound it:
+
+- The child must advertise a version in `>=0.4.4, <0.5.0`
+  (`supports_host_scoped_eggsearch`); otherwise the call is refused with
+  "Eggsearch does not advertise the supported host-scoped retrieval protocol
+  (0.4.4 through 0.4.x)".
+- Only `repo_search` / `repo_fetch` / `repo_map` are host-scope capable, and
+  only a local stdio child can carry a scope — a remote client, or a mock
+  client, is refused. A raw MCP call to those tools still receives the
+  **authenticated disabled scope** rather than the child's configured roots,
+  so the managed child never inherits its own configured roots.
 
 ### IDE Server (`ide_server.rs`)
 
@@ -258,7 +306,10 @@ for Unix socket mode exists but is `#[allow(dead_code)]`.
   replay equality.
 - **Key configuration**: `CODEGG_MASTER_KEY` is preferred, followed by the
   existing canonical compatibility aliases `CODEGG_ENCRYPTION_KEY` and
-  `OPENCODE_ENCRYPTION_KEY`. `CODEGG_TOKEN_KEY` is deprecated and is
+  `OPENCODE_ENCRYPTION_KEY` — the chain is `codegg_config::encryption::ENV_CHAIN`.
+  When no environment variable is set, the canonical resolver falls back to
+  the managed key file (`CODEGG_MASTER_KEY_FILE`, else
+  `<config_dir>/codegg/master.key`). `CODEGG_TOKEN_KEY` is deprecated and is
   retained only to read and migrate historical MCP token stores.
 - **PKCE**: S256 challenge, callback server on `127.0.0.1:0`.
 - **Replay protection**: Used authorization codes tracked with expiry.
@@ -267,12 +318,16 @@ for Unix socket mode exists but is `#[allow(dead_code)]`.
 ### CLI (`cli.rs`)
 
 ```
-codegg mcp add <name> --type local|remote [--command ...] [--url ...]
+codegg mcp add <NAME> --server-type local|remote [--command <CMD>] [--args <ARG>...] [--url <URL>]
 codegg mcp list
-codegg mcp remove <name>
-codegg mcp enable <name> --enabled true|false
-codegg mcp debug [--name <server>] [--url <url>]
+codegg mcp remove <NAME>
+codegg mcp enable <NAME> [--enabled]
+codegg mcp debug [<NAME>] [--url <URL>]
 ```
+
+The CLI flag is `--server-type` (clap's kebab-case of the `server_type`
+field); the **config** key it writes is still `"type"`. `debug`'s server
+name is a **positional** argument, not `--name`.
 
 The `debug` command tests connection to a named server from config or
 an arbitrary URL. For remote servers, it connects, discovers tools,
@@ -285,7 +340,7 @@ and reports the count.
 | `McpService` | `mod.rs:165` | Server registry + OAuth manager |
 | `McpServer` | `mod.rs:115` | Per-server state (name, status, tools, version, client) |
 | `McpClientType` | `mod.rs:147` | Local / Remote / Mock dispatch |
-| `McpExposurePolicy` | `mod.rs:179` | Controls raw MCP tool visibility |
+| `McpExposurePolicy` | `mod.rs:192` | Controls raw MCP tool visibility |
 | `McpTool` | `mod.rs:78` | Tool definition from server |
 | `McpToolCallResult` | `mod.rs:98` | Text + optional structured JSON |
 | `McpServerStatus` | `mod.rs:107` | `Disconnected` (default) / `Connecting` / `Connected` / `Error(String)` |
@@ -300,9 +355,13 @@ and reports the count.
 | `TokenSet` | `auth.rs:80` | Access + refresh tokens with expiry |
 | `McpCli` | `cli.rs:17` | CLI command handler |
 | `McpCommand` | `cli.rs:185` | Clap subcommand enum |
-| `IdeServer` | `ide_server.rs:50` | IDE MCP server (openDiff) |
-| `McpError` | `crates/codegg-core/src/error.rs:198` | Connection, Server, ToolCall, OAuth, Encryption, Timeout |
-| `parse_mcp_tool_server` | `mod.rs:220` | Extract server from `mcp__<server>__<tool>` |
+| `IdeServer` | `ide_server.rs:51` | IDE MCP server (openDiff) |
+| `McpError` | `crates/codegg-core/src/error.rs:234` | Connection, Server, ToolCall, OAuth, Encryption, Timeout |
+| `McpServerOrigin` | `mod.rs:130` | `Configured` / `Plugin { plugin_id, plugin_version }` ownership |
+| `McpPluginReconcileReport` | `mod.rs:139` | connected / removed / collisions / failed from plugin reconcile |
+| `NegotiatedProtocol` | `protocol.rs:20` | Modern vs legacy negotiated protocol revision |
+| `DiscoveryInfo` | `protocol.rs:46` | Bounded `server/discover` metadata |
+| `parse_mcp_tool_server` | `mod.rs:233` | Extract server from `mcp__<server>__<tool>` |
 
 ## Configuration Surface
 
@@ -363,7 +422,7 @@ command = "eggsearch"
 args = ["mcp", "stdio"]
 ```
 
-The `schema.rs:4252` test `explicit_mcp_eggsearch_does_not_force_search_section`
+The `schema.rs:4718` test `explicit_mcp_eggsearch_does_not_force_search_section`
 parses exactly this direct-key form and asserts
 `cfg.mcp.contains_key("eggsearch")`.
 
@@ -371,10 +430,10 @@ Config types (`crates/codegg-config/src/schema.rs`):
 
 | Struct | Line | Keys |
 |--------|------|------|
-| `McpEntry` | `:1213` | `enabled`, flattened `McpServerConfig` |
-| `McpServerConfig` | `:1221` | `type`, command, args, env, url, headers, etc. |
-| `McpReconnectConfig` | `:1238` | `enabled`, `max_retries`, delay, heartbeat intervals |
-| `McpOAuthConfig` | `:1248` | `client_id`, `client_secret`, `scope` |
+| `McpEntry` | `:1569` | `enabled`, flattened `McpServerConfig` |
+| `McpServerConfig` | `:1577` | `type`, command, args, env, url, headers, etc. |
+| `McpReconnectConfig` | `:1594` | `enabled`, `max_retries`, delay, heartbeat intervals |
+| `McpOAuthConfig` | `:1604` | `client_id`, `client_secret`, `scope` |
 
 Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 `McpServerConfig.server_type`). The `environment` field is merged with
@@ -382,8 +441,12 @@ Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 
 ## Invariants & Gotchas
 
-- **`McpService` is not `Send + Sync`** — it is always wrapped in
-  `Arc<RwLock<McpService>>` for shared access.
+- **`McpService` is `Send + Sync`** — every field is (`HashMap<String,
+  McpServer>`, `HashMap<String, String>` host-scope tokens, `OAuthManager`),
+  and the service is held in a `static StdRwLock<Option<Arc<RwLock<McpService>>>>`
+  (`src/search_backend/state.rs`), which only compiles under that bound.
+  The `Arc<RwLock<McpService>>` wrapper is for *mutual exclusion*, not for
+  thread-safety of the type itself.
 - **Write lock during tool calls** — `call_tool_structured` acquires a
   write lock on the inner client, so concurrent calls to the same
   server serialize. This is acceptable because tool calls are
@@ -423,18 +486,24 @@ Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 ## Testing
 
 ```bash
-# MCP unit + integration tests
-cargo test -p codegg --test mcp
-cargo test -p codegg --test mcp_reconnect
-cargo test -p codegg --test fake_eggsearch_mcp
+# MCP integration tests live in the `config_provider` test family
+cargo test --test config_provider -- mcp
+cargo test --test config_provider -- mcp_reconnect
+cargo test --test config_provider -- fake_eggsearch_mcp
 
 # Unit tests within the module
 cargo test -p codegg mcp::tests
 cargo test -p codegg mcp::local::tests
+cargo test -p codegg mcp::remote::tests
+cargo test -p codegg mcp::auth::tests
+cargo test -p codegg mcp::protocol::tests
 ```
 
 `fake_eggsearch_mcp` exercises the end-to-end eggsearch dispatch
 path using an in-process mock `McpService` (no real binary needed).
+The real-process pair gate is `scripts/test-eggsearch-pair.sh`, which
+builds the pinned eggsearch revision and checks its version identity
+before running the native adapters.
 
 ## Related Docs
 
@@ -478,3 +547,66 @@ against `crates/codegg-config/src/schema.rs`.
   `McpOAuthConfig` `:969`→`:1274`.
 - Re-confirmed all 17 `mod.rs`/`local.rs`/`remote.rs`/`auth.rs`/`cli.rs`/
   `ide_server.rs` rows in the Key Types table as still accurate.
+
+Verified 2026-10-23 against `src/mcp/`, `crates/codegg-core/src/error.rs`,
+`crates/codegg-config/src/schema.rs`, `src/security/ssrf.rs`,
+`src/tool/mcp_resource.rs`, `src/search_backend/{bootstrap,state,eggsearch}.rs`,
+`scripts/test-eggsearch-pair.sh`, and `tests/config_provider/`.
+- **Corrected a wrong invariant.** The doc claimed "`McpService` is not
+  `Send + Sync`". It **is**: every field is `Send + Sync`, and the service is
+  held in a `static StdRwLock<Option<Arc<RwLock<McpService>>>>>`
+  (`src/search_backend/state.rs`), which only compiles under that bound. The
+  `Arc<RwLock<…>>` wrapper is for mutual exclusion, not for thread-safety of
+  the type.
+- **Corrected 4 stale Key Types refs**: `McpExposurePolicy` `:179`→`:192`,
+  `IdeServer` `ide_server.rs:50`→`:51`, `McpError`
+  `error.rs:198`→`:234`, `parse_mcp_tool_server` `mod.rs:220`→`:233`. Added
+  rows for `McpServerOrigin` (`:130`), `McpPluginReconcileReport` (`:139`),
+  `NegotiatedProtocol` (`protocol.rs:20`), and `DiscoveryInfo`
+  (`protocol.rs:46`).
+- **Corrected 5 stale schema refs**: `McpEntry` `:1213`→`:1569`,
+  `McpServerConfig` `:1221`→`:1577`, `McpReconnectConfig` `:1238`→`:1594`,
+  `McpOAuthConfig` `:1248`→`:1604`, and the proof test
+  `explicit_mcp_eggsearch_does_not_force_search_section` `:4252`→`:4718`.
+  The 2026-10-06 pass had already corrected these to `:1239`/`:1247`/`:1264`/
+  `:1274`; they moved again.
+- **Corrected the CLI block.** `codegg mcp add --type` is wrong: clap's
+  derive generates `--server-type` from the `server_type` field (the config
+  key is still `"type"`). `codegg mcp enable <name> --enabled true|false` is
+  wrong: `enabled` is a `bool` flag (`#[arg(long, default_value = "true")]`),
+  so it takes no value. `codegg mcp debug --name <server>` is wrong: the
+  server name is a positional. Now matches `docs/MCP.md`.
+- **Corrected the eggsearch pin.** The doc named a single immutable commit.
+  There are **two** pins and they disagree: `scripts/test-eggsearch-pair.sh:6`
+  pins `13fcac0b7ac0125d38e4e9775ebe1d62028fda72` while
+  `src/install.rs:24` (`PINNED_EGGSEARCH_COMMIT`, the installation-owned
+  authority for the shipped bundle) still pins
+  `32f48bb57a43274d763c7f9ba919eab84d125edc`. Both agree on the version
+  `0.4.4`. The doc now records the two pins and the divergence instead of
+  silently adopting one of them.
+- **Corrected the Testing section.** `tests/mcp.rs`, `tests/mcp_reconnect.rs`
+  and `tests/fake_eggsearch_mcp.rs` no longer exist as standalone targets —
+  the root package's integration tests are families. The three members now
+  live in the `config_provider` family (`tests/config_provider/{mcp,mcp_reconnect,fake_eggsearch_mcp}.inc`)
+  and are selected with `cargo test --test config_provider -- <member>`.
+- **Added depth**: the four resource byte ceilings with their consumers, the
+  `mcpres:v1:<server>:<sha256>` handle format, the managed-master-key
+  fallback in `codegg_config::encryption` (`CODEGG_MASTER_KEY_FILE`, else
+  `<config_dir>/codegg/master.key`), and a new "Host-scoped local retrieval"
+  subsection covering `connect_stdio_host_scoped`, the
+  `codegg/host-local-scope` metadata, and the `>=0.4.4, <0.5.0` server-version
+  gate.
+- **Re-confirmed as accurate**: the `Where It Lives` tree (including
+  `pub(crate) mod protocol;` at `mod.rs:12`), the protocol-version constants
+  and byte ceilings in `protocol.rs`, `env_clear()` + PATH re-injection, the
+  `min(timeout, 10s)` spawn timeout, the EOF error string, the
+  `follow_redirects(false)` policy, the port-qualified DNS snapshot pinned to
+  the Eggfetch request, the `is_internal_ip` blocked ranges (loopback,
+  RFC1918, link-local, CGNAT), the 1s→60s backoff / 5 retries / 30s heartbeat,
+  `is_legacy_probe_error`'s narrow classification, the SSRF and OAuth
+  contracts, the `McpExposurePolicy` field set and `list_filtered_tools`
+  semantics, `catalog_fingerprint`, `reconcile_plugin_servers` (including the
+  `plugin:<plugin>:<name>` naming and the `local`/`stdio` ↔ `remote`/`http`
+  canonicalization at `src/plugin/manifest.rs`), and the eggsearch adapter
+  control names (`excerpt_count` ≤ 3, `focus`, `cache_policy`,
+  `max_cache_age_seconds`, internal `response_detail=diagnostic`).

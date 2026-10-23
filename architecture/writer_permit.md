@@ -49,7 +49,7 @@ crates/codegg-core/src/storage/immediate.rs     # the shared BEGIN IMMEDIATE wri
 src/core/writer_permit.rs                      # the daemon adapter: authority resolution,
                                               # bounded per-checkout waiter, the holder guard,
                                               # the operator surface
-crates/codegg-core/src/session/schema.rs        # migrate_v84: the writer_permit table
+crates/codegg-core/src/session/schema.rs        # migrate_v86: the writer_permit table
 src/core/runtime_deps.rs                       # the daemon owns exactly one permit service
 src/core/daemon_construct.rs                   # startup reconciliation of orphaned permits
 src/tool/writer_fence.rs                       # the tool-facing fence contract (C003): the scope,
@@ -632,7 +632,7 @@ reported.
   `tests/server_feature/checkout_reservation_c004_http.inc` (through a real HTTP route), over
   a temporary Git checkout. C005's evidence is in
   `tests/security_permission/process_denial_c005.inc`, over the same reserved-checkout fixture.
-  C006's evidence is in `tests/shared_checkout_c006.rs` (15 tests): the
+  C006's evidence is in `tests/shared_checkout_c006.rs` (16 tests): the
   placement joins the group's checkout, two members racing for one group land
   on one checkout, two writers on the shared checkout never overlap, a run
   outside the group is refused, a process effect is refused, a live persistent
@@ -679,7 +679,7 @@ unproven quiescence parking the permit, the operator inspect and release
 surface, the operator release needing proven quiescence, and startup
 reconciliation parking a permit left live.
 
-`tests/core_daemon/writer_fence_c003.inc` (9 tests) covers the fence: a write outside the
+`tests/core_daemon/writer_fence_c003.inc` (10 tests) covers the fence: a write outside the
 run's checkout refused with no filesystem effect, a write inside it allowed, a
 daemon-granted scratch root inside the scope, the real `write` tool refusing
 an out-of-scope target without creating the file, two runs on one checkout
@@ -694,3 +694,93 @@ The `BEGIN IMMEDIATE` primitive the store depends on is shared with the
 user-prompt queue store and is guarded by
 `scripts/check_queue_write_transaction_shape.py`, whose self-test proves it
 rejects both a deferred read-then-write path and a closing rollback.
+
+## Source verification
+
+Verified 2026-10-23 against `crates/codegg-core/src/writer_permit.rs`,
+`crates/codegg-core/src/storage/immediate.rs`,
+`crates/codegg-core/src/session/schema.rs`,
+`crates/codegg-core/src/checkout_reservation.rs`,
+`crates/codegg-core/src/process_admission.rs`,
+`crates/codegg-core/src/shared_checkout.rs`,
+`crates/codegg-core/src/run_placement.rs`,
+`crates/codegg-core/src/jobs/mod.rs`, `src/core/writer_permit.rs`,
+`src/core/writer_fence.rs`, `src/core/checkout_mediation.rs`,
+`src/tool/writer_fence.rs`, `src/tool/process_admission.rs`,
+`src/tool/process_capability.rs`, `src/core/runtime_deps.rs`,
+`src/core/daemon_construct.rs`, `crates/codegg-core/src/audit.rs`, and the
+test files named in "Verification". No build or test run was performed; every
+count below is a source-level measurement of `#[test]` / `#[tokio::test]`
+attributes.
+
+- **Corrected a wrong migration ref.** The `writer_permit` table is created by
+  `migrate_v86` (`crates/codegg-core/src/session/schema.rs:3598`), not
+  `migrate_v85` — v85 creates the C007 `git_index_publication` journal.
+- **Corrected two test counts.** `tests/core_daemon/writer_fence_c003.inc`
+  holds **10** test functions, not 9; `tests/shared_checkout_c006.rs` holds
+  **16**, not 15. `crates/codegg-core/tests/writer_permit.rs` = **21** and
+  `tests/core_daemon/writer_permit_service.inc` = **12** were already
+  accurate.
+- **Confirmed the durable schema.** The `writer_permit` table is keyed by
+  `worktree_id TEXT PRIMARY KEY` (one row per worktree, as the permit-vs-lease
+  table states), its `state` column is `CHECK`-constrained to the four states
+  of the state machine (`available`, `held`, `releasing`, `quarantined`), and
+  the idempotency key column carries the 1..128 byte bound the text names.
+- **Confirmed the constants and the gate.**
+  `MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES = 128`
+  (`crates/codegg-core/src/writer_permit.rs:101`),
+  `MAX_WRITER_PERMIT_WAITERS_PER_WORKTREE = 64`
+  (`src/core/writer_permit.rs:61`),
+  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS = ["linux", "macos"]`
+  (`crates/codegg-core/src/run_placement.rs:94`).
+- **Confirmed the platform gate is a compile-time table, not a runtime flag**,
+  and that the Windows refusal has a *different* reason from macOS's: the
+  `run_placement.rs` module comment records that macOS was qualified on a
+  hosted lane's evidence while **no filesystem-enforcement backend is
+  registered for Windows at all**, so no CI run could produce the missing
+  evidence.
+- **Confirmed the fourteen mediated sinks.**
+  `CheckoutWriterSink` (`src/core/checkout_mediation.rs:45`) has exactly 14
+  variants, and `src/core/checkout_mediation.rs:226` names itself the live
+  owner of the `checkout_writer_refusal` audit action.
+- **Confirmed the audit actions.** `AuditAction::ProcessDenial` and
+  `AuditAction::CheckoutWriterRefusal` both exist in
+  `crates/codegg-core/src/audit.rs` (`:141` and `:133`).
+- **Confirmed the symbol names**: `WriterPermitView`
+  (`crates/codegg-core/src/writer_permit.rs:431`), `QuiescenceEvidence`
+  (`:458`), `WriterPermitGuard` (`src/core/writer_permit.rs:466`),
+  `WorktreePermitAuthority` (`src/core/writer_permit.rs:627`),
+  `CheckoutWriterFence` (`src/tool/writer_fence.rs:252`), `WriterFenceFactory`
+  (`src/tool/writer_fence.rs:590`), and `DaemonWriterFenceFactory`
+  (`src/core/writer_fence.rs:482`).
+- **Confirmed the fence key shape.** The tool layer's idempotency key is
+  `wf1:{label}:{sha256}` (`src/tool/writer_fence.rs:345`): the readable label
+  is the tool name **truncated** to `MAX_FENCE_KEY_LABEL_CHARS`, while the
+  digest covers the untruncated tool name together with the target paths and
+  the invocation key, so truncating the label cannot make two tools collide.
+  The text's `wf1:{tool}:{sha256}` is the same shape.
+- **Confirmed the scheduler claim**: the writer-bearing job kinds (`Shell`,
+  `ManagedProcess`, `Test`, `Lint`, `Python`, `ToolProgram`) carry empty
+  exclusivity key sets, and only `exclusive:`-prefixed keys conflict —
+  `crates/codegg-core/src/jobs/mod.rs:883` is the one live
+  `exclusive:worktree-mutation` assignment.
+- **Confirmed the referenced scripts and closure record exist**:
+  `scripts/check_writer_disposition.py`, `scripts/check_process_denial.py`,
+  `scripts/check_shared_checkout.py`,
+  `scripts/check_queue_write_transaction_shape.py`, and
+  `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md`.
+- **Confirmed all the named test files exist**:
+  `crates/codegg-core/tests/writer_permit.rs`,
+  `tests/core_daemon/writer_permit_service.inc`,
+  `tests/core_daemon/writer_fence_c003.inc`,
+  `tests/core_daemon/checkout_reservation_c004.inc`,
+  `tests/server_feature/checkout_reservation_c004_http.inc`,
+  `tests/security_permission/process_denial_c005.inc`, and
+  `tests/shared_checkout_c006.rs`.
+- **Confirmed the C004 / C005 / C006 module ownership claims**:
+  `crates/codegg-core/src/checkout_reservation.rs` (durable reservation state),
+  `src/core/checkout_mediation.rs` (the daemon adapter), the gate running in
+  `src/core/daemon.rs` after the M003 authorization step,
+  `crates/codegg-core/src/process_admission.rs` (durable process-admission
+  state), `src/tool/process_admission.rs` (the tool-layer contract), and
+  `src/tool/process_capability.rs` (what counts as a process surface).

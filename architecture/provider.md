@@ -9,7 +9,16 @@ and provides resilience primitives (circuit breaker, fallback, response
 cache).
 
 **Re-export**: `codegg::provider` via `pub use codegg_providers as provider`
-in `src/lib.rs`.
+in `src/lib.rs` (`src/lib.rs:16`).
+
+**Not everything in the crate is reachable.** The crate also carries
+compiled-in capability that no registration path or caller selects: the
+`ProviderCache` in `cache.rs`, the `vertex.rs` / `copilot.rs` /
+`cloudflare.rs` / `gitlab.rs` provider modules, and the
+`create_sap_ai_core` / `create_zenmux` / `create_kilo` /
+`create_vercel_ai_gateway` factories. The reachable set is the 17 ids in
+`builtin_registration_order()` plus the `eggpool` / `custom` / `azure`
+durable-connection entries.
 
 ## Where It Lives
 
@@ -20,23 +29,32 @@ in `src/lib.rs`.
 | `crates/codegg-providers/src/openai.rs` | OpenAI Chat Completions |
 | `crates/codegg-providers/src/google.rs` | Google Generative Language API |
 | `crates/codegg-providers/src/azure.rs` | Azure OpenAI Service |
-| `crates/codegg-providers/src/vertex.rs` | Google Vertex AI (wraps OpenAI-compat) |
+| `crates/codegg-providers/src/vertex.rs` | Google Vertex AI (wraps OpenAI-compat) — **not wired** |
 | `crates/codegg-providers/src/bedrock.rs` | AWS Bedrock with SigV4 signing |
 | `crates/codegg-providers/src/openrouter.rs` | OpenRouter aggregator |
 | `crates/codegg-providers/src/openai_compatible.rs` | Generic OpenAI-compatible |
-| `crates/codegg-providers/src/copilot.rs` | GitHub Copilot |
-| `crates/codegg-providers/src/cloudflare.rs` | Cloudflare Workers AI |
-| `crates/codegg-providers/src/gitlab.rs` | GitLab AI gateway |
+| `crates/codegg-providers/src/copilot.rs` | GitHub Copilot — **not wired** |
+| `crates/codegg-providers/src/cloudflare.rs` | Cloudflare Workers AI — **not wired** |
+| `crates/codegg-providers/src/gitlab.rs` | GitLab AI gateway — **not wired** |
 | `crates/codegg-providers/src/opencode_zen.rs` | OpenCode Zen service |
+| `crates/codegg-providers/src/opencode_go.rs` | OpenCode Go multi-surface provider (M011) |
+| `crates/codegg-providers/src/provider_profile.rs` | Pure projection of the shared provider profile (surface routes, wire resolution) |
+| `crates/codegg-providers/src/setup_catalog.rs` | Pre-credential provider-definition authority (C002) |
+| `crates/codegg-providers/src/qualification.rs` | Catalog-vs-credential qualification types (M010) |
+| `crates/codegg-providers/src/eggpool.rs` | Bounded compatible `/models` probe core and reason codes |
+| `crates/codegg-providers/src/connection.rs` | Durable connection secret references and rotation guards |
 | `crates/codegg-providers/src/additional.rs` | Factory functions for OpenAI-compat providers |
 | `crates/codegg-providers/src/wire.rs` | Canonical bridge, shared family codecs, stream decoding, and completed tool-call accumulation |
 | `crates/codegg-providers/src/fallback.rs` | FallbackProvider with circuit breaker |
 | `crates/codegg-providers/src/circuit.rs` | CircuitBreaker implementation |
 | `crates/codegg-providers/src/discovery.rs` | ModelDiscoveryService with SQLite cache |
 | `crates/codegg-providers/src/text_tool_parser.rs` | Bounded textual tool-call repair |
-| `crates/codegg-providers/src/cache.rs` | Provider response cache |
+| `crates/codegg-providers/src/cache.rs` | Provider response cache — **not wired** |
 | `crates/codegg-providers/src/responses_api.rs` | OpenAI Responses API adapter |
 | `crates/codegg-providers/src/auth_types.rs` | Credential, CredentialStore, AuthResolver |
+| `crates/codegg-providers/src/crypto.rs` | AES-256-GCM / Argon2id primitives |
+| `crates/codegg-providers/src/error.rs` | `ProviderError` taxonomy and retry disposition |
+| `crates/codegg-providers/src/retry.rs` | Bounded retry chain contract (`RetryContext`, dispositions) |
 
 ## How It Works
 
@@ -44,14 +62,15 @@ in `src/lib.rs`.
 
 Two entry points exist:
 
-**`register_builtin(registry)`** (`provider_core.rs:498`) — registers 15
+**`register_builtin(registry)`** (`provider_core.rs:632`) — registers 15
 providers, each gated on its environment variable. No config dependency.
 
-**`register_builtin_with_config(registry, config)`** (`provider_core.rs:890`)
+**`register_builtin_with_config(registry, config)`** (`provider_core.rs:1122`)
 — the primary production path. Registers 17 providers by checking config
 first, then falling back to env vars per-provider. Uses three helper
 functions with a single credential resolution path, each wired to an
-explicit `CredentialCapability` from `credential_capability_for`:
+explicit `CredentialCapability` from `credential_capability_for`
+(`provider_core.rs:717`):
 
 1. `register_config_provider` (`ApiKeyOnly`) — for providers with
    base_url override (anthropic, openai, google, openrouter)
@@ -100,8 +119,8 @@ so the caller gets an actionable state instead of a silent pick.
 
 ### Credential Resolution
 
-`resolve_provider_credential(provider_id, cfg, env_var, store, pin)`
-(`provider_core.rs`) is the single resolution path. It builds a
+`resolve_provider_credential(provider_id, cfg, env_var, store, pins)`
+(`provider_core.rs:759`) is the single resolution path. It builds a
 `ResolverContext` with `capability = credential_capability_for(provider_id)`
 and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 `ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
@@ -109,26 +128,39 @@ and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 reinterpretation). Expired records return `AuthError::Expired` before
 transport. Resolution order:
 
-0. **`pin` — the turn's connection binding** (a turn only; see below). This
+0. **`pins` — the turn's connection binding** (a turn only; see below). This
    precedes every other source, including config and env.
 1. Explicit `auth.env` env var
 2. Conventional `{PROVIDER}_API_KEY`
 3. Inline `auth.value`
 4. Decrypted `auth.encrypted_value` (requires a resolvable master key: an explicit environment key or the existing CodeGG-managed key)
-5. User-level `CredentialStore` lookup (by `account_id`)
-6. Legacy `api_key` / `encrypted_api_key` fields
 
-**Store fallback (steps 0–6 all miss).** When the resolver returns `None`,
+Steps 1–4 are the typed `auth` arm. When none of them hits, the resolver
+**falls through** to the shared no-auth tail, so the effective order of the
+remaining sources is:
+
+5. `ctx.env_override` (test-only) → `EnvExplicit`
+6. Conventional `{PROVIDER}_API_KEY` → `EnvConventional`
+7. Legacy `api_key` → `LegacyApiKey`
+8. Decrypted legacy `encrypted_api_key` → `LegacyDecrypted`
+9. User-level `CredentialStore` lookup by `account_id` → `UserStore`
+
+The legacy fields therefore precede the store, and the store's lookup
+inside the resolver is an **exact-match** `find_record`, not a scan.
+
+**Store fallback (all nine miss).** When the resolver returns `None`,
 `resolve_provider_credential` makes one final attempt against the
-`CredentialStore` by provider id. It *counts* usable records instead of racing
-them: expired records are not candidates, one usable record resolves, and two
-or more return typed `AuthError::AmbiguousCredential` naming every candidate
-account. This exists because a credential added through the TUI `/connect` flow
-is written *only* to the credential store: it appears in neither config nor the
-environment. Without the fallback such a provider resolved to `None`, was skipped
-at registration (`NO KEY for provider ...`), and contributed no models — so
+`CredentialStore` by provider id. This is a **second, different** store
+lookup: it *counts* usable records instead of racing them — expired records
+are not candidates, one usable record resolves, and two or more return typed
+`AuthError::AmbiguousCredential` naming every candidate account. It exists
+because a credential added through the TUI `/connect` flow is written *only*
+to the credential store: it appears in neither config nor the environment.
+Without the fallback such a provider resolved to `None`, was skipped at
+registration (`NO KEY for provider ...`), and contributed no models — so
 `/connect` reported success while `/models` stayed empty. The fallback never
-displaces the precedence above: config and env still win whenever they resolve.
+displaces the precedence above: config and env still win whenever they
+resolve.
 Covered by `resolve_provider_credential_falls_back_to_store_without_config_entry`
 and `env_still_wins_over_the_store_fallback` in `provider_core.rs`.
 
@@ -402,16 +434,27 @@ a provider connection, and the code keeps them separate in the type system
 - `CatalogOutcome` (`Available` / `Unavailable` / `Rejected`) is a transport
   and catalog verdict. It has no authentication variant at all: a public
   `/models` endpoint answering 200 proves reachability, not credential
-  validity.
+  validity. `CatalogOutcome::is_authentication_rejection()` returns `false`
+  unconditionally, and the failure reasons carry no credential meaning
+  (`CatalogUnavailable`: `Unreachable` / `Timeout` / `TlsFailed` /
+  `Cancelled`; `CatalogRejected`: `InvalidJson` / `Oversized` / `Empty` /
+  `UnsupportedApi`).
 - `CredentialVerification` (`Verified` / `Unverified` /
   `AuthenticationFailed` / `NoCredentialRequired`) is the credential verdict.
   `Unverified` is a durable first-class state meaning "configured, and no
   authenticated operation has accepted this credential yet".
 - `SetupProbeStrategy::credential_evidence()` declares what a strategy may
-  prove. `ProviderCatalog` → `CredentialEvidence::CatalogOnly` (never
-  verification). `CredentialVerification::from_probe` is the only place a
-  **catalog probe** may derive a credential verdict, and both strategies now
-  land on `Unverified` from it.
+  prove: `CredentialEvidence::CatalogOnly` (never verification) or
+  `CredentialEvidence::Authenticated` (a genuinely authenticated,
+  non-billable metadata request). `ProviderCatalog` →
+  `CredentialEvidence::CatalogOnly`; `AuthenticatedCompatibleCatalog` →
+  `CredentialEvidence::Authenticated`. Two catalog entries use the
+  authenticated strategy (`eggpool` and `custom`); the other 18 use
+  `ProviderCatalog`.
+  `CredentialVerification::from_probe` is the only place a probe may derive
+  a credential verdict: `Authenticated` + an available catalog →
+  `Verified`, every other combination → `Unverified`, and an explicit
+  authentication rejection → `AuthenticationFailed`.
 - **Only a real completion verifies a credential.** No metadata request can,
   however strictly it is authenticated. Measured against the real OpenCode Go
   gateway (`https://opencode.ai/zen/go/v1`): `GET /models` with a bogus bearer
@@ -589,7 +632,7 @@ the provider-connection selection subsystem.
 
 ## Key Types & APIs
 
-### Provider Trait (`provider_core.rs:89`, `#[async_trait]` at `:84`)
+### Provider Trait (`provider_core.rs:88`, `#[async_trait]` at `:83`)
 
 ```rust
 #[async_trait]
@@ -600,10 +643,19 @@ pub trait Provider: Send + Sync {
     async fn stream(&self, request: &ChatRequest)
         -> Result<EventStream, ProviderError>;
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
-    async fn discover_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
-    async fn ping(&self) -> Result<bool, ProviderError>;
+    async fn discover_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        self.models().await
+    }
+    async fn ping(&self) -> Result<bool, ProviderError> {
+        self.models().await.map(|m| !m.is_empty())
+    }
 }
 ```
+
+`discover_models` and `ping` have **default implementations** that delegate
+to `models()`, so an implementation only has to override them when
+discovery is materially different from the listing (or to make a cheap
+health check).
 
 ### ProviderCapabilities (`provider_core.rs:132`)
 
@@ -638,7 +690,15 @@ continuation).
 references) and openai (full Responses API, hosted programs, nested calls).
 Others default to no special capabilities.
 
-### ChatRequest (`provider_core.rs:238`)
+Which reasoning dimensions a *surface* can express is not a capability flag:
+it is the wire kernel's authority, and CodeGG does not re-decide it per
+provider. The representability is therefore pinned by per-surface encoding
+fixtures over the shared codec (see "Reasoning intent at the wire boundary"
+below), not implied by the bridge. The per-*model* facts — whether a model
+accepts an effort label at all, and whether it can be turned off — are a
+separate authority and are not settled here.
+
+### ChatRequest (`provider_core.rs:264`)
 
 ```rust
 pub struct ChatRequest {
@@ -663,14 +723,31 @@ runtime's canonical session identity:
 pub struct ProviderRequestContext {
     pub session_id: Option<Arc<str>>,
     pub wire_policy: Option<Arc<ProviderWirePolicy>>,
+    pub reasoning: ReasoningControl,
 }
 ```
 
-`ProviderWirePolicy` (`provider_core.rs:223`) is the immutable model-adapter
+`ReasoningControl` is the request's own explicit reasoning instruction and
+carries the one state the two selection fields above cannot express:
+
+```rust
+pub enum ReasoningControl {
+    Unspecified, // no instruction: the selection, or the provider default, applies
+    Disabled,    // explicitly off — a wire-visible instruction, not an absence
+    Enabled,     // on, with no depth label: the binary thinking-on dimension
+}
+```
+
+The concrete selection stays on `ChatRequest` itself: `reasoning_effort` is a
+`String` (an open, provider-scoped label carried verbatim) and `thinking_budget`
+is a token count carried verbatim. Effort and budget are mutually exclusive.
+
+`ProviderWirePolicy` (`provider_core.rs:249`) is the immutable model-adapter
 projection carried alongside the session identity: `tool_aliases`,
 `argument_aliases`, `allow_private_reasoning_round_trip`,
 `include_reasoning_content`, `enable_thinking`, `tool_choice`, and
-`max_parallel_tools`.
+`max_parallel_tools`. It is adapter policy, not request intent: the request's
+own reasoning instruction is `ReasoningControl`, and the two are never merged.
 
 It is not model input and is never serialized into the request body. The turn
 runtime validates and attaches the existing CodeGG session identity; retries,
@@ -684,22 +761,22 @@ run-scoped value, and standalone operations create one invocation-scoped
 value at their boundary. Providers consume this context but never generate
 or persist it.
 
-### Message (`provider_core.rs:254`)
+### Message (`provider_core.rs:379`)
 
 Tagged enum (`#[serde(tag = "role")]`): `System`, `User` (Vec<ContentPart>),
 `Assistant` (Vec<ContentPart> + tool_calls), `Tool` (tool_call_id + content).
 
-### ContentPart (`provider_core.rs:319`)
+### ContentPart (`provider_core.rs:444`)
 
 Untagged enum: `Text { text }`, `Image { image_url }`, `Reasoning { text, visibility }`.
 `Reasoning` is `#[serde(skip)]` — never serialized on the wire. Max 256KB.
 
-### ChatEvent (`provider_core.rs:366`)
+### ChatEvent (`provider_core.rs:491`)
 
 Streaming response events: `TextDelta`, `ReasoningDelta`, `ToolCall`,
 `ToolResult`, `Finish { stop_reason, usage }`, `Error`.
 
-### ToolDefinition (`provider_core.rs:408`)
+### ToolDefinition (`provider_core.rs:533`)
 
 ```rust
 pub struct ToolDefinition {
@@ -713,7 +790,7 @@ pub struct ToolDefinition {
 Methods: `to_openai()`, `to_anthropic()` — convert to provider-specific
 wire format. Both handle `defer_loading`.
 
-### ModelInfo (`provider_core.rs:456`)
+### ModelInfo (`provider_core.rs:581`)
 
 ```rust
 pub struct ModelInfo {
@@ -728,16 +805,24 @@ pub struct ModelInfo {
 }
 ```
 
-### ProviderRegistry (`provider_core.rs:467`)
+### ProviderRegistry (`provider_core.rs:592`)
 
 ```rust
 pub struct ProviderRegistry {
-    providers: HashMap<String, Box<dyn Provider>>,
+    providers: BTreeMap<String, Box<dyn Provider>>,
 }
 // new(), register(), get(), list()
 ```
 
-### ProviderCapabilities::for_provider (`provider_core.rs:168`)
+The map is a **`BTreeMap`, not a `HashMap`**, and that is load-bearing:
+`ProviderRegistry::list()` feeds the model catalog, so its order decides
+which provider's models come first — and consumers fall back to `models[0]`
+when they have no explicit selection. A `HashMap` iterates in `RandomState`
+order, which is reseeded per process, so "the first provider" changed on
+every launch, silently routing turns to whichever backend hashed first.
+Sorted keys make the catalog stable.
+
+### ProviderCapabilities::for_provider (`provider_core.rs:217`)
 
 Returns provider-specific capabilities. Anthropic: `supports_defer_loading`,
 `supports_tool_references`, `max_tools_per_request: None`. The direct OpenAI
@@ -750,10 +835,14 @@ OpenAI also has `max_tools_per_request: Some(128)`,
 `hosted_languages: ["python"]`, `max_response_items: Some(100)`,
 `max_nested_calls: Some(50)`, `requires_fingerprint: false`,
 `supports_output_schema: true`, `max_result_size: Some(1024 * 1024)` (1 MB),
-`max_tool_calls_per_program: Some(50)`. Any other id returns
-`Self::default()` (all flags false, all limits `None`).
+`max_tool_calls_per_program: Some(50)`. **Azure, OpenRouter, and OpenCode
+Zen** get `strips_reasoning_effort: true` and otherwise default. Any other
+id returns `Self::default()` (all flags false, all limits `None`).
 
-### EventStream (`provider_core.rs:68`)
+The three stripping ids must stay in lockstep with the `omit_openai_fields`
+calls in `azure.rs` / `openrouter.rs` / `opencode_zen.rs`.
+
+### EventStream (`provider_core.rs:67`)
 
 ```rust
 pub type EventStream = Pin<Box<dyn Stream<Item =
@@ -835,7 +924,7 @@ Open->HalfOpen after timeout, HalfOpen->Closed after success threshold.
 
 ## Registration Summary
 
-### 15 Env-Var Providers (`register_builtin()`)
+### 15 Env-Var Providers (`register_builtin()`, `provider_core.rs:632`)
 
 Registered if the corresponding env var is set:
 
@@ -857,18 +946,48 @@ Registered if the corresponding env var is set:
 | `VENICE_API_KEY` | Venice |
 | `MINIMAX_API_KEY` | MiniMax |
 
-### 17 Config+Env Providers (`register_builtin_with_config()`)
+### 17 Config+Env Providers (`register_builtin_with_config()`, `provider_core.rs:1122`)
 
-Same 15 plus `opencode_go` (OPENCODE_GO_API_KEY) and
-`generalcompute` (GENERALCOMPUTE_API_KEY). Each checks config first,
-then env var. **Per-provider independence**: adding one via config does
-NOT suppress others. `register_builtin()` is only called as fallback
-if registry is empty after all config-based attempts.
+Same 15 plus `opencode_go` (`OPENCODE_GO_API_KEY`) and `generalcompute`
+(`GENERALCOMPUTE_API_KEY`). Each checks config first, then its own env var.
+**Per-provider independence**: adding one via config does NOT suppress the
+others. `register_builtin()` is only called as a fallback
+(`provider_core.rs:1416-1418`) if the registry is empty after all
+config-based attempts — a redundant safety net, not the mechanism.
+
+`builtin_registration_order()` (`provider_core.rs:726`) lists the same 17 ids
+in registration order. The setup catalog
+(`crates/codegg-providers/src/setup_catalog.rs:235`) carries **20** entries:
+those 17 plus `eggpool` (`EGGPOOL_PRESET_ID`), `custom`
+(`CUSTOM_COMPATIBLE_ID`), and `azure` (`AZURE_ID`) — the three ids that are
+reachable through a durable connection rather than through process-wide
+registration. A coverage test pins the 17 registration ids to the catalog,
+so a new built-in cannot land without a setup disposition.
+
+`register_builtin_with_config_connections()` (`:1049`) is the variant for
+surfaces that cannot speak for a session (model listing, provider pickers,
+`codegg models`): it supplies every connection's locator, so a connection
+is the authority for its own provider. Without it, a rotation left the live
+record beside the orphan it replaced and the provider disappeared from
+`codegg models` with `Provider not found`.
 
 ### Config-Only Providers (NOT auto-registered)
 
-SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
-`provider.<id>` config entries.
+SAP AI Core, Zenmux, Kilo, and Vercel AI Gateway have constructors in
+`additional.rs` (`create_sap_ai_core`, `create_zenmux`, `create_kilo`,
+`create_vercel_ai_gateway`) but are **not** in
+`builtin_registration_order()`, not in the setup catalog, and have no
+caller anywhere in the tree. They are therefore not reachable through
+config today — a `provider.<id>` config entry alone will not register them.
+The generic OpenAI-compatible path for an operator-supplied upstream is
+the `custom` catalog entry (`CUSTOM_COMPATIBLE_ID`), which requires an
+explicit endpoint.
+
+The same is true of four whole provider modules: `vertex.rs`,
+`copilot.rs`, `cloudflare.rs`, and `gitlab.rs` define a `Provider`
+implementation each, but none has a caller or a registration path, and
+none appears in the setup catalog. They are compiled-in capability, not
+reachable upstreams.
 
 ### Shared Provider Profile and Multi-Surface Dispatch (M011)
 
@@ -884,6 +1003,19 @@ secret-free metadata only: base URL, per-surface paths, per-surface auth
 references, connection lifecycle, HTTP transport, cancellation, deadlines, and
 retry/error ownership. `eggpool-wire` remains the request-grammar and stream
 authority. The profile carries no secrets and never owns a credential.
+
+**Stream liveness.** The provider imposes **no per-chunk deadline** on any of
+its three surfaces, and that is a policy statement rather than an omission.
+Long-stream liveness is owned by the agent layer (`STREAM_SETUP_TIMEOUT` of
+120 s for the first event, `STREAM_IDLE_TIMEOUT` of 90 s between events,
+plus cancellation and the retry-chain budget). A provider-level chunk
+deadline *below* the agent's own idle timeout fires first and reports a slow
+but valid stream as a provider error, so the agent's bound never applies.
+That is how nine of the twelve `worklog` trials failed in the harness's
+sustained scenario. Every sibling streaming surface — `openai`, `anthropic`,
+`google` — passes no chunk deadline either, so OpenCode Go does not invent
+one: the deadline is surface-independent precisely because it is not applied
+at the provider level.
 
 **Dependency pinning.** `eggpool-provider-profile` declares `eggpool-wire` as a
 *path* dependency, and Cargo resolves a git dependency's path dependencies
@@ -1039,7 +1171,9 @@ routes native OpenAI, Azure OpenAI, OpenRouter, CodeGG Zen, and the shared
 OpenAI-compatible transport through `encode_openai_chat` and
 `openai_chat_stream`. Compatible presets and wrappers use the same transport
 core. Provider modules still own endpoint construction, credentials, headers,
-discovery, HTTP status handling, chunk-idle deadlines, and cancellation.
+discovery, HTTP status handling, and cancellation. They do **not** own stream
+liveness: no provider surface imposes a per-chunk deadline, and the agent layer
+bounds a long stream instead (see Stream liveness above).
 OpenAI Chat's current `max_tokens` field is preserved by a closed CodeGG
 bridge transform because the shared canonical codec emits
 `max_completion_tokens` by default. `scripts/check_provider_wire_cutover.py`
@@ -1059,36 +1193,369 @@ provider crate does not infer model policy from model names.
 
 ### Extended-thinking control (`/reasoning`)
 
-Extended thinking is configured in three places, applied in this order —
+Extended thinking is configured in four places, applied in this order —
 later wins:
 
 1. `ModelProfileConfig.default_reasoning_effort` /
    `default_thinking_budget` (config).
 2. Agent-level `thinking_budget` / `reasoning_effort` (`apply_agent_config`).
-3. The frontend's `/reasoning` selection, carried per turn on
+3. The daemon-owned, principal-scoped persisted selection
+   (`RuntimePreferenceStore.reasoning_selection`).
+4. The frontend's `/reasoning` selection, carried per turn on
    `CoreRequest::TurnSubmit.reasoning` (`apply_reasoning_override`).
 
-The per-turn field is **frontend-local and never persisted**: it rides each
-submit rather than becoming durable session state, so it cannot go stale
-against the selected model and needs no migration. It is
+**The vocabulary is open and provider-scoped** (ADR-0049). The effort
+selection is a free-form label, not a level on a closed enum: a vendor label
+such as `xhigh`, `max`, `none` or `default` is selectable and is carried
+verbatim from the selection to the provider wire. Nothing normalizes,
+lower-cases, translates, or folds a label onto a fixed level set. The four
+labels in `codegg_protocol::core::KNOWN_REASONING_EFFORT_LABELS`
+(`minimal`, `low`, `medium`, `high`) are a **convenience set** used only for
+the frontend's fallback cycling order when no per-model capability record is
+available; they are not a model's option set and they do not constrain what a
+label may be.
+
+**The daemon owns the durable selection.** The effective selection for a turn
+is resolved as **explicit turn override ▸ persisted principal preference ▸
+agent / model-profile default**. The persisted preference lives in
+`runtime_preferences.reasoning_selection` (migration `v84`), is scoped to the
+principal derived from transport authority, and is revision-gated: a stale
+write fails with `preference_conflict` rather than last-write-wins. It is
+resolved at **turn admission**, so it applies to a direct submit, a
+session-prompt submit, a queued-prompt delivery (resolved at *delivery* time,
+because the model chosen at delivery may differ from the one at enqueue), and
+a delegated idle continuation alike.
+
+The per-turn field is **not** frontend-local any more: `TurnSubmit.reasoning`
+is the explicit per-turn override, and the daemon's persisted selection
+applies whenever that field is absent. `TurnSubmit.reasoning` is still
 `#[serde(default)]`, so a client that predates the field still decodes and
-inherits the configured default.
+inherits the resolved selection.
 
 `ReasoningOverride::Off` clears *both* `reasoning_effort` and
-`thinking_budget`. That is the only way to express an explicit disable: the
-wire encoder (`wire.rs`) treats "neither field set" as thinking-not-requested,
-so clearing only one would leave a configured value in force.
+`thinking_budget`, **and** marks the request as an explicit disable
+(`ProviderRequestContext::reasoning = ReasoningControl::Disabled`). Clearing the
+two selection fields removes any configured selection; the explicit-disable
+mark is what carries "off" to the wire. The two are not interchangeable: the
+wire encoder reads "no preference" and "explicitly off" as different intents,
+and a surface that can express a disable emits one (`thinking:
+{"type": "disabled"}` on Anthropic Messages, `reasoning_effort: "none"` on
+OpenAI Chat Completions, `reasoning: {"effort": "none"}` on OpenAI Responses,
+`generationConfig.thinkingConfig.thinkingBudget: 0` on Gemini
+GenerateContent).
 
-Effort and budget are mutually exclusive — the encoder selects `ReasoningMode`
-from whichever is present, so leaving both set would silently prefer budget
-over the user's choice. `apply_reasoning_choice` clears the other field.
+Effort and budget are mutually exclusive — the encoder selects the mode from
+whichever is present, so leaving both set would silently prefer budget over the
+user's choice. `apply_reasoning_choice` clears the other field.
+
+### Reasoning capability negotiation
+
+Changing the protocol's effort representation is a breaking change, so the
+daemon advertises what it accepts and a client consults that advertisement
+before sending a non-enumerated label.
+
+`CoreRequest::ReasoningCapabilities` returns
+`CoreResponse::ReasoningCapabilities { capabilities }`, carrying
+`ReasoningCapabilitiesDto`:
+
+| Field | Meaning |
+|---|---|
+| `open_label_vocabulary` | the daemon accepts a label outside the known convenience set |
+| `known_labels` | the labels the daemon recognises by name, in the fallback ladder order |
+| `max_label_bytes` | the largest label the daemon accepts |
+
+The rules are:
+
+- A client that has **not observed** the advertisement sends **no**
+  non-enumerated label. `codegg-client`'s `compose_turn_submit` refuses one
+  with `ComposerError::ReasoningVocabularyUnsupported` before the request is
+  built. The known convenience labels need no advertisement: they are the
+  legacy vocabulary every daemon understands.
+- A daemon that has **not advertised** the open vocabulary refuses a
+  non-enumerated label with a typed error
+  (`reasoning_vocabulary_unsupported`), never by silently folding it onto a
+  known level and never by failing the daemon. The refusal happens at turn
+  admission, before the turn is claimed.
+
+The advertisement and the admission check read the **same** daemon-owned
+value, so "advertised" and "accepted" cannot drift apart.
+`scripts/check_reasoning_vocabulary_open.py` guards the whole contract: no
+closed effort enum may survive, the provider bridge must keep carrying the
+label verbatim, and every turn-admission path must resolve the daemon-owned
+selection.
+
+
+### Per-model reasoning capability model (ADR-0050)
+
+The vocabulary is open, so the daemon cannot tell from a label alone
+whether the model behind it accepts that label. A **capability record**
+answers that: it is a per-model statement of what the model's family
+accepts on the reasoning dimensions.
+
+The record (`codegg_config::schema::ReasoningCapabilityRecord`, re-exported
+by `codegg_core::model_profile::capability`) carries four **independent**
+dimensions, each with its own status in the kernel's vocabulary —
+`Supported | Unsupported | Unknown | Mixed | Conflicting`:
+
+| Dimension | Fields | Question it answers |
+|---|---|---|
+| effort | `effort_status`, `accepted_effort_labels` | Which reasoning-effort labels does the model accept? |
+| disable | `disable_status` | May reasoning be turned off at all? |
+| budget | `budget_status`, `min_thinking_budget`, `max_thinking_budget` | Is a fixed token budget accepted, and within which bounds? |
+| always-reasons | `always_reasons_status`, `always_reasons` | Does the model always reason? |
+
+An **undeclared** dimension is `Unknown`, never `Unsupported`: "nobody has
+published a contract for this" is not the same claim as "the model
+refuses this". The accepted-label set is an open, provider-scoped string
+set — never a fixed enumeration, never a fabricated label, and a depth
+label is never converted into a token budget.
+
+**Resolution order.** The effective capability for a model is resolved by
+`codegg_core::model_profile::capability::resolve_reasoning_capability` in
+the order **operator/config override ▸ adapter baseline ▸ discovery overlay
+▸ unknown**:
+
+1. the operator's configuration override
+   (`[model_profile.<model>].reasoning_capability`) is authoritative for
+   the dimensions it declares and may only **narrow** the compiled
+   baseline;
+2. the adapter-declared baseline is the compiled, deterministic record
+   shipped in `crates/codegg-core/assets/model-adapters/`;
+3. the discovery overlay (provider catalog metadata) may only narrow — an
+   overlay that introduces a label, a bound, or an always-reasons value the
+   effective record does not already carry is **rejected in full** and the
+   rejection is reported, never silent;
+4. the absence of a record is `Unknown`.
+
+The resolution is **read-only**: it never mutates the baseline, the
+configuration, or any in-flight turn state. The shipped baseline and the
+families deliberately left `Unknown` are documented in
+[model-adapters.md](model-adapters.md).
+
+**Admission policy.** The effective capability is applied to the turn's
+resolved selection through the kernel's `reasoning_capability_notices_neutral`
+and `ReasoningCapabilityPolicy`, and produces exactly one of:
+
+| Outcome | Meaning |
+|---|---|
+| `Reject` | The selection is refused **locally** with a typed refusal naming the model and the dimension. No provider request is dispatched. |
+| `WarnDrop` | The unsupported dimension is dropped and a notice records **what was dropped**. |
+| `AllowWithWarning` | The selection proceeds with a recorded uncertainty notice. |
+| `Allow` | The selection proceeds unchanged. |
+
+The kernel's default policy is **fail-closed** — `unsupported → Reject`,
+`unknown → Reject`, `mixed → WarnDrop` — and that is the disposition set
+ADR-0050 decided. The consequence is deliberate: a selection on a
+dimension nobody has published a contract for is refused at admission
+rather than forwarded optimistically.
+
+The kernel's neutral capability type is **status-only**: it carries no
+accepted-label list and never validates a label. The accepted-label set
+and the budget bounds therefore stay in CodeGG's record, and the kernel
+supplies the per-dimension decision.
+
+The check runs at **turn admission**
+(`src/core/daemon_turns.rs`, `CoreRequest::TurnSubmit`), after the daemon
+has resolved the effective selection (explicit override ▸ persisted
+principal preference ▸ agent / model-profile default) and before any
+provider request is dispatched. A refusal is a successful protocol
+exchange carrying a typed error — `CoreResponse::Error { code:
+"reasoning_capability_unsupported", .. }` — not a transport failure.
+
+**The typed codes a frontend has to tell apart.** Four codes coexist, and
+they arrive on **two different channels**, which is the distinction that
+matters:
+
+| Code | Channel | Meaning | The turn |
+|---|---|---|---|
+| `reasoning_vocabulary_unsupported` | `CoreResponse::Error` | The daemon has not advertised the open vocabulary, so the label itself is refused. | refused |
+| `reasoning_capability_unsupported` | `CoreResponse::Error` | The model's capability record refuses the selection. | refused |
+| `reasoning_capability_notice` | `CoreEvent::Error` (session event) | A dimension was dropped; the notice names what was dropped. | proceeds |
+| `reasoning_selection_unreadable` | `CoreEvent::Error` (session event) | The persisted selection could not be read, so the agent / model-profile default applies instead. | proceeds |
+
+The two refusals are distinguishable by `CoreResponse::Error.code`, and the
+two notices by `CoreEvent::Error.code`; the **channel** separates a refusal
+from a notice. A frontend that collapses either pair into a generic
+"turn failed" loses the distinction.
+
+A persisted selection that cannot be **read** is not authority, so the turn
+continues on the agent / model-profile default — but the loss is reported
+rather than silent. A store that cannot be read drops the choice the person
+made, and a turn that continued without saying so would hand them a
+different model behaviour with no indication that their stored choice was
+gone. The notice is **session-scoped**: the daemon's event log delivers a
+session-less event to a client only as a global event, and the WS filter
+drops a global `CoreEvent::Error`, so a session-less notice would never
+reach the client that asked for the turn.
+
+**Which dimensions each surface can express.** A surface that cannot
+express a dimension emits **no reasoning field at all**, which is why the
+capability record and the surface have to be read together:
+
+| Surface | Effort label | Fixed budget | Explicit disable |
+|---|---|---|---|
+| OpenAI Chat Completions | `reasoning_effort: "<label>"` | — | `reasoning_effort: "none"` |
+| OpenAI Responses | `reasoning: {"effort": "<label>"}` | — | `reasoning: {"effort": "none"}` |
+| Anthropic Messages | — | `thinking: {"type": "enabled", "budget_tokens": N}` | `thinking: {"type": "disabled"}` |
+| Gemini GenerateContent | — | `generationConfig.thinkingConfig.thinkingBudget: N` | `thinkingBudget: 0` |
+| Gemini Interactions | — | — | — |
+
+Two consequences follow. A model whose family is reached over the
+**Anthropic-compatible** surface cannot carry an effort label at all, so
+an effort selection on such a route produces no reasoning field. And a
+surface that cannot express a dimension makes the selection *silent*, not
+*wrong* — which is exactly why an unsupported selection is refused
+locally, with a typed error naming the model and the dimension, instead of
+being forwarded for the provider to ignore.
+
+### The frontend option surface (M004)
+
+The capability record is only useful if a frontend can turn it into the
+choices it actually offers. `reasoning_options(&Option<ReasoningCapabilityDto>)`
+in `crates/codegg-protocol/src/provider.rs` is that derivation, and it is a
+**pure function of the capability** — it never consults a provider, a
+connection, or the network.
+
+The rules are one per dimension:
+
+- **Effort** — the accepted labels, **in the capability's own order**, so the
+  cycle follows the model's ladder rather than a global one.
+- **Disable** — offered only when the model permits one.
+- **Budget** — offered only when the model accepts one *and* the value is
+  inside the capability's bounds.
+- **Always-reasons** — a model that always reasons is offered **no** off
+  switch, and the command says why instead of appearing broken.
+
+With **no** capability at all, the derivation falls back to the known-label
+ladder and sets `fallback = true`. The ladder is a convenience vocabulary, not
+a statement about the model, so a surface that shows it says so — it must not
+present the ladder as the model's options.
+
+The result is always a **subset** of what the capability permits. The
+derivation can only narrow; it can never widen a model's options, because a
+frontend that offers a choice the model refuses produces exactly the failure
+this subsystem exists to remove.
+
+The capability travels to the frontend on the model DTOs
+(`ProviderModelDto.reasoning_capability`, `SelectedModelDto.reasoning_capability`),
+declared optional and skipped when absent — so a daemon that publishes no
+capability and a client that predates the field interoperate in both
+directions, and an absent capability reads as "unknown", never as "no
+reasoning".
+
+The frontend's write path is the daemon's: `/reasoning` sends
+`CoreRequest::ReasoningPreferenceSet` with the daemon's preference revision as
+the compare-and-set, and the local display is updated from the daemon's
+**response** rather than from the option the user just picked. A refused write
+puts the daemon's last known value back and surfaces the typed refusal.
+
+### Discovery overlay from provider catalog metadata (M005)
+
+
+The third source in the resolution order above — the **discovery overlay** —
+is a provider's *published* thinking-capability contract, retained from the
+catalog response rather than discarded by it. It is the narrowest of the
+three: it may only **remove** an option the compiled adapter baseline
+offers.
+
+**Where it is retained.** `crates/codegg-providers/src/eggpool.rs` parses a
+model's catalog entry and looks for a thinking capability at
+`eggpool.capabilities.thinking`, `capabilities.thinking`, or `thinking`. Two
+shapes are read from that one block: the **flat** runtime capability
+(`supported_efforts`, `toggle`, `effort`, `budget`, `budget_tokens_min`,
+`budget_tokens_max`) and the **documented** `control_contract` shape, whose
+`accepted_efforts` and per-dimension statuses sit one level deeper. The
+retained value is an `EggpoolCapabilityOverlay`, carried on the probe summary
+in its **own field**.
+
+**It is outside the catalog digest, on purpose.** `digest_models` hashes
+`id` and `name` only, and that is load-bearing: the digest *is* the
+revision-scoped `catalog_revision` that stored last-used-model preferences
+are keyed against and that the revision-scoped `provider_connection_models`
+rows hang off. Folding the capability into it would invalidate stored
+preferences and split those rows. So the capability has its **own revision**
+— a digest over the overlay content alone — and the overlay is additionally
+**revision-scoped**: it records the catalog revision it belongs to, so an
+overlay from a superseded catalog is recognisable and can be treated as
+absent.
+
+**It may only narrow.** The overlay is parsed into the same
+`ReasoningCapabilityRecord` the resolution already consumes, and every
+dimension it declares is a narrowing of the baseline. An overlay that
+introduces a label, a bound, or an always-reasons value the effective record
+does not carry is **rejected in full** by
+`codegg_core::model_profile::capability::apply_discovery_overlay`, and the
+rejection is reported, never silent. The always-reasons property is never
+taken from a provider's advertisement: the compiled baseline owns it.
+
+**Its bounds.** The accepted-effort ladder is deduplicated and bounded (≤ 32
+labels, ≤ 64 bytes each); the thinking-budget range is bounded and must have
+`min ≤ max`. Malformed, oversized, or wrong-typed content degrades to
+`Unknown` **for that dimension** and never fails the catalog probe — a
+malformed provider response must not break model discovery. An overlay that
+declares no dimension at all is absent, and the compiled baseline stands.
+
+**It is replaced atomically.** The overlay is installed by swapping a whole
+value under one lock, so a turn never observes a partially updated capability
+and the request path cannot mutate an installed overlay.
+
+**It has no live source at this baseline.** The upstream
+`control_contract.accepted_efforts` contract is unimplemented in every
+available revision; the pinned `/v1/models` handler emits a flat four-key
+model object with no capability block; and the one capability shape upstream
+*does* expose at runtime rides an integrations-profile route CodeGG does not
+call. Every provider response therefore yields an **absent** overlay today,
+and the effective capability is the compiled baseline, exactly as before.
+This is **forward-compatible machinery, not a shipped behaviour change**. The
+route that would become the source, if a deployment ever published the
+contract on `/v1/models`, is the catalog response itself — the same body the
+probe already reads — so no new provider endpoint is required.
+
+### Reasoning intent at the wire boundary
+
+`wire.rs` projects CodeGG's request onto the kernel's canonical
+`ReasoningIntent`. The projection is lossless over the vocabulary CodeGG owns:
+
+| CodeGG request | canonical `ReasoningIntent` |
+|---|---|
+| no preference | `ReasoningIntent::default()` — `requested: None` |
+| explicit disable | `ReasoningIntent::disabled()` — `requested: Some(false)`, mode `Toggle`, `explicit_disable: true` |
+| effort label | mode `Effort`, label carried verbatim |
+| fixed budget | mode `FixedBudget`, budget carried verbatim |
+| thinking on, no depth | mode `Adaptive` |
+
+The explicit disable is the **kernel's own constructor**, not a literal:
+`explicit_disable` is never written as `false` at a construction site, because a
+hard-coded `false` is exactly the shape that made "off" unreachable.
+`scripts/check_reasoning_intent_fidelity.py` enforces both that and the
+absence of a closed CodeGG effort vocabulary in the provider crate.
+
+Which dimensions a surface can express is the kernel's authority, not
+CodeGG's. The per-surface encoding is therefore pinned by fixtures rather than
+implied by the bridge: for every surface CodeGG uses (OpenAI Chat
+Completions, OpenAI Responses, Anthropic Messages, Gemini GenerateContent) and
+every intent, the encoded body's reasoning content is asserted — including the
+cases where a surface cannot express a dimension and emits **no** reasoning
+field at all (an effort label on Anthropic Messages, a budget on the OpenAI
+surfaces).
+
+One adapter reads the request's intent directly: the generic
+OpenAI-compatible encoder expresses the thinking toggle through
+`chat_template_kwargs.enable_thinking`, so an explicit disable has to reach
+that field rather than the stripped `reasoning_effort`. It used to compute the
+wire value as `request.thinking_budget != Some(0)`, which could never be false —
+a zero budget is not a request the kernel accepts — so "off" could not be
+expressed there at all.
 
 **Adapter divergence is intentional and unmodified.** Azure, OpenRouter, and
 Zen strip the reasoning projection (`azure.rs`, `openrouter.rs`,
-`opencode_zen.rs`, plus the `openai_compatible` allowlist), with tests
-asserting the fields are absent. A `/reasoning` selection therefore has no
-effect on those providers; this is a wire-shape decision, not a TUI bug, and
-changing it would need a per-adapter justification.
+`opencode_zen.rs`), with tests asserting the fields are absent. The generic
+compatible transport (`openai_compatible.rs`) omits `reasoning_effort` (along
+with `temperature`, `top_p`, `max_tokens`, and `response_format`) for every
+provider that uses it, because the generic compatible contract intentionally
+does not forward generation controls. A `/reasoning` selection therefore has
+no effect on those providers; this is a wire-shape decision, not a TUI bug,
+and changing it would need a per-adapter justification.
 
 Because that failure is silent, `ProviderCapabilities` exposes
 `strips_reasoning_effort` for exactly those three providers, and the TUI raises
@@ -1104,12 +1571,14 @@ over-reporting would warn users who are getting what they asked for.
 
 ### Anthropic (`anthropic.rs`)
 
-- Base URL: `https://api.anthropic.com`
+- Base URL: `https://api.anthropic.com` (`setup_catalog::ANTHROPIC_BASE_URL`)
 - API version: `2023-06-01`
 - Shared Anthropic Messages encoding and SSE decoding through `wire.rs`
 - Thinking budget via the canonical reasoning projection
-- Hardcoded models: claude-sonnet-4-20250514, claude-opus-4-20250514,
-  claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022
+- Models: **no compiled-in list.** `AnthropicProvider::models()` starts from
+  an optional `models_override` (the operator-declared additive `models`
+  block) and then runs shared discovery; the id is overridable with
+  `with_id` / `with_name` / `with_models`.
 
 ### OpenAI (`openai.rs`)
 
@@ -1127,17 +1596,21 @@ over-reporting would warn users who are getting what they asked for.
 
 ### Google (`google.rs`)
 
+- Native base: `https://generativelanguage.googleapis.com/v1beta`
+  (`GEMINI_NATIVE_BASE`)
 - `streamGenerateContent` with SSE
 - Shared Gemini GenerateContent encoding and SSE decoding through `wire.rs`
 - Tool declarations, function calls/results, images, finish reasons, and usage
   use the shared Gemini surface
-- Models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash
+- Models: **no compiled-in list** — shared discovery only.
 
 ### Azure (`azure.rs`)
 
 - Endpoint: `{endpoint}/openai/deployments/{model}/chat/completions?api-version=2024-10-21`
+  (`AZURE_API_VERSION`)
 - `api-key` header auth
-- Models: gpt-4.1, gpt-4o
+- Models: **no compiled-in list** — discovery via
+  `{endpoint}/openai/models?api-version=…`
 
 ### Bedrock (`bedrock.rs`)
 
@@ -1145,7 +1618,8 @@ over-reporting would warn users who are getting what they asked for.
 - Endpoint: `https://bedrock-runtime.{region}.amazonaws.com/model/{model}/converse-stream`
 - Session token support for temp credentials
 - Custom SSE for Bedrock event stream format
-- Models: anthropic.claude-sonnet-4, anthropic.claude-3-5-sonnet, meta.llama3-1-405b
+- Models: **no compiled-in list** — discovery via
+  `https://bedrock.{region}.amazonaws.com/foundation-models`
 
 ### OpenAI Compatible (`openai_compatible.rs`)
 
@@ -1154,7 +1628,7 @@ key). Factory methods: `simple()` (wraps key in `Credential::api_key`),
 `simple_with_credential()` (preserves `CredentialKind` and `expires_at`).
 Configured `extra_headers` are validated and emitted on chat requests, but may
 not collide with transport-owned authentication, content-type, or session
-affinity headers. 30-second chunk timeout. Dynamic model discovery via
+affinity headers. Dynamic model discovery via
 `/models`. OpenCode Go explicitly enables a required `x-opencode-session`
 affinity policy; it reads only `ChatRequest.context.session_id`, so missing or
 invalid context fails before network I/O. Other OpenAI-compatible providers do
@@ -1184,7 +1658,15 @@ Profile and Multi-Surface Dispatch (M011)).
 | `create_opencode_go` | opencode_go | shared-profile-owned (`https://opencode.ai/zen/go/v1`) | Credential |
 
 `create_minimax` takes `String` because the MiniMax endpoint is
-Anthropic-compatible and uses a different auth header.
+Anthropic-compatible and uses a different auth header. `create_xai` builds
+an `OpenAiCompatibleConfig` directly (not `simple_with_credential`) so it
+can set the `Authorization` auth header explicitly.
+
+**None of these factories carries a compiled-in model seed.** `create_xai`
+and `create_minimax` both build with an empty model vector; the rest use
+`OpenAiCompatibleProvider::simple` / `simple_with_credential`, which also
+starts empty. Every model's list comes from discovery or from an
+operator-declared additive `models` block — see "Model discovery authority".
 
 ### OpenCode Zen (`opencode_zen.rs`)
 
@@ -1203,8 +1685,9 @@ Three rules govern the model list:
 1. **Discovery is canonical and is always attempted.** A provider's
    models come from its discovery endpoint. The endpoint's method,
    path, query, and whether it is `required` come from the reviewed
-   shared profile (`ProviderProfile::resolved_models_endpoint()`), not
-   from a CodeGG-local constant.
+   shared profile (`provider_profile::resolved_models_endpoint()`,
+   `crates/codegg-providers/src/provider_profile.rs:365`), not from a
+   CodeGG-local constant.
 2. **Config-declared models are additive only.** A provider's `models`
    block augments what discovery returned; it never replaces it and
    never suppresses the discovery attempt. This is the escape hatch for
@@ -1246,6 +1729,44 @@ rather than calling `refresh()` unconditionally on a fresh service, which
 re-queried every provider on every request and returned `[]` whenever any
 of them was slow — leaving the TUI model picker permanently empty.
 Standalone mode uses the same sequence in `src/main.rs`.
+
+## Configuration Surface
+
+The provider-owned configuration keys live under `[provider.<id>]` in the
+config file (`codegg_config::schema::ProviderConfig`,
+`crates/codegg-config/src/schema.rs:1612`):
+
+| Key | Meaning |
+|-----|---------|
+| `api_key` | Plaintext API key. Legacy path; prefer `auth`. |
+| `encrypted_api_key` | Legacy `v2:`-prefixed ciphertext, decrypted by the providers crate during credential resolution. |
+| `encrypted` | Legacy flag marking `api_key` as ciphertext. |
+| `base_url` | Endpoint override. Honoured only where the setup definition's endpoint policy allows it. |
+| `enterprise_url` | Enterprise endpoint override. |
+| `set_cache_key` | Whether the provider's results are cache-keyed. |
+| `timeout` | `ProviderTimeout` — untagged enum `Ms(u64)` or `Disabled(bool)`; default `Ms(300000)`. |
+| `chunk_timeout` | Per-chunk idle deadline, in seconds. |
+| `whitelist` / `blacklist` | Model id filters applied to the discovered catalog. |
+| `models` | `HashMap<String, ModelConfig>` — **additive** model declarations (see "Model discovery authority"); never a replacement for discovery. |
+| `options` | `HashMap<String, serde_json::Value>` — provider-specific extras. |
+| `auth` | Typed `AuthConfig` descriptor. Takes precedence over `api_key` / `encrypted_api_key` during credential resolution. |
+| `account_id` | Disambiguates multiple accounts for one provider in the user-level credential store. |
+
+Top-level provider lists:
+
+- `disabled_providers` — a provider id listed here is **not** registered
+  at all. This is the opt-out; defining *another* provider in config is
+  not.
+- `enabled_providers` — the inverse allowlist.
+
+`[model_profile.<model>]` (config-level, not provider-level) carries
+`default_reasoning_effort`, `default_thinking_budget`, and the
+`orchestration_tier`; see [model-adapters.md](model-adapters.md).
+
+The annotated example is `codegg.example.jsonc`; validate it with
+`codegg validate --config codegg.example.jsonc`. Several of these keys are
+untagged enums (`ProviderTimeout`, `AuthConfig`), whose wrong shape
+silently discards the whole file.
 
 ## Shared Wire Bridge (`wire.rs`)
 
@@ -1292,8 +1813,19 @@ application-level deadlines remain the correctness bound for provider streams.
   above lives inside this one function, so no registration helper grows its own
   lookup path.
 - **Per-provider config independence**: Adding `anthropic` via config does
-  NOT suppress `openai` env-var registration. Only if the registry is empty
-  after all config-based registrations does `register_builtin()` run.
+  NOT suppress `openai` env-var registration. The config-first path
+  explicitly registers all 17 built-ins, each resolving its own config and
+  then its own conventional env var. Only if the registry is empty after
+  all config-based registrations does `register_builtin()` run, and that
+  fallback is a redundant safety net rather than the mechanism.
+  `disabled_providers` is the opt-out.
+- **Registry order is stable**: `ProviderRegistry` uses a `BTreeMap`, so
+  `list()` order is deterministic across processes.
+- **No compiled-in model catalog**: no provider module, factory, or
+  `additional.rs` constructor ships a model seed list. A provider's models
+  come from discovery, augmented by an operator-declared additive `models`
+  block. `scripts/check_no_hardcoded_models.py` fails the build if a list
+  reappears.
 - **Secret logging forbidden**: Auth log lines use `ResolvedAuthSource::as_str()`
   (e.g. `env(explicit)`, `config(encrypted)`). Never log secret prefix/suffix.
 - **ExternalCommand disabled**: Both `AuthResolver::resolve` and
@@ -1305,6 +1837,14 @@ application-level deadlines remain the correctness bound for provider streams.
   get the complete policy-authorized definitions.
 - **FallbackProvider creates one CircuitBreaker per provider** at
   construction time, not lazily.
+- **Semantic model routing is opt-in and provider-neutral**: an exact
+  `virtual:<name>` alias selects a compatible model *through the already
+  selected connection*; a concrete model bypasses routing entirely.
+  Routing never changes durable session or provider-connection selection,
+  and there is **no local affinity cache** — `sticky` and `affinity_ttl_s`
+  are shared policy fields only. The routing policy is compiled in
+  `codegg-core`'s `model_routing` (`compile_model_routers`), which contains
+  no provider, session, credential, or inference behavior.
 
 ## Testing
 
@@ -1315,28 +1855,177 @@ cargo test -p codegg-providers -- circuit    # circuit breaker tests
 cargo test -p codegg-providers -- fallback   # fallback provider tests
 ```
 
+The provider crate's unit tests live beside the code (`provider_core.rs`,
+`wire.rs`, `setup_catalog.rs`, `provider_profile.rs`, `qualification.rs`,
+`discovery.rs`, `auth_types.rs`, `openai_compatible.rs`). Cross-layer
+coverage lives in the root package's test families:
+
+```bash
+cargo test --test agent_loop -- opencode_go_connection_trajectory
+cargo test --test config_provider -- provider_mock
+cargo test --test core_daemon -- provider_reconnect_e2e
+```
+
+Static guards for this subsystem:
+
+```bash
+python3 scripts/check_no_hardcoded_models.py
+python3 scripts/check_provider_resilience_ownership.py
+python3 scripts/check_provider_wire_boundary.py
+python3 scripts/check_provider_wire_cutover.py
+python3 scripts/check_provider_multi_surface_dispatch.py
+python3 scripts/check_provider_qualification.py
+bash scripts/check_provider_connections_m4_coverage.sh
+bash scripts/check_provider_connections_tombstone_compat.sh
+```
+
 ## Related Docs
 
-- `architecture/core.md` — core facade and transport adapters
-- `architecture/config.md` — provider config schema and merging
-- `architecture/auth.md` — auth security policy
-- `architecture/resilience.md` — circuit breaker pattern details
+- [core.md](core.md) — core facade and transport adapters
+- [config.md](config.md) — provider config schema and merging
+- [auth.md](auth.md) — auth security policy and credential resolution
+- [crypto.md](crypto.md) — encryption of stored credentials
+- [resilience.md](resilience.md) — circuit breaker pattern details
+- [retry.md](retry.md) — the bounded retry chain the provider turn consumes
+- [model-adapters.md](model-adapters.md) — resolved model adapter and wire policy
 
 ## Source Verification
 
-Verified 2026-10-06 against `crates/codegg-providers/src/provider_core.rs`.
-- Corrected 13 stale `provider_core.rs:line` refs (trait `51`→`89`,
-  capabilities `96`→`133`, `for_provider` `131`→`168`, `ChatRequest`
-  `183`→`238`, `Message` `199`→`254`, `ContentPart` `262`→`319`, `ChatEvent`
-  `311`→`366`, `ToolDefinition` `353`→`408`, `ModelInfo` `401`→`456`,
-  `ProviderRegistry` `412`→`467`, `EventStream` `35`→`68`,
-  `register_builtin` `443`→`498`, `register_builtin_with_config` `844`→`890`,
-  `resolve_provider_credential` `579`→`625`). `#[async_trait]` is at `:84`.
-- Documented the full 14-field `ProviderCapabilities` set and the exact
-  `for_provider` anthropic/openai values (128 tools, 100 items, 50 nested
-  calls, 1 MiB result, 50 calls/program).
-- Added the previously undocumented `ProviderRequestContext.wire_policy`
-  field and the 7-field `ProviderWirePolicy` struct (`:223`).
-- Confirmed correct as written: 15 env-var providers in `register_builtin`
-  (`:498`) and 17 in `register_builtin_with_config` (`:890`), matching the
-  17-entry `builtin_registration_order()`.
+Verified 2026-10-23 against `crates/codegg-providers/src/provider_core.rs`,
+`auth_types.rs`, `error.rs`, `setup_catalog.rs`, `provider_profile.rs`,
+`qualification.rs`, `discovery.rs`, `wire.rs`, `fallback.rs`, `circuit.rs`,
+`additional.rs`, `anthropic.rs`, `openai.rs`, `google.rs`, `azure.rs`,
+`bedrock.rs`, `openai_compatible.rs`, `opencode_zen.rs`, `opencode_go.rs`,
+`text_tool_parser.rs`; `crates/codegg-config/src/schema.rs`;
+`crates/codegg-core/src/model_routing.rs`; and the provider guard scripts
+under `scripts/`.
+
+Corrections made in this pass:
+- **Corrected eleven stale `provider_core.rs:line` refs** that had drifted
+  further since the 2026-10-06 pass: the trait `89`→`88` and its
+  `#[async_trait]` `84`→`83`, `for_provider` `168`→`180`,
+  `ProviderWirePolicy` `223`→`249`, `ChatRequest` `238`→`264`,
+  `Message` `254`→`280`, `ContentPart` `319`→`345`, `ChatEvent` `366`→`392`,
+  `ToolDefinition` `408`→`434`, `ModelInfo` `456`→`482`,
+  `ProviderRegistry` `467`→`493`, `EventStream` `68`→`67`. The doc's own
+  verification section had recorded the drifted values as "corrected", so
+  they were one generation stale.
+- **Corrected `ProviderRegistry`'s field type.** The doc showed
+  `providers: HashMap<String, Box<dyn Provider>>`; the source uses a
+  `BTreeMap`, and the sorted order is load-bearing (it decides which
+  provider's models come first, and consumers fall back to `models[0]`).
+  Added the rationale.
+- **Corrected the `Provider` trait listing.** `discover_models` and `ping`
+  have default implementations delegating to `models()`; the doc listed
+  them as required trait methods.
+- **Removed the four compiled-in model lists** the doc claimed for
+  Anthropic, Google, Azure, and Bedrock (e.g. "Hardcoded models:
+  claude-sonnet-4-20250514, claude-opus-4-20250514, …"). No such lists
+  exist — `grep` for the model ids across the providers crate finds only
+  a `responses_api.rs` test fixture. This also contradicted the doc's own
+  "Model discovery authority" section and `scripts/check_no_hardcoded_models.py`.
+  Replaced with the actual discovery paths and, for Anthropic, the
+  `models_override` seed that only an operator's additive `models` block
+  populates.
+- **Corrected the "Config-Only Providers" claim.** The doc said SAP AI
+  Core, Zenmux, Kilo, and Vercel AI Gateway "require explicit
+  `provider.<id>` config entries". Their constructors exist in
+  `additional.rs` but have **no caller anywhere in the tree** and are in
+  neither `builtin_registration_order()` nor the setup catalog, so a
+  config entry does not register them. The doc now says so and points at
+  the `custom` catalog entry as the real generic path.
+- **Corrected the `for_provider` coverage.** The doc's list of
+  `for_provider` values ended at OpenAI and then jumped to "any other id
+  returns `Self::default()`", omitting the `azure | openrouter |
+  opencode_zen` arm that sets `strips_reasoning_effort: true`. Added it
+  and the lockstep requirement with the `omit_openai_fields` calls.
+- **Added `## Configuration Surface`**, which the doc lacked despite
+  owning the whole provider config surface: the 13 `ProviderConfig` keys,
+  the `ProviderTimeout` untagged enum and its `Ms(300000)` default,
+  `disabled_providers` / `enabled_providers`, and the pointer to
+  `codegg.example.jsonc`.
+- **Corrected the credential resolution order.** The doc listed the
+  user-level `CredentialStore` lookup (step 5) *before* the legacy
+  `api_key` / `encrypted_api_key` fields (step 6). In the source the
+  typed `auth` arm tries only env → conventional env → inline value →
+  encrypted value and then **falls through** to the shared no-auth tail,
+  whose order is env override → conventional env → legacy → legacy
+  decrypted → store. Legacy therefore precedes the store. The doc now
+  shows the four typed steps and the five tail steps separately, and
+  names the two *different* store lookups (the resolver's exact-match
+  `find_record`, and `resolve_provider_credential`'s count-and-refuse
+  fallback).
+- **Corrected `resolve_provider_credential`'s parameter list**: the
+  parameter is `pins` (a slice of `TurnCredentialPin`), not `pin`, and
+  the function now carries its line ref (`:660`).
+- **Corrected the setup-catalog count**: the catalog carries **20**
+  entries, not 17 — the 17 registration ids plus `eggpool`, `custom`, and
+  `azure`.
+- **Corrected the `SetupProbeStrategy` mapping.** The doc said "both
+  strategies now land on `Unverified` from it". `from_probe` returns
+  `Verified` for `CredentialEvidence::Authenticated` + an available
+  catalog. Two catalog entries use the authenticated strategy
+  (`eggpool`, `custom`); the other 18 use `ProviderCatalog`.
+- **Corrected `ProviderProfile::resolved_models_endpoint()`** to
+  `provider_profile::resolved_models_endpoint()`
+  (`crates/codegg-providers/src/provider_profile.rs:365`) — it is a
+  CodeGG free function over the shared registry, not a method on a
+  CodeGG-owned `ProviderProfile` type.
+- **Added the semantic-model-routing invariant** — the doc described
+  model selection and discovery but never said that `virtual:<name>`
+  routing is opt-in, exact-alias-only, connection-neutral, and has no
+  local affinity cache. Verified against
+  `crates/codegg-core/src/model_routing.rs` and
+  `codegg_config::schema::VIRTUAL_MODEL_PREFIX`.
+- **Added the no-compiled-in-catalog invariant** to *Invariants &
+  Gotchas*, cross-referencing the guard.
+- **Added the registry-order invariant** (`BTreeMap`, not `HashMap`).
+- **Added the `register_builtin_with_config_connections()` entry point**
+  and why it exists: without it, a rotation left the live record beside
+  the orphan it replaced and the provider vanished from `codegg models`
+  with `Provider not found`.
+- **Added the setup-catalog coverage statement**: the catalog carries
+  **20** entries — the 17 ids in `builtin_registration_order()` plus
+  `eggpool`, `custom`, and `azure`, which are reachable through a durable
+  connection rather than process-wide registration. A coverage test pins
+  the 17 registration ids to the catalog, so a new built-in cannot land
+  without a setup disposition.
+- **Added the additional-factory note** that `create_xai` builds an
+  `OpenAiCompatibleConfig` directly (to set the `Authorization` header)
+  rather than via `simple_with_credential`, and that no factory carries a
+  model seed.
+- **Added the cross-layer test commands** and the full list of provider
+  guard scripts.
+- **Fixed the `Related Docs` links**, which pointed at bare directory-style
+  paths, and added `crypto.md`, `retry.md`, and `model-adapters.md`.
+
+Confirmed correct as written: the 15 env-var providers in
+`register_builtin` (`provider_core.rs:632`) and the 17 in
+`builtin_registration_order()` (`:726`); the `ProviderCapabilities` 15-field
+set and its helper predicates
+`can_host_programs()` / `full_hosted_support()`; the `ChatRequest`,
+`ProviderRequestContext` (2 fields), `ProviderWirePolicy` (7 fields),
+`Message`, `ContentPart`, `ChatEvent`, `ToolDefinition`, and `ModelInfo`
+field lists; the `ToolDefinition::to_openai()` / `to_anthropic()` pair;
+the `create_http_client()` parameters (10s connect, 32 idle per host, 30s
+idle-pool timeout, 10 redirect hops) and the 60s `non_streaming_timeout()`;
+the `FallbackProvider` struct and its library-only C003 status; the retry
+taxonomy's Permanent/Transient/Conditional sets (including
+`from_http_status` mapping 401/403 to `Auth` and 429 to `RateLimit`) and
+the 30s `Retry-After` clamp; the `CircuitBreaker` defaults
+(`failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`,
+`max_half_open_duration=30s`); shared-profile-owned discovery and
+`resolved_models_endpoint()`; the discovery TTL (1 hour); the
+`cached_models` table; the OpenAI endpoint contract; the Anthropic API
+version `2023-06-01`; the Azure `2024-10-21` API version; the Bedrock
+`converse-stream` endpoint; the OpenCode Zen base URL and
+"embedded models: none"; the `text_tool_repair` profile names; the
+`MAX_SSE_FRAME_BYTES = 8 MiB` bound and the `repair_chat_identity` /
+`consume_events` seams; the `omit_openai_fields` call sites in
+`azure.rs` / `openrouter.rs` / `opencode_zen.rs`; the
+`strips_reasoning_effort_*` test names; the M002 provisioning sequence
+and its duplicate-guard semantics; the M010 two-axis qualification model
+and the v69 `credential_status` migration; the
+`ProviderConnectionCredentialReporter` and `connect_success_message`
+locations; and the capture seam's
+`#[cfg(any(test, feature = "capture-test-support"))]` gate.

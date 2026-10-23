@@ -33,7 +33,7 @@ provides lazy, security-bounded resource access for skill assets.
 | Resources | `src/skills/resource.rs` — `ResourceHandle`, `ResourceReadLimits`, bounded reads |
 | Diagnostics | `src/skills/diagnostic.rs` — `Diagnostic`, `Severity` |
 | Compat adapter | `src/skills/compat.rs` — `SkillIndexCompat` wrapping `AssetRegistry` |
-| Tests | `tests/agent_loop/skills.inc`, `tests/agent_loop/skills_registry.inc` |
+| Tests | `tests/agent_loop/skills.inc`, `tests/agent_loop/skills_registry.inc`, `tests/agent_loop/skill_publication.inc` |
 
 ## How It Works
 
@@ -41,12 +41,13 @@ provides lazy, security-bounded resource access for skill assets.
 
 1. `AssetRegistry::build(config, project_root, global_roots)` resolves
    `SourceRoot` entries from the config, project root, and global roots.
-2. For each root, `discover_in_root` (registry.rs:308) reads directory
+2. For each root, `discover_in_root` (registry.rs:470) reads directory
    entries, validates symlink boundaries, and calls `parser::parse_candidate`
-   (parser.rs:51) for each `SKILL.md` (or direct `.md` for CodeGG-native compat).
-3. `resolve` groups candidates by normalized name, orders project before global
-   before configured sources, then uses nearest workspace depth before vendor
-   rank, selects the first valid candidate, and records shadowed alternatives.
+   (parser.rs:53) for each `SKILL.md` (or direct `.md` for CodeGG-native compat).
+3. `resolve` (registry.rs:629) groups candidates by normalized name, orders
+   project before global before configured sources, then uses nearest workspace
+   depth before vendor rank, selects the first valid candidate, and records
+   shadowed alternatives.
 4. Returns `AssetRegistry { effective, diagnostics, sources }`.
 
 ### Precedence
@@ -88,10 +89,11 @@ CodeGG skill, while CodeGG's rank leads within the same scope.
 `~/.config` on Linux and `~/Library/Application Support` on macOS). The
 foreign-harness global roots are config-dir-relative, **not** `$HOME`-relative:
 `AssetRegistry::build` takes each global root as the *parent* and appends
-`<vendor>/skills` (`src/skills/registry.rs:250-303`), and callers pass
+`<vendor>/skills` (`src/skills/registry.rs:249-435`,
+`resolve_source_roots_with_home`), and callers pass
 `default_global_discovery_root()` — exactly `dirs::config_dir()`
-(`src/agent/asset_context.rs`) as that parent. The daemon does so at
-`src/core/daemon_refresh.rs:187-191`.
+(`src/agent/asset_context.rs:266`) as that parent. The daemon does so at
+`src/core/daemon_refresh.rs:317-319`, which seeds the shared `AssetContext`.
 
 ### Configured roots (`skills.paths`)
 
@@ -108,12 +110,18 @@ is recorded as a shadowed alternative diagnostic instead.
 on every path.
 
 Both keys are applied through `asset_discovery_config_from`
-(`src/agent/asset_context.rs`), which every `AssetRegistry` construction site
-calls. `ProjectAssetSnapshotBuilder::new` takes only `Arc<Config>` and derives
-the discovery config itself rather than accepting an injected one, so a config
+(`src/agent/asset_context.rs:280`), which most `AssetRegistry` construction
+sites call. `ProjectAssetSnapshotBuilder::new` takes only `Arc<Config>` and
+derives the discovery config itself rather than accepting an injected one, so a config
 key cannot be honoured in one construction path and ignored in another. This
 mirrors the earlier defect where `SkillsConfig.paths` and `.enabled` were parsed
 and merged but read by no production code path.
+
+One construction site does **not** honour the config keys: the proposal
+collision check at `src/tool/skill_proposal.rs:132` uses
+`AssetDiscoveryConfig::default()` rather than
+`asset_discovery_config_from(&app_config)`, so it sees every source kind
+even when `skills.enabled = false`, and it does not consult `skills.paths`.
 
 Passing an already-joined path such as `<config>/codegg/skills` is a silent
 failure: it resolves to `<config>/codegg/skills/codegg/skills`, which does not
@@ -124,21 +132,26 @@ skills never appear. `already_joined_global_root_discovers_nothing` in
 in `src/agent/asset_context.rs` pins the accessor.
 
 Every registry construction site builds its own `AssetRegistry`, so every one
-of them must honor the parent-directory contract:
+of them must honor the parent-directory contract. There are **seven** such
+construction sites, spread across six files (`src/tui/app/mod.rs` holds two):
 
 | Construction site | Purpose |
 |---|---|
-| `src/core/daemon_refresh.rs:187-191,375-379` | Daemon-side registry; owns the shared `AssetContext` global roots |
-| `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder::build_skills`; adds plugin sources |
-| `src/tool/skill.rs:85-92` | The `skill` model tool; chains the context roots with the platform default |
+| `src/agent/asset_snapshot_builder.rs:87-105` | `ProjectAssetSnapshotBuilder::build_skills`; `build_with_plugin_sources`, so plugin-contributed skills join the set |
+| `src/skills/compat.rs:67` | `SkillIndexCompat::load_with_home`; `build_with_home`, the legacy facade |
+| `src/skills/publish.rs:447-451` | `SkillPublicationService`; the publish-time collision check |
+| `src/tool/skill.rs:101-110` | The `skill` model tool; chains the context roots with the platform default |
 | `src/tool/skill_proposal.rs:132-136` | Collision diagnostics for a submitted proposal |
-| `src/tui/app/mod.rs:4482-4489,4641-4652` | `/skill-promote` listing and `/skill-proposal` live-collision view |
-| `src/skills/compat.rs:32-44` | `SkillIndexCompat::load`, the legacy facade |
+| `src/tui/app/mod.rs:6823` and `:6986` | `/skill-promote` listing and the `/skill-proposal` live-collision view |
+
+The daemon no longer builds a registry directly: `src/core/daemon_refresh.rs`
+builds the shared `AssetContext` (seeding the global root at `:317-319`) and
+`src/agent/asset_snapshot_builder.rs` builds the registry from it.
 
 CodeGGProject also discovers direct `.md` files in `.codegg/skills/`,
 treating them as `CodeGGNativeCompat` entries; the skill name falls back to
 the markdown file's stem when the frontmatter omits `name`
-(`src/skills/parser.rs:105-110`).
+(`src/skills/parser.rs:107-113`).
 
 ### Portable SKILL.md schema
 
@@ -168,7 +181,7 @@ CodeGG-native `.codegg/skills/` also accepts legacy frontmatter
 (`name`, `version`, `tags`). The parser auto-detects portable vs
 native shape by checking for portable required fields.
 
-### Digest computation (parser.rs:377)
+### Digest computation (parser.rs:498)
 
 SHA-256 over: frontmatter bytes + `\n` + body with CRLF→LF
 normalization. Format-stable across platforms.
@@ -190,7 +203,7 @@ skill package:
 
 ## Key Types & APIs
 
-### AssetRegistry (registry.rs:11)
+### AssetRegistry (registry.rs:13)
 
 ```rust
 pub struct AssetRegistry {
@@ -203,7 +216,7 @@ pub struct AssetRegistry {
 Methods: `build`, `build_with_plugin_sources`, `get`, `list`,
 `find_matching`, `build_system_prompt`, `activate`, `resource_handle`.
 
-### EffectiveSkill (candidate.rs:33)
+### EffectiveSkill (candidate.rs:35)
 
 ```rust
 pub struct EffectiveSkill {
@@ -211,6 +224,7 @@ pub struct EffectiveSkill {
     pub normalized_name: String,
     pub description: String,
     pub source_kind: SourceKind,
+    pub workspace_depth: u8,
     pub source_path: PathBuf,
     pub package_root: PathBuf,
     pub content_digest: String,
@@ -222,12 +236,16 @@ pub struct EffectiveSkill {
 }
 ```
 
+`workspace_depth` is the ancestor distance the winning candidate came from
+(0 = the selected directory); it is what makes a nearer project skill beat a
+parent CodeGG skill.
+
 ### SourceKind (source.rs:6)
 
 Enum with 23 variants. Methods: `precedence_rank`, `is_project_local`,
 `is_global`, `directory_name`, `is_foreign`.
 
-### AssetDiscoveryConfig (source.rs:91)
+### AssetDiscoveryConfig (source.rs:150)
 
 ```rust
 pub struct AssetDiscoveryConfig {
@@ -238,8 +256,13 @@ pub struct AssetDiscoveryConfig {
     pub max_skill_name_length: usize,      // 128
     pub max_description_length: usize,     // 2048
     pub enabled_sources: HashSet<SourceKind>,
+    pub configured_roots: Vec<PathBuf>,    // from `skills.paths`
 }
 ```
+
+The defaults are at `source.rs:190-198`; `enabled_sources` defaults to all
+23 `SourceKind` values except `Plugin` (plugin sources are contributed
+explicitly, not discovered from a directory).
 
 ### ResourceHandle (resource.rs:44)
 
@@ -263,17 +286,32 @@ pub struct ResourceReadLimits {
 }
 ```
 
-### SkillIndexCompat (compat.rs:11)
+### SkillIndexCompat (compat.rs:10)
 
-Wraps `Arc<AssetRegistry>` behind the legacy `SkillIndex` API.
-Used by `src/main.rs` and `src/tool/skill.rs`. The `load` method
-derives global roots from `default_global_discovery_root()`
-(`dirs::config_dir()`).
+Wraps `Arc<AssetRegistry>` behind the legacy `SkillIndex` API. The `load`
+method (`compat.rs:31`) derives global roots from
+`default_global_discovery_root()` (`dirs::config_dir()`); `load_with_home`
+(`:42`) and `load_with_discovery_roots` (`:57`) are the variants that take
+an explicit home or root list.
+
+`SkillIndexCompat` currently has **no production consumer**: the only
+references outside its own file are the `pub use compat::SkillIndexCompat;`
+re-export in `src/skills/mod.rs:12`.
 
 ### Legacy types (mod.rs)
 
-`Skill` (name, description, version, tags, body, source) and
-`SkillIndex` (legacy facade) are preserved for backward compatibility.
+`Skill` (name, description, version, tags, body, source) and `SkillIndex`
+(legacy facade) are preserved for backward compatibility.
+
+`SkillIndex` is still **live** on one path: `src/main.rs:4098-4105` uses it
+to implement `codegg --session skill:<name>`, which activates a skill body
+into the composer. That path does **not** go through `AssetRegistry`: it
+scans `dirs::config_dir()/codegg/skills` and `<project>/.codegg/skills`
+directly (`src/skills/mod.rs:59-75`), so it sees none of the other
+harness-compatible roots, applies no precedence or shadowing, and performs no
+portable-name or symlink-boundary validation. The already-joined global path
+it uses is the same shape `AssetRegistry` warns about — it is correct here
+only because this legacy loader joins it itself.
 
 ### Diagnostic (diagnostic.rs:22)
 
@@ -288,8 +326,8 @@ pub struct Diagnostic {
 ## Security Bounds
 
 - Symlink escape containment: canonicalize paths, reject candidates
-  that escape the source root (`validate_symlink_boundary`, registry.rs:419,
-  called at `:354` and `:377`)
+  that escape the source root (`validate_symlink_boundary`, registry.rs:598,
+  called at `:517` and `:548`)
 - Resource path traversal: relative paths only, no `..` (resource.rs:89)
 - Script files inventoried (name + size) but never executed
 - Resource bodies lazy and bounded by `ResourceReadLimits`
@@ -347,9 +385,14 @@ published file remains on disk and the refresh diagnostic is shown.
 
 ```bash
 cargo test -p codegg skills               # legacy SkillIndex tests
-cargo test --test skills_registry          # AssetRegistry integration tests
-cargo test --test skill_publication        # approved publication safety/precedence tests
+cargo test --test agent_loop -- skills_registry     # AssetRegistry integration tests
+cargo test --test agent_loop -- skill_publication   # approved publication safety/precedence tests
 ```
+
+`skills_registry.inc`, `skills.inc`, and `skill_publication.inc` are members
+of the `agent_loop` **family**, so the family/member form
+(`cargo test --test <family> -- <member>`) is required; the standalone
+`--test skills_registry` form selects zero tests.
 
 `tests/agent_loop/skills_registry.inc` covers: empty project, all 4 project source
 kinds, global skills, precedence (project over global), native compat
@@ -383,7 +426,7 @@ while five other construction sites passed an already-joined
 skills were silently dropped everywhere except the daemon. `src/skills/compat.rs`
 was subtly different: it took `.parent()` of the already-joined path, landing on
 `<config>/codegg` and still double-joining. `default_global_skills_root()` is now
-`default_global_discovery_root()` (exactly `dirs::config_dir()`), all six sites
+`default_global_discovery_root()` (exactly `dirs::config_dir()`), all seven sites
 pass the parent directory, and two regression tests pin both halves of the
 contract. Added the construction-site table, since the daemon was previously
 documented as if it were the only registry builder.
@@ -412,3 +455,46 @@ exact 11 `SourceKind` variants with their literal discriminants
 M002/M003 symbols (`validate_portable_document` `parser.rs:171`,
 `SkillPromotionStore::submit` `promotion.rs:429`,
 `SkillPublicationService` `publish.rs:71`, `reconcile` `publish.rs:133`).
+
+Verified 2026-10-23 against all 10 files in `src/skills/`, plus
+`src/agent/asset_context.rs`, `src/agent/asset_snapshot_builder.rs`,
+`src/core/daemon_refresh.rs`, `src/tool/skill.rs`,
+`src/tool/skill_proposal.rs`, `src/tui/app/mod.rs`, `src/main.rs`, and
+`tests/agent_loop/`. Corrections made:
+
+| Claim in the previous revision | Finding |
+|---|---|
+| `AssetRegistry` `registry.rs:11` | `:13`. |
+| `build_with_plugin_sources` `registry.rs:26` | `:28`. |
+| `discover_in_root` `registry.rs:308` | `:470`. |
+| `resolve` `registry.rs:450` | `:629`. |
+| `validate_symlink_boundary` `registry.rs:419`, called at `:354` and `:377` | `:598`, called at `:517` and `:548`. |
+| `EffectiveSkill` `candidate.rs:33`, 12 fields | `:35`; the struct has **13** fields — the missing one is `workspace_depth: u8`, which is what carries the ancestor distance the winner came from. |
+| `AssetDiscoveryConfig` `source.rs:91`, 7 fields | `:150`; the struct has **8** fields — the missing one is `configured_roots: Vec<PathBuf>` (the `skills.paths` entries). Defaults are at `source.rs:190-198`. |
+| `SkillIndexCompat` `compat.rs:11` | `:10`. |
+| `parse_candidate` `parser.rs:51` | `:53`. |
+| `validate_portable_document` `parser.rs:171` | `:202`. |
+| `compute_digest` `parser.rs:377` | `:498`. |
+| "the exact 11 `SourceKind` variants with their literal discriminants `0/10/20/30/35/40/50/60/70/80/90`" | Stale. `SourceKind` has **23** variants (`src/skills/source.rs:6-37`); the eleven listed are the original set, and the twelve added since are `PiProject` 21, `CursorProject` 22, `GeminiProject` 24, `CopilotProject` 26, `ClineProject` 27, `RooProject` 28, `FactoryProject` 29, `ClineGlobal` 52, `PiGlobal` 54, `RooGlobal` 56, `CopilotGlobal` 57, `FactoryGlobal` 58. The precedence table in the body already listed all 23 correctly. |
+| "the global-root append happens at `src/skills/registry.rs:250-303`" | The function is `resolve_source_roots_with_home` at `registry.rs:249-435`. |
+| "The daemon does so at `src/core/daemon_refresh.rs:187-191`" | The daemon now seeds the shared `AssetContext` global root at `src/core/daemon_refresh.rs:317-319`; it does **not** build a registry. The registry is built by `src/agent/asset_snapshot_builder.rs:98` via `build_with_plugin_sources`. |
+| The construction-site table listed `src/core/daemon_refresh.rs:187-191,375-379` | Dead reference — that file no longer builds a registry. Rebuilt the table against the real construction sites: `src/agent/asset_snapshot_builder.rs:98`, `src/skills/compat.rs:67`, `src/skills/publish.rs:447`, `src/tool/skill.rs:110`, `src/tool/skill_proposal.rs:136`, `src/tui/app/mod.rs:6823` and `:6986`. |
+| "`SkillIndexCompat` … Used by `src/main.rs` and `src/tool/skill.rs`" | Wrong on both counts. `src/tool/skill.rs:110` builds an `AssetRegistry` directly, and `src/main.rs:4098` uses the legacy `SkillIndex`, not `SkillIndexCompat`. `SkillIndexCompat` has **no production consumer**. |
+| — | Added: the fact that the legacy `SkillIndex` is still live on the `codegg --session skill:<name>` path (`src/main.rs:4098-4105`) and that it bypasses `AssetRegistry` entirely — no other harness roots, no precedence, no portable-name or symlink-boundary validation; the `enabled_sources` default (all 22 non-`Plugin` kinds); and the `workspace_depth` field's role. |
+
+Corrected 2026-10-23: the test commands. `cargo test --test skills_registry`
+and `cargo test --test skill_publication` select **zero** tests — both are
+members of the `agent_loop` family (`tests/agent_loop/skills_registry.inc`,
+`tests/agent_loop/skill_publication.inc`), so the family/member form is
+required.
+
+Corrected 2026-10-23 (second pass): the construction-site **count**. Both the
+body prose and the 2026-10-06 reconciliation note said "six sites", but six is
+the number of *files*; the table lists **seven** call sites because
+`src/tui/app/mod.rs` holds two. Re-measured every `AssetRegistry::build*`
+call site in `src/` and `crates/`: seven are production and two
+(`src/skills/registry.rs:748`, `:801`) are `#[cfg(test)]` helpers inside the
+`mod tests` block that starts at `src/skills/registry.rs:733`. The body now
+states seven sites across six files, and the word "six" was corrected where it
+counted sites.
+

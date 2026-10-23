@@ -304,6 +304,25 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, preference, snapshot, error,
             );
         }
+        TuiCommand::ReasoningPreferenceUpdated {
+            request_id,
+            preference,
+            previous,
+            error,
+        } => {
+            super::super::commands::reasoning::apply_preference_updated(
+                app, request_id, preference, previous, error,
+            );
+        }
+        TuiCommand::ReasoningPreferenceLoaded {
+            request_id,
+            preference,
+            error,
+        } => {
+            super::super::commands::reasoning::apply_preference_loaded(
+                app, request_id, preference, error,
+            );
+        }
         TuiCommand::RefreshPresence { project_id } => {
             super::super::commands::presence::start_refresh_presence(app, project_id);
         }
@@ -1349,11 +1368,30 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             // provider could silently disagree.
             if error.is_none() {
                 if let Some(selection) = selection.as_ref() {
+                    // The capability rides on the model-resolution response.
+                    // Recording it here is what lets `/reasoning` offer the
+                    // model's own options instead of the known-label
+                    // fallback.
+                    if let codegg_protocol::provider::SessionSelectionDto::Selected {
+                        model, ..
+                    } = selection
+                    {
+                        app.record_reasoning_capability(
+                            model.model_id.as_str(),
+                            model.reasoning_capability.clone(),
+                        );
+                    }
                     if let Some(runtime_model) =
                         crate::core::session_selection::durable_selected_runtime_model(selection)
                     {
                         app.reconcile_durable_selection_model(&runtime_model);
                     }
+                }
+                for model in &models {
+                    app.record_reasoning_capability(
+                        model.model_id.as_str(),
+                        model.reasoning_capability.clone(),
+                    );
                 }
             }
 

@@ -238,6 +238,49 @@ impl EventLog {
         .is_some()
     }
 
+    /// Replay the events the **ring buffer** still holds, strictly after
+    /// `from_event_seq`, keeping every event that matches **any** of `filters`.
+    ///
+    /// This is **not** a re-delivery seam for a subscriber that fell behind
+    /// the bounded broadcast, and it must not be used as one. The ring and
+    /// the broadcast have the same capacity and both retain the *same*
+    /// window — the most recent `capacity` events — so the events a lagged
+    /// subscriber missed are exactly the events the ring has already evicted.
+    /// Replaying the ring after a lag would therefore re-send the events the
+    /// broadcast still holds and **not** the ones that were lost.
+    ///
+    /// It exists for the cases where a consumer asks for a span it has a
+    /// right to see and the log can still serve it: a reconnect that resumes
+    /// from a cursor, or a test that needs the events a log published.
+    ///
+    /// The filter semantics are the same `event_matches_filter` helper the
+    /// live delivery path uses, applied with **any**-match across the filter
+    /// set — the same rule the socket forwarder applies to live events.
+    pub async fn replay_ring_from_any(
+        &self,
+        from_event_seq: u64,
+        filters: &[EventFilter],
+    ) -> Vec<EventEnvelope<CoreEvent>> {
+        let ring = self.ring.lock().await;
+        ring.iter()
+            .filter(|event| event.event_seq > from_event_seq)
+            .filter(|event| {
+                filters.is_empty() || filters.iter().any(|f| event_matches_filter(f, event))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The lowest sequence the ring buffer still holds.
+    ///
+    /// A subscriber that fell behind the bounded broadcast missed events
+    /// below this floor: the ring and the broadcast evict the same window,
+    /// so the floor is the boundary of what the log can still serve.
+    pub async fn ring_floor_seq(&self) -> u64 {
+        let ring = self.ring.lock().await;
+        ring.front().map(|event| event.event_seq).unwrap_or(0)
+    }
+
     /// Replay events strictly after `from_event_seq` (i.e. with
     /// `event_seq > from_event_seq`). `from_event_seq` is treated as
     /// the last sequence already seen by the client; pass `0` to

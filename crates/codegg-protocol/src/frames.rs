@@ -7,6 +7,52 @@ use crate::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEn
 /// that construct those structs remain source-compatible.
 pub const PROJECT_CATALOG_CAPABILITY: &str = "project_catalog.v1";
 
+/// The code carried by the frame that tells a client its event stream has a
+/// hole in it.
+///
+/// The daemon's event log is a **bounded** broadcast. A consumer that falls
+/// behind it loses events, and a consumer that cannot tell it lost events
+/// will pair a tool call with a completion it never saw. This code is the
+/// namespaced signal that says so.
+///
+/// It travels in an ordinary [`CoreFrame::Error`] with no request id, so no
+/// consumer's wire shape changes: a consumer that ignores error frames keeps
+/// working unchanged, and one that reads this code learns that its stream is
+/// incomplete instead of assuming it is complete.
+pub const EVENT_STREAM_GAP_CODE: &str = "event_stream_gap";
+
+/// Build the message body of an event-stream gap frame.
+///
+/// The dropped count is the fact a consumer needs; the two sequence numbers
+/// are the context that makes the report diagnosable. The format is
+/// `dropped=<n> last_delivered_seq=<n> oldest_retained_seq=<n>` so a consumer
+/// can read the count without a structured field.
+pub fn event_stream_gap_message(
+    dropped: u64,
+    last_delivered_seq: u64,
+    oldest_retained_seq: u64,
+) -> String {
+    format!(
+        "event stream gap: dropped={dropped} last_delivered_seq={last_delivered_seq} \
+         oldest_retained_seq={oldest_retained_seq}"
+    )
+}
+
+/// Read the dropped-event count out of an event-stream gap message.
+///
+/// Returns `None` when the message does not carry a count, so a malformed
+/// report is treated as "a gap happened, of unknown size" rather than as a
+/// gap of zero events. A gap of zero events is not a thing.
+pub fn event_stream_gap_dropped(message: &str) -> Option<u64> {
+    for field in message.split_whitespace() {
+        let Some(value) = field.strip_prefix("dropped=") else {
+            continue;
+        };
+        return value.parse::<u64>().ok();
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectCatalogCapabilities {
     pub supported: bool,

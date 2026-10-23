@@ -305,11 +305,15 @@ Repeated corrective passes indicate the subsystem roadmap or milestone sizing ne
 
 `plans/registry.md` is the compact control surface. It links active documents and blockers without duplicating their detailed requirements. Its sections today are:
 
-- Active subsystem roadmaps (with current milestone and dependencies/blockers)
+- Status vocabulary
+- Active subsystem roadmaps
+- Eggplan integration planning reconciliation
+- Active implementation plans
 - Dependency-ready implementation plans
 - Current execution order and dependency gates
 - Milestones eligible for fresh planning
 - Blocked work and blockers
+- Eggwork remote-execution control point
 - Closure work and current control points
 - Recently closed or conditionally closed work (with commit references)
 - Verification policy
@@ -464,6 +468,20 @@ When adding to `plans/registry.md`:
 | `plans/closure/README.md` | Closure record template |
 | `plans/archive/README.md` | Archive workflow |
 
+## See Also
+
+- `plans/003-planning-process.md` — the canonical planning-governance rules
+  this skill operationalises (authority order, handoff review, anti-patterns)
+- `plans/registry.md` — the authoritative record of which milestones and
+  roadmaps are active, blocked, or closed
+- `plans/README.md` — the top-level planning-system guide and the planning
+  hierarchy
+- `plans/subsystems/README.md`, `plans/implementation/README.md`,
+  `plans/closure/README.md` — the three templates this skill describes
+- `plans/adrs/README.md` — the ADR threshold rules and template
+- `.opencode/skills/documentation/SKILL.md` — keeping the user-facing docs and
+  the agent-facing index consistent with the plans
+
 ## Operational Notes
 
 - **Authority order when conflicts arise**: canonical long-term > accepted ADRs > subsystem roadmap > implementation plan > current repository evidence (`plans/003-planning-process.md` §6).
@@ -502,3 +520,33 @@ deriving interim plans. Added the sibling `-addendum`/`-experiment`
 roadmap naming used throughout `plans/subsystems/`, which the
 `<subsystem>-roadmap.md` convention alone does not describe. Claims
 without a traceable source were removed rather than guessed.
+
+Second pass (2026-10-23): re-verified against `plans/registry.md`,
+`plans/README.md`, `plans/000-long-term-specification.md`,
+`plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`,
+`plans/003-planning-process.md`,
+`plans/{adrs,subsystems,implementation,closure,archive}/README.md`, and the
+`plans/{subsystems,implementation,closure,adrs,archive}/` directory listings.
+
+Confirmed unchanged: the nine-status vocabulary table matching
+`plans/registry.md:12-22` exactly (`proposed`, `ready`, `active`, `blocked`,
+`closing`, `closed`, `conditionally closed`, `superseded`, `archived`); the
+five-step authority order matching `plans/003-planning-process.md:204-210`;
+the Related Files table — every path exists, including `plans/adrs/README.md`
+and `plans/archive/README.md`; and the sibling naming convention — there are
+`-corrective-closure-addendum.md` and `-corrective-addendum.md` roadmaps in
+`plans/subsystems/`, plus five `-experiment-roadmap.md` files (the
+`tool-selection-advisor-*` set).
+
+Corrected: the registry's section list was incomplete. It named nine of the
+registry's thirteen `##` sections and omitted **Status vocabulary**
+(`plans/registry.md:12`), **Eggplan integration planning reconciliation**
+(`:122`), **Active implementation plans** (`:149`), and **Eggwork
+remote-execution control point** (`:583`). The list now names all thirteen.
+
+Added the missing `## See Also` section, naming `plans/003-planning-process.md`
+— the canonical planning-governance document that this skill's authority-order
+and handoff-review rules come from — alongside the registry and the closure
+template. The `plans/` tree has no `architecture/` counterpart, so this skill's
+authoritative documents are the planning documents themselves.
+

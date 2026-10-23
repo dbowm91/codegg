@@ -249,7 +249,10 @@ impl App {
         let prompt_height = self
             .prompt_state
             .prompt
-            .needed_height(max_prompt_height)
+            // The pane's width, not the prompt chunk's: the chunk's width is
+            // what this height is asking for, so using it would be circular.
+            // The pane's width is the width the composer wraps at.
+            .needed_height(max_prompt_height, pane_area.width)
             .saturating_add(todo_rows)
             .saturating_add(tasks_rows)
             .saturating_add(hint_rows);
@@ -1982,10 +1985,15 @@ impl App {
             "Ask anything…".to_string()
         };
         self.prompt_state.prompt.set_placeholder(placeholder);
-        let visible_lines = area.height.saturating_sub(2) as usize;
+        // The composer wraps at the pane's width, which is the width this
+        // chunk has: the layout splits the pane vertically, so the chunk's
+        // width is the pane's width and the height the box asked for was
+        // computed against it.
+        self.prompt_state.prompt.set_wrap_width(area.width);
+        let visible_rows = self.prompt_state.prompt.visible_text_rows(area.height);
         self.prompt_state
             .prompt
-            .ensure_cursor_visible_with_width(visible_lines, area.width as usize);
+            .ensure_cursor_visible_with_width(visible_rows, area.width);
 
         // The cursor rules and the badge read the same two facts: the resolved
         // mode and the derived keyboard ownership. A caret that disagrees with
@@ -2175,6 +2183,20 @@ impl App {
 
         let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
         activity.push(format!("agent:{agent_name}"));
+
+        // Provider reasoning control (M004): the daemon-owned extended-
+        // thinking selection, shown next to the daemon-resolved policy line
+        // because it is the same kind of fact — a setting the daemon owns and
+        // the frontend only displays. It is **content in an existing chip
+        // chain**, never a condition on a row's presence: the footer is a
+        // fixed-height surface, so a chip cannot reflow the transcript the
+        // way a row could, and it adds no second spinner and no second
+        // cadence (it is static text in a bar the one 100 ms frame table
+        // already redraws).
+        activity.push(format!(
+            "reasoning:{}",
+            self.ui_state.reasoning_mode.detail()
+        ));
 
         if self.session_state.subagent_count > 0 {
             activity.push(format!("subagents:{}", self.session_state.subagent_count));
@@ -3142,5 +3164,97 @@ mod viewport_owner_tests {
             ViewportOwner::ChangeReview,
             "a modal decision surface must never be covered by a tab"
         );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_indicator_tests {
+    use super::*;
+    use crate::protocol::core::ReasoningMode;
+
+    /// The activity chips the status bar would render.
+    fn chips(app: &App) -> Vec<String> {
+        app.build_status_summary().activity
+    }
+
+    /// The indicator shows the **daemon-owned** selection compactly.
+    #[test]
+    fn the_indicator_shows_the_daemon_owned_selection() {
+        let app = App::new_for_testing("/tmp".to_string());
+        let mut app = app;
+
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:high"),
+            "the chip must show the selection, got {:?}",
+            chips(&app)
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Off;
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:off"),
+            "the chip must show the off selection, got {:?}",
+            chips(&app)
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Inherit;
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:default"),
+            "the chip must show the default selection, got {:?}",
+            chips(&app)
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Budget(2048);
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:budget 2048"),
+            "the chip must show the budget selection, got {:?}",
+            chips(&app)
+        );
+    }
+
+    /// The indicator is **content in an existing chain**, never a condition
+    /// on the surface's presence. The footer is a fixed-height row, so the
+    /// chip cannot move the transcript the way a row could: the number of
+    /// chips changes, but nothing about the layout does.
+    #[test]
+    fn the_indicator_does_not_reflow_the_transcript() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let layout_before = app
+            .ui_state
+            .layout
+            .session_layout(Rect::new(0, 0, 80, 24), None);
+
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let layout_after = app
+            .ui_state
+            .layout
+            .session_layout(Rect::new(0, 0, 80, 24), None);
+
+        assert_eq!(
+            layout_before, layout_after,
+            "the reasoning indicator must not move the transcript"
+        );
+    }
+
+    /// The indicator adds no second spinner and no second cadence: it is
+    /// static text in a bar that the one 100 ms frame table already
+    /// redraws, so two renders of the same selection are byte-identical and
+    /// the chip carries no animation glyph of its own.
+    #[test]
+    fn the_indicator_adds_no_second_spinner_or_cadence() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let first = chips(&app);
+        let second = chips(&app);
+        assert_eq!(
+            first, second,
+            "the reasoning indicator must be static, not an animated frame"
+        );
+        for frame in crate::tui::components::spinner::SPINNER_FRAMES {
+            assert!(
+                !first.iter().any(|chip| chip.contains(frame)),
+                "the reasoning indicator must not draw a spinner frame ({frame})"
+            );
+        }
     }
 }

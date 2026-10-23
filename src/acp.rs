@@ -13,6 +13,7 @@ use crate::protocol::dto::{ContentPart, ProjectRegisterRequestDto, ProviderMessa
 use crate::protocol::projection::dto::ToolArgumentProjection;
 use crate::protocol::projection::event::ProjectionEvent;
 use crate::protocol::projection::replay::{ProjectionStreamKind, ProjectionSubscriptionRequest};
+use codegg_client::ClientEvent;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -24,6 +25,25 @@ use tokio::sync::mpsc;
 
 const ACP_PROTOCOL_VERSION: u64 = 1;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+
+/// The JSON-RPC error code for a native turn failure.
+///
+/// Distinct from the `-32011` permission-pending code: `-32010` means the
+/// native turn itself failed, `-32011` means the headless turn reached a
+/// permission request nobody answered.
+const ACP_TURN_FAILED_CODE: i64 = -32010;
+
+/// The namespaced session-update kind that reports a hole in the event stream.
+///
+/// The daemon's event log is a bounded broadcast, so a connection can fall
+/// behind it and lose events. When that happens the adapter says so, on an
+/// **optional** update kind that a consumer that does not know about ignores:
+/// no ACP v1 field became required, and an existing consumer keeps working.
+///
+/// A consumer that does read it must treat the affected span as unmeasured.
+/// The alternative — carrying on as though the stream were complete — is what
+/// let a dropped tool completion be read as a tool that never finished.
+const EVENT_GAP_SESSION_UPDATE: &str = "codegg_event_gap";
 
 #[derive(Debug, serde::Deserialize)]
 struct RpcRequest {
@@ -48,6 +68,13 @@ struct ActivePrompt {
     cancel_requested: bool,
     close_requested: bool,
     cancel_sent: bool,
+    /// The number of events this turn's observation is missing.
+    ///
+    /// A non-zero value means the turn's event stream had a hole. The turn's
+    /// outcome is still reported, but the consumer is told, because a
+    /// tool call whose completion was dropped must not be read as a tool
+    /// that never finished.
+    gap_dropped: u64,
 }
 
 impl ActivePrompt {
@@ -89,7 +116,7 @@ pub async fn run(
     let mut policy_applied = false;
     let mut policy_lease: Option<AcpPolicyLease> = None;
     let mut policy_snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto> = None;
-    let (_event_sink, mut events) = mpsc::channel::<EventEnvelope<CoreEvent>>(256);
+    let (_event_sink, mut events) = mpsc::channel::<ClientEvent>(256);
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
@@ -276,6 +303,7 @@ pub async fn run(
                                 cancel_requested: false,
                                 close_requested: false,
                                 cancel_sent: false,
+                                gap_dropped: 0,
                             }),
                             CoreResponse::TurnAdmissionReceipt { receipt }
                                 if receipt.status == "accepted" =>
@@ -290,6 +318,7 @@ pub async fn run(
                                     cancel_requested: false,
                                     close_requested: false,
                                     cancel_sent: false,
+                                    gap_dropped: 0,
                                 })
                             }
                             CoreResponse::TurnAdmissionReceipt { receipt } => {
@@ -348,7 +377,33 @@ pub async fn run(
                 }
             }
             event = events.recv() => {
-                let Some(event) = event else { break };
+                let Some(received) = event else { break };
+                let event = match received {
+                    ClientEvent::Event(envelope) => *envelope,
+                    ClientEvent::Lagged { dropped } => {
+                        // This consumer fell behind the shared broadcast. The
+                        // events it is missing are not recoverable from here,
+                        // so the fact is reported rather than absorbed.
+                        report_event_gap(&stdout, active.as_mut(), dropped, "client_broadcast_lag")
+                            .await?;
+                        continue;
+                    }
+                    ClientEvent::Gap { dropped } => {
+                        // The daemon dropped events from the stream it sends
+                        // us. The consumer must know: a tool call whose
+                        // completion was dropped is not a tool that never
+                        // finished.
+                        report_event_gap(
+                            &stdout,
+                            active.as_mut(),
+                            dropped,
+                            "daemon_event_stream_gap",
+                        )
+                        .await?;
+                        continue;
+                    }
+                    ClientEvent::Closed => break,
+                };
                 if let Some(prompt) = active.as_mut() {
                     let accepted = handle_event(&stdout, prompt, &event).await?;
                     if accepted {
@@ -373,16 +428,28 @@ pub async fn run(
                         let prompt = active.take().unwrap();
                         match terminal_stop_reason(&event) {
                             Some(completed_reason) => {
-                                write_result(&stdout, prompt.request_id, json!({"stopReason": completed_reason,
-                                    "codeggUsage": terminal_usage(&event)})).await?;
+                                // The turn's outcome is reported as it is, and
+                                // the gap is reported alongside it when the
+                                // observation had a hole in it. The consumer
+                                // decides what an incomplete observation means;
+                                // the adapter's job is to say that it is
+                                // incomplete.
+                                let mut result = json!({"stopReason": completed_reason,
+                                    "codeggUsage": terminal_usage(&event)});
+                                if prompt.gap_dropped > 0 {
+                                    result["codeggEventGap"] =
+                                        json!({"dropped": prompt.gap_dropped});
+                                }
+                                write_result(&stdout, prompt.request_id, result).await?;
                             }
                             None => {
+                                let failure_data = terminal_failure_data(&prompt, &event);
                                 write_error_with_data(
                                     &stdout,
                                     prompt.request_id,
-                                    -32010,
+                                    ACP_TURN_FAILED_CODE,
                                     "native turn failed",
-                                    json!({"kind":"turn_failed", "sessionId":prompt.session_id, "turnId":prompt.turn_id}),
+                                    failure_data,
                                 ).await?;
                             }
                         }
@@ -410,10 +477,12 @@ pub async fn run(
     Ok(())
 }
 
-fn drain_event_floor(events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>) -> u64 {
+fn drain_event_floor(events: &mut mpsc::Receiver<ClientEvent>) -> u64 {
     let mut floor = 0;
     while let Ok(event) = events.try_recv() {
-        floor = floor.max(event.event_seq);
+        if let ClientEvent::Event(envelope) = event {
+            floor = floor.max(envelope.event_seq);
+        }
     }
     floor
 }
@@ -440,7 +509,7 @@ async fn cancel_if_ready(client: Option<&Arc<SocketCoreClient>>, prompt: &mut Ac
 
 async fn ensure_client(
     client: &mut Option<Arc<SocketCoreClient>>,
-    events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>,
+    events: &mut mpsc::Receiver<ClientEvent>,
     policy: Option<crate::policy_surface::CliPolicyOverride>,
     policy_applied: &mut bool,
     policy_lease: &mut Option<AcpPolicyLease>,
@@ -456,7 +525,9 @@ async fn ensure_client(
         .await
         .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!(e.to_string())))?;
     let connected = Arc::new(outcome.client);
-    *events = connected.subscribe();
+    // The loss-aware subscription: a dropped event must reach the adapter as
+    // a fact, so the adapter can tell the consumer its stream had a hole.
+    *events = connected.subscribe_events();
     if let Some(policy) = policy {
         if !*policy_applied {
             *policy_snapshot = Some(apply_and_verify_policy(&connected, policy).await?);
@@ -743,6 +814,36 @@ async fn replay_snapshot(
     write_result(stdout, id, json!({"sessionId": sid})).await
 }
 
+/// Report a hole in the event stream to the consumer.
+///
+/// The report rides an **optional**, namespaced session-update kind. A
+/// consumer that does not know the kind ignores it and keeps working; a
+/// consumer that does know it marks the affected span unmeasured. The turn
+/// that was running, if any, also records the gap so the turn's own result
+/// carries the fact.
+async fn report_event_gap(
+    stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    prompt: Option<&mut ActivePrompt>,
+    dropped: u64,
+    source: &str,
+) -> Result<(), crate::error::AppError> {
+    tracing::warn!(dropped, source, "ACP event stream gap");
+    if let Some(prompt) = prompt {
+        prompt.gap_dropped = prompt.gap_dropped.saturating_add(dropped);
+        update(
+            stdout,
+            &prompt.session_id,
+            json!({
+                "sessionUpdate": EVENT_GAP_SESSION_UPDATE,
+                "dropped": dropped,
+                "source": source,
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn handle_event(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     prompt: &mut ActivePrompt,
@@ -914,6 +1015,74 @@ fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
     }
 }
 
+/// Build the `-32010` JSON-RPC error `data` payload for a failed turn.
+///
+/// The payload carries the redacted failure class and the usage
+/// provenance, and nothing else. It NEVER carries
+/// `CoreEvent::TurnFailed.message`: that message embeds upstream provider
+/// text and can carry credentials, so it stays in the local transcript.
+///
+/// The usage provenance distinguishes four facts that are easy to
+/// conflate:
+///
+/// - `reported` — the provider reported token counts
+/// - `not_observed` — the turn ended before any provider response
+/// - `not_provided` — a provider response arrived but reported no tokens
+/// - `lost_at_projection` — the native layer had usage, but this event
+///   came through the projection stream, which does not carry it
+/// - `unspecified` — availability could not be established
+fn terminal_failure_data(prompt: &ActivePrompt, event: &EventEnvelope<CoreEvent>) -> Value {
+    use crate::protocol::core::{TurnFailureCategory, UsageAvailability};
+
+    let (category, usage, absent_reason) = match &event.payload {
+        CoreEvent::TurnFailed {
+            category, usage, ..
+        } => (*category, *usage, UsageAvailability::Unspecified),
+        CoreEvent::ProjectionStreamEvent { envelope, .. } => match &envelope.payload {
+            ProjectionEvent::TurnFailed {
+                category, usage, ..
+            } => (*category, *usage, UsageAvailability::LostAtProjection),
+            _ => (None, None, UsageAvailability::Unspecified),
+        },
+        _ => (None, None, UsageAvailability::Unspecified),
+    };
+
+    let category = category.unwrap_or(TurnFailureCategory::NativeFailureUnspecified);
+    let (counts, reason) = match usage {
+        Some(usage) => (Some(usage), usage.availability),
+        None => (None, absent_reason),
+    };
+
+    // `codeggUsage` is null whenever no token count is available. A
+    // partially reported usage still produces the object, with null for
+    // the counts the route did not report.
+    let usage_value = match counts {
+        Some(usage)
+            if usage.input_tokens.is_some()
+                || usage.output_tokens.is_some()
+                || usage.cached_tokens.is_some()
+                || usage.reasoning_tokens.is_some() =>
+        {
+            json!({
+                "inputTokens": usage.input_tokens,
+                "outputTokens": usage.output_tokens,
+                "cachedTokens": usage.cached_tokens,
+                "reasoningTokens": usage.reasoning_tokens,
+            })
+        }
+        _ => Value::Null,
+    };
+
+    json!({
+        "kind": "turn_failed",
+        "sessionId": prompt.session_id,
+        "turnId": prompt.turn_id,
+        "codeggFailureCategory": category.as_str(),
+        "codeggUsage": usage_value,
+        "codeggUsageReason": reason.as_str(),
+    })
+}
+
 fn tool_arguments_sha256(arguments: &ToolArgumentProjection) -> Option<String> {
     let text = match arguments {
         ToolArgumentProjection::Inline { arguments } => arguments,
@@ -969,11 +1138,15 @@ async fn write_error_with_data(
     message: &str,
     data: Value,
 ) -> Result<(), crate::error::AppError> {
-    write_frame(
-        stdout,
-        json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message,"data":data}}),
-    )
-    .await
+    write_frame(stdout, error_frame(id, code, message, data)).await
+}
+
+/// Build the JSON-RPC error frame.
+///
+/// Pure so the wire shape (code, message, data) can be asserted without a
+/// stdout writer.
+fn error_frame(id: Value, code: i64, message: &str, data: Value) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message,"data":data}})
 }
 async fn write_notification(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
@@ -1018,6 +1191,7 @@ mod tests {
             cancel_requested: false,
             close_requested: false,
             cancel_sent: false,
+            gap_dropped: 0,
         }
     }
 
@@ -1156,6 +1330,171 @@ mod tests {
             }),
             None
         );
+
+        // The SUCCESS path's `codeggUsage` shape is frozen: the failure
+        // class and the usage reason belong to the failure payload only.
+        let success_usage = terminal_usage(&completed);
+        let keys: Vec<&str> = success_usage
+            .as_object()
+            .expect("success usage is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for expected in [
+            "turnId",
+            "inputTokens",
+            "outputTokens",
+            "cachedTokens",
+            "reasoningTokens",
+            "contextLimit",
+        ] {
+            assert!(keys.contains(&expected), "missing {expected} in {keys:?}");
+        }
+        for forbidden in ["codeggFailureCategory", "codeggUsageReason"] {
+            assert!(
+                !keys.contains(&forbidden),
+                "success usage must not carry {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn acp_turn_failed_error_carries_the_redacted_category_and_usage() {
+        use crate::protocol::core::{TurnFailureCategory, TurnUsage, UsageAvailability};
+
+        let mut active = prompt();
+        active.turn_id = Some("turn-1".into());
+        let failed = event(
+            11,
+            "session-1",
+            CoreEvent::TurnFailed {
+                session_id: "session-1".into(),
+                turn_id: Some("turn-1".into()),
+                // A provider message with a credential-shaped string in it:
+                // none of this may reach the wire payload.
+                message: "Agent error: provider error: 529 overloaded sk-live-SECRET".into(),
+                category: Some(TurnFailureCategory::ProviderApi),
+                usage: Some(TurnUsage {
+                    input_tokens: Some(120),
+                    output_tokens: Some(35),
+                    cached_tokens: Some(20),
+                    reasoning_tokens: None,
+                    availability: UsageAvailability::Reported,
+                }),
+            },
+        );
+
+        let data = terminal_failure_data(&active, &failed);
+        let frame = error_frame(
+            json!(1),
+            ACP_TURN_FAILED_CODE,
+            "native turn failed",
+            data.clone(),
+        );
+
+        assert_eq!(frame["error"]["code"], -32010);
+        assert_eq!(data["kind"], "turn_failed");
+        assert_eq!(data["sessionId"], "session-1");
+        assert_eq!(data["turnId"], "turn-1");
+        assert_eq!(data["codeggFailureCategory"], "provider_api");
+        assert_eq!(data["codeggUsage"]["inputTokens"], 120);
+        assert_eq!(data["codeggUsage"]["outputTokens"], 35);
+        assert_eq!(data["codeggUsage"]["cachedTokens"], 20);
+        assert_eq!(data["codeggUsage"]["reasoningTokens"], Value::Null);
+        assert_eq!(data["codeggUsageReason"], "reported");
+
+        // The provider message is never projected into the payload.
+        let rendered = data.to_string();
+        assert!(
+            !rendered.contains("SECRET"),
+            "the payload must not carry provider text: {rendered}"
+        );
+        assert!(
+            !rendered.contains("529"),
+            "the payload must not carry the provider message: {rendered}"
+        );
+    }
+
+    #[test]
+    fn acp_native_turn_failure_without_usage_reports_unspecified() {
+        let mut active = prompt();
+        active.turn_id = Some("turn-1".into());
+        let failed = event(
+            11,
+            "session-1",
+            CoreEvent::TurnFailed {
+                session_id: "session-1".into(),
+                turn_id: Some("turn-1".into()),
+                message: "Agent error: provider turn cancelled".into(),
+                category: Some(crate::protocol::core::TurnFailureCategory::Cancelled),
+                usage: None,
+            },
+        );
+
+        let data = terminal_failure_data(&active, &failed);
+        assert_eq!(data["codeggFailureCategory"], "cancelled");
+        assert_eq!(data["codeggUsage"], Value::Null);
+        assert_eq!(data["codeggUsageReason"], "unspecified");
+    }
+
+    #[test]
+    fn acp_projection_turn_failure_without_usage_reports_lost_at_projection() {
+        let mut active = prompt();
+        active.turn_id = Some("turn-1".into());
+        let failed = projection_event(
+            11,
+            "sub-1",
+            "session-1",
+            "turn-1",
+            ProjectionEvent::TurnFailed {
+                turn_id: "turn-1".into(),
+                message: "projection carried failure".into(),
+                failed_at: 0,
+                category: None,
+                usage: None,
+            },
+        );
+
+        let data = terminal_failure_data(&active, &failed);
+        assert_eq!(data["kind"], "turn_failed");
+        assert_eq!(data["sessionId"], "session-1");
+        assert_eq!(data["turnId"], "turn-1");
+        assert_eq!(data["codeggUsage"], Value::Null);
+        assert_eq!(data["codeggUsageReason"], "lost_at_projection");
+        assert_eq!(data["codeggFailureCategory"], "native_failure_unspecified");
+    }
+
+    #[test]
+    fn acp_projection_turn_failure_keeps_a_reported_category_and_usage() {
+        use crate::protocol::core::{TurnFailureCategory, TurnUsage, UsageAvailability};
+
+        let mut active = prompt();
+        active.turn_id = Some("turn-1".into());
+        let failed = projection_event(
+            11,
+            "sub-1",
+            "session-1",
+            "turn-1",
+            ProjectionEvent::TurnFailed {
+                turn_id: "turn-1".into(),
+                message: "projection carried failure".into(),
+                failed_at: 0,
+                category: Some(TurnFailureCategory::ProviderTransport),
+                usage: Some(TurnUsage {
+                    input_tokens: Some(11),
+                    output_tokens: None,
+                    cached_tokens: None,
+                    reasoning_tokens: None,
+                    availability: UsageAvailability::Reported,
+                }),
+            },
+        );
+
+        let data = terminal_failure_data(&active, &failed);
+        assert_eq!(data["codeggFailureCategory"], "provider_transport");
+        assert_eq!(data["codeggUsage"]["inputTokens"], 11);
+        assert_eq!(data["codeggUsage"]["outputTokens"], Value::Null);
+        assert_eq!(data["codeggUsageReason"], "reported");
     }
 
     #[test]
@@ -1282,6 +1621,8 @@ mod tests {
                 session_id: "session-1".into(),
                 turn_id: Some("turn-1".into()),
                 message: "provider unavailable".into(),
+                category: None,
+                usage: None,
             },
         );
         assert_eq!(terminal_stop_reason(&failed), None);

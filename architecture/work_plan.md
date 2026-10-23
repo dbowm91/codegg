@@ -24,13 +24,17 @@ evidence correlation, and the host-owned completion arbiter.
 | Bounded projection/pagination (M003) | `crates/codegg-core/src/work_plan/projection.rs` |
 | Host-evidence snapshot (M003) | `crates/codegg-core/src/work_plan/evidence.rs` |
 | One-way Todo contract (M003) | `crates/codegg-core/src/work_plan/todo_projection.rs` |
+| Repository binding (C001) | `crates/codegg-core/src/work_plan/repository_binding.rs` |
+| Checkpoint provenance | `crates/codegg-core/src/work_plan/checkpoint.rs` |
+| Fresh-epoch policy | `crates/codegg-core/src/work_plan/epoch_policy.rs` |
 | Module re-exports | `crates/codegg-core/src/work_plan/mod.rs` |
 | Model tools (`work_plan_get`, `work_plan_update_item`) | `src/tool/work_plan.rs` |
 | Evidence assembly (jobs/runs) | `src/work_plan_evidence.rs` |
 | Completion arbiter + turn/Goal gates | `src/work_plan_arbiter.rs` |
 | Todo one-way sync | `src/work_plan_todo_sync.rs` |
-| DB schema | `crates/codegg-core/src/session/schema.rs` migration v59 (plan tables); v68 adds the repository-binding tables. Current layout `storage::STORAGE_LAYOUT_VERSION = 68` |
-| Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `crates/codegg-core/tests/agent_loop/work_plan_projection_arbiter.inc`, `tests/agent_loop/work_plan_projection_arbiter.inc` + in-module unit tests |
+| Repository binding (host side) | `src/work_plan_repository_binding.rs` |
+| DB schema | `crates/codegg-core/src/session/schema.rs` migration v59 (plan tables); v68 adds the repository-binding tables. Current layout `storage::STORAGE_LAYOUT_VERSION = 87` |
+| Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `tests/agent_loop/work_plan_projection_arbiter.inc` + in-module unit tests |
 
 ## How It Works
 
@@ -346,7 +350,7 @@ ownership/migration guard:
 - Storage v68 adds `work_plan_eggplan_binding`,
   `work_plan_eggplan_item_binding`, and `work_order_eggplan_binding`
   (append/replace only, no destructive path).
-- Tests: `tests/agent_loop/work_plan_repository_binding.inc` (37 cases incl. the C001
+- Tests: `tests/agent_loop/work_plan_repository_binding.inc` (32 cases incl. the C001
   dirty stable/drift/legacy matrix) plus the
   core binding-persistence suite.
 
@@ -426,9 +430,8 @@ terminate with a single turn-end close. Full evidence matrix:
 ```bash
 cargo test -p codegg-core --lib -- work_plan
 cargo test -p codegg-core --test work_plan_foundation
-cargo test -p codegg-core --test work_plan_projection_arbiter
-cargo test --test work_plan_projection_arbiter
-cargo test --test long_horizon_trajectory_qualification
+cargo test --test agent_loop -- work_plan_projection_arbiter
+cargo test --test agent_loop -- long_horizon_trajectory_qualification
 cargo test -p codegg-core -- migration
 ```
 
@@ -459,8 +462,9 @@ current workspace.
 ## Source Verification
 
 Verified 2026-10-06 against source. Corrected: the DB-schema row claimed
-`STORAGE_LAYOUT_VERSION = 59`; it is 68
-(`crates/codegg-core/src/storage/mod.rs:39`) — the row now separates "plan
+`STORAGE_LAYOUT_VERSION = 59`; it was 68 at the time
+(`crates/codegg-core/src/storage/mod.rs:39`; re-anchored to `:48` and the
+value re-read as 87 on 2026-10-23) — the row now separates "plan
 tables are v59" from "binding tables are v68" from the current layout version;
 the differential parity claim of "28 cases" is 21 `differential_*` test
 functions in `tests/agent_loop/work_plan_eggplan_differential.inc`. Verified accurate:
@@ -480,6 +484,40 @@ that `Disabled` and a zero `max_total_items` both yield no items and the cap
 is `clamp(1, 12)` (`todo_projection.rs:122-127`), the TaskStatePolicy-driven
 todo caps for Sparse/Explicit/Guided, every referenced file path
 (`src/work_plan_{arbiter,eggplan,evidence,repository_binding,todo_sync}.rs`,
-`src/tool/work_plan.rs`, `src/agent/loop.rs`, `src/tool/goal.rs`, both
-`work_plan_projection_arbiter.rs` tests, `work_plan_foundation.rs`), and
+`src/tool/work_plan.rs`, `src/agent/loop.rs`, `src/tool/goal.rs`, the
+`tests/agent_loop/work_plan_projection_arbiter.inc` fixture,
+`work_plan_foundation.rs`), and
 `scripts/check_work_plan_repository_binding.py`.
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: `STORAGE_LAYOUT_VERSION` is now **87**
+  (`crates/codegg-core/src/storage/mod.rs:48`), not 68. The DB-schema row and
+  the storage paragraph now state 87; the row still separates "plan tables are
+  v59" from "binding tables are v68" from the current layout version.
+- **Corrected**: the repository-binding fixture count is **32** test
+  functions, not 37 (`tests/agent_loop/work_plan_repository_binding.inc`).
+  The differential parity claim of 21 `differential_*` functions still holds —
+  that file has 23 tests in total (21 `differential_*` plus two
+  `completion_revalidation_*` cases).
+- **Corrected**: `crates/codegg-core/tests/agent_loop/work_plan_projection_arbiter.inc`
+  does not exist; the arbiter fixture is `tests/agent_loop/work_plan_projection_arbiter.inc`
+  (a root-package family member) and was listed twice.
+- **Corrected**: the `cargo test` invocations were rewritten to the family
+  form the repository now uses: `work_plan_projection_arbiter` and
+  `long_horizon_trajectory_qualification` are members of the `agent_loop`
+  family, so they are `cargo test --test agent_loop -- <member>`. The
+  `codegg-core` invocations (`--lib`, `--test work_plan_foundation`) still
+  address that crate's own targets and are unchanged.
+- **Verified accurate**: the 10 files in `crates/codegg-core/src/work_plan/`
+  (`model.rs`, `store.rs`, `assessment.rs`, `projection.rs`, `evidence.rs`,
+  `todo_projection.rs`, `repository_binding.rs`, `checkpoint.rs`,
+  `epoch_policy.rs`, `mod.rs`); `MAX_ITEMS_PER_PLAN = 64`
+  (`work_plan/model.rs:29`); `MAX_PROJECTION_ITEMS = 8` and default `limit` 5
+  (`work_plan/projection.rs:15`/`:35`); `MAX_PROJECTION_BYTES = 4096`
+  (`projection.rs:18`); the `clamp(1, 12)` todo-projection cap
+  (`todo_projection.rs:127`); `MAX_CHECKPOINT_WORK_ITEMS = 5`
+  (`work_plan/checkpoint.rs:26`); `decide_epoch`
+  (`work_plan/epoch_policy.rs:215`); the v59 and v68 migrations
+  (`session/schema.rs:2624` and `:2814`); and the Eggplan pin
+  `0dd33b761e85f1364320a9208aaebd5be281c6a5` (`Cargo.toml:292-293`).

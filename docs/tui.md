@@ -122,9 +122,9 @@ Discover commands in-app instead:
 Keybindings with two modifiers use `Ctrl+Alt`, never `Ctrl+Shift`. CodeGG does
 not ask the terminal for enhanced key reporting, so a `Ctrl+Shift+<letter>`
 keystroke arrives indistinguishable from `Ctrl+<letter>` and fires that key's
-plain-`Ctrl` action instead. `Shift+S` opens the panel
-manager, `Ctrl+Alt+S` focuses the sidebar, and `Ctrl+Alt+N` / `Ctrl+Alt+B` move
-between project tabs.
+plain-`Ctrl` action instead. `Shift+S` opens the panel manager, `Ctrl+Alt+S`
+focuses the sidebar, `Ctrl+Alt+O` opens every hidden detail in the transcript,
+and `Ctrl+Alt+N` / `Ctrl+Alt+B` move between project tabs.
 
 ### Moving between the box and the panel
 
@@ -316,6 +316,22 @@ Registry metadata — domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
 
+### The composer's box grows with your text
+
+The box at the bottom grows as your prompt gets longer — up to **ten rows**,
+counting the mode row at the top and the character-count and `(multiline)`
+markers at the bottom. It never takes more than its share of the screen: the
+composer is capped at **40 %** of the screen's height, so on a short terminal
+the conversation keeps the rest.
+
+The ten-row cap is a cap on the **box**, not on what you can type. Text past
+the tenth row stays in the box and you reach it by scrolling; nothing is
+truncated and nothing is dropped.
+
+The mode row stays at the top and the markers stay at the bottom, and your
+text scrolls between them. Long lines wrap at **word** boundaries, so a word is
+never split across two rows.
+
 ### The cursor in the composer
 
 The composer shows a caret, and what that caret tells you is where the
@@ -358,11 +374,16 @@ The word motions move it by word instead of by character:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a line, keeping the column |
+| `j` / `k` | Move down / up a row of the box, keeping the column |
 
-`j` and `k` only move the caret when your prompt spans **more than one
-line**. On a single line they scroll the conversation instead, which is what
-they have always done.
+`j` and `k` only move the caret when your prompt **does not fit its box** —
+when there is more of it than the box can show. When the prompt fits, they
+scroll the conversation instead, which is what they have always done.
+
+`Ctrl+u` and `Ctrl+d` **page**. They page the **composer** when the composer
+has more to show than its box can hold, and the **conversation** when it does
+not — the same two keys, and the same page size either way. The page is not
+restricted to `[NOR]`: it behaves the same in both modes.
 
 ### The composer's own keymap in `[NOR]` mode
 
@@ -375,7 +396,7 @@ three cannot disagree:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a line — only when the prompt spans more than one line |
+| `j` / `k` | Move down / up a row of the box — only when the prompt does not fit its box |
 | `v` | Start selecting characters; a caret motion then extends the selection |
 | `x` | Select the whole line, and grow the selection a line at a time |
 | `d` | Delete the selection |
@@ -388,8 +409,8 @@ three cannot disagree:
 
 Two rules cover the edges of that table:
 
-- **`j` and `k` need more than one line.** On a single-line prompt they are
-  the conversation's, and scroll it.
+- **`j` and `k` need a prompt that does not fit.** When the prompt fits its box
+  they are the conversation's, and scroll it.
 - **An edit that changes the length of the text drops the selection.** The
   selection remembers *positions* in the text, so once the text moves the
   selection would point at the wrong characters. Editing, undoing and
@@ -405,7 +426,7 @@ a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
 ```
 
 - The letters are the composer's own keys, and they are the ones available
-  **right now** — `j` and `k` are absent while your prompt is one line long,
+  **right now** — `j` and `k` are absent while your prompt fits its box,
   because there they scroll the conversation.
 - `space help` opens the help box, where every key above is described in
   full.
@@ -542,6 +563,78 @@ behind it in the draft stash.
 
 A lost connection is reported as a connection problem, not as "the agent is
 busy", and it restores your prompt the same way.
+
+## Reading the transcript
+
+### What is collapsed by default
+
+The conversation arrives **collapsed**. A tool call is one row until you open
+it, and a block of thinking is one row until you open it too — so a screen
+full of tool calls can be skimmed instead of scrolled. The agent's own writing
+is never collapsed: what it says to you is always there in full.
+
+A collapsed row is the whole of the tool call:
+
+```
+  ✓ bash npm test (1.2s) (+42 lines) expand
+```
+
+The icon is the call's status, the name is the tool, and the rest is what it
+was pointed at and how long it took. **`(+42 lines)`** is how much of the
+output is hidden — the count of the rows the expansion actually draws, so it
+is what you get when you open it. (The `read` tool is the exception: it draws
+its own numbered code, so its count is the raw output's line count.) Opening
+the call takes the count away: with the output on screen, "42 hidden lines"
+is just noise.
+
+Two things are worth knowing:
+
+- **A call that has not produced anything yet draws a second line.** It says
+  whether the call is queued or running, and if it is waiting on you it says
+  so and names the key: `queued — waiting on your approval · Enter to
+  review`. That line is the way back to an approval you dismissed, so it is
+  never dropped.
+- **On a narrow terminal the row gives up the timing, not the name.** The
+  duration and the exit code are dropped before the tool's name or the
+  `expand` word, so there is always a way back into the call.
+
+### Opening one thing
+
+Click the row of the thing you want. A tool call's row opens that tool call;
+a thinking block's row opens that thinking block. Clicking the agent's own
+writing changes nothing — there is nothing hidden in it to open.
+
+When the same message holds both a thinking block and a tool call, each opens
+on its own: click the thinking row for the thinking, and the tool call's row
+for the tool call.
+
+### What an expanded tool call shows
+
+What you get is the call's **input** and its **output**, each formatted to be
+read rather than to be copied:
+
+- The **input** is pretty-printed when it is JSON, so a long argument reads as
+  a list instead of one dense line.
+- The **output** of a web-search style tool — `websearch`, `research`,
+  `webfetch` — is shown as an **outline**: an indented list of the fields and
+  the results, with every value in it spelled out.
+- Any **other** output is shown as pretty-printed JSON when it is JSON, and as
+  the raw text when it is not.
+
+The **trust banner** that wraps an external result is not shown. It is text
+addressed to the agent rather than the result itself, so the expanded call
+shows the result and leaves the banner out.
+
+### Opening everything at once
+
+`Ctrl+Alt+O` opens **every** hidden detail in the conversation — every tool
+call, every thinking block — and a second press closes them all again. A short
+message says which of the two happened: `all details expanded` or
+`all details collapsed`.
+
+`/expand-all` does the same thing, and is also spelled `/expand-disclosures`
+and `/collapse-all`. If you would rather not use a chord at all, that is the
+route.
 
 ## The prompt queue
 
@@ -1067,6 +1160,63 @@ visible either way, because those change what the rows on screen mean.
 Opening the box takes an async create-and-attach round trip against the daemon.
 Until it completes there is no box, so keystrokes keep going to the composer —
 type the command again once the box is up rather than assuming `i` was eaten.
+
+## Reasoning control
+
+`/reasoning` chooses how much the model is asked to think. `/thinking` is a
+different control and stays different: `/thinking` decides whether reasoning
+text is *rendered*, and `/reasoning` decides what the model is *asked to do*.
+
+The selection is kept by the daemon against your own account, so it applies to
+every turn that starts afterwards — including turns you start from another
+window, and including the next one after a restart. The status bar at the
+bottom of the screen always shows the current selection (`reasoning: high`,
+`reasoning: off`, `reasoning: default`), next to the approval and sandbox
+policy, so you do not have to run the command to find out what the next turn
+will use.
+
+The options are the ones your model actually accepts, not a fixed ladder:
+
+- The effort labels come from the model, in the model's own order. A model
+  that accepts `low`, `medium`, `high`, `xhigh`, and `max` offers exactly
+  those.
+- **Off** appears only when the model can turn reasoning off. A model that
+  always reasons has no off, and the command says so instead of looking
+  broken.
+- A fixed thinking budget appears only when the model accepts one and the
+  value is inside the model's accepted range.
+
+When CodeGG has no published capability for the model — which includes
+OpenAI-compatible endpoints and local servers, where whether `reasoning_effort`
+is honoured depends on the deployment rather than on the vendor — the command
+falls back to the known labels (`minimal`, `low`, `medium`, `high`) and says
+that it is a fallback. That is a convenience ladder, not a statement about
+your model, and the command never presents it as one.
+
+**The daemon still has the last word on that fallback.** A model nobody has
+published a reasoning contract for is *unknown*, not permissive, so the daemon
+refuses an explicit reasoning selection on it rather than forwarding it on a
+guess. The refusal names the model and the dimension, and nothing is sent to
+the provider. If you use an endpoint whose deployment does honour
+`reasoning_effort`, declare what it accepts in your config — the
+`model_profile.<model>.reasoning_capability` block in `codegg.example.jsonc`
+shows the shape — and the same command then offers that model's own options
+and accepts them.
+
+Two things can go wrong, and both are reported rather than swallowed:
+
+- The provider drops the setting on the wire. Some adapters remove
+  `reasoning_effort` from the request body entirely, so the selection is
+  accepted and then ignored. The confirmation is a warning for those
+  providers.
+- The daemon refuses the selection. The reason is shown — a concurrent write
+  from somewhere else, a label this daemon does not accept, or a model that
+  does not accept that selection — and the status row goes back to the
+  daemon's value.
+
+The daemon's value always wins. If the selection was changed elsewhere, or
+the daemon narrows it, the status row is corrected to match, and the turn
+that follows uses the daemon's selection rather than a stale local copy.
 
 ## Approval and sandbox
 
@@ -2141,3 +2291,51 @@ and a panel with nothing loaded in it says nothing either.
 - `docs/tools.md` — what the agent can actually call
 - `docs/themes.md` — theme authoring
 - `docs/TROUBLESHOOTING.md` — common failures
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Launch flags (`-c`, `-s`, `--fork`, `--no-session`, `-m`, `-a`, `--cwd`,
+  `-p`/`--run`, `--standalone`) and the policy flags
+  (`--approval-mode`, `--sandbox`, `--yolo`): `src/main.rs` (`Cli`,
+  `ExecutionPolicyArgs`).
+- Default keybindings and their descriptions: `src/tui/input.rs`
+  (`default_bindings_internal`) and the `Action` description list —
+  `Ctrl+T` (tasks), `Ctrl+B` (sidebar), `Shift+N`/`Shift+P`/`Shift+X`
+  (buffer tabs), `Shift+F` (project picker), `Shift+S` (panel manager),
+  `Ctrl+Alt+S` (sidebar focus), `Ctrl+Alt+N`/`Ctrl+Alt+B` (project tabs),
+  `Ctrl+O` (Workspace view), `Shift+Q` (panel exit), `Ctrl+C` (interrupt).
+- `Ctrl+Q` is the quit arm alongside `q`: `src/tui/commands/exit_control.rs`.
+- The three-second exit arm window: `src/tui/app/state/prompt.rs`
+  (`EXIT_ARM_WINDOW`).
+- The 16-tab caps: `src/tui/app/state/subagent_tabs.rs`
+  (`MAX_OPEN_SUBAGENT_TABS`) and `src/tui/app/state/project_picker.rs`
+  (`MAX_OPEN_PROJECT_TABS`).
+- `/projects`, `/workspaces`, `/workspace`, `/panels`, `/files`, `/diff`,
+  `/plan`, `/keybinds`, `/theme`, `/skills`, `/reload`, `/skill-promote`,
+  `/skill-proposals`, `/skill-proposal`: `src/tui/command.rs`.
+- Editor function keys — F2 diagnostics, F3 hover, F4 definition, F5
+  references, F6 document symbols, F7 workspace symbols, F8 completion, F9
+  semantic-token refresh: `src/tui/commands/editor.rs`.
+- Editor bounds: 5,000-line built-in highlighting scan
+  (`src/tui/editor_highlight.rs`), 1,000-token semantic cap
+  (`crates/codegg-protocol/src/lsp.rs`, `MAX_LSP_SEMANTIC_TOKENS`), 32 KiB
+  render line and 256 KiB frame source (`src/tui/editor.rs`), and the 2 MiB
+  editor search bound (`src/tui/editor.rs`, `MAX_EDITOR_SEARCH_BYTES`).
+- Directory listing bounds — 100,000 entries examined, 4,096 nodes kept, a
+  three-level walk window, and the 512 KiB response cap:
+  `src/directory_listing.rs` and
+  `crates/codegg-protocol/src/document.rs`
+  (`MAX_DIRECTORY_LISTING_RESPONSE_BYTES`).
+- Human shell caps — 1 MB per command, 8 MB total, 100 commands, 300 s
+  timeout (`src/shell/types.rs`), and the 256 KiB head plus 256 KiB tail
+  retention (`src/shell/store.rs`).
+- Approval modes `interactive` / `automatic` / `yolo` and sandbox profiles
+  `read-only` / `workspace-write` / `full-host`:
+  `src/policy_surface.rs` and `codegg_core::approval::SandboxProfile`.
+- Permission dialog keys: `src/tui/components/dialogs/permission.rs`.
+- Theme subcommands and the `<name>` shorthand:
+  `src/tui/app/mod.rs` (`handle_theme_command`).
+- The 50 bundled Halloy themes and the `cyber-red` default:
+  `assets/themes/halloy/`, `src/theme/registry.rs`.

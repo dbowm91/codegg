@@ -216,6 +216,288 @@ impl fmt::Debug for CreateEggpoolConnectionRequest {
     }
 }
 
+// ── Provider reasoning control (M004): per-model capability payload ────
+
+/// The status of one reasoning-capability dimension.
+///
+/// Mirrors the five statuses of the per-model capability record
+/// (ADR-0050) so a client can tell "nobody has published a contract for
+/// this dimension" ([`ReasoningCapabilityAxis::Unknown`]) from "the model
+/// refuses this" ([`ReasoningCapabilityAxis::Unsupported`]).
+///
+/// `Mixed` and `Conflicting` are **not established** either: a mixed
+/// dimension is accepted by some model variants and refused by others, and
+/// a conflicting one is contradicted by its sources. A frontend that cannot
+/// tell which applies treats both the way it treats `Unknown`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningCapabilityAxis {
+    /// Nobody has published a contract for this dimension.
+    #[default]
+    Unknown,
+    /// The dimension is accepted.
+    Supported,
+    /// The dimension is refused.
+    Unsupported,
+    /// The dimension is accepted by some model variants and refused by
+    /// others.
+    Mixed,
+    /// Two sources disagree about the dimension.
+    Conflicting,
+}
+
+impl ReasoningCapabilityAxis {
+    /// Whether this axis carries an established, affirmative contract.
+    ///
+    /// Only `Supported` qualifies. `Unsupported` is an established
+    /// *refusal* and is answered separately; `Unknown`, `Mixed`, and
+    /// `Conflicting` are all "not established" and take the fallback path.
+    pub fn is_supported(self) -> bool {
+        matches!(self, Self::Supported)
+    }
+}
+
+/// The per-model reasoning capability of one model.
+///
+/// Presentation and selection data only: it grants nothing, authorizes
+/// nothing, and is never an admission input. The daemon still refuses a
+/// selection the model does not accept at turn admission; this payload
+/// exists so a frontend can *offer* only what the model accepts.
+///
+/// **An absent payload means the peer predates the capability.** It reads
+/// as "not established" — never as "this model accepts nothing", and never
+/// as "this model accepts everything". A frontend without a payload falls
+/// back to the known-label ladder and says that it is a fallback; see
+/// [`reasoning_options`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ReasoningCapabilityDto {
+    /// The status of the **effort** dimension: whether a provider-scoped
+    /// reasoning-effort label is accepted at all.
+    #[serde(default)]
+    pub effort: ReasoningCapabilityAxis,
+    /// The effort labels this model accepts, in the capability's own order.
+    ///
+    /// Empty when the effort dimension is not established. The order is the
+    /// capability's, not this crate's: a frontend cycles the labels in the
+    /// order it is given them.
+    #[serde(default)]
+    pub accepted_effort_labels: Vec<String>,
+    /// The status of the **disable** dimension: whether reasoning can be
+    /// turned off at all.
+    ///
+    /// Distinct from "no effort control available" and from "always
+    /// reasons".
+    #[serde(default)]
+    pub disable: ReasoningCapabilityAxis,
+    /// The status of the **budget** dimension: whether a fixed thinking
+    /// budget is accepted.
+    #[serde(default)]
+    pub budget: ReasoningCapabilityAxis,
+    /// The smallest accepted fixed thinking budget, in tokens.
+    #[serde(default)]
+    pub min_budget_tokens: Option<u64>,
+    /// The largest accepted fixed thinking budget, in tokens.
+    #[serde(default)]
+    pub max_budget_tokens: Option<u64>,
+    /// Whether the model always reasons.
+    ///
+    /// `Some(true)` is the always-reasons property: the model has no off
+    /// switch, so the disable dimension cannot be `Supported`. `None` means
+    /// the property is not established.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_reasons: Option<bool>,
+}
+
+impl ReasoningCapabilityDto {
+    /// Whether a fixed budget of `tokens` lies inside this model's accepted
+    /// range.
+    ///
+    /// A model that publishes no bound accepts any budget; a model that
+    /// publishes one bound is bounded on that side only.
+    pub fn budget_within_bounds(&self, tokens: u64) -> bool {
+        if let Some(min) = self.min_budget_tokens {
+            if tokens < min {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_budget_tokens {
+            if tokens > max {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// The reasoning options a frontend may offer for one model.
+///
+/// The set is always a **subset** of what the model accepts: a frontend
+/// never widens it, and it never invents a label the capability did not
+/// publish. It is derived by [`reasoning_options`] from the model's
+/// capability payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningOptionSet {
+    /// The options, in the order the frontend cycles them.
+    pub options: Vec<crate::core::ReasoningMode>,
+    /// Whether the effort options are the known-label **fallback** rather
+    /// than the model's published accepted labels.
+    ///
+    /// A frontend that shows a fallback must say so: the known-label ladder
+    /// is a convenience vocabulary, not a statement about the model.
+    pub fallback: bool,
+    /// Whether the model always reasons, so there is no off switch.
+    pub always_reasons: bool,
+}
+
+impl ReasoningOptionSet {
+    /// Whether the model accepts an off switch.
+    ///
+    /// False for a model that always reasons, and for a model whose disable
+    /// dimension is refused.
+    pub fn allows_disable(&self) -> bool {
+        self.options
+            .iter()
+            .any(|option| matches!(option, crate::core::ReasoningMode::Off))
+    }
+}
+
+/// Derive the reasoning options a frontend may offer for one model.
+///
+/// `capability` is the model's capability payload, or `None` when the peer
+/// does not publish one. `None` reads as "not established" on every
+/// dimension — never as "this model accepts nothing".
+///
+/// The rules, one per dimension:
+///
+/// - **effort** — established (`Supported`): the accepted labels, in the
+///   capability's own order. Refused (`Unsupported`): no effort option at
+///   all. Not established (`Unknown`, `Mixed`, `Conflicting`): the
+///   known-label ladder, marked as a fallback.
+/// - **disable** — established: an off option, *unless* the model always
+///   reasons. Refused: no off option. Not established: the historic off
+///   option, which the known-label vocabulary carried before the
+///   capability existed.
+/// - **budget** — established: a fixed-budget option, and only when the
+///   offered value lies inside the model's accepted range. Refused: no
+///   budget option. Not established: no budget option, because the
+///   known-label vocabulary declares no budget contract.
+///
+/// The result is always a subset of what the model accepts.
+pub fn reasoning_options(capability: Option<&ReasoningCapabilityDto>) -> ReasoningOptionSet {
+    let mut options = vec![crate::core::ReasoningMode::Inherit];
+    let mut fallback = false;
+    let mut always_reasons = false;
+
+    match capability {
+        // No payload at all: the peer predates the capability, so every
+        // dimension is not established and every dimension takes its
+        // fallback.
+        None => {
+            fallback = true;
+            options.extend(
+                crate::core::KNOWN_REASONING_EFFORT_LABELS
+                    .iter()
+                    .map(|label| crate::core::ReasoningMode::Effort((*label).to_string())),
+            );
+            options.push(crate::core::ReasoningMode::Off);
+        }
+        Some(capability) => {
+            match capability.effort {
+                axis if axis.is_supported() && !capability.accepted_effort_labels.is_empty() => {
+                    options.extend(
+                        capability
+                            .accepted_effort_labels
+                            .iter()
+                            .map(|label| crate::core::ReasoningMode::Effort(label.clone())),
+                    );
+                }
+                // A supported effort axis with no published label is not a
+                // published contract: fall back rather than offer nothing.
+                axis if axis.is_supported() => {
+                    fallback = true;
+                    options.extend(
+                        crate::core::KNOWN_REASONING_EFFORT_LABELS
+                            .iter()
+                            .map(|label| crate::core::ReasoningMode::Effort((*label).to_string())),
+                    );
+                }
+                ReasoningCapabilityAxis::Unsupported => {}
+                _ => {
+                    fallback = true;
+                    options.extend(
+                        crate::core::KNOWN_REASONING_EFFORT_LABELS
+                            .iter()
+                            .map(|label| crate::core::ReasoningMode::Effort((*label).to_string())),
+                    );
+                }
+            }
+
+            always_reasons = capability.always_reasons.unwrap_or(false);
+            if always_reasons {
+                // The model always reasons: there is no off switch, whatever
+                // the disable axis says. The frontend states this rather than
+                // offering a control the provider would refuse.
+            } else {
+                match capability.disable {
+                    axis if axis.is_supported() => options.push(crate::core::ReasoningMode::Off),
+                    ReasoningCapabilityAxis::Unsupported => {}
+                    _ => options.push(crate::core::ReasoningMode::Off),
+                }
+            }
+
+            if capability.budget.is_supported() {
+                if let Some(tokens) = reasoning_budget_value(capability) {
+                    options.push(crate::core::ReasoningMode::Budget(tokens));
+                }
+            }
+        }
+    }
+
+    ReasoningOptionSet {
+        options,
+        fallback,
+        always_reasons,
+    }
+}
+
+/// The fixed-budget value a frontend may offer for a model, when the model
+/// accepts a budget.
+///
+/// The smallest accepted budget is the smallest commitment the model accepts,
+/// so it is inside the model's range by construction. A model that publishes
+/// only an upper bound offers that bound.
+///
+/// `None` when the model accepts no budget, or when the published bound does
+/// not fit this platform's token counter.
+pub fn reasoning_budget_value(capability: &ReasoningCapabilityDto) -> Option<usize> {
+    let tokens = capability
+        .min_budget_tokens
+        .or(capability.max_budget_tokens)?;
+    usize::try_from(tokens).ok()
+}
+
+/// The fixed-budget option for one model, when the model accepts a budget
+/// and `tokens` lies inside its accepted range.
+///
+/// Returns `None` when the model does not accept a budget, or when the
+/// value is outside the model's accepted range — a budget the model would
+/// refuse is not offered.
+pub fn reasoning_budget_option(
+    capability: Option<&ReasoningCapabilityDto>,
+    tokens: u64,
+) -> Option<crate::core::ReasoningMode> {
+    let capability = capability?;
+    if !capability.budget.is_supported() {
+        return None;
+    }
+    if !capability.budget_within_bounds(tokens) {
+        return None;
+    }
+    Some(crate::core::ReasoningMode::Budget(
+        usize::try_from(tokens).ok()?,
+    ))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderModelDto {
     pub id: String,
@@ -224,6 +506,12 @@ pub struct ProviderModelDto {
     pub max_output_tokens: Option<u64>,
     pub supports_tools: bool,
     pub supports_vision: bool,
+    /// The model's reasoning capability, when the daemon publishes one.
+    ///
+    /// Absent means the peer predates the capability, which reads as "not
+    /// established" — not as "this model accepts nothing".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_capability: Option<ReasoningCapabilityDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -489,6 +777,13 @@ pub struct SelectedModelDto {
     pub supports_tools: bool,
     pub supports_vision: bool,
     pub catalog_revision: String,
+    /// The selected model's reasoning capability, when the daemon publishes
+    /// one.
+    ///
+    /// Absent means the peer predates the capability, which reads as "not
+    /// established" — not as "this model accepts nothing".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_capability: Option<ReasoningCapabilityDto>,
 }
 
 /// Result of resolving the current session selection. One of three
@@ -529,4 +824,384 @@ pub struct UpdateSessionSelectionRequest {
     pub model_id: String,
     pub expected_connection_revision: Option<u64>,
     pub expected_catalog_revision: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{CoreRequest, CoreResponse, ReasoningMode};
+
+    fn model_dto(capability: Option<ReasoningCapabilityDto>) -> ProviderModelDto {
+        ProviderModelDto {
+            id: "mimo-v2.6-flash".to_string(),
+            name: "Mimo v2.6 Flash".to_string(),
+            context_window: 200_000,
+            max_output_tokens: Some(64_000),
+            supports_tools: true,
+            supports_vision: true,
+            reasoning_capability: capability,
+        }
+    }
+
+    fn selected_model_dto(capability: Option<ReasoningCapabilityDto>) -> SelectedModelDto {
+        SelectedModelDto {
+            connection_id: "conn-1".to_string(),
+            model_id: "mimo-v2.6-flash".to_string(),
+            model_name: "Mimo v2.6 Flash".to_string(),
+            context_window: 200_000,
+            max_output_tokens: Some(64_000),
+            supports_tools: true,
+            supports_vision: true,
+            catalog_revision: "cat-1".to_string(),
+            reasoning_capability: capability,
+        }
+    }
+
+    fn capability(
+        effort: ReasoningCapabilityAxis,
+        labels: &[&str],
+        disable: ReasoningCapabilityAxis,
+        budget: ReasoningCapabilityAxis,
+    ) -> ReasoningCapabilityDto {
+        ReasoningCapabilityDto {
+            effort,
+            accepted_effort_labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            disable,
+            budget,
+            min_budget_tokens: None,
+            max_budget_tokens: None,
+            always_reasons: None,
+        }
+    }
+
+    /// A response from a peer that predates the capability decodes cleanly
+    /// and the payload reads as **absent** — "not established", never "this
+    /// model accepts nothing".
+    #[test]
+    fn response_without_capability_payload_decodes_as_absent() {
+        let json = serde_json::json!({
+            "type": "provider_connection_models",
+            "connection_id": "conn-1",
+            "catalog_revision": "cat-1",
+            "models": [{
+                "id": "mimo-v2.6-flash",
+                "name": "Mimo v2.6 Flash",
+                "context_window": 200_000,
+                "max_output_tokens": 64_000,
+                "supports_tools": true,
+                "supports_vision": true
+            }]
+        });
+        let response: CoreResponse = serde_json::from_value(json).expect("decodes");
+        let CoreResponse::ProviderConnectionModels { models, .. } = response else {
+            panic!("expected provider_connection_models");
+        };
+        assert_eq!(models.len(), 1);
+        assert!(
+            models[0].reasoning_capability.is_none(),
+            "an absent payload must read as absent, not as an empty capability"
+        );
+
+        let json = serde_json::json!({
+            "type": "session_selection",
+            "session_id": "sess-1",
+            "selection": {
+                "state": "selected",
+                "connection": {
+                    "id": "conn-1",
+                    "provider_kind": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com",
+                    "tls_policy": "required",
+                    "scope": "account",
+                    "state": "ready",
+                    "revision": 1,
+                    "model_count": 1,
+                    "catalog_revision": "cat-1",
+                    "health": null
+                },
+                "model": {
+                    "connection_id": "conn-1",
+                    "model_id": "gpt-4o",
+                    "model_name": "GPT-4o",
+                    "context_window": 128_000,
+                    "max_output_tokens": 16_384,
+                    "supports_tools": true,
+                    "supports_vision": true,
+                    "catalog_revision": "cat-1"
+                },
+                "connection_revision": 1,
+                "catalog_revision": "cat-1"
+            }
+        });
+        let response: CoreResponse = serde_json::from_value(json).expect("decodes");
+        let CoreResponse::SessionSelection { selection, .. } = response else {
+            panic!("expected session_selection");
+        };
+        let SessionSelectionDto::Selected { model, .. } = selection else {
+            panic!("expected a selected selection");
+        };
+        assert!(model.reasoning_capability.is_none());
+    }
+
+    /// A response that carries the payload round-trips it unchanged.
+    #[test]
+    fn response_with_capability_payload_round_trips() {
+        let capability = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["low", "medium", "high", "xhigh", "max"],
+            ReasoningCapabilityAxis::Unsupported,
+            ReasoningCapabilityAxis::Unknown,
+        );
+        let response = CoreResponse::ProviderConnectionModels {
+            connection_id: "conn-1".to_string(),
+            catalog_revision: Some("cat-1".to_string()),
+            models: vec![model_dto(Some(capability.clone()))],
+        };
+        let encoded = serde_json::to_value(&response).expect("encodes");
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("decodes");
+        let CoreResponse::ProviderConnectionModels { models, .. } = decoded else {
+            panic!("expected provider_connection_models");
+        };
+        assert_eq!(models[0].reasoning_capability.as_ref(), Some(&capability));
+
+        let response = CoreResponse::SessionSelection {
+            session_id: "sess-1".to_string(),
+            selection: SessionSelectionDto::Selected {
+                connection: Box::new(ProviderConnectionSummaryDto {
+                    id: "conn-1".to_string(),
+                    provider_kind: "minimax".to_string(),
+                    display_name: "MiniMax".to_string(),
+                    endpoint: "https://api.minimax.test".to_string(),
+                    tls_policy: "required".to_string(),
+                    scope: "account".to_string(),
+                    state: "ready".to_string(),
+                    revision: 1,
+                    model_count: 1,
+                    catalog_revision: Some("cat-1".to_string()),
+                    health: None,
+                    credential_hint: None,
+                }),
+                model: Box::new(selected_model_dto(Some(capability.clone()))),
+                connection_revision: 1,
+                catalog_revision: "cat-1".to_string(),
+            },
+        };
+        let encoded = serde_json::to_value(&response).expect("encodes");
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("decodes");
+        let CoreResponse::SessionSelection { selection, .. } = decoded else {
+            panic!("expected session_selection");
+        };
+        let SessionSelectionDto::Selected { model, .. } = selection else {
+            panic!("expected a selected selection");
+        };
+        assert_eq!(model.reasoning_capability.as_ref(), Some(&capability));
+    }
+
+    /// The models channel keeps its `Vec<String>` shape: the capability
+    /// payload rides on the model DTOs, never on the models snapshot.
+    #[test]
+    fn models_snapshot_and_refresh_shapes_are_unchanged() {
+        let response = CoreResponse::ModelsSnapshot {
+            current_model: Some("minimax/minimax-m3".to_string()),
+            models: vec![
+                "minimax/minimax-m3".to_string(),
+                "openai/gpt-4o".to_string(),
+            ],
+        };
+        let encoded = serde_json::to_value(&response).expect("encodes");
+        assert_eq!(encoded["models"][0], "minimax/minimax-m3");
+        assert!(
+            encoded["models"].is_array(),
+            "the models channel stays a list of model strings"
+        );
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("decodes");
+        let CoreResponse::ModelsSnapshot { models, .. } = decoded else {
+            panic!("expected models_snapshot");
+        };
+        assert_eq!(models.len(), 2);
+        assert!(models.iter().all(|model| model.contains('/')));
+
+        let request = CoreRequest::ModelsRefresh;
+        let encoded = serde_json::to_value(&request).expect("encodes");
+        assert_eq!(encoded["type"], "models_refresh");
+        let decoded: CoreRequest = serde_json::from_value(encoded).expect("decodes");
+        assert!(matches!(decoded, CoreRequest::ModelsRefresh));
+    }
+
+    /// An absent capability offers the known-label ladder **and says it is
+    /// a fallback**: the ladder is a convenience vocabulary, not a statement
+    /// about the model.
+    #[test]
+    fn absent_capability_falls_back_to_the_known_label_ladder() {
+        let set = reasoning_options(None);
+        assert!(set.fallback, "an absent payload must read as a fallback");
+        assert!(!set.always_reasons);
+        for label in crate::core::KNOWN_REASONING_EFFORT_LABELS {
+            assert!(
+                set.options
+                    .contains(&ReasoningMode::Effort(label.to_string())),
+                "the fallback offers the known label '{label}'"
+            );
+        }
+        assert_eq!(set.options.first(), Some(&ReasoningMode::Inherit));
+        // The fallback is not the model's full option set: it is flagged, and
+        // it carries no budget, because the known-label vocabulary declares
+        // no budget contract.
+        assert!(!set
+            .options
+            .iter()
+            .any(|option| matches!(option, ReasoningMode::Budget(_))));
+    }
+
+    /// An established capability offers the model's own labels, in the
+    /// capability's order.
+    #[test]
+    fn established_capability_offers_the_capabilitys_labels_in_its_order() {
+        let capability = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["low", "medium", "high", "xhigh", "max"],
+            ReasoningCapabilityAxis::Unsupported,
+            ReasoningCapabilityAxis::Unknown,
+        );
+        let set = reasoning_options(Some(&capability));
+        assert!(!set.fallback);
+        assert_eq!(
+            set.options,
+            vec![
+                ReasoningMode::Inherit,
+                ReasoningMode::Effort("low".to_string()),
+                ReasoningMode::Effort("medium".to_string()),
+                ReasoningMode::Effort("high".to_string()),
+                ReasoningMode::Effort("xhigh".to_string()),
+                ReasoningMode::Effort("max".to_string()),
+            ]
+        );
+    }
+
+    /// A model that permits no disable offers no disable.
+    #[test]
+    fn capability_without_disable_offers_no_off_option() {
+        let capability = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["low", "high"],
+            ReasoningCapabilityAxis::Unsupported,
+            ReasoningCapabilityAxis::Unsupported,
+        );
+        let set = reasoning_options(Some(&capability));
+        assert!(!set.allows_disable());
+        assert!(!set.options.contains(&ReasoningMode::Off));
+        assert!(!set.always_reasons);
+    }
+
+    /// A model that always reasons is told so, and gets no off switch even
+    /// when the disable axis claims support.
+    #[test]
+    fn always_reasons_model_is_stated_and_offers_no_off_option() {
+        let mut capability = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["low", "high"],
+            ReasoningCapabilityAxis::Supported,
+            ReasoningCapabilityAxis::Unsupported,
+        );
+        capability.always_reasons = Some(true);
+        let set = reasoning_options(Some(&capability));
+        assert!(set.always_reasons, "the always-reasons case is stated");
+        assert!(!set.allows_disable());
+        assert!(!set.options.contains(&ReasoningMode::Off));
+    }
+
+    /// A budget outside the model's accepted range is not offered.
+    #[test]
+    fn budget_outside_the_models_bounds_is_not_offered() {
+        let mut capability = capability(
+            ReasoningCapabilityAxis::Unsupported,
+            &[],
+            ReasoningCapabilityAxis::Supported,
+            ReasoningCapabilityAxis::Supported,
+        );
+        capability.min_budget_tokens = Some(1024);
+        capability.max_budget_tokens = Some(4096);
+
+        assert!(!capability.budget_within_bounds(512));
+        assert!(capability.budget_within_bounds(2048));
+        assert!(!capability.budget_within_bounds(8192));
+
+        assert_eq!(reasoning_budget_option(Some(&capability), 512), None);
+        assert_eq!(reasoning_budget_option(Some(&capability), 8192), None);
+        assert_eq!(
+            reasoning_budget_option(Some(&capability), 2048),
+            Some(ReasoningMode::Budget(2048))
+        );
+
+        // The derived set offers only an in-bounds budget: the smallest
+        // commitment the model accepts.
+        let set = reasoning_options(Some(&capability));
+        let budget = set
+            .options
+            .iter()
+            .find_map(|option| match option {
+                ReasoningMode::Budget(tokens) => Some(*tokens),
+                _ => None,
+            })
+            .expect("an in-bounds budget option");
+        assert_eq!(budget, 1024);
+        assert!(capability.budget_within_bounds(budget as u64));
+    }
+
+    /// A model that accepts no budget is offered no budget, and an unknown
+    /// budget dimension falls back to the known-label vocabulary, which
+    /// declares no budget contract.
+    #[test]
+    fn unsupported_and_unknown_budget_dimensions_offer_no_budget() {
+        let unsupported = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["high"],
+            ReasoningCapabilityAxis::Supported,
+            ReasoningCapabilityAxis::Unsupported,
+        );
+        assert!(!reasoning_options(Some(&unsupported))
+            .options
+            .iter()
+            .any(|option| matches!(option, ReasoningMode::Budget(_))));
+
+        let unknown = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["high"],
+            ReasoningCapabilityAxis::Supported,
+            ReasoningCapabilityAxis::Unknown,
+        );
+        assert!(!reasoning_options(Some(&unknown))
+            .options
+            .iter()
+            .any(|option| matches!(option, ReasoningMode::Budget(_))));
+        assert_eq!(reasoning_budget_option(Some(&unknown), 2048), None);
+    }
+
+    /// The frontend's option list is a subset of what the capability
+    /// permits: it never widens it.
+    #[test]
+    fn option_set_is_a_subset_of_what_the_capability_permits() {
+        let capability = capability(
+            ReasoningCapabilityAxis::Supported,
+            &["low", "high"],
+            ReasoningCapabilityAxis::Supported,
+            ReasoningCapabilityAxis::Supported,
+        );
+        let set = reasoning_options(Some(&capability));
+        for option in &set.options {
+            match option {
+                ReasoningMode::Effort(label) => assert!(
+                    capability.accepted_effort_labels.iter().any(|l| l == label),
+                    "the frontend offered a label the capability does not publish"
+                ),
+                ReasoningMode::Budget(tokens) => assert!(
+                    capability.budget_within_bounds(*tokens as u64),
+                    "the frontend offered a budget outside the model's range"
+                ),
+                ReasoningMode::Off => assert!(capability.disable.is_supported()),
+                ReasoningMode::Inherit => {}
+            }
+        }
+    }
 }

@@ -97,7 +97,6 @@ impl Provider for GoogleProvider {
         Ok(crate::wire::shared_stream(
             stream,
             eggpool_wire::codec::StreamAdapterKind::GeminiGenerateContentSse,
-            None,
             req.context.wire_policy.clone(),
         ))
     }

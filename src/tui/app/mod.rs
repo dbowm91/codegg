@@ -90,7 +90,7 @@ use super::components::dialogs::permission::PermissionDialog;
 use super::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use super::components::dialogs::session::SessionDialog;
 use super::components::dialogs::tree::TreeDialog;
-use super::components::messages::{MessageRole, MessagesWidget, MsgPart};
+use super::components::messages::{MessageRole, MessagesWidget, MsgPart, RowPart};
 use super::components::prompt::PromptWidget;
 use super::components::sidebar::{clean_inline_text, SidebarWidget};
 use super::components::status_bar::{StatusBarWidget, TuiStatusSummary};
@@ -1006,6 +1006,9 @@ impl App {
                 auto_scroll: true,
                 show_thinking: true,
                 reasoning_mode: crate::protocol::core::ReasoningMode::Inherit,
+                reasoning_capabilities: std::collections::HashMap::new(),
+                reasoning_preference_revision: None,
+                reasoning_request: crate::tui::app::state::AsyncUiRequestState::default(),
                 show_timestamps: false,
                 timeline_visible: false,
                 timeline_selected: 0,
@@ -1595,6 +1598,9 @@ impl App {
                 auto_scroll: true,
                 show_thinking: true,
                 reasoning_mode: crate::protocol::core::ReasoningMode::Inherit,
+                reasoning_capabilities: std::collections::HashMap::new(),
+                reasoning_preference_revision: None,
+                reasoning_request: crate::tui::app::state::AsyncUiRequestState::default(),
                 show_timestamps: false,
                 timeline_visible: false,
                 timeline_selected: 0,
@@ -2615,6 +2621,54 @@ impl App {
         crate::provider::ProviderCapabilities::for_provider(provider).strips_reasoning_effort
     }
 
+    /// The reasoning capability the daemon published for the current model.
+    ///
+    /// The daemon's model-resolution response is the only source. A model
+    /// with no published capability has **no entry**, which reads as "not
+    /// established" — the frontend falls back to the known-label ladder and
+    /// says that it is a fallback. It never reads as "this model accepts
+    /// nothing".
+    ///
+    /// The capability is keyed by model id: the selected model is carried as
+    /// `provider/model`, and the durable session selection names the same
+    /// model by id, so the model segment is what identifies it.
+    pub fn current_reasoning_capability(
+        &self,
+    ) -> Option<&crate::protocol::provider::ReasoningCapabilityDto> {
+        let model = self.agent_state.current_model.as_str();
+        let model_id = model
+            .split_once('/')
+            .map(|(_, id)| id)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(model);
+        self.ui_state.reasoning_capabilities.get(model_id)
+    }
+
+    /// Record the capability the daemon published for one model.
+    ///
+    /// A repeated model-resolution response updates the entry
+    /// idempotently, and a model that publishes no capability leaves the
+    /// entry absent rather than recording an empty one.
+    pub fn record_reasoning_capability(
+        &mut self,
+        model_id: &str,
+        capability: Option<crate::protocol::provider::ReasoningCapabilityDto>,
+    ) {
+        if model_id.is_empty() {
+            return;
+        }
+        match capability {
+            Some(capability) => {
+                self.ui_state
+                    .reasoning_capabilities
+                    .insert(model_id.to_string(), capability);
+            }
+            None => {
+                self.ui_state.reasoning_capabilities.remove(model_id);
+            }
+        }
+    }
+
     pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
         self.remote_send_tx = Some(tx);
     }
@@ -3089,20 +3143,13 @@ impl App {
                     tracing::error!(error = %e, "provider_messages_to_dtos conversion failed");
                     Default::default()
                 }),
-            reasoning: match self.ui_state.reasoning_mode {
-                // `Inherit` sends `None`, which leaves the agent /
-                // model-profile default untouched.
-                crate::protocol::core::ReasoningMode::Inherit => None,
-                crate::protocol::core::ReasoningMode::Effort(level) => {
-                    Some(crate::protocol::core::ReasoningOverride::Effort { level })
-                }
-                crate::protocol::core::ReasoningMode::Budget(tokens) => {
-                    Some(crate::protocol::core::ReasoningOverride::Budget { tokens })
-                }
-                crate::protocol::core::ReasoningMode::Off => {
-                    Some(crate::protocol::core::ReasoningOverride::Off)
-                }
-            },
+            // The selection is **daemon-owned**: `/reasoning` writes it
+            // through `ReasoningPreferenceSet`, and the daemon resolves it
+            // at every turn-admission path. Sending the frontend's copy as
+            // an explicit override made the local value beat the persisted
+            // one — the opposite of what the daemon promises — so the turn
+            // carries no override and inherits the daemon's selection.
+            reasoning: None,
             human_shell_promotion_ids: promotion_ids,
         };
         use sha2::Digest;
@@ -4118,9 +4165,17 @@ impl App {
             && self.composer_holds_keyboard()
             && self.composer_input_mode() == InputMode::Normal
         {
-            let line_count = self.prompt_state.prompt.num_lines();
+            // The fit is the **cached** measurement the layout pass took: the
+            // wrapped row count against the visible row count. It is read, not
+            // recomputed — a second computation of the same fact is a second
+            // answer to it, and the gate and the box must not be able to
+            // disagree. A composer that has never been laid out has no
+            // measurement, and an unmeasured fit holds no conditional claim:
+            // the key falls through rather than being swallowed in a state the
+            // user cannot see.
+            let fit = self.prompt_state.prompt.content_fit();
             if let Some(claim) = crate::tui::composer_claims::claim_for(key.modifiers, key.code) {
-                if claim.condition.holds(line_count) {
+                if claim.condition.holds(fit) {
                     // The claim is consumed here. A reserved verb does
                     // nothing, and that is the point: the letter is the
                     // composer's, so the app's action for it is not
@@ -4300,6 +4355,7 @@ impl App {
             Some(InputAction::CycleModelForward) => self.process_msg(TuiMsg::CycleModelForward),
             Some(InputAction::CycleModelBackward) => self.process_msg(TuiMsg::CycleModelBackward),
             Some(InputAction::ToggleReasoning) => self.process_msg(TuiMsg::ToggleReasoning),
+            Some(InputAction::ExpandAllDisclosures) => self.expand_all_disclosures(),
             Some(InputAction::ToggleTts) => self.process_msg(TuiMsg::ToggleTts),
             Some(InputAction::StopTts) => self.stop_tts(),
             Some(InputAction::ToggleFullscreen) => self.process_msg(TuiMsg::ToggleFullscreen),
@@ -4360,6 +4416,11 @@ impl App {
             Some(InputAction::PageUp) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, -10);
+                } else if self.prompt_state.prompt.content_overflows() {
+                    // The innermost surface first: the composer overflows its
+                    // box, so the page is the composer's. The transcript's
+                    // page is unchanged when the composer fits.
+                    self.prompt_state.prompt.page_up();
                 } else {
                     self.scroll_page_up()
                 }
@@ -4367,6 +4428,8 @@ impl App {
             Some(InputAction::PageDown) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, 10);
+                } else if self.prompt_state.prompt.content_overflows() {
+                    self.prompt_state.prompt.page_down();
                 } else {
                     self.scroll_page_down()
                 }
@@ -5566,7 +5629,12 @@ impl App {
         }
     }
 
-    fn dispatch_builtin_command(
+    /// Dispatch one built-in slash command.
+    ///
+    /// Crate-visible so the reasoning command's own tests can drive the
+    /// command the way the dispatcher does, rather than through a
+    /// test-only shim that could drift from the real path.
+    pub(crate) fn dispatch_builtin_command(
         &mut self,
         action: crate::tui::command::BuiltinSlashAction,
         raw_input: Option<&str>,
@@ -6556,31 +6624,66 @@ impl App {
                 };
                 self.messages_state.toasts.info(msg);
             }
+            B::ExpandAllDisclosures => {
+                // The palette twin of the `Ctrl+Alt+O` chord: the same
+                // gesture, the same toast.
+                self.expand_all_disclosures();
+            }
             B::Reasoning => {
-                // Cycles default -> medium -> high -> off -> default. Distinct
-                // from `/thinking`, which only toggles whether reasoning text is
+                // The option set is the **model's**, not a static ladder:
+                // the labels the capability publishes, in its own order, a
+                // disable only when the model permits one, and a budget only
+                // when it lies inside the model's bounds. Distinct from
+                // `/thinking`, which only toggles whether reasoning text is
                 // rendered; this one changes what the model is asked to do.
-                self.ui_state.reasoning_mode = self.ui_state.reasoning_mode.cycle();
-                let detail = self.ui_state.reasoning_mode.detail();
+                //
+                // The daemon owns the selection, so it needs somewhere to
+                // store it. Without a daemon connection the command reports
+                // that rather than changing a local value the daemon would
+                // ignore.
+                if self.core_client.is_none() {
+                    self.messages_state.toasts.error(
+                        "Extended thinking unavailable: this frontend has no daemon connection, so \
+                         the selection cannot be stored",
+                    );
+                    return;
+                }
+                let options = crate::tui::commands::reasoning::option_set(self);
+                let previous = self.ui_state.reasoning_mode.clone();
+                let next = crate::tui::commands::reasoning::next_mode(&previous, &options);
+                // The display moves immediately so the command feels
+                // responsive; the daemon's response corrects it when the two
+                // differ, and a refusal puts the daemon's last known value
+                // back.
+                self.ui_state.reasoning_mode = next.clone();
+                let detail = next.detail();
                 // Selecting an effort or budget on a provider whose adapter
                 // deletes `reasoning_effort` is silently ignored. Warn instead
                 // of letting the control look broken.
-                if self.ui_state.reasoning_mode.requests_reasoning()
-                    && self.selected_provider_strips_reasoning()
-                {
-                    self.messages_state.toasts.warning(&format!(
-                        "Extended thinking: {detail} — {} drops this setting on the wire",
+                let strips = next.requests_reasoning() && self.selected_provider_strips_reasoning();
+                let mut message = format!("Extended thinking: {detail}");
+                if let Some(note) = crate::tui::commands::reasoning::option_note(&options) {
+                    message.push_str(" — ");
+                    message.push_str(&note);
+                }
+                if strips {
+                    message.push_str(&format!(
+                        " — {} drops this setting on the wire",
                         self.agent_state
                             .current_model
                             .split('/')
                             .next()
                             .unwrap_or("this provider")
                     ));
+                    self.messages_state.toasts.warning(&message);
                 } else {
-                    self.messages_state
-                        .toasts
-                        .info(&format!("Extended thinking: {detail}"));
+                    self.messages_state.toasts.info(&message);
                 }
+                crate::tui::commands::reasoning::start_preference_update(
+                    self,
+                    crate::tui::commands::reasoning::override_for(&next),
+                    previous,
+                );
             }
             B::ModelsRefresh => {
                 self.refresh_models();
@@ -9252,6 +9355,12 @@ impl App {
             ClickTarget::Viewport => {
                 if let Some(viewport) = self.viewport_area {
                     let row = y.saturating_sub(viewport.y) as usize;
+                    // The row's owner, not the message, is the unit of
+                    // disclosure. Resolving the message first made the
+                    // reasoning arm win every time: in a message carrying
+                    // both a reasoning block and a tool call, the tool call
+                    // could never be reached by clicking.
+                    let owner = self.messages_state.messages.part_at_viewport_line(row);
                     if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
                         // A row waiting on an approval is an action, not a
                         // disclosure. Answering is otherwise only reachable
@@ -9259,15 +9368,23 @@ impl App {
                         if self.open_pending_permission_for_message(idx) {
                             return;
                         }
-                        // Clicking a message expands whichever detail the
-                        // message actually carries. Reasoning is checked
-                        // first: its collapsed header is the one-line
-                        // "Thought for 3.2s" line, and clicking that is how
-                        // the user opens the thinking text.
-                        if self.messages_state.messages.message_has_reasoning(idx) {
-                            self.messages_state.messages.toggle_reasoning(idx);
-                        } else if self.messages_state.messages.message_has_tool_output(idx) {
-                            self.messages_state.messages.toggle_tool_output(idx);
+                        match owner {
+                            Some((_, RowPart::ToolCall { part_idx })) => {
+                                self.messages_state
+                                    .messages
+                                    .toggle_tool_call_part(idx, part_idx);
+                            }
+                            Some((_, RowPart::Reasoning { part_idx })) => {
+                                self.messages_state
+                                    .messages
+                                    .toggle_reasoning_part(idx, part_idx);
+                            }
+                            // A row that holds nothing expandable changes
+                            // nothing. This is an explicit no-op: falling
+                            // back to the message-level toggle would
+                            // reintroduce exactly the defect this path
+                            // exists to fix.
+                            None => {}
                         }
                     } else {
                         self.messages_state.messages.sel_msg = None;
@@ -10947,6 +11064,29 @@ impl App {
                 self.messages_state.messages.toggle_reasoning(idx);
             }
         }
+    }
+
+    /// Expand every tool call and every reasoning block in the transcript,
+    /// or collapse every one of them.
+    ///
+    /// The disclosure state is per part, so this is the only gesture that can
+    /// open the whole transcript at once. Model prose is not a disclosure and
+    /// is not touched: it is never collapsed, so there is nothing to expand.
+    ///
+    /// The outcome is reported in the same toast surface the `/thinking`
+    /// command uses, because the gesture changes what the buffer shows and
+    /// the user needs to know which way it went.
+    fn expand_all_disclosures(&mut self) {
+        let expand = self.messages_state.messages.any_disclosure_collapsed();
+        self.messages_state
+            .messages
+            .set_all_disclosures_expanded(expand);
+        let msg = if expand {
+            "all details expanded"
+        } else {
+            "all details collapsed"
+        };
+        self.messages_state.toasts.info(msg);
     }
 
     fn toggle_tts(&mut self) {
@@ -13054,12 +13194,17 @@ impl App {
                         debug_log!("composer claim: word end");
                     }
                     ComposerVerb::LineDown => {
-                        self.prompt_state.prompt.cursor_line_down();
-                        debug_log!("composer claim: line down");
+                        // The composer's vertical motion is a **visual-row**
+                        // motion: the row the caret's byte is drawn on, not a
+                        // newline-separated line of the buffer. The claim
+                        // holds only when the content overflows the box, so
+                        // the row below is a row the user can see.
+                        self.prompt_state.prompt.cursor_visual_row_down();
+                        debug_log!("composer claim: visual row down");
                     }
                     ComposerVerb::LineUp => {
-                        self.prompt_state.prompt.cursor_line_up();
-                        debug_log!("composer claim: line up");
+                        self.prompt_state.prompt.cursor_visual_row_up();
+                        debug_log!("composer claim: visual row up");
                     }
                     ComposerVerb::SelectChars => {
                         self.prompt_state.prompt.toggle_select_chars();
@@ -19708,9 +19853,59 @@ mod projection_adoption_tests {
 mod reasoning_strip_warning_tests {
     use super::*;
 
+    /// A daemon that echoes back the reasoning selection it was given.
+    ///
+    /// `/reasoning` writes the selection through the daemon, so the command
+    /// needs a core connection: without one it reports that the selection
+    /// cannot be stored, which is the honest answer but not what these
+    /// tests are about. These tests cover the command's own synchronous
+    /// behaviour — the local display and the toast — so the daemon's
+    /// completion is left on the command channel.
+    struct EchoingDaemon;
+
+    #[async_trait::async_trait]
+    impl crate::core::CoreClient for EchoingDaemon {
+        async fn request(
+            &self,
+            request: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
+        ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+            let selection = match request.payload {
+                crate::protocol::core::CoreRequest::ReasoningPreferenceSet {
+                    selection, ..
+                } => selection,
+                _ => None,
+            };
+            Ok(crate::protocol::core::CoreResponse::ReasoningPreference {
+                preference: crate::protocol::core::RuntimePreferenceDto {
+                    principal_id: "local".to_string(),
+                    approval_mode: crate::protocol::core::ApprovalModeDto::Interactive,
+                    sandbox_profile: crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+                    network_intent: crate::protocol::core::NetworkIntentDto::LegacyUnrestricted,
+                    revision: 1,
+                    updated_at_ms: 0,
+                    last_provider_connection_id: None,
+                    last_model_id: None,
+                    last_task_provider_connection_id: None,
+                    last_task_model_id: None,
+                    reasoning_selection: selection,
+                },
+            })
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
     fn app_with_model(model: &str) -> App {
         let mut app = App::new_for_testing("/tmp".to_string());
         app.agent_state.current_model = model.to_string();
+        app.set_core_client(std::sync::Arc::new(EchoingDaemon));
         app
     }
 
@@ -19792,8 +19987,15 @@ mod reasoning_strip_warning_tests {
         // Cycle all the way to Off on a stripping provider: asking for no
         // thinking is honoured by every adapter, so there is nothing to warn
         // about even though the provider strips the field.
+        //
+        // The cycle now moves through the **model's** options rather than a
+        // fixed ladder, so "all the way to Off" is a walk to the end of the
+        // option set, not a fixed number of steps.
         let mut app = app_with_model("openrouter/anthropic/claude");
-        for _ in 0..3 {
+        for _ in 0..16 {
+            if app.ui_state.reasoning_mode == crate::protocol::core::ReasoningMode::Off {
+                break;
+            }
             app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Reasoning, None);
         }
         assert_eq!(
@@ -20340,6 +20542,242 @@ mod user_prompt_queue_projection_tests {
                 .map(|entry| entry.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["entry-0", "entry-1", "entry-2"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod row_precise_disclosure_tests {
+    use super::*;
+    use crate::tui::components::messages::UIMessage;
+
+    /// The viewport the click handler resolves a click against.
+    const VIEWPORT: Rect = Rect::new(0, 0, 80, 40);
+
+    /// An assistant message carrying **both** a reasoning block and a tool
+    /// call — the shape that made the tool call unreachable by clicking.
+    ///
+    /// The reasoning block comes first so the old handler's reasoning arm
+    /// would win: it asked "does this message have reasoning?" before it
+    /// asked anything else.
+    fn mixed_message() -> UIMessage {
+        UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![
+                MsgPart::Reasoning {
+                    content: "The comparison has to run before it means anything.".to_string(),
+                    collapsed: true,
+                },
+                MsgPart::ToolCall {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: "{\"command\":\"cargo test\"}".to_string(),
+                    output: "running 3 tests\ntest result: ok".to_string(),
+                    status: ToolStatus::Completed,
+                    duration_ms: Some(7),
+                    exit_code: Some(0),
+                    output_lines: Some(2),
+                    expanded: false,
+                },
+                MsgPart::Text {
+                    content: "The comparison is done.".to_string(),
+                },
+            ],
+            timestamp: None,
+            is_plan_mode: None,
+        }
+    }
+
+    /// An app holding the mixed message, with a viewport to click in.
+    fn app_with_mixed_message() -> App {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.messages_state.messages.set_width(80);
+        app.messages_state.messages.set_visible_height(40);
+        app.messages_state.messages.messages.push(mixed_message());
+        app.messages_state.messages.invalidate_rows();
+        app.messages_state.messages.scroll_to_top();
+        app.viewport_area = Some(VIEWPORT);
+        app
+    }
+
+    /// The rows the transcript draws, read back out of a rendered buffer.
+    fn drawn_rows(app: &App) -> Vec<String> {
+        let area = Rect::new(0, 0, VIEWPORT.width, VIEWPORT.height);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&app.messages_state.messages, area, &mut buffer);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The viewport row the transcript draws the given text on.
+    fn row_of(app: &App, needle: &str) -> u16 {
+        let rows = drawn_rows(app);
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("the transcript must draw a row containing {needle:?}"))
+            as u16
+    }
+
+    /// The disclosure state of the message's parts.
+    fn disclosure_state(app: &App) -> (bool, bool) {
+        let msg = &app.messages_state.messages.messages[0];
+        let tool_expanded = msg.parts.iter().find_map(|part| match part {
+            MsgPart::ToolCall { expanded, .. } => Some(*expanded),
+            _ => None,
+        });
+        let reasoning_collapsed = msg.parts.iter().find_map(|part| match part {
+            MsgPart::Reasoning { collapsed, .. } => Some(*collapsed),
+            _ => None,
+        });
+        (
+            tool_expanded.expect("the message carries a tool call"),
+            reasoning_collapsed.expect("the message carries a reasoning block"),
+        )
+    }
+
+    /// The toast the last gesture left behind.
+    fn last_toast(app: &App) -> String {
+        app.messages_state
+            .toasts
+            .iter()
+            .last()
+            .map(|toast| toast.message.clone())
+            .unwrap_or_default()
+    }
+
+    /// Clicking a tool call's header expands **that tool call**, in a message
+    /// that also carries a reasoning block.
+    ///
+    /// The click used to be answered by the message, and the reasoning arm
+    /// won: click one expanded the reasoning, click two collapsed it again,
+    /// and the tool call was never reachable by clicking at all.
+    #[test]
+    fn clicking_a_tool_call_row_expands_the_tool_call_and_not_the_reasoning() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "bash");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(
+            tool_expanded,
+            "the clicked tool call must be the thing that expanded"
+        );
+        assert!(
+            reasoning_collapsed,
+            "the reasoning block must not have moved when the tool call was clicked"
+        );
+    }
+
+    /// Clicking a reasoning block's header expands **that reasoning block**.
+    #[test]
+    fn clicking_a_reasoning_row_expands_the_reasoning_block() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "Thinking");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(
+            !reasoning_collapsed,
+            "the clicked reasoning block must be the thing that expanded"
+        );
+        assert!(
+            !tool_expanded,
+            "the tool call must not have moved when the reasoning block was clicked"
+        );
+    }
+
+    /// A row that holds nothing expandable changes nothing. It must not
+    /// fall back to the message-level toggle: that fallback is the defect
+    /// this path exists to fix.
+    #[test]
+    fn clicking_a_prose_row_toggles_nothing() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "The comparison is done.");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(!tool_expanded, "a prose row must not expand the tool call");
+        assert!(
+            reasoning_collapsed,
+            "a prose row must not expand the reasoning block"
+        );
+    }
+
+    /// The expand-all gesture opens every tool call and every reasoning
+    /// block, and the next press closes every one of them again.
+    #[test]
+    fn the_expand_all_gesture_opens_everything_and_the_next_press_closes_it() {
+        let mut app = app_with_mixed_message();
+
+        app.expand_all_disclosures();
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(tool_expanded, "the tool call must be open");
+        assert!(!reasoning_collapsed, "the reasoning block must be open");
+        assert!(
+            last_toast(&app).contains("expanded"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+
+        app.expand_all_disclosures();
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(!tool_expanded, "the tool call must be closed again");
+        assert!(
+            reasoning_collapsed,
+            "the reasoning block must be closed again"
+        );
+        assert!(
+            last_toast(&app).contains("collapsed"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+    }
+
+    /// The palette command is the same gesture with the same outcome.
+    #[test]
+    fn the_palette_command_expands_everything_too() {
+        let mut app = app_with_mixed_message();
+
+        app.dispatch_builtin_command(
+            crate::tui::command::BuiltinSlashAction::ExpandAllDisclosures,
+            None,
+        );
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(tool_expanded, "the tool call must be open");
+        assert!(!reasoning_collapsed, "the reasoning block must be open");
+        assert!(
+            last_toast(&app).contains("expanded"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+    }
+
+    /// The palette command is registered under a name the user can find.
+    #[test]
+    fn the_palette_carries_the_expand_all_command() {
+        let registry = crate::tui::command::CommandRegistry::new_for_workspace_root(
+            std::path::Path::new("/tmp"),
+        );
+        let command = registry
+            .find_by_name_or_alias("/expand-all")
+            .expect("the palette must carry the expand-all command");
+        assert!(
+            matches!(
+                command.action,
+                crate::tui::command::CommandAction::Builtin(
+                    crate::tui::command::BuiltinSlashAction::ExpandAllDisclosures
+                )
+            ),
+            "the palette command must run the expand-all gesture"
         );
     }
 }

@@ -11,7 +11,12 @@ backends via `CoreClient`.
 
 ## Where It Lives
 
-`src/tui/` — ~14,358 lines in `app/mod.rs` alone.
+`src/tui/` — 196 Rust files, ~202,400 lines in total. `src/tui/app/mod.rs` is
+~20,300 lines on its own and holds the `App` state machine, the command
+dispatch, and the panel renderers; the rest is split across `src/tui/app/state/`
+(34 files), `src/tui/components/`, `src/tui/panels/`, `src/tui/runtime/`, and
+`src/tui/ui_builders/`. The full tree is under
+[Directory Structure](#directory-structure).
 
 ## How It Works
 
@@ -656,6 +661,84 @@ that appears or vanishes.
 The `queued` suffix (M004) is appended in the same left-aligned `" · "` chain
 as the subagent and job counts, in the overlay, and is text on an existing row —
 never an extra row and never a condition on the overlay's existence.
+
+**The reasoning indicator (provider reasoning control M004).** The footer status
+bar's activity chain carries the extended-thinking selection, next to the
+daemon-resolved policy line: `reasoning: high`, `reasoning: off`,
+`reasoning: default`, `reasoning: budget 2048`. It reads the **daemon-owned**
+selection (`UiState::reasoning_mode`), never a frontend-local field — the
+daemon resolves the selection at every turn-admission path, so a local copy is
+a projection, not an authority.
+
+Three properties are load-bearing:
+
+- It is **content in an existing chain**, never a condition on the surface's
+  presence. The status bar is a fixed-height row, so a chip cannot move the
+  transcript the way a row could — and a conditional chip would make the
+  bar's width budget a function of the selection. The chip is pushed
+  unconditionally in `build_status_summary`, and `status_bar.rs` must not
+  mention the reasoning state at all; `scripts/check_tui_reasoning_surface.py`
+  enforces both.
+- It adds **no second spinner and no second cadence**. There is one frame
+  table, one `ActivityPhase` enum, and one 100 ms frame table
+  (`tui::components::spinner`); the indicator is static text in a bar the one
+  frame already redraws. The same guard fails a second frame table anywhere
+  under `src/tui/`, a timer in the reasoning surface, and a reach for the
+  frame chooser from it.
+- The transient toast after `/reasoning` is **preserved** — it confirms the
+  action — but it is no longer the only place the selection is visible.
+
+**The indicator moved once.** The branch that introduced it put the chip in the
+working strip's reserved row 0. `main` later deleted the working strip as part
+of its buffer-chrome roadmap — the strip's height was subtracted from the
+transcript, and its row 0 was the buffer's only status surface — so the
+indicator moved to the footer status bar. The property that survived the move
+is the one that mattered: the indicator is **content**, and no surface's
+presence or height is a function of the reasoning state.
+
+**The `/reasoning` write path (M004).** The daemon owns the selection, so
+`/reasoning` writes it: the command derives the model's options, advances the
+cycle, and sends `CoreRequest::ReasoningPreferenceSet` with the daemon's
+preference revision as the compare-and-set. The local display is updated from
+the daemon's **response**, not from the option the user just picked — when the
+two differ, the daemon's value wins and the display is corrected. A refused
+write puts the daemon's last known value back and surfaces the typed refusal
+(`preference_conflict`, `invalid_reasoning_selection`,
+`reasoning_vocabulary_unsupported`, `reasoning_capability_unsupported`) instead
+of swallowing it.
+
+Because the selection is daemon state, the turn carries **no** explicit
+override: `TurnSubmit.reasoning` is `None`, so the daemon's persisted
+selection applies. Sending the frontend's copy as an override made the local
+value beat the persisted one — the opposite of what the daemon promises — so
+the turn inherits the daemon's selection and the frontend's copy is a
+projection of it.
+
+The option set comes from the daemon's model-resolution response, which
+carries the model's effective capability (`ReasoningCapabilityDto` on
+`SelectedModelDto` and `ProviderModelDto`). The rules are one per dimension:
+the accepted labels **in the capability's order**; a disable only when the
+model permits one; a budget only when the model accepts one and the value is
+inside its bounds. A dimension that is absent or `Unknown` falls back to the
+known-label ladder — and says so, because the ladder is a convenience
+vocabulary, not a statement about the model. The frontend's option list is
+always a **subset** of what the capability permits; it never widens it.
+
+The option set is a **subset** of what the capability permits and the cycle
+moves through the **model's** options rather than a static ladder. A model
+that accepts no disable is never offered one, and the command explains why
+instead of appearing broken. A model that always reasons is told so: there is
+no off.
+
+**The WS-attach frontend cannot store the selection.** `TuiMessage` carries no
+`CoreRequest` variant, so a frontend attached over the remote WebSocket has
+no channel to send `ReasoningPreferenceSet` on. There, `/reasoning` says the
+selection cannot be stored and **does not** change the display — it does not
+fall back to a local value the daemon would ignore, because a local value that
+the daemon never sees is a second, contradictory source of truth. The
+attached frontend still *shows* the daemon's selection in row 0. Adding the
+channel means adding a `TuiMessage` variant that carries a core request; that
+is a protocol change and is deliberately not smuggled into this milestone.
 
 **Side panels are mouse surfaces like the buffer.** Every occupied column
 records its rect on each render (`App::panel_areas`), and
@@ -1427,6 +1510,63 @@ numbers are its own gutter and the wrap budget is `width - gutter`. A path that
 skips the wrap is not merely clipped, it is *unreachable*: there is no
 horizontal scrollbar and `scroll_left`/`scroll_right` are no-ops.
 
+#### The styled, word-aware wrap
+
+`src/tui/wrap.rs` owns a second engine, for text that carries a style:
+`wrap_styled_spans_by_word_rows(spans: &[Span<'static>], width: u16) ->
+Vec<WrappedRow>` and `wrap_styled_spans_by_word(spans: &[Span<'static>],
+width: u16) -> Vec<Line<'static>>`. The main buffer and the composer share
+it. Its contract:
+
+- **It breaks at whitespace.** Words are placed greedily, separated by a single
+  space, and trailing whitespace is dropped. A token that alone is wider than
+  the row is hard-broken at character boundaries — exactly as `wrap_to_strings`
+  does, so the two engines agree.
+- **It preserves each word's style.** A span is split at word boundaries
+  rather than flattened, so a style that spans a boundary survives on both
+  sides of it.
+- **It preserves byte offsets.** `WrappedRow { slices, source_start,
+  source_end, width }` and `StyledSlice { text, style, source_start,
+  source_end }` report the byte range of the source behind them:
+  `source_start` is inclusive, `source_end` is exclusive, and both are offsets
+  into the concatenation of the input spans' contents.
+- **A terminal control sequence is one atomic, zero-width token.** It never
+  ends a word, never consumes row width, and is never split across two rows.
+  The OSC-8 hyperlink form therefore keeps its opener and its closer whole
+  across a wrap, and the URL duplicated in the sequence's parameters consumes
+  **no** row width — a hyperlink's target is a parameter of the sequence, not
+  text.
+
+A `width` of zero returns the source as one unwrapped row, and an empty source
+returns one empty row, so the row count is never zero for a non-empty buffer.
+
+**Which paths use it.** The model-authored text — the assistant prose, the
+reasoning body and the streaming tail — reaches the renderer through the
+markdown path (`wrap_markdown_spans` → `wrap_styled_spans_by_word`), and every
+markdown text node goes with it: paragraphs, headings, block quotes and list
+items. **Fenced code blocks and the `read` tool's output stay character-aware**
+(`wrap_code_spans`): a code block broken mid-word is normal and expected, and
+code must not be re-flowed at word boundaries.
+
+The **fallback style is applied at the call site**: `wrap_markdown_spans`
+re-styles a span whose style is `Style::default()` before wrapping it, because
+the primitive has no fallback-style parameter and a default-styled span would
+otherwise be wrapped unstyled.
+
+**The measured effect.** The character-aware wrapper emitted one span per
+character, so the per-layout allocation grew with the length of the answer. On
+a 291-character paragraph at width 60 the allocation fell from **290 spans to
+82 slices** (3.5×); on a 411-character paragraph, from **409 spans to 118
+slices** (3.5×). The **row count goes up by one per paragraph** (5 → 6 and
+7 → 8): the word-aware wrap leaves slack at each row end where the
+character-aware wrap filled every row to the exact column, so a paragraph can
+now occupy one more row than it did. The transcript's scroll range is derived
+from the rows that are drawn, so that extra row is part of the contract rather
+than a rounding difference.
+
+The plain string engine is unchanged and still exists: `wrap_to_strings`,
+`wrap_count`, `ellipsize_to_width` and `visible_width`.
+
 ### Chat viewport scrolling
 
 The row index (`src/tui/components/messages/layout.rs`) is the contract between
@@ -1474,6 +1614,180 @@ all read that one index, so they cannot disagree. `MessageLayoutCache::new` and
 `find_visible_range` no longer exist — the render slices rows directly instead
 of rebuilding a window of neighbouring messages and converting a cache offset
 into a position inside it.
+
+### The detail view: the payload, not the banner
+
+An expanded tool call shows what the call was and what it returned, in a form a
+person can read. The formatting is a **display-side** projection and lives in
+`src/tui/components/messages.rs`:
+
+- `extract_trust_frame_payload_for_display(output: &str) -> &str` pulls the
+  payload out of the external-content trust frame. The frame header is
+  recognised **only in the output's first line** and only within a bounded byte
+  budget (`TRUST_FRAME_HEADER_MAX_BYTES`); it has to name a known marker
+  (`TRUST_FRAME_MARKERS`) *and* carry the frame's trust attribute, so a
+  bracketed word that is not a frame is not mistaken for one. The closing
+  marker is found with one reverse search over the body. An **unframed output
+  is returned unchanged**, and a frame whose **closing marker is missing**
+  yields the payload after the banner.
+- `format_payload_for_display(payload: &str) -> String` pretty-prints JSON
+  (`serde_json::to_string_pretty`) and falls back to the **raw text** otherwise.
+  An empty payload formats to nothing without failing.
+- The structured tools — `websearch`, `research`, `webfetch` — render the
+  **outline** (`render_structured_output_outline`): an indented result set that
+  prints every leaf scalar, which *is* the readable form of the payload rather
+  than a second copy of the document beside it. Every other output renders
+  pretty-printed JSON when it parses and the raw text otherwise. The tool
+  **input** gets the same treatment, so a JSON argument is shown pretty-printed
+  instead of as one dense line.
+
+The **trust banner is not shown**. The extraction removes it, and the header's
+expand affordance and the "(+N more lines)" count come from the **drawn
+body** — the count has to describe the rows that are actually drawn. (`read`
+is the one exception: it renders its own numbered code, so its count still
+comes from the raw output.)
+
+The frame itself is a prompt-injection defence and it is **not** weakened by
+this: `src/search_backend/framing.rs` is unchanged, and the model path still
+receives the frame byte for byte. The TUI only *reads* it, and it duplicates
+the marker names (`TRUST_FRAME_MARKERS`) because the framing module is the
+model path's contract and is not the TUI's to change. See
+`architecture/search_backend.md#trust-framing-framingrs`.
+
+### The disclosure model: collapsed by default
+
+The transcript's disclosures are **collapsed by default**. A tool call is one
+row and a reasoning block is one row, so a screen of tool calls can be skimmed
+rather than scrolled. The state is per **part** — `MsgPart::ToolCall {
+expanded }` and `MsgPart::Reasoning { collapsed }` — not per message, and
+model prose is not a disclosure at all.
+
+**The collapsed tool call is one row.** The tool-call arm renders no preview
+row and no `"(+N more lines)"` hint while the call is collapsed. The
+transcript's one remaining `"(+N more lines, click or toggle to expand)"`
+hint belongs to the separate `MsgPart::ShellCell` part, which keeps its own
+preview rows.
+
+**The header is one row, and the ellipsis lands on the target alone.** The row
+is `"  " + icon + " " + name`, then the **target**, then the summary, then the
+hidden-output counter, then the affordance (`expand` / `collapse`). The
+target's budget is `header_width − (name + summary + counter + toggle) − 1`,
+where `header_width` is the widget's width less `TOOL_HEADER_INDENT`. The
+icon, the name and the affordance are never **ellipsized**; only the target
+is. The old 400-column target ceiling (`TOOL_TARGET_MAX_WIDTH`) is **gone**
+from the tree — the row's remaining width is the only ceiling.
+
+**The hidden-output count moves into the header.** A collapsed call shows
+` (+N lines)` between the summary and the affordance, and the **expanded**
+header drops it: with the content visible, the count of hidden lines is noise.
+The count comes from the **drawn body** — the same `output_line_count` the
+rows are built from — so it describes the content that *would* be drawn rather
+than the raw output. (`read` is the one exception: it renders its own
+numbered code, so its count comes from the raw output.) While the call is
+collapsed the daemon-side summary's own `output_lines` entry is suppressed, so
+a row never shows two line counts.
+
+**Reasoning blocks default to collapsed.** Every construction site of a
+reasoning part sets `collapsed: true` — four in
+`src/tui/components/messages.rs`, one in `src/tui/commands/sessions.rs`. The
+collapsed header reads `Thinking`, or `Thought for <duration>` once the block
+has run. The global `show_thinking` switch hides the reasoning **body** but
+still draws that one-line header.
+
+**Model prose is never collapsed.** The assistant's prose is always drawn in
+full, and the expand-all gesture does not touch it.
+
+Two exceptions to the one-row header, and both are deliberate:
+
+- **A pending or running call with no output yet draws a second row.** The
+  row below the header reads `queued — waiting on your approval · Enter to
+  review`, `queued — not started yet (waiting on admission or approval)`, or
+  `running — waiting for command/tool output...`. It is the **backup way back
+  into a dismissed approval**, so it is kept: the one-row promise holds for a
+  call *with* output.
+- **The summary yields at narrow widths.** When the fixed parts do not fit,
+  the summary (duration, exit code) is dropped so the name, the counter and
+  the affordance survive. The affordance is never clipped.
+
+### A row resolves to its part, not to its message
+
+`src/tui/components/messages/layout.rs` records the **part boundaries**
+alongside the rows:
+
+```rust
+pub enum RowPart {
+    ToolCall { part_idx: usize },
+    Reasoning { part_idx: usize },
+}
+pub struct PartSpan { pub part: RowPart, pub start: usize, pub count: usize }
+```
+
+`MessageLayoutCache` gains `part_offsets: Vec<(usize, RowPart, usize, usize)>`
+— `(msg_idx, part, first row index, row count)` per expandable part, in row
+order. The **one** row producer records the runs: `build_message_rows` returns
+them, and its assistant branch `build_assistant_parts_lines` pushes a
+`PartSpan` at the end of the reasoning arm and at the end of the tool-call
+arm. `push_message` then translates the spans through the blank-collapse, so a
+part's recorded range is the range of what is **drawn**, not of what was
+emitted. `find_part_at_line` binary-searches `part_offsets` exactly as
+`find_message_at_line` does `message_offsets`, and the message-level
+resolution is untouched.
+
+The resolution path is `MessagesWidget::part_at_viewport_line(line)` →
+`cache.find_part_at_line(scroll_position() + line)` →
+`Option<(msg_idx, RowPart)>`.
+
+The **click handler** (`App::dispatch_click` → `on_click`, the viewport arm)
+resolves the **part** and toggles **that** part:
+
+- a row that belongs to a tool call toggles the tool call
+  (`toggle_tool_call_part`);
+- a row that belongs to a reasoning block toggles the reasoning block
+  (`toggle_reasoning_part`);
+- a row that belongs to **neither** toggles **nothing** — an explicit no-op,
+  not a fallback to the message-level toggle.
+
+The old ordering asked "does this message have reasoning?" before "does it
+have tool output?", so in a message carrying both the reasoning arm won every
+time and the tool call could never be reached by clicking. The reasoning block
+is now reachable only by clicking a reasoning row. A pending call's **status
+row** resolves to the tool call.
+
+### The expand-all gesture
+
+One gesture opens the whole transcript. The action is
+`InputAction::ExpandAllDisclosures`, and the matching `ActionKey` is
+`ActionKey::ExpandAllDisclosures`, so it is user-rebindable and appears in the
+keybind editor.
+
+- The chord is **`Ctrl+Alt+O`** —
+  `(KeyModifiers::CONTROL | KeyModifiers::ALT, KeyCode::Char('o'))` — and it
+  is bound in **both** maps. It is **`Ctrl+Alt` and not `Ctrl+Shift`** because
+  the app never pushes keyboard-enhancement flags: in legacy xterm encoding a
+  `Ctrl+Shift+O` keystroke arrives indistinguishable from `Ctrl+O` and fires
+  the workspace dashboard. That is the app's **chord contract** (below), and
+  `tests/tui_render/modifier_chords.inc::no_binding_map_contains_a_control_shift_entry`
+  fails if either map binds `CONTROL|SHIFT`.
+- `Ctrl+O` still opens the workspace dashboard in **both** maps. The new chord
+  is additive; it does not take the dashboard's key.
+- The palette command is **`/expand-all`** (aliases `expand-disclosures` and
+  `collapse-all`), dispatched to the same handler, so the toast is identical.
+- The toast reads **"all details expanded"** or **"all details collapsed"**.
+
+Expansion covers every tool call and every reasoning block. Model prose is
+untouched — it is never collapsed, so there is nothing to expand.
+
+**The key-authority guards were repaired, not extended.**
+`scripts/check_tui_composer_key_authority.py` now models **five** chords (the
+new one included) and polices the new chord-only action with its **existing**
+rules: bound in both maps, reachable by a chord and never by the bare claimed
+letter (`o` is the composer's), and documented under its modifier chord. Its
+brace matcher was repaired to be comment- and literal-aware — it previously
+stopped at a `}` inside a comment and so had never seen the second half of the
+vim map. `scripts/check_tui_editor_key_authority.py` had two **stale counts in
+prose** (66 → 72 Normal-mode chords; "three" → "two" guard-block chords),
+corrected against the guard's own summary line. **No new static guard was
+added.**
 
 ### Long Output → Info Dialog
 
@@ -1828,12 +2142,25 @@ disagree about a caret motion: a caret motion is a Helix-parity capability,
 not a keymap flavour.
 
 `j` and `k` are the table's one **conditional** pair, and the condition is
-written on the entry rather than inferred. They are claimed only when the
-composer buffer has more than one line; on a single-line buffer they fall
-through to transcript scroll unchanged, which is why their app-level binding
-survives. A condition that is not written down is how a leak reappears: a
-claim that quietly stops applying looks exactly like a claim that was never
-made.
+written on the entry rather than inferred. The condition is
+`ClaimCondition::ContentOverflowsBox`: the composer claims them when its
+**content does not fit its box** — the wrapped row count exceeds the visible
+row count. On a composer that fits, they fall through to transcript scroll
+unchanged, which is why their app-level binding survives. A condition that is
+not written down is how a leak reappears: a claim that quietly stops applying
+looks exactly like a claim that was never made.
+
+The measure is **rows, not lines**, and it is measured once. The layout pass
+caches it on the widget as `ComposerFit::Unknown` or
+`ComposerFit::Measured { row_count, visible_rows }`, and the claim gate reads
+that cached value, so the gate and the layout cannot disagree. Before the
+composer has been laid out the fit is `Unknown`, the condition does not hold,
+and the keys fall through rather than being swallowed in a state the user
+cannot see. **The exact-fit case is load-bearing**: a composer whose text wraps
+to exactly the box's height *fits* — three rows in a three-row box — and `j`/`k`
+fall through to the transcript; one row more and the composer takes the keys
+and moves the caret one **visual row**, which is the row the caret's byte is
+drawn on, not a newline-separated line of the buffer.
 
 The claim step is consulted **before** the global binding map, in the
 composer branch of the key chain, so it inherits the chain's priority: a
@@ -1899,10 +2226,10 @@ Two consequences of the move are recorded rather than hidden. `ToggleAgentRun`
 left `is_normal_only`, because its only spelling is now a chord, and a chord
 cannot be composed as text; the entry used to exist for the bare `x`. And the
 guard's rule for a re-spelled action is "not a **claimed** key" rather than "not
-a bare character": the three old letters — `x`, `d` and `i` — are all claimed,
-so the claim rule already forbids their bare spellings, while a bare spelling
-of a letter the composer does not claim is exactly what the invariant above
-requires to keep working.
+a bare character": the four old letters — `x`, `d`, `i` and `a` — are all
+claimed, so the claim rule already forbids their bare spellings, while a bare
+spelling of a letter the composer does not claim is exactly what the invariant
+above requires to keep working.
 
 `scripts/check_tui_composer_key_authority.py` polices the table. It reads the
 claim table and the two binding maps, and fails when a letter is claimed
@@ -1910,7 +2237,12 @@ twice, when a claimed letter can still reach an app-level action, when a
 re-spelled chord is missing from a map, when a re-spelled action has no chord
 to reach it by or still answers to a claimed key, when a capital claim misses
 an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only`
-entry. It carries a `--self-test` that injects each
+entry. The same rules now cover the actions that were **born** as a chord: the
+expand-all gesture has no bare spelling at all, so its chord is its only route
+to the user, and it answers to the same three rules — bound in both maps,
+reachable by a chord that is not a claimed key (`o` is the composer's), and
+documented under that chord. It carries a `--self-test`
+that injects each
 violation class, and it is wired into `scripts/verify.sh quick` and CI.
 
 The composer, the editor and the terminal panel now have three separate key
@@ -2313,6 +2645,51 @@ newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
 and `y` as separate events, so `prefix_pending` remembers the first key and any
 second key other than `y` disarms it and is then handled normally.
 
+#### The composer's box: wrapped rows, a visual-row scroll, a pinned mode row
+
+The composer paints **wrapped rows**, the scroll is a **visual-row** offset,
+and the caret's drawn cell is the cell of the caret's **byte**.
+`src/tui/composer_geometry.rs` is the geometry module:
+`VisualLayout::new(source, rows)`, `row_count()`, `row_cells(row)`,
+`row_width(row)`, `row_source_start(row)`, `cell_of_byte(byte)`,
+`byte_at(row, column)` and `caret_position(byte)`. The cells and the rendered
+bytes are the same set seen from two sides — every cell holds exactly one
+rendered character and every rendered character is on exactly one cell — so
+"where is the caret" has one answer whether it is asked in bytes or in
+columns.
+
+**The height formula** is `1 (mode row) + min(wrapped_rows, 10 - 1 -
+marker_rows) + marker_rows`, clamped to the **40 % budget**
+(`area.height * 40 / 100`, floor 3) with a minimum of 3 rows. Two bounds, and
+they are not the same bound:
+
+- The **10-row cap is a cap on the box's total rows** — the mode row, the text
+  rows and the marker rows together. It is **not** a limit on how much may be
+  typed: text past the cap stays in the buffer and is reachable by scrolling.
+- The **40 % budget wins** over the cap: on a 15-row screen the budget is 6
+  rows and the box takes 6.
+
+The height is computed against the **pane's** width, not the prompt chunk's.
+The chunk does not exist yet when the height is computed, and the session
+layout splits the pane vertically, so the chunk's width *is* the pane's width;
+using the not-yet-existing chunk's width would be circular.
+
+The **mode row is fixed at the top** of the box and the **marker rows are
+pinned at the bottom**; the text window scrolls between them. This is a
+behaviour change: the mode row used to be the paragraph's first line and the
+markers its last lines, and the scroll offset was applied to the whole
+paragraph — so both scrolled away with the text.
+
+The **horizontal scroll** survives, but it is non-zero only when a row is
+wider than the box — a single character wider than the whole row. With
+wrapping it is zero in every ordinary case.
+
+**`Ctrl+u` and `Ctrl+d` page the composer when it overflows and the transcript
+when it does not**, in the same branch shape the workspace dashboard already
+uses. The page size is the transcript's own rule: the visible height minus
+two, with a floor of one. The page is **not mode-gated** — the same branch
+handles both modes.
+
 #### The selection-manipulation verbs (M008)
 
 Eighteen verbs resolve over a **set**. They split into three groups, and the
@@ -2644,7 +3021,7 @@ spawn-and-complete or fire-and-forget instead.
 
 ## Key Types & APIs
 
-### App (`src/tui/app/mod.rs:222`)
+### App (`src/tui/app/mod.rs:328`)
 
 ```rust
 pub struct App {
@@ -2654,9 +3031,11 @@ pub struct App {
     pub messages_state: MessagesState,
     pub dialog_state: DialogState,
     pub agent_state: AgentState,
+    pub command_registry: CommandRegistry,
     pub sidebar: SidebarWidget,
     pub panel_host: crate::tui::panels::SidePanelHost,
     pub status_bar: StatusBarWidget,
+    pub policy_ui: PolicyUiState,
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
@@ -2670,11 +3049,17 @@ pub struct App {
     pub busy_spinner: SpinnerWidget,
     pub active_goal: Option<GoalSnapshot>,
     pub lsp_tool: Option<Arc<LspTool>>,
+    pub search_runtime: Option<SearchRuntimeContext>,
+    pub lsp_status_cache: Option<String>,
     pub security_review_running: Option<SecurityReviewTaskState>,
     pub shell_store: ShellOutputStore,
     pub command_run_store: CommandOutputStore,
     pub shell_handles: HashMap<u64, ShellHandle>,
+    pub interactive_terminals: InteractiveTerminalController,
+    pub pending_turn_submission: Option<PendingTurnSubmission>,
+    pub turn_submit_request: AsyncUiRequestState,
     pub task_registry: TuiTaskRegistry,
+    pub file_tree_coordinator: FileTreeScanCoordinator,
     pub plugin_ui_state: PluginUiState,
     pub plugin_manager: Option<PluginManager>,
     pub remote_sequence: u64,
@@ -2682,9 +3067,16 @@ pub struct App {
 }
 ```
 
+The struct carries roughly 95 public fields; the listing above names the
+load-bearing ones and the elided tail is the viewport/scroll/click/hover/border
+geometry plus the per-turn submit plumbing. Two of the named fields are the
+admission seam worth knowing about: `pending_turn_submission` and
+`turn_submit_request` hold the submit that the event loop will hand to the
+core, and `interactive_terminals` owns the live PTY surfaces.
+
 ### State Domains (`src/tui/app/state/`)
 
-27 state modules (28 `.rs` files including `mod.rs`):
+33 state modules (34 `.rs` files including `mod.rs`):
 
 | Module | Purpose |
 |--------|---------|
@@ -2710,7 +3102,12 @@ pub struct App {
 | `restore.rs` | State restore |
 | `routing.rs` | Route routing helpers |
 | `session.rs` | Session, token counts, history, changed files, git sidebar, rate limits |
+| `session_work.rs` | Session work-surface state |
 | `snapshot.rs` | Remote snapshot building |
+| `subagent_addressee.rs` | C007: who the composer is addressed to |
+| `subagent_tabs.rs` | Subagent tab set over the main buffer (Shift+N/P/X) |
+| `subagents.rs` | SubagentRow projection rows and strip/buffer view state |
+| `tasks.rs` | Ctrl+T tasks overlay rows (todos, subagents, jobs) |
 | `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
 | `view_switch.rs` | Active-view switch coordinator |
 | `work_orders.rs` | M003/C001 task + work-order state, `ComposerMode` |
@@ -3949,19 +4346,24 @@ panel never calls `process_msg` itself; only `App::on_mouse`'s
 `ClickTarget::Sidebar` arm does, which is what keeps the click and Enter routes
 identical (`a_clicked_subagent_row_opens_the_same_tab_as_enter`).
 
-### UiState (`src/tui/app/state/ui.rs:40`)
+### UiState (`src/tui/app/state/ui.rs:41`)
 
 ```rust
 pub struct UiState {
     pub theme: Arc<Theme>,
     pub layout: TuiLayout,
     pub sidebar_visible: bool,
+    pub tree_focused: bool,
     pub auto_scroll: bool,
     pub show_thinking: bool,
-    /// Per-turn extended-thinking selection (`/reasoning`).
-    /// Frontend-local; sent on each `TurnSubmit`, never persisted.
+    /// The extended-thinking selection (`/reasoning`), projected from the
+    /// **daemon-owned** selection.
     ///
-    /// When the cycled mode actually requests reasoning
+    /// The daemon resolves the selection at every turn-admission path, so
+    /// this is a projection: it is corrected from the daemon's response
+    /// whenever the two differ, and the daemon's value wins.
+    ///
+    /// When the selected mode actually requests reasoning
     /// (`ReasoningMode::requests_reasoning`) and the selected model's provider
     /// strips `reasoning_effort` on the wire, the confirmation is raised as a
     /// warning instead of an info toast. The provider is derived from the
@@ -3970,6 +4372,17 @@ pub struct UiState {
     /// `ProviderCapabilities::for_provider` — never a TUI-maintained list. An
     /// unresolvable provider stays silent rather than warning speculatively.
     pub reasoning_mode: ReasoningMode,
+    /// The reasoning capability the daemon published for each model it has
+    /// resolved, keyed by model id. A model with no entry has **no published
+    /// capability**, which reads as "not established" — never as "this model
+    /// accepts nothing".
+    pub reasoning_capabilities: HashMap<String, ReasoningCapabilityDto>,
+    /// The daemon's preference revision, used as the compare-and-set
+    /// revision for a reasoning write.
+    pub reasoning_preference_revision: Option<u64>,
+    /// Request generation for the reasoning read/write path. A stale
+    /// completion is dropped rather than applied.
+    pub reasoning_request: AsyncUiRequestState,
     pub show_timestamps: bool,
     pub routes: RouteManager,
     pub dialog: Dialog,
@@ -3995,15 +4408,23 @@ pub struct UiState {
     pub tts_via_daemon: bool,
     pub diagnostics: TuiDiagnostics,
     pub plugin_ui_caps: PluginUiCapabilities,
+    pub subagents: SubagentState,
 }
 ```
 
-### SessionState (`src/tui/app/state/session.rs:71`)
+### SessionState (`src/tui/app/state/session.rs:94`)
 
 ```rust
 pub struct SessionState {
     pub session: Option<Session>,
     pub session_status: SessionStatus,
+    pub working_since: Option<Instant>,
+    pub running_tool: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub stopped_turn: Option<String>,
+    /// Latched turn failure. Cleared only by `TurnStarted`; `report_turn_error`
+    /// writes here, and shell/clipboard/theme feedback must not.
+    pub last_error: Option<String>,
     pub token_in: u64,
     pub token_out: u64,
     pub live_output_tokens: u64,
@@ -4027,8 +4448,27 @@ pub struct SessionState {
     pub permission_pending: bool,
     pub subagent_count: usize,
     pub git_sidebar: GitSidebarState,
+    pub user_prompt_queue: VecDeque<String>,
+    pub root: Option<String>,
+    pub branch: Option<String>,
+    pub dirty: bool,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub untracked_count: usize,
+    pub conflicted_count: usize,
+    pub ahead: usize,
+    pub behind: usize,
+    pub operation_state_label: Option<String>,
+    pub available_actions: Vec<String>,
+    pub conflicted_paths: Vec<String>,
 }
 ```
+
+`context_limit` starts at **0**, and `0` means "unknown" — every reader
+(the footer, the stats dialog, the timeline readout) treats it as unknown
+rather than dividing by it. `last_error` is the latched turn failure: it is
+cleared only by `TurnStarted`, and `report_turn_error` is for turn failures
+alone, not for shell, clipboard, or theme feedback.
 
 ### AgentState (`src/tui/app/state/agent.rs:6`)
 
@@ -4086,7 +4526,7 @@ behind the one on screen — see *Pending approvals are a queue*),
 Plugin dialogs stored in `PluginUiState`, not `DialogState`.
 A single `Dialog::Plugin` variant handles all plugin dialogs.
 
-### Dialog Variants (`src/tui/app/types.rs:2`)
+### Dialog Variants (`src/tui/app/types.rs:4`)
 
 ```rust
 pub enum Dialog {
@@ -4096,13 +4536,13 @@ pub enum Dialog {
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Logs, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
+    DoctorReport, Logs, Plugin, RunDetail, JobDetail, ProjectPicker, Collaborators, ProjectChat,
     Team, Control, TeamTokenSecret, TriggerSecret,
-    TaskSchedule, TaskView, WorkspaceDashboard, PolicySelector,
+    TaskSchedule, TaskView, WorkspaceDashboard, PolicySelector, Queue,
 }
 ```
 
-51 variants.
+53 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -4122,13 +4562,13 @@ pub enum DialogType {
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Logs, Plugin, RunDetail, Collaborators, ProjectChat,
+    DoctorReport, Logs, Plugin, RunDetail, JobDetail, Collaborators, ProjectChat,
     Team, Control, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
-    TriggerSecret, WorkspaceDashboard, PolicySelector, None,
+    TriggerSecret, WorkspaceDashboard, PolicySelector, Queue, None,
 }
 ```
 
-51 variants, matching `Dialog` 1:1 through the exhaustive compatibility
+53 variants, matching `Dialog` 1:1 through the exhaustive compatibility
 conversions.
 
 `TaskSchedule` is the WorkOrder scheduling sheet
@@ -4202,25 +4642,50 @@ with close observes the dropped dashboard state and does nothing.
 canonical lifecycle identity is the live component's `DialogType`; the
 `ui_state.dialog` value is only a derived compatibility mirror.
 
-### Component Trait (`src/tui/components/component.rs:183`)
+### Component Trait (`src/tui/components/component.rs:215`)
 
 ```rust
 pub trait Component: Send + Any + AsAny {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg>;
-    fn handle_paste(&mut self, text: String) -> Option<TuiMsg> { None }
+    fn docks_as_viewer(&self) -> bool { false }
+    fn keymap_hint(&self) -> Option<String> { None }
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render(frame, area, theme);
+    }
+    fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> { None }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>);
     fn dialog_type(&self) -> DialogType;
     fn is_modal(&self) -> bool { self.dialog_type().is_modal() }
-    fn hit_test(&self, rel_y: usize) -> Option<usize> { None }
-    fn set_selected(&mut self, idx: usize) {}
+    fn hit_test(&self, _rel_y: usize) -> Option<usize> { None }
+    fn set_selected(&mut self, _idx: usize) {}
     fn focus_next(&mut self) {}
     fn focus_prev(&mut self) {}
     fn focusable_count(&self) -> usize { 1 }
     fn focused_index(&self) -> usize { 0 }
-    fn set_focused(&mut self, idx: usize) {}
+    fn set_focused(&mut self, _idx: usize) {}
 }
 ```
+
+Three of these defaults are load-bearing:
+
+- `docks_as_viewer` — `App::handle_dialog_key` intercepts `Shift+←/→/↑/↓`
+  **only** when this is `true`, which is how the plain viewer boxes dock into
+  the side column without each re-implementing the check. A dialog with a
+  composer, a filter, or its own mode tracking must answer the gesture
+  itself, so the default `false` is the safe one.
+- `keymap_hint` — the verbs this widget owns, spelled the way this widget
+  spells them. The panel host asks for it so the shared hint line above the
+  composer describes **this box** rather than a host-side paraphrase.
+- `render_in_panel` — defaults to the modal render. A widget that draws its
+  own border, title, or keymap footer overrides this instead of `render`,
+  because the host has already painted a border and a title into the same
+  rect.
+
+`centered_rect(percent_x, percent_y, area)` lives in the same module and is
+the single definition of the centred-popup shape; it was duplicated in
+`app/mod.rs` and `components/dialogs/run_detail.rs` before it was lifted
+here.
 
 ### FocusManager (`src/tui/components/component/focus.rs`)
 
@@ -4230,17 +4695,20 @@ pub struct FocusManager {
 }
 ```
 
-Key methods: `push(component)`, `pop()`, `top()`/`top_mut()`,
+Key methods: `push(component) -> bool`, `pop()`, `top()`/`top_mut()`,
 `with_dialog(_mut)`, `with_component`, `handle_key(key)`,
-`active_dialog_type()`, `len()`. Focus belongs to each component, so nested
+`active_dialog_type()`, `len()`. `push` returns `false` and refuses the push
+when a component of the same `DialogType` is already mounted, so an async
+refresh or a rapid reopen cannot create a hidden second owner. Focus belongs to each component, so nested
 push/pop preserves the underlying modal's selection. `Tab` and `Shift-Tab`
 wrap against the current component count, including zero and one-control
 dialogs.
 
-### TuiMsg (`src/tui/app/types.rs:123`)
+### TuiMsg (`src/tui/app/types.rs:155`)
 
-116 variants — synchronous intent from TUI to App, consumed by
-`App::process_msg`. Grouped by intent:
+164 variants — synchronous intent from TUI to App, consumed by
+`App::process_msg`. The table below groups the principal intents; it is a
+grouping, not the full 164-variant list.
 
 | Group | Variants |
 |---|---|
@@ -4258,7 +4726,7 @@ dialogs.
 | Task view | `TaskViewMove`, `TaskViewReorder`, `TaskViewOpen`, `TaskViewRefresh`, `TaskViewCancel`, `TaskViewResume`, `TaskViewDetail` |
 | Task schedule / triggers | `TaskScheduleConfirm`, `TaskScheduleMove`, `TaskTriggerSetup`, `TaskTriggerRevoke`, `TaskTriggerRotate`, `TaskTriggerRefresh`, `TriggerSecretClose`, `TeamTokenSecretClose` |
 
-### TuiCommand (`src/tui/app/commands.rs:15`)
+### TuiCommand (`src/tui/app/commands.rs:56`)
 
 ### Esc never quits; exiting is explicit
 
@@ -4325,7 +4793,7 @@ the daemon's durable selection converging on the display.
 Pinned by `scripts/check_model_select_convergence.py` and
 `tests/tui_render/tui_model_selection_persist.inc`.
 
-Async commands sent via channel — 205 variants covering: session CRUD,
+Async commands sent via channel — 245 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
 template creation, session message loading, subagent spawn, task/worktree
 operations, memory operations, goal lifecycle, research browser, doctor,
@@ -5774,9 +6242,11 @@ root routing.
 
 ### InputAction
 
-52 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
+61 variants (`src/tui/input.rs:137`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
-`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTasksList`, `ToggleSection`,
+`NewSession`, `ToggleAgentRun`, `ToggleSidebar`, `FocusSidebar`,
+`OpenPanelManager`, `DirectionLeft`, `DirectionRight`, `DirectionUp`,
+`DirectionDown`, `ToggleTasksList`, `ToggleSection`,
 `CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
 `CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
 `Quit`, `ForceQuit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`,
@@ -5785,7 +6255,15 @@ root routing.
 `ClearSearch`, `Command`, `ToggleTts`, `StopTts`, `ToggleFullscreen`,
 `TogglePermissionMode`, `OpenDiff`, `GoToTop`, `GoToBottom`,
 `OpenProjectPicker`, `NextProjectTab`, `PreviousProjectTab`,
-`CloseProjectTab`, `ToggleComposerMode`, `OpenWorkspaceDashboard`.
+`CloseProjectTab`, `NextSubagentTab`, `PreviousSubagentTab`,
+`CloseSubagentTab`, `ToggleComposerMode`, `OpenWorkspaceDashboard`.
+
+The four `Direction*` variants are the resolved direction of a chord whose
+final key decides the axis, so the handler that consumes them never has to
+re-derive the axis from the key that was pressed. The three `*SubagentTab`
+variants drive the subagent tab set over the main buffer (Shift+N/P/X);
+`CloseProjectTab` is the workspace-project equivalent and is a different
+verb.
 
 ### New session (`Ctrl+N`, `/new`)
 
@@ -5886,7 +6364,8 @@ tui/
 │   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
 │   ├── modal.rs            # FocusManager-backed modal lifecycle
 │   ├── plugin_ui.rs        # Validated plugin UI effect application
-│   └── state/              # 31 state domain modules + mod.rs
+│   ├── turn_submit.rs      # Prompt submit admission and turn start
+│   └── state/              # 33 state domain modules + mod.rs
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
 │       ├── change_review.rs # M006-E review state machine
@@ -5910,6 +6389,7 @@ tui/
 │       ├── restore.rs      # State restore
 │       ├── routing.rs      # Route routing helpers
 │       ├── session.rs      # SessionState (session, history, git info)
+│       ├── session_work.rs  # Session work-surface state
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── subagent_addressee.rs # C007: who the composer is addressed to
 │       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
@@ -5919,7 +6399,7 @@ tui/
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode
 │       └── workspace_dashboard.rs # M005 Workspace primary-view cache
-├── commands/               # 37 command handler submodules + mod.rs
+├── commands/               # 41 command handler submodules + mod.rs
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
 │   ├── change_review.rs    # M006-E review commands
@@ -5967,7 +6447,7 @@ tui/
 │   ├── component/
 │   │   ├── focus.rs        # FocusManager for modal focus stack
 │   │   └── context.rs      # AppContext for overlay dialogs
-│   ├── dialogs/            # 40 modal dialogs + mod.rs (all implement Component)
+│   ├── dialogs/            # 41 modal dialogs + mod.rs (all implement Component)
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette (query/selection model only —
 │   │   │                     # it no longer renders; see "One popup" below)
@@ -6012,7 +6492,6 @@ tui/
 │   ├── diff.rs             # DiffViewer
 │   ├── editor.rs           # M006-A buffer widget
 │   ├── file_tree.rs        # M006-D file tree widget
-│   ├── help_overlay.rs     # (removed in C001 — help is mode-aware via input.rs)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── messages/           # MessagesWidget submodules
@@ -6031,6 +6510,8 @@ tui/
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── panels/                 # Swappable side-panel host (Shift+S manager)
 │   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost
+│   ├── agents.rs           # Agent-tree panel
+│   ├── hosted.rs           # Hosted (plugin-provided) panel slot
 │   ├── chat.rs             # Interactive project-chat panel
 │   ├── terminal.rs         # Live PTY panel (NOR/INS, starts a shell on `i`)
 │   ├── help.rs             # Keybinding-reference panel (hosts HelpDialog)
@@ -6041,16 +6522,27 @@ tui/
 ├── panel_resize.rs         # Outward-only panel resize rules + key→border geometry
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
+├── chat_browser.rs         # One chat browser, two surfaces (main buffer + chat panel)
+├── composer_claims.rs      # Composer claim/state helpers
+├── composer_text.rs        # Composer text editing helpers
 ├── editor.rs               # M006-A editor presentation record/state
+├── editor_completion.rs    # Editor completion popup model
 ├── editor_effect.rs        # M010 editor-level pending effect + clipboard verb
+├── editor_highlight.rs     # Editor semantic highlight projection
+├── editor_lsp.rs           # Editor LSP presentation (M006-C)
+├── editor_match.rs         # Editor match/search state
 ├── document_session.rs     # TuiDocumentSession (DocumentController seam)
 ├── file_diff.rs            # Async diff stats for sidebar
+├── file_icons.rs           # File-kind icon mapping
 ├── file_tree.rs            # M006-D directory walk + node model
+├── file_tree_coordinator.rs # File-tree refresh/lazy-load coordinator
 ├── interactive_terminal.rs # Interactive terminal projection
 ├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
+├── text_geometry.rs        # Shared text measurement helpers
+├── wrap.rs                 # Text wrapping primitives
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (167 built-in)
+├── command.rs              # Slash command registry (168 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats
@@ -6118,7 +6610,9 @@ Do NOT use `UiNode` for: interactive components needing focus management
 
 ## Configuration Surface
 
-No direct TUI config keys in `opencode.jsonc`. TUI state is driven by:
+No direct TUI config keys in the CodeGG config file (`codegg.jsonc`,
+`codegg.json`, or `config.json`; the annotated example is
+`codegg.example.jsonc`). TUI state is driven by:
 - Theme selection via `[theme]` config
 - Keybindings via `[keybindings]` config
 - Vim mode via config
@@ -6445,6 +6939,90 @@ arms), `TuiCommand` (203) and `InputAction` (50) counts, the 46-variant
 (`check_tui_project_authority.py` scanning `session_state.project_dir` and
 `std::env::current_dir()`; `check_tui_editor_text_authority.py` rejecting
 second text buffers and direct filesystem reads).
+
+Verified 2026-10-23 (deep-dive pass) against `src/tui/`
+(`app/mod.rs`, `app/types.rs`, `app/commands.rs`, `app/state/*.rs`,
+`app/state/dialog.rs`, `components/component.rs`,
+`components/component/focus.rs`, `input.rs`, `task_lifecycle.rs`,
+`command.rs`, `runtime/command_dispatch.rs`), `tests/tui_render/`, and
+`scripts/check_tui_*`. This document is large (7000+ lines), so the
+load-bearing numeric, structural, and API-surface claims were verified
+rather than every line.
+
+Corrected:
+- **Stale file-size claim**: "Where It Lives" said `src/tui/app/mod.rs` is
+  "~14,358 lines". It is now ~20,300 lines, and `src/tui/` as a whole is
+  196 `.rs` files / ~202,400 lines. The section now carries the real
+  numbers and points at the Directory Structure tree.
+- **Stale module counts in the Directory Structure tree**: `app/state/` is
+  **33** modules (34 `.rs` files), not 31 (32); `commands/` is **41**
+  submodules, not 37; `components/dialogs/` is **41** dialogs, not 40.
+  `command.rs` holds **168** built-in commands, not 167 (the count asserted
+  by `built_in_command_count_matches_release_docs`, `src/tui/command.rs:1217`).
+- **Stale tree entries**: removed `components/help_overlay.rs` (deleted;
+  the tree still listed it as "removed in C001"), and added the modules the
+  tree did not mention at all — `app/turn_submit.rs`, `app/state/session_work.rs`,
+  `panels/agents.rs`, `panels/hosted.rs`, and the top-level
+  `chat_browser.rs`, `composer_claims.rs`, `composer_text.rs`,
+  `editor_completion.rs`, `editor_highlight.rs`, `editor_lsp.rs`,
+  `editor_match.rs`, `file_icons.rs`, `file_tree_coordinator.rs`,
+  `text_geometry.rs`, `wrap.rs`.
+- **Stale line anchors**: `App` is at `app/mod.rs:328` (not `:222`);
+  `SessionState` at `app/state/session.rs:94` (not `:71`);
+  `Component` at `components/component.rs:215` (not `:183`);
+  `TuiMsg` at `app/types.rs:155` (not `:123`); `TuiCommand` at
+  `app/commands.rs:56` (not `:15`); `Dialog` at `app/types.rs:4` (not `:2`);
+  `InputAction` at `src/tui/input.rs:137` (not `:102`);
+  `dispatch_tui_command` at `src/tui/runtime/command_dispatch.rs:87`
+  (not `:84`). The `dispatch_tui_command` reference is now stated by symbol
+  name as well, so it survives further drift.
+- **Stale variant counts**: `TuiMsg` is **164** variants (not 116);
+  `TuiCommand` is **245** (not 205/203); `InputAction` is **61** (not 52);
+  `Dialog` and `DialogType` are **53** each (not 51/46) — `JobDetail` and
+  `Queue` were missing from both listings.
+- **Incomplete `Component` trait listing**: the listing omitted
+  `docks_as_viewer`, `keymap_hint`, and `render_in_panel`, which are the
+  three defaults the docking contract depends on. They are now listed with
+  what each one means.
+- **Incomplete `LspService`-style listings**: the `App` struct listing
+  omitted `command_registry`, `policy_ui`, `search_runtime`,
+  `lsp_status_cache`, `interactive_terminals`, `pending_turn_submission`,
+  `turn_submit_request`, and `file_tree_coordinator`; the `SessionState`
+  listing omitted `last_error` (the latched turn failure),
+  `working_since`, `running_tool`, `active_turn_id`, `stopped_turn`,
+  `user_prompt_queue`, and the git-summary fields. The `UiState` listing
+  omitted `tree_focused` and `subagents`.
+- **Wrong config filename**: the Configuration Surface section referred to
+  `opencode.jsonc`. This repo has no such file — the config files are
+  `codegg.jsonc`, `codegg.json`, and `config.json`, and the annotated
+  example is `codegg.example.jsonc`.
+- **Stale `GitSidebarState` anchor**: it is at `app/state/session.rs:222`,
+  not `:134`.
+
+Confirmed accurate, no change needed:
+- `TuiTaskKind` (13 variants) and `TuiTaskRegistry`
+  (`src/tui/task_lifecycle.rs:133`), `AsyncUiRequestState`
+  (`app/state/async_request.rs:20`), `ComposerMode`
+  (`app/state/work_orders.rs:25`), and `Route` (`src/tui/route.rs:2`).
+- `dispatch_tui_command` is `pub(crate) async` with exactly **five**
+  `.await` points, all inside the durable-editor arms —
+  `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
+  `EditCheckpointList` (`runtime/command_dispatch.rs:2687`, `:2738`,
+  `:2792`, `:2846`, `:2898`).
+- `EXIT_ARM_WINDOW` is three seconds
+  (`src/tui/app/state/prompt.rs:126`), and the "two deliberate presses" rule
+  for `q` and `Ctrl+C` is documented correctly.
+- The render-regression count is 111 `#[test]` in
+  `tests/tui_render/tui_render.inc`.
+- `FocusManager` is `stack: VecDeque<Box<dyn Component>>`, and `push`
+  returns `bool` and refuses a duplicate `DialogType` — the doc's listing is
+  now explicit about that, because a hidden second owner is the failure it
+  prevents.
+- The Invariants & Gotchas section already states the load-bearing rules
+  correctly: no working strip and nothing reserved between transcript and
+  composer, `Esc` as the mode switch, the composer naming exactly one
+  destination, the single directional dispatcher, and the one-time docking
+  gesture interception gated on `Component::docks_as_viewer()`.
 ### Editor LSP presentation (M006-C)
 
 The editor consumes the daemon-owned `LspDiagnosticsGet` and `LspReadGet`

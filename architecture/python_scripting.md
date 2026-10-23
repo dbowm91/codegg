@@ -65,7 +65,7 @@ safely. The module is the domain authority for Python execution semantics.
 
 All production model-facing Python execution flows through the scheduler:
 
-- `PythonJobExecutor` (`src/scheduler/executors.rs:1148`) implements `JobExecutor`
+- `PythonJobExecutor` (`src/scheduler/executors.rs`) implements `JobExecutor`
   for `JobKind::Python`. It validates source digest, begins a RunStore record,
   invokes `execute_python_script_with_cancellation()`, persists artifacts, and
   completes the record.
@@ -76,7 +76,7 @@ All production model-facing Python execution flows through the scheduler:
 
 ## Key Types & APIs
 
-### PythonExecutionMode (`types.rs:260`)
+### PythonExecutionMode (`src/python_script/types.rs`)
 
 | Mode | Description | Default Timeout | Subprocess | Writes |
 |------|-------------|----------------|------------|--------|
@@ -84,7 +84,7 @@ All production model-facing Python execution flows through the scheduler:
 | `Transform` | Mutating transformation | 60s | Denied | Allowed (workspace) |
 | `Verify` | Test/verification | 300s | Allowed (allowlisted) | Denied |
 
-### PythonScriptRequest (`types.rs:475`)
+### PythonScriptRequest (`src/python_script/types.rs`)
 
 ```rust
 pub struct PythonScriptRequest {
@@ -109,7 +109,7 @@ writable scratch root for Analyze/Verify; Transform additionally receives the
 approved workspace write root. Shared `/tmp` and global user cache directories
 are not writable sandbox roots.
 
-### PythonRiskAssessment (`types.rs:437`)
+### PythonRiskAssessment (`src/python_script/types.rs`)
 
 ```rust
 pub struct PythonRiskAssessment {
@@ -127,15 +127,17 @@ pub struct PythonRiskAssessment {
 }
 ```
 
-`PythonRiskScanner`: `Ast | Fallback` — which analysis backend produced the result.
+`PythonRiskScanner`: `Ast | Fallback` — which analysis backend produced the
+result. `PythonRiskAssessment::safe()` returns a `Fallback`-scanner, all-clear
+assessment; `requires_permission()` is true for `Medium` and `High`.
 
-### PythonRiskLevel (`types.rs:419`)
+### PythonRiskLevel (`src/python_script/types.rs`)
 
 `Safe | Low | Medium | High`
 
 Priority: destructive_ops > subprocess/network > file_io/dynamic_exec/dep_install > safe.
 
-### PythonCapabilityProfile (`types.rs:66`)
+### PythonCapabilityProfile (`src/python_script/types.rs`)
 
 ```rust
 pub struct PythonCapabilityProfile {
@@ -156,7 +158,7 @@ Constructors: `analyze(workspace_root)`, `transform(workspace_root)`,
 `verify(workspace_root)`, `from_mode_risk_and_context(mode, workspace_root, risk)`.
 Risk analysis can only narrow capabilities, never widen.
 
-### ExecutableRule (`types.rs:20`)
+### ExecutableRule (`src/python_script/types.rs`)
 
 Controls which subprocess binaries are allowed in Verify mode:
 
@@ -171,13 +173,13 @@ pub struct ExecutableRule {
 Default Verify rules: `cargo`, `cargo-test`, `pytest`, `python3 -m pytest`,
 `go test`, `make test`, `make build`.
 
-### PythonCapabilityEnvelope (`types.rs:311`)
+### PythonCapabilityEnvelope (`src/python_script/types.rs`)
 
 Legacy capability envelope (backward compat). Fields: `read_workspace`,
 `write_workspace`, `read_outside_workspace`, `write_outside_workspace`, `subprocess`,
 `network`, `env_access`, `dependency_install`, `destructive_fs`.
 
-### PythonPolicyDecision (`types.rs:240`)
+### PythonPolicyDecision (`src/python_script/types.rs`)
 
 ```rust
 pub struct PythonPolicyDecision {
@@ -191,12 +193,12 @@ pub struct PythonPolicyDecision {
 }
 ```
 
-### SandboxBackend (`types.rs:183`)
+### SandboxBackend (`src/python_script/types.rs`)
 
 `Os { backend } | Unavailable | PortableFallback | None` (the legacy
 `PortableFallback` value is not selected for constrained execution)
 
-### SandboxOutcome (`types.rs:205`)
+### SandboxOutcome (`src/python_script/types.rs`)
 
 ```rust
 pub enum SandboxOutcome {
@@ -207,7 +209,7 @@ pub enum SandboxOutcome {
 }
 ```
 
-### PythonRunResult (`types.rs:520`, 23 fields)
+### PythonRunResult (`src/python_script/types.rs`, 23 fields)
 
 ```rust
 pub struct PythonRunResult {
@@ -240,7 +242,17 @@ pub struct PythonRunResult {
 
 Labels are pseudo-local run identifiers, not registered in any artifact store.
 
-### DelegatedPythonRun (`tool.rs:16`)
+### Supporting types (`src/python_script/types.rs`)
+
+| Type | Shape |
+|------|-------|
+| `PythonRunStatus` | `Success \| Failed(i32) \| TimedOut \| SpawnError` — with `exit_code()` and `is_success()` helpers |
+| `PythonScriptSource` | `Inline(String) \| FilePath(PathBuf)` |
+| `SandboxRequirement` | The containment tier a profile requires of the host |
+| `SandboxFailureKind` | The kind of sandbox-setup failure recorded in `SandboxOutcome::Failed` |
+| `CapabilityViolation` | One denied capability, with its reason |
+
+### DelegatedPythonRun (`src/python_script/tool.rs`)
 
 ```rust
 pub struct DelegatedPythonRun {
@@ -269,7 +281,7 @@ pub fn cleanup_orphans(&self, active_digests: &[&str]) -> usize
 
 `INLINE_SOURCE_MAX_BYTES = 200 KiB`, `SOURCE_STORE_MAX_BYTES = 2 MiB`.
 
-### PythonProjector (`src/python_script/projection.rs:163`)
+### PythonProjector (`src/python_script/projection.rs`)
 
 Implements `CommandOutputProjector` for the shell projection pipeline. Name: `"python"`.
 Detects Python commands by argv prefix (`python3`, `python`, `pip`, `pip3`, `conda`).
@@ -325,6 +337,16 @@ pub async fn persist_python_run(
     request: &PythonScriptRequest,
     result: &PythonRunResult,
 ) -> Option<RunId>
+pub(crate) async fn write_python_run_artifacts(
+    store: &Arc<dyn RunStore>,
+    handle: &RunHandle,
+    result: &PythonRunResult,
+)
+pub(crate) async fn complete_python_run(
+    store: &Arc<dyn RunStore>,
+    handle: RunHandle,
+    result: &PythonRunResult,
+) -> Option<RunId>
 
 // source_store.rs
 pub fn compute_digest(source: &str) -> String
@@ -341,25 +363,27 @@ pub fn compute_digest(source: &str) -> String
 
 ### Verify mode timeouts
 
-The tool default for Verify mode is 300s (`src/python_script/tool.rs:543`). The scheduler may
-override via `JobPayload.timeout_secs`.
+The tool default for Verify mode is 300s (`src/python_script/tool.rs`). The scheduler may
+override via `JobPayload.timeout_secs`. A model-supplied `timeout` is clamped
+to 900s, and the tool's wait bound is `timeout + 30s`.
 
-### Source store constants (`src/python_script/source_store.rs:17`/`:20`)
+### Source store constants (`src/python_script/source_store.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `INLINE_SOURCE_MAX_BYTES` | 204,800 | Max source inlineable in job payload |
 | `SOURCE_STORE_MAX_BYTES` | 2,000,000 | Max total source accepted by store |
 
-### Environment policy (`src/python_script/executor.rs:24-31`)
+### Environment policy (`src/python_script/executor.rs`)
 
 Inherited env vars: `PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`,
 `PYTHONPATH`, `DYLD_LIBRARY_PATH`. All other env vars are cleared.
 
 ### Diff generation
 
-Per-file content capped at 4000 chars (`executor.rs:688`).
-File content capture limit: 2 MiB per file (`executor.rs:617`).
+Per-file content capped at 4000 chars (`MAX_DIFF_CONTENT` in
+`src/python_script/executor.rs`).
+File content capture limit: 2 MiB per file (`MAX_FILE_BYTES` in the same file).
 
 ## Invariants & Gotchas
 
@@ -429,11 +453,11 @@ cargo test -p codegg --lib python_script
 Submodule targeting:
 
 ```bash
-cargo test -p codegg --lib python_script::analyze      # 39 tests
-cargo test -p codegg --lib python_script::sandbox       # 43 tests
-cargo test -p codegg --lib python_script::executor      # 20 tests
+cargo test -p codegg --lib python_script::analyze      # 35 tests
+cargo test -p codegg --lib python_script::sandbox       # 44 tests
+cargo test -p codegg --lib python_script::executor      # 24 tests
 cargo test -p codegg --lib python_script::projection    # 20 tests
-cargo test -p codegg --lib python_script::tool          # 2 tests
+cargo test -p codegg --lib python_script::tool          # 4 tests
 cargo test -p codegg --lib python_script::source_store  # 13 tests
 cargo test -p codegg --lib python_script::snapshot      # 4 tests
 cargo test -p codegg --lib python_script::tests         # module-level integration tests
@@ -442,8 +466,13 @@ cargo test -p codegg --lib python_script::tests         # module-level integrati
 ### Adversarial testing
 
 ```bash
-cargo test --test python_sandbox_adversarial
+cargo test --test tool_programs -- python_sandbox_adversarial
 ```
+
+`python_sandbox_adversarial` is a member of the `tool_programs`
+integration-test family (`tests/tool_programs/`); the family is the single
+Cargo test target declared in the root `Cargo.toml`, so the member name must be
+passed as a filter after `--`.
 
 Validates escape and bypass resistance: alias bypass, getattr bypass,
 shell=True bypass, pathlib escape, dynamic code execution, import chain
@@ -487,3 +516,50 @@ matching the doc block exactly, `PythonScriptRequest` 7 fields,
 `INLINE_SOURCE_MAX_BYTES` 200 KiB and `SOURCE_STORE_MAX_BYTES` 2,000,000
 (`source_store.rs:17`/`:20`), and the 2 MiB / 4000-char diff limits
 (`executor.rs:617`/`:688`).
+
+Verified 2026-10-23 against `src/python_script/{types,analyze,sandbox,executor,projection,tool,source_store,snapshot}.rs`,
+`src/scheduler/executors.rs`, the root `Cargo.toml` test targets, and
+`tests/tool_programs/mod.rs`. Corrected:
+
+- **All `types.rs` line refs replaced by symbol names.** Every one of them had
+  drifted by ~10 lines (`PythonExecutionMode` 260→270, `PythonScriptRequest`
+  475→485, `PythonRiskLevel` 419→429, `PythonRiskAssessment` 437→447,
+  `PythonCapabilityEnvelope` 311→321, `PythonPolicyDecision` 240→250,
+  `SandboxOutcome` 205→213, `PythonRunResult` 520→530). They are now
+  referenced by declaration name and file.
+- **`PythonJobExecutor` line ref dropped** (`executors.rs:1148` had drifted to
+  `:1771`).
+- **`DelegatedPythonRun` and `PythonProjector` line refs dropped**
+  (`tool.rs:16` → `:19`; `projection.rs:163` → `:159`).
+- **Diff-cap line refs replaced by constant names**: the 4000-char per-file
+  diff cap is `MAX_DIFF_CONTENT` and the 2 MiB capture limit is
+  `MAX_FILE_BYTES`, both in `src/python_script/executor.rs` (they were cited as
+  `:688`/`:617`, which had drifted).
+- **Test counts re-measured** with a Rust-aware scan: analyze 39 → 35,
+  sandbox 43 → 44, executor 20 → 24, tool 2 → 4. projection 20,
+  source_store 13, and snapshot 4 are unchanged.
+- **Adversarial test command corrected.** `cargo test --test
+  python_sandbox_adversarial` selected zero tests — the member now lives in
+  the `tool_programs` family. It is now `cargo test --test tool_programs --
+  python_sandbox_adversarial`.
+- **Missing surfaces added**: the supporting types (`PythonRunStatus`,
+  `PythonScriptSource`, `SandboxRequirement`, `SandboxFailureKind`,
+  `CapabilityViolation`), the `write_python_run_artifacts()` /
+  `complete_python_run()` RunStore helpers the document's own step 8 depends
+  on, the 900s model-supplied timeout clamp (`MAX_TIMEOUT_SECS`) and the
+  `timeout + 30s` tool wait bound, and
+  `PythonRiskAssessment::safe()` / `requires_permission()`.
+
+Verified accurate: 9 files in `src/python_script/`; `PythonRiskAssessment` 11
+fields; `PythonCapabilityProfile` 10 fields with `analyze` / `transform` /
+`verify` / `from_mode_risk_and_context` constructors and narrowing-only
+semantics; `PythonPolicyDecision` 7 fields; `PythonRunResult`'s 23 fields
+matching the doc block exactly; `PythonScriptRequest` 7 fields with
+`workspace_root` as the authoritative CWD-containment boundary;
+`ExecutableRule` 3 fields and the 7 default Verify rules; 4 `SandboxOutcome`
+variants; `DEFAULT_TIMEOUT_SECS` 60 and `MAX_SCRIPT_LENGTH` 500,000;
+`INLINE_SOURCE_MAX_BYTES` 200 KiB and `SOURCE_STORE_MAX_BYTES` 2,000,000;
+the 2 MiB / 4000-char diff limits; the 7 inherited environment variables; the
+source-store API and its symlink / traversal / oversize / invalid-UTF-8
+rejections; and the `IdempotencyClass`, source-integrity, legacy-payload
+rejection, cancellation, and fail-closed sandbox invariants.

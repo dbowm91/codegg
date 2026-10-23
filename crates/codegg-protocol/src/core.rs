@@ -912,7 +912,82 @@ pub struct RuntimePreferenceDto {
     /// pre-M003 payloads and means "no Task preference".
     #[serde(default)]
     pub last_task_model_id: Option<String>,
+    /// Provider reasoning control M002: the daemon-owned, principal-scoped
+    /// extended-thinking selection.
+    ///
+    /// `None` decodes from pre-M002 payloads and means "no explicit
+    /// selection": the turn then inherits the agent / model-profile
+    /// default. The label inside an `Effort` selection is an **open,
+    /// provider-scoped** string carried verbatim.
+    #[serde(default)]
+    pub reasoning_selection: Option<ReasoningOverride>,
 }
+
+/// Capability negotiation for the provider-reasoning control surface.
+///
+/// A client consults this before sending a **non-enumerated** reasoning
+/// label (one outside [`KNOWN_REASONING_EFFORT_LABELS`]). A daemon that
+/// has not advertised [`open_label_vocabulary`](Self::open_label_vocabulary)
+/// refuses such a label with a typed error rather than decoding it as one
+/// of the known labels — silently folding `xhigh` into `high` would change
+/// what the model is asked to do.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasoningCapabilitiesDto {
+    /// True when this daemon accepts an open, provider-scoped reasoning
+    /// label — a label outside the known convenience set.
+    ///
+    /// A client MUST NOT send a non-enumerated label to a daemon that has
+    /// not advertised this.
+    #[serde(default)]
+    pub open_label_vocabulary: bool,
+    /// The known convenience labels this daemon recognises, in the
+    /// fallback ladder order.
+    #[serde(default)]
+    pub known_labels: Vec<String>,
+    /// Maximum bytes this daemon accepts for one reasoning label.
+    #[serde(default)]
+    pub max_label_bytes: usize,
+}
+
+impl ReasoningCapabilitiesDto {
+    /// The capabilities this daemon build advertises.
+    pub fn current() -> Self {
+        Self {
+            open_label_vocabulary: true,
+            known_labels: KNOWN_REASONING_EFFORT_LABELS
+                .iter()
+                .map(|label| (*label).to_string())
+                .collect(),
+            max_label_bytes: MAX_REASONING_LABEL_BYTES,
+        }
+    }
+
+    /// Whether this daemon advertises the open, provider-scoped label
+    /// vocabulary.
+    pub fn accepts_open_label(&self) -> bool {
+        self.open_label_vocabulary
+    }
+
+    /// Whether `label` is a label this daemon can carry without having
+    /// advertised the open vocabulary.
+    pub fn is_enumerated_label(&self, label: &str) -> bool {
+        self.known_labels.iter().any(|known| known == label)
+    }
+}
+
+/// The maximum number of bytes one reasoning label may occupy.
+///
+/// Bounded in Rust at the store and request boundaries so a hostile or
+/// mistaken label cannot become an unbounded durable value or an
+/// unbounded provider wire field.
+pub const MAX_REASONING_LABEL_BYTES: usize = 64;
+
+/// The largest fixed extended-thinking token budget that may be
+/// persisted or requested.
+///
+/// A zero budget is refused too: the provider wire rejects it, so
+/// storing one would persist a value that can never be honoured.
+pub const MAX_REASONING_BUDGET_TOKENS: usize = 1_000_000;
 
 /// Obtained filesystem enforcement projection (M005).
 ///
@@ -1976,6 +2051,17 @@ pub enum CoreResponse {
     /// no identity field.
     ApprovalPreference {
         preference: RuntimePreferenceDto,
+    },
+    /// Provider reasoning control M002: the caller's durable,
+    /// principal-scoped extended-thinking selection, projected with the
+    /// rest of the runtime preference.
+    ReasoningPreference {
+        preference: RuntimePreferenceDto,
+    },
+    /// Provider reasoning control M002: the daemon's reasoning capability
+    /// advertisement.
+    ReasoningCapabilities {
+        capabilities: ReasoningCapabilitiesDto,
     },
     /// Effective execution-policy snapshot for the caller's session
     /// context. Immutable once captured for a turn; mode changes apply
@@ -3705,6 +3791,34 @@ pub enum CoreRequest {
         #[serde(default)]
         expected_revision: Option<u64>,
     },
+    /// Provider reasoning control M002: read the caller's durable,
+    /// principal-scoped extended-thinking selection.
+    ///
+    /// The principal is derived from transport authority, never from the
+    /// request body.
+    ReasoningPreferenceGet,
+    /// Provider reasoning control M002: persist the caller's durable,
+    /// principal-scoped extended-thinking selection.
+    ///
+    /// `selection: None` clears the selection, which puts the turn back
+    /// on the agent / model-profile default. The selection is **open**: an
+    /// `Effort` selection carries a provider-scoped label verbatim, and
+    /// the daemon validates its shape and length before writing it. CAS
+    /// via `expected_revision`: stale writes fail with
+    /// `preference_conflict` for reload.
+    ReasoningPreferenceSet {
+        #[serde(default)]
+        selection: Option<ReasoningOverride>,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// Provider reasoning control M002: read the daemon's reasoning
+    /// capability advertisement.
+    ///
+    /// A client consults this before sending a non-enumerated label; a
+    /// daemon that has not advertised the open vocabulary refuses such a
+    /// label with a typed error.
+    ReasoningCapabilities,
     /// Read the effective execution-policy snapshot (persisted preference
     /// resolved against built-in defaults). Immutable once captured for a
     /// turn; concurrent mode changes apply on the next boundary.
@@ -3846,63 +3960,83 @@ pub enum CoreRequest {
     },
 }
 
-/// A TUI-chosen extended-thinking setting for one turn.
+/// An extended-thinking selection for one turn.
 ///
 /// Effort and budget are mutually exclusive on the wire: a budget selects
 /// Anthropic-style fixed-budget thinking, an effort selects OpenAI-style
-/// reasoning effort. `Off` explicitly disables thinking, which is distinct
-/// from `None` on the request (inherit the configured default).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+/// reasoning effort.
+///
+/// `Off` explicitly disables thinking for this turn. It is distinct from the
+/// *absent* override: this enum has no `None` variant, and an absent
+/// `ReasoningOverride` on the request means "inherit the daemon's resolved
+/// selection", whereas `Off` is a positive instruction to turn thinking off.
+/// The request preparation layer carries that distinction to the provider wire,
+/// where an explicit disable is a different shape from "no preference".
+///
+/// The effort label is **open and provider-scoped** (ADR-0049). It is not a
+/// level on a fixed enum: an arbitrary vendor label is carried verbatim, and
+/// the known convenience labels in [`KNOWN_REASONING_EFFORT_LABELS`] are a
+/// convenience set for the fallback ordering only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ReasoningOverride {
-    /// Reasoning-effort levels, ordered so cycling is well defined.
-    Effort { level: ReasoningEffort },
+    /// An open, provider-scoped reasoning-effort label.
+    ///
+    /// The label is carried **verbatim**: it is never normalized,
+    /// lower-cased, translated into another label, or mapped onto a
+    /// fixed level set. A vendor label such as `xhigh`, `max`, `none` or
+    /// `default` is a legitimate value here, exactly as the four known
+    /// convenience labels are.
+    Effort { level: String },
     /// A fixed token budget for extended thinking.
     Budget { tokens: usize },
     /// Explicitly disable thinking for this turn.
+    ///
+    /// Distinct from an absent override, which inherits the configured
+    /// default.
     Off,
 }
 
-/// Reasoning-effort levels a model may support.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningEffort {
-    Minimal,
-    Low,
-    Medium,
-    High,
+/// The known reasoning-effort labels, in the fallback escalation order.
+///
+/// This is a **convenience set**, not a model's option set. It is the
+/// order the frontend's `/reasoning` cycle falls back to when no
+/// per-model capability record is available, and the only labels this
+/// crate recognises by name. A label outside this set is legitimate: it
+/// is preserved verbatim end to end and is never translated into one
+/// of these.
+pub const KNOWN_REASONING_EFFORT_LABELS: [&str; 4] = ["minimal", "low", "medium", "high"];
+
+/// Whether `label` is one of the known convenience labels.
+///
+/// Exact, case-sensitive match: a label is either one of the known
+/// spellings or it is an open vendor label. Nothing is folded, and
+/// nothing is rejected for being unknown.
+pub fn is_known_reasoning_effort_label(label: &str) -> bool {
+    KNOWN_REASONING_EFFORT_LABELS.contains(&label)
 }
 
-impl ReasoningEffort {
-    /// The provider-facing spelling used on the request wire.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReasoningEffort::Minimal => "minimal",
-            ReasoningEffort::Low => "low",
-            ReasoningEffort::Medium => "medium",
-            ReasoningEffort::High => "high",
-        }
-    }
-
-    /// The next level in the escalation cycle.
-    pub fn next(self) -> ReasoningEffort {
-        match self {
-            ReasoningEffort::Minimal => ReasoningEffort::Low,
-            ReasoningEffort::Low => ReasoningEffort::Medium,
-            ReasoningEffort::Medium => ReasoningEffort::High,
-            ReasoningEffort::High => ReasoningEffort::High,
-        }
-    }
+/// The next known label in the fallback ladder.
+///
+/// Returns `None` when `label` is already the top of the ladder, or
+/// when it is not one of the known labels at all — an open vendor label
+/// has no defined successor, because this crate does not know the
+/// vendor's ordering.
+pub fn next_known_reasoning_effort_label(label: &str) -> Option<&'static str> {
+    let index = KNOWN_REASONING_EFFORT_LABELS
+        .iter()
+        .position(|known| *known == label)?;
+    KNOWN_REASONING_EFFORT_LABELS.get(index + 1).copied()
 }
 
 /// Selector for the extended-thinking mode a turn requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ReasoningMode {
     /// Use whatever the agent / model profile configures.
     #[default]
     Inherit,
-    /// Reasoning-effort ladder.
-    Effort(ReasoningEffort),
+    /// An open, provider-scoped reasoning-effort label.
+    Effort(String),
     /// Fixed extended-thinking token budget.
     Budget(usize),
     /// Explicitly off for this turn.
@@ -3923,14 +4057,24 @@ impl From<Option<ReasoningOverride>> for ReasoningMode {
 impl ReasoningMode {
     /// Advance the cycle: inherit → effort ladder → off → inherit.
     ///
-    /// The effort ladder saturates at `high`; the cycle then continues to
-    /// `Off` so a user can always return to the configured default.
+    /// The effort ladder is the **fallback** ladder — the known
+    /// convenience labels in [`KNOWN_REASONING_EFFORT_LABELS`] — because
+    /// this crate holds no per-model capability record. It saturates at
+    /// `high`; the cycle then continues to `Off` so a user can always
+    /// return to the configured default.
+    ///
+    /// A label that is **not** one of the known convenience labels has no
+    /// successor in this ladder: the vendor's ordering is unknown here,
+    /// so the cycle leaves the ladder at `Off` rather than inventing a
+    /// neighbouring level for it.
     pub fn cycle(self) -> ReasoningMode {
         match self {
-            ReasoningMode::Inherit => ReasoningMode::Effort(ReasoningEffort::Medium),
-            ReasoningMode::Effort(level) => match level.next() {
-                next if next == level => ReasoningMode::Off,
-                next => ReasoningMode::Effort(next),
+            ReasoningMode::Inherit => {
+                ReasoningMode::Effort(KNOWN_REASONING_EFFORT_LABELS[2].to_string())
+            }
+            ReasoningMode::Effort(level) => match next_known_reasoning_effort_label(&level) {
+                Some(next) => ReasoningMode::Effort(next.to_string()),
+                None => ReasoningMode::Off,
             },
             ReasoningMode::Budget(_) => ReasoningMode::Off,
             ReasoningMode::Off => ReasoningMode::Inherit,
@@ -3941,12 +4085,15 @@ impl ReasoningMode {
     ///
     /// Only the modes that pin a concrete value need it; `Inherit` defers to
     /// config and `Off` deliberately asks for none.
-    pub fn requests_reasoning(self) -> bool {
+    pub fn requests_reasoning(&self) -> bool {
         matches!(self, ReasoningMode::Effort(_) | ReasoningMode::Budget(_))
     }
 
     /// Short label for the status bar.
-    pub fn label(self) -> &'static str {
+    ///
+    /// An open vendor label is shown verbatim — it is not folded onto one
+    /// of the known convenience labels.
+    pub fn label(&self) -> &str {
         match self {
             ReasoningMode::Inherit => "default",
             ReasoningMode::Effort(level) => level.as_str(),
@@ -3960,7 +4107,7 @@ impl ReasoningMode {
     }
 
     /// Human-readable label, including the concrete budget amount.
-    pub fn detail(self) -> String {
+    pub fn detail(&self) -> String {
         match self {
             ReasoningMode::Budget(tokens) => format!("budget {tokens}"),
             other => other.label().to_string(),
@@ -4007,6 +4154,109 @@ impl CoreRequest {
             Self::ScratchUsage { .. } | Self::ScratchReclaim { .. }
         )
     }
+}
+
+/// Stable, secret-safe classification of a failed turn.
+///
+/// Never carries provider text, URLs, credentials, or response bodies.
+/// A consumer may branch on the category without ever seeing the failure
+/// message, which is the only reason the category exists: the message on
+/// [`CoreEvent::TurnFailed`] embeds upstream provider text and can carry
+/// secrets, so it must never be projected to an untrusted surface.
+///
+/// Every variant has exactly one native producer. A category with no
+/// producer would be a claim, not a classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnFailureCategory {
+    /// The provider could not be reached or the response stream broke.
+    ProviderTransport,
+    /// The provider rejected the credentials.
+    ProviderAuth,
+    /// The provider refused the request on quota/rate grounds.
+    ProviderRateLimit,
+    /// The provider request timed out.
+    ProviderTimeout,
+    /// The provider answered with an API-level failure.
+    ProviderApi,
+    /// The turn was cancelled before it completed.
+    Cancelled,
+    /// The daemon restarted while the turn was active.
+    DaemonRestarted,
+    /// The agent loop itself failed (invalid identity, invalid request).
+    AgentInternal,
+    /// The native layer could not classify the failure any more precisely.
+    NativeFailureUnspecified,
+}
+
+impl TurnFailureCategory {
+    /// The stable wire spelling of this category.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderTransport => "provider_transport",
+            Self::ProviderAuth => "provider_auth",
+            Self::ProviderRateLimit => "provider_rate_limit",
+            Self::ProviderTimeout => "provider_timeout",
+            Self::ProviderApi => "provider_api",
+            Self::Cancelled => "cancelled",
+            Self::DaemonRestarted => "daemon_restarted",
+            Self::AgentInternal => "agent_internal",
+            Self::NativeFailureUnspecified => "native_failure_unspecified",
+        }
+    }
+}
+
+/// Why provider usage is present or absent on a terminal event.
+///
+/// The distinction matters because "zero tokens" and "no token information"
+/// are different facts: a provider that reports `0` tokens is
+/// [`UsageAvailability::NotProvided`], while a turn that died before any
+/// provider response is [`UsageAvailability::NotObserved`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageAvailability {
+    /// The provider reported usage for this turn.
+    Reported,
+    /// The turn ended before any provider response reported usage.
+    NotObserved,
+    /// A provider response arrived but the route does not report usage.
+    NotProvided,
+    /// Usage was known natively but is not observable at this point.
+    LostAtProjection,
+    /// Availability could not be established.
+    Unspecified,
+}
+
+impl UsageAvailability {
+    /// The stable wire spelling of this availability reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reported => "reported",
+            Self::NotObserved => "not_observed",
+            Self::NotProvided => "not_provided",
+            Self::LostAtProjection => "lost_at_projection",
+            Self::Unspecified => "unspecified",
+        }
+    }
+}
+
+/// Provider-reported usage for a terminal turn, with explicit provenance.
+///
+/// The token counts are optional so "the provider reported zero" and "the
+/// provider reported nothing" stay distinguishable: the counts are absent
+/// when the route does not report them, and [`UsageAvailability::availability`]
+/// says which of the two happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<usize>,
+    pub availability: UsageAvailability,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -4178,6 +4428,23 @@ pub enum CoreEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         message: String,
+        /// Stable, secret-safe classification of the failure.
+        ///
+        /// Never carries provider text, URLs, credentials, or response
+        /// bodies. Optional because a persisted `core_event_log` row written
+        /// before this field existed must still deserialize, and because a
+        /// producer that genuinely cannot classify the failure leaves it
+        /// absent rather than guessing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<TurnFailureCategory>,
+        /// Provider usage observed before the failure, with explicit
+        /// provenance.
+        ///
+        /// Optional for the same wire-compat reason as `category`; `None`
+        /// means "no usage observation was attached here", which is not the
+        /// same as "the provider reported zero tokens".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
     },
     /// Controller lease changed (acquire/transfer/takeover/release).
     /// Structural locators only: session/turn/principal ids, revision,
@@ -4816,6 +5083,124 @@ mod tests {
     }
 
     #[test]
+    fn turn_failed_without_category_or_usage_still_deserializes() {
+        // A `core_event_log` row written before the failure class and the
+        // usage provenance existed must still decode: both fields are
+        // optional and default to absent, never to a fabricated value.
+        let legacy = r#"{"type":"turn_failed","session_id":"s1","message":"boom"}"#;
+        let event: CoreEvent = serde_json::from_str(legacy).expect("legacy row decodes");
+        match event {
+            CoreEvent::TurnFailed {
+                session_id,
+                turn_id,
+                message,
+                category,
+                usage,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(turn_id, None);
+                assert_eq!(message, "boom");
+                assert_eq!(category, None);
+                assert_eq!(usage, None);
+            }
+            other => panic!("expected TurnFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_failed_round_trips_the_category_and_the_usage_provenance() {
+        let event = CoreEvent::TurnFailed {
+            session_id: "s1".into(),
+            turn_id: Some("t1".into()),
+            message: "boom".into(),
+            category: Some(TurnFailureCategory::ProviderTransport),
+            usage: Some(TurnUsage {
+                input_tokens: Some(120),
+                output_tokens: Some(35),
+                cached_tokens: None,
+                reasoning_tokens: None,
+                availability: UsageAvailability::Reported,
+            }),
+        };
+        let encoded = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(encoded["category"], "provider_transport");
+        assert_eq!(encoded["usage"]["availability"], "reported");
+        assert_eq!(encoded["usage"]["input_tokens"], 120);
+        // Absent counts stay absent on the wire.
+        assert!(encoded["usage"].get("cached_tokens").is_none());
+        let decoded: CoreEvent = serde_json::from_value(encoded).expect("round trips");
+        match decoded {
+            CoreEvent::TurnFailed {
+                session_id,
+                turn_id,
+                message,
+                category,
+                usage,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(turn_id.as_deref(), Some("t1"));
+                assert_eq!(message, "boom");
+                assert_eq!(category, Some(TurnFailureCategory::ProviderTransport));
+                assert_eq!(
+                    usage,
+                    Some(TurnUsage {
+                        input_tokens: Some(120),
+                        output_tokens: Some(35),
+                        cached_tokens: None,
+                        reasoning_tokens: None,
+                        availability: UsageAvailability::Reported,
+                    })
+                );
+            }
+            other => panic!("expected TurnFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_availability_and_failure_category_use_the_documented_wire_spellings() {
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::Reported).unwrap(),
+            "reported"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::NotObserved).unwrap(),
+            "not_observed"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::NotProvided).unwrap(),
+            "not_provided"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::LostAtProjection).unwrap(),
+            "lost_at_projection"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::Unspecified).unwrap(),
+            "unspecified"
+        );
+        for (category, spelling) in [
+            (TurnFailureCategory::ProviderTransport, "provider_transport"),
+            (TurnFailureCategory::ProviderAuth, "provider_auth"),
+            (
+                TurnFailureCategory::ProviderRateLimit,
+                "provider_rate_limit",
+            ),
+            (TurnFailureCategory::ProviderTimeout, "provider_timeout"),
+            (TurnFailureCategory::ProviderApi, "provider_api"),
+            (TurnFailureCategory::Cancelled, "cancelled"),
+            (TurnFailureCategory::DaemonRestarted, "daemon_restarted"),
+            (TurnFailureCategory::AgentInternal, "agent_internal"),
+            (
+                TurnFailureCategory::NativeFailureUnspecified,
+                "native_failure_unspecified",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(category).unwrap(), spelling);
+            assert_eq!(category.as_str(), spelling);
+        }
+    }
+
+    #[test]
     fn secret_bearing_variants_are_denied() {
         // Guard pins the secret-bearing set behind `is_secret_bearing`.
         // Any future secret-bearing create/rotate variant must be added to
@@ -5449,37 +5834,82 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_cycles_upward_and_saturates() {
-        use ReasoningEffort::*;
-        assert_eq!(Minimal.next(), Low);
-        assert_eq!(Low.next(), Medium);
-        assert_eq!(Medium.next(), High);
-        assert_eq!(High.next(), High, "the ladder must not wrap silently");
+    fn known_reasoning_effort_labels_escalate_and_saturate() {
+        assert_eq!(next_known_reasoning_effort_label("minimal"), Some("low"));
+        assert_eq!(next_known_reasoning_effort_label("low"), Some("medium"));
+        assert_eq!(next_known_reasoning_effort_label("medium"), Some("high"));
+        assert_eq!(
+            next_known_reasoning_effort_label("high"),
+            None,
+            "the ladder must not wrap silently"
+        );
+        assert_eq!(
+            next_known_reasoning_effort_label("xhigh"),
+            None,
+            "an open label has no successor in the fallback ladder"
+        );
+    }
+
+    #[test]
+    fn an_open_reasoning_label_is_carried_verbatim() {
+        // ADR-0049: the vocabulary is open and provider-scoped. A vendor
+        // label is preserved exactly — not folded onto a known level, not
+        // lower-cased, not rejected.
+        let selection = ReasoningOverride::Effort {
+            level: "xhigh".to_string(),
+        };
+        let json = serde_json::to_string(&selection).expect("selection must encode");
+        assert_eq!(json, r#"{"mode":"effort","level":"xhigh"}"#);
+        let decoded: ReasoningOverride =
+            serde_json::from_str(&json).expect("selection must decode");
+        assert_eq!(decoded, selection);
+        assert!(!is_known_reasoning_effort_label("xhigh"));
+    }
+
+    #[test]
+    fn the_known_labels_keep_their_legacy_serialized_shape() {
+        // The serialized shape for the four known labels is unchanged by
+        // the vocabulary widening.
+        for label in KNOWN_REASONING_EFFORT_LABELS {
+            let selection = ReasoningOverride::Effort {
+                level: label.to_string(),
+            };
+            let json = serde_json::to_string(&selection).expect("selection must encode");
+            assert_eq!(json, format!(r#"{{"mode":"effort","level":"{label}"}}"#));
+        }
     }
 
     #[test]
     fn reasoning_mode_cycle_reaches_every_setting_and_returns_home() {
-        use ReasoningEffort::*;
         let start = ReasoningMode::Inherit;
-        let mut mode = start;
-        let mut seen = vec![mode];
+        let mut mode = start.clone();
+        let mut seen = vec![mode.clone()];
         // Bounded: the cycle must return to Inherit rather than diverge.
         for _ in 0..8 {
             mode = mode.cycle();
             if mode == start {
                 break;
             }
-            seen.push(mode);
+            seen.push(mode.clone());
         }
         assert_eq!(mode, start, "the cycle must return to its start");
         assert!(
-            seen.contains(&ReasoningMode::Effort(Medium)),
+            seen.contains(&ReasoningMode::Effort("medium".to_string())),
             "the cycle must offer a real effort level"
         );
         assert!(
             seen.contains(&ReasoningMode::Off),
             "the cycle must offer an explicit off"
         );
+    }
+
+    #[test]
+    fn an_open_label_leaves_the_fallback_ladder_at_off() {
+        // The fallback ladder knows only the convenience labels. An open
+        // label has no successor here, so the cycle steps off the ladder
+        // rather than inventing a neighbouring level for it.
+        let mode = ReasoningMode::Effort("xhigh".to_string());
+        assert_eq!(mode.cycle(), ReasoningMode::Off);
     }
 
     #[test]
@@ -5498,7 +5928,7 @@ mod tests {
     fn only_pinned_modes_request_reasoning() {
         // The TUI warns about providers that strip the field, so the
         // predicate must be true exactly where a request would be sent.
-        assert!(ReasoningMode::Effort(ReasoningEffort::Medium).requests_reasoning());
+        assert!(ReasoningMode::Effort("medium".to_string()).requests_reasoning());
         assert!(ReasoningMode::Budget(4_096).requests_reasoning());
         // `Inherit` defers to config (which may or may not set anything) and
         // `Off` asks for none; neither is a request this control made.

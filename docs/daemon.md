@@ -268,3 +268,29 @@ codegg daemon logs --lines 200
 - `architecture/client.md` — the native client and frontend/daemon boundary.
 - `docs/install.md` — installing CodeGG and its managed runfiles.
 - `docs/TROUBLESHOOTING.md` — symptom-driven daemon diagnosis.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Daemon root per platform (macOS `~/Library/Application Support/codegg`,
+  Linux `$XDG_RUNTIME_DIR/codegg` → `$XDG_DATA_HOME/codegg` →
+  `~/.local/share/codegg`, other Unix `/tmp/codegg`, Windows the local data
+  dir) and the `CODEGG_DAEMON_HOME` override:
+  `crates/codegg-client/src/paths.rs`.
+- The singleton lock file and the `daemon.json` / `core.sock` / `daemon.log`
+  artifacts: `src/core/instance.rs`.
+- `daemon` config keys (`auto_start`, `mode`, `project_scope`,
+  `event_log_capacity`, `startup_timeout_ms`, `shutdown_timeout_ms`):
+  `crates/codegg-config/src/schema.rs`.
+- `daemon.enabled` and `daemon.socket` exist in the schema but are read by no
+  production path: `crates/codegg-config/src/schema.rs`.
+- `daemon stop` is Unix-only: `src/main.rs` `cmd_daemon` (the `Stop` arm is
+  `#[cfg(unix)]`).
+- `codegg server` requires `--standalone-core` and exits 2 otherwise:
+  `src/main.rs` `cmd_server`.
+- `scratch.retention_days` default 14, `scratch.enabled`,
+  `scratch.sweep_interval_minutes`, `scratch.orphan_grace_hours`:
+  `crates/codegg-config/src/schema.rs`.
+- `codegg daemon scratch-usage` / `scratch-reclaim`:
+  `src/main.rs` `DaemonCommand`.

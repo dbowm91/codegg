@@ -124,11 +124,14 @@ Blocked     → Queued | Cancelled | Expired
 Completed | Cancelled | Expired → (none)
 ```
 
-`JobState::is_terminal()` (`crates/codegg-core/src/jobs/mod.rs:940`) reports
+`JobState::is_terminal()` (`crates/codegg-core/src/jobs/mod.rs:1058`) reports
 `Completed`, `Failed`, `Cancelled`, `TimedOut`, `Expired` as terminal — note
 that `Failed` and `TimedOut` are terminal *for dispatch* yet still have a legal
 outgoing edge to `Queued`, which is how an explicit retry re-enters the queue.
 Do not treat "terminal" and "no outgoing transitions" as the same set.
+(`AttemptState::is_terminal()` is at `mod.rs:1113` and reports `Completed`,
+`Failed`, `Cancelled`, `TimedOut`, `Interrupted` — there is no `Expired`
+attempt state.)
 
 ### AttemptState Transitions
 
@@ -183,10 +186,16 @@ JobStore owns queue/lifecycle. RunStore owns execution artifacts. They are NOT a
 ## Testing
 
 ```bash
-cargo test --test durable_jobs_phase4          # integration tests
+cargo test --test scheduler_jobs -- durable_jobs_phase4   # integration tests
 cargo test -p codegg-core jobs                 # unit tests for state machines, store
 cargo test -p codegg-core schedule             # unit tests for schedule logic
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. `durable_jobs_phase4.inc`
+is a member of the `scheduler_jobs` family, so the correct form is
+`cargo test --test scheduler_jobs -- durable_jobs_phase4`.
 
 All tests use `current_thread` Tokio runtime. In-memory stores for state-machine tests; SQLite stores for integration tests.
 
@@ -214,3 +223,26 @@ written: every path in the module map, the `NewJob` field list including the
 six child-job lineage fields and `ExecutionTarget`, the idempotency
 eligibility split, and all three `cargo test` targets (`durable_jobs_phase4`
 exists as an integration target).
+
+Fourth pass (2026-10-23): re-verified against
+`crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store}.rs`,
+`src/{job_dispatcher,job_recovery,background_task_migration}.rs`,
+`tests/scheduler_jobs/durable_jobs_phase4.inc`, and `scripts/check-core-boundary.sh`.
+Confirmed unchanged: every row of the module map, including the
+`JobDispatcher` trait (`src/job_dispatcher.rs:22`), `SubAgentJobDispatcher`
+(`:26`), `NullJobDispatcher` (`:110`), `recover_jobs_at_startup`
+(`src/job_recovery.rs:7`), and `migrate_legacy_background_tasks`
+(`src/background_task_migration.rs:52`); both state-machine diagrams, which
+still match `job_state_transitions` (`store.rs:109-123`) and
+`attempt_state_transitions` (`store.rs:127-139`) exactly; the
+`JobState::is_terminal()` variant set; and the idempotency eligibility split.
+
+Corrected: `JobState::is_terminal()` was cited at `mod.rs:940` (actually
+`:1058`) and `AttemptState::is_terminal()` at `mod.rs:995` (actually `:1113`);
+the job transition table at `store.rs:86-100` (actually `:109-123`) and the
+attempt table at `:104-116` (actually `:127-139`). The integration-test
+command named a target that does not exist — `durable_jobs_phase4.inc` is a
+member of the `scheduler_jobs` family, so `cargo test --test
+durable_jobs_phase4` selected zero tests and exited 0; it now reads
+`cargo test --test scheduler_jobs -- durable_jobs_phase4`.
+
