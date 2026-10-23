@@ -51,8 +51,14 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # `causal_observe_replay` joined 2026-10-16 after two hosted CI runs exceeded
 # its frozen p95 gate while other workspace binaries ran concurrently. Keep
 # the full binary exclusive; the test itself and its 5 ms assertion remain.
+#
+# `interactive_process_sessions` and `interactive_terminal_tui` left this list
+# on 2026-10-23: both were absorbed into the `interactive_process_attach_resume`
+# family, so their binaries no longer exist and the merged executable keeps
+# this family's exclusive slot. Three exclusive executables cost three serial
+# slots for 40 test functions; one costs one.
 [[profile.ci.overrides]]
-filter = "binary(eggwork_remote_execution_live) | binary(interactive_process_attach_resume) | binary(interactive_process_sessions) | binary(interactive_terminal_tui) | binary(scheduler_cancellation) | binary(causal_observe_replay)"
+filter = "binary(eggwork_remote_execution_live) | binary(interactive_process_attach_resume) | binary(scheduler_cancellation) | binary(causal_observe_replay)"
 threads-required = "num-cpus"
 slow-timeout = { period = "300s", terminate-after = 1 }
 
