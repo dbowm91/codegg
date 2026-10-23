@@ -363,3 +363,38 @@ operations 260, identity newtypes 19, built-in slash commands 169, built-in
 agents 10, bundled themes 50, TUI state modules 33, database tables 95
 statements / 91 tables, storage layout version 88, Git operation variants 54,
 Git risk classes 11, and workspace member crates 11 (+ root).
+
+### Fifth amendment — 2026-10-23, repository audit corrective C004 + merge reconciliation
+
+Three rows moved because C004 added one thing of each kind, and the merge of
+C004 needed reconciling. No row's **measure** changed, so no method decision is
+needed; the values were re-measured with `scripts/measure_overview_counts.py`
+and compared to the table row by row.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 329 | 331 | `tests/core_daemon/job_state_terminality_c004.inc` and `tests/scheduler_jobs/job_status_projection_c004.inc` — a new `.inc` member of each of two existing families. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; neither family directory nor any `tests/*.rs` was added, so the root package's **test-target** count did not move. |
+| Guard scripts (all) | 82 | 83 | `scripts/check_job_state_terminality_agreement.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 42 | 43 | The same guard, wired into `scripts/verify.sh quick` and `.github/workflows/ci.yml`; a guard's two `ci.yml` steps — the guard and its `--self-test` — are one distinct script. The measure is unchanged. |
+
+**Merge reconciliation.** C004 was developed on a sibling branch from the same
+base and re-measured these three rows in isolation, so it recorded its own
+single increment against the pre-merge base. `architecture/overview.md`
+conflicted on the two guard rows and on the tree comment; the rows were
+re-measured on the merged tree and the tree comment was corrected to the
+canonical **331**. The paragraph that summarises the count movement was
+merged into one statement covering C001, C002 and C004 rather than left as
+three competing versions.
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root). In particular the
+`codegg-core` modules row is still **54**: C004's new
+`codegg-core/src/jobs/evidence.rs` is a **sub**module of `jobs`, not a
+top-level `pub mod` in the crate's `lib.rs`.
