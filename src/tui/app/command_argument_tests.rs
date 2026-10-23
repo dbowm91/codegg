@@ -162,10 +162,16 @@ fn open_receives_the_path_without_the_command_name() {
     let mut app = App::new_for_testing("/tmp".into());
     dispatch_typed(&mut app, "/open src/lib.rs");
     let messages = toast_messages(&app);
-    assert!(!messages.is_empty(), "the command must report its outcome");
+    // The path has to reach the handler as a workspace-relative path. The
+    // assertion is anchored on a positive outcome — the command reported a
+    // document-open diagnostic — and it rules out the path refusal: a path
+    // that still carries the command name is absolute, and the handler
+    // refuses it before it reaches the project context.
     assert!(
-        !messages.iter().any(|m| m.contains("not absolute")),
-        "the path must not carry the command name: {messages:?}"
+        messages
+            .iter()
+            .any(|m| m.contains("Cannot open document") && !m.contains("not absolute")),
+        "the path must reach the handler as a workspace-relative path: {messages:?}"
     );
 }
 
