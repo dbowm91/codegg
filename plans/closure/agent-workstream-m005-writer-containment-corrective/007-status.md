@@ -26,7 +26,7 @@ Two more defects fell out of the same review and are closed here: a **store read
 | 4. A shared placement that cannot be honoured is refused with a typed error and never silently executed in the parent's workspace | §3.4 | **met, with one named divergence — §10** |
 | 5. Every defect above has a regression test that fails against the baseline and passes after the fix | §4 | **met** |
 | 6. Every new guard is wired into `verify.sh quick` or CI and has a `--self-test` case that is rejected when the defect is reintroduced | §5 | **met** |
-| 7. `verify.sh quick`, workspace clippy and the named test targets are green | §6 | **met** — `verify.sh quick` is green across its 86 steps, the workspace clippy with `-D warnings` is green, and the four named test targets are green |
+| 7. `verify.sh quick`, workspace clippy and the named test targets are green | §4.4 and §4.5 | **met** — `verify.sh quick` is green across its 86 steps, the workspace clippy with `-D warnings` is green, and the four named test targets are green |
 
 ## 3. Production implementation evidence
 
@@ -92,8 +92,10 @@ pub async fn release_group_lease(
 terminal status, and returns whether it did. A live group keeps its lease.
 
 **The executor asks the coordinator.**
-`src/scheduler/executors.rs` — the teardown path now calls
-`release_run_checkout`, which for a shared checkout delegates to
+`src/scheduler/executors.rs` — the teardown path now has two release helpers:
+`release_isolated_checkout`, which releases the lease on a checkout the run
+holds **for itself** and returns at once when the run holds a shared checkout,
+and `release_shared_checkout`, which delegates to
 `coordinator.release_group_lease(checkout)` and holds the lease when the group
 is live. The isolated path is unchanged: an isolated checkout's lease is
 released exactly as it always was.
@@ -178,6 +180,41 @@ transition the product would have rejected.
 Against the baseline, the first test has no counterpart: the baseline released
 the lease unconditionally when the allocating run ended.
 
+#### 4.1.1 A defect this milestone's first implementation carried, and the fix
+
+The two tests above exercise the **coordinator** directly. They did not
+exercise the **executor**, and the executor's ordering was wrong: it decided
+the shared lease's disposition *before* the run's terminal transition was
+durable. At that moment the group still looked live, so
+`release_group_lease` returned `false` and the lease was **retained for
+good** — the checkout never returned to `ready`, and the group held its
+reservation forever. The production path did not release the lease at all.
+
+Two changes close it, and both are needed:
+
+- **The release is decided after the terminal transition.** The executor's
+  teardown now calls `release_isolated_checkout` before the transition and
+  `release_shared_checkout` **after** it. The isolated path is unchanged: its
+  lease is the run's own, and it is released exactly as it always was.
+  The shared path's lease belongs to the group, so its disposition cannot be
+  decided while the run is still live.
+- **The group's liveness is derived from its members' durable statuses**, not
+  from the group's stored status. The stored status is recomputed by a
+  separate notification path, so at the moment of the release it may still
+  say `running` even though every member has finished. A member whose durable
+  record is **gone** cannot be running; a member whose record cannot be
+  **read** is an unresolved liveness, and the lease is held.
+
+`the_groups_lease_is_released_even_when_the_groups_stored_status_is_stale`
+covers the second change: every member's durable run is finished, the group
+is deliberately **not** recomputed — so its stored status is stale — and the
+lease is still released.
+
+`two_members_placed_through_the_real_scheduler_share_one_checkout` covers
+the first change end to end: it places two members through the real
+scheduler, waits for both to complete, and now also asserts that the
+checkout's lease is released and that the record is back to `ready`.
+
 ### 4.2 A failed lookup is a typed error
 
 `tests/shared_checkout_c006.rs` gained
@@ -203,7 +240,7 @@ which is what the review reproduced by execution.
 
 ### 4.4 The named test targets
 
-§6.1 and §6.2 of the plan name the shared-checkout suite. The scoped run on
+§10 and §11 of the plan name the shared-checkout suite. The scoped run on
 the implementation tree:
 
 | Target | Result |
@@ -428,3 +465,70 @@ would have, because the owner run had ended. The group-aware
 **The placement fix is a value fix, not a shape fix.** The payload type never
 changed; the value the child carries did. A group-placed child now records
 what the caller asked for instead of the default.
+
+## 14. Amendment: implementation review
+
+An implementation review of this milestone's change set found defects that the
+verification in §4 did not reach, because the tests exercised the coordinator
+directly and never the executor's ordering. The record is amended rather than
+replaced: the closure stands, and the amendments below are what the review
+changed.
+
+**A1 — the shared lease was never released in production.** The executor
+decided the shared lease's disposition **before** the run's terminal
+transition was durable. At that moment the group still looked live, so
+`release_group_lease` returned `false` and the lease was retained for good —
+the checkout never returned to `ready`. §4.1's two tests called the
+coordinator directly, so they passed while the production path was broken.
+
+The fix has two parts, and both are needed: the executor releases the
+**isolated** lease before the transition and the **shared** lease after it
+(`release_isolated_checkout` / `release_shared_checkout` in
+`src/scheduler/executors.rs`), and `group_is_live` derives the group's
+liveness from its **members' durable run statuses** rather than from the
+group's stored status, which is recomputed by a separate notification path
+and may still say `running` when every member has finished.
+
+**A2 — `release_group_lease` reported a success it could not verify.** The
+release's error was discarded (`let _ = ...`), so a failed release was logged
+as a released lease. The error is now propagated.
+
+**A3 — two refusal arms left the run un-finished.** The "no shared-checkout
+coordinator" arm and the "shared checkout linkage failed" arm returned a
+failure without recording the terminal transition, so the run stayed in
+`Preparing` for good — and a group whose member never finishes never
+terminates, which holds the shared lease. Both arms now finish the run, as
+their neighbours do.
+
+**A4 — `group_is_live` failed open on an unreadable member.** A member whose
+durable record cannot be read is an unresolved liveness, not an absent one:
+the answer is an error and the lease is held. A member whose record is
+**gone** cannot be running and does not keep the group alive.
+
+The second half of that is safe in every reachable case, and the review
+checked it: the group record is created *after* the children it names are
+spawned, so a member's durable record always exists before the group names
+it, and there is no run-deletion path in the tree. A model-supplied member
+id with no record names a run that will never join, so treating it as
+terminal is right — and a **forward** reference, which is the shape that
+would let the lease go early and a later member allocate a second checkout,
+is not reachable.
+
+**A5 — the shared-checkout guard's coverage.** The guard set that protects
+this milestone grew by one rule — `fail-closed-authority-read` in
+`scripts/check_writer_fence_completeness.py` — which asserts that the fence's
+durable authority reads are never answered with "absent". See the C009
+record's §14 for the rule itself.
+
+**A6 — the guard set changed, and the step count did not.** The review
+removed a duplicated `check_writer_fence_completeness` invocation from
+`scripts/verify.sh` (the guard ran twice in `run_guards`, −2 steps) and wired
+`check_daemon_cwd_usage.py`, which this line's C008 corrective extended but
+which was wired into **neither** `verify.sh quick` nor CI (+2 steps). The
+count is therefore unchanged at **86 steps**, over a different guard set.
+
+**A7 — §3.3's quoted code.** The two lines quoted in §3.3 paraphrase the
+baseline's error-swallowing form; the tree's form is a `match` on the store
+read. The substance of §3.3 — absence is skipped, a failed read is a typed
+`SharedCheckoutError::Lookup` — is unchanged and was verified against the
+tree.

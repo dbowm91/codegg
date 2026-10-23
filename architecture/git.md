@@ -142,11 +142,14 @@ invoked from **both** child-construction paths in
 `GitEnvPolicy::apply_sync` (the synchronous path). A child spawned through
 either path is therefore mediated. The guard
 `scripts/check_git_forbidden_patterns.py` asserts both calls: it matches a
-**call** (the detector name followed by `(` in a comment-stripped method
-body), not a mention, so a comment that names the detector does not satisfy
-the obligation. Its `--self-test` deletes each call in turn, and deletes both
-together, and proves the guard rejects each — a guard obligation without a
-matching injection is a claim, not a check.
+**call** (the detector name followed by `(` in a **masked** method body), not a
+mention. The mask removes Rust block comments, line comments, string literals,
+raw strings and char literals, so a name that appears only inside a comment or
+a literal does not satisfy the obligation. Its `--self-test` deletes each call
+in turn, deletes both together, and evades each call with a block comment, a
+multi-line block comment, a string literal and a raw string literal, and proves
+the guard rejects each — a guard obligation without a matching injection is a
+claim, not a check.
 
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
@@ -287,7 +290,11 @@ Three properties carry the contract:
   documentation correction. Narrowing the grant to the linked worktree's own
   directory would need a new ADR. See
   `scripts/check_contained_worktree_grant.py`, which asserts that the ADR,
-  the code comments, and the delivered grant name the same single path.
+  the code comments, and the delivered grant name the same single path —
+  and it asserts the **refusal** behaviourally, by evaluating the grant's
+  own condition against synthetic write roots, so neutering the condition
+  (`&& false`) or widening it (`!write.starts_with(administration_root)`)
+  is detected rather than matched as text.
 - **Containment is asserted, not requested.** The launch's *obtained*
   enforcement is read after the launch; a request is a hope. The grant itself
   is asserted against the built launch description, not against the

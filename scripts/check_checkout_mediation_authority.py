@@ -66,6 +66,17 @@ HTTP_FILE_SOURCE = "src/server/routes/file.rs"
 HTTP_WORKSPACE_SOURCE = "src/server/routes/workspace.rs"
 DAEMON_SOURCE = "src/core/daemon.rs"
 DAEMON_GOALS_SOURCE = "src/core/daemon_goals.rs"
+DAEMON_DOCUMENTS_SOURCE = "src/core/daemon_documents.rs"
+DAEMON_PROJECT_INIT_SOURCE = "src/core/daemon_project_init.rs"
+
+# Every **effect** family the daemon mediates. The identifier rule is a
+# property of the pairing between the gate and the effects, so a family the
+# guard does not read is a family whose rule can drift silently.
+EFFECT_SOURCES: tuple[str, ...] = (
+    DAEMON_GOALS_SOURCE,
+    DAEMON_DOCUMENTS_SOURCE,
+    DAEMON_PROJECT_INIT_SOURCE,
+)
 
 # The capped `list` surface on the worktree store.
 CAPPED_LIST_CALL = re.compile(r"\.list\s*\(")
@@ -209,11 +220,27 @@ def check_http_mediation(file_src: str, workspace_src: str) -> list[str]:
 # ── Check 3: one workspace-identifier rule on the gate and the effect ──
 
 
-def check_identifier_rule(daemon_src: str, goals_src: str) -> list[str]:
-    """The defects in the gate/effect identifier rule."""
+def check_identifier_rule(daemon_src: str, effects: dict[str, str]) -> list[str]:
+    """The defects in the gate/effect identifier rule.
+
+    The invariant is **one direction**: the gate's identifier rule must be at
+    least as permissive as every effect family's. A gate that is stricter
+    than an effect refuses identifiers that effect would accept, so the write
+    is stopped by the gate's own refusal and the mediation machinery never
+    engages — that is the defect this rule exists to catch.
+
+    An effect that is *stricter* than the gate is safe: it refuses more, and
+    every write it performs has already been mediated by the gate. The tree
+    has exactly that shape — the gate and the goals effect use the permissive
+    `WorkspaceId::new_unchecked`, while the document and project-init effects
+    apply a stricter lexical check on top. The rule therefore constrains the
+    gate against the **most permissive** effect, and leaves a stricter effect
+    alone.
+    """
     problems: list[str] = []
 
     gate = _function_body(daemon_src, "async fn workspace_root_for")
+    gate_permissive = False
     if gate is None:
         problems.append(
             f"{DAEMON_SOURCE} no longer declares `workspace_root_for`; the gate's "
@@ -223,25 +250,34 @@ def check_identifier_rule(daemon_src: str, goals_src: str) -> list[str]:
         if "WorkspaceId::parse" in gate:
             problems.append(
                 f"{DAEMON_SOURCE}: the gate resolves the workspace with "
-                "`WorkspaceId::parse` while the effect uses `WorkspaceId::new_unchecked`; "
-                "a gate stricter than the effect is a gate that silently stops mediating"
+                "`WorkspaceId::parse`, which is stricter than the effect side's "
+                "rule; a gate stricter than the effect is a gate that silently "
+                "stops mediating"
             )
-        if "WorkspaceId::new_unchecked" not in gate:
+        gate_permissive = "WorkspaceId::new_unchecked" in gate
+        if not gate_permissive:
             problems.append(
-                f"{DAEMON_SOURCE}: the gate does not resolve the workspace with the "
-                "effect side's `WorkspaceId::new_unchecked` rule"
+                f"{DAEMON_SOURCE}: the gate does not resolve the workspace with "
+                "`WorkspaceId::new_unchecked`; the gate's rule has to be visible "
+                "against the effect's"
             )
 
-    if "WorkspaceId::parse" in goals_src:
-        problems.append(
-            f"{DAEMON_GOALS_SOURCE} resolves a workspace with `WorkspaceId::parse`; "
-            "the effect side and the gate must use one identifier rule"
-        )
-    if "WorkspaceId::new_unchecked" not in goals_src:
-        problems.append(
-            f"{DAEMON_GOALS_SOURCE} no longer resolves a workspace with "
-            "`WorkspaceId::new_unchecked`"
-        )
+    # Every effect family is scanned, not one of them: the rule is a
+    # property of the *pairing*, and a family the guard does not read is a
+    # family whose rule can drift silently.
+    for rel, src in effects.items():
+        effect_permissive = "WorkspaceId::new_unchecked" in src
+        if "WorkspaceId::parse" not in src and not effect_permissive:
+            problems.append(
+                f"{rel} no longer resolves a workspace with either identifier rule; "
+                "the effect's rule has to be visible against the gate's"
+            )
+        if effect_permissive and not gate_permissive:
+            problems.append(
+                f"{rel} resolves a workspace with `WorkspaceId::new_unchecked` while "
+                "the gate uses a stricter rule; the gate would not mediate the "
+                "identifiers this effect accepts"
+            )
 
     if "Unresolvable(super::checkout_mediation::CheckoutWriterSink, String)" not in daemon_src:
         problems.append(
@@ -270,7 +306,7 @@ def load_sources(root: Path = ROOT) -> dict[str, str]:
         HTTP_FILE_SOURCE,
         HTTP_WORKSPACE_SOURCE,
         DAEMON_SOURCE,
-        DAEMON_GOALS_SOURCE,
+        *EFFECT_SOURCES,
     ):
         path = root / rel
         sources[rel] = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -287,7 +323,8 @@ def check_tree(sources: dict[str, str]) -> list[str]:
         sources.get(HTTP_FILE_SOURCE, ""), sources.get(HTTP_WORKSPACE_SOURCE, "")
     )
     problems += check_identifier_rule(
-        sources.get(DAEMON_SOURCE, ""), sources.get(DAEMON_GOALS_SOURCE, "")
+        sources.get(DAEMON_SOURCE, ""),
+        {rel: sources.get(rel, "") for rel in EFFECT_SOURCES},
     )
     return problems
 
@@ -361,15 +398,36 @@ def run_self_test() -> int:
     )
     expect_rejected("a gate that resolves the workspace more strictly than the effect", drifted)
 
-    # 6. The effect side goes back to the stricter identifier rule.
+    # 6. An effect that resolves the workspace *more strictly* than the gate
+    #    is safe: it refuses more, and every write it performs has already
+    #    been mediated by the gate. The rule constrains the gate against the
+    #    most permissive effect, and leaves a stricter effect alone.
     drifted = dict(baseline)
     drifted[DAEMON_GOALS_SOURCE] = (
         baseline[DAEMON_GOALS_SOURCE]
         + "\n// probe\nfn _probe() { let _ = codegg_core::workspace::WorkspaceId::parse(\"x\"); }\n"
     )
-    expect_rejected("an effect side that resolves the workspace more strictly", drifted)
+    expect_accepted("an effect side that resolves the workspace more strictly", drifted)
 
-    # 7. The explicit unresolvable-target arm disappears.
+    # 7. An effect family the guard does not read resolves the workspace more
+    #    permissively than the gate: the gate would not mediate the
+    #    identifiers that family accepts. This is why every effect family is
+    #    scanned and not one of them.
+    drifted = dict(baseline)
+    drifted[DAEMON_SOURCE] = baseline[DAEMON_SOURCE].replace(
+        "let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.to_owned());",
+        "let id = codegg_core::workspace::WorkspaceId::parse(workspace_id).ok()?;",
+    )
+    drifted[DAEMON_DOCUMENTS_SOURCE] = (
+        baseline[DAEMON_DOCUMENTS_SOURCE]
+        + "\n// probe\nfn _probe() { let _ = codegg_core::workspace::WorkspaceId::new_unchecked(\"x\"); }\n"
+    )
+    expect_rejected(
+        "an effect family the gate does not cover resolving the workspace more permissively",
+        drifted,
+    )
+
+    # 8. The explicit unresolvable-target arm disappears.
     drifted = dict(baseline)
     drifted[DAEMON_SOURCE] = baseline[DAEMON_SOURCE].replace(
         "Unresolvable(super::checkout_mediation::CheckoutWriterSink, String),",
@@ -407,7 +465,8 @@ def main() -> int:
     print(
         "checkout-mediation-authority check ok: the reservation authority reads an "
         "unbounded candidate set, the HTTP routes refuse without a daemon, and the "
-        "gate and the effect share one workspace-identifier rule"
+        "gate's workspace-identifier rule is at least as permissive as every effect "
+        "family's"
     )
     return 0
 

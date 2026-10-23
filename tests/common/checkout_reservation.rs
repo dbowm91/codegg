@@ -333,4 +333,32 @@ impl ReservedCheckout {
             other => panic!("expected the checkout conflict, got {other:?}"),
         }
     }
+
+    /// Assert the response is the typed **unresolved-target** refusal.
+    ///
+    /// M005 corrective C008 (implementation review): a refusal that carries
+    /// a lookup failure is not an observed reservation. It gets its own code
+    /// and its own recovery text, because a caller whose workspace cannot be
+    /// resolved has no group to wait for — telling it to "retry after that
+    /// group finishes" pointed at a group that may not exist.
+    pub fn assert_unresolved_target(&self, response: &codegg::protocol::core::CoreResponse) {
+        use codegg::protocol::core::CoreResponse;
+        match response {
+            CoreResponse::Error { code, message } => {
+                assert_eq!(
+                    code, "checkout_target_unresolved",
+                    "expected the typed unresolved-target refusal, got {response:?}"
+                );
+                assert!(
+                    message.contains("could not be established"),
+                    "the refusal must say the reservation could not be established: {message}"
+                );
+                assert!(
+                    message.contains("retry"),
+                    "the refusal must offer a recovery path: {message}"
+                );
+            }
+            other => panic!("expected the unresolved-target refusal, got {other:?}"),
+        }
+    }
 }

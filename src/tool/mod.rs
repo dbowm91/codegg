@@ -1214,8 +1214,8 @@ impl ToolRegistry {
             commit_tool
         };
         // M005 corrective C009: `commit` is a mutating workspace tool, so it
-        // takes the same fail-closed `None` arm as the eleven workspace tools
-        // above. Registered directly, it kept the sentinel workdir
+        // takes the same fail-closed `None` arm as the fourteen workspace tools
+        // above it. Registered directly, it kept the sentinel workdir
         // `\0codegg:no-workspace-root`, which `canonicalize_existing_prefix`
         // resolves *under* the checkout root — lexically contained, so the
         // fence's containment check passed and the tool took the checkout's

@@ -1903,8 +1903,22 @@ fn extract_validation_evidence(
 /// managed checkout, and the containment-only fence is the correct fallback
 /// for it.
 ///
-/// The lookup is best-effort: a run store that is absent answers "no", and
-/// an unreadable run record is reported rather than treated as managed.
+/// The lookup is best-effort in one direction only: a run store that is
+/// absent answers "no", and a run record that cannot be **read** answers
+/// "managed" — the refusal. The direction is deliberate, and it matches the
+/// team-policy probe in the same change set, which withholds its fallback
+/// on an unreadable store. Reading an unreadable record as "unmanaged" would
+/// substitute a containment-only fence for a run that may in fact hold the
+/// group's shared checkout, which is the anonymous-writer hole this
+/// milestone exists to close.
+///
+/// The question is whether **this run** holds a managed checkout, so the
+/// run's **own** durable record is authoritative. The parent's record is a
+/// fallback for a request that carries no run id at all, and it is not a
+/// second opinion: a delegated child of an isolated (mutating) parent holds
+/// no checkout of its own, and reading the parent's checkout as the child's
+/// would refuse the ordinary "a mutating agent spawns a read-only explorer"
+/// pattern for a run that can never write.
 async fn request_holds_managed_checkout(
     store: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
     request: &SubAgentRequest,
@@ -1917,13 +1931,17 @@ async fn request_holds_managed_checkout(
     };
     match store.get_run(run_id).await {
         Ok(Some(run)) => run.worktree_id.is_some(),
+        // The run's durable record is gone: it cannot be running.
         Ok(None) => false,
         Err(error) => {
+            // An unreadable run record is an **unresolved** liveness, not an
+            // absent one, and the refusal is the only safe direction.
             tracing::warn!(
                 error = %error,
-                "managed checkout probe failed; treating the run as unmanaged"
+                run_id = %run_id,
+                "managed checkout probe failed; treating the run as managed"
             );
-            false
+            true
         }
     }
 }
@@ -2403,6 +2421,74 @@ mod writer_fence_tests {
         assert!(
             !request_holds_managed_checkout(None, &request(None, None)).await,
             "a dispatch with no durable run holds no managed checkout"
+        );
+    }
+
+    /// M005 corrective C009 (implementation review): a delegated child is
+    /// judged by its **own** durable record, not by its parent's.
+    ///
+    /// A delegated child of an isolated (mutating) parent holds no checkout
+    /// of its own — the parent's checkout is the parent's — so reading the
+    /// parent's checkout as the child's would refuse the ordinary "a mutating
+    /// agent spawns a read-only explorer" pattern, for a run that can never
+    /// write. The probe answers a question about *this* run, and this run's
+    /// record is the only one that answers it.
+    #[tokio::test]
+    async fn a_delegated_child_is_judged_by_its_own_record_not_its_parents() {
+        let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+        let (parent_run_id, child_run_id) = (AgentRunId::new(), AgentRunId::new());
+        for (index, run_id) in [parent_run_id.clone(), child_run_id.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let workspace_id = WorkspaceId::new();
+            let task = NewAgentTask {
+                task_id: AgentTaskId::new(),
+                parent_task_id: None,
+                originating_session_id: "session-c009-child".into(),
+                originating_turn_id: None,
+                project_id: ProjectId::new(),
+                repository_id: Some(RepositoryId::new()),
+                workspace_id: workspace_id.clone(),
+                requested_agent: "build".into(),
+                delegation_key: format!("delegation-child-{index}"),
+                request_fingerprint: format!("fingerprint-child-{index}"),
+                description: "c009 delegated child probe".into(),
+            };
+            let run = NewAgentRun {
+                run_id,
+                parent_run_id: None,
+                depth: 1,
+                workspace_id,
+                agent_name: "build".into(),
+                agent_digest: None,
+                provider: "test".into(),
+                model: "test".into(),
+                authority_digest: format!("authority-child-{index}"),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            };
+            runs.create_or_get(task, run)
+                .await
+                .expect("create the durable run");
+        }
+        // Only the parent is placed on a managed checkout.
+        runs.attach_worktree(&parent_run_id, WorktreeId::new())
+            .await
+            .expect("place the parent on a managed checkout");
+
+        assert!(
+            !request_holds_managed_checkout(
+                Some(runs.clone()),
+                &request(Some(child_run_id.clone()), Some(parent_run_id.clone()))
+            )
+            .await,
+            "the child's own record is authoritative: a delegated child of a \
+             managed parent holds no managed checkout of its own"
+        );
+        assert!(
+            request_holds_managed_checkout(Some(runs), &request(Some(parent_run_id), None)).await,
+            "the parent still holds a managed checkout"
         );
     }
 }

@@ -21,7 +21,7 @@ C005 fixed both: the guard now asserts the detector's **call** — in both the a
 | §13 criterion | Evidence | Result |
 |---|---|---|
 | 1. Deleting either or both detector call sites produces a finding | §4.1 — three separate mutations, three rejections | **met** |
-| 2. The guard's `--self-test` includes the injection and reports it rejected | §4.2 — the self-test's twenty-first through twenty-fourth cases | **met** |
+| 2. The guard's `--self-test` includes the injection and reports it rejected | §4.2 — the self-test's thirty-third through thirty-sixth cases | **met** |
 | 3. The guard runs in `verify.sh quick` and in CI with its `--self-test`; `AGENTS.md` records the change and its reason | §3.4 | **met** |
 | 4. `src/security/workflow/report.rs` admits both diff reads through `admit_generation_bound`, and an inadmissible fact produces a typed error | §3.3 | **met** |
 | 5. Every defect above has a regression test that fails against the baseline and passes after the fix | §4.1 (guard) and §4.3 (consumers) | **met** |
@@ -47,7 +47,7 @@ half-passing, so both are asserted and both are injected in the self-test.
 
 ### 3.2 The guard's self-test
 
-The self-test gained three cases:
+The self-test gained four cases:
 
 ```
   ok   the trusted route stops calling the hostile-config detector in the async path (rejected by hostile-git-metadata-detector-call-missing)
@@ -67,7 +67,7 @@ the other consumers use:
 ```rust
 let admitted = crate::git_consistency::admit_generation_bound(
     fact,
-    live_read_capability(),
+    crate::git_consistency::live_read_capability(),
 )?;
 ```
 
@@ -281,3 +281,52 @@ The next reader should know two things.
 **The guard's `--self-test` is the evidence, not the guard.** The original defect was a guard that could not see the removal of what it protected. Every obligation the guard now claims has a matching injection, and the injection count is printed: **36 injected defects, each rejected**.
 
 **`architecture/git.md` now names the detector's invocation points.** That is the durable half of the fix: a reader who wants to know where the mediation happens does not have to grep, and the guard asserts the same thing the document says.
+
+## 14. Amendment: implementation review
+
+An implementation review of this milestone's change set found that the
+milestone's own guard was still vacuous against one evasion form. The record
+is amended rather than replaced: the closure stands, and the amendments below
+are what the review changed.
+
+**A1 — the detector-call rule was vacuous against a Rust block comment.** The
+rule asserted that the trusted Git route's `apply` and `apply_sync` methods
+call `ensure_repository_config_surface_is_contained(...)`. It searched the
+method body with a helper that removed `//` line comments and left `/* ... */`
+block comments intact, and the call pattern's lookbehind only excluded a
+preceding quote — so a call that appeared **only inside a block comment**
+satisfied it.
+
+Reproduced before the fix: replacing both real call sites in
+`crates/egggit/src/process.rs` with
+
+```rust
+        /* ensure_repository_config_surface_is_contained(&worktree)?; */
+```
+
+made the guard report `PASS (0 findings)` and exit 0. A string-literal
+evasion was already caught, because the lookbehind excludes a preceding
+quote; the block-comment form was not.
+
+The guard now masks block comments, line comments, string literals, raw
+strings and char literals before it looks for the call, using the technique
+`scripts/check_git_consistency_consumers.py` already used. The shared
+`_strip_line_comments` helper was **not** changed in place — it is still used
+by the override-table parsing — so the override rules are unaffected.
+
+**A2 — the self-test grew from 36 cases to 40.** The four new injections
+are the block-comment evasion, a multi-line block-comment evasion, a
+string-literal evasion and a raw-string-literal evasion. Each was verified
+to be **vacuous against the old guard** (0 findings) and **rejected by the
+new one** (1 finding each), so the self-test discriminates rather than
+merely passing.
+
+**A3 — the `verify.sh quick` step count.** The review removed a duplicated
+`check_writer_fence_completeness` invocation from `scripts/verify.sh` (−2
+steps) and wired `check_daemon_cwd_usage.py`, which was wired into neither
+`verify.sh quick` nor CI (+2 steps). The count is unchanged at **86 steps**,
+over a different guard set.
+
+**A4 — the record's quoted self-test output is milestone-scoped.** The
+"36 injected defects, each rejected" line in §13 remains the milestone's own
+measurement; the live count is now **40**.

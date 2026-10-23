@@ -147,16 +147,26 @@ impl DaemonWriterFence {
     /// checkout than the run actually holds must not be able to bind the
     /// permit. A run with no durable record — a daemon turn — falls back to
     /// the scope the daemon resolved for it.
-    async fn worktree_id(&self) -> Option<WorktreeId> {
+    async fn worktree_id(&self) -> Result<Option<WorktreeId>, WriterFenceError> {
         if let Some(run) = self.run_id.as_ref() {
-            if let Ok(Some(record)) = self.runs.get_run(run).await {
-                return record.worktree_id.clone();
+            // M005 corrective C009 (implementation review): an unreadable
+            // run record is an **unresolved** scope, not an absent one. The
+            // old `if let Ok(Some(record))` swallowed the error and fell
+            // through to the scope's own identifier, so a store failure
+            // quietly answered a different question than the one asked.
+            let record = self
+                .runs
+                .get_run(run)
+                .await
+                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+            if let Some(record) = record {
+                return Ok(record.worktree_id.clone());
             }
         }
         if self.scope.worktree_id.is_empty() {
-            return None;
+            return Ok(None);
         }
-        WorktreeId::parse(&self.scope.worktree_id).ok()
+        Ok(WorktreeId::parse(&self.scope.worktree_id).ok())
     }
 
     /// The live group that shares this checkout, if any.
@@ -165,12 +175,32 @@ impl DaemonWriterFence {
     /// lease are members of the same live group. The group is the bounded
     /// reservation that authorizes the second writer; without it, the lease
     /// owner is the only writer and the checkout is private.
-    async fn shared_group(&self) -> Option<AgentRunGroupId> {
-        let groups = self.groups.as_ref()?;
-        let run = self.run_id.clone()?;
-        let worktree_id = self.worktree_id().await?;
-        let record = self.worktrees.get(&worktree_id).await.ok()?;
-        let owner = record.owner_run_id.clone()?;
+    ///
+    /// M005 corrective C009 (implementation review): a store error is
+    /// **not** "this checkout is private". The old `.ok()?` chain collapsed
+    /// a failed read into `None`, so the shared profile never came into
+    /// force: no writer permit was taken and no principal was required,
+    /// while the sibling that did hold the permit kept writing. The same
+    /// reads fail closed in [`Self::shares_live_group`], and they fail
+    /// closed here.
+    async fn shared_group(&self) -> Result<Option<AgentRunGroupId>, WriterFenceError> {
+        let Some(groups) = self.groups.as_ref() else {
+            return Ok(None);
+        };
+        let Some(run) = self.run_id.clone() else {
+            return Ok(None);
+        };
+        let Some(worktree_id) = self.worktree_id().await? else {
+            return Ok(None);
+        };
+        let record = self
+            .worktrees
+            .get(&worktree_id)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+        let Some(owner) = record.owner_run_id.clone() else {
+            return Ok(None);
+        };
 
         if owner == run {
             // The lease owner is a writer in its own right. It still needs a
@@ -178,10 +208,16 @@ impl DaemonWriterFence {
             // below through the membership overlap.
         }
 
-        let member_groups = groups.groups_for_member(&run).await.ok()?;
-        let owner_groups = groups.groups_for_member(&owner).await.ok()?;
+        let member_groups = groups
+            .groups_for_member(&run)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+        let owner_groups = groups
+            .groups_for_member(&owner)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
 
-        member_groups
+        Ok(member_groups
             .into_iter()
             .find(|member_group| {
                 !codegg_core::agent_run_group::RunGroupStatus::is_terminal(member_group.status)
@@ -189,7 +225,7 @@ impl DaemonWriterFence {
                         .iter()
                         .any(|owner_group| owner_group.group_id == member_group.group_id)
             })
-            .map(|member_group| member_group.group_id)
+            .map(|member_group| member_group.group_id))
     }
 
     /// Record a refusal in the daemon's log.
@@ -269,7 +305,7 @@ impl CheckoutWriterFence for DaemonWriterFence {
         // 2. A run that holds no managed checkout has no lease, so there is
         //    no permit to take. Containment above is the whole of the fence
         //    for such a run, and it costs no durable write.
-        let Some(worktree_id) = self.worktree_id().await else {
+        let Some(worktree_id) = self.worktree_id().await? else {
             return Ok(None);
         };
 
@@ -294,7 +330,12 @@ impl CheckoutWriterFence for DaemonWriterFence {
 
         // 4. The checkout's share is derived from durable state, never
         //    asserted by the caller.
-        let shared_group = self.shared_group().await;
+        //
+        //    M005 corrective C009 (implementation review): the derivation
+        //    fails closed. An unreadable group store is an unresolved
+        //    share, not a private checkout, so the effect is refused
+        //    rather than admitted without a permit.
+        let shared_group = self.shared_group().await?;
 
         // 5. Fail closed on effect classes this milestone has no profile
         //    for, but only where a shared profile is in force: an isolated
@@ -609,12 +650,16 @@ impl crate::tool::writer_fence::WriterFenceFactory for DaemonWriterFenceFactory 
         // run holds. Without a record there is no lease, and a run with no
         // lease has nothing to fence.
         let worktree_id = match run_id.as_ref() {
+            // M005 corrective C009 (implementation review): an unreadable
+            // run record is an **unresolved** lease, not an absent one. The
+            // old `.ok().flatten()` turned a store failure into "this run
+            // holds no checkout", so the caller received no fence at all
+            // and the write proceeded with no mediation.
             Some(run) => self
                 .runs
                 .get_run(run)
                 .await
-                .ok()
-                .flatten()
+                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?
                 .and_then(|record| record.worktree_id),
             None => None,
         };

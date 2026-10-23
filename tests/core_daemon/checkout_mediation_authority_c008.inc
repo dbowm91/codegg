@@ -149,6 +149,12 @@ async fn a_reserved_checkout_is_refused_past_the_list_cap() {
 /// effect, so an identifier the effect could resolve left the gate with no
 /// target: the write went *unmediated*. The gate now refuses instead, and it
 /// refuses on both the checkpoint-restore and the LSP-apply path.
+///
+/// M005 corrective C008 (implementation review): the refusal is an
+/// **unresolved target**, not an observed reservation. It carries its own
+/// error code (`checkout_target_unresolved`) and its own recovery text,
+/// because a caller whose workspace cannot be resolved has no group to wait
+/// for.
 #[tokio::test]
 async fn an_unresolvable_workspace_identifier_is_refused_not_unmediated() {
     let fixture = ReservedCheckout::build().await;
@@ -160,7 +166,7 @@ async fn an_unresolvable_workspace_identifier_is_refused_not_unmediated() {
             session_id: fixture.session_id.clone(),
         })
         .await;
-    fixture.assert_conflict(&restore);
+    fixture.assert_unresolved_target(&restore);
 
     let target = fixture.checkout.path().join("unmediated.rs");
     std::fs::write(&target, "fn main() {}\n").expect("seed the file");
@@ -181,7 +187,7 @@ async fn an_unresolvable_workspace_identifier_is_refused_not_unmediated() {
             },
         })
         .await;
-    fixture.assert_conflict(&apply);
+    fixture.assert_unresolved_target(&apply);
     assert_eq!(
         std::fs::read_to_string(&target).expect("read the file"),
         "fn main() {}\n",

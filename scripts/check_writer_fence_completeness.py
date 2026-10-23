@@ -46,12 +46,14 @@ REGISTRY_FILE = "src/tool/mod.rs"
 DAEMON_CONSTRUCT_FILE = "src/core/daemon_construct.rs"
 WORKER_FILE = "src/agent/worker.rs"
 TASK_TOOL_FILE = "src/tool/task.rs"
+DAEMON_FENCE_FILE = "src/core/writer_fence.rs"
 
 SCANNED_FILES: list[str] = [
     REGISTRY_FILE,
     DAEMON_CONSTRUCT_FILE,
     WORKER_FILE,
     TASK_TOOL_FILE,
+    DAEMON_FENCE_FILE,
 ]
 
 # ── Rule A: mutating workspace tools fail closed ─────────────────────
@@ -388,11 +390,170 @@ def scan_nested_dispatch_fence(sources: dict[str, str]) -> list[Finding]:
     return findings
 
 
+def scan_fail_closed_authority_reads(sources: dict[str, str]) -> list[Finding]:
+    """A durable authority read must never be answered with "absent".
+
+    The fence and the containment-only probe each answer one question with a
+    durable read: *does this run hold a managed checkout, and is it a shared
+    one?* An **unreadable** store is not an absent record. When the read's
+    error is discarded — `.ok()`, `.ok().flatten()`, `if let Ok(..)`,
+    `unwrap_or(..)` — the error becomes a permissive answer: no fence at all,
+    a private checkout, or a run that looks unmanaged. The refusal is the
+    only safe direction, so these reads must surface their errors.
+    """
+    findings: list[Finding] = []
+
+    authority_reads: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+        (
+            DAEMON_FENCE_FILE,
+            "fence_for",
+            ("get_run(",),
+        ),
+        (
+            DAEMON_FENCE_FILE,
+            "shared_group",
+            ("get_run(", "groups_for_member(", ".worktrees", "worktrees.get("),
+        ),
+        (
+            DAEMON_FENCE_FILE,
+            "worktree_id",
+            ("get_run(",),
+        ),
+    )
+    for rel, function, markers in authority_reads:
+        source = sources.get(rel, "")
+        body = _function_body(source, function)
+        if body is None:
+            findings.append(
+                Finding(
+                    rel,
+                    1,
+                    f"the `{function}` authority read could not be located, so the "
+                    "guard cannot prove it fails closed",
+                    "fail-closed-authority-read",
+                )
+            )
+            continue
+        start, end = body
+        text = source[start:end]
+        for statement in _swallowed_read_statements(text, markers):
+            findings.append(
+                Finding(
+                    rel,
+                    _line_no(source, start + text.index(statement)),
+                    f"the `{function}` authority read discards its error "
+                    f"({statement}); an unreadable store is not an absent record, "
+                    "and the refusal is the only safe direction",
+                    "fail-closed-authority-read",
+                )
+            )
+
+    # The managed-checkout probe must not read a store error as "this run is
+    # not managed": that answers "unmanaged" and downgrades the fence to a
+    # containment-only one that can never take the writer permit.
+    worker = sources.get(WORKER_FILE, "")
+    body = _function_body(worker, "request_holds_managed_checkout")
+    if body is None:
+        findings.append(
+            Finding(
+                WORKER_FILE,
+                1,
+                "the managed-checkout probe could not be located, so the guard "
+                "cannot prove it fails closed",
+                "fail-closed-authority-read",
+            )
+        )
+    else:
+        start, end = body
+        text = worker[start:end]
+        for arm in _error_arm_bodies(text):
+            if _arm_yields_false(arm):
+                findings.append(
+                    Finding(
+                        WORKER_FILE,
+                        _line_no(worker, start + text.index(arm)),
+                        "the managed-checkout probe answers 'unmanaged' when the "
+                        "run store cannot be read; an unreadable store is not an "
+                        "absent record, and the refusal is the only safe direction",
+                        "fail-closed-authority-read",
+                    )
+                )
+    return findings
+
+
+def _function_body(source: str, name: str) -> tuple[int, int] | None:
+    """The `(start, end)` span of a named function's body.
+
+    Handles free functions and inherent/impl methods alike: the signature is
+    located by name, and the body is the brace group that follows it.
+    """
+    match = re.search(rf"\bfn\s+{re.escape(name)}\s*(?:<[^>]*>)?\s*\(", source)
+    if match is None:
+        return None
+    open_paren = source.index("(", match.start())
+    _, close_paren = _balanced(source, open_paren)
+    brace = source.find("{", close_paren)
+    if brace < 0:
+        return None
+    _, close = _balanced(source, brace)
+    return brace, close
+
+
+def _swallowed_read_statements(body: str, markers: tuple[str, ...]) -> list[str]:
+    """The statements that read durable state and discard its error."""
+    offenders: list[str] = []
+    seen: set[str] = set()
+    for marker in markers:
+        for match in re.finditer(re.escape(marker), body):
+            start = body.rfind("\n", 0, match.start()) + 1
+            end = _statement_end(body, start)
+            statement = body[start:end].strip()
+            if statement in seen:
+                continue
+            if not re.search(r"\.ok\s*\(\s*\)", statement) and not re.search(
+                r"if\s+let\s+Ok\s*\(", statement
+            ) and not re.search(r"unwrap_or(?:_default)?\s*\(", statement):
+                continue
+            seen.add(statement)
+            offenders.append(statement)
+    return offenders
+
+
+def _error_arm_bodies(body: str) -> list[str]:
+    """The bodies of the `Err(..) => ..` arms in a match."""
+    arms: list[str] = []
+    for match in re.finditer(r"\bErr\s*\(", body):
+        arrow = body.find("=>", match.end())
+        if arrow < 0:
+            continue
+        brace = body.find("{", arrow)
+        if brace < 0 or brace - arrow > 16:
+            continue
+        _, close = _balanced(body, brace)
+        arms.append(body[brace:close])
+    return arms
+
+
+def _arm_yields_false(arm: str) -> bool:
+    """True when a match arm's value is the literal `false`.
+
+    The arm's value is the block's trailing expression, so the test is on the
+    arm's **tail**, not on the whole arm: an arm that logs and then answers
+    `false` yields `false` just as an arm that simply answers `false` does.
+    """
+    body = re.sub(r"//[^\n]*", "", arm)
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+    body = body.strip().strip("{}").strip()
+    body = body.rstrip(";").strip()
+    return bool(re.search(r"\bfalse\b\s*$", body))
+
+
 CHECKS = (
     ("registry-fail-closed", scan_registry_fail_closed),
     ("local-principal-fallback", scan_local_principal_fallback),
     ("worker-fence-fallback", scan_worker_fence_fallback),
     ("nested-dispatch-fence", scan_nested_dispatch_fence),
+    ("fail-closed-authority-read", scan_fail_closed_authority_reads),
 )
 
 
@@ -416,6 +577,37 @@ def collect_findings() -> list[Finding]:
 # ── Self-test ────────────────────────────────────────────────────────
 #
 # Exercises the exact detectors used above. Each case states what it proves.
+
+def _synthetic_fence_source(fence_body: str, group_body: str) -> str:
+    """A synthetic `src/core/writer_fence.rs` carrying both authority reads.
+
+    The guard reports a missing function as "cannot prove it fails closed",
+    so a self-test source has to carry **both** of them; otherwise the case
+    would be measuring the scaffold rather than the detector.
+    """
+    return (
+        "impl WriterFenceFactory for DaemonWriterFenceFactory {\n"
+        "    async fn fence_for(&self, request: WriterScopeRequest) -> Option<Fence> {\n"
+        f"{fence_body}"
+        "    }\n"
+        "}\n"
+        "impl DaemonWriterFence {\n"
+        "    async fn shared_group(&self) -> Option<AgentRunGroupId> {\n"
+        f"{group_body}"
+        "    }\n"
+        "    async fn worktree_id(&self) -> Option<WorktreeId> {\n"
+        "        let run = self.run_id.clone()?;\n"
+        "        let record = self\n"
+        "            .runs\n"
+        "            .get_run(&run)\n"
+        "            .await\n"
+        "            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?\n"
+        "            .and_then(|record| record.worktree_id.clone());\n"
+        "        record\n"
+        "    }\n"
+        "}\n"
+    )
+
 
 SELF_TEST_CASES: list[tuple[str, str, dict[str, str], int]] = [
     (
@@ -601,6 +793,192 @@ SELF_TEST_CASES: list[tuple[str, str, dict[str, str], int]] = [
                 "        task_id,\n"
                 "        writer_fence: self.inherited_writer_fence(ctx),\n"
                 "    };\n"
+                "}\n"
+            )
+        },
+        0,
+    ),
+    (
+        "the fence factory discarding its run read is caught",
+        "fail-closed-authority-read",
+        {
+            DAEMON_FENCE_FILE: _synthetic_fence_source(
+                "        let worktree_id = match request.agent_run_id.as_ref() {\n"
+                "            Some(run) => self\n"
+                "                .runs\n"
+                "                .get_run(run)\n"
+                "                .await\n"
+                "                .ok()\n"
+                "                .flatten()\n"
+                "                .and_then(|record| record.worktree_id),\n"
+                "            None => None,\n"
+                "        };\n"
+                "        let _ = worktree_id;\n"
+                "        None\n",
+                "        let member_groups = self.groups.as_ref()?.groups_for_member(&run).await?;\n"
+                "        let _ = member_groups;\n"
+                "        None\n",
+            )
+        },
+        1,
+    ),
+    (
+        "the fence factory surfacing its run read is accepted",
+        "fail-closed-authority-read",
+        {
+            DAEMON_FENCE_FILE: _synthetic_fence_source(
+                "        let worktree_id = match request.agent_run_id.as_ref() {\n"
+                "            Some(run) => self\n"
+                "                .runs\n"
+                "                .get_run(run)\n"
+                "                .await\n"
+                "                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?\n"
+                "                .and_then(|record| record.worktree_id),\n"
+                "            None => None,\n"
+                "        };\n"
+                "        let _ = worktree_id;\n"
+                "        None\n",
+                "        let member_groups = self\n"
+                "            .groups\n"
+                "            .as_ref()?\n"
+                "            .groups_for_member(&run)\n"
+                "            .await\n"
+                "            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;\n"
+                "        let _ = member_groups;\n"
+                "        None\n",
+            )
+        },
+        0,
+    ),
+    (
+        "the shared-group derivation discarding its group read is caught",
+        "fail-closed-authority-read",
+        {
+            DAEMON_FENCE_FILE: _synthetic_fence_source(
+                "        let worktree_id = match request.agent_run_id.as_ref() {\n"
+                "            Some(run) => self\n"
+                "                .runs\n"
+                "                .get_run(run)\n"
+                "                .await\n"
+                "                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?\n"
+                "                .and_then(|record| record.worktree_id),\n"
+                "            None => None,\n"
+                "        };\n"
+                "        let _ = worktree_id;\n"
+                "        None\n",
+                "        let member_groups = self.groups.as_ref()?.groups_for_member(&run).await.ok()?;\n"
+                "        let _ = member_groups;\n"
+                "        None\n",
+            )
+        },
+        1,
+    ),
+    (
+        "the shared-group derivation surfacing its group read is accepted",
+        "fail-closed-authority-read",
+        {
+            DAEMON_FENCE_FILE: _synthetic_fence_source(
+                "        let worktree_id = match request.agent_run_id.as_ref() {\n"
+                "            Some(run) => self\n"
+                "                .runs\n"
+                "                .get_run(run)\n"
+                "                .await\n"
+                "                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?\n"
+                "                .and_then(|record| record.worktree_id),\n"
+                "            None => None,\n"
+                "        };\n"
+                "        let _ = worktree_id;\n"
+                "        None\n",
+                "        let member_groups = self\n"
+                "            .groups\n"
+                "            .as_ref()?\n"
+                "            .groups_for_member(&run)\n"
+                "            .await\n"
+                "            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;\n"
+                "        let _ = member_groups;\n"
+                "        None\n",
+            )
+        },
+        0,
+    ),
+    (
+        "the fence's worktree-scope read discarding its error is caught",
+        "fail-closed-authority-read",
+        {
+            DAEMON_FENCE_FILE: _synthetic_fence_source(
+                "        let worktree_id = match request.agent_run_id.as_ref() {\n"
+                "            Some(run) => self\n"
+                "                .runs\n"
+                "                .get_run(run)\n"
+                "                .await\n"
+                "                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?\n"
+                "                .and_then(|record| record.worktree_id),\n"
+                "            None => None,\n"
+                "        };\n"
+                "        let _ = worktree_id;\n"
+                "        None\n",
+                "        let member_groups = self\n"
+                "            .groups\n"
+                "            .as_ref()?\n"
+                "            .groups_for_member(&run)\n"
+                "            .await\n"
+                "            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;\n"
+                "        let _ = member_groups;\n"
+                "        None\n",
+            ).replace(
+                "            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?\n"
+                "            .and_then(|record| record.worktree_id.clone());",
+                "            .ok()?;\n"
+                "        record",
+            )
+        },
+        1,
+    ),
+    (
+        "the managed-checkout probe answering 'unmanaged' on a store error is caught",
+        "fail-closed-authority-read",
+        {
+            WORKER_FILE: (
+                "async fn request_holds_managed_checkout(store: Option<Arc<dyn Store>>, request: &Req) -> bool {\n"
+                "    let Some(store) = store else {\n"
+                "        return false;\n"
+                "    };\n"
+                "    let Some(run_id) = request.run_id.as_ref().or(request.parent_run_id.as_ref()) else {\n"
+                "        return false;\n"
+                "    };\n"
+                "    match store.get_run(run_id).await {\n"
+                "        Ok(Some(run)) => run.worktree_id.is_some(),\n"
+                "        Ok(None) => false,\n"
+                "        Err(error) => {\n"
+                "            tracing::warn!(error = %error, \"probe failed\");\n"
+                "            false\n"
+                "        }\n"
+                "    }\n"
+                "}\n"
+            )
+        },
+        1,
+    ),
+    (
+        "the managed-checkout probe refusing on a store error is accepted",
+        "fail-closed-authority-read",
+        {
+            WORKER_FILE: (
+                "async fn request_holds_managed_checkout(store: Option<Arc<dyn Store>>, request: &Req) -> bool {\n"
+                "    let Some(store) = store else {\n"
+                "        return false;\n"
+                "    };\n"
+                "    let Some(run_id) = request.run_id.as_ref().or(request.parent_run_id.as_ref()) else {\n"
+                "        return false;\n"
+                "    };\n"
+                "    match store.get_run(run_id).await {\n"
+                "        Ok(Some(run)) => run.worktree_id.is_some(),\n"
+                "        Ok(None) => false,\n"
+                "        Err(error) => {\n"
+                "            tracing::warn!(error = %error, \"probe failed\");\n"
+                "            true\n"
+                "        }\n"
+                "    }\n"
                 "}\n"
             )
         },

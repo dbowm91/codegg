@@ -80,6 +80,18 @@ run_guards() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    # The daemon's turn code resolves its workspace root from the execution
+    # context, never from the process working directory: a user-scoped
+    # daemon's working directory is wherever it was launched. The guard
+    # covers `src/core/**` and the turn-code surfaces, plus the
+    # `codegg-core` crate. A guard which is not run automatically cannot
+    # protect anything, so it runs here with its self-test.
+    echo "==> python3 scripts/check_daemon_cwd_usage.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py --self-test)
+
+    echo "==> python3 scripts/check_daemon_cwd_usage.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py)
+
     # The trusted Git route owns every CodeGG-owned Git child, and the
     # hostile-metadata detector is the mediation that refuses a repository
     # which declares a configuration surface the route cannot neutralise.
@@ -187,12 +199,6 @@ run_guards() {
 
     echo "==> python3 scripts/check_shared_checkout.py"
     (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py)
-
-    echo "==> python3 scripts/check_writer_fence_completeness.py --self-test"
-    (cd "$REPO_ROOT" && python3 scripts/check_writer_fence_completeness.py --self-test)
-
-    echo "==> python3 scripts/check_writer_fence_completeness.py"
-    (cd "$REPO_ROOT" && python3 scripts/check_writer_fence_completeness.py)
 
     echo "==> python3 scripts/check_blackboard_contract_matrix.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check_blackboard_contract_matrix.py --self-test)

@@ -1249,6 +1249,29 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
         );
     }
 
+    // M005 corrective C007 (implementation review): the group's shared lease
+    // is released once the group has finished, so the checkout returns to the
+    // pool.
+    //
+    // The release used to be decided **before** the run's terminal transition
+    // was durable, so the group still looked live and the lease was retained
+    // for good — the checkout never returned to the pool and the group held
+    // its reservation forever.
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    assert!(
+        record.owner_run_id.is_none(),
+        "a finished group releases the shared lease: {record:?}"
+    );
+    assert_eq!(
+        record.state,
+        codegg_core::worktree_service::ManagedWorktreeState::Ready,
+        "the released checkout returns to the pool"
+    );
+
     // And the daemon resolves that same checkout for both runs, through the
     // production factory rather than a directly constructed fence.
     let scope_for = |run_id: &AgentRunId, attempt: &str| WriterScopeRequest {
@@ -1273,51 +1296,40 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
         "both runs resolve the same checkout"
     );
 
-    // The first writer takes the checkout.
-    let held = first
+    // The first writer is refused: the group has finished, and a finished
+    // group has no write authority left.
+    //
+    // The group's lease was released above, so the checkout has no lease
+    // holder, and the fence's authorization step — "the run holds the lease,
+    // or shares a live group with the run that holds it" — has nothing to
+    // authorize. This is the correct disposition, and it is the disposition
+    // the milestone's ordering defect concealed: with the lease wrongly
+    // retained, this writer was still authorized to take the permit.
+    //
+    // The serialization of two writers on a **live** group is proven
+    // separately, by `two_writers_on_the_shared_checkout_never_overlap`.
+    let refused = first
         .begin(shared.request(
             shared.repository_root.path(),
             "composed-first",
             NativeEffectClass::FileWrite,
         ))
-        .await
-        .expect("the first writer takes the shared checkout");
+        .await;
     assert!(
-        held.is_some(),
-        "a shared checkout must take a permit: there is a second writer to exclude"
+        matches!(refused, Err(WriterFenceError::NotAuthorized { .. })),
+        "a finished group must not authorize a writer: {refused:?}"
     );
-
-    // The second writer is queued behind it. It cannot take the checkout
-    // while the first holds it, so it proceeds only once the first settles.
-    //
-    // The first settles on a timer rather than on demand: the production
-    // fence's wait bound is thirty seconds, and a proof that waits for it
-    // would make this test a thirty-second test.
-    let settler = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        held.expect("held permit")
-            .settle(WriterFenceOutcome::Settled)
-            .await
-            .expect("the first writer settles its permit");
-    });
-    let queued = second
+    let refused = second
         .begin(shared.request(
             shared.repository_root.path(),
             "composed-second",
             NativeEffectClass::FileWrite,
         ))
-        .await
-        .expect("the second writer takes the checkout once the first settles");
+        .await;
     assert!(
-        queued.is_some(),
-        "the second writer takes the checkout after the first settles"
+        matches!(refused, Err(WriterFenceError::NotAuthorized { .. })),
+        "a finished group must not authorize a writer: {refused:?}"
     );
-    settler.await.expect("the settling writer finished");
-    queued
-        .expect("held permit")
-        .settle(WriterFenceOutcome::Settled)
-        .await
-        .expect("the second writer settles its permit");
 }
 
 /// M005 corrective C007 §6.2: the group's shared checkout lease belongs to
@@ -1426,6 +1438,92 @@ async fn the_groups_lease_is_released_when_the_group_has_finished() {
             .await
             .expect("the group's state"),
         "the group has finished",
+    );
+
+    let released = shared
+        .coordinator
+        .release_group_lease(&checkout)
+        .await
+        .expect("the lease disposition");
+    assert!(released, "a finished group releases its lease");
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    assert!(
+        record.owner_run_id.is_none(),
+        "the lease is released, so the checkout returns to the pool",
+    );
+}
+
+/// M005 corrective C007 (implementation review): the group's liveness is
+/// derived from its **members' durable statuses**, not from the group's
+/// stored status.
+///
+/// The stored status is recomputed by a separate notification path, so a
+/// reader that consults it alone can see a group as live after its last
+/// member has finished. The executor releases the shared lease right after
+/// the run's own terminal transition, and at that moment the group's stored
+/// status may still say `running` — the lease would then be retained for
+/// good and the checkout would never return to the pool.
+#[tokio::test]
+async fn the_groups_lease_is_released_even_when_the_groups_stored_status_is_stale() {
+    let shared = Shared::new("lease-stale-status").await;
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    let checkout = SharedCheckout {
+        worktree_id: shared.worktree_id.clone(),
+        path: record.path.clone(),
+        lease_generation: record.lease_generation,
+        owner_run_id: shared.owner_run.clone(),
+        group_id: shared.group_id.clone(),
+    };
+
+    for (run_id, task_id) in [
+        (&shared.owner_run, &shared.owner_task),
+        (&shared.member_run, &shared.member_task),
+    ] {
+        shared.advance_to_running(run_id, task_id).await;
+        shared
+            .runs
+            .finish(
+                run_id,
+                codegg_core::agent_run::AgentRunTerminalOutcome::Completed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("finish the group member");
+        // The group is deliberately **not** recomputed here: its stored
+        // status stays `running`, which is exactly the state the executor's
+        // release used to consult.
+    }
+
+    let stored = shared
+        .groups
+        .group_record(&shared.group_id)
+        .await
+        .expect("the group's record")
+        .expect("the group has a record");
+    assert!(
+        !stored.status.is_terminal(),
+        "the group's stored status is deliberately stale for this proof"
+    );
+
+    assert!(
+        !shared
+            .coordinator
+            .group_is_live(&shared.group_id)
+            .await
+            .expect("the group's state"),
+        "a group whose members have all finished is not live, whatever its stored status says",
     );
 
     let released = shared

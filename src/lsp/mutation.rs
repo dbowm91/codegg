@@ -274,8 +274,30 @@ pub enum LspMutationApplyError {
     /// The window this closes is the **lock wait**, not the instruction gap:
     /// a writer that queued behind another writer may find the checkout
     /// reserved by the time its turn comes.
-    #[error("checkout_reserved: {0}")]
-    CheckoutReserved(String),
+    #[error("{0}")]
+    CheckoutReserved(CheckoutRefusal),
+}
+
+/// A refused write, with the error code the client sees.
+///
+/// M005 corrective C008 (implementation review): the refusal's **code**
+/// travels with it. The applier used to carry only a message and the
+/// handler hardcoded `checkout_reserved`, so a refusal raised because the
+/// authority could not be reached was reported to the client as "another
+/// group holds this checkout" — advice that points at a group that may not
+/// exist, and cannot succeed on a retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutRefusal {
+    /// The stable error code a client sees.
+    pub code: String,
+    /// The human-readable refusal.
+    pub message: String,
+}
+
+impl std::fmt::Display for CheckoutRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
 }
 
 /// The under-lock checkout-reservation re-check.
@@ -298,9 +320,9 @@ pub enum LspMutationApplyError {
 pub trait UnderLockReservationCheck: Send + Sync {
     /// Re-check the reservation for `root` under the held repository lock.
     ///
-    /// `Err` carries the refusal message. The daemon emits the refusal row
-    /// before returning, so a refusal is evidence either way.
-    async fn recheck(&self, root: &Path) -> Result<(), String>;
+    /// `Err` carries the refusal, with its code. The daemon emits the
+    /// refusal row before returning, so a refusal is evidence either way.
+    async fn recheck(&self, root: &Path) -> Result<(), CheckoutRefusal>;
 }
 
 /// Failure taxonomy for the trusted session/workspace binding seam used by
@@ -440,8 +462,8 @@ pub async fn apply_preview(
     // answered it before the wait and could not see the reservation that
     // appeared while this writer queued.
     if let Some(check) = under_lock_reservation_check {
-        if let Err(message) = check.recheck(&canonical_root).await {
-            return Err(LspMutationApplyError::CheckoutReserved(message));
+        if let Err(refusal) = check.recheck(&canonical_root).await {
+            return Err(LspMutationApplyError::CheckoutReserved(refusal));
         }
     }
     if let Some(service) = &lsp_service {
@@ -921,8 +943,11 @@ mod tests {
         struct Refusing;
         #[async_trait::async_trait]
         impl UnderLockReservationCheck for Refusing {
-            async fn recheck(&self, _root: &Path) -> Result<(), String> {
-                Err("the checkout is reserved by a live agent-run group".to_owned())
+            async fn recheck(&self, _root: &Path) -> Result<(), CheckoutRefusal> {
+                Err(CheckoutRefusal {
+                    code: "checkout_reserved".to_owned(),
+                    message: "the checkout is reserved by a live agent-run group".to_owned(),
+                })
             }
         }
 
@@ -946,6 +971,16 @@ mod tests {
             matches!(error, LspMutationApplyError::CheckoutReserved(_)),
             "the refusal must be a reservation conflict, got {error:?}"
         );
+        // M005 corrective C008 (implementation review): the refusal's code
+        // travels with it, so a client can tell an observed reservation from
+        // an authority that could not answer.
+        match &error {
+            LspMutationApplyError::CheckoutReserved(refusal) => assert_eq!(
+                refusal.code, "checkout_reserved",
+                "the refusal must carry the code the client sees"
+            ),
+            other => panic!("expected a reservation conflict, got {other:?}"),
+        }
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             original,

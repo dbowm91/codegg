@@ -497,3 +497,88 @@ async fn two_writers_on_one_shared_checkout_have_distinguishable_principals() {
         "the permit row must name the principal that actually wrote"
     );
 }
+
+/// M005 corrective C009 (implementation review): an unreadable run store is
+/// an **unresolved** lease, not an absent one.
+///
+/// The fence factory used to discard the run-store error (`.ok().flatten()`),
+/// so a store failure produced "this run holds no checkout" and the caller
+/// received **no fence at all**. The write then proceeded with no mediation:
+/// the exact anonymous-writer hole the milestone exists to close.
+#[tokio::test]
+async fn the_fence_factory_refuses_when_the_run_store_cannot_be_read() {
+    let pool = isolated_pool().await;
+    let runs: Arc<dyn AgentRunStore> = Arc::new(codegg_core::agent_run::SqliteAgentRunStore::new(
+        pool.clone(),
+    ));
+
+    // A real run, in a real store, so the read succeeds until the pool closes.
+    let run_id = AgentRunId::new();
+    let workspace_id = WorkspaceId::new();
+    runs.create_or_get(
+        NewAgentTask {
+            task_id: AgentTaskId::new(),
+            parent_task_id: None,
+            originating_session_id: "session-unreadable".to_owned(),
+            originating_turn_id: Some("turn-unreadable".to_owned()),
+            project_id: ProjectId::new(),
+            repository_id: Some(RepositoryId::new()),
+            workspace_id: workspace_id.clone(),
+            requested_agent: "build".to_owned(),
+            delegation_key: "delegation-unreadable".to_owned(),
+            request_fingerprint: "fingerprint-unreadable".to_owned(),
+            description: "c009 unreadable run store".to_owned(),
+        },
+        NewAgentRun {
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            depth: 1,
+            workspace_id,
+            agent_name: "build".to_owned(),
+            agent_digest: None,
+            provider: "test".to_owned(),
+            model: "test".to_owned(),
+            authority_digest: "authority-unreadable".to_owned(),
+            budget: AgentRunBudget::default(),
+            shared_scratch: Vec::new(),
+        },
+    )
+    .await
+    .expect("create the delegated run");
+
+    // The store is now unreadable: its pool is closed.
+    pool.close().await;
+
+    let worktrees = codegg_core::worktree_service::WorktreeService::sqlite(
+        isolated_pool().await,
+        std::path::PathBuf::from("/tmp/codegg-managed-worktrees"),
+        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+    );
+    let permits = WriterPermitService::new(
+        WriterPermitStore::new(isolated_pool().await),
+        WorktreePermitAuthority::new(worktrees.clone()),
+    );
+    let factory = DaemonWriterFenceFactory::new(permits, worktrees, runs, None, false);
+
+    let outcome = factory
+        .fence_for(WriterScopeRequest {
+            agent_run_id: Some(run_id.as_str().to_owned()),
+            workspace_root: std::path::PathBuf::from("/tmp"),
+            attempt_id: Some("attempt-unreadable".to_owned()),
+            cancellation: None,
+        })
+        .await;
+
+    match outcome {
+        Err(WriterFenceError::Unavailable(reason)) => {
+            assert!(
+                !reason.is_empty(),
+                "the refusal must say why the store could not be read"
+            );
+        }
+        Err(other) => panic!("expected the store to be unavailable, got {other:?}"),
+        Ok(_) => {
+            panic!("an unreadable run store must not resolve a fence: it must refuse")
+        }
+    }
+}

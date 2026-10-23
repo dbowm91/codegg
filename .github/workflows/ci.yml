@@ -111,6 +111,17 @@ jobs:
       - name: Execution ownership guard
         run: python3 scripts/check_execution_ownership.py
 
+      # The daemon's turn code resolves its workspace root from the
+      # execution context, never from the process working directory. The
+      # guard covers `src/core/**` and the turn-code surfaces, plus the
+      # `codegg-core` crate. A guard which is not run automatically cannot
+      # protect anything.
+      - name: Daemon working-directory usage guard
+        run: python3 scripts/check_daemon_cwd_usage.py --self-test
+
+      - name: Daemon working-directory usage guard
+        run: python3 scripts/check_daemon_cwd_usage.py
+
       # The trusted Git route owns every CodeGG-owned Git child. The
       # hostile-metadata detector is the mediation that refuses a
       # repository which declares a configuration surface the route cannot

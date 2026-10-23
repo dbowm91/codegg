@@ -6,7 +6,8 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
-                          # boundaries, sandbox, execution-ownership, git-route,
+                          # boundaries, sandbox, execution-ownership, daemon-cwd,
+                          # git-route,
                           # git-consistency-consumers, contained-worktree-grant,
                           # writer-fence-completeness, checkout-mediation-authority,
                           # TUI authority,
@@ -147,14 +148,23 @@ protects nothing:
 - `python3 scripts/check_writer_fence_completeness.py` — every mutating tool
   has a `None` arm that **refuses** (the `commit` tool was the one that did
   not), the daemon's team-policy principal fallback is derived from the team
-  state rather than a literal `true`, and the nested-subagent dispatch
+  state rather than a literal `true`, the nested-subagent dispatch
   forwards the parent's fence instead of silently downgrading to a
-  containment-only one.
+  containment-only one, and the fence's **durable authority reads** are
+  never answered with "absent" — an unreadable run store is an unresolved
+  lease, not a missing one, and answering it with "absent" produced a
+  writer with no fence at all.
 - `python3 scripts/check_checkout_mediation_authority.py` — the reservation
   authority must not resolve a path through a **capped** list (a 512-row
   oldest-first list fails open once the catalog grows), the HTTP routes must
-  refuse rather than skip the gate when no daemon is attached, and the gate
-  and the effect must resolve the workspace identifier by the same rule.
+  refuse rather than skip the gate when no daemon is attached, and the gate's
+  workspace-identifier rule must be at least as permissive as **every** effect
+  family's — a gate stricter than an effect refuses identifiers the effect
+  would accept, so the mediation never engages.
+- `python3 scripts/check_daemon_cwd_usage.py` — no `std::env::current_dir()`
+  in workspace-bound daemon code; the root is threaded through
+  `ExecutionContext`. It covers `src/core/**`, the turn-code surfaces and the
+  `codegg-core` crate.
 
 Each runs in `scripts/verify.sh quick` and in CI, each with a `--self-test`
 that injects the defect and proves the guard rejects it.
@@ -181,7 +191,11 @@ that injects the defect and proves the guard rejects it.
 - Process spawning / execution surfaces → `python3 scripts/check_execution_ownership.py`
   and keep `docs/execution-ownership.toml` in sync; scheduler changes also need
   `check_scheduler_bypass.py`; daemon path handling needs `check_daemon_cwd_usage.py`
-  (no `std::env::current_dir()` in workspace-bound daemon code — thread `ExecutionContext`)
+  (no `std::env::current_dir()` in workspace-bound daemon code — thread `ExecutionContext`).
+  That guard now runs automatically — it is in `scripts/verify.sh quick` and CI with
+  its `--self-test`. It was wired into neither before the C008 corrective extended
+  it to cover `crates/codegg-core`, and a guard which is not run automatically cannot
+  protect anything.
 - `assets/agents/*.toml` or `assets/prompts/` → `python3 scripts/generate_builtin_agents.py`
   to regenerate `src/agent/builtins/generated.rs` (never edit it); `--check` in CI.
   That generator owns `src/agent/builtins/mod.rs` **outright** — it rewrites the

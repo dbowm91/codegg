@@ -743,7 +743,9 @@ _CONFIG_KEY_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[A-Za-z0-9_.-]+)+$")
 #
 # The pattern matches a call, not a mention: the trailing `(` is required, the
 # name may not be part of a longer identifier, and the body it is searched in
-# has its line comments stripped first, so a comment that names the detector
+# has every non-code region masked out first — line comments, block comments
+# (including multi-line ones), string literals, raw string literals and
+# character literals — so a comment or a string that names the detector
 # cannot satisfy the obligation.
 DETECTOR_NAME = "ensure_repository_config_surface_is_contained"
 DETECTOR_CALL_RE = re.compile(rf'(?<![\w"]){re.escape(DETECTOR_NAME)}\s*\(')
@@ -780,6 +782,39 @@ def _strip_line_comments(text: str) -> str:
         out.append(char)
         index += 1
     return "".join(out)
+
+
+# The regions of a Rust source that are not code: comments, string literals
+# (including raw ones) and character literals. A lifetime is not a character
+# literal — `<'a, 'b>` has no closing quote after the `a` — so the
+# character-literal form only matches a quoted single character.
+#
+# This is the same masking technique `scripts/check_git_consistency_consumers.py`
+# uses, kept as a local copy because the guards in this repository are
+# independent scripts: none of them imports another.
+_MASK_RE = re.compile(
+    r"r(?P<hashes>#+)\"(?:[^\"]|\"(?!(?P=hashes)))*\"(?P=hashes)"
+    r"|r\"[^\"]*\""
+    r"|//[^\n]*"
+    r"|/\*.*?\*/"
+    r"|\"(?:\\.|[^\"\\\n])*\""
+    r"|'(?:\\.|[^\\'\n])'",
+    re.DOTALL,
+)
+
+
+def _mask_non_code(text: str) -> str:
+    """Blank out comments and literal contents, preserving every offset.
+
+    Every non-code region — a `//` line comment, a `/* ... */` block comment
+    (single-line or spanning many lines), a string literal, a raw string
+    literal, or a character literal — is replaced by spaces of the same
+    length, so offsets and line numbers still address the original text.
+
+    A name that appears **only** inside one of those regions is a mention,
+    not a call, and must not satisfy an obligation that asks for a call.
+    """
+    return _MASK_RE.sub(lambda match: re.sub(r"[^\n]", " ", match.group(0)), text)
 
 
 def _function_body(text: str, name: str) -> Optional[str]:
@@ -1144,9 +1179,10 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
     #    and in the sync path, because a route that mediates only one of
     #    them is half-moderated, not moderated.
     #
-    #    The assertion matches a call, not a mention: line comments are
-    #    stripped from the body first, and the pattern requires the name to
-    #    be followed by `(`.
+    #    The assertion matches a call, not a mention: the method's body is
+    #    masked so that no comment, string literal or character literal can
+    #    stand in for the call, and the pattern requires the name to be
+    #    followed by `(`.
     policy = _impl_block(text, "GitEnvPolicy")
     if policy is None:
         findings.append(
@@ -1178,7 +1214,11 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
                 )
                 continue
             method_body, method_line = found
-            if not DETECTOR_CALL_RE.search(_strip_line_comments(method_body)):
+            # The body is masked before it is searched: a name that appears
+            # only inside a line comment, a block comment, a string literal
+            # or a character literal is a mention, not a call, and cannot
+            # satisfy the obligation.
+            if not DETECTOR_CALL_RE.search(_mask_non_code(method_body)):
                 findings.append(
                     Finding(
                         rule="hostile-git-metadata-detector-call-missing",
@@ -1503,6 +1543,45 @@ def _self_test_cases() -> List[Tuple[str, Callable[[str], Optional[str]], str]]:
                 text,
                 "ensure_repository_config_surface_is_contained(&worktree)?;",
                 "// ensure_repository_config_surface_is_contained(&worktree)?;",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a block comment",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                "/* ensure_repository_config_surface_is_contained(&worktree)?; */",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a multi-line "
+            "block comment",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                "/* the detector is called here:\n"
+                "           ensure_repository_config_surface_is_contained(&worktree)?;\n"
+                "        */",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a string literal",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                'let _note = "see ensure_repository_config_surface_is_contained(&worktree)?;";',
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a raw string literal",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                'let _note = r#"see ensure_repository_config_surface_is_contained(&worktree)?;"#;',
             ),
             "hostile-git-metadata-detector-call-missing",
         ),

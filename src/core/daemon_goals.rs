@@ -22,7 +22,10 @@ struct DaemonUnderLockReservationCheck<'a> {
 
 #[async_trait::async_trait]
 impl crate::lsp::mutation::UnderLockReservationCheck for DaemonUnderLockReservationCheck<'_> {
-    async fn recheck(&self, root: &std::path::Path) -> Result<(), String> {
+    async fn recheck(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<(), crate::lsp::mutation::CheckoutRefusal> {
         self.daemon
             .recheck_checkout_reservation(
                 &self.context,
@@ -30,7 +33,15 @@ impl crate::lsp::mutation::UnderLockReservationCheck for DaemonUnderLockReservat
                 root,
             )
             .await
-            .map_err(|conflict| conflict.to_string())
+            .map_err(|conflict| crate::lsp::mutation::CheckoutRefusal {
+                // M005 corrective C008 (implementation review): the refusal's
+                // own code travels with it. A refusal raised because the
+                // authority could not be reached is not "another group holds
+                // this checkout", and saying so points the client at a group
+                // that may not exist.
+                code: conflict.code().to_owned(),
+                message: conflict.to_string(),
+            })
     }
 }
 
@@ -1211,10 +1222,15 @@ impl CoreDaemon {
                     // M005 corrective C008: a reservation refusal is a
                     // **conflict**, not an authorization failure — the same
                     // disposition every other mediated sink gives it.
-                    Err(crate::lsp::mutation::LspMutationApplyError::CheckoutReserved(message)) => {
+                    //
+                    // M005 corrective C008 (implementation review): the
+                    // refusal's own code travels with it, so a refusal
+                    // raised because the authority could not be reached is
+                    // not reported as an observed reservation.
+                    Err(crate::lsp::mutation::LspMutationApplyError::CheckoutReserved(refusal)) => {
                         Ok(CoreResponse::Error {
-                            code: "checkout_reserved".into(),
-                            message,
+                            code: refusal.code,
+                            message: refusal.message,
                         })
                     }
                     Err(error) => Ok(CoreResponse::Error {

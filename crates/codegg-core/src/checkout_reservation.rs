@@ -216,7 +216,15 @@ impl CheckoutReservationService {
             .map_err(|error| CheckoutReservationError::Lookup(error.to_string()))?;
         let mut best: Option<(usize, WorktreeRecord)> = None;
         for record in records {
-            let root = canonical_identity(&record.path);
+            // M005 corrective C008 (implementation review): a record whose
+            // path is relative is a corrupt row, and it is **not** skipped.
+            // The old `canonical_identity` anchored a relative path at the
+            // process's current directory, so the record never matched the
+            // absolute target and was dropped from the candidate set
+            // silently — a reserved checkout that answered "unreserved",
+            // which admits the writer. An unresolved record path is now a
+            // typed error, and the lookup fails closed.
+            let root = canonical_identity_absolute(&record.path)?;
             if !target.starts_with(&root) {
                 continue;
             }
@@ -458,6 +466,57 @@ mod tests {
             record.path.canonicalize().expect("canonical"),
             inner.canonicalize().expect("canonical"),
             "the deepest containing root wins"
+        );
+    }
+
+    /// M005 corrective C008 (implementation review): a record whose path is
+    /// relative is a corrupt row, and the authority fails closed on it.
+    ///
+    /// The lookup used to canonicalize the record's path against the
+    /// **process's current directory**, so a relative record never matched
+    /// the absolute target and was dropped from the candidate set silently:
+    /// a reserved checkout answered "unreserved", and the gate admitted the
+    /// writer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_relative_record_path_is_a_typed_error_rather_than_a_silent_skip() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let store = Arc::new(crate::worktree_service::InMemoryWorktreeStore::new());
+        let now = chrono::Utc::now().timestamp_millis();
+        store
+            .insert_reserved(WorktreeRecord {
+                worktree_id: WorktreeId::new(),
+                project_id: crate::identity::ProjectId::new(),
+                repository_id: crate::identity::RepositoryId::new(),
+                workspace_id: crate::workspace::WorkspaceId::new(),
+                node_id: None,
+                repository_root: root.path().to_path_buf(),
+                path: std::path::PathBuf::from("relative/checkout"),
+                branch: Some("codegg/worktree/x".into()),
+                base_commit: "a".repeat(40),
+                managed: true,
+                state: crate::worktree_service::ManagedWorktreeState::InUse,
+                health: crate::worktree_service::WorktreeHealth::Clean,
+                lease_generation: 0,
+                owner_run_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("insert the corrupt row");
+        let service = WorktreeService::with_store(
+            store,
+            root.path().join("managed"),
+            Arc::new(crate::workspace_services::WorkspaceLockTable::new()),
+        );
+        let reservations = CheckoutReservationService::new(service, None);
+
+        let error = reservations
+            .record_for_path(&root.path().join("file.txt"))
+            .await
+            .expect_err("a relative record path must not be skipped silently");
+        assert!(
+            matches!(error, CheckoutReservationError::RelativePath(_)),
+            "the corrupt row must be a typed error, got {error:?}",
         );
     }
 

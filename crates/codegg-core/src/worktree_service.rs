@@ -500,6 +500,13 @@ impl WorktreeStore for InMemoryWorktreeStore {
     ///
     /// The in-memory store was already unbounded, so it keeps the durable
     /// store's semantics: the authority sees the whole catalog.
+    ///
+    /// M005 corrective C008 (implementation review): the ordering is a
+    /// **total** order, matching the durable store's. Ordering by
+    /// `created_at` alone leaves records that share a timestamp in an
+    /// unspecified order — the in-memory store kept its insertion order and
+    /// the durable store returned the database's — so the two stores could
+    /// answer the same lookup differently. `worktree_id` breaks the tie.
     async fn list_authority_candidates(&self) -> Result<Vec<WorktreeRecord>, WorktreeServiceError> {
         let state = self.state.lock().await;
         let mut values: Vec<_> = state
@@ -508,7 +515,11 @@ impl WorktreeStore for InMemoryWorktreeStore {
             .filter(|record| record.state != ManagedWorktreeState::Removed)
             .cloned()
             .collect();
-        values.sort_by_key(|record| record.created_at);
+        values.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.worktree_id.cmp(&right.worktree_id))
+        });
         Ok(values)
     }
 
@@ -746,9 +757,16 @@ impl WorktreeStore for SqliteWorktreeStore {
     /// checkout — are absent from the result, so the authority would report
     /// a reserved checkout as unreserved. This read has no bound, so a cap
     /// can never hide a reserved checkout.
+    /// M005 corrective C008: every non-removed row, no cap.
+    ///
+    /// The durable store's ordering is a **total** order. Ordering by
+    /// `created_at` alone leaves records that share a timestamp in the
+    /// database's unspecified order, so the in-memory and durable stores
+    /// could answer the same lookup differently. `worktree_id` breaks the
+    /// tie, and the in-memory store breaks it the same way.
     async fn list_authority_candidates(&self) -> Result<Vec<WorktreeRecord>, WorktreeServiceError> {
         let rows = sqlx::query(&format!(
-            "SELECT {RECORD_COLUMNS} FROM managed_worktree WHERE state <> 'removed' ORDER BY created_at"
+            "SELECT {RECORD_COLUMNS} FROM managed_worktree WHERE state <> 'removed' ORDER BY created_at, worktree_id"
         ))
         .fetch_all(&self.pool)
         .await

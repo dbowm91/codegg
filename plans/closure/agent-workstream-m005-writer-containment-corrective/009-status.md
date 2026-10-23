@@ -14,7 +14,7 @@ was not the last line it claimed to be.
 
 **The `commit` tool was the one mutating tool registered without the
 fail-closed wrapper.** `ToolRegistry::with_options` documents that the `None`
-arms **refuse** rather than defaulting, and eleven workspace tools honour it.
+arms **refuse** rather than defaulting, and fourteen workspace tools honour it.
 The commit tool did not: with `workspace_root: None` it stayed in the registry
 with the sentinel workdir `\0codegg:no-workspace-root`, which
 `canonicalize_existing_prefix` resolves to `<checkout_root>/\0codegg:no-workspace-root`
@@ -61,19 +61,19 @@ managed checkout with no fence is **refused**, never silently downgraded.
 | 3. A single-user daemon still attributes its own writes and is not refused by its own fence | §4.3 | **met** — this is the non-regression the milestone had to protect |
 | 4. A nested child dispatched from a run on a managed checkout takes the checkout's writer permit or is refused with a typed error — never silently downgraded to containment-only | §3.3 and §4.4 | **met** |
 | 5. Every defect above has a regression test, and every new guard is wired in with a `--self-test` case that is rejected when the defect is reintroduced | §4 and §5 | **met** |
-| 6. `verify.sh quick`, workspace clippy and the named test targets are green | §6 | **met** — `verify.sh quick` is green across its 86 steps, the workspace clippy with `-D warnings` is green, and the three named test targets are green |
+| 6. `verify.sh quick`, workspace clippy and the named test targets are green | §4.5 and §4.6 | **met** — `verify.sh quick` is green across its 86 steps, the workspace clippy with `-D warnings` is green, and the three named test targets are green |
 
 ## 3. Production implementation evidence
 
 ### 3.1 The commit tool takes the fail-closed arm
 
 `src/tool/mod.rs` — the commit tool now registers through the same wrapper as
-the other eleven workspace tools:
+the other fourteen workspace tools:
 
 ```rust
 // M005 corrective C009: `commit` is a mutating workspace tool, so it
-// takes the same fail-closed `None` arm as the eleven workspace tools
-// above. …
+// takes the same fail-closed `None` arm as the fourteen workspace tools
+// above it. …
 let commit_tool: Box<dyn Tool> = match workspace_root.as_ref() {
     Some(_) => Box::new(commit_tool),
     None => unrooted(Box::new(commit_tool)),
@@ -200,7 +200,7 @@ let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> =
         Some(fence) => Some(fence),
         None => {
             let durable_runs = subagent_pool.durable_agent_runs.lock().await.clone();
-            if request_holds_managed_checkout(durable_runs, &request).await {
+            if request_holds_managed_checkout(durable_runs, request).await {
                 return Err(
                     "delegated run holds a managed checkout but no writer fence was resolved; \
                      refusing to downgrade to a containment-only fence"
@@ -468,7 +468,7 @@ The next reader should know three things.
 **The commit tool was a containment illusion.** The sentinel workdir resolved
 to a path *lexically under* the checkout root, so the fence's containment check
 passed — and the damage was done only later, in quarantine. The fix is the
-fail-closed wrapper the other eleven tools already had.
+fail-closed wrapper the other fourteen tools already had.
 
 **The team-policy refusal was dead code, and it is now reachable.** The
 derivation reads durable state at fence time, so it survives a restart and
@@ -480,3 +480,76 @@ this milestone removes.
 this milestone leaves, and it points at `src/scheduler/executors.rs` — the file
 the C007 corrective owns. The next reader who picks that up has a concrete
 target: carry the dispatching turn's principal on `SubAgentRequest`.
+
+## 14. Amendment: implementation review
+
+An implementation review of this milestone's change set found three fail-open
+paths that the verification in §4 did not reach. The record is amended rather
+than replaced: the closure stands, and the amendments below are what the
+review changed.
+
+**A1 — the managed-checkout probe failed open on a store error.** The probe
+that decides whether a run holds a managed checkout read the run store and
+answered "unmanaged" when the read failed, so the worker substituted a
+containment-only fence — a fence that can never take the writer permit — for a
+run that may in fact hold the group's shared checkout. That is the
+anonymous-writer hole this milestone exists to close.
+
+The probe now treats an unreadable run record as **managed** — the refusal.
+An absent record is still "not managed": a run with no durable record is not
+running. This matches the team-policy probe in the same change set, which
+already withheld its fallback on an unreadable store.
+
+**A2 — the probe's scope was corrected.** The first fix probed **both** the
+request's run id and its parent's, on the reasoning that a delegated run's
+own record may carry no worktree while its parent's does. That was wrong,
+and an independent review of the fix pass caught it: a delegated child of an
+isolated (mutating) parent holds no checkout of its own, so reading the
+parent's checkout as the child's refused the ordinary "a mutating agent
+spawns a read-only explorer" pattern — a run that can never write.
+
+The probe answers a question about **this** run, so the run's **own**
+durable record is authoritative; the parent's record is a fallback for a
+request that carries no run id at all. The review's own check confirms the
+distinction is the one that matters: in the scheduler path the child is
+dispatched with its own run id and the dispatching run as its parent, so
+probing both is what refused the child. `a_delegated_child_is_judged_by_its_own_record_not_its_parents`
+covers it.
+
+**A3 — the fence's durable authority reads were answered with "absent".**
+Three reads discarded their error, and each turned a store failure into a
+permissive answer:
+
+- `DaemonWriterFenceFactory::fence_for` read the run record with
+  `.ok().flatten()`. A store failure became "this run holds no checkout", so
+  the caller received **no fence at all** and the write proceeded with no
+  mediation. The error is now `WriterFenceError::Unavailable`.
+- `DaemonWriterFence::shared_group` read the worktree record and the group's
+  membership with `.ok()?`. A failed read collapsed into "this checkout is
+  private", so the shared profile never came into force: no writer permit was
+  taken and no principal was required, while the sibling that did hold the
+  permit kept writing. The reads now fail closed, as the same file's
+  `shares_live_group` already did.
+- `DaemonWriterFence::worktree_id` read the run record with
+  `if let Ok(Some(record))`. An unreadable record fell through to the scope's
+  own identifier, so a store failure quietly answered a different question
+  than the one asked.
+
+**A4 — the guard for this milestone grew a rule.** The new
+`fail-closed-authority-read` rule in `scripts/check_writer_fence_completeness.py`
+asserts that these reads surface their errors. It reports **6 findings on the
+baseline commit `f1b83a7a7`** — the three discarded reads, the discarded
+`worktree_id` read, and the two probe arms — and **0** on the fixed tree. Its
+`--self-test` grew from 11 cases to **18**: each of the seven new cases
+injects one of the discarded-read forms and requires the detector to reject
+it, and its paired case requires the surfaced form to be accepted. The rule
+also reports a **missing** authority function as "cannot prove it fails
+closed", so renaming or moving one of them is a finding rather than a silent
+pass.
+
+**A5 — the guard set changed, and the step count did not.** The review
+removed a duplicated `check_writer_fence_completeness` invocation from
+`scripts/verify.sh` (the guard ran twice in `run_guards`, −2 steps) and wired
+`check_daemon_cwd_usage.py`, which the sibling C008 corrective extended but
+which was wired into **neither** `verify.sh quick` nor CI (+2 steps). The
+count is therefore unchanged at **86 steps**, over a different guard set.

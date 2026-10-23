@@ -53,7 +53,7 @@ wait.
 | 5. The reservation authority never resolves a path against the process working directory, and the cwd guard covers `crates/codegg-core` | §3.4 and §5 | **met** |
 | 6. A write that waits on the repository lock re-checks the reservation after the lock is held | §3.5 and §4.4 | **met** |
 | 7. Every defect above has a regression test, and every new guard is wired in with a `--self-test` case that is rejected when the defect is reintroduced | §4 and §5 | **met** |
-| 8. `verify.sh quick`, workspace clippy and the named test targets are green | §6 | **met, except for one measured pre-existing flake** — `verify.sh quick` is green across its 86 steps and the workspace clippy with `-D warnings` is green; `core_daemon` and `shared_checkout_c006` are green, and `server_feature` reports 100 passed / 1 failed on a **pre-existing** flake that was measured on the untouched baseline — see §10 (U1) |
+| 8. `verify.sh quick`, workspace clippy and the named test targets are green | §4.6 and §4.7 | **met, except for one measured pre-existing flake** — `verify.sh quick` is green across its 86 steps and the workspace clippy with `-D warnings` is green; `core_daemon` and `shared_checkout_c006` are green, and `server_feature` reports 100 passed / 1 failed on a **pre-existing** flake that was measured on the untouched baseline — see §10 (U1) |
 
 ## 3. Production implementation evidence
 
@@ -77,7 +77,7 @@ cap cannot hide a reserved checkout.
 
 **Measured cost.** The authority read is a single indexed query over the
 non-removed rows of one user's catalog. At the catalog sizes the milestone
-tested — 614 non-removed rows, of which one is the reserved checkout — the
+tested — 601 non-removed rows, of which one is the reserved checkout — the
 resolution is a single `fetch_all` and the whole test's reservation phase
 completes in well under a second. The point of the change is not speed: it is
 that the *result* is now correct at any catalog size, where before it was
@@ -473,3 +473,59 @@ repository lock in the daemon, so the daemon could re-check after acquiring
 it. The LSP applier takes the lock itself, so it calls back into the daemon
 while it holds it. That asymmetry is the reason the applier takes a trait
 rather than the daemon handing the lock over.
+
+## 14. Amendment: implementation review
+
+An implementation review of this milestone's change set found four defects
+that the verification in §4 did not reach. The record is amended rather than
+replaced: the closure stands, and the amendments below are what the review
+changed.
+
+**A1 — a corrupt record row was dropped silently.** `record_for_path`
+canonicalized each candidate record's path with `canonical_identity`, which
+anchors a relative path at the **process's current directory**. A record
+whose path was relative therefore never matched the absolute target and was
+dropped from the candidate set — so a reserved checkout answered
+"unreserved" and the gate admitted the writer. The record's path is now
+resolved with `canonical_identity_absolute`, and an unresolved one is a typed
+error the lookup fails closed on.
+`a_relative_record_path_is_a_typed_error_rather_than_a_silent_skip` covers it.
+
+**A2 — an unresolvable target reported an observed reservation.** The
+`Unresolvable` arm produced a conflict with `lookup_failure: Some(..)`, but
+`CheckoutConflict::code()` answered `"checkout_reserved"` for every conflict
+and `recovery()` offered the reservation's text — "retry after that group
+finishes" — to a caller whose group may not exist. An unresolved target now
+has its own code (`checkout_target_unresolved`) and its own recovery text.
+`a_lookup_failure_is_not_reported_as_an_observed_reservation` covers it.
+
+**A3 — the LSP preview-apply sink flattened the refusal to a message.** The
+applier carries the under-lock refusal as a `String`, so the handler
+hardcoded `checkout_reserved` and the distinction A2 introduces never reached
+that sink. The refusal now carries its code — `CheckoutRefusal` — and the
+handler reports the code the daemon produced.
+
+**A4 — the two stores could answer the same lookup differently.** The
+authority read ordered by `created_at` alone, so records that share a
+timestamp came back in an unspecified order — the durable store in the
+database's order, the in-memory store in its insertion order. The ordering
+is now a total order, broken by `worktree_id`, and the two agree.
+
+**A5 — the guard's identifier rule was over-specified and under-scoped.**
+The rule demanded that the gate and the effect use *one* identifier rule, and
+it read one of the three effect families. The tree does not have that shape
+and does not need it: the gate uses the most permissive rule
+(`WorkspaceId::new_unchecked`) and the document and project-init effects apply
+a stricter lexical check on top, which can only refuse more. The rule now
+asserts the property that matters — the gate's rule must be at least as
+permissive as **every** effect family's — and it reads all three families,
+so one that is not read can no longer drift silently. Its `--self-test` grew
+from 8 cases to 9: the new case injects an effect family the gate does not
+cover resolving the workspace more permissively than the gate, and requires
+the detector to reject it.
+
+**A6 — the `verify.sh quick` step count.** The review removed a duplicated
+`check_writer_fence_completeness` invocation from `scripts/verify.sh` (−2
+steps) and wired `check_daemon_cwd_usage.py`, which this milestone extended
+but which was wired into **neither** `verify.sh quick` nor CI (+2 steps). The
+count is therefore unchanged at **86 steps**, over a different guard set.
