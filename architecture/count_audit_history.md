@@ -435,3 +435,26 @@ in the **merged** tree. C005 added **two** `.inc` members of existing families
 the *Guard scripts (all)* row did not move, while the *CI guard scripts* row
 did, because the repaired guard is now wired into the CI guard step for the
 first time.
+
+## C007 — comment corpus reduction and drift guard (2026-10-23)
+
+| Row | Before | After | Why it moved |
+|---|---|---|---|
+| Guard scripts (all) | 84 | **85** | `scripts/check_comment_budget.py` is a new guard. It is wired into `scripts/verify.sh quick` and into the CI guard step. |
+| CI guard scripts | 45 | **46** | The new guard's two CI steps (the `--self-test` and the guard itself) are one guard script, so the *CI guard scripts* row counts the script once, not the steps. |
+
+Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
+against this tree, each against its own listed `Source`. No other row moved:
+C007 changed no schema, no tool registration, no module, no storage layout,
+and it added no integration test file (the guard's `--self-test` is the
+coverage, by the milestone plan's own placement decision).
+
+The *quick runs 14 guards CI does not* note in the `CI guard scripts` row is
+unchanged: the new guard is in **both** `quick` and CI, so it adds one guard
+to each and does not change the size of the quick-only set.
+
+The measurement was taken on the C007 branch, before the sibling corrective
+milestones (C001–C006) are merged. Those branches re-measured the same table
+on their own trees, so this row set is expected to conflict at merge time; the
+reconciliation is the union of each side's contribution, re-measured in the
+merged tree rather than carried over from either side.
