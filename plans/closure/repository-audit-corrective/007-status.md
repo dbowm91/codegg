@@ -123,9 +123,9 @@ and replacing the cell with an exact pointer. **No narrative was deleted.**
 
 | Measure | Before | After | Δ |
 |---|---:|---:|---:|
-| Words in the file | 99,859 | 81,044 | **−18,815 (−18.8%)** |
-| Table rows | 747 | 747 | 0 |
-| Words in table cells | 90,169 | 68,161 | −22,008 |
+| Words in the file | 99,859 | 81,336 | **−18,523 (−18.5%)** |
+| Table rows | 747 | 748 | +1 (this milestone's own row) |
+| Words in table cells | 90,169 | 68,461 | −21,708 |
 | Median row | 44 words | 43 words | −1 |
 | Maximum row | 2,086 words | 1,190 words | −896 |
 | Rows over 500 words | 30 | 6 | −24 |
@@ -348,12 +348,37 @@ place.
   re-measure again.
 * `docs/comment-budget.toml` — the budget, the illustrative-path table, the
   recorded-stale-reference table, and the oversized-block exemptions.
-* `plans/registry.md` — the fat rows reduced (§3.3).
+* `architecture/overview.md` — a new **§"Comment policy"** section: what a
+  comment is for, the five things it does and does not do, and the six rules
+  the guard enforces (§12 of the plan asks for the policy here).
+* `plans/registry.md` — the fat rows reduced (§3.3) and this milestone's own
+  row.
+* `plans/README.md` — the registry's entry now says that the registry **is
+  an index**: a row states a status and points at the record that holds the
+  narrative, and a row whose narrative outgrew the index moves it into the
+  closure record the row already cites.
 * 22 closure records under `plans/closure/` — the moved registry narratives.
 
 ### 6.5 The results, in full
 
-Recorded at the end of this record, from the run of §6.1.
+| Command | Result |
+|---|---|
+| `scripts/verify.sh quick` | **passed** — "Quick verification passed." (exit 0) |
+| `cargo fmt --check --all` | clean |
+| `CARGO_BUILD_JOBS=3 cargo check -p codegg --all-targets` | passed |
+| `python3 scripts/check_comment_budget.py` | passed (one recorded `NOTE` for the C006 deferral) |
+| `python3 scripts/check_comment_budget.py --self-test` | passed; R0–R6 each rejected (§6.3) |
+| `python3 scripts/check_project_agent_pwd_inference.py` | passed |
+| `python3 scripts/check_project_agent_pwd_inference.py --self-test` | passed; three cases (§5.1) |
+| `python3 scripts/rust_test_scan.py --validate` | all checks pass; residual 0 on `src`, `crates` and `tests` |
+| `python3 scripts/measure_overview_counts.py` | Guard scripts 85, CI guard scripts 46, integration test files 333 — matching the published rows |
+
+**The `verify.sh quick` run found two real defects**, both of which are
+fixed and recorded in §6.6: a guard landmark the reduction had removed from
+`src/tool/broker.rs`, and a second one from `src/scheduler/executors.rs`. The
+first run of the milestone's own guard would have been green without them;
+the repository's guards were the ones that caught it. That is the reason the
+milestone's third audience is *the repository's own guards*.
 
 ---
 
@@ -548,7 +573,7 @@ row for this milestone was not among them.
 | Stale references fixed | 21 of the audit's 22 real ones, plus 17 the guard found |
 | Stale references deferred | 1 (C006-owned file) |
 | Illustrative examples preserved | 6 (the audit's) + 6 (found by the guard) |
-| Registry | 99,859 → 81,044 words; max row 2,086 → 1,190; 25 rows reduced |
+| Registry | 99,859 → 81,336 words; max row 2,086 → 1,190; median 44 → 43; 25 rows reduced |
 | New guard | `scripts/check_comment_budget.py`, five rules + R0, `--self-test` non-vacuous |
 | Guards hardened | PWD allowance narrowed and dead entry removed; skip marker no longer matches comments |
 | `verify.sh quick` | green |
