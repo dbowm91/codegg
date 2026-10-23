@@ -53,7 +53,7 @@ wait.
 | 5. The reservation authority never resolves a path against the process working directory, and the cwd guard covers `crates/codegg-core` | §3.4 and §5 | **met** |
 | 6. A write that waits on the repository lock re-checks the reservation after the lock is held | §3.5 and §4.4 | **met** |
 | 7. Every defect above has a regression test, and every new guard is wired in with a `--self-test` case that is rejected when the defect is reintroduced | §4 and §5 | **met** |
-| 8. `verify.sh quick`, workspace clippy and the named test targets are green | §4.6 and §4.7 | **met, except for one measured pre-existing flake** — `verify.sh quick` is green across its 86 steps and the workspace clippy with `-D warnings` is green; `core_daemon` and `shared_checkout_c006` are green, and `server_feature` reports 100 passed / 1 failed on a **pre-existing** flake that was measured on the untouched baseline — see §10 (U1) |
+| 8. `verify.sh quick`, workspace clippy and the named test targets are green | §4.6 and §4.7 | **met, except for one measured pre-existing flake** — `verify.sh quick` is green across its 86 steps at the closing commit and the workspace clippy with `-D warnings` is green; `core_daemon` and `shared_checkout_c006` are green, and `server_feature` reports 100 passed / 1 failed on a **pre-existing** flake that was measured on the untouched baseline — see §10 (U1) |
 
 ## 3. Production implementation evidence
 
@@ -210,14 +210,17 @@ Two tests, in the same `.inc`:
 
 | Target | Result |
 |---|---|
-| `cargo test -p codegg --test core_daemon` | **507 passed, 0 failed** |
+| `cargo test -p codegg --features server --test core_daemon` | **507 passed, 0 failed** —
+  **498** without the `server` feature, which gates the nine
+  `work_orders_m005_trigger::http_fire` tests |
 | `cargo test -p codegg --test server_feature` | **100 passed, 1 failed** — the failure is `projection_transport_real::real_tui_pending_snapshot_disconnect_convergence_50_cycles`, a TUI projection-transport test unrelated to this milestone; it is a **pre-existing** flake, measured on the untouched baseline, and the analysis is in §10 (U1) |
 | `cargo test -p codegg --test shared_checkout_c006` | **19 passed, 0 failed** |
 | `cargo test -p codegg-core` | green |
 
 ### 4.7 The whole-tree gates
 
-`scripts/verify.sh quick` is **green** on the implementation tree — 86 steps,
+`scripts/verify.sh quick` is **green** on the implementation tree at the
+closing commit — 86 steps,
 including `cargo fmt --check --all`, every guard with its `--self-test`, and
 `cargo check --workspace --all-targets --locked`. `cargo clippy --workspace
 --all-targets --locked -- -D warnings` is **green** as well, after four lints
@@ -413,7 +416,8 @@ accumulated 287 GB of already-trashed build caches; purging it was necessary to
 make the tree buildable), and the scoped tests and the guards were prioritised
 over the whole-tree gates. Both gates have since been run on this tree:
 
-- `scripts/verify.sh quick` — **green**, 86 steps: `cargo fmt --check --all`,
+- `scripts/verify.sh quick` — **green**, 86 steps on the implementation tree:
+  `cargo fmt --check --all`,
   every guard with its `--self-test`, and
   `cargo check --workspace --all-targets --locked`;
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — **green**
@@ -528,4 +532,25 @@ the detector to reject it.
 `check_writer_fence_completeness` invocation from `scripts/verify.sh` (−2
 steps) and wired `check_daemon_cwd_usage.py`, which this milestone extended
 but which was wired into **neither** `verify.sh quick` nor CI (+2 steps). The
-count is therefore unchanged at **86 steps**, over a different guard set.
+count is therefore unchanged at **86 steps** over a different guard set — the
+count at the branch tip `8225f42dd`; the merged tree's count is in §14 A7.
+
+**A7 — the merged tree's measurements.** The **86 steps** recorded above were
+measured on the branch tip `8225f42dd`, where the quick lane's `==>` lines were
+83 in `run_guards` plus 3 in `run_quick`. Reconciling with `origin/main`
+`3b29c5b88` adds **nine** — `origin/main`'s four reasoning-control guards
+(eight lines: each runs once with `--self-test` and once for real) and the
+harness-lab unittest step (one) — so the merged tree's quick lane runs **95**
+`==>` lines. The count is measured, not incremented:
+
+```bash
+awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 91
+awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
+```
+
+The merged tree's quick lane was re-run after the merge: **green**, 95 steps.
+
+`shared_checkout_c006` is **20** in the merged tree — §4.6's table keeps the
+closing-commit number, and the review pass added the lease-release regression
+test. `core_daemon` is **507** with `--features server` and **498** without it,
+both re-measured on the merged tree.

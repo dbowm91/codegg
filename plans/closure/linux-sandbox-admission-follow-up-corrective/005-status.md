@@ -26,7 +26,7 @@ C005 fixed both: the guard now asserts the detector's **call** — in both the a
 | 4. `src/security/workflow/report.rs` admits both diff reads through `admit_generation_bound`, and an inadmissible fact produces a typed error | §3.3 | **met** |
 | 5. Every defect above has a regression test that fails against the baseline and passes after the fix | §4.1 (guard) and §4.3 (consumers) | **met** |
 | 6. The trusted route's existing containment is unchanged | §5 | **met** |
-| 7. `verify.sh quick`, workspace clippy and the named test targets are green | §4.4 | **met** — `verify.sh quick` is green across its 86 steps and the workspace clippy with `-D warnings` is green; the named test targets are green |
+| 7. `verify.sh quick`, workspace clippy and the named test targets are green | §4.4 | **met** — `verify.sh quick` is green across its 86 steps at the closing commit and the workspace clippy with `-D warnings` is green; the named test targets are green |
 
 ## 3. Production implementation evidence
 
@@ -38,9 +38,11 @@ C005 fixed both: the guard now asserts the detector's **call** — in both the a
 `ensure_repository_config_surface_is_contained`.
 
 The rule matches a **call**, not a mention: the detector name must be followed
-by `(` in a **comment-stripped** method body, using the script's existing
-`_strip_line_comments` machinery. A comment that names the detector does not
-satisfy the obligation — which is precisely how the original gap was invisible.
+by `(` in a **masked** method body — block comments, line comments, string
+literals, raw strings and char literals are masked before the call is looked
+for, using the script's `_mask_non_code` helper. A comment that names the
+detector does not satisfy the obligation — which is precisely how the original
+gap was invisible.
 
 Asserting only one of the two call sites would have left the mutation
 half-passing, so both are asserted and both are injected in the self-test.
@@ -82,8 +84,10 @@ unhandled site.
 
 `scripts/check_git_forbidden_patterns.py` now runs in `scripts/verify.sh`'s
 `quick` path and in `.github/workflows/ci.yml`, each **with** its `--self-test`.
-The reason is recorded in `AGENTS.md`: *"A guard which is not run automatically
-cannot protect anything."* The script was previously classified as
+The reason is recorded in `AGENTS.md`: *"A guard that runs only when somebody
+remembers it protects nothing."* (The sentence was rewritten when this line
+reconciled with `origin/main`, which replaced the guard section; the reason is
+the same.) The script was previously classified as
 change-triggered; that classification is gone, and `AGENTS.md` now lists it
 among the automatic guards with the reason.
 
@@ -239,7 +243,8 @@ accumulated 287 GB of already-trashed build caches; purging it was necessary to
 make the tree buildable at all), and the scoped tests and the guards were
 prioritised over the whole-tree gates. Both have since been run on this tree:
 
-- `scripts/verify.sh quick` — **green**, 86 steps: `cargo fmt --check --all`,
+- `scripts/verify.sh quick` — **green**, 86 steps on the implementation tree:
+  `cargo fmt --check --all`,
   every guard with its `--self-test`, and
   `cargo check --workspace --all-targets --locked`;
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — **green**
@@ -324,9 +329,30 @@ merely passing.
 **A3 — the `verify.sh quick` step count.** The review removed a duplicated
 `check_writer_fence_completeness` invocation from `scripts/verify.sh` (−2
 steps) and wired `check_daemon_cwd_usage.py`, which was wired into neither
-`verify.sh quick` nor CI (+2 steps). The count is unchanged at **86 steps**,
-over a different guard set.
+`verify.sh quick` nor CI (+2 steps). The count is unchanged at **86 steps** over a different guard set — the count
+at the branch tip `8225f42dd`; the merged tree's count is in §14 A5.
 
 **A4 — the record's quoted self-test output is milestone-scoped.** The
 "36 injected defects, each rejected" line in §13 remains the milestone's own
 measurement; the live count is now **40**.
+
+**A5 — the merged tree's measurements.** The **86 steps** recorded above were
+measured on the branch tip `8225f42dd`, where the quick lane's `==>` lines were
+83 in `run_guards` plus 3 in `run_quick`. Reconciling with `origin/main`
+`3b29c5b88` adds **nine** — `origin/main`'s four reasoning-control guards
+(eight lines: each runs once with `--self-test` and once for real) and the
+harness-lab unittest step (one) — so the merged tree's quick lane runs **95**
+`==>` lines. The count is measured, not incremented:
+
+```bash
+awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 91
+awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
+```
+
+The merged tree's quick lane was re-run after the merge: **green**, 95 steps.
+
+This milestone's own scope is the two guards and the diff-consumer fix; the
+review pass added **no** test to it, so §4.4 and §9 need no correction. The
+tests the review pass added belong to the sibling M005 records — the fence
+factory's unreadable-store refusal and the delegated-child probe — and are
+counted there.

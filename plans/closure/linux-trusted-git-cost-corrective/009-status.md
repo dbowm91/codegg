@@ -27,7 +27,7 @@ C009 corrected the descriptions, replaced the substring comparison with equality
 | 3. An obtained-root set containing a prefix-sharing path but not the required path **fails** the obtained-root check | `tests/contained_worktree_c008.rs::the_obtained_root_check_compares_paths_and_not_substrings` | **met** |
 | 4. A static guard asserts the grant/ADR agreement and rejects an injected divergence in either direction | `scripts/check_contained_worktree_grant.py --self-test`: four injections, four rejections | **met** |
 | 5. Every defect above has a regression test that fails against the baseline and passes after the fix | The guard reports **8 findings** against the baseline tree and **0** against the fixed tree (§4); the obtained-root test fails against the baseline's substring comparison (§4) | **met** |
-| 6. The five existing `contained_worktree_c008` tests remain green, and `verify.sh quick` and `cargo clippy --workspace --all-targets -- -D warnings` are green | §4 | **met** — `contained_worktree_c008` is 7 passed / 0 failed, `verify.sh quick` is green across its 86 steps, and the workspace clippy with `-D warnings` is green |
+| 6. The five existing `contained_worktree_c008` tests remain green, and `verify.sh quick` and `cargo clippy --workspace --all-targets -- -D warnings` are green | §4 | **met** — `contained_worktree_c008` is 7 passed / 0 failed, `verify.sh quick` is green across its 86 steps at the closing commit, and the workspace clippy with `-D warnings` is green |
 
 ## 3. Production implementation evidence
 
@@ -271,7 +271,8 @@ accumulated 287 GB of already-trashed build caches, which were purged to make
 the tree buildable at all), and the guard and the scoped tests were prioritised
 over the whole-tree gates. Both have since been run:
 
-- `scripts/verify.sh quick` — **green**, 86 steps: `cargo fmt --check --all`,
+- `scripts/verify.sh quick` — **green**, 86 steps on the implementation tree:
+  `cargo fmt --check --all`,
   every guard with its `--self-test`, and
   `cargo check --workspace --all-targets --locked`;
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — **green**
@@ -361,9 +362,27 @@ fixed tree.
 **A5 — the `verify.sh quick` step count.** The review removed a duplicated
 `check_writer_fence_completeness` invocation from `scripts/verify.sh` (−2
 steps) and wired `check_daemon_cwd_usage.py`, which was wired into neither
-`verify.sh quick` nor CI (+2 steps). The count is unchanged at **86 steps**,
-over a different guard set.
+`verify.sh quick` nor CI (+2 steps). The count is unchanged at **86 steps** over a different guard set — the count
+at the branch tip `8225f42dd`; the merged tree's count is in §14 A7.
 
 **A6 — the record's quoted self-test output is milestone-scoped.** The
 milestone's own four-injection measurement remains as recorded; the live
 count is now **9**.
+
+**A7 — the merged tree's measurements.** The **86 steps** recorded above were
+measured on the branch tip `8225f42dd`, where the quick lane's `==>` lines were
+83 in `run_guards` plus 3 in `run_quick`. Reconciling with `origin/main`
+`3b29c5b88` adds **nine** — `origin/main`'s four reasoning-control guards
+(eight lines: each runs once with `--self-test` and once for real) and the
+harness-lab unittest step (one) — so the merged tree's quick lane runs **95**
+`==>` lines. The count is measured, not incremented:
+
+```bash
+awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 91
+awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
+```
+
+The merged tree's quick lane was re-run after the merge: **green**, 95 steps.
+
+`contained_worktree_c008` is still **7** in the merged tree — the merge added
+no test to it — so §4's table needed no correction.
