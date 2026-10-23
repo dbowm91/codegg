@@ -91,9 +91,6 @@ the commit it runs against. The exact future evidence that discharges
 the condition is:
 
 1. a **green hosted `CI / verify` run against that commit on the hosted
-   runner** — not the local gate, and not a re-run of the local gate. The exact future evidence that discharges the condition is:
-
-1. a **green hosted `CI / verify` run against that commit on the hosted
    runner** — not the local gate, and not a re-run of the local gate.
 
 **The risk.** A local `scripts/verify.sh quick` run is a property of **this
