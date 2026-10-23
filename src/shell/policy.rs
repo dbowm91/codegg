@@ -2,6 +2,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::tool::destructive::{RootDeleteTarget, RootDeleteVerdict};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HumanShellPolicyDecision {
     Allow,
@@ -9,10 +11,16 @@ pub enum HumanShellPolicyDecision {
     Block { reason: String },
 }
 
-static BLOCK_RM_RF_ROOT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+/").unwrap());
-static BLOCK_RM_FR_ROOT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+/").unwrap());
+/// The reason shown when a recursive removal of the filesystem root is refused.
+///
+/// ADR-0045 decision 3 keeps a hard rejection for cases that are *enforceable*.
+/// This one is a best-effort command-text rule, so the text says exactly that:
+/// it does not claim the filesystem is protected, because a script, another
+/// tool, or another spelling reaches the same effect.
+const ROOT_DELETE_BLOCK_REASON: &str =
+    "a recursive removal of the filesystem root is refused by this built-in command-text rule \
+     (best-effort text match, not a security boundary)";
+
 static BLOCK_MKFS_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"mkfs\.").unwrap());
 static BLOCK_MKFS_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"mkfs\s").unwrap());
 static BLOCK_DD_ZERO: LazyLock<Regex> =
@@ -58,7 +66,7 @@ static WARN_FIND_DESTRUCTIVE: LazyLock<Regex> =
 pub fn evaluate_command(command: &str) -> HumanShellPolicyDecision {
     let normalized = normalize_command(command);
 
-    if let Some(reason) = check_block_patterns(&normalized) {
+    if let Some(reason) = check_block_patterns(command, &normalized) {
         return HumanShellPolicyDecision::Block { reason };
     }
 
@@ -78,29 +86,48 @@ fn normalize_command(command: &str) -> String {
         .replace(['\'', '"'], "")
 }
 
-fn check_block_patterns(cmd: &str) -> Option<String> {
-    if BLOCK_RM_RF_ROOT.is_match(cmd) || BLOCK_RM_FR_ROOT.is_match(cmd) {
-        return Some("rm -rf / is catastrophic".to_string());
+/// Whether the command is a recursive force removal of the filesystem root.
+///
+/// The classification is owned by the canonical recogniser in
+/// `crate::tool::destructive` — the same one the tool-side risk signal uses —
+/// so the two cannot disagree about the same spelling. The home directory is
+/// deliberately *not* a block here: it keeps the pre-existing warning.
+fn is_root_delete(command: &str) -> bool {
+    matches!(
+        crate::tool::destructive::classify_root_delete(command),
+        RootDeleteVerdict::RootTarget(
+            RootDeleteTarget::FilesystemRoot | RootDeleteTarget::FilesystemRootGlob
+        )
+    )
+}
+
+/// `raw` is the command as written; `normalized` is its lowercased,
+/// quote-stripped form. The root-delete recogniser reads the raw text because
+/// it is case-sensitive about `$HOME` and because a quoted target is still an
+/// argument to `rm`. Every other block pattern matches the normalized text.
+fn check_block_patterns(raw: &str, normalized: &str) -> Option<String> {
+    if is_root_delete(raw) {
+        return Some(ROOT_DELETE_BLOCK_REASON.to_string());
     }
-    if BLOCK_MKFS_DOT.is_match(cmd) || BLOCK_MKFS_SPACE.is_match(cmd) {
+    if BLOCK_MKFS_DOT.is_match(normalized) || BLOCK_MKFS_SPACE.is_match(normalized) {
         return Some("mkfs destroys filesystems".to_string());
     }
-    if BLOCK_DD_ZERO.is_match(cmd) || BLOCK_DD_DEV.is_match(cmd) {
+    if BLOCK_DD_ZERO.is_match(normalized) || BLOCK_DD_DEV.is_match(normalized) {
         return Some("dd reading/writing device nodes".to_string());
     }
-    if BLOCK_FORK_BOMB.is_match(cmd) {
+    if BLOCK_FORK_BOMB.is_match(normalized) {
         return Some("fork bomb".to_string());
     }
-    if BLOCK_SHUTDOWN.is_match(cmd) {
+    if BLOCK_SHUTDOWN.is_match(normalized) {
         return Some("shutdown halts the system".to_string());
     }
-    if BLOCK_REBOOT.is_match(cmd) {
+    if BLOCK_REBOOT.is_match(normalized) {
         return Some("reboot restarts the system".to_string());
     }
-    if BLOCK_POWEROFF.is_match(cmd) {
+    if BLOCK_POWEROFF.is_match(normalized) {
         return Some("poweroff halts the system".to_string());
     }
-    if BLOCK_HALT.is_match(cmd) {
+    if BLOCK_HALT.is_match(normalized) {
         return Some("halt halts the system".to_string());
     }
     None

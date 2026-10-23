@@ -28,6 +28,9 @@ pub mod approval_reviewer;
 #[path = "doom_loop.inc"]
 pub mod doom_loop;
 
+#[path = "destructive_delete_classification.inc"]
+pub mod destructive_delete_classification;
+
 #[path = "host_admission_manifest.inc"]
 pub mod host_admission_manifest;
 

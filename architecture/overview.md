@@ -636,7 +636,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (327 files)
+├── tests/                      # Integration tests (328 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -888,3 +888,13 @@ was true of the tree it described and is **not** true of the merged tree. The
 merged tree, and this line's six new members still sit on top of that. Every other
 code-count row was re-checked against its own listed `Source` in the merged tree and is
 unchanged.
+
+Three rows moved on **2026-10-23** with the repository-audit-corrective C002 milestone
+(destructive-delete classification coverage), and were re-measured with
+`python3 scripts/measure_overview_counts.py` rather than incremented: *Integration test
+files* is **328** (the new `tests/security_permission/destructive_delete_classification.inc`),
+*Guard scripts (all)* is **81** (the new `scripts/check_destructive_risk_signal_coverage.py`),
+and *CI guard scripts* is **41** (that one guard's two `ci.yml` steps — the guard and its
+`--self-test` — are one distinct script). The new member lives inside the existing
+`security_permission` family, so the root package's **test-target** count did **not** move.
+Every other code-count row was re-checked against its own listed `Source` and is unchanged.

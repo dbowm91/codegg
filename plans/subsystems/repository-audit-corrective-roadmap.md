@@ -351,7 +351,7 @@ The roadmap is closed when:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | C001 | not started | `plans/implementation/repository-audit-corrective/001-nested-runtime-panic-removal.md` | — | — |
-| C002 | not started | `plans/implementation/repository-audit-corrective/002-destructive-delete-classification-coverage.md` | — | — |
+| C002 | **closed** | `plans/implementation/repository-audit-corrective/002-destructive-delete-classification-coverage.md` | `plans/closure/repository-audit-corrective/002-status.md` | — |
 | C003 | not started | `plans/implementation/repository-audit-corrective/003-slash-command-argument-contract.md` | — | — |
 | C004 | not started | `plans/implementation/repository-audit-corrective/004-job-state-terminality-and-status-projection.md` | — | — |
 | C005 | not started | `plans/implementation/repository-audit-corrective/005-verification-surface-and-dead-code.md` | — | C001–C004 closed |

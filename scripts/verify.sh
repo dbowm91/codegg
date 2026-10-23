@@ -233,6 +233,12 @@ run_guards() {
     echo "==> python3 scripts/check_shell_policy_test_safety.py"
     (cd "$REPO_ROOT" && python3 scripts/check_shell_policy_test_safety.py)
 
+    echo "==> python3 scripts/check_destructive_risk_signal_coverage.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_destructive_risk_signal_coverage.py)
+
+    echo "==> python3 scripts/check_destructive_risk_signal_coverage.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_destructive_risk_signal_coverage.py --self-test)
+
     echo "==> python3 scripts/test_shell_policy_test_safety.py"
     (cd "$REPO_ROOT" && python3 scripts/test_shell_policy_test_safety.py)
 
