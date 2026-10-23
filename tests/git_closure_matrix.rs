@@ -91,7 +91,9 @@ fn inspect_clean_repo_returns_no_conflicts() {
     init_repo(dir.path());
     write_file(dir.path(), "a.txt", "hello");
     commit(dir.path(), "init");
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state, egggit::RepositoryOperationState::None);
     assert!(state.is_clean());
 }
@@ -126,7 +128,9 @@ fn inspect_unborn_repo_does_not_panic() {
     let dir = tempfile::TempDir::new().unwrap();
     init_repo(dir.path());
     // No commits yet — HEAD points to an unborn branch.
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(matches!(state, egggit::RepositoryOperationState::None));
 }
 
@@ -204,7 +208,9 @@ fn inspect_large_staged_diff() {
         stdout.contains("files changed"),
         "expected stat summary: {stdout}"
     );
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(
         state.is_clean(),
         "staging does not create in-progress operation"
@@ -507,7 +513,9 @@ fn stash_pop_with_conflicts_creates_conflict_state() {
         !pop.status.success(),
         "stash pop with conflicts should fail"
     );
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(
         matches!(state, egggit::RepositoryOperationState::None),
         "stash pop does not leave operation state"
@@ -918,7 +926,9 @@ fn runstore_backend_detail_matches_recovery_action() {
         .output()
         .unwrap();
     assert!(!merge.status.success(), "merge must conflict");
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state.family(), OperationFamily::Merge);
     assert_eq!(state.label(), "merge");
     let _ = Command::new("git")

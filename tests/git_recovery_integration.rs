@@ -116,7 +116,9 @@ fn operation_state_none_on_clean_repo() {
     init_repo(dir.path());
     write_file(dir.path(), "a.txt", "hello");
     commit(dir.path(), "init");
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state, RepositoryOperationState::None);
     assert!(state.is_clean());
     assert!(state.available_actions().is_empty());
@@ -128,7 +130,9 @@ fn operation_state_detects_merge() {
         return;
     }
     let dir = setup_conflict();
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state.family(), OperationFamily::Merge);
     assert!(state.action_available(RecoveryAction::Continue));
     assert!(state.action_available(RecoveryAction::Abort));
@@ -171,7 +175,9 @@ fn operation_state_detects_rebase() {
         .output()
         .unwrap();
     assert!(!r.status.success(), "rebase must conflict");
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(matches!(state, RepositoryOperationState::Rebase(_)));
     assert!(state.action_available(RecoveryAction::Continue));
     assert!(state.action_available(RecoveryAction::Abort));
@@ -217,7 +223,9 @@ fn operation_state_detects_cherry_pick() {
         .output()
         .unwrap();
     assert!(!r.status.success());
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state.family(), OperationFamily::CherryPick);
 }
 
@@ -240,7 +248,9 @@ fn operation_state_detects_bisect() {
         .current_dir(dir.path())
         .output()
         .unwrap();
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state.family(), OperationFamily::Bisect);
     assert!(!state.action_available(RecoveryAction::Continue));
     assert!(!state.action_available(RecoveryAction::Abort));
@@ -269,7 +279,9 @@ fn conflict_during_merge_reachable_via_state() {
         return;
     }
     let dir = setup_conflict();
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     let (orig_head, current_head) = match state {
         RepositoryOperationState::Merge(s) => (s.original_head, s.other_head),
         other => panic!("expected Merge, got {other:?}"),
@@ -321,7 +333,9 @@ async fn recovery_abort_requires_containment_and_preserves_operation_state() {
     let exec = codegg::git_mutations::GitMutationExecutor::new();
     let result = codegg::git_recovery::abort_in_progress_typed(&exec, dir.path()).await;
     assert_recovery_requires_containment(result.expect_err("merge abort needs containment"));
-    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    let state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert_eq!(state.family(), OperationFamily::Merge);
 }
 
@@ -341,6 +355,7 @@ async fn recovery_continue_with_unresolved_conflicts_requires_containment() {
     assert_eq!(
         detect_operation_state_for_root(dir.path())
             .unwrap()
+            .into_value()
             .family(),
         OperationFamily::Merge
     );
@@ -369,7 +384,9 @@ async fn recovery_continue_after_resolution_requires_containment() {
     assert_recovery_requires_containment(
         result.expect_err("merge continue requires contained Git execution"),
     );
-    let state_after = detect_operation_state_for_root(dir.path()).unwrap();
+    let state_after = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(
         matches!(state_after, RepositoryOperationState::Merge(_)),
         "unsupported executor must leave merge recovery pending: {state_after:?}"
@@ -448,6 +465,7 @@ async fn recovery_skip_during_rebase_requires_containment() {
     assert_eq!(
         detect_operation_state_for_root(dir.path())
             .unwrap()
+            .into_value()
             .family(),
         OperationFamily::Rebase
     );
@@ -461,6 +479,7 @@ async fn recovery_skip_during_rebase_requires_containment() {
     assert_eq!(
         detect_operation_state_for_root(dir.path())
             .unwrap()
+            .into_value()
             .family(),
         OperationFamily::Rebase
     );
@@ -523,7 +542,9 @@ fn toctou_defense_detects_state_mismatch() {
     assert!(!r.status.success(), "rebase must conflict");
 
     // Initial detection: state should be Rebase.
-    let initial_state = detect_operation_state_for_root(dir.path()).unwrap();
+    let initial_state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(
         matches!(initial_state, RepositoryOperationState::Rebase(_)),
         "expected Rebase, got {initial_state:?}"
@@ -537,7 +558,9 @@ fn toctou_defense_detects_state_mismatch() {
         .output()
         .unwrap();
     assert!(abort.status.success(), "rebase --abort must succeed");
-    let post_abort_state = detect_operation_state_for_root(dir.path()).unwrap();
+    let post_abort_state = detect_operation_state_for_root(dir.path())
+        .unwrap()
+        .into_value();
     assert!(
         post_abort_state.is_clean(),
         "repo should be clean after abort"
