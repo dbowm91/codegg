@@ -2172,8 +2172,11 @@ it toggles this route's file tree rather than opening the tasks overlay.
 ## Browsing files
 
 `Ctrl+T` opens a tree pane beside the editor; `/files` opens the same
-navigator as a box you can dock into the side panel with `Shift+L`. Both run
-the same navigation, so the keys below mean the same thing in both.
+navigator as a box you can dock into the side panel with `Shift+L`. Both read
+the same navigation and the same selection — one cursor, shared — so the keys
+below mean the same thing in both. The **filter** is the one thing they do
+not share: the Ctrl+T pane's filter lives in the app's tree state, and the
+`/files` box keeps its own, so the two can show different rows.
 
 | Key | What it does |
 |---|---|

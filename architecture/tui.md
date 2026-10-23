@@ -3310,8 +3310,39 @@ dialog cancels the task that reports it, so the result would be lost.
 `/files` opens a **navigator** box over the workspace root, and `Files` is a
 hosted panel so the same box docks into the side column with `Shift+L`. It is
 one implementation: the box, the hosted panel, and the editor-side Ctrl+T
-pane all run the *same* `FileTreeState` navigation, so a fix in one is a fix
-in all three.
+pane all read the *same* navigation, so a fix in one is a fix in all three.
+
+### The ownership split
+
+`App::file_tree_state` is the single **authority** for the navigator's tree
+*structure*: its nodes, its expansion set, its scope, its selection and its
+pending cursor. A surface may hold a read-only `FileTreeStructure` of that
+structure — a distinct type, so a surface structurally cannot hold a
+field it might mutate — and may not hold a second mutable copy of it.
+
+The authority also owns the **Ctrl+T tree pane's** own state, because that
+pane *is* this value's surface: the pane's live filter, its insert mode, its
+scroll offset and its measured viewport. Every *other* surface owns its own:
+the `/files` box keeps a **box-local** filter, its own insert mode and its own
+scroll offset, and pages against its **own** measured viewport height. Two
+filters and two scroll offsets, one structure, one selection.
+
+The selection is a **path**, not an index, so it does not depend on a filter
+or on two copies agreeing about a row number. Every verb is a path-bearing
+intent — `FilesDescend`, `FilesAscend`, `FilesSelect` — resolved against the
+authority by `commands::file_tree`. `h` resolves "the parent of this row"
+against the **unfiltered** row set, because that is a structural question and
+the surface's own filtered view cannot answer it.
+
+The structure reaches every mounted surface through one refresh, in
+`App::render`, ahead of the tree pane, the side panel and the modal dialog.
+The refresh is gated on `FileTreeState::revision`, which every
+render-changing mutation bumps: an unchanged frame costs no copy, and a
+mutation cannot be forgotten — which is exactly how the listing mirror used to
+go stale. The refresh reaches the **docked** panel as well as the modal box,
+through a typed seam on the panel host: a docked box is owned by the panel
+host, not by the focus manager, and a refresh that only knew about the modal
+stack left the docked panel showing a frozen copy of the tree.
 
 | Key | Meaning |
 |---|---|
