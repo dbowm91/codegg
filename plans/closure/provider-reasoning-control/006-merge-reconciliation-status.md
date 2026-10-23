@@ -22,8 +22,8 @@ Historical closure records this record supplements and does **not** rewrite:
 - `plans/closure/provider-reasoning-control/004-status.md` (M004, closed)
 - `plans/closure/provider-reasoning-control/005-status.md` (M005, closed)
 
-Repository baseline reconciled: `origin/main` at `f1b83a7a7`, reached in
-**three** stages. The first merge was against `8cee65934` ("fix(server): map
+Repository baseline reconciled: `origin/main` at `3e43d4144`, reached in
+**four** stages. The first merge was against `8cee65934` ("fix(server): map
 the process-denial refusal to 409, not an unhandled variant"), which is
 **439 commits** ahead of this branch's merge-base `c93211542` ("Merge pull
 request #153 from dbowm91/docs/core-family-counts-m006"). The branch head at
@@ -35,8 +35,8 @@ stage. In the third stage — the one against the `origin/main` the pull request
 targets — the branch's side of the merge-base was 92 files and `main`'s was
 585, with **eleven files** changed on both sides.
 
-**The reconciliation took three stages, because `main` moved twice while it
-was in flight.** The first merge was against `8cee65934`. During the merged
+**The reconciliation took four stages, because `main` moved three times while
+it was in flight.** The first merge was against `8cee65934`. During the merged
 tree's qualification — which, on this host, took hours — `main` advanced a
 further **six commits** to `47f5572b1` (the agent-workstream blackboard's
 M008: `3477bc589`, `4d327add9`, `3549d9216`, `e1b898cb8`, `2a797c86c`,
@@ -46,8 +46,14 @@ the CI/test-throughput recovery workstream and its M004 root-test-target
 family consolidation. The third merge brought that in, and is recorded in §2b,
 §4b and §7.6.
 
-The third merge is the one that makes this line publishable: it is the
-reconciliation against the `origin/main` the pull request is opened against.
+`main` then advanced a further **five commits** to `3e43d4144` — the landing
+of PR #170 (pause the hosted Desktop E2E qualification) and PR #171 (absorb
+two interactive test families into one, and repair two guards) — and the
+fourth merge brought that in too. It is recorded in §2c and §4c.
+
+The third and fourth merges are the ones that make this line publishable:
+together they are the reconciliation against the `origin/main` the pull
+request is opened against.
 
 ## 1. Executive finding
 
@@ -188,6 +194,45 @@ this line had yielded to it in the first stage. Under the same rule, both of
 this line's numbers yield again — ADR-0048 → **ADR-0049** and ADR-0049 →
 **ADR-0050** — and `plans/adrs/README.md` gains the index entry `main`'s
 ADR-0048 never had.
+
+## 2c. The fourth stage: `main` advanced by 5 commits
+
+`main` advanced five commits to `3e43d4144` — the landing of PR #170 (pause
+the hosted Desktop E2E qualification) and PR #171 (absorb two interactive test
+families into one, and repair two guards) — while this line was waiting for
+its pull request to be reviewed.
+
+The fourth merge produced **one conflicted file**: `plans/registry.md`, where
+both sides again inserted a subsystem row at the same slot. **Both rows were
+kept**, with `main`'s current row first — main's own PR #171 updated that
+row's text, so `main`'s version was taken, not ours. `architecture/overview.md`
+and `docs/test-ownership.toml` **auto-merged** without conflict, and no
+reasoning-control file was among the merged set.
+
+`main`'s PR #171 also **repaired the two guards this line's third stage had
+to satisfy** — `scripts/check_test_ownership.py` and
+`scripts/check_test_duplication.py` — and consolidated the
+`interactive_process_sessions` and `interactive_terminal_tui` families into
+`interactive_process_attach_resume`. This line's ownership entry for
+`reasoning_overlay_narrowing` in `docs/test-ownership.toml` survived the
+manifest repair, and all 51 guards still pass.
+
+## 4c. The fourth stage's re-measurement — nothing moved
+
+Every row of the Verified-counts table was **re-measured against its own
+listed `Source`** in the newly merged tree, and **no row moved**: integration
+test files **321**, CI guard scripts **80**, tool source files **84**,
+architecture docs **91**, storage layout version **88**.
+
+The family consolidation in PR #171 is the reason one of those rows needed
+re-measuring rather than assuming: `tests/interactive_process_sessions/` and
+`tests/interactive_terminal_tui/` were absorbed into
+`tests/interactive_process_attach_resume/`, and their `mod.rs` files were
+deleted. The row's Source counts `tests/*.rs` + `tests/*/*.inc`, so the
+**`.inc` count is unchanged at 317** — the `.inc` files moved rather than
+disappeared, and the deleted `mod.rs` files were never counted. The top-level
+`tests/*.rs` count stays at **4**, and the row reads **321** exactly as it did
+after the third stage.
 
 ## 3. The indicator's re-landing
 

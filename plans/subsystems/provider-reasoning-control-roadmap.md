@@ -375,12 +375,13 @@ This roadmap is closed when:
 
 ### Merge reconciliation with `main` (2026-10-22, and again 2026-10-23)
 
-`main` was reconciled with the closed milestone chain **three times**, because it
-advanced twice while the merged tree was being qualified: first 439 commits to
+`main` was reconciled with the closed milestone chain **four times**, because it
+advanced three times while the merged tree was being qualified: first 439 commits to
 `8cee65934` (eight conflicts), then six more to `47f5572b1` — the
-agent-workstream blackboard's M008 — with one conflict, and finally 79 more to
+agent-workstream blackboard's M008 — with one conflict, then 79 more to
 `f1b83a7a7` — the CI/test-throughput recovery workstream and its M004
-root-test-target family consolidation — with two conflicts. The reasoning contract
+root-test-target family consolidation — with two conflicts, and finally five more to
+`3e43d4144` (the landing of PR #170 and PR #171) with one conflict. The reasoning contract
 survived intact; three allocations yielded to `main` and one surface moved:
 
 - **ADR-0044 → ADR-0048 → ADR-0049** (the open-vocabulary record) and
@@ -413,6 +414,14 @@ counts `tests/*.rs` + `tests/*/*.inc` with `tests/common/` excluded and reads
 `main`** and corrected rather than incremented — the tool source files row
 read 83 against a tree of 84, because `main` added
 `src/tool/bash/tests/git_fixture.rs` without re-measuring it.
+
+The **fourth** merge had one conflict — `plans/registry.md`, both sides inserting a
+subsystem row at the same slot — and both rows were kept, with `main`'s current row
+first (`main`'s own PR #171 had updated that row's text). Every Verified-counts row
+was re-measured against its own listed `Source` and **none moved**, because PR #171's
+family consolidation moved the `.inc` files rather than removing them. All 51 guards
+still pass, with this line's `reasoning_overlay_narrowing` ownership entry intact
+through `main`'s repair of the ownership and duplication guards.
 
 Recorded in
 `plans/closure/provider-reasoning-control/006-merge-reconciliation-status.md`.

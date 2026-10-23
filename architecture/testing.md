@@ -346,13 +346,20 @@ starving subprocess timing tests). That is why it is sound despite
 process-global env
 mutation throughout the test code: unlike `cargo test --test-threads=N`,
 no two tests ever share an address space, so intra-suite env races are
-impossible by construction (verified by audit 2026-09-25). The five
+impossible by construction (verified by audit 2026-09-25). The four
 sleep/timeout-bound heavy binaries (`eggwork_remote_execution_live`,
-`interactive_process_attach_resume`, `interactive_process_sessions`,
-`interactive_terminal_tui`, `scheduler_cancellation`) run alone via
-`threads-required = "num-cpus"`. `scheduler_cancellation` joined this list
-2026-09-25 after real-`sleep` token assertions flaked twice under parallel
-load while passing serially.
+`interactive_process_attach_resume`, `scheduler_cancellation`,
+`causal_observe_replay`) run alone via `threads-required = "num-cpus"`.
+`scheduler_cancellation` joined
+this list 2026-09-25 after real-`sleep` token assertions flaked twice under
+parallel load while passing serially; `causal_observe_replay` joined
+2026-10-16 after two hosted CI runs exceeded its frozen p95 gate while other
+workspace binaries ran concurrently.
+`interactive_process_sessions` and `interactive_terminal_tui` left this list
+on 2026-10-23: both were absorbed into the `interactive_process_attach_resume`
+family, so their executables no longer exist, and the merged executable keeps
+this family's exclusive slot. Three exclusive executables cost three serial
+slots for 40 test functions; one costs one.
 The profile is workspace-wide only — subset runs (`-p <crate>`) use the
 default or timing profile, because the heavy-binary filter strictly
 requires its binaries to exist.
@@ -484,13 +491,16 @@ Consequences worth knowing:
   unit of selection is the family. `cargo test --test <family> -- <member>`
   still narrows to one member, because libtest's filter is a substring match
   on the full test path.
-- **The `ci` profile's whole-binary exclusions still resolve.** The six
+- **The `ci` profile's whole-binary exclusions still resolve.** The four
   binaries that reserve the runner for themselves
   (`eggwork_remote_execution_live`, `interactive_process_attach_resume`,
-  `interactive_process_sessions`, `interactive_terminal_tui`,
-  `scheduler_cancellation`, `causal_observe_replay`) are each a family of
-  one and keep their exact target name. Their flake rationale stays attached
+  `scheduler_cancellation`, `causal_observe_replay`) each keep their exact
+  target name. Their flake rationale stays attached
   to the binary that flaked, not to the family.
+  `interactive_process_attach_resume` is the one **family of three** in the
+  list since 2026-10-23, when it absorbed `interactive_process_sessions` and
+  `interactive_terminal_tui`: two more exclusive executables became one, and
+  the merged binary keeps the slot the three had between them.
 - **`tests/common/` is a helper tree, not a target.** It is bound once per
   family that uses it, through `#[path = "../common/mod.rs"]`, and the
   members reach it with `use super::common;`.
@@ -1012,6 +1022,11 @@ The one place that needs the unstripped binary is the desktop bundle, which
 ships the root daemon: `.github/workflows/desktop-e2e.yml` builds it with
 `--config 'profile.dev.strip="none"'` so crash symbolication is preserved.
 That workflow runs no test suite, so it has no double compile to reclaim.
+**That workflow is manual dispatch only since 2026-10-23** — the desktop
+foundation's development is paused, so the hosted visible-window qualification
+no longer runs on push or on pull requests. See `desktop.md` §"The hosted
+qualification is paused (2026-10-23)" for the evidence and for what restoring
+it costs.
 
 Release artifacts are unaffected: `[profile.release]` already had
 `strip = true`, and it is a separate profile.

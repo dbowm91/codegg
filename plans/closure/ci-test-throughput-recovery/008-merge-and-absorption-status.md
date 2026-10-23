@@ -686,6 +686,13 @@ reported where they happen.
   path in a **doc comment**. Neither can make the renderer stop emitting the
   permission list. The failure belongs to the desktop foundation's line
   (`apps/desktop/`), not to this one.
+
+  **Since 2026-10-23 this lane no longer runs at all.** Development on the
+  desktop foundation line is paused, so `.github/workflows/desktop-e2e.yml` is
+  **manual dispatch only** and no longer runs on push or on pull requests —
+  see `architecture/desktop.md` §"The hosted qualification is paused
+  (2026-10-23)". The item is therefore **not carried forward**: the lane is
+  paused by decision, not outstanding.
 - **M011's composed-race test is flaky locally, and it is flaky on `main`
   too.** `tests/composed_two_agent_race_m011.rs`'s
   `two_live_agents_racing_on_one_shared_checkout_never_overlap` fails

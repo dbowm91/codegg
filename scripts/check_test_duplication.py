@@ -54,7 +54,11 @@ SHARED_HELPER_DIRS = ("tests/common/",)
 
 # A family root that declares the shared helper module.
 FAMILY_DECLARES_COMMON = re.compile(
-    r"^\s*(?:#\[path\s*=\s*\"[^\"]*\"\]\s*)?mod\s+common\s*;",
+    # The binding is `pub mod common;` — the shared tree's items are `pub`,
+    # so a private binding makes them unreachable and the dead-code lint
+    # reports them. A pattern that only matched `mod common;` would skip
+    # every family in the tree and make this check vacuous.
+    r"^\s*(?:#\[path\s*=\s*\"[^\"]*\"\]\s*)?(?:pub\s+)?mod\s+common\s*;",
     re.M,
 )
 
