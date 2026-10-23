@@ -130,13 +130,13 @@ host). Nothing in the untested column is claimed as proven.
 |---|---|---|
 | The class is a closed, typed, serializable value with distinct names | **tested** | `crates/egggit/src/consistency.rs` — `GitReadConsistency`, its `as_str`, and the class-name unit test |
 | The class travels with the read result and survives `map` | **tested** | `GitReadFact::map` and its unit test |
-| A live-class read is refused for a generation-bound consumer | **tested** | `admit_generation_consistent` returns `LiveClassWithoutCapability`; asserted in `consistency.rs` and in `tests/git_read_consistency.rs` |
-| A read with no object generation is refused | **tested** | `admit_generation_consistent` returns `NoObjectGeneration`; asserted in `consistency.rs` and in `tests/git_read_consistency.rs` |
-| A captured class is admitted, and the admitted value keeps its class | **tested** | `consistency.rs`; `tests/git_read_consistency.rs` |
+| A live-class read is refused for a generation-bound consumer | **tested** | `admit_generation_consistent` returns `LiveClassWithoutCapability`; asserted in `consistency.rs` and in `tests/command_git/git_read_consistency.inc` |
+| A read with no object generation is refused | **tested** | `admit_generation_consistent` returns `NoObjectGeneration`; asserted in `consistency.rs` and in `tests/command_git/git_read_consistency.inc` |
+| A captured class is admitted, and the admitted value keeps its class | **tested** | `consistency.rs`; `tests/command_git/git_read_consistency.inc` |
 | A composite read carries the weakest contributing class | **tested** | `GitReadConsistency::weaker`; the `repo_status` / `list_branches` / `diff_summary` weakest-class tests in `crates/egggit/src/` |
 | A production build cannot obtain the live-read capability | **tested** | `LiveReadCapability`'s only constructor is `#[cfg(feature = "git-live-read-test-support")]`; the crate's default build has no constructor, and the root crate's `live_read_capability()` returns `None` in every build |
 | The capability authorises a live read without rewriting its class | **tested** | the capability-gated admission test, under the test-only feature |
-| The refusal happens **before** mutation and leaves refs and the index unchanged | **tested** | the publisher refusal test and the producer/consumer-mismatch test in `tests/git_read_consistency.rs` |
+| The refusal happens **before** mutation and leaves refs and the index unchanged | **tested** | the publisher refusal test and the producer/consumer-mismatch test in `tests/command_git/git_read_consistency.inc` |
 | The publisher records the class of the generation it published from | **tested** | `GitIndexPublicationReceipt::consistency`; the publication receipt summary in `src/git_mutations.rs` |
 | The publisher refuses a live-class staging before it writes anything | **tested** | `publish_prepared_index` returns `StagingNotCaptured` before the lock and before the journal write |
 
@@ -146,7 +146,7 @@ host). Nothing in the untested column is claimed as proven.
 |---|---|---|
 | A repository-declared filter command is refused on the **read** route | **tested** | `trusted_git_read_route_refuses_a_repository_that_declares_a_filter_command` in `crates/egggit/src/process.rs` |
 | A filter command declared **only** in an `include.path` file is refused | **tested** | `trusted_git_read_route_refuses_a_filter_declared_only_in_an_included_file`; the detector's include tests |
-| The filter command does not execute | **tested** | the marker assertion in both read-route tests, plus the host-positive control in `tests/git_hostile_metadata.rs` |
+| The filter command does not execute | **tested** | the marker assertion in both read-route tests, plus the host-positive control in `tests/command_git/git_hostile_metadata.inc` |
 | An ordinary repository still reads | **tested** | `trusted_git_read_route_allows_a_repository_without_a_hostile_surface`; the detector's benign-config test |
 | The inspection is bounded (depth, file count, file size, total bytes) | **tested** | the detector's bound tests in `crates/egggit/src/config_surface.rs` |
 | An include cycle terminates and is reported | **tested** | the detector's include-cycle test |

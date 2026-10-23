@@ -15,10 +15,22 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+// The shared helper tree is bound **publicly**. A private `mod common;`
+// makes its `pub` items unreachable from this crate root — and
+// `tests/common/secret_scan.rs` carries no `allow(dead_code)` of its own,
+// so a private binding reports every one of its items as dead code under
+// `-D warnings`. The families bind it the same way.
+pub mod common;
+
 use codegg::git_contained_worktree::{
-    build_worktree_grant, compose_worktree_child_launch, ContainedGitWorktreeCreator,
-    WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
+    build_worktree_grant, ContainedGitWorktreeCreator, WorktreeChildPaths, WorktreeChildStep,
+    WorktreeLaunchTiers,
 };
+// The native proof is the only consumer of the child-launch composition, and
+// it is Linux-only, so the import carries the same gate. Without it the
+// import is unused on every other platform, which is a clippy error.
+#[cfg(target_os = "linux")]
+use codegg::git_contained_worktree::compose_worktree_child_launch;
 use codegg_core::worktree_service::{
     ContainedWorktreeCreator, ContainedWorktreeOutcome, ContainedWorktreeRequest,
     CreateWorktreeRequest, WorktreeService, WorktreeServiceError,
@@ -26,6 +38,7 @@ use codegg_core::worktree_service::{
 use codegg_core::worktree_service::{ManagedWorktreeState, WorktreeHealth};
 
 /// The established opt-in for the native Linux M004/M005 proofs.
+#[cfg(target_os = "linux")]
 const NATIVE_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -337,54 +350,11 @@ impl ContainedWorktreeCreator for FakeCreator {
                 })
             }
             FakeMode::LinkedWorktree => {
-                // The branch is the daemon's: it is created before the child
-                // runs, so the child attaches to an existing branch.
-                run_git(
-                    &request.repository_root,
-                    &[
-                        "branch",
-                        request.branch.as_str(),
-                        request.base_commit.as_str(),
-                    ],
-                );
-                // The production shape: the worktree is created detached and
-                // the branch is attached afterwards.
-                let administration_dir = request.repository_gitdir.join("worktrees").join(
-                    request
-                        .worktree_path
-                        .file_name()
-                        .expect("worktree name")
-                        .to_string_lossy()
-                        .to_string(),
-                );
-                run_git(
-                    &request.repository_gitdir,
-                    &[
-                        "--git-dir",
-                        request.repository_gitdir.to_str().expect("gitdir"),
-                        "worktree",
-                        "add",
-                        "--detach",
-                        request.worktree_path.to_str().expect("worktree path"),
-                        request.base_commit.as_str(),
-                    ],
-                );
-                run_git(
-                    &administration_dir,
-                    &[
-                        "--git-dir",
-                        administration_dir.to_str().expect("administration dir"),
-                        "symbolic-ref",
-                        "HEAD",
-                        &format!("refs/heads/{}", request.branch),
-                    ],
-                );
-                Ok(ContainedWorktreeOutcome {
-                    administration_dir,
-                    backend: "test-double".into(),
-                    abi: None,
-                    network_enforced: true,
-                })
+                // The real linked worktree, shared with the suites that need
+                // a checkout Git itself recognises.
+                common::linked_worktree::LinkedWorktreeCreator::new()
+                    .create(request)
+                    .await
             }
         }
     }
@@ -523,6 +493,10 @@ async fn the_seam_creates_a_real_checkout_and_fails_closed() {
 // ── 3. The contained child ────────────────────────────────────────────────
 
 /// Write an executable script the child will run.
+// The native proof is the only consumer, and it is Linux-only, so the helper
+// carries the same gate. Without it the helper is unused on every other
+// platform, which is a clippy error.
+#[cfg(target_os = "linux")]
 fn write_script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write script");
     #[cfg(unix)]

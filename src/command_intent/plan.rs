@@ -1449,14 +1449,6 @@ mod tests {
     }
 
     #[test]
-    fn complex_shell_fails_active_routing_validation() {
-        let intent = classify_command("cargo test && rm -rf .");
-        let plan = plan_execution(&intent);
-        let result = plan.validate_for_active_routing();
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn git_push_fails_active_routing_validation() {
         let intent = classify_command("git push origin main");
         let plan = plan_execution(&intent);

@@ -129,6 +129,20 @@ scope's fingerprint for the lifetime of the acquisition.
 The binding is scoped to the live acquisition: the key is cleared when the
 permit is released or quarantined, and a later acquisition may reuse it.
 
+**The key is bounded, and the tool layer digests to meet it.** The store
+accepts an idempotency key of at most 128 bytes
+(`MAX_WRITER_PERMIT_IDEMPOTENCY_BYTES`, and a `CHECK` constraint on the
+column). The tool layer's key is a **digest** of the tool name, the target
+paths and the invocation key — `wf1:{tool}:{sha256}` — because the readable
+form of that material is longer than the bound on any real checkout: a managed
+checkout path alone runs past a hundred bytes and the invocation key is
+another eighty.
+
+A key the store refuses is a write that never happens, so this is not a
+readability preference. The digest keeps both properties the store relies on:
+the same operation retried carries the same key, and two different operations
+never do.
+
 ## Quiescence
 
 A release is only permitted with **positive** evidence that the caller's
@@ -612,12 +626,12 @@ reported.
   deadlock against the document or repository lock, and a permit could.
 - **Not a claim of mediation.** A permit existing does not mean any particular
   writer went through it. C003's own evidence is in
-  `tests/writer_fence_c003.rs`, and it constructs the shared case directly
+  `tests/core_daemon/writer_fence_c003.inc`, and it constructs the shared case directly
   rather than waiting for a product path to exist. C004's evidence is in
-  `tests/checkout_reservation_c004.rs` (through a real `CoreDaemon`) and
-  `tests/checkout_reservation_c004_http.rs` (through a real HTTP route), over
+  `tests/core_daemon/checkout_reservation_c004.inc` (through a real `CoreDaemon`) and
+  `tests/server_feature/checkout_reservation_c004_http.inc` (through a real HTTP route), over
   a temporary Git checkout. C005's evidence is in
-  `tests/process_denial_c005.rs`, over the same reserved-checkout fixture.
+  `tests/security_permission/process_denial_c005.inc`, over the same reserved-checkout fixture.
   C006's evidence is in `tests/shared_checkout_c006.rs` (15 tests): the
   placement joins the group's checkout, two members racing for one group land
   on one checkout, two writers on the shared checkout never overlap, a run
@@ -654,7 +668,7 @@ surviving a close and reopen, the rollback contract, a panicking holder
 leaving the permit held rather than freed, the redacted view, and the store
 under competing connections.
 
-`tests/writer_permit_service.rs` (12 tests) covers the adapter: the lease
+`tests/core_daemon/writer_permit_service.inc` (12 tests) covers the adapter: the lease
 owner acquiring, a run without the lease being refused (the cross-project
 denial), a principal outside the project — a viewer, and a principal with no
 membership — being refused (the cross-principal denial), a waiter taking the
@@ -665,7 +679,7 @@ unproven quiescence parking the permit, the operator inspect and release
 surface, the operator release needing proven quiescence, and startup
 reconciliation parking a permit left live.
 
-`tests/writer_fence_c003.rs` (9 tests) covers the fence: a write outside the
+`tests/core_daemon/writer_fence_c003.inc` (9 tests) covers the fence: a write outside the
 run's checkout refused with no filesystem effect, a write inside it allowed, a
 daemon-granted scratch root inside the scope, the real `write` tool refusing
 an out-of-scope target without creating the file, two runs on one checkout

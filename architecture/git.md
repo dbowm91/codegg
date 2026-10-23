@@ -825,19 +825,25 @@ grep undercounts, because a test attribute can share a line with others.
 | `egggit/operation_state.rs` | 11 |
 | `egggit` (all `src/*.rs`) | 165 |
 | `egggit/conflict.rs` | 7 |
-| `tests/git_mutations_integration.rs` | 12 (tokio::test) |
-| `tests/git_network_integration.rs` | 29 |
-| `tests/git_recovery_integration.rs` | 19 |
-| `tests/git_index_publication.rs` | 26 (C007 private-index publication; 17 C007 + 5 shared secret-scan + 4 C003 regressions) |
-| `tests/git_read_consistency.rs` | 16 (C003 read-consistency contract and fence) |
-| `tests/git_hostile_metadata.rs` | 11 (C003 hostile-configuration surface) |
+| `tests/command_git/git_mutations_integration.inc` | 12 (tokio::test) |
+| `tests/command_git/git_network_integration.inc` | 29 |
+| `tests/command_git/git_recovery_integration.inc` | 19 |
+| `tests/command_git/git_index_publication.inc` | 21 (C007 private-index publication; 17 C007 + 4 C003 regressions) |
+| `tests/command_git/git_read_consistency.inc` | 16 (C003 read-consistency contract and fence) |
+| `tests/command_git/git_hostile_metadata.inc` | 6 (C003 hostile-configuration surface) |
 
 The `egggit` rows rose from 109 and 8 on the C003 head: the typed
 consistency contract, the configuration-surface detector, and the
-trusted-route pre-flight tests are in that crate. The `git_index_publication`
-row rose from 22: C003 added the regression tests for the three C007
-invariants that were claimed but untested, plus the live-class staging
-refusal.
+trusted-route pre-flight tests are in that crate. The
+`git_index_publication` row rose from 17: C003 added the regression tests for
+the three C007 invariants that were claimed but untested, plus the
+live-class staging refusal.
+
+These rows count the **member** of the consolidated `command_git` family, so
+they are smaller than the pre-consolidation per-file counts for the members
+that share the family's `common` helper: the 5 shared secret-scan tests live
+once in `tests/command_git/secret_scan_self_tests.inc` and are counted
+there, not in each member.
 
 ### Key test categories
 
@@ -866,7 +872,7 @@ refusal.
   the staged object. The **contained** staging step additionally needs a
   qualified host — it is exercised by the hosted
   `production_private_index_publisher_stages_and_publishes_under_containment`
-  test in `tests/linux_m004_process_ipc.rs`.
+  test in `tests/linux_git_test_support/linux_m004_process_ipc.inc`.
 - **policy_drift_tests** (root): Ensures canonical lists match Phase F
   entries. `root_and_core_share_canonical_lists` verifies root and
   codegg-core read from same source.

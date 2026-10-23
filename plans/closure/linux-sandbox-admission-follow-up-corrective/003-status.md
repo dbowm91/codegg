@@ -3,7 +3,7 @@
 Status: **conditionally closed** — the slice's own exit criteria are met; the condition is a maintainer-owned decision that C003 cannot make
 Source implementation plan: `plans/implementation/linux-sandbox-admission-follow-up-corrective/003-git-live-read-consistency-and-metadata-review.md`
 Source subsystem roadmap: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md` (C003)
-Repository baseline: `f4019a410` (`main`, the merge of PR #162)
+Repository baseline: `f4019a410` (`main` at the start of the milestone), merged forward with `3ee32e839` (`main`) when the branch was prepared for review
 Branch: `plans/linux-sandbox-c003-git-consistency-metadata-review`
 ADR packet: `plans/closure/linux-sandbox-admission-follow-up-corrective/003-adr-0044-packet.md`
 Predecessor review: `plans/closure/linux-trusted-git-cost-corrective/006-status.md` §8 (the blocking items this milestone answers)
@@ -299,7 +299,7 @@ being added, and both were fixed rather than worked around:
 ## 5. The C007 publication invariants
 
 Three invariants the C007 closure record claimed had no test. They now do,
-in `tests/git_index_publication.rs`:
+in `tests/command_git/git_index_publication.inc`:
 
 1. **The real `Add` dispatch preflight** runs before the publisher touches
    the repository, and a failing precondition leaves the index and refs
@@ -351,7 +351,11 @@ and no production live-ODB read is enabled or qualified.
 
 ## 8. Verification executed
 
-All of it on this Linux host, on the branch tip.
+All of it on this Linux host. The counts in §8.1–§8.4 were first measured on
+the milestone's own head and then **re-measured on the merged head**, after
+`main` consolidated the command-git test family into `tests/command_git/*.inc`
+and this milestone's two new suites were moved into that family. The numbers
+below are the merged head's.
 
 ### 8.1 Compile and static gates
 
@@ -367,16 +371,28 @@ All of it on this Linux host, on the branch tip.
 | Target | Result |
 |---|---|
 | `cargo nextest run -p egggit` | **164 passed**, 1 skipped (165 total) |
-| `cargo nextest run -p codegg --test git_read_consistency --test git_hostile_metadata --test git_index_publication` | **53 passed**, 0 skipped |
+| `cargo nextest run -p codegg --test command_git` | **478 passed**, 1 skipped (479 total) |
 | `cargo nextest run -p codegg-core` | **1105 passed**, 0 skipped |
-| `cargo nextest run -p codegg --test git_recovery_integration --test git_closure_matrix --test worktree --test shell_projection_phase10` | **100 passed**, 0 skipped |
 
-The 53 are the milestone's own evidence: 16 in `git_read_consistency`, 11 in
-`git_hostile_metadata`, 26 in `git_index_publication` (of which 4 are C003's).
+The `command_git` target is the consolidated command-git family that `main`
+introduced while this milestone was in flight: one Cargo test executable
+whose members are `tests/command_git/*.inc`. This milestone's two new suites
+were **moved into that family** (`git_read_consistency.inc` and
+`git_hostile_metadata.inc`) rather than left as standalone executables, so
+the consolidation's purpose — N executables replaced by 1 — is preserved.
+The family's 478 include this milestone's 26 new and adapted members:
+16 in `git_read_consistency`, 6 in `git_hostile_metadata`, and 21 in
+`git_index_publication` of which 4 are C003's.
+
+The member-level counts are smaller than the pre-consolidation per-file
+counts for the members that share the family's `common` helper, because the
+5 shared secret-scan tests live once in `secret_scan_self_tests.inc` and are
+counted there rather than in each member. That is a counting artefact, not a
+loss: the shared tests still run.
 
 #### 8.2.1 What the new tests assert, by name
 
-*Fence and contract* (`tests/git_read_consistency.rs`): a live-class read is
+*Fence and contract* (`tests/command_git/git_read_consistency.inc`): a live-class read is
 inadmissible to a generation-bound consumer; a read with no object generation
 is refused; captured classes are admitted and round-trip their class; the
 class cannot be dropped from a read fact; a read fact is not a
@@ -392,7 +408,7 @@ producer/consumer mismatch is refused before any mutation; a failed read is a
 typed error and cannot be mistaken for a result; the operation-state sentinel
 read reports no object generation.
 
-*Hostile configuration* (`tests/git_hostile_metadata.rs`): a filter process
+*Hostile configuration* (`tests/command_git/git_hostile_metadata.inc`): a filter process
 declared only through `include.path` is detected; a filter clean command
 declared only through `include.path` is detected; the filter sentinel command
 produces the sentinel when run directly (the **host-positive control**); an
@@ -400,7 +416,7 @@ ordinary repository reports no hostile surface; a URL-scoped credential helper
 is detected and the plain form is not; a credential secret never appears in
 the report.
 
-*C007 invariants* (`tests/git_index_publication.rs`): the real `Add` dispatch
+*C007 invariants* (`tests/command_git/git_index_publication.inc`): the real `Add` dispatch
 preflight refuses before the publisher is consulted; a scratch root inside the
 repository is refused before the repository changes; the publisher never
 invokes a repository-declared clean filter; a live-class prepared index is
@@ -428,10 +444,22 @@ passes.
 |---|---|
 | `scripts/verify.sh quick` | **`Quick verification passed.`** — the agent schema, core/client/desktop boundaries, sandbox, execution-ownership, TUI authority, http-route-disposition, audit-coverage, queue-delivery-callsites, queue-write-transaction-shape, scheduler-bypass, config-merge-coverage, no-hardcoded-models, provider wire/catalog/resilience, OpenAI endpoint and Eggwork routing guards, the filter-execution guard (20 registered filters) and `cargo check --workspace --all-targets --locked` all passed |
 
-The gate was run twice: the first run failed on `cargo fmt --check` because
-five one-line call-site adaptations exceeded the 100-column limit. The
-formatting was fixed and the gate was re-run clean. The failure is recorded
-here because the first run's result is a real result and not a footnote.
+The gate was run **four** times, and it failed twice. Both failures are
+recorded here, because a first run's result is a real result and not a
+footnote.
+
+1. **Failed on `cargo fmt --check`** — five one-line call-site adaptations
+   exceeded the 100-column limit. The formatting was fixed and the gate was
+   re-run.
+2. **Passed** on the milestone's own head.
+3. **Failed on `check_test_target_references`** after `main`'s consolidation
+   was merged in: `architecture/overview.md` recorded 319 integration test
+   files and the tree held 321, because C003's two new members are two more
+   files. The count row was re-measured and corrected — 321 — and the
+   correction is recorded in `architecture/overview.md`'s own count history,
+   with the reason and the note that the **test-target** count did not move
+   because both new members live inside the consolidated family.
+4. **Passed** on the merged head.
 
 ## 9. What this milestone does not establish
 
@@ -501,3 +529,18 @@ finding a silently rewritten document.
    Adding `core.attributesFile` to the override table made two of the
    self-test's injected defects stop being detected. The cause was a real
    correctness bug in the guard, not a defect in the injection.
+4. **Two test counts were corrected against the consolidated family.** This
+   milestone's two new suites were first measured as standalone executables
+   (11 and 16 tests). The 11 counted the shared `common` helper's 5
+   secret-scan tests as well, because a standalone file with `mod common;`
+   compiles that module's tests into its own binary. Inside the consolidated
+   `command_git` family the shared tests run once, in their own member, so the
+   member's own count is 6. The `git_index_publication` count moved the same
+   way (26 standalone → 21 as a member, with the 5 shared tests counted
+   separately). The `architecture/git.md` table now records member-level
+   counts and says so.
+
+   The historical closure records that name `tests/git_index_publication.rs`
+   are **not** rewritten: `main` relocated that file into the consolidated
+   family while this milestone was in flight, and those records are pinned to
+   their own evidence. This note is the correction's home instead.

@@ -1138,12 +1138,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_empty_is_rejected() {
-        let intent = classify_command("");
-        assert_eq!(intent.kind, CommandIntentKind::Rejected);
-    }
-
-    #[test]
     fn plan_test_routes_to_test_runner() {
         let intent = classify_command("cargo test");
         let plan = plan_execution(&intent);

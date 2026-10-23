@@ -363,7 +363,7 @@ checkout**, and fails when a sink loses its mediation.
 | No lock-order inversion or deadlock between the pending document lock and the writer permit; cancellation/restart preserves revision and dirty-file state | **met** | the mediation takes no lock and holds no permit; it is placed before the repository lock and before the write. `capture_save` is read-only, so a refusal advances no revision |
 | `.codegg/runs` and the legacy DB have an explicit verified disposition and a test; no false "outside checkout" claim | **met** | §5 and the manifest's stable store policy. The legacy DB's *production write path* was corrected against the plan's premise |
 | Separate checkouts continue ordinary non-blocking API writes; read-only file tree and temp diff need no writer authority | **met** | `a_document_create_into_an_unreserved_checkout_succeeds` and `an_http_write_into_an_unreserved_checkout_succeeds`; the read-only surfaces were never mediated |
-| Genuine integration tests through a real `CoreDaemon`, HTTP route and temporary Git checkout | **met** | `tests/checkout_reservation_c004.rs` (daemon) and `tests/checkout_reservation_c004_http.rs` (HTTP), over `tests/common/checkout_reservation.rs` |
+| Genuine integration tests through a real `CoreDaemon`, HTTP route and temporary Git checkout | **met** | `tests/core_daemon/checkout_reservation_c004.inc` (daemon) and `tests/server_feature/checkout_reservation_c004_http.inc` (HTTP), over `tests/common/checkout_reservation.rs` |
 | Run focused suites, fmt, quick, Clippy and the applicable ownership checks | **met** | §9 |
 
 ## 9. Verification evidence

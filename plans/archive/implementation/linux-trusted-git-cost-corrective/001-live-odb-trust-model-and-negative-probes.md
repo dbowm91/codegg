@@ -35,7 +35,7 @@ Determine whether reading the host's *live, read-only-mounted* Git object store 
 
 ## Expected changes, ownership and compatibility
 
-Test-only fixtures and supporting internal test helper may be added near `tests/linux_m004_process_ipc.rs` / `tests/linux_bubblewrap_first_hop.rs`. No new production subprocess owner, no broad integration rewrite, no non-Linux default, no persistent store/protocol/schema changes. Runtime cost baseline only; no optimization claim. All temporary artifacts and test namespaces are private and cleaned on timeout/panic/cancellation.
+Test-only fixtures and supporting internal test helper may be added near `tests/linux_git_test_support/linux_m004_process_ipc.inc` / `tests/linux_bubblewrap_first_hop.rs`. No new production subprocess owner, no broad integration rewrite, no non-Linux default, no persistent store/protocol/schema changes. Runtime cost baseline only; no optimization claim. All temporary artifacts and test namespaces are private and cleaned on timeout/panic/cancellation.
 
 ## Verification
 

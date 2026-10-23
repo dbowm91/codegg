@@ -12,7 +12,7 @@ ADRs: accepted ADR-0002/ADR-0032; ADR-0047 was proposed at C001 time and was **a
 - Contract deliverable: `c001-restricted-profile-contract.md` — the 48-root writer matrix, the policy matrix, the user-visible guarantee and exact refusal contract, the lock-order and ownership model, the C002 protocol shape, and the twelve named holes.
 - Disposition manifest: `docs/writer-disposition.toml`.
 - Guard: `scripts/check_writer_disposition.py` (wired into `scripts/verify.sh quick`, with `--self-test`).
-- Negative guards: `tests/writer_disposition_guards.rs`.
+- Negative guards: `tests/tool_programs/writer_disposition_guards.inc`.
 - Source audit evidence: `c001-evidence/`.
 - Closure record: `plans/closure/agent-workstream-m005-writer-containment-corrective/001-status.md`.
 

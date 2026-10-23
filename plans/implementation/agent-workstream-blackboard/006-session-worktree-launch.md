@@ -135,7 +135,7 @@ claimed. M006 is **closed** — see `plans/closure/agent-workstream-blackboard/0
   selected session's *existing* checkout, and `F` forks the selected
   session into a new checkout. The plain `f` fork is untouched.
 - **A service-level integration test** against a real Git repository:
-  `tests/session_launch_service.rs` drives the service through a real
+  `tests/core_daemon/session_launch_service.inc` drives the service through a real
   `git worktree` in a real repository, and asserts on the linked
   worktree's `.git` *file*, the branch, the canonical bindings, the
   worktree count, and the failures.

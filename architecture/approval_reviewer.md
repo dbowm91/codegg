@@ -18,7 +18,7 @@ authorization ceiling.
 | Per-loop denial counters | `src/agent/loop.rs` (`reviewer_denial_counts`) |
 | Config surface | `crates/codegg-config/src/schema.rs` (`ApprovalReviewerConfig`) |
 | Isolation guard | `scripts/check_approval_reviewer.py` |
-| Integration tests | `tests/approval_reviewer.rs`, `tests/agent_loop_harness.rs` (`approval_automatic_reviewer_*`) |
+| Integration tests | `tests/security_permission/approval_reviewer.inc`, `tests/agent_loop/agent_loop_harness.inc` (`approval_automatic_reviewer_*`) |
 
 ## How It Works
 
@@ -172,7 +172,7 @@ Verified accurate as written:
 | `ApprovalRouter::route_escalation` never auto-allows for `Automatic` | `approval.rs:252`-`:264` (explicit comment at `:253`-`:256`: only the async reviewer may allow/deny) |
 | reviewer cannot recurse into the router, change mode/profile, or spawn subagents | `scripts/check_approval_reviewer.py` forbidden patterns `PermissionPending`, `ApprovalRouter`, `set_approval_mode`, `set_sandbox_profile`, `TaskTool`, `SubAgent`, `tool::bash`, … |
 | `provider/model` with an unknown provider ⇒ reviewer unavailable | `ReviewerConfig::resolve_model` `reviewer.rs:167`-`:184` |
-| `tests/approval_reviewer.rs` (9 `#[test]`) and the 2 `approval_automatic_reviewer_*` cases in `tests/agent_loop_harness.rs` (`:4647`, `:4728`) | Both files exist; the listed `cargo test` targets are valid |
+| `tests/security_permission/approval_reviewer.inc` (9 `#[test]`) and the 2 `approval_automatic_reviewer_*` cases in `tests/agent_loop/agent_loop_harness.inc` (`:4647`, `:4728`) | Both files exist; the listed `cargo test` targets are valid |
 
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
 ownership migration and M006 closure"), which added 30 lines near the top of

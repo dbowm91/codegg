@@ -531,12 +531,12 @@ that still want it.
 active reintroduces a route-gated reflow. The safe shape is: keep the row
 **allocated** (so the height never changes) and render it **empty** when the
 editor is active. That satisfies "remove that line entirely when editor is
-active" visually while keeping the layout stable. `tests/tui_panel_docking.rs:1703-1711`
+active" visually while keeping the layout stable. `tests/tui_render/tui_panel_docking.inc:1703-1711`
 asserts the hint row is "never vacated" — the allocated-but-blank approach keeps
 that test's intent intact.
 
-**Test fallout.** `tests/tui_chat_surfaces.rs:479` and `:578` assert the hint row
-contains `"COMP"`; `tests/tui_composer_keymap_consistency.rs:174` treats
+**Test fallout.** `tests/tui_render/tui_chat_surfaces.inc:479` and `:578` assert the hint row
+contains `"COMP"`; `tests/tui_render/tui_composer_keymap_consistency.inc:174` treats
 `"COMP" | "NOR" | "INS"` as permitted prose in the row. All three encode the
 duplication the user wants removed and must be updated together with the change.
 
@@ -989,11 +989,11 @@ contract into the new one.
   assertion — every test using `banner()` needs a new anchor.
 - `src/tui/components/editor.rs:2453-2470` — asserts the title contains
   `"NOR"`/`"INS"`. Removing the title's mode breaks it.
-- `tests/tui_chat_surfaces.rs:479`, `:578` — assert the composer hint row
+- `tests/tui_render/tui_chat_surfaces.inc:479`, `:578` — assert the composer hint row
   contains `"COMP"`.
-- `tests/tui_composer_keymap_consistency.rs:174` — treats `"COMP" | "NOR" | "INS"`
+- `tests/tui_render/tui_composer_keymap_consistency.inc:174` — treats `"COMP" | "NOR" | "INS"`
   as permitted prose parts in the hint row.
-- `tests/tui_panel_docking.rs:1703-1711` — asserts the hint row is never vacated
+- `tests/tui_render/tui_panel_docking.inc:1703-1711` — asserts the hint row is never vacated
   and that the vacated row names the composer's verbs.
 - `src/tui/commands/editor.rs:6037-6046` — asserts `PageDown` moves a **half**
   page (`cursor == 70`). Making `PageDown` a full page breaks this test, and the

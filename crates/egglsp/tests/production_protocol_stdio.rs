@@ -7,9 +7,10 @@ use serde_json::json;
 use tokio::time::sleep;
 use url::Url;
 
-mod common;
+#[path = "common/production_harness.rs"]
+mod production_harness;
 
-use common::ProductionClientHarness;
+use production_harness::ProductionClientHarness;
 
 async fn start_harness(
     scenario: serde_json::Value,

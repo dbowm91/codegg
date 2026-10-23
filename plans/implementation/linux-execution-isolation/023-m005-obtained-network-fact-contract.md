@@ -178,6 +178,6 @@ not an omission.
 | `src/git_publication/publisher.rs` | the receipt carries the staging's boundary verbatim |
 | `src/git_mutations.rs` | the receipt summary names the mechanism that obtained the boundary |
 | `tests/git_index_publication.rs` | the test staging reports `NotReported` |
-| `tests/linux_m004_process_ipc.rs` | the hosted proof asserts the receipt states the boundary it obtained |
+| `tests/linux_git_test_support/linux_m004_process_ipc.inc` | the hosted proof asserts the receipt states the boundary it obtained |
 | `architecture/security.md` | the obtained-fact contract is recorded |
 | `architecture/git.md` | the receipt's boundary contract is updated |

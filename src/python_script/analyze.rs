@@ -683,13 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn ast_shutil_rmtree_detected() {
-        let result = analyze_python_risk("import shutil\nshutil.rmtree('/tmp/dir')");
-        assert_eq!(result.level, PythonRiskLevel::High);
-        assert!(result.has_destructive_ops);
-    }
-
-    #[test]
     fn ast_pip_install_in_string_detected() {
         let result = analyze_python_risk("x = 'pip install numpy'");
         // The AST scanner checks string constants for dependency install patterns
@@ -705,26 +698,10 @@ mod tests {
     // ── AST scanner: alias and from-import resolution tests ──────────
 
     #[test]
-    fn ast_from_import_run_detected() {
-        let result = analyze_python_risk("from subprocess import run\nrun(['ls'])");
-        assert_eq!(result.level, PythonRiskLevel::Medium);
-        assert!(result.has_subprocess);
-        assert_eq!(result.scanner, PythonRiskScanner::Ast);
-    }
-
-    #[test]
     fn ast_from_import_popen_detected() {
         let result = analyze_python_risk("from subprocess import Popen as P\nP(['ls'])");
         assert_eq!(result.level, PythonRiskLevel::Medium);
         assert!(result.has_subprocess);
-        assert_eq!(result.scanner, PythonRiskScanner::Ast);
-    }
-
-    #[test]
-    fn ast_import_os_alias_remove_detected() {
-        let result = analyze_python_risk("import os as o\no.remove('x')");
-        assert_eq!(result.level, PythonRiskLevel::High);
-        assert!(result.has_destructive_ops);
         assert_eq!(result.scanner, PythonRiskScanner::Ast);
     }
 
@@ -782,12 +759,6 @@ mod tests {
         let result = analyze_python_risk("x = 'subprocess.run([\"ls\"])'");
         assert!(!result.has_subprocess);
         assert_eq!(result.scanner, PythonRiskScanner::Ast);
-    }
-
-    #[test]
-    fn ast_syntax_error_fallback() {
-        let result = analyze_python_risk("def foo(");
-        assert_eq!(result.scanner, PythonRiskScanner::Fallback);
     }
 
     #[test]

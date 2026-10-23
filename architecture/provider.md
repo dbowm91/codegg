@@ -351,7 +351,7 @@ fails genuinely abandoned `staged`/`probing` rows on daemon restart; that
 crash-recovery path is unchanged and is what keeps a real stuck attempt from
 being mistaken for concurrency.
 
-Covered by `tests/provider_reconnect_e2e.rs` (reconnect after removal, retry
+Covered by `tests/core_daemon/provider_reconnect_e2e.inc` (reconnect after removal, retry
 after rejection, and live-duplicate rejection) and by
 `committed_provisioning_row_does_not_block_reconnecting_same_provider` /
 `concurrent_equivalent_provisioning_still_conflicts` in `src/core/eggpool.rs`.
@@ -998,7 +998,7 @@ Guards: `scripts/check_provider_multi_surface_dispatch.py` (6 checks, wired into
 
 ### Cross-Layer Trajectory and the Capture Seam (C001)
 
-`tests/opencode_go_connection_trajectory.rs` proves the whole durable path in
+`tests/agent_loop/opencode_go_connection_trajectory.inc` proves the whole durable path in
 one test: persisted `other:opencode_go` connection with a real encrypted
 `CredentialStore` secret binding → persisted bounded model catalog →
 `session_selection::update_selection` → `durable_selected_runtime_model` →

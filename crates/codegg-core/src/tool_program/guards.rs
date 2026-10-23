@@ -54,6 +54,13 @@ macro_rules! assert_parse_only {
 /// This is checked by ensuring `pyo3` is not in the dependency list.
 /// The actual check is performed by `cargo deny` or `cargo audit` in CI;
 /// this macro is a documentation-level reminder.
+///
+/// The invariant is **enforced** by `scripts/check_tool_program_parse_only.py`,
+/// which rejects a `pyo3` dependency, a `pyo3` import, a process spawn, or
+/// a Python FFI link in this module. It used to be "enforced" by three test
+/// functions in this file that could not fail: one called the no-op macro
+/// above, one called the documentation-only function below, and one had a
+/// body of nothing but comments.
 pub fn cpython_execution_is_forbidden() {
     // This function exists solely for documentation purposes.
     // The Tool Program pipeline must never call this with user source.
@@ -66,32 +73,4 @@ pub fn cpython_execution_is_forbidden() {
     //
     // If you need to execute Python, use the `python_script` module
     // which is a separate tool with its own sandbox/mode policy.
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_only_marker_compiles() {
-        let _guard = ToolProgramCompilerIsParseOnly;
-        assert_parse_only!();
-    }
-
-    #[test]
-    fn cpython_guard_function_exists() {
-        // Verify the guard function exists and can be called
-        // (it's a no-op documentation function)
-        cpython_execution_is_forbidden();
-    }
-
-    #[test]
-    fn no_cpython_import_in_module() {
-        // This test documents that the Tool Program module does not
-        // import pyo3 or any CPython bindings. The actual enforcement
-        // is at the Cargo.toml level (no pyo3 dependency).
-        //
-        // If this test fails, someone has added a CPython dependency.
-        // Fix by removing the dependency and using the parse-only pipeline.
-    }
 }

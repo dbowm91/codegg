@@ -22,27 +22,27 @@
 //! target.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "daemon_protocol.inc"]
-mod daemon_protocol;
+pub mod daemon_protocol;
 #[path = "failpoint.inc"]
-mod failpoint;
+pub mod failpoint;
 #[path = "publication_integration.inc"]
-mod publication_integration;
+pub mod publication_integration;
 #[path = "restart_recovery.inc"]
-mod restart_recovery;
+pub mod restart_recovery;
 #[path = "resume.inc"]
-mod resume;
+pub mod resume;
 #[path = "retention.inc"]
-mod retention;
+pub mod retention;
 #[path = "safe_publication.inc"]
-mod safe_publication;
+pub mod safe_publication;
 #[path = "storage.inc"]
-mod storage;
+pub mod storage;
 #[path = "stream_context.inc"]
-mod stream_context;
+pub mod stream_context;
 #[path = "subscription.inc"]
-mod subscription;
+pub mod subscription;
 #[path = "transport_isolation.inc"]
-mod transport_isolation;
+pub mod transport_isolation;

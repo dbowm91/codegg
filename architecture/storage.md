@@ -133,7 +133,7 @@ The current layout version is **79**, defined by
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
-`tests/storage_migrations.rs` equality assertion). It is exported and
+`tests/core_daemon/storage_migrations.inc` equality assertion). It is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases.
 
