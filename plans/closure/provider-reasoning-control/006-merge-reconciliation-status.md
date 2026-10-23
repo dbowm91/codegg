@@ -22,8 +22,8 @@ Historical closure records this record supplements and does **not** rewrite:
 - `plans/closure/provider-reasoning-control/004-status.md` (M004, closed)
 - `plans/closure/provider-reasoning-control/005-status.md` (M005, closed)
 
-Repository baseline reconciled: `origin/main` at `3e43d4144`, reached in
-**four** stages. The first merge was against `8cee65934` ("fix(server): map
+Repository baseline reconciled: `origin/main` at `12999178a`, reached in
+**five** stages. The first merge was against `8cee65934` ("fix(server): map
 the process-denial refusal to 409, not an unhandled variant"), which is
 **439 commits** ahead of this branch's merge-base `c93211542` ("Merge pull
 request #153 from dbowm91/docs/core-family-counts-m006"). The branch head at
@@ -35,7 +35,7 @@ stage. In the third stage — the one against the `origin/main` the pull request
 targets — the branch's side of the merge-base was 92 files and `main`'s was
 585, with **eleven files** changed on both sides.
 
-**The reconciliation took four stages, because `main` moved three times while
+**The reconciliation took five stages, because `main` moved four times while
 it was in flight.** The first merge was against `8cee65934`. During the merged
 tree's qualification — which, on this host, took hours — `main` advanced a
 further **six commits** to `47f5572b1` (the agent-workstream blackboard's
@@ -51,9 +51,14 @@ of PR #170 (pause the hosted Desktop E2E qualification) and PR #171 (absorb
 two interactive test families into one, and repair two guards) — and the
 fourth merge brought that in too. It is recorded in §2c and §4c.
 
-The third and fourth merges are the ones that make this line publishable:
-together they are the reconciliation against the `origin/main` the pull
-request is opened against.
+`main` then advanced a further **five commits** to `12999178a` — the landing
+of PR #173 (adapt the Linux-gated test-support call sites to C003's typed
+live-read result) and PR #174 (record the C003 landing). The fifth merge
+brought that in, and it is recorded in §2d.
+
+The third, fourth and fifth merges are the ones that make this line
+publishable: together they are the reconciliation against the `origin/main`
+the pull request is opened against.
 
 ## 1. Executive finding
 
@@ -233,6 +238,28 @@ deleted. The row's Source counts `tests/*.rs` + `tests/*/*.inc`, so the
 disappeared, and the deleted `mod.rs` files were never counted. The top-level
 `tests/*.rs` count stays at **4**, and the row reads **321** exactly as it did
 after the third stage.
+
+## 2d. The fifth stage: `main` fixed the Linux CI breakage
+
+`main` advanced five commits to `12999178a` — the landing of PR #173 ("adapt
+the gated call sites to C003's typed live-read result") and PR #174 ("record
+the landing, and correct the baseline the landing broke").
+
+PR #173 is the **fix for the Linux CI breakage this line was inheriting**.
+`main`'s C003 read-consistency change made `execute_contained_live_read_test_only`
+return `GitReadFact<ManagedProcessResult>`, and the Linux-gated test-support
+target was not updated with it — so `process-ipc` and
+`restricted-userns-fails-closed` failed to compile on `main` itself, and this
+line's pull request inherited those two red jobs. §7.7 records the inheritance
+as `main`'s; PR #173 is `main` fixing it, and this fifth merge brings the fix
+in.
+
+The merge was **conflict-free**: `main`'s five commits touched only
+`tests/linux_git_test_support/linux_git_c002_performance.inc`,
+`tests/linux_git_test_support/linux_m004_process_ipc.inc` and
+`plans/closure/linux-sandbox-admission-follow-up-corrective/003-status.md`,
+and **no reasoning-control file was among them**. The Verified-counts table
+was not touched by `main` and did not move.
 
 ## 3. The indicator's re-landing
 
