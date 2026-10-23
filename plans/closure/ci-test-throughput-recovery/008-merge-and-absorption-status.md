@@ -636,6 +636,7 @@ lanes below are theirs, and they are the second landing's own verification.
 | `Windows native probe contract` | `39892846339`, `39893074116` | `c721875fc` | **success**, twice |
 | `Shared checkout macOS qualification` | `39893074277` | `c721875fc` | **success** |
 | `Linux M004 process and IPC qualification` | `39898581643` | `a3b6116e8` (both landings **plus** PR #173) | **success** |
+| `CI` | `39898581729` attempt 2 | `a3b6116e8` | **success** (attempt 1 was red — §7) |
 
 **No `Desktop E2E` lane ran on either PR, or on `main`'s pushes.** That is
 the pause working, and it is the observable difference between the two
@@ -838,8 +839,10 @@ where each red lane is attributed to the line that owns it.
   `running` jobs to a terminal state and the assertion fails. The family is
   untouched by this work, the tree's **test sources** are identical to this
   branch's head `c721875fc` — PR #170 changed a workflow file and documents,
-  no test source — and that head's `verify` job **passed**. The owning line
-  is the tool-programs line.
+  no test source — and that head's `verify` job **passed**. The re-run of
+  the `CI` lane at `a3b6116e8` (attempt 2 of `39898581729`, **success**) runs
+  the **same** family on the same test sources, and it passes there. The
+  owning line is the tool-programs line.
 
   **2. The `CI` lane — run `39898581729` attempt 1, at `a3b6116e8`.** The same
   step failed at
@@ -859,8 +862,10 @@ where each red lane is attributed to the line that owns it.
   crates/eggwork-test-node/ scripts/prebuild-eggwork-fixtures.sh
   scripts/detect-live-eggwork-changes.sh` is empty). The lane is included
   because the CI job runs the **whole** suite on a `main` push, so the live
-  target is not merely present but is the one that failed. The owning line is
-  the Eggwork live-fixture line.
+  target is not merely present but is the one that failed. **The re-run
+  settles it**: attempt 2 of the same run, on the **identical** tree
+  `a3b6116e8`, is **success**. The owning line is the Eggwork live-fixture
+  line.
 
   **3. The `Windows process launcher` lane — run `39895908305` attempt 1, at
   `31564eaf8`.** Its "Journaled Windows ACL lease and recovery tests" step
@@ -913,8 +918,10 @@ where each red lane is attributed to the line that owns it.
   compile error, fixed upstream — and the three lanes that did go red on
   `main` are a test race in the tool-programs family, a live sidecar that did
   not start in time, and a five-second Job-Object wait in the Windows native
-  sandbox family. None is in a family this work touches, and all three are
-  re-runnable without a change.
+  sandbox family. None is in a family this work touches, and **all three were
+  re-run green on the identical tree**: the `CI` lane's attempt 2
+  (`39898581729`, **success**) and the Windows lane's attempt 2
+  (`39895908305`, **success**).
 
   **What this does mean for the line.** The lanes are **flaky**, not broken by
   this landing, and the cost of that is the line's own: a red lane on `main`
