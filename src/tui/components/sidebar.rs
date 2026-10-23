@@ -47,11 +47,6 @@ pub enum SidebarFocusTarget {
     /// address one subject rather than two lookalikes.
     Subagent(String),
     /// The job's durable id, not its position in the list.
-    ///
-    /// Index-based targets are used elsewhere in this widget for rows the
-    /// projection appends to, but jobs are *upserted*: a finished job is
-    /// filtered out, so indices shift under the cursor and a focused index
-    /// would silently move to a different job. The id is stable.
     Job(String),
     McpServer(usize),
     FileChange(usize),
@@ -2619,10 +2614,6 @@ mod tests {
     }
 
     /// The panel never renders a row absent from the snapshot.
-    ///
-    /// An empty section contributes no header and no rows at all, so a
-    /// session with no delegated work shows no empty "Subagents (0)" block
-    /// that would cost a row and read as a failure to populate.
     #[test]
     fn empty_sections_contribute_no_header_and_no_rows() {
         let sidebar = SidebarWidget::default();

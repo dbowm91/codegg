@@ -1,10 +1,5 @@
 //! LSP evidence collector with trait-based dependency injection.
 //!
-//! [`LspEvidenceProvider`] abstracts LSP operations so the collector
-//! can be tested without a live server. The core [`collect_context`]
-//! function assembles an [`LspContextPacket`] from provider results,
-//! enforcing budget and recording provenance for every item.
-//!
 //! # Design
 //!
 //! - [`LspEvidenceProvider`] is the trait that concrete adapters implement.

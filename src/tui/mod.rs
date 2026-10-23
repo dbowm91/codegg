@@ -1,7 +1,5 @@
 //! # Terminal User Interface (TUI)
 //!
-//! This module provides the terminal-based UI for codegg, built with [ratatui].
-//!
 //! ## Architecture Overview
 //!
 //! The TUI is structured around several key components:
@@ -98,9 +96,6 @@
 //! 4. State changes trigger re-renders via [`App::render`](app::App::render)
 //!
 //! ## Error Handling
-//!
-//! Render errors are caught and displayed gracefully without crashing the application.
-//! The event loop uses `catch_unwind` to recover from rendering panics.
 
 pub mod app;
 pub mod async_cmd;
@@ -2280,12 +2275,6 @@ mod async_cmd_tests {
 
     /// The event loop's gate must admit the socket path, or the armed
     /// continuation is never started and the prompt hangs forever.
-    ///
-    /// This is the second half of the deadlock: `send_prompt` arms the
-    /// continuation, but `runtime/event_loop.rs` gated the submit block on
-    /// `!matches!(mode, AppMode::RemoteCore { .. })`, so a socket-daemon app
-    /// could arm a continuation nothing would ever consume. Both call sites
-    /// now share `App::is_ws_attach_transport`.
     #[test]
     fn socket_daemon_is_not_the_ws_attach_transport() {
         let mut app = socket_daemon_app_with_tab();

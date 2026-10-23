@@ -1,11 +1,5 @@
 //! Row index for the chat viewport.
 //!
-//! The cache holds the rows the renderer actually emits and derives the
-//! scroll offsets from them. Because the disagreement is per message it
-//! accumulated down the buffer, so the further back you scrolled the further
-//! the cached offset sat from the row actually drawn — long transcripts
-//! clipped off the edge and most of the history became unreachable.
-//!
 //! Rows are cached flat rather than per message so that a partial rebuild
 //! (streaming appends to the last message) can splice the rebuilt suffix in
 //! place instead of re-emitting every earlier message.

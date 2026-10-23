@@ -168,9 +168,6 @@ pub struct PendingSelectionUpdate {
 }
 
 /// Number of leading connection-id characters shown on a row.
-///
-/// Eight is enough to separate two rows that are otherwise identical while
-/// staying short enough to leave room for the credential hint.
 const CONNECTION_ID_PREVIEW_LEN: usize = 8;
 
 /// Short, stable discriminator for one connection id.

@@ -1,11 +1,5 @@
 //! The global `JobScheduler`.
 //!
-//! This is the daemon-owned orchestrator. It owns the
-//! `FairJobQueue`, `AdmissionController`, `ExecutorRegistry`, and
-//! the running-attempts map. It loops, claiming newly-queued jobs
-//! from `JobStore`, walking the fair queue, asking the admission
-//! controller for permits, and dispatching to typed executors.
-//!
 //! Lifecycle invariants (enforced here, validated by tests):
 //!
 //! 1. **One executor invocation per attempt.** The scheduler records

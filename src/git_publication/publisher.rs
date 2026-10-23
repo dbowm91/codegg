@@ -1,7 +1,4 @@
 //! The C007 publisher: private staging, compare-and-swap, atomic publication.
-//!
-//! See the module documentation in [`crate::git_publication`] for the
-//! contract this implements.
 
 use std::fs;
 use std::io::ErrorKind;

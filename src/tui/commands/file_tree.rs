@@ -726,10 +726,6 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
 }
 
 /// Handle one key while the panel's filter is being typed.
-///
-/// The filter is panel state, so it survives the mode change: `Esc` leaves
-/// insert mode and **keeps** the filter, and the rows stay filtered so the
-/// user can navigate them.
 fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
     match key.code {

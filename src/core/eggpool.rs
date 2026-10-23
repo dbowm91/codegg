@@ -1821,8 +1821,6 @@ impl ProviderConnectionProvisioner {
     /// the wire, and only when a binding exists — the plaintext itself is
     /// dropped immediately and is never logged.
     ///
-    /// Remove the credential record a rotation or replacement just superseded.
-    ///
     /// Scoping, deliberately narrow:
     ///
     /// - Only the *previous* binding of the connection being rotated or
@@ -4084,13 +4082,6 @@ mod tests {
     }
 
     /// Exactly one active connection is the authority for its provider.
-    ///
-    /// This is the rule that lets `codegg exec`, `codegg models`, and `/models`
-    /// find a provider at all. They have no session and no turn, so without a
-    /// connection they fall back to counting credential-store records — and a
-    /// rotation leaves the live record beside the orphan it replaced, the count
-    /// reaches two, and the provider disappears with `Provider not found` while
-    /// a healthy `active` connection holds its working key.
     #[tokio::test(flavor = "current_thread")]
     async fn one_active_connection_is_the_authority_for_its_provider() {
         let _master = MasterKeyGuard::new("eggpool-connection-authority-master");

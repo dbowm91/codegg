@@ -350,9 +350,6 @@ pub async fn sweep_scratch_once_with_budget(
         // reclaimer tries it at delete time, and the sweep is the retry for
         // the tree it had to refuse because work was still running. It does
         // not wait out the retention window — the session is gone.
-        //
-        // A live session's tree is protected by the window: it is idle, not
-        // abandoned, and the operator may still return to it.
         if !session.deleted && now_ms.saturating_sub(session.time_updated) < retention_ms {
             report.skipped_active += 1;
             continue;
@@ -590,10 +587,6 @@ async fn session_tree_is_reclaimable(
 }
 
 /// Find the durable session that owns a tree's digest, if any.
-///
-/// The digest is one-way, so the mapping is computed forward: every durable
-/// session id is hashed and the result compared. A tree that matches no
-/// session is an orphan, and an orphan has no lease.
 async fn session_owning_digest(
     pool: &SqlitePool,
     digest_hex: &str,

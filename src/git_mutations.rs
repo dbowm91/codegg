@@ -31,9 +31,6 @@ use crate::git_network_policy::NetworkFailureKind;
 use crate::git_service::{GitExecutionService, GitServiceError, RawGitOutput};
 
 // ── Process environment policy ───────────────────────────────────────
-//
-// The canonical env-var lists and builder live in `egggit::process`. These
-// re-exports preserve the historical root paths used by downstream callers.
 
 /// Re-export of the canonical allowlist. See
 /// [`codegg_git::process_policy::ALLOWED_ENV_VARS`] for the source of
@@ -766,11 +763,6 @@ impl GitMutationExecutor {
     /// the workspace lease and the daemon-owned mutation authority the
     /// executor already requires, plus the path validation the caller
     /// already performed.
-    ///
-    /// The publication itself is what makes this safe: the index is staged
-    /// privately, the intent is recorded durably, and the index is replaced
-    /// under Git's own lock with a compare-and-swap against the generation
-    /// the staging observed.
     async fn execute_add_publication(
         &self,
         operation: &GitOperation,

@@ -4,17 +4,6 @@
 //! subprocess via stdio. Must run serially (`--test-threads=1`).
 //! Do not broaden coverage here if a mock/in-process test can cover the behavior.
 //!
-//! These tests use the fake LSP server (scenario engine) to drive the
-//! [`LspService`] process-supervisor, restart coordinator, and
-//! per-client generation safety. They are gated behind the
-//! `lsp-test-support` feature and run without external network access.
-//!
-//! Each test is self-contained: it builds a fresh `LspService` with
-//! the fake server binary, drives a scripted scenario, and asserts
-//! on operational state, generation tracking, and process spawn
-//! counts (derived from the transcript file written by the fake
-//! server).
-//!
 //! ## Restart design notes
 //!
 //! The fake server reads its scenario JSON file exactly once at
@@ -1599,10 +1588,6 @@ fn hover_crash_scenario(
 /// - Phase 1: gen 1 crashes on didOpen → coordinator restarts → gen 2
 /// - Phase 2: gen 2 crashes on hover → coordinator restarts → gen 3
 /// - Phase 3: gen 3 is healthy
-///
-/// Phase 2 crashes on hover (not didOpen) so the coordinator's
-/// document replay succeeds and gen 2 reaches Ready before the
-/// user-triggered crash.
 #[tokio::test]
 async fn two_consecutive_restarts_use_monotonic_generations() {
     let tempdir = tempfile::tempdir().expect("tempdir");

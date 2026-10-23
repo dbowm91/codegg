@@ -26,11 +26,6 @@
 //!   [`LspContextPacket`] + [`PreviewArtifactRegistry`] to
 //!   [`LspTuiSummary`]; it delegates to
 //!   [`crate::tui_summary::build_tui_summary`] for the same reason.
-//!
-//! The existing functions in [`crate::security_context`] and
-//! [`crate::tui_summary`] remain the implementation of record;
-//! these bridges are additive, named, and provide a single import
-//! path for downstream consumers.
 
 use crate::context::{
     AgentContextSource, LspContextItem, LspContextItemKind, LspContextPacket, LspContextScore,
@@ -77,10 +72,6 @@ fn canonical_freshness_rank(f: LspEvidenceFreshness) -> u32 {
 
 /// Resolve the (server_id, server_generation, freshness, post_restart,
 /// age_ms) tuple from a semantic response's diagnostic evidence.
-///
-/// When no evidence is present the bridge defaults to
-/// `(None, None, Unknown, false, None)` — the same convention used
-/// by the existing tool-facing bridge in `src/tool/lsp.rs`.
 fn resolve_semantic_provenance(
     response: &SemanticContextResponse,
 ) -> (

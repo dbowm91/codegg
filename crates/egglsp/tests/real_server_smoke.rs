@@ -1882,12 +1882,6 @@ impl RealServerHarness {
     /// 3. `client.writer.close()` — signals EOF to the server.
     /// 4. `runtime.wait_for_exit()` under `graceful_timeout`.
     /// 5. Force kill and re-wait on `absolute_timeout` exhaustion.
-    ///
-    /// Pass 3 — each step is captured in the returned
-    /// `HarnessShutdownResult` so the
-    /// `LspCompatibilityReport.shutdown_trace` field carries the
-    /// full per-step evidence, not just a coarse `requested` /
-    /// `server_exited` boolean pair.
     async fn shutdown_and_collect(
         &self,
         graceful_timeout: Duration,
@@ -2630,10 +2624,6 @@ async fn run_smoke_suite(
     // fixture does not require touching the harness — only the
     // per-language constructor needs to opt in to the new
     // operations.
-    //
-    // Pass 2 — each helper now emits a paired
-    // `LspOperationCompatibility` record at the request site
-    // (no name parsing on the read path).
     let mut operation_records: Vec<egglsp::compatibility::LspOperationCompatibility> = Vec::new();
     run_generalized_operation_checks(
         client,

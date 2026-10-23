@@ -149,10 +149,6 @@ impl SubagentNameRegistry {
 }
 
 /// Draw a name that does not collide with anything in `active`.
-///
-/// The pool is walked in a randomly chosen order so that concurrent spawns do
-/// not march in lockstep through the same prefix. The selection itself is in
-/// [`draw_from`].
 fn draw(active: &HashMap<u64, String>) -> String {
     draw_from(active, random_index(SUBAGENT_NAMES.len()))
 }

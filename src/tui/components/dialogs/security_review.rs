@@ -46,11 +46,6 @@ enum Chrome {
 ///   the keystroke first and the arm is unreachable from a column — dead code
 ///   that reads exactly like a working key. That is the reason this hint is
 ///   written next to the arms rather than next to the footer.
-///
-/// Everything else below is dispatched: `j/k` move, `^d`/`^u` page the detail,
-/// `f` cycles the filter, `n` and `p` pin it to notes and prompts, `enter`
-/// previews, `h` jumps to the hunk, and `]`/`[` step between hunk-backed
-/// items.
 const HINT: &str = "j/k move · ^d/^u page · f filter · n notes · p prompts · enter preview · h jump hunk · ]/[ hunk nav";
 
 /// Which section of the detail pane is currently focused.

@@ -4,11 +4,6 @@
 //! resolved to a registry entry. A handler receives the argument and nothing
 //! else: never the typed line, never an argument that still starts with the
 //! command's own name — or with one of its aliases.
-//!
-//! Every test here drives the real dispatch path: the registry resolves the
-//! spelling the user typed, the entry extracts the argument, and the handler
-//! receives it. A handler that reads the palette's query again, or that
-//! strips the command name itself, fails here.
 
 use super::App;
 use crate::tui::app::commands::TuiCommand;

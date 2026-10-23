@@ -108,11 +108,6 @@ impl App {
                 self.close_dialog();
             }
             // ── Project chat window intents ──────────────────────────
-            //
-            // The dialog emits these; every one routes into the existing
-            // `commands/chat.rs` seam so the daemon round-trip, the
-            // authorization decision, and the stale-completion guards
-            // stay in one place. Nothing here writes chat state directly.
             TuiMsg::ChatSend { body, reply_to } => {
                 if let Some(project_id) = self.chat_panel_project.clone() {
                     crate::tui::commands::chat::start_chat_send(self, project_id, body, reply_to);

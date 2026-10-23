@@ -6,24 +6,12 @@
 //!
 //! ## Design
 //!
-//! The coordinator is a free function parameterized by a small
-//! [`RestartShared`] trait that the production `LspService`
-//! implements. Tests can plug in lightweight mock implementations
-//! of the same trait to drive the coordinator end-to-end without
-//! spawning real server processes.
-//!
 //! The coordinator never reconstructs a hard-coded `src/lib.rs`
 //! path. It uses the persisted [`LspClientDescriptor`] (populated
 //! on first publish) and the currently open document registry
 //! (read at restart time) to pick a seed file.
 //!
 //! ## Ownership model (Pass 1, Phase 3 final closure)
-//!
-//! Restart ownership is held in a per-key slot. The slot is
-//! acquired by [`acquire_restart_ownership`], released by
-//! [`RestartLease::release`] (async; production path) or
-//! [`RestartLease::Drop`] (safety fallback), and observed by
-//! [`cancel_restart_ownership`].
 //!
 //! **Cancellation is intent, not completion.** `cancel_restart_ownership`
 //! signals intent via the lease's cancellation token but does
@@ -1354,19 +1342,6 @@ where
                 //    concurrent readers, so the coordinator MUST
                 //    NOT abort after this point on a lease-token
                 //    cancellation.
-                //
-                //    From here onward, the coordinator treats
-                //    the lease token as advisory. Cancellation
-                //    is logged at debug level; the coordinator
-                //    continues to a coherent `Ready` or
-                //    `Degraded` outcome. The manual caller will
-                //    revalidate the generation after owner
-                //    completion (Pass 2) and can decide whether
-                //    another restart is still needed.
-                //
-                //    Replay failure and readiness timeout remain
-                //    real outcomes — they transition to
-                //    `Degraded` or propagate an error.
                 if let Some(token) = lease_token.as_ref() {
                     if token.is_cancelled() {
                         debug!(
@@ -1396,12 +1371,6 @@ where
                 // before being marked Ready. Cold start and restart
                 // share the same readiness helper so behavior is
                 // consistent across the two paths.
-                //
-                // Pass 6 — A live replacement that times out on
-                // readiness is returned as `RestartOutcome::Degraded`
-                // (not as `LaunchFailed`). The live client remains
-                // published and observable; the caller logs
-                // degraded distinctly.
                 let readiness = shared
                     .wait_for_readiness(key, &descriptor.readiness_policy)
                     .await;
@@ -4380,12 +4349,6 @@ mod tests {
     /// completes the remove-then-broadcast sequence, the waiter
     /// observes `Finished`, and a fresh acquisition succeeds
     /// with a new owner id.
-    ///
-    /// This test would fail under a hypothetical
-    /// signal-before-removal implementation: the waiter would
-    /// race the removal, observe `Finished`, and either return
-    /// `Ok` while the slot was still installed (false success) or
-    /// block forever behind the contended lock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn finished_is_not_observable_until_slot_is_removed() {
         use super::super::restart::cancel_restart_ownership;

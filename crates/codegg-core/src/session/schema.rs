@@ -3654,10 +3654,6 @@ async fn migrate_v86(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 ///
 /// `stage` is a closed enum. `needs_attention` is terminal until an
 /// operator resolves it; a launch never silently re-enters a stage.
-///
-/// This migration was **v85** on the writer-containment branch and is **v87**
-/// in the merged tree, for the same reason as the writer permit above: `main`
-/// had already published v84 and v85, so the branch's numbers move above them.
 async fn migrate_v87(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"

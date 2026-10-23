@@ -74,9 +74,6 @@ const HINT_BROWWSING: &str =
     "j/k move · [ ] reorder · a add · e edit · d delete · s send now · r refresh";
 
 /// The verbs while a text step has the keyboard.
-///
-/// Two keys, both of which the box itself answers. This is the one place a
-/// stray `d` does real damage — see [`QueueDialog::is_text_step`].
 const HINT_TEXT: &str = "Enter next · Esc cancel";
 
 /// The verbs while the duration step has the keyboard.
@@ -946,10 +943,6 @@ fn format_remaining(remaining_ms: i64) -> String {
 /// - `"@3h"` — scheduled and still waiting.
 /// - `"@·"` — due, i.e. the time has arrived and it is waiting for the next
 ///   turn rather than for the clock.
-///
-/// The last state is the one that matters: "scheduled for 09:00" and "09:00 has
-/// passed and it still has not run" look identical otherwise, and they are very
-/// different states for a user deciding whether to press `s`.
 fn due_marker(run_at_ms: Option<i64>, now_ms: i64) -> String {
     match run_at_ms {
         None => "  ".to_string(),

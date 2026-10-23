@@ -992,9 +992,6 @@ fn format_epoch_millis(millis: i64) -> String {
 }
 
 /// Attach the TUI to a running daemon over the local Unix socket.
-///
-/// Shared by `codegg daemon attach` (canonical) and the hidden
-/// top-level `attach-daemon` compatibility alias.
 async fn cmd_daemon_attach(
     endpoint: Option<String>,
     session: Option<String>,

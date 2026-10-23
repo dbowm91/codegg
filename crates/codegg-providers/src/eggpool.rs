@@ -257,11 +257,6 @@ pub const MAX_OVERLAY_THINKING_BUDGET_TOKENS: usize = 16_777_216;
 
 /// The locations of a published thinking-capability block inside one catalog
 /// entry.
-///
-/// The documented envelope nests the capability under
-/// `eggpool.capabilities.thinking`; the flat runtime capability sits at
-/// `capabilities.thinking`, or directly on the entry as `thinking`. All
-/// three are read, because none of them is published today.
 const OVERLAY_CAPABILITY_PATHS: [&str; 3] = [
     "/eggpool/capabilities/thinking",
     "/capabilities/thinking",
@@ -269,9 +264,6 @@ const OVERLAY_CAPABILITY_PATHS: [&str; 3] = [
 ];
 
 /// The keys a published accepted-effort ladder may use.
-///
-/// The documented contract shape spells it `accepted_efforts`; the flat
-/// runtime capability spells it `supported_efforts`.
 const OVERLAY_LABEL_KEYS: [&str; 2] = ["accepted_efforts", "supported_efforts"];
 
 /// A bounded, typed thinking-capability overlay retained for one model.
@@ -528,10 +520,6 @@ fn parse_thinking_overlay(entry: &Value) -> Option<EggpoolThinkingOverlay> {
     let always_reasons_claim = overlay_always_reasons(thinking, contract);
 
     // The effort dimension: the published ladder and the published status.
-    //
-    // One rule set governs every dimension: malformed content takes the
-    // dimension with it, a contradiction degrades it, and a published
-    // ladder is itself a declaration of the dimension it belongs to.
     let labels = match overlay_labels_field(thinking, contract) {
         None => OverlayLabels::Absent,
         Some(value) => parse_overlay_labels(value),
@@ -1130,9 +1118,6 @@ pub const CREDENTIAL_PROBE_MAX_TOKENS: usize = 1;
 const CREDENTIAL_PROBE_PROMPT: &str = "ping";
 
 /// Response-body bound for the verification request.
-///
-/// The status line is the whole verdict, so nothing is retained and no model
-/// output can leak into a log line or a durable row.
 const CREDENTIAL_PROBE_BYTE_LIMIT: usize = 8 * 1024;
 
 const DEFAULT_CREDENTIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1632,9 +1617,6 @@ fn parse_summary(
 }
 
 /// The overlay candidates seen for one model id.
-///
-/// A duplicate id is one catalog entry, so two different contracts for the
-/// same id are ambiguous and neither is retained.
 enum OverlayCandidate {
     /// No contract was published for this id.
     Absent,

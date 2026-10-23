@@ -29,12 +29,6 @@ enum Chrome {
 }
 
 /// The verbs `ResearchBrowserMode::RunsList` delivers, for the panel host.
-///
-/// `handle_key` also answers `↑/↓` and `Esc`, and neither belongs in a hosted
-/// hint: the arrows are claimed by `insert_panel_direction_bindings` as panel
-/// directions, and `Esc` is the mode switch — it means "close" in the modal
-/// box and something else in a column. The old footer's `Esc close` was
-/// therefore dead the moment this box docked.
 const RUNS_LIST_HINT: &str = "j/k move · enter open · r refresh";
 
 /// The verbs `ResearchBrowserMode::RunDetail` delivers.

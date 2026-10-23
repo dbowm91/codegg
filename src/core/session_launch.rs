@@ -1,10 +1,5 @@
 //! M006 — the daemon-side session launch service.
 //!
-//! The service drives a launch from an accepted request to a bound
-//! session, and it drives it **recoverably**: every step is written to
-//! the durable launch saga *before* the next step begins, so a launch
-//! that dies half-way leaves a record of how far it got.
-//!
 //! # What the service owns
 //!
 //! * The **checkout**: a managed worktree, either freshly reserved and
@@ -214,10 +209,6 @@ impl SessionLaunchService {
     }
 
     /// Drive the launch from wherever it stopped to the end.
-    ///
-    /// Every step is written to the durable saga *before* the next step
-    /// begins, so a launch that dies half-way leaves a record of how far
-    /// it got — and a resume picks up from there.
     async fn run(
         &self,
         current: &mut SessionLaunchRecord,

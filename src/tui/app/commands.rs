@@ -113,12 +113,6 @@ pub enum TuiCommand {
         error: Option<String>,
     },
     /// Completion of a permission or question response round trip.
-    ///
-    /// The reply is sent from a detached task, so a daemon-side refusal
-    /// (`CoreResponse::Error`) is otherwise invisible: the dialog closes,
-    /// nothing is logged, and the waiter — whose human wait is unbounded by
-    /// default — blocks the tool forever. This variant surfaces the refusal
-    /// so the user learns the tool did **not** resume.
     PermissionResponseFinished {
         /// Human-readable cause. `None` on a successful `Ack`.
         error: Option<String>,
@@ -443,13 +437,6 @@ pub enum TuiCommand {
     /// Provider Connections Milestone 3: trigger the connection
     /// selection dialog refresh flow. Emitted when the dialog opens or
     /// when the user requests an explicit reload.
-    ///
-    /// `focus_connection_id` names the connection whose catalog the user is
-    /// looking at. It is set when the highlight moves, because the model
-    /// pane is per-connection: without it the dialog would keep rendering
-    /// the previously focused connection's models under a different
-    /// highlighted row, and Enter would bind that model to the wrong
-    /// connection.
     SessionSelectionRefresh {
         focus_connection_id: Option<String>,
     },

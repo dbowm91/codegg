@@ -17,10 +17,6 @@
 //!
 //! ## The contract
 //!
-//! The mapping is a **bijection between the layout's cells and the bytes the
-//! wrap renders**: every cell holds exactly one rendered character, and every
-//! rendered character is on exactly one cell.
-//!
 //! The bytes the wrap deliberately does **not** render — a line break, and
 //! the whitespace a row break swallowed — are on no cell at all. The wrap's
 //! own contract says as much: the range of a collapsed whitespace run "is what
@@ -34,11 +30,6 @@
 //! the last rendered character sits one column past it.
 //!
 //! ## The trailing row
-//!
-//! A buffer that ends with a line break has one more line than the wrap's
-//! rows: the empty line the caret sits on once the break is typed. The
-//! layout adds that row, so the row count agrees with the buffer's line count
-//! and the caret after the break has a row of its own.
 
 use crate::tui::wrap::{visible_width, WrappedRow};
 use unicode_width::UnicodeWidthChar;

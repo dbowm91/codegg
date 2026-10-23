@@ -115,14 +115,6 @@ pub enum HostileConfigSurface {
     /// `filter.<name>.process`, `filter.<name>.clean` or
     /// `filter.<name>.smudge` — the filter commands Git runs to convert
     /// content to and from its object form.
-    ///
-    /// This is the surface that matters most for a *read*. `git status` and
-    /// `git diff` are on the trusted read route, and both compare the working
-    /// tree against the index *through the clean filter*, so a repository
-    /// that declares a filter command and ships an attribute that selects it
-    /// gets that command executed by an ordinary status read. The
-    /// `process` form is worse still: it is a long-running filter process
-    /// that Git starts and speaks a protocol to.
     FilterCommand,
     /// `core.attributesFile` — a user-level attributes file that can select
     /// a filter or a diff driver.
@@ -162,10 +154,6 @@ pub enum HostileConfigSurface {
     /// truncated.
     OutOfBoundsInclude,
     /// The config was not fully inspected because a bound was exceeded.
-    ///
-    /// A malformed configuration file also produces this surface: the file
-    /// could not be vouched for, so the inspection is incomplete. The
-    /// truncated flag of the report is set at the same time.
     InspectionTruncated,
 }
 
@@ -297,11 +285,6 @@ struct RepositoryLayout {
 
 impl RepositoryLayout {
     /// Locate the repository's own configuration files without running Git.
-    ///
-    /// The git directory is found from the `.git` entry of the root: a
-    /// directory for an ordinary repository, a `gitdir:` pointer file for a
-    /// linked worktree or a submodule. A bare repository is recognised by
-    /// its own `HEAD` and `objects`.
     fn discover(repository_root: &Path) -> Option<Self> {
         let root = fs::canonicalize(repository_root).ok()?;
         let dot_git = root.join(".git");

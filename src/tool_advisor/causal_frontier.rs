@@ -5210,12 +5210,6 @@ mod tests {
     /// file with no further ceremony. The write path is gated on an
     /// explicit opt-in:
     ///
-    /// ```text
-    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
-    ///     tool_advisor::causal_frontier::tests::m002_regenerate_checked_in_receipt \
-    ///     --ignored --nocapture
-    /// ```
-    ///
     /// Without the opt-in the test asserts that the checked-in receipt is
     /// still present and writes nothing.
     #[test]

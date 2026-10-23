@@ -353,9 +353,6 @@ pub fn apply_completion(
 
 /// Reload the editor's open document when the apply wrote it.
 ///
-/// The apply changed the file on disk behind the editor's buffer, so a clean
-/// buffer is reloaded and the editor shows what is on disk.
-///
 /// A buffer with a draft is **not** reloaded. A reload discards the local
 /// draft, and the daemon's own dirty-document check is not the editor's:
 /// the editor is a replica, so the daemon can believe a document is clean
@@ -497,11 +494,6 @@ mod tests {
     /// construction. What *is* assertable, and what actually protects the
     /// user, is the consequence: the change the review displays is the same
     /// change the request carries, bound to the same candidate and digest.
-    ///
-    /// If a future change re-derived the displayed diff from disk, or opened
-    /// the review from a different source than the apply, the two would
-    /// diverge here and the user would be approving something other than what
-    /// lands.
     #[test]
     fn the_reviewed_change_and_the_applied_request_are_the_same_change() {
         let (mut app, _dir, preview_id, target) = app_with_pending_candidate();

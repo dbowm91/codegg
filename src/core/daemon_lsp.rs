@@ -981,10 +981,6 @@ static PREVIEW_CANDIDATE_REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// Mint one reviewable candidate, or none.
 ///
-/// The daemon owns the language server, so it owns the material the apply path
-/// consumes: the patches, the base each was computed against, and the digest
-/// that binds a request to exactly this candidate.
-///
 /// **Nothing is registered.** The apply path verifies a digest recomputed over
 /// the request's *own* patches (`src/lsp/mutation.rs:380-401`), so a candidate
 /// that travelled from here and was altered in transit fails the check. That

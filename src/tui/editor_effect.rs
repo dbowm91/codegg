@@ -19,9 +19,6 @@
 //! a document change discards it. That contract is M013's and is preserved
 //! exactly. What changed is the *type* of the thing being parked: it was an
 //! LSP fact, and it is now an editor fact.
-//!
-//! [`EditorState::pending_effect`]:
-//!     crate::tui::app::state::editor::EditorState::pending_effect
 
 use codegg_protocol::lsp::LspReadOperation;
 

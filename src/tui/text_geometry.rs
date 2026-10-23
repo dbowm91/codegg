@@ -1,13 +1,5 @@
 //! Shared word and line geometry over a text buffer.
 //!
-//! The editor and the composer are two surfaces over the same idea: a text
-//! buffer with a caret in it, and Helix's motions over that caret. Before this
-//! module they each had their own idea of where a word ends, and the two
-//! could disagree — the composer had no word motions at all, so "disagree"
-//! meant "the composer had nothing". The first time a motion lands on both
-//! surfaces, the rule has to be one rule, or the surfaces drift the moment
-//! the policy changes.
-//!
 //! So the geometry lives here, over a [`TextSource`], and each surface
 //! supplies an adapter:
 //!
@@ -15,10 +7,6 @@
 //!   reads on demand;
 //! - the composer adapts its own `String`, which is a frontend-local buffer
 //!   that is delivered only on submit.
-//!
-//! The adapters differ in every respect that matters — one is a replica with
-//! revisions, the other is a plain string — and agree on the one thing that
-//! matters: where the words are.
 //!
 //! ## The word policy
 //!

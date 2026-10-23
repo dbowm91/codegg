@@ -303,10 +303,6 @@ impl FilesDialog {
     }
 
     /// Type into the panel's filter.
-    ///
-    /// The panel's insert mode is its own: `Esc` leaves it and **keeps** the
-    /// filter, so the rows the user narrowed to stay narrowed while the
-    /// panel goes back to navigation.
     fn handle_insert_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
             KeyCode::Esc => {
@@ -350,11 +346,6 @@ impl Component for FilesDialog {
     }
 
     /// The verbs this box implements, for the panel host to reuse verbatim.
-    ///
-    /// `handle_key` below is the implementation and `HINT` is the
-    /// advertisement; putting the same bytes on both sides of that boundary is
-    /// the whole point, because a host-side paraphrase is how the panel came
-    /// to advertise `i act`, a verb no arm above ever dispatches.
     fn keymap_hint(&self) -> Option<String> {
         Some(HINT.to_string())
     }

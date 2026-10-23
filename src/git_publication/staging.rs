@@ -1,9 +1,5 @@
 //! The staging step of a C007 publication.
 //!
-//! Staging is the half of the publication that runs Git: it produces the
-//! **private index** (and the private object database that goes with it) for
-//! a set of repository-relative paths, without touching the repository.
-//!
 //! It is a trait because the two halves of the vertical have different
 //! evidence requirements:
 //!
@@ -15,10 +11,6 @@
 //! * a test may substitute its own implementation to drive the publication
 //!   half — the compare-and-swap, the lock, the atomic replacement, and the
 //!   crash recovery — on a host that cannot provide the M004/M005 tier.
-//!
-//! The trait boundary is where the trust boundary is: everything above it
-//! (the journal, the compare-and-swap, the atomic publication) is the same
-//! code in both cases.
 
 use async_trait::async_trait;
 use egggit::GitReadConsistency;

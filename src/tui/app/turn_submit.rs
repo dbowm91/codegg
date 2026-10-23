@@ -59,9 +59,6 @@ pub enum TurnSubmitOutcome {
     /// The daemon accepted the submission (receipt or plain acknowledgement).
     Accepted,
     /// A turn is already active for this session; this submit was refused.
-    ///
-    /// The running turn is untouched. The submission is recoverable: the user
-    /// can resubmit once the active turn ends.
     Contended { code: String, message: String },
     /// The daemon refused for some reason other than an active turn: a bad
     /// agent index, an unresolvable provider, a controller-lease conflict, an

@@ -696,11 +696,6 @@ fn parse_test_request_in(
     // relative `workdir` resolves against that same root under the same
     // containment rule every file path obeys, because `Command::current_dir`
     // would otherwise have the OS resolve it against the daemon's cwd.
-    //
-    // Both branches go through the shared resolver so an omitted and an
-    // explicit root produce the *same* canonical spelling. Two spellings of
-    // one directory would let the job's derived `workspace_id` differ between
-    // two calls that mean the same thing.
     let workdir = match (input["workdir"].as_str(), workspace_root) {
         (Some(raw), Some(root)) => crate::tool::util::resolve_workdir(Path::new(raw), root)?,
         (Some(raw), None) => PathBuf::from(raw),

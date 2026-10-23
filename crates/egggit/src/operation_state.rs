@@ -1,9 +1,5 @@
 //! Repository operation-state discovery.
 //!
-//! Phase F extends `egggit` with a structured model for in-progress
-//! repository operations (merge, rebase, cherry-pick, revert, bisect,
-//! sequencer-driven operations, and apply-mailbox).
-//!
 //! Each variant carries the origin, current step, target refs, conflicted
 //! paths, and recommended legal actions where safely discoverable from
 //! Git plumbing. When filesystem sentinel files are version-sensitive we

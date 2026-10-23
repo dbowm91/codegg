@@ -12,9 +12,6 @@
 //! in the same session retries naturally, since the title is still the
 //! creation default.
 //!
-//! This module wires the agent's contract to a lightweight one-shot
-//! provider call (no tools, no sub-agent dispatch, no scheduler work).
-//!
 //! The excerpt comes from the completed turn rather than the message table:
 //! the title task fires while the run is finishing, before
 //! [`crate::agent::transcript`] persists the turn.

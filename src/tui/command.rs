@@ -183,9 +183,6 @@ pub enum BuiltinSlashAction {
     Reasoning,
     /// Expand every tool call and every reasoning block in the transcript, or
     /// collapse every one of them.
-    ///
-    /// The palette twin of the `Ctrl+Alt+O` chord: the gesture changes what
-    /// the buffer shows, so it has to be reachable without knowing the key.
     ExpandAllDisclosures,
     ModelsRefresh,
     Variants,
@@ -448,9 +445,6 @@ impl Command {
 }
 
 /// The first whitespace-delimited token of `text`, and the text after it.
-///
-/// The token is the command spelling the user typed; the rest is the
-/// argument. A line with no whitespace is one token and no argument.
 fn split_first_token(text: &str) -> (&str, &str) {
     match text.find(char::is_whitespace) {
         Some(index) => (&text[..index], &text[index..]),
@@ -459,9 +453,6 @@ fn split_first_token(text: &str) -> (&str, &str) {
 }
 
 /// The text after `name`, when `name` is the first token of `text`.
-///
-/// The comparison is the registry's own: a leading slash and the case are
-/// not significant, so `/theme` and `theme` are the same spelling.
 fn strip_named_token<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     let (token, rest) = split_first_token(text);
     if CommandRegistry::normalize_name(token) == CommandRegistry::normalize_name(name) {

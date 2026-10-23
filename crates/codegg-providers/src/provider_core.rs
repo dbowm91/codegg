@@ -1,8 +1,4 @@
 //! LLM provider interface and implementations.
-//!
-//! This module provides the Provider trait for interacting with various LLM backends
-//! including Anthropic, OpenAI, Google Vertex, AWS Bedrock, and more. Providers handle
-//! authentication, request formatting, streaming responses, and error handling.
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -591,14 +587,6 @@ pub struct ModelInfo {
 
 pub struct ProviderRegistry {
     /// Keyed by provider id in **sorted** order.
-    ///
-    /// `ProviderRegistry::list()` feeds the model catalog, so its order decides
-    /// which provider's models come first — and consumers fall back to
-    /// `models[0]` when they have no explicit selection. A `HashMap` iterates
-    /// in `RandomState` order, which is reseeded per process, so the "first"
-    /// provider changed on every launch. That silently picked a different
-    /// provider (and a different model) each run, which in turn routed turns to
-    /// whichever backend hashed first. Sorted keys make the catalog stable.
     providers: BTreeMap<String, Box<dyn Provider>>,
 }
 
@@ -858,14 +846,6 @@ pub(crate) fn resolve_provider_credential(
     }
 
     // Credential-store fallback.
-    //
-    // A credential added through the TUI `/connect` flow is written to the
-    // credential store under the provider id and appears in neither config nor
-    // the environment. Without this fallback the resolver returns `None`, the
-    // provider is skipped during registration (`NO KEY for provider ...`), and
-    // it therefore contributes no models — so connecting a provider through
-    // the TUI appeared to have no effect at all: `/connect` reported success
-    // while `/models` stayed empty.
     //
     // Config and env keep priority; this only supplies the missing case.
     // Expired records are treated as absent rather than as a bad key.

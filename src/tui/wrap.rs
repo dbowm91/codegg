@@ -6,13 +6,6 @@
 //! dialog therefore pre-wrap their content with these helpers: the same
 //! algorithm decides both how many rows a string occupies and which rows to
 //! draw, which is what keeps scroll offsets aligned with what is on screen.
-//!
-//! Two engines live here. [`wrap_to_strings`] wraps plain text by words and
-//! returns plain strings. [`wrap_styled_spans_by_word`] wraps **styled**
-//! spans by the same rule and additionally reports the **byte range** of the
-//! source behind every row, so a consumer can map a byte offset back to the
-//! row and column it came from. Both engines exclude terminal escape
-//! sequences from word segmentation and from width measurement.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};

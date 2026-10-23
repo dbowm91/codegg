@@ -234,10 +234,6 @@ pub struct SessionDialog {
     /// Live jobs shown under the subagents.
     jobs: Vec<JobListRow>,
     /// M006: the managed checkouts, keyed by the checkout's path.
-    ///
-    /// A session's `directory` is the join key: the launch binds the
-    /// session's directory to the checkout's path, so the checkout a
-    /// session runs in is the one whose path matches.
     checkouts: HashMap<String, CheckoutInfo>,
     visible_height: usize,
     sorted_cache: RefCell<SortedCache>,

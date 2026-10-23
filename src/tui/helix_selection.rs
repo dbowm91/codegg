@@ -564,10 +564,6 @@ impl<P: SelectionPoint> SelectionState<P> {
     // is what lets the caller tell "this did nothing" from "this worked", so a
     // no-op is reported once instead of submitted as an edit that undoes
     // nothing. The M004 `case_range` rule, applied to the set.
-    //
-    // None of these reads text or resolves a motion, so none needs to know
-    // what a point is — that is what keeps this module free of coordinates
-    // and usable from the terminal panel as well as the editor.
 
     /// The head of member `index`.
     ///
@@ -864,9 +860,6 @@ mod tests {
     use crate::tui::composer_text::ComposerPoint;
 
     /// The width of one line in the composer's test buffer.
-    ///
-    /// The rules ask about columns like 999 and 200, so the buffer has to be
-    /// wide enough for the questions to mean something.
     const LINE_WIDTH: usize = 1000;
 
     /// The stride between two lines' starts: the line's bytes and its newline.
@@ -906,10 +899,6 @@ mod tests {
 
     /// The rules, written once and checked against every surface that uses
     /// them.
-    ///
-    /// Each rule takes the surface's two functions: how to build a point at a
-    /// line and column, and how to move a point down some rows. Everything
-    /// else — the points, the state, the modes — is the shared machine's.
     mod rules {
         use super::{SelectionMode, SelectionPoint, SelectionState};
 
@@ -1241,11 +1230,6 @@ mod tests {
     }
 
     /// Check every rule against every surface.
-    ///
-    /// The rules are the shared machine's contract. A surface that claims to
-    /// use the machine has to satisfy them, and the cheapest way to prove that
-    /// is to run the same rules against it — not to write a second set of
-    /// tests that says the same thing in different words.
     macro_rules! shared_rule_tests {
         ($module:ident, $surface:expr, $($name:ident),* $(,)?) => {
             mod $module {
