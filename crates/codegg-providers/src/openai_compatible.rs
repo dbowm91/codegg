@@ -277,7 +277,12 @@ impl OpenAiCompatibleProvider {
         }
         if let Some((field, configured_value)) = thinking_transform(&adapter) {
             let value = if configured_value.as_deref() == Some("true") {
-                json!(request.thinking_budget != Some(0))
+                // The adapter pins thinking on, so the request's own explicit
+                // disable is the only way to say "off". The previous
+                // `thinking_budget != Some(0)` test could never be false: a
+                // zero budget is not a request the kernel accepts, and the
+                // request's explicit disable did not exist at the wire.
+                json!(!crate::wire::reasoning_intent(request).explicit_disable)
             } else if configured_value.as_deref() == Some("false") {
                 json!(false)
             } else {

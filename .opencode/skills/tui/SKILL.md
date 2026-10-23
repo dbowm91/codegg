@@ -77,11 +77,11 @@ the daemon remains responsible for containment and `file.read` authorization.
 Do not build a workspace path from a display basename or open an LSP URI.
 
 - **`dispatch_tui_command` is `pub(crate) async fn`**
-  (`src/tui/runtime/command_dispatch.rs:84`). The match is overwhelmingly
+  (`src/tui/runtime/command_dispatch.rs:87`). The match is overwhelmingly
   synchronous, but it contains five `.await` points, all of the same shape:
   `match core_client.request(req).await` inside the durable-editor arms
   (`EditUndoLatest`, `EditReapplyLatest`, `EditUndo`, `EditReapply`,
-  `EditCheckpointList`, at lines 2109/2160/2214/2268/2320). Those arms await
+  `EditCheckpointList`, at lines 2687/2738/2792/2846/2898). Those arms await
   an in-process `CoreClient` round trip and return a completion `TuiCommand`.
   Every other arm is non-async.
 - High-latency work uses the **spawn-and-complete** pattern instead:
@@ -1051,6 +1051,34 @@ Three rules, each of which was a defect first:
   interrupted mid-sentence. Route genuine turn failures through it only; shell,
   clipboard, and `/theme` errors would otherwise claim a turn failure that never
   happened. The full text stays in the toast and `/logs` keeps 50.
+- **The reasoning indicator is status-bar content, and the daemon owns the
+  value.** The footer status bar's activity chain carries the extended-thinking
+  selection (`reasoning: high`, `reasoning: off`, `reasoning: budget 2048`),
+  next to the daemon-resolved approval and sandbox policy. Three properties are
+  load-bearing. It is **content in an existing chain**, never a condition on a
+  surface's presence — the chip is pushed unconditionally in
+  `build_status_summary`, and `status_bar.rs` must not mention the reasoning
+  state at all, so the bar's height and width budget cannot become a function
+  of the selection. It adds **no second spinner and no second cadence**: there
+  is one frame table, one `ActivityPhase` enum, and one 100 ms cadence, and
+  the indicator is static text in a bar the one frame already redraws. And it
+  reads the **daemon-owned** selection, never a frontend-local field —
+  the daemon resolves the selection at every turn-admission path, so a local
+  copy is a projection, not an authority. `/reasoning` therefore writes
+  through `CoreRequest::ReasoningPreferenceSet` with the daemon's preference
+  revision as the compare-and-set, and the local display is corrected from
+  the daemon's **response** rather than from the option the user just picked.
+  A refused write puts the daemon's last known value back and surfaces the
+  typed refusal (`preference_conflict`, `invalid_reasoning_selection`,
+  `reasoning_vocabulary_unsupported`, `reasoning_capability_unsupported`) —
+  the last two are different conditions and must not collapse into one
+  message. `scripts/check_tui_reasoning_surface.py` guards all of it.
+  **The indicator's surface moved once already**: it was introduced in the
+  working strip's reserved row 0, and `main` deleted the working strip as
+  part of its buffer-chrome roadmap, so it lives in the status bar now. The
+  property that survived the move is the one that mattered — the indicator is
+  content, and no surface's presence or height is a function of the
+  reasoning state.
 - **One approval on screen; the rest queue, and the queued row is the way back.**
   `show_permission_dialog` used to assign straight into `permission_dialog`, so
   the second `PermissionPending` of a batch destroyed the first *along with its
@@ -1692,6 +1720,24 @@ Three rules, each of which was a defect first:
   explicit retry must not duplicate the already-visible user message. Tab
   switch/close, reconnect, and shutdown invalidate the continuation.
 
+## See Also
+
+- `architecture/tui.md` — authoritative TUI module contract
+- `architecture/theme.md` — the theming surface the render layer consumes
+- `architecture/command.md` — the command-intent classification the slash
+  commands and key chords share
+- `architecture/permission.md` — the approval dialog and escalation rules the
+  permission queue implements
+- `architecture/project.md` — the project/workspace authority the
+  project-authority guard enforces
+- `.opencode/skills/agent/SKILL.md` — the turn that the TUI drives
+- `.opencode/skills/core/SKILL.md` — the core facade the TUI sends commands to
+- `.opencode/skills/lsp-ide/SKILL.md` — the editor LSP leaves and the
+  preview-apply path
+- `.opencode/skills/human-shell/SKILL.md` — the `/shell-*` commands and the
+  `ShellCell` widget
+- `.opencode/skills/testing-ci/SKILL.md` — running the `tui_render` family
+
 ## Static Guards
 
 Every guard in the table below fails `verify.sh quick` and the CI `verify` job.
@@ -1726,8 +1772,14 @@ session event subscription.
 
 ```bash
 cargo test --test tui_render        # rendering integration tests
-cargo test --test tui               # behavior tests
+cargo test --test tui_render -- tui  # behavior tests
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The behaviour members live
+in the `tui_render` family (`tests/tui_render/tui.inc`), so the correct form
+is `cargo test --test tui_render -- <member>`.
 
 Rendering tests assert on buffer contents; keep widget output deterministic
 (no wall-clock times without injection seams).
@@ -1736,8 +1788,8 @@ Rendering tests assert on buffer contents; keep widget output deterministic
 
 Re-verified 2026-10-06 against `architecture/tui.md` and source. Re-confirmed
 accurate: `dispatch_tui_command` is `pub(crate) async fn` at
-`runtime/command_dispatch.rs:84` with exactly five `.await` points at
-2109/2160/2214/2268/2320, all `match core_client.request(req).await` inside
+`runtime/command_dispatch.rs:87` with exactly five `.await` points at
+2687/2738/2792/2846/2898, all `match core_client.request(req).await` inside
 the `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
 `EditCheckpointList` arms (verified by grep, not by reading the match);
 `spawn_tui_task` / `spawn_registered_tui_task` in `src/tui/async_cmd.rs`;
@@ -1750,14 +1802,14 @@ the `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
 `ActionKey::all()` as the exhaustive configurable list with `InputAction::Char`
 the non-configurable exception; `MsgPart::ShellCell` in
 `components/messages.rs`; `/shell-*` registered in `command.rs` and handled in
-`commands/shell.rs`; both `--test tui_render` and `--test tui` targets.
+`commands/shell.rs`; and the `tui_render` family target.
 
 Corrected this pass: the remote-protocol bullet claimed the `/tui`
 WebSocket "speaks the `TuiCommand` enum". `TuiCommand` derives only
-`Debug, Clone` (`app/commands.rs:14`) and appears nowhere in `src/server/` or
+`Debug, Clone` (`app/commands.rs:55`) and appears nowhere in `src/server/` or
 `crates/codegg-protocol/`; the wire type is
 `codegg_protocol::tui::TuiMessage` (`#[serde(tag = "type")]`,
-`crates/codegg-protocol/src/tui.rs:16-19`), which `src/server/ws.rs:23`
+`crates/codegg-protocol/src/tui.rs:16-20`), which `src/server/ws.rs:23`
 imports and serializes. Replaced with the wire-enum name.
 
 Added: a `## Static Guards` section naming
@@ -1769,3 +1821,52 @@ each one actually rejects (both scripts confirmed present and wired into
 Re-verified 2026-10-10 for C003: focused Esc is forwarded to the PTY, Ctrl-]
 leaves focus, and the screen renderer uses bounded VT state with resize and
 degraded-history handling. Terminal output remains outside model context.
+
+Third pass (2026-10-23): re-verified against `src/tui/`, `src/tui/app/`,
+`src/tui/commands/`, `src/tui/runtime/`, `src/tui/components/`,
+`src/tui/panels/`, `src/tui/ui_builders/`,
+`crates/codegg-protocol/src/tui.rs`, `src/server/ws.rs`,
+`scripts/verify.sh`, `.github/workflows/ci.yml`, and `tests/tui_render/`.
+
+Confirmed unchanged: every path in the Layout table exists — all twenty-two
+listed files and directories, including the five `src/tui/app/state/`
+helpers (`execution_context.rs`, `async_request.rs`, `routing.rs`,
+`work_orders.rs`, `workspace_dashboard.rs`), `src/tui/commands/{primary_projection,agent_editor,work_orders,workspace_dashboard}.rs`,
+`src/tui/panels/agents.rs`, and the three `src/tui/ui_builders/` modules.
+`dispatch_tui_command` is `pub(crate) async fn`; the five `.await` points are
+all `match core_client.request(req).await` and sit in the five named
+durable-editor arms. `spawn_tui_task` (`src/tui/async_cmd.rs:20`) and
+`spawn_registered_tui_task` (`:52`); `UiRouteToken` (`app/state/routing.rs:66`);
+`DialogType` (`components/component.rs:22`); `FocusManager`
+(`components/component/focus.rs`); `MAX_TOAST_LINES = 3`
+(`src/tui/app/modal.rs:95`); `MsgPart::ShellCell`
+(`src/tui/components/messages.rs:124`); `ActionKey::all()`
+(`src/tui/input.rs:361`); `requeue_open_permission`
+(`src/tui/app/mod.rs:10063`), `show_permission_dialog` (`:15561`),
+`mount_permission_dialog` (`:15598`), `report_turn_error` (`:1950`), and
+`is_ws_attach_transport` (`:2593`); `DialogState::permission_queue`
+(`src/tui/app/state/dialog.rs:36`); `EXIT_ARM_WINDOW`
+(`src/tui/app/state/prompt.rs:82`); and that `Dialog::Info` does not exist in
+`src/tui/app/types.rs` while `src/tui/components/dialogs/info.rs` does.
+
+Confirmed the Static Guards table's claim that every listed guard fails
+`verify.sh quick` **and** the CI `verify` job: all eleven
+`check_tui_*` scripts appear in `scripts/verify.sh:86-121` and in
+`.github/workflows/ci.yml:115-151`.
+
+Corrected: `dispatch_tui_command` was cited at
+`src/tui/runtime/command_dispatch.rs:84` (actually `:87`), and the five
+`.await` points at 2109/2160/2214/2268/2320 (actually
+**2687/2738/2792/2846/2898** — a drift of ~580 lines). `TuiCommand`'s derive
+was cited at `app/commands.rs:14` (actually `:55`; `:14` is
+`ShellPromotionStageResult`'s derive) and the wire enum at
+`crates/codegg-protocol/src/tui.rs:16-19` (`:16-20`).
+
+Corrected: `cargo test --test tui` named a target that does not exist — the
+behaviour member is `tests/tui_render/tui.inc`, a member of the `tui_render`
+family, so the old form selected zero tests and exited 0. It now reads
+`cargo test --test tui_render -- tui`.
+
+Added the missing `## See Also` section, naming the authoritative
+`architecture/tui.md` that this skill's intro already points at.
+

@@ -1365,7 +1365,8 @@ async fn build_git_context_for_path(cwd: &std::path::Path) -> String {
     };
 
     let status = match egggit::status_v2::rich_repo_status(&root).await {
-        Ok(s) => s,
+        // Prompt context only: not a generation-bound consumer, so the class is dropped.
+        Ok(s) => s.into_value(),
         Err(_) => return String::new(),
     };
 

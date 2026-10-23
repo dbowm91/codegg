@@ -91,7 +91,7 @@ ExecutorCompletion returned to scheduler
 | `ProgramStore` | `crates/codegg-core/src/tool_program/store.rs:29` | Content-addressed IR store with cache key matching |
 | `ToolProgramTool` | `src/tool/tool_program.rs:79` | Model-facing tool (DirectOnly, foreground/background) |
 | `ToolProgramExecutor` | `src/scheduler/tool_program_executor.rs:119` | `JobExecutor` for `JobKind::ToolProgram` |
-| `BrokerAdapter` | `src/scheduler/tool_program_executor.rs:181` | Bridges `BrokerCallback` to real `ToolBroker` |
+| `BrokerAdapter` | `src/scheduler/tool_program_executor.rs:252` | Bridges `BrokerCallback` to real `ToolBroker` |
 | `ToolProgramNotificationService` | `src/scheduler/tool_program_notifications.rs` | Durable notification records with claim/ack semantics |
 
 ## Invariants
@@ -505,20 +505,24 @@ pub trait BrokerCallback: Send + Sync {
         &self, request: &ChildJobRequest,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<ChildJobResult, InterpreterError>;
-    async fn heartbeat(&self, budget: &BudgetSnapshot);
+    async fn heartbeat(&self, budget: &BudgetSnapshot);     // default: no-op
     async fn call_reserved(&self, sequence: u32, request: &CallRequest)
-        -> Result<(), InterpreterError>;
+        -> Result<(), InterpreterError>;                    // default: Ok(())
     async fn call_completed(&self, completed: &CompletedCall)
-        -> Result<(), InterpreterError>;
+        -> Result<(), InterpreterError>;                    // default: Ok(())
     async fn checkpoint(&self, checkpoint: &InterpreterCheckpoint)
-        -> Result<(), InterpreterError>;
+        -> Result<(), InterpreterError>;                    // default: Ok(())
 }
 ```
 
-The default implementations for `submit_child_job`,
-`submit_child_job_with_checkpoint`, `call_reserved`, `call_completed`,
-and `checkpoint` are no-ops or return errors. Production code
-overrides all of them via `BrokerAdapter`.
+Only `execute_call` is required
+(`crates/codegg-core/src/tool_program/interpreter.rs:679-734`). The
+defaults exist to keep in-memory fixtures source-compatible:
+`submit_child_job` returns `InterpreterError::BrokerError`,
+`submit_child_job_with_checkpoint` delegates to `submit_child_job`,
+`heartbeat` is a no-op, and `call_reserved` / `call_completed` /
+`checkpoint` return `Ok(())`. Production code overrides all of them via
+`BrokerAdapter`.
 
 ## M008: Background Programs and Notifications
 
@@ -560,8 +564,10 @@ confirmation.
 
 Every nested broker call verifies the `ToolAuthorityGrant` against:
 validity, integrity, workspace, caller class, effect class, session,
-permission mode, principal, path policy, manifest, contract snapshot,
-and policy revision (9 dimensions checked in `verify_grant_scope`).
+permission mode, principal, path policy, manifest, and policy revision —
+plus, for a programmatic caller, the frozen contract-snapshot digest and
+a runtime contract-drift comparison (12 checks in
+`ToolBroker::verify_grant_scope`, `src/tool/broker.rs:262-470`).
 Missing, stale, mismatched, or
 tampered grants fail closed.
 
@@ -657,7 +663,9 @@ milestones in the Tool Programs subsystem are closed.
 Current storage version is defined by `storage::STORAGE_LAYOUT_VERSION`
 (`storage/mod.rs`).
 Tool program tables (`tool_program`, `tool_program_call`) were
-introduced in migration v33 and are additive.
+introduced in migration v33 and are additive. The
+`tool_program_notification` table (background-program notifications) was
+added in migration v34.
 
 ## Testing
 
@@ -708,11 +716,6 @@ cargo test --test tool_program_scenario             # scenario tests
 - Source/IR content-store GC removes only unreferenced digests.
 - The `tool_program` table cascades deletes to `tool_program_call`.
 
-## Related Docs
-
-- `architecture/tool_broker.md` — Tool Broker pipeline
-- `architecture/tool_program_language.md` — Restricted-Python language spec
-- `architecture/tool.md` — Tool trait and registry
 ## Run groups and background execution
 
 Tool Programs remain the deterministic programmatic tool-loop authority: they
@@ -725,7 +728,59 @@ agent-run group or an unowned task. Use ordinary direct/parallel tools for
 short turn-local work, Tool Programs for bounded deterministic tool loops, and
 run groups only for independent delegated agent lifetimes.
 
+## Related Docs
+
+- `architecture/tool_broker.md` — Tool Broker pipeline
+- `architecture/tool_program_language.md` — Restricted-Python language spec
+- `architecture/tool.md` — Tool trait and registry
+
 ## Source Verification
+
+Verified 2026-10-23 against source. Corrected:
+
+- `BrokerAdapter` `src/scheduler/tool_program_executor.rs:181` → `:252`
+  (the struct is at `:252`; `:181` is inside the executor's own body).
+- The M012 grant-scope list said "9 dimensions" while enumerating twelve
+  items. It now states the real count: 12 checks in
+  `ToolBroker::verify_grant_scope` (`src/tool/broker.rs:262-470`) —
+  validity, integrity, workspace, caller class, effect class, session,
+  permission mode, principal, path policy, manifest, policy revision, plus
+  the programmatic-only frozen contract-snapshot digest and runtime
+  contract-drift comparison.
+- The `BrokerCallback` trait block showed `heartbeat` as a required method
+  and omitted the defaults of the other five. Only `execute_call` is
+  required; `heartbeat` has a no-op default, `submit_child_job` returns
+  `InterpreterError::BrokerError`,
+  `submit_child_job_with_checkpoint` delegates to it, and
+  `call_reserved` / `call_completed` / `checkpoint` return `Ok(())`
+  (`crates/codegg-core/src/tool_program/interpreter.rs:679-734`).
+
+Added: the `tool_program_notification` table is migration **v34** (the
+`tool_program` and `tool_program_call` tables are v33), and the
+"Run groups and background execution" section was moved above
+"Related Docs" so the document ends on its reference sections.
+
+Verified accurate: `ProgramResult` (`interpreter.rs:229`); `ProgramStatus`
+7 variants (`:243`); `ProgramValue` 8 variants (`:32`); `FailureClass`
+13 classes (`:169`); `BrokerCallback` 7 methods (`:679`); `CallRequest` /
+`CallResult` / `CompletedCall` (`:582` / `:591` / `:660`);
+`MeteredInterpreter` (`:813`); `RuntimeLimits` (`:359`);
+`InterpreterCheckpoint` (`:450`); `ProgramStore` (`store.rs:29`) and its
+seven methods (`store.rs:76/114/145/216/235/245/280/291/302`);
+`ToolProgramTool` (`src/tool/tool_program.rs:79`);
+`ToolProgramExecutor` (`src/scheduler/tool_program_executor.rs:119`);
+`MAX_MODEL_TIMEOUT_MS` = 10 min (`src/tool/tool_program.rs:45`);
+`ProgramCacheConfig` defaults (300s / 100 per tool / 1000 total,
+`src/tool/program_cache.rs:60-68`); the 8-tool programmatic palette and
+its caller policies, effect classes, output schemas, and cache TTLs
+(`read` 300s, `glob` 60s, `grep` 60s, `list` 30s, `diff` 60s,
+`repo_search` disabled, `git_read` disabled, `lsp_read` disabled);
+`resolve_manifest`'s five rejection reasons
+(`src/tool/program_manifest.rs:29-40`); the `ChildJobOp` → `JobKind`
+mapping; the M001/M002/M003 eligibility matrices; and the migration
+versions (v33 `migrate_v33` at
+`crates/codegg-core/src/session/schema.rs:484`, v34 `migrate_v34` at
+`:429`).
 
 Verified 2026-10-06 against source. Corrected: `ProgramStatus` `:242` → `:243`,
 `BrokerCallback` `:675` → `:679`, and `ProgramValue` was attributed to

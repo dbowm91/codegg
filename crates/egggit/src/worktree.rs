@@ -1,3 +1,5 @@
+use crate::consistency::GitReadFact;
+use crate::process::GitCommandOutput;
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -10,10 +12,7 @@ pub struct WorktreeInfo {
     pub is_detached: bool,
 }
 
-async fn run_git_async(
-    root: PathBuf,
-    args: Vec<String>,
-) -> Result<std::process::Output, EgggitError> {
+async fn run_git_async(root: PathBuf, args: Vec<String>) -> Result<GitCommandOutput, EgggitError> {
     crate::process::run(&args, &root).await
 }
 
@@ -52,7 +51,12 @@ fn push_parsed_worktree(
 }
 
 /// List worktrees in a repository (read-only).
-pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn.
+pub async fn list_worktrees(
+    git_root: &Path,
+) -> Result<GitReadFact<Vec<WorktreeInfo>>, EgggitError> {
     let output = run_git_async(
         git_root.to_path_buf(),
         vec!["worktree".into(), "list".into(), "--porcelain".into()],
@@ -63,6 +67,7 @@ pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, Egggit
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
+    let consistency = output.consistency;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
@@ -109,7 +114,7 @@ pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, Egggit
         current_is_detached,
     );
 
-    Ok(worktrees)
+    Ok(GitReadFact::new(worktrees, consistency))
 }
 
 /// Walk up the directory tree to find a git root.
@@ -143,6 +148,7 @@ pub fn is_git_worktree(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consistency::GitReadConsistency;
     use std::process::Command;
 
     fn init_repo(dir: &Path) {
@@ -207,9 +213,29 @@ mod tests {
     async fn list_worktrees_for_repo() {
         let dir = tempfile::TempDir::new().unwrap();
         init_repo(dir.path());
-        let list = list_worktrees(dir.path()).await.unwrap();
+        let list = list_worktrees(dir.path()).await.unwrap().into_value();
         // There is at least the main worktree.
         assert!(!list.is_empty());
         assert!(list[0].is_current);
+    }
+
+    /// A worktree listing consults the object store, so its read observed
+    /// an object generation and the carried class says so.
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_worktrees_carries_a_generation_consistent_class() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo(dir.path());
+
+        let fact = list_worktrees(dir.path()).await.unwrap();
+        assert_ne!(
+            fact.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "a worktree listing consults the object store"
+        );
+        assert!(
+            fact.class().is_generation_consistent(),
+            "a worktree listing must report a generation-consistent class, got {}",
+            fact.class()
+        );
     }
 }

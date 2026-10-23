@@ -92,7 +92,7 @@ subagents from gaining capabilities the parent does not have.
 
 Plan-mode surface is owned by `src/tool/disclosure.rs::PLAN_ALLOWED`
 (single source consumed by both `filter_tools_for_model` and the resolved
-surface). When plan mode is active, only these 18 tools are allowed
+surface). When plan mode is active, only these 17 tools are allowed
 (`PLAN_ALLOWED`, `src/tool/disclosure.rs:262-280`): `read`, `glob`, `grep`,
 `list`, `codesearch`, `repo_search`, `webfetch`, `lsp`, `skill`, `todoread`,
 `todowrite`, `bash`, `plan_enter`, `plan_exit`, `tool_search`,
@@ -327,8 +327,9 @@ failure, abstention, and budget overflow preserve the existing palette.
 Verified 2026-10-06 against source. Corrected: capability count 13 → 15
 (`MemoryRead` and `PluginExecute` were missing from the prose list, and
 `ManageWorkOrders` was missing from the enum code block — the enum block now
-matches the source verbatim); plan-mode allowlist 15 → 18 names
-(`mcp_resource_search`/`mcp_resource_read` were missing). Line refs:
+matches the source verbatim); plan-mode allowlist 15 → 17 names
+(`mcp_resource_search`/`mcp_resource_read` were missing; the count was
+mis-stated as 18 and is corrected on 2026-10-23). Line refs:
 `ResolvedToolSurface` `:131` → `:147`, `ResolvedTool` `:120` → `:136`,
 `AgentCapabilitySet` `:32` → `:36`, `ToolOmission` `:114` → `:130`
 (reason enum `:120`), `SurfaceError` `:141` → `:157`, and all seven Key
@@ -338,3 +339,18 @@ Functions rows (`:151/168/207/228/335/342/360` →
 6 `ToolOmissionReason` variants, 3 `SurfaceError` variants, 15
 `AgentCapabilitySet` bool fields, `PLAN_ALLOWED` ordering, and the
 four disclosure states with `ProfileSpecific`.
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: the plan-mode allowlist is **17** names, not 18. The
+  enumeration in the prose already listed exactly the 17 entries
+  `PLAN_ALLOWED` declares; only the count was wrong.
+  `PLAN_ALLOWED` is at `src/tool/disclosure.rs:262` and spans `262-280`.
+- **Verified accurate**: every `src/agent/tool_surface.rs` line anchor
+  (`Capability`:15, `AgentCapabilitySet`:36, `ToolOmissionReason`:120,
+  `ToolOmission`:130, `ResolvedTool`:136, `ResolvedToolSurface`:147,
+  `SurfaceError`:157, `from_registry`:166, `from_registry_with_aliases`:183,
+  `resolve`:228, `resolve_with_aliases`:250, `definitions`:385, `reduce`:392,
+  `canonical_name_for_wire`:410); the 15 `Capability` variants and their
+  order; the 6 `ToolOmissionReason` variants (`Denied`, `PlanMode`,
+  `DisabledByModel`, `MissingBackend`, `NonCallable`, `ParentCeiling`).

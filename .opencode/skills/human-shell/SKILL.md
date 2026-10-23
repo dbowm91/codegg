@@ -57,7 +57,7 @@ capabilities as available unless a separate implementation lands.
 8. `/shell-list` displays the last 10 commands as `[id] <status> $ command`,
    where `<status>` is `done exit=N X.Xs`, `running X.Xs`, `timeout Xs`,
    `killed X.Xs`, or `failed`, plus a ` [promoted]` marker once the entry has
-   been promoted (`src/tui/commands/shell.rs:567-574`)
+   been promoted (`src/tui/commands/shell.rs:1203-1255`)
 9. `!` output is NOT added to model context. Explicit promotions use the shared
    redactor, are capped at 32 KiB, and are durably staged by the authoritative
    session owner before the TUI reports them staged.
@@ -83,7 +83,9 @@ The WebSocket prompt-string transport retains its explicit unsubmitted-draft
 behavior and does not treat queue delivery as staging.
 
 **Both keep `origin: ShellOrigin::HumanEphemeral`**
-(`src/tui/commands/shell.rs:66`). `promote_after` only selects the capture
+(`src/tui/runtime/command_dispatch.rs:1983`; also
+`src/shell/runtime.rs:369,412,450,482` and `src/tui/mod.rs:292,798,847,935,1041`).
+`promote_after` only selects the capture
 policy — do not branch on origin to detect promotion. The
 `ShellOrigin::HumanPromoted` variant is declared (`src/shell/types.rs:7`)
 but is **never constructed** anywhere in `src/`, `crates/`, or `tests/`;
@@ -101,7 +103,7 @@ but is **never constructed** anywhere in `src/`, `crates/`, or `tests/`;
 - `shutdown`, `reboot`, `halt`, `poweroff`
 
 **Warned** (confirmation dialog if `confirm_dangerous` is enabled —
-gated at `src/tui/commands/shell.rs:28`):
+gated at `src/tui/commands/shell.rs:37`):
 - `rm -rf .` (current directory), `rm -rf ~` / `$HOME`
 - `git clean -f...`
 - `sudo`
@@ -161,7 +163,7 @@ streamed length. The head/tail split is not a 3-way split of the budget.
 ```
 
 `ansi` controls ANSI escape handling in captured output (`AnsiMode`: `sgr-only`
-(default), `strip`, `raw` — `crates/codegg-config/src/schema.rs:2936`).
+(default), `strip`, `raw` — `crates/codegg-config/src/schema.rs:3614`).
 `default_timeout_secs` defaults to 300 (`DEFAULT_TIMEOUT_SECS`,
 `src/shell/types.rs:104`) and is capped at 1 hour by config validation.
 
@@ -183,11 +185,11 @@ composer draft.
 
 Separate from the `!`/`!!` path, the *agent's* bash tool classifies commands
 by family. `RouteLevel` defaults to `Observe`
-(`crates/codegg-config/src/schema.rs:3483`) — classification and metadata
+(`crates/codegg-config/src/schema.rs:4271`) — classification and metadata
 only, with every command still executing via raw shell. Raising a family to
 `Active` is what routes execution to structured backends. Setting
 `CODEGG_ROUTING_DISABLE=1` is the emergency kill switch that disables routing
-for all families (`src/tool/bash/policy.rs:322`); per-family `Off` config
+for all families (`src/tool/bash/policy.rs:535`); per-family `Off` config
 disables one family.
 
 ## Key Types
@@ -248,3 +250,40 @@ disable it. A pending staged message currently lives in the active TUI until
 the next accepted turn. WebSocket TUI transport places approved evidence in
 an empty composer because it has no separate staged-context request; it
 preserves existing draft text and does not treat queue delivery as acceptance.
+
+Third pass (2026-10-23): re-verified against `src/shell/{types,store,policy,runtime,digest,daemon,mod}.rs`,
+`src/shell/{projection,projector,redactor,rtk,projection_bridge}.rs`,
+`src/tui/commands/shell.rs`, `src/tui/runtime/command_dispatch.rs`,
+`src/tui/mod.rs`, `src/tool/bash/policy.rs`,
+`crates/codegg-config/src/schema.rs`, and `src/tool/bash.rs`.
+
+Confirmed unchanged: the `\!` escape hatch (`src/shell/types.rs:127`); the
+`ShellOrigin::HumanPromoted` variant being declared but never constructed
+(`src/shell/types.rs:7`); `ShellOrigin::AgentTool` likewise
+(`src/shell/types.rs:8`); `ShellOutputEntry::promoted`
+(`src/shell/store.rs:90`); the four storage constants
+`DEFAULT_TIMEOUT_SECS` / `DEFAULT_MAX_BYTES_PER_COMMAND` /
+`DEFAULT_MAX_TOTAL_BYTES` / `DEFAULT_MAX_HISTORY_ENTRIES`
+(`src/shell/types.rs:104-107`); `BoundedOutput` and its 256 KiB head/tail
+caps (`src/shell/store.rs:14`, `:10-11`); `ShellOutputEntry`
+(`src/shell/store.rs:79`); `ShellCommandId` (`src/shell/types.rs:52`);
+`normalize_command` and the policy regex block (`src/shell/policy.rs:72`,
+`:12-56`); the twelve `src/shell/` modules including the five projection
+modules the `architecture/human_shell.md` pipeline names; and the `AnsiMode`
+variant set (`sgr-only`, `strip`, `raw`).
+
+Corrected: the `/shell-list` status format was cited at
+`src/tui/commands/shell.rs:567-574` — that range is the `/shell-show` output
+header; `handle_shell_list` is at `:1203` and the `done exit=N X.Xs` /
+`running X.Xs` status arms at `:1223-1255`. The `ShellOrigin::HumanEphemeral`
+site was cited at `src/tui/commands/shell.rs:66`, but that file no longer
+constructs it at all; the construction sites are
+`src/tui/runtime/command_dispatch.rs:1983`, `src/shell/runtime.rs:369,412,450,482`,
+and `src/tui/mod.rs:292,798,847,935,1041`. The `confirm_dangerous` gate was
+cited at `:28` (actually `:37`, `app.shell_confirm_dangerous`); the
+oldest-first eviction at `src/shell/store.rs:253-255` (actually the
+`pop_front` calls at `:262` and `:270`); `AnsiMode` at
+`crates/codegg-config/src/schema.rs:2936` (actually `:3614`); `RouteLevel`
+at `:3483` (actually `:4271`); and the `CODEGG_ROUTING_DISABLE=1` kill switch
+at `src/tool/bash/policy.rs:322` (actually `:535`).
+

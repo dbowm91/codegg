@@ -146,9 +146,11 @@ async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<Git
             project_dir.display()
         )));
     };
+    // Sidebar display, not a generation-bound consumer: the class is dropped.
     let status = egggit::status_v2::rich_repo_status(&root)
         .await
-        .map_err(|e| anyhow::anyhow!("git status failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("git status failed: {}", e))?
+        .into_value();
     let branch = if status.branch.is_none() {
         Some("detached".to_string())
     } else {

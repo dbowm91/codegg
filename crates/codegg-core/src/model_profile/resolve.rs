@@ -109,6 +109,24 @@ pub fn apply_config_override(
     if let Some(v) = cfg.default_thinking_budget {
         base.default_thinking_budget = Some(v);
     }
+    if let Some(ref v) = cfg.reasoning_capability {
+        // The operator's override is authoritative for the dimensions it
+        // declares, and it may only **narrow** the compiled baseline: the
+        // merged accepted-label set is the intersection of the two
+        // declared sets, so an override can never widen a dimension's
+        // accepted set beyond the baseline.
+        let resolution = super::capability::resolve_reasoning_capability(
+            base.reasoning_capability.as_ref(),
+            Some(v),
+            None,
+        );
+        // A refused override leaves the compiled baseline standing.
+        base.reasoning_capability = if resolution.rejected.is_empty() {
+            Some(resolution.effective)
+        } else {
+            base.reasoning_capability
+        };
+    }
     if let Some(v) = cfg.max_parallel_tools {
         base.max_parallel_tools = Some(v);
     }
@@ -146,6 +164,7 @@ pub fn default_profile(model: &str) -> ResolvedModelProfile {
         requires_post_tool_continue_nudge: false,
         default_reasoning_effort: None,
         default_thinking_budget: None,
+        reasoning_capability: None,
         max_parallel_tools: None,
         preferred_tools: None,
         disabled_tools: None,

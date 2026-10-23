@@ -10,7 +10,9 @@ Git policy, sandbox grants, scheduler admission, or run creation.
 - `crates/codegg-core/src/workstream_claim.rs` owns typed claim, actor,
   prerequisite, state, CAS, target-normalization, and SQLite store contracts.
 - `crates/codegg-core/src/session/schema.rs::migrate_v79` owns the additive
-  schema; `STORAGE_LAYOUT_VERSION` is 79.
+  schema. That migration is **version 79 of the chain**, not the current
+  layout: `STORAGE_LAYOUT_VERSION` is **87**, because the writer permit (v86)
+  and the session launch (v87) landed after it.
 - `crates/codegg-protocol/src/projection/workstream.rs` joins authorized
   claim summaries to the existing session projection. It does not access
   storage or authorize a caller.
@@ -75,6 +77,33 @@ projection's event cursor for peer observation.
 
 ```bash
 cargo test -p codegg-core workstream_claim::tests
-cargo test --test workstream_claim_m003
+cargo test --test core_daemon -- workstream_claim
 python3 scripts/check_project_catalog_invariants.py
 ```
+
+The integration coverage lives in the `core_daemon` family at
+`tests/core_daemon/workstream_claim_m003.inc`; the root package's integration
+tests are families, so `cargo test --test workstream_claim_m003` selects zero
+tests and still exits `0` — `workstream_claim_m003` is a family *member*, not a
+target. The member's own test functions carry descriptive names, so filter on
+the function prefix (`-- workstream_claim`) rather than the file name.
+
+## Source verification
+
+Verified 2026-10-23 against source. Corrected:
+
+- `STORAGE_LAYOUT_VERSION` "79" → **87** (`crates/codegg-core/src/storage/mod.rs:48`).
+  The value 79 is the *migration* that adds the claims schema
+  (`schema.rs::migrate_v79`), not the current layout.
+- The integration test target `workstream_claim_m003` → the `core_daemon`
+  family member `tests/core_daemon/workstream_claim_m003.inc`.
+
+Confirmed unchanged: the owning module
+(`crates/codegg-core/src/workstream_claim.rs`); the protocol projector
+(`crates/codegg-protocol/src/projection/workstream.rs`); every published
+bound — `MAX_CLAIMS_PER_GROUP` 128, `MAX_CLAIM_EVENTS_PER_GROUP` 4096,
+`MAX_CLAIM_DEPENDENCIES` 32, `MAX_CLAIM_TARGET_BYTES` 256; the `workstream_claim`
+table's own `CHECK` constraints (`target` 1–256, `owner_id` 1–128,
+`idempotency_key` 1–128, `claim_kind` in task/path/interface, `state` in
+offered/claimed/released/blocked/completed); the `BEGIN IMMEDIATE` transaction
+shape; and the advisory-only scope statement.

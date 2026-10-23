@@ -26,6 +26,22 @@ requires_explicit_tool_contract = true
 requires_post_tool_continue_nudge = true
 max_parallel_tools = 2
 
+[profile.reasoning_capability]
+# MiniMax-M3.1 publishes an open effort ladder and refuses an explicit
+# disable: both `none` and `thinking.type = "disabled"` are rejected with
+# "requires adaptive thinking". The model always reasons, so the disable
+# dimension is not `supported`.
+#
+# The budget dimension is left undeclared: MiniMax publishes no fixed
+# thinking-budget bound, and an undeclared dimension is `unknown`, not
+# `unsupported`.
+effort_status = "supported"
+accepted_effort_labels = ["low", "medium", "high", "xhigh", "max"]
+disable_status = "unsupported"
+budget_status = "unknown"
+always_reasons_status = "supported"
+always_reasons = true
+
 [tools]
 format = "anthropic_tool"
 tool_choice = "auto"

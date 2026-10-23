@@ -100,6 +100,17 @@ Generic wrapper mapping a Codegg tool name to an eggsact tool name.
 Implements `Tool` trait. Both `execute()` and `execute_structured()`
 delegate to `EggsactRuntime::call_json()`.
 
+`name()` returns `self.codegg_name` — a **runtime-supplied** name, not a
+literal in the `impl Tool` block. A single `impl Tool for EggsactTool` block
+therefore resolves all 13 names, so a scan of `impl Tool for … name()` for a
+string literal cannot see any of them. They are counted instead at their
+`EggsactTool::new()` call sites in `src/tool/deterministic.rs`, and they *do*
+appear in the catalogued set of distinct production tool names in
+`architecture/tool.md` — 75 in total (62 literal + these 13).
+`defer_loading()` returns `self.defer` and `expose_in_definitions()` returns
+`self.expose`, which is how the always-visible / deferred split is carried
+per instance.
+
 ### build_eggsact_tools (`src/tool/deterministic.rs:106-289`)
 
 ```rust
@@ -154,7 +165,7 @@ Exposed to the model via `expose_in_definitions = true`:
 
 ### Deferred / Contextual Tools (5)
 
-Discoverable via `tool_search` but not shown by default:
+Discoverable via `tool_search` and flagged as deferred to the provider:
 
 | Tool | Description |
 |------|-------------|
@@ -164,9 +175,24 @@ Discoverable via `tool_search` but not shown by default:
 | `structured_data_compare` | Compare structured config/data output (JSON) |
 | `text_fingerprint` | Compute a deterministic SHA-256 fingerprint of text |
 
-Deferred tools use `expose_in_definitions = false` and
-`defer_loading = true`. They are registered in the ToolCatalog but not
-sent to the model in tool definitions.
+Deferred tools are constructed with `defer_loading = true` and
+`expose_in_definitions = true`
+(`src/tool/deterministic.rs:222-286`). They **are** present in the
+model-facing tool definitions; `defer_loading` is a provider-level
+extension flag on the emitted `ToolDefinition`
+(`crates/codegg-providers/src/provider_core.rs:439`, serialized as
+`"defer_loading": true` at `:449`), not a removal from the list.
+`ToolRegistry::definitions()` (`src/tool/mod.rs:1484-1493`) filters on
+`expose_in_definitions()` and then marks each definition with
+`defer_loading`. Providers that do not support the extension (OpenAI,
+OpenRouter) ignore the flag.
+
+The `expose_in_definitions = false` treatment belongs to a different
+family: the hidden program-only adapters (`git_read`, `lsp_read`), the
+disabled-backend stubs, and the `invalid` diagnostic tool. The
+always-visible and deferred deterministic wrappers are the same in this
+respect — both are advertised, and only the deferred ones carry the
+deferral flag.
 
 ## Registration Flow
 
@@ -180,7 +206,9 @@ EggsactRuntime::new(config)
             └── build_eggsact_tools(runtime)
                     │
                     ├── Always-visible → ToolRegistry::with_options()
-                    └── Deferred → ToolCatalog (discoverable via tool_search)
+                    └── Deferred → ToolRegistry::with_options()
+                                   (registered, catalogued as deferred,
+                                    discoverable via tool_search)
 ```
 
 Key points:
@@ -188,12 +216,15 @@ Key points:
   actionable error; registry construction logs the error and skips the
   deterministic wrappers rather than changing policy
 - Registration happens in `ToolRegistry::with_options()`
+  (`src/tool/mod.rs:1261-1289`), gated on
+  `det_cfg.enabled && det_cfg.backend != "disabled"`
 - The runtime is constructed from `DeterministicToolsRuntimeConfig`
   resolved by `integrated_config::resolve_integrated_config()`
+  (`src/tool/integrated_config.rs:137`)
 
 ## Configuration
 
-### Schema (`[deterministic_tools]` in opencode.json)
+### Schema (`[deterministic_tools]` in `codegg.jsonc`)
 
 ```toml
 [deterministic_tools]
@@ -202,9 +233,16 @@ backend = "native"                # "native" | "disabled"
 profile = "codegg_core"           # validated by the linked eggsact runtime
 model_audience = "model"          # audience for model-facing tools
 harness_audience = "harness"      # audience for preflight checks
-expose_expert_tools = false       # expose deferred tools to model
+expose_expert_tools = false       # resolved but not consulted at registration
 max_output_chars = 12000          # truncation limit (1..1_000_000)
 ```
+
+`expose_expert_tools` is currently **inert**: it is resolved into
+`DeterministicToolsRuntimeConfig`
+(`src/tool/integrated_config.rs:204`) and printed by the `codegg` status
+command (`src/main.rs:3300`), but no registration or disclosure path
+reads it. The always-visible / deferred split is fixed in
+`build_eggsact_tools()`, not by this key.
 
 ### Validation
 
@@ -292,6 +330,58 @@ output truncation, structured fields, and deferred-tool discoverability.
 - `crates/codegg-config/src/schema.rs` — `DeterministicToolsConfig`
 
 ## Source Verification
+
+Verified 2026-10-23 against source. Corrected:
+
+- The deferred-tools section claimed `expose_in_definitions = false` and
+  "not sent to the model in tool definitions". Both are wrong: the 5
+  deferred wrappers are constructed with `defer_loading = true` **and**
+  `expose_in_definitions = true` (`src/tool/deterministic.rs:222-286`),
+  so they do appear in `ToolRegistry::definitions()`
+  (`src/tool/mod.rs:1484-1493`); `defer_loading` is a provider-level
+  extension flag on the emitted definition
+  (`crates/codegg-providers/src/provider_core.rs:439-465`), not a
+  removal from the list.
+- `expose_expert_tools` was documented as "expose deferred tools to
+  model". It is **inert**: it is resolved into
+  `DeterministicToolsRuntimeConfig`
+  (`src/tool/integrated_config.rs:204`) and printed by the status command
+  (`src/main.rs:3300`), but no registration or disclosure path reads it.
+- The config file name was `opencode.json`; the accepted user filenames
+  are `codegg.jsonc` / `codegg.json` / `config.json`
+  (`crates/codegg-config/src/paths.rs:63-72`).
+- The Registration Flow diagram implied deferred wrappers land only in the
+  `ToolCatalog`; they are registered in the `ToolRegistry` as well
+  (`src/tool/mod.rs:1277-1279`).
+
+Added: a note on `EggsactTool::name()` resolving at runtime
+(`self.codegg_name`), which is why a literal-name scan cannot see the 13
+deterministic tool names and why the production tool-name count needs a
+second source — their `EggsactTool::new()` call sites in
+`src/tool/deterministic.rs`.
+
+Corrected 2026-10-23: the note above said the 13 names "do not appear in the
+62 distinct production tool names catalogued in `architecture/tool.md`". The
+count was wrong twice over — it is 75, not 62 (the 13 are now counted at
+their constructor call sites), and the names *do* appear in the catalogued set.
+The mechanism the note was explaining is unchanged and still correct: one
+`impl Tool for EggsactTool` block resolves all 13 names at runtime.
+
+Verified accurate: `EggsactRuntime` struct `adapter.rs:88-91` + impl
+`:93-150`; `EggsactConfig` `:68-75` + `Default` `:77`; `EggsactCallResult`
+`:153-169` (10 fields); `EggsactTool` `deterministic.rs:17-26` + impl
+`:28`; `build_eggsact_tools` `:106-289` and its 8 always-visible / 5
+deferred split (names and order); all 13 tools `ToolCategory::ReadOnly`;
+`truncate_utf8_safe` `adapter.rs:18-57`; `format_response` `:185`;
+`to_structured_result` `:172` and its `LocalTrusted` provenance;
+`eggsact = "1.2.5"` (`Cargo.toml:274`);
+`eggsact::mcp::registry::available_profiles()` used at `adapter.rs:97`;
+`DeterministicToolsConfig::validate()` in
+`crates/codegg-config/src/schema.rs:3982-4008`; the four validation
+rules; the four named profiles; harness `max_output_chars: 8_000` vs
+model `12_000`; and the registration gate
+`det_cfg.enabled && det_cfg.backend != "disabled"`
+(`src/tool/mod.rs:1263`).
 
 Verified 2026-10-06 against source. Corrected: `EggsactRuntime`
 `adapter.rs:88-145` → struct `:88-91` + impl `:93-150`;

@@ -1,3 +1,5 @@
+use crate::consistency::GitReadFact;
+use crate::process::GitCommandOutput;
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -33,7 +35,7 @@ pub struct BlameResult {
 async fn run_git_blame(
     root: std::path::PathBuf,
     args: Vec<String>,
-) -> Result<std::process::Output, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     crate::process::run(&args, &root).await
 }
 
@@ -96,7 +98,14 @@ fn parse_porcelain(stdout: &str) -> Vec<BlameEntry> {
 }
 
 /// Get blame information for a file.
-pub async fn blame_file(root: &Path, path: &str) -> Result<BlameResult, crate::EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn: a blame consults the object store, so the class is
+/// generation-consistent.
+pub async fn blame_file(
+    root: &Path,
+    path: &str,
+) -> Result<GitReadFact<BlameResult>, crate::EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
@@ -113,17 +122,22 @@ pub async fn blame_file(root: &Path, path: &str) -> Result<BlameResult, crate::E
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let consistency = output.consistency;
     let entries = parse_porcelain(&stdout);
 
-    Ok(BlameResult {
-        path: path.to_string(),
-        entries,
-    })
+    Ok(GitReadFact::new(
+        BlameResult {
+            path: path.to_string(),
+            entries,
+        },
+        consistency,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consistency::GitReadConsistency;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -165,7 +179,7 @@ mod tests {
         init_repo(dir.path());
         commit(dir.path(), "initial", "a.txt", "line1\nline2\nline3\n");
 
-        let result = blame_file(dir.path(), "a.txt").await.unwrap();
+        let result = blame_file(dir.path(), "a.txt").await.unwrap().into_value();
         assert_eq!(result.path, "a.txt");
         assert_eq!(result.entries.len(), 3);
         assert_eq!(result.entries[0].content, "line1");
@@ -179,7 +193,7 @@ mod tests {
         init_repo(dir.path());
         commit(dir.path(), "initial", "a.txt", "hello\n");
 
-        let result = blame_file(dir.path(), "a.txt").await.unwrap();
+        let result = blame_file(dir.path(), "a.txt").await.unwrap().into_value();
         assert_eq!(result.entries.len(), 1);
         let e = &result.entries[0];
         assert_eq!(e.commit.len(), 40);
@@ -196,7 +210,7 @@ mod tests {
         commit(dir.path(), "first", "a.txt", "old1\nold2\n");
         commit(dir.path(), "second", "a.txt", "new1\nold2\n");
 
-        let result = blame_file(dir.path(), "a.txt").await.unwrap();
+        let result = blame_file(dir.path(), "a.txt").await.unwrap().into_value();
         assert_eq!(result.entries.len(), 2);
         // Line 1 was changed in the second commit
         assert_eq!(result.entries[0].content, "new1");
@@ -223,6 +237,27 @@ mod tests {
         assert!(r.is_err());
     }
 
+    /// A blame consults the object store, so its read observed an object
+    /// generation and the carried class says so.
+    #[tokio::test(flavor = "current_thread")]
+    async fn blame_carries_a_generation_consistent_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit(dir.path(), "initial", "a.txt", "hello\n");
+
+        let result = blame_file(dir.path(), "a.txt").await.unwrap();
+        assert_ne!(
+            result.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "a blame consults the object store"
+        );
+        assert!(
+            result.class().is_generation_consistent(),
+            "a blame read must report a generation-consistent class, got {}",
+            result.class()
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn blame_multiline_file() {
         let dir = TempDir::new().unwrap();
@@ -230,7 +265,7 @@ mod tests {
         let content = "first\nsecond\nthird\nfourth\nfifth\n";
         commit(dir.path(), "initial", "a.txt", content);
 
-        let result = blame_file(dir.path(), "a.txt").await.unwrap();
+        let result = blame_file(dir.path(), "a.txt").await.unwrap().into_value();
         assert_eq!(result.entries.len(), 5);
         for (i, e) in result.entries.iter().enumerate() {
             assert_eq!(

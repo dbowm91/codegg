@@ -1,6 +1,6 @@
 # TUI Subagent and Job Visibility — Convergence Corrective Addendum
 
-Status: active
+Status: closed (C001–C007 closed)
 
 Source roadmap: `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md`
 Long-term references:
@@ -668,3 +668,11 @@ Interaction with a subagent (C007) is **not** part of this definition.
 | C005 agent descriptors | closed | `plans/implementation/tui-subagent-and-job-visibility-convergence/003-agent-descriptors.md` | `plans/closure/tui-subagent-and-job-visibility-convergence/003-status.md` | C004 (closed) — conditional re-review discharged: closure found no defect in the additive-field chain |
 | C006 node lifetime | closed (answered + escalated) | — (none; see §7 — D-8 governance gap) | `plans/closure/tui-subagent-and-job-visibility-convergence/007-status.md` | C002 (closed), C004 (closed). **Residual unresolved:** a subagent *can* start with no active parent turn, and the reducer's drop is therefore a real defect. Retaining the node needs a projection home outside `active_turn.agent_tree` — the stop condition, escalated to parent **D5** / an ADR |
 | C007 send-to-subagent | closed | `plans/implementation/tui-subagent-and-job-visibility-convergence/005-send-to-subagent.md` | `plans/closure/tui-subagent-and-job-visibility-convergence/005-status.md` | none — ADR-0041 accepted 2026-10-18 (Option A), C005 closed |
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- Closure records `plans/closure/tui-subagent-and-job-visibility-convergence/001-status.md` through `007-status.md` each carry a closed status.
+- C007 is closed *as an answered and escalated milestone*, not as a fixed defect — its own closure record says so, and that wording is preserved here.
+- `plans/registry.md` now reads *closed (C001–C007 all closed)*.

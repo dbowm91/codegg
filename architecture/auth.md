@@ -29,13 +29,14 @@ retains a decrypt-only reader for historical `CODEGG_ENC_v1` files.
 | Core auth types (`AuthConfig`, `Credential`, `CredentialKind`, `CredentialStore`, `AuthResolver`, `AuthError`) | `crates/codegg-providers/src/auth_types.rs` |
 | Re-export for backward compat | `src/auth/mod.rs` |
 | CLI (`AuthCli`, `read_key_from_stdin`) | `src/auth/cli.rs` |
-| `ExternalCommandProvider`, `ExternalCredential` | `crates/codegg-providers/src/auth_types.rs` |
+| `ExternalCommandProvider`, `ExternalCredential` | `crates/codegg-providers/src/auth_types.rs` (live) and `src/auth/external.rs` (root-crate copy) |
 | OAuth scaffolding (disabled) | `src/auth/oauth.rs` |
 | Test support (`env_lock`, `lock_env`) | `src/auth/mod.rs` (test_support) and `crates/codegg-providers/src/auth_types.rs` (test_support) |
 | Crypto primitives | `crates/codegg-providers/src/crypto.rs` |
 | Master key retrieval | `codegg_config::encryption::get_master_key()` (read-only) |
 | First-run key bootstrap | `codegg_config::encryption::get_or_create_master_key*` (writes only) |
 | Resolver-bypass guard | `scripts/check_master_key_resolver.py` |
+| Capability matrix (single source of truth) | `crates/codegg-providers/src/setup_catalog.rs` (`provider_setup_catalog()`) |
 
 > **Note:** Core auth types now live in `codegg-providers`. Root
 > `src/auth/mod.rs` re-exports them from
@@ -55,11 +56,9 @@ resolver tries each step and returns the first hit:
 3. `AuthConfig::ApiKey.value` (inline, non-empty) → `InlineValue`
 4. `AuthConfig::ApiKey.encrypted_value`, decrypted with master key
    → `EncryptedConfig` (returns `MasterKeyMissing` if no key)
-5. User-level `CredentialStore` lookup (provider id + optional account
-   id), filtered by `ctx.capability` → `UserStore`
-6. Legacy `ProviderConfig::api_key` (post-decryption) → `LegacyApiKey`
-7. Legacy `ProviderConfig::encrypted_api_key` already decrypted
-   → `LegacyDecrypted`
+
+When none of the four hits, the resolver falls through to the **shared
+no-auth tail** below — which is where the legacy and store sources live.
 
 For **no auth** (no `AuthConfig` or `AuthConfig::None`):
 1. `ctx.env_override` → `EnvExplicit`
@@ -74,12 +73,24 @@ the centralized `resolve_provider_credential` path. Env/config/legacy
 steps always produce `CredentialKind::ApiKey`; only the store steps can
 yield `BearerToken`, and only when the target capability accepts it.
 
-`AuthConfig::Stored { account_id }` skips straight to `UserStore`.
+`AuthConfig::Stored { account_id }` skips straight to `UserStore`: it
+requires a store (no store → `NotFound`), uses `account_id` or falls
+back to `ctx.account_id`, and returns `NotFound` when the record or its
+decryption is unavailable.
 
 `AuthConfig::ExternalCommand` → `AuthError::Unsupported`
 `AuthConfig::OAuthDevice` → `AuthError::Unsupported`
 `AuthConfig::None` → `Ok(None)`
 
+> **The connection binding outranks everything.** Above the resolver
+> itself, `resolve_provider_credential`
+> (`crates/codegg-providers/src/provider_core.rs`) checks the turn's
+> `TurnCredentialPin` **first** and returns
+> `ResolvedAuthSource::ConnectionBinding`. Rotation exists precisely so
+> a connection's key changes while the rest of the machine (config, env,
+> other stored records) still holds the old one — any later source could
+> silently undo the rotation the user just performed.
+>
 > **Stored bearer tokens are capability-scoped.** Both the
 > `AuthConfig::Stored` arm and the no-auth fallback's store lookup
 > select records according to the target provider's
@@ -91,6 +102,14 @@ yield `BearerToken`, and only when the target capability accepts it.
 > records of either kind fail with `AuthError::Expired` before network
 > access. The store enforces one record per `(provider_id, account_id)`
 > binding, so selection is deterministic.
+>
+> **Ambiguity is refused, not guessed.** `AuthError::AmbiguousCredential`
+> exists because the store keeps every record a rotation or `/connect`
+> ever wrote: a provider can hold an orphaned key beside the live one.
+> Picking the first record would inherit on-disk insertion order and
+> silently authenticate with a key the user replaced. The refusal names
+> every candidate account id (never a secret) and tells the operator to
+> bind one with `/connect` or remove the unused accounts.
 
 ### Provider Registration
 
@@ -124,6 +143,13 @@ registration. The executable matrix lives in
 `capability_matrix_covers_every_registration_branch` test fails if a new
 branch lands without a classification.
 
+`credential_capability_for` reads the **setup catalog**
+(`crates/codegg-providers/src/setup_catalog.rs`), which is the single
+source of truth for every built-in's capability; an unknown provider id
+falls back to the conservative `ApiKeyOnly`. The catalog also covers
+non-registered ids (`eggpool`, `custom-compatible`, `azure`) that have
+their own capabilities but are not part of `builtin_registration_order()`.
+
 | Provider | Helper | Capability |
 |---|---|---|
 | anthropic, openai, google, openrouter | `register_config_provider` | `ApiKeyOnly` |
@@ -131,14 +157,27 @@ branch lands without a classification.
 | mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, opencode_go, generalcompute | `register_credential_provider` | `ApiKeyOrBearer` |
 
 `register_builtin` (env-var-only, no config) wraps each key in
-`Credential::api_key(...)`. Used as last-resort fallback when
-config-aware path registers zero providers.
+`Credential::api_key(...)`. It is **not** the normal path: the
+config-aware path above registers every built-in unconditionally, and
+`register_builtin` only runs as the last-resort fallback when the
+config-aware pass registered zero providers
+(`crates/codegg-providers/src/provider_core.rs:1317-1319`).
+
+> **Defining a provider in config does NOT disable env-var
+> auto-registration for the others.** The config-first path
+> (`register_builtins_with_store`) explicitly registers all 17 built-ins,
+> and each one resolves **its own** config and then **its own** conventional
+> env var. So `[provider.openai]` in config affects only `openai`; the
+> other 16 still auto-register from their env vars. The
+> `if registry.list().is_empty() { register_builtin(registry) }` fallback
+> is a redundant safety net that only fires when config-based registration
+> produced zero results.
 
 ### Security Rules
 
 - **Never log secret prefix/suffix.** `mask_secret()` returns a fixed
-  16-bullet mask (`••••••••••••••••`) regardless of input length.
-  Empty secrets return empty string.
+  16-bullet mask (`••••••••••••••••`) for any non-empty secret; an
+  empty secret returns an empty string. The length never leaks.
 - **Master key required to store.** `CredentialStore::put` uses the
   canonical create-on-write resolver: an explicit environment key wins,
   an existing managed key (`<config_dir>/codegg/master.key`, `0o600` on
@@ -160,7 +199,9 @@ config-aware path registers zero providers.
   label like `"env(explicit)"`, `"config(inline)"`) and never the
   secret.
 - **On-disk file permissions** are `0o600` on Unix. Atomic
-  write-then-rename via `.tmp-{uuid}` intermediate file.
+  write-then-rename via a `.{filename}.tmp-{uuid}` intermediate file
+  (opened `create_new`, `fsync`ed, then `rename`d; the parent directory
+  is `fsync`ed too on Unix).
 - **External command** is disabled. Both `AuthResolver::resolve` and
   `ExternalCommandProvider::fetch` return `AuthError::Unsupported` for
   any non-empty command. No synchronous shell-out path is reachable.
@@ -170,7 +211,7 @@ config-aware path registers zero providers.
 
 ## Key Types & APIs
 
-### AuthConfig (`auth_types.rs:190`)
+### AuthConfig (`auth_types.rs:243`)
 
 ```rust
 pub enum AuthConfig {
@@ -182,7 +223,11 @@ pub enum AuthConfig {
 }
 ```
 
-### Credential (`auth_types.rs:131`)
+`Default` is `ApiKey { env: None, value: None, encrypted_value: None }`.
+`is_api_key()` and `is_supported()` are the two predicates;
+`is_supported()` is true for `ApiKey` and `Stored` only.
+
+### Credential (`auth_types.rs:149`)
 
 ```rust
 pub struct Credential {
@@ -195,18 +240,19 @@ pub struct Credential {
 `Debug` impl masks the secret via `mask_secret()`.
 `authorization_header_value()` returns `Bearer {secret}` for both kinds.
 
-### CredentialKind (`auth_types.rs:70`)
+### CredentialKind (`auth_types.rs:88`)
 
 ```rust
 pub enum CredentialKind { ApiKey, BearerToken }
 ```
 
-### AuthError (`auth_types.rs:15`)
+### AuthError (`auth_types.rs:15`) — 10 variants
 
 ```rust
 pub enum AuthError {
     NotFound(String),
     Expired(String),
+    AmbiguousCredential { provider_id: String, candidates: String },
     MasterKeyMissing,
     Crypto(String),
     Io(std::io::Error),
@@ -217,7 +263,11 @@ pub enum AuthError {
 }
 ```
 
-### AuthResolver (`auth_types.rs:314`)
+`AmbiguousCredential` names the candidate **account ids** (comma-separated,
+or the literal `no-account` for a legacy account-less record) — never a
+secret.
+
+### AuthResolver (`auth_types.rs:371`)
 
 ```rust
 pub struct AuthResolver { external: ExternalCommandProvider }
@@ -231,7 +281,7 @@ impl AuthResolver {
 }
 ```
 
-### ResolverContext (`auth_types.rs:265`)
+### ResolverContext (`auth_types.rs:318`)
 
 ```rust
 pub struct ResolverContext {
@@ -249,7 +299,7 @@ pub struct ResolverContext {
 sets it from `credential_capability_for`; direct resolver callers must
 set it explicitly when they intend bearer support.
 
-### ResolvedAuth (`auth_types.rs:281`)
+### ResolvedAuth (`auth_types.rs:334`)
 
 ```rust
 pub struct ResolvedAuth {
@@ -258,7 +308,7 @@ pub struct ResolvedAuth {
 }
 ```
 
-### ResolvedAuthSource (`auth_types.rs:287`)
+### ResolvedAuthSource (`auth_types.rs:340`) — 9 variants
 
 ```rust
 pub enum ResolvedAuthSource {
@@ -267,13 +317,17 @@ pub enum ResolvedAuthSource {
     InlineValue,      // "config(inline)"
     EncryptedConfig,  // "config(encrypted)"
     UserStore,        // "user_store"
+    ConnectionBinding,// "connection_binding"
     LegacyApiKey,     // "legacy(api_key)"
     LegacyDecrypted,  // "legacy(decrypted)"
     ExternalCommand,  // "external_command"
 }
 ```
 
-### CredentialCapability (`auth_types.rs`)
+`ConnectionBinding` is the turn's connection-bound credential; it
+outranks every other source (see *Resolution Priority Order*).
+
+### CredentialCapability (`auth_types.rs:102`)
 
 ```rust
 pub enum CredentialCapability { ApiKeyOnly, ApiKeyOrBearer }
@@ -283,7 +337,7 @@ pub enum CredentialCapability { ApiKeyOnly, ApiKeyOrBearer }
 `incompatible_credential_message()` builds the typed
 `Unsupported` diagnostic without secret material.
 
-### CredentialStore (`auth_types.rs:553`)
+### CredentialStore (`auth_types.rs:610`)
 
 ```rust
 pub struct CredentialStore {
@@ -293,7 +347,13 @@ pub struct CredentialStore {
 ```
 
 Key methods:
-- `at_default_location()` — opens `~/.config/codegg/credentials.json`
+- `at_default_location()` — opens `<config_dir>/codegg/credentials.json`
+  (`~/.config/codegg/credentials.json` on Linux,
+  `~/Library/Application Support/codegg/credentials.json` on macOS,
+  `%APPDATA%\codegg\credentials.json` on Windows)
+- `at_path(path)` — opens an explicit store path (used by the CLI's
+  `with_store_path` and by tests)
+- `path()` — the store's on-disk path
 - `put(provider_id, account_id, kind, secret, expires_at, scopes)` —
   encrypts through the canonical master-key resolver: an explicit
   environment key wins, an existing managed key is reused, and a genuinely
@@ -308,10 +368,12 @@ Key methods:
   resolvable master key is available
 - `find_record(provider_id, account_id)` — exact-match metadata lookup
   used for expiry/capability checks before decryption
+- `records_for_provider(provider_id)` — every record for one provider, in
+  on-disk order; the caller's tool for proving a choice is unambiguous
 - `remove(provider_id, account_id)` — `Some("*")` removes all accounts
-- `list()` — returns all records (metadata only)
+- `list()` — returns all records (metadata only, deliberately unsorted)
 
-### StoredCredentialRecord (`auth_types.rs:533`)
+### StoredCredentialRecord (`auth_types.rs:590`)
 
 ```rust
 pub struct StoredCredentialRecord {
@@ -326,7 +388,7 @@ pub struct StoredCredentialRecord {
 }
 ```
 
-### ExternalCommandProvider (`auth_types.rs:245`)
+### ExternalCommandProvider (`auth_types.rs:298`)
 
 ```rust
 pub struct ExternalCommandProvider;
@@ -337,6 +399,11 @@ impl ExternalCommandProvider {
     }
 }
 ```
+
+`ExternalCredential` is at `auth_types.rs:291`. A **second**, root-crate
+copy of both types lives in `src/auth/external.rs`; `src/auth/mod.rs`
+re-exports the providers-crate versions, so the root `crate::auth::external`
+module is the legacy home and the re-exported ones are the live types.
 
 ### Test Support
 
@@ -426,13 +493,19 @@ base_url = "https://api.openai.com/v1"
 # auth resolved via OpenAI auth config or env var
 ```
 
-Adding ANY provider via config disables all env-var auto-registration.
-Env vars are: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
+Adding a provider via config does **not** disable env-var
+auto-registration for the other providers — the config-first path
+registers all 17 built-ins explicitly, each resolving its own config and
+then its own conventional env var. The env vars are:
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
 `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `GROQ_API_KEY`,
 `DEEPINFRA_API_KEY`, `CEREBRAS_API_KEY`, `COHERE_API_KEY`,
 `TOGETHERAI_API_KEY`, `PERPLEXITY_API_KEY`, `XAI_API_KEY`,
 `VENICE_API_KEY`, `MINIMAX_API_KEY`, `OPENCODE_GO_API_KEY`,
 `GENERALCOMPUTE_API_KEY`, `OPENCODE_ZEN_API_KEY`.
+
+To *disable* a provider, use the config's `disabled_providers` list — not
+the presence of another provider's config entry.
 
 ## Invariants & Gotchas
 
@@ -449,15 +522,26 @@ Env vars are: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
 4. **Master key required to store.** Reading plaintext without a master
    key returns `Ok(None)` (no decryption), so env/config paths still
    work.
-5. **Provider registration via config disables env-var auto-registration.**
-   This is an all-or-nothing toggle.
+5. **Config does not disable env-var auto-registration.** Defining one
+   provider in config leaves the other 16 built-ins free to auto-register
+   from their env vars. The `registry.list().is_empty()` fallback to
+   `register_builtin` is a redundant safety net, not the mechanism.
+   `disabled_providers` is the opt-out.
 6. **Conventional env var** is `{PROVIDER_UPPER}_API_KEY` with `-`
    replaced by `_`. E.g., `opencode_go` → `OPENCODE_GO_API_KEY`.
 7. **`codegg auth` CLI** validates ids up-front to prevent log injection
    and store corruption. Empty ids, whitespace, punctuation, and
    non-ASCII are rejected.
-8. **On-disk atomicity.** Write to `.tmp-{uuid}`, `fsync`, then
-   `rename`. On Unix, parent directory is also synced. Mode `0o600`.
+8. **On-disk atomicity.** Write to `.{filename}.tmp-{uuid}`, `fsync`,
+   then `rename`. On Unix, parent directory is also synced. Mode `0o600`.
+9. **A rotation leaves an orphan beside the live key.** The store keeps
+   every record a rotation or `/connect` ever wrote, so "first match"
+   would be on-disk insertion order — a coin flip that can authenticate
+   with a superseded key. Selection therefore refuses with
+   `AuthError::AmbiguousCredential` and names the candidate accounts.
+   `CredentialStore::list()` is deliberately unsorted; use
+   `records_for_provider()` when a caller must reason about one
+   provider's records.
 
 ## Durable Connection Secret References
 
@@ -522,9 +606,12 @@ cargo test -p codegg --lib auth
 
 Key test patterns:
 - `credential_debug_masks_secret` — Debug never leaks plaintext
-- `set_key_without_master_key_returns_error` — MasterKeyMissing enforced
+- `set_key_without_master_key_bootstraps_fresh_store` — a fresh store
+  self-initializes its managed key
+- `set_key_with_orphaned_material_refuses_new_key` — existing ciphertext
+  is never orphaned by a replacement key
 - `set_key_rejects_invalid_provider_id` — id validation
-- `logout_wildcard` — `*` removes all accounts
+- `logout_wildcard_is_accepted` — `*` removes all accounts
 - Resolution priority ordering tests
 
 ## Related Docs
@@ -532,24 +619,99 @@ Key test patterns:
 - [crypto.md](crypto.md) — Encryption primitives
 - [provider.md](provider.md) — Provider registration
 - [config.md](config.md) — Configuration schema
+- [connection.md](../crates/codegg-providers/src/connection.rs) — durable
+  connection secret references and rotation guards
 
 ## Source Verification
 
-Verified 2026-10-06 against `crates/codegg-providers/src/auth_types.rs`,
-`src/auth/mod.rs`, and `crates/codegg-providers/src/crypto.rs`.
-- Corrected 10 stale `auth_types.rs:line` refs: `AuthConfig` `174`→`190`,
-  `Credential` `115`→`131`, `CredentialKind` `54`→`70`,
-  `AuthResolver` `298`→`314`, `ResolverContext` `249`→`265`,
-  `ResolvedAuth` `265`→`281`, `ResolvedAuthSource` `271`→`287`,
-  `CredentialStore` `537`→`553`, `StoredCredentialRecord` `517`→`533`,
-  `ExternalCommandProvider` `229`→`245`.
-- Confirmed correct as written: `AuthError` at `auth_types.rs:15` with
-  exactly the 9 documented variants, and `CredentialKind` at `:70` with
-  exactly `ApiKey, BearerToken`.
-- Confirmed the module boundary: `src/auth/mod.rs` re-exports
-  `codegg_providers::auth_types::{…}` and declares only `cli`, `external`,
-  and `oauth` submodules. It does **not** re-export crypto — the crypto
-  surface lives at `codegg_providers::crypto`
-  (`crates/codegg-providers/src/crypto.rs`, `pub mod crypto` at
-  `crates/codegg-providers/src/lib.rs:18`). See
-  [crypto.md](crypto.md).
+Verified 2026-10-23 against `crates/codegg-providers/src/auth_types.rs`,
+`crates/codegg-providers/src/provider_core.rs`,
+`crates/codegg-providers/src/setup_catalog.rs`,
+`crates/codegg-providers/src/connection.rs`,
+`src/auth/{mod,cli,external,oauth}.rs`, and
+`scripts/check_master_key_resolver.py`.
+
+Corrections made in this pass:
+- **Corrected a false claim that contradicted the code and AGENTS.md.**
+  The doc stated "Adding ANY provider via config disables all env-var
+  auto-registration. This is an all-or-nothing toggle." and repeated it
+  as invariant #5. The config-first path
+  (`register_builtins_with_store`,
+  `crates/codegg-providers/src/provider_core.rs:1109`) explicitly
+  registers **all 17** built-ins, each resolving its own config and then
+  its own conventional env var — so defining one provider in config
+  affects only that provider. The `registry.list().is_empty()` fallback
+  to `register_builtin` (`provider_core.rs:1317-1319`) is a redundant
+  safety net that fires only when config-based registration produced
+  zero results. The doc now states the correct behaviour in both places
+  and names `disabled_providers` as the actual opt-out.
+- **Corrected nine stale `auth_types.rs:line` refs**, all of which had
+  drifted further since 2026-10-06: `AuthConfig` `190`→`243`,
+  `Credential` `131`→`149`, `CredentialKind` `70`→`88`,
+  `AuthResolver` `314`→`371`, `ResolverContext` `265`→`318`,
+  `ResolvedAuth` `281`→`334`, `ResolvedAuthSource` `287`→`340`,
+  `CredentialStore` `553`→`610`, `StoredCredentialRecord` `533`→`590`,
+  `ExternalCommandProvider` `245`→`298`. Added
+  `CredentialCapability` `102` and `ExternalCredential` `291`.
+- **Corrected `AuthError`'s variant count** (9 → **10**). The
+  `AmbiguousCredential { provider_id, candidates }` variant was missing
+  entirely. It is load-bearing: the store keeps every record a rotation
+  or `/connect` ever wrote, so "first match" would be on-disk insertion
+  order and could authenticate with a superseded key.
+- **Corrected `ResolvedAuthSource`'s variant count** (8 → **9**).
+  `ConnectionBinding` was missing — it is the source the turn's
+  connection-bound credential resolves under, and it outranks every other
+  source in `resolve_provider_credential`.
+- **Corrected the `AuthConfig` resolution order.** The doc listed seven
+  steps for the `ApiKey` arm, but the `ApiKey` arm only tries four
+  (env override → conventional env → inline value → encrypted value);
+  the store and legacy sources are reached by **falling through** to the
+  shared no-auth tail. The doc now shows the four steps and then the
+  tail explicitly, so the priority order is not read as if the store
+  preceded the legacy fields.
+- **Added the connection-binding precedence** to the resolution section
+  — it was only mentioned in passing under *Provider Registration*.
+- **Documented the `AuthConfig::Stored` arm's failure modes** (no store →
+  `NotFound`; missing record → `NotFound`; undecryptable → `NotFound`),
+  which the doc summarised as "skips straight to `UserStore`".
+- **Added `CredentialStore::at_path`, `path()`, and
+  `records_for_provider()`** to the store's method list, and the note
+  that `list()` is deliberately unsorted.
+- **Corrected the credential store's default path.** The doc gave only
+  the Linux form; the store resolves
+  `codegg_config::paths::global_config_path()`'s parent and falls back to
+  `dirs::config_dir()/codegg`, so the macOS and Windows forms differ.
+- **Corrected the on-disk temp-file name** to
+  `.{filename}.tmp-{uuid}` (the doc wrote `.tmp-{uuid}`).
+- **Corrected `mask_secret()`'s description** to "16-bullet mask for any
+  non-empty secret; empty secret returns an empty string" (the old
+  "regardless of input length" contradicted the very next sentence).
+- **Added the setup catalog** as the single source of truth for the
+  capability matrix, and the note that it also covers `eggpool`,
+  `custom-compatible`, and `azure` — ids that are *not* in
+  `builtin_registration_order()`.
+- **Corrected the test-name list.** `set_key_without_master_key_returns_error`
+  does not exist; the real test is
+  `set_key_without_master_key_bootstraps_fresh_store`, and
+  `logout_wildcard` is `logout_wildcard_is_accepted`. Added
+  `set_key_with_orphaned_material_refuses_new_key`.
+- **Added the `ExternalCommandProvider` duplication note**: the types
+  exist in both `crates/codegg-providers/src/auth_types.rs` (live) and
+  `src/auth/external.rs` (root copy), and `src/auth/mod.rs` re-exports
+  the providers-crate ones.
+
+Confirmed correct as written: `AuthError` at `auth_types.rs:15`;
+`CredentialKind`'s exactly `ApiKey, BearerToken`; the module boundary
+(`src/auth/mod.rs` re-exports `codegg_providers::auth_types::{…}` and
+declares only `cli`, `external`, and `oauth` submodules, and does **not**
+re-export crypto — the crypto surface lives at `codegg_providers::crypto`
+(`crates/codegg-providers/src/crypto.rs`, `pub mod crypto` at
+`crates/codegg-providers/src/lib.rs:18`)); the three registration helpers
+and their provider lists; the 17-provider capability matrix (verified
+against `setup_catalog.rs`); `builtin_registration_order()`'s 17 ids;
+`conventional_env_for`'s `{PROVIDER_UPPER}_API_KEY` rule; the
+`ExternalCommand` / `OAuthDevice` disablement; the MCP token-store key
+lifecycle; the master-key precedence chain and
+`CODEGG_MASTER_KEY_FILE` override; the CLI's `[A-Za-z0-9_-]` id
+validation with `*` allowed only for `logout`; and
+`capability_for_provider_kind()` / `validate_rotation_kind()`.

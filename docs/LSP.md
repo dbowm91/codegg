@@ -228,3 +228,25 @@ words `Enter` uses.
 - Invalid file paths return `LspError::LaunchFailed`
 - Request timeouts send a best-effort `$/cancelRequest`; if that cancel write fails, the transport is marked failed and later calls fail fast with `LspError::WriterClosed`
 - Immediate request/notification I/O failures surface as `LspError::RequestFailed`; once the transport is failed, later calls fail fast with `LspError::WriterClosed`
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- The authoritative implementation is `crates/egglsp/`; `src/lsp/` is a
+  re-export shim: `src/lsp/`, `crates/egglsp/src/lib.rs`.
+- Crate layout: `crates/egglsp/src/server.rs`, `service.rs`, `client.rs`,
+  `diagnostics.rs`, and `operations/` containing `code_actions.rs`,
+  `completion.rs`, `formatting.rs`, `navigation.rs`, `overlay_ops.rs`,
+  `rename.rs`, `semantic_tokens.rs`, `signature.rs`.
+- **39** server definitions and the `server_definitions()` ids
+  (`rust-analyzer`, `gopls`, `pyright`, `typescript-language-server`,
+  `jdtls`, `clangd`, …): `crates/egglsp/src/server.rs`. `rust-analyzer` is the
+  only definition carrying a `download:` spec.
+- The `egglsp::test_support` feature gate: `crates/egglsp/Cargo.toml`
+  (`lsp-test-support`).
+- `LspError` variants (`LaunchFailed`, `RequestFailed`, `WriterClosed`):
+  `crates/codegg-core/src/error.rs`.
+- `experimental.lsp_tool` gate: `crates/codegg-config/src/schema.rs`.
+- Diagnostics are reported by workspace-relative path:
+  `crates/codegg-protocol/src/`.

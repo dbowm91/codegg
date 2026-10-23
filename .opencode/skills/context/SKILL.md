@@ -145,7 +145,7 @@ unless `enabled` is `true`.
 }
 ```
 
-`stable_prefix` is declared in `ContextPackerConfig` (`schema.rs:645`) but is
+`stable_prefix` is declared in `ContextPackerConfig` (`schema.rs:991`) but is
 **not read anywhere** — the stable prefix is always computed from block cache
 class, not gated on this flag.
 
@@ -170,9 +170,19 @@ Reductions are always derived from `base_request_tools` (the full profile-filter
 
 ```bash
 cargo test -p codegg context::                     # src/context/ unit tests
-cargo test -p codegg --test context_continuity_m004
-cargo test -p codegg --test context_projection_adversarial
+cargo test -p codegg --test agent_loop -- context_continuity_m004
+cargo test -p codegg --test command_git -- context_projection_adversarial
 ```
+
+## See Also
+
+- `architecture/cache-aware-context.md` — the cache-aware packer contract
+- `architecture/compaction.md` — the compaction pipeline this layer feeds
+- `architecture/context-compaction-ownership.md` — who owns compaction
+- `architecture/context-ledger.md` — the durable context ledger
+- `architecture/agent.md` — the turn loop this context layer serves
+- `.opencode/skills/agent/SKILL.md` — turn phases, `AgentLoop` lifetime
+- `.opencode/skills/core/SKILL.md` — the transport that carries tool output
 
 ## Source verification
 
@@ -195,21 +205,62 @@ Second pass (2026-10-06) against all 20 `src/context/*.rs` files,
   machine-generated control instructions are eligible when
   `compact_tool_results_only=false` (`volatile_tail.rs:165-176`).
 - "Cache stats are session-local" was wrong: `ContextCacheStats` is owned by
-  `AgentLoopServices` (`coordinator.rs:77`) and `AgentLoop` is built per turn
-  (`turn_runtime.rs:725`), so observations never span turns.
+  `AgentLoopServices` (`coordinator.rs:89`) and `AgentLoop` is built per turn
+  (`turn_runtime.rs:953`), so observations never span turns.
 - "OpenAI and Anthropic do" report cached tokens was unsourced; replaced with
   the verifiable `Option` + clamp contract (`usage_normalize.rs:26-42`).
 - "Observation mode only" was ambiguous next to the tool-palette mutation
   path; scoped it to `observe_context_pack`.
 - Added the `context_packer.stable_prefix` dead-flag fact: declared at
-  `schema.rs:645`, zero readers repo-wide.
+  `schema.rs:991`, zero readers repo-wide.
 - Verified accurate: all 20 module paths, the `ContextHandle` builder set,
   `build_tool`/`build_evidence` signatures, all 8 `[context_policy]`
   tool-palette defaults and all 7 volatile-tail defaults
-  (`schema.rs:715-768`), `always_include_tools` default
+  (`schema.rs:1025-1080`), `always_include_tools` default
   (`[context_read, tool_search, todowrite]`), the 5 `ContextPackObservationPhase`
-  variants, all 8 `project_tool_output` call sites (`loop.rs:1819`,
-  `follow_up.rs:341`), `read_tool` defaults (`offset` 0, `max_bytes` 20000,
+  variants, both production `project_tool_output` call sites (`loop.rs:1989`,
+  `follow_up.rs:737`), `read_tool` defaults (`offset` 0, `max_bytes` 20000,
   `read_tool.rs:45-75`), the `bounded_artifact_handles` 32 cap
   (`context_frame.rs:7`), and the diagnostic log field names at
   `context_runtime.rs:162`.
+
+Verified 2026-10-23 against the 20 `src/context/*.rs` modules,
+`src/agent/context_runtime.rs`, `src/agent/context_frame.rs`,
+`src/agent/coordinator.rs`, `src/agent/turn_runtime.rs`,
+`src/agent/agent_loop_factory.rs`, `src/agent/loop.rs`,
+`src/agent/follow_up.rs`, `src/context/read_tool.rs`,
+`src/context/volatile_tail.rs`, `src/context/usage_normalize.rs`,
+`crates/codegg-config/src/schema.rs`, and the `agent_loop` / `command_git`
+test families.
+
+Confirmed unchanged: 20 modules under `src/context/`; the packer defaults'
+`unwrap_or` fallbacks (`src/agent/context_runtime.rs:64-113`); the
+`stable_prefix` dead-flag fact (declared in `ContextPackerConfig`, no reader
+repo-wide); the `has_recovery_handle` `ctx://` gate
+(`src/context/volatile_tail.rs:72-78`); the machine-generated control
+instruction eligibility under `compact_tool_results_only=false`
+(`src/context/volatile_tail.rs:165-176`); the two volatile-tail tombstone
+variants (`:251-265`); `normalize_from_finish` and its `Option` + clamp
+contract (`src/context/usage_normalize.rs:26-42`); the `read_tool` defaults
+`offset` 0 / `max_bytes` 20000 (`src/context/read_tool.rs:45-75`);
+`MAX_CONTINUATION_ARTIFACT_HANDLES = 32` (`src/agent/context_frame.rs:7`);
+and the diagnostic log field names (`src/agent/context_runtime.rs:162`).
+
+Corrected: `stable_prefix` was cited at `crates/codegg-config/src/schema.rs:645`
+— the field is at `:991` inside `ContextPackerConfig` (the cited line is an
+unrelated doc comment). `ContextPolicyConfig` and its `always_include_tools`
+default were cited as `schema.rs:715-768`; the struct is at `:1025` and the
+accessor at `:1076`, so the range is now `:1025-1080`. `ContextCacheStats` on
+`AgentLoopServices` was cited at `src/agent/coordinator.rs:77` (actually
+`:89`); the per-turn `AgentLoop` construction at `src/agent/turn_runtime.rs:725`
+(actually `:953`).
+
+Corrected a count: "all 8 `project_tool_output` call sites" was wrong — the
+production call sites are **two**: `src/agent/loop.rs:1989` and
+`src/agent/follow_up.rs:737` (the other 54 mentions are the function's own
+tests and its definition). The two cited line numbers were also stale
+(`loop.rs:1819` → `:1989`, `follow_up.rs:341` → `:737`).
+
+Added the missing `## See Also` section, naming the authoritative
+`architecture/cache-aware-context.md` alongside the related context,
+compaction, and agent docs.

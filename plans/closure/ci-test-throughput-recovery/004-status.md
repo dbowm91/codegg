@@ -52,6 +52,76 @@ The plan's stated hazard was that a family inheriting two previously-exclusive b
 - The CI job's `-E 'not binary(eggwork_remote_execution_live)'` filter is **byte-identical**.
 - No family's exclusivity changed.
 
+### 2.1 A factual correction, 2026-10-23: two of the six were absorbed
+
+§2 above describes the partition as implemented on 2026-10-21. Two of its
+claims are no longer true, and this section corrects them rather than
+leaving them standing.
+
+**What changed.** `interactive_process_sessions` (the interactive PTY session
+engine) and `interactive_terminal_tui` (the interactive terminal controller
+and its TUI) were absorbed into `interactive_process_attach_resume`. Their
+member files were **moved**, not copied: they live at
+`tests/interactive_process_attach_resume/interactive_process_sessions.inc` and
+`tests/interactive_process_attach_resume/interactive_terminal_tui.inc`, and
+the receiving family root declares them with `#[path]`. No test body and no
+assertion changed, and the merged binary carries **39** test functions — the
+22 + 11 + 6 the three families carried between them.
+
+So the partition is now **19 families** on the merged tree (it had reached 21
+when `main`'s advance brought its own LSP and server integration tests across
+as new families), the root package has **23** test targets rather than 25,
+and the workspace has **51** rather than 53.
+
+**Why the merge is sound, against this section's own hazard.** The hazard
+named above was that "a family inheriting two previously-exclusive binaries
+would serialise them against each other". It does not materialise, because
+the **merged binary is itself exclusive**: `interactive_process_attach_resume`
+was already on the whole-binary exclusion list, so the merged executable
+keeps that family's exclusive slot, and its members still run alone, never
+against one another. What the merge removes is not a guarantee, it is
+**duplication**: three exclusive executables reserved the hosted 4-vCPU
+runner for three serial slots to run 39 test functions, and one reserves one
+slot to run the same 39. It also removes two link units, because a family's
+cost is dominated by the code it links rather than by the number of test
+functions in it.
+
+**The filter is no longer byte-identical.** `.config/nextest.toml`'s
+whole-binary filter dropped `binary(interactive_process_sessions)` and
+`binary(interactive_terminal_tui)`, because those executables no longer
+exist, and it now names **four** binaries:
+`eggwork_remote_execution_live`, `interactive_process_attach_resume`,
+`scheduler_cancellation`, `causal_observe_replay`. The CI job's
+`-E 'not binary(eggwork_remote_execution_live)'` filter is unchanged.
+
+**The "family of one" property does not hold for one of the four.** The
+merged family is a family of three. That is the point of the change, and it
+is why the `ci` profile's exclusion list is now four binaries rather than
+six: the three interactive families were one executable each, and they are
+one executable now.
+
+**The four feature-gated families are unchanged**, for the reason §2 gives:
+a family cannot mix a gated member with an ungated one, so
+`lsp_test_support`, `server_feature`, `windows_sandbox_test_support` and
+`linux_git_test_support` stand alone, one family per gate. That is also why
+the floor for this layout is **19** and not the ~15 D4 accepted: merging one
+of them into an ungated family would build its tests in **every** CI run —
+`server_feature` alone would add 98 — which is the opposite of the
+milestone's objective.
+
+**One guard had to change with it, and one guard was already vacuous.**
+`check_test_ownership.py`'s self-test removed "the first group" to prove
+that an unowned test target is rejected; that injection only orphaned a
+target when the first group was its only owner, and after this change three
+groups legitimately name the merged target, so the injection proved nothing.
+It now removes a group that owns its target **alone**, which is what "an
+unowned test target" means. Separately, `check_test_duplication.py`'s
+`check_unused_helper_declarations` matched only `mod common;`, while every
+family in the tree binds the tree with `pub mod common;` — so the check had
+been **skipping all nine families that declare it** and had been vacuous
+since M004 made the binding public. The pattern now accepts the public form,
+and the check runs against all nine and passes: each one uses the helper.
+
 ## 3. What else changed, and why it was not optional
 
 ### 3.1 A regression this milestone introduced, found by the suite and fixed
@@ -209,6 +279,64 @@ same tests on the baseline commit. The seventh was the latter, and it was fixed.
 consolidation still exists and is still executed: 15,572 of 15,580 pass, and
 every failure is either proved pre-existing or fixed. The milestone's
 no-regression claim now rests on a measurement, not on a file-by-file diff.
+
+### 8.2 A factual correction, 2026-10-23: both medium findings above were discharged by M005's closure
+
+The two **medium** rows in the table above still read "unmeasured", and each
+names a required action. Both were **discharged**, after this record was
+written, by M005 — the hosted verification and measurement closure milestone
+(`plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md`).
+This subsection records that, because a reader of §8 who took the table at its
+word would otherwise go looking for work that is already done.
+
+**The hosted wall-clock effect (the first medium row).** Measured on the hosted
+runner, `ubuntu-24.04`, `mold` present, **every run warm-cache on both
+sides**, with the two phases recovered from the run log rather than from a
+new step — because adding a build step would change the job being measured:
+
+| | before median (n = 4) | after median (n = 3) | ratio | threshold | verdict |
+|---|---:|---:|---:|---|---|
+| build phase (T2) | 683.000 s | 359.000 s | **52.6 %** | ≤ 60 % | **PASS** |
+| execution phase (T3) | 487.818 s | 377.692 s | **77.4 %** | ≥ 90 % | **FAIL** |
+
+The raw values for both sides, and their sources, are published in
+`architecture/testing.md` §"The hosted two-phase wall-clock (M005)". The
+wall-clock is reported **with its dispersion** and is not quoted as a precise
+effect size, and **T3 does not hold** — the execution phase did not stay
+within 90 % of the baseline's median — which is reported with its reason
+rather than rounded away.
+
+**The family-level link cost (the second medium row).** Measured locally, on
+the same machine, in the same session, with the same command
+(`CARGO_TARGET_DIR="$(mktemp -d)" cargo test --workspace --locked --no-run --timings`,
+parsed from the emitted `const UNIT_DATA = [...]` with `re.S` — the
+`--timings=json` form is unstable on cargo 1.89):
+
+| | before (`2c1953347`) | after (`3dfeb6e2f`) | change |
+|---|---:|---:|---:|
+| Root integration-test executables linked | 275 | 17 | **−93.8 %** |
+| Aggregate unit-seconds, whole workspace | 4,300.8 | 2,618.9 | **−39.1 %** |
+| Aggregate unit-seconds, root integration bucket | 2,123.6 | 423.0 | **−80.1 %** |
+
+**§5's ~41 % projection reproduces within 1.9 percentage points** (−39.1 %
+measured), which is the answer to §5's own statement that "the model
+understates the saving and should not be read as a measurement". The
+per-family table, the parse command and the raw unit data are in
+`plans/validation/ci-test-throughput-recovery/measurement-record.md` §3, and
+the published summary is `architecture/testing.md` §"The measured link cost
+(M005)".
+
+**What §5 still is not.** The measurement also records what it does **not**
+show: this record's §5 baseline model (271 targets, 4,040.1 of 9,155.6
+unit-seconds) does **not** reproduce on the measuring machine, and the
+aggregate carries a contention-mediated component. §5's projection therefore
+stands as a **projection from the plan's baseline**, and the measured numbers
+are the ones above — not §5's, and not this record's.
+
+So §8's two medium rows are **closed by this subsection**: the required action
+for each was carried out — by M005 — and the numbers are carried here, with
+their sources in M005's closure record and in `architecture/testing.md`. This
+record stays immutable apart from this factual correction.
 
 ## 9. Registry updates
 

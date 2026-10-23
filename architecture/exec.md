@@ -10,7 +10,7 @@ JSON or plain text to stdout.
 
 ## Where It Lives
 
-`src/exec.rs` (single file, ~357 lines)
+`src/exec.rs` (single file, ~384 lines)
 
 ## How It Works
 
@@ -26,13 +26,16 @@ JSON or plain text to stdout.
 │                     ExecMode::run()                      │
 │                                                          │
 │  1. Load Config (errors → CONFIG_ERROR)                 │
-│  2. Resolve provider + model                            │
-│  3. Resolve agent by name                               │
-│  4. Bootstrap search backend (MCP)                      │
-│  5. Build ToolRegistry                                  │
-│  6. Create AgentLoop (headless, no TUI)                 │
-│  7. Run agent turn, collect events                      │
-│  8. Extract result, tools used, token count             │
+│  2. Register builtin providers w/ config connections     │
+│  3. Resolve provider + model (config model, else         │
+│     EMERGENCY_DEFAULT_MODEL; "provider/model" split)     │
+│  4. Resolve agent by name (default "build")              │
+│  5. Build PermissionChecker in exec mode + writer fence  │
+│  6. Bootstrap search backend (MCP)                      │
+│  7. Build ToolRegistry                                  │
+│  8. Create AgentLoop (headless, no TUI, no daemon)      │
+│  9. Run agent turn, collect events                      │
+│ 10. Extract result, tools used, token count             │
 └─────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -168,6 +171,7 @@ codegg exec --json '{"prompt": "fix the bug"}' --json-output
 | `TOOL_TIMEOUT` | Tool timeout |
 | `TOOL_PERMISSION` | Tool permission denied |
 | `TOOL_DISABLED` | Tool disabled |
+| `TOOL_BACKEND_UNAVAILABLE` | Tool execution backend unavailable |
 | `TOOL_ERROR` | Tool execution error |
 | `MCP_ERROR` | MCP error |
 | `LSP_ERROR` | LSP error |
@@ -181,10 +185,10 @@ codegg exec --json '{"prompt": "fix the bug"}' --json-output
 | `CLIPBOARD_ERROR` | Clipboard error |
 | `TUI_ERROR` | TUI error |
 
-29 codes are produced by `classify_error()` (`src/exec.rs:263-334`),
-which maps `AppError` variants to `(code, message)` tuples. The
-`INTERNAL_ERROR` string in `print_output` is a JSON-serialization
-fallback literal, not a `classify_error` arm.
+30 codes are produced by `classify_error()` (`src/exec.rs`), which maps
+`AppError` variants to `(code, message)` tuples. The `INTERNAL_ERROR` string in
+`print_output` is a JSON-serialization fallback literal, not a
+`classify_error` arm.
 
 ## Exit Codes
 
@@ -195,11 +199,33 @@ fallback literal, not a `classify_error` arm.
 
 ## Configuration Surface
 
+### CLI (`codegg exec`)
+
+| Flag | Meaning |
+|------|---------|
+| `--json <JSON>` | Inline `ExecInput` JSON (alternative to stdin) |
+| `--file <PATH>` | Read `ExecInput` JSON from a file |
+| `--json-output` / `-j` | Emit `ExecOutput` JSON on stdout (alias of `--format json`) |
+| `--format <text\|json>` | Output format selector |
+| `--quiet` / `-q` | Suppress stderr diagnostics |
+| `--session <ID>` | Session identifier for the invocation |
+| `--approval-mode <MODE>` | Headless approval mode (`interactive`, `automatic`, `yolo`) |
+| `--sandbox <PROFILE>` | Sandbox profile (`read-only`, `workspace-write`, `full-host`) |
+| `--yolo` | Exact alias for `--approval-mode yolo` |
+
+`--approval-mode` / `--sandbox` / `--yolo` resolve through
+`codegg::policy_surface::resolve_cli_policy()` and land on the same
+`CliPolicyOverride` contract the TUI approval selector uses.
+
+### In-process
+
 - Model override: `input.model` in `ExecInput` (format: `provider/model-name`)
 - Agent override: `input.agent` in `ExecInput` (defaults to `"build"`)
 - Session ID: `ExecMode::new()` parameter or auto-generated UUID
 - JSON output: `ExecMode::new()` `json_output` flag
 - Quiet mode: `ExecMode::new()` `quiet` flag suppresses stderr diagnostics
+- Model default: `config.model`, falling back to `EMERGENCY_DEFAULT_MODEL`
+- Approval mode / sandbox profile: `ExecMode::with_policy(policy)`
 
 ## Invariants & Gotchas
 
@@ -209,8 +235,20 @@ fallback literal, not a `classify_error` arm.
   flows into the registry, so wrappers never consult process-global slots.
 - **ToolRegistry uses session config**: `ToolRegistry::with_config_and_search_runtime(&config, search_runtime)`
   builds the full tool registry from config plus the bootstrapped context.
+- **A workspace root is required**: exec mode has no managed checkout, so the
+  process cwd is taken as the project root and a failure to resolve it is a
+  hard error ("exec mode requires a workspace root"). Exec never falls back to
+  a daemon-owned root.
+- **Writer fence, no permit**: exec installs a `WorkspaceWriterFence` rooted at
+  the project root so native writers stay inside it; it mints no
+  `WriterPermit`, because exec owns no managed checkout.
+- **No daemon scope**: the `AgentLoop` is created with no daemon scope, so
+  there is no reservation to violate and processes stay unrestricted unless a
+  policy sets a sandbox profile.
 - **Question channel**: `setup_question_channel_for_exec()` is called,
-  enabling question tool handling with a 300-second timeout.
+  enabling question tool handling with a 300-second timeout. The timeout
+  itself lives in the agent batch path (`src/agent/tool_batch.rs`), not in
+  `src/exec.rs`.
 - **Model parsing**: `parse_model()` splits on `/` — if no `/` is present,
   the provider defaults to `"openai"`.
 - **Error messages include duration**: The error output format is
@@ -246,3 +284,35 @@ lists, `ExecOutput::success` / `::error` constructors, the
 ({duration}ms)"` error format. Noted that `INTERNAL_ERROR` is a
 serialization-fallback literal in `print_output`, not a `classify_error`
 arm.
+
+Verified 2026-10-23 against `src/exec.rs`, `src/main.rs` (the `Exec`
+subcommand and `ExecutionPolicyArgs`), `src/agent/loop.rs`
+(`setup_question_channel_for_exec`), and `src/agent/tool_batch.rs` (the
+question timeout). Corrected:
+
+- **Error-code count 29 → 30.** `ToolError::BackendUnavailable(_)` maps to
+  `TOOL_BACKEND_UNAVAILABLE` ("Tool execution backend unavailable"), which the
+  table omitted. `classify_error()` now has 30 arms.
+- **`classify_error()` line ref dropped.** `src/exec.rs:263-334` had drifted;
+  the function is now referenced by name and file, because `src/exec.rs` keeps
+  moving.
+- **File size ~357 → ~384 lines.**
+- **CLI surface added.** The document described only the in-process API. The
+  `codegg exec` flags (`--json`, `--file`, `--format`, `--json-output`/`-j`,
+  `--quiet`/`-q`, `--session`/`-s`, and the flattened `--approval-mode` /
+  `--sandbox` / `--yolo` policy arguments) are now tabulated, together with the
+  `config.model` → `EMERGENCY_DEFAULT_MODEL` model default.
+- **Three invariants added** that the source owns and the document omitted:
+  exec mode requires a workspace root (it does not fall back to a daemon-owned
+  root); exec installs a `WorkspaceWriterFence` but mints no `WriterPermit`;
+  and exec runs with no daemon scope.
+
+Verified accurate: the `ExecInput` / `ExecOutput` field lists and camelCase
+renaming; the `ExecMode` field list including `policy`; `ExecMode::new()` /
+`with_policy()`; `ExecOutput::success` / `::error`; the `exit_code` 0/1
+contract; `parse_model()`'s `"openai"` default; the
+`"{msg}: {error} ({duration}ms)"` error format; the
+`bootstrap_search_runtime()` and `with_config_and_search_runtime()` calls; and
+the `INTERNAL_ERROR` serialization-fallback note. The 300-second question
+timeout was confirmed to live in `src/agent/tool_batch.rs` (not `src/exec.rs`),
+so the claim is retained but now attributed.

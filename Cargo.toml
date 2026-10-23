@@ -355,7 +355,11 @@ windows-sys = { version = "0.61.2", features = [
 [features]
 default = ["arboard"]
 windows-sandbox-test-support = []
-linux-git-test-support = []
+# Test-only support for the contained live-read route. It carries
+# `egggit/git-live-read-test-support`, the feature that compiles
+# `LiveReadCapability`'s only constructor into existence, so the live-read
+# capability exists in a test-only build and in no shipped build.
+linux-git-test-support = ["egggit/git-live-read-test-support"]
 arboard = ["dep:arboard"]
 plugins = ["wasmtime"]
 debug-logging = []
@@ -467,14 +471,6 @@ path = "tests/eggwork_remote_execution_live/mod.rs"
 [[test]]
 name = "interactive_process_attach_resume"
 path = "tests/interactive_process_attach_resume/mod.rs"
-
-[[test]]
-name = "interactive_process_sessions"
-path = "tests/interactive_process_sessions/mod.rs"
-
-[[test]]
-name = "interactive_terminal_tui"
-path = "tests/interactive_terminal_tui/mod.rs"
 
 [[test]]
 name = "scheduler_cancellation"

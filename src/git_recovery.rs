@@ -215,6 +215,7 @@ pub async fn skip_in_progress(
 async fn detect_state(repo_root: &Path) -> Result<RepositoryOperationState, GitMutationError> {
     detect_operation_state_for_root(repo_root)
         .map_err(|e| GitMutationError::Repository(e.to_string()))
+        .map(|fact| fact.into_value())
 }
 
 /// Cross-check that the requested action is legal for the state we are
@@ -232,7 +233,8 @@ pub fn assert_action_matches(
     // Re-read state from disk to close the TOCTOU window between the
     // original detection and the actual recovery action.
     let fresh_state = detect_operation_state_for_root(repo_root)
-        .map_err(|e| GitMutationError::Repository(e.to_string()))?;
+        .map_err(|e| GitMutationError::Repository(e.to_string()))?
+        .into_value();
     if fresh_state != *expected_state {
         return Err(GitMutationError::StateMismatch {
             expected: expected_state.label().to_string(),

@@ -28,7 +28,7 @@ unscoped global event stream.
 - **Affected-path extraction**: `crates/codegg-core/src/snapshot/affected_paths.rs`
 - **Diff computation**: `crates/codegg-core/src/snapshot/diff.rs`
 - **DB schema**: `crates/codegg-core/src/session/schema.rs`
-  (migration v13 for `snapshot`, v46 for `edit_checkpoint` and
+  (migration v13 for `snapshot`, v46 for `edit_checkpoint`, v47 for
   `edit_restore_operation`)
 - **Python script snapshots**: `src/python_script/snapshot.rs`
   (separate, metadata-only)
@@ -278,9 +278,10 @@ CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_workspace ON edit_checkpoint(work
 CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_session ON edit_checkpoint(session_id, created_at DESC);
 ```
 
-Defined in migrations v13 and v46 (`session/schema.rs`). `snapshot` is created
-in `migrate_v13` (`schema.rs:831`); v46 (`schema.rs:2796`) creates
-`edit_restore_operation` and `edit_checkpoint`. Both tables coexist;
+Defined in migrations v13, v46 and v47 (`session/schema.rs`). `snapshot` is
+created in `migrate_v13` (`schema.rs:908`); `migrate_v46` (`schema.rs:3770`)
+creates `edit_checkpoint`; `migrate_v47` (`schema.rs:3737`) creates
+`edit_restore_operation`. Both tables coexist;
 `edit_checkpoint` reuses the same file-state serialization and size limits as
 `snapshot` but adds explicit
 `workspace_id`/`turn_id`/`batch_seq` provenance. Legacy `snapshot`
@@ -457,7 +458,45 @@ per-workspace lock. TUI slash commands `/edit-undo`, `/edit-reapply`,
 
 ## Source verification
 
-Verified 2026-10-06 against all 5 files in
+### Pass of 2026-10-23
+
+Re-verified against all 5 files in `crates/codegg-core/src/snapshot/`
+(`mod.rs`, `checkpoint.rs`, `checked_restore.rs`, `affected_paths.rs`,
+`diff.rs`), `crates/codegg-core/src/session/schema.rs`, and
+`crates/codegg-config/src/schema.rs`. No build or test run was performed;
+every count is a source-level measurement.
+
+- **Corrected a wrong migration claim.** The document said "v46 creates both
+  `edit_restore_operation` and `edit_checkpoint`". It does not:
+  `migrate_v46` (`schema.rs:3770`) creates `edit_checkpoint` and its four
+  indexes; `edit_restore_operation` is created by `migrate_v47`
+  (`schema.rs:3737`). "Where It Lives" and the schema section now name
+  v13 / v46 / v47 separately.
+- **Re-anchored the migration refs**: `migrate_v13` `schema.rs:831` → `:908`;
+  `migrate_v46` `schema.rs:2796` → `:3770`; added `migrate_v47` `:3737`.
+- **Confirmed every other body ref as written.** `SnapshotOptions` `:13`,
+  `Default for SnapshotOptions` `:19`, `FileSnapshot` `:30`, `Snapshot` `:38`,
+  `SnapshotView` `:47`, `SnapshotManager` `:55`, the eleven
+  `SnapshotManager` method anchors (`:62`, `:70`, `:95`, `:132`, `:197`,
+  `:221`, `:244`, `:283`, `:323`, `:363`, `:372`), `is_safe_relative_path`
+  `:541`, `ensure_contained_parent` `:561`, the M012 family
+  `checkpoint.rs:653-808`, the affected-path helpers
+  `affected_paths.rs:147`/`:183`/`:267`/`:272`, `diff_files` `diff.rs:29`,
+  and `format_unified_diff` `diff.rs:128`.
+- **Confirmed the field lists** for `SnapshotOptions` (3), `FileSnapshot` (4),
+  `Snapshot` (5), `SnapshotView` (5), `FileState`, `EditFileState` (4),
+  `EditCheckpoint` (8), and the four `diff.rs` types.
+- **Confirmed the defaults and exclusions**: `max_files` 5000,
+  `max_file_bytes` 1_000_000, `max_total_bytes` 20_000_000, each clamped to
+  1 with a `tracing::warn!` when zero; and the excluded directory set
+  `.git`, `node_modules`, `target`, `.codegg` (`mod.rs:609`).
+- **Confirmed the config surface**: `snapshot: Option<bool>` and
+  `snapshot_config: Option<SnapshotConfig>` at
+  `crates/codegg-config/src/schema.rs:263`-`:264`.
+
+### Pass of 2026-10-06
+
+Verified against all 5 files in
 `crates/codegg-core/src/snapshot/` (`mod.rs`, `checkpoint.rs`,
 `checked_restore.rs`, `affected_paths.rs`, `diff.rs`) and
 `crates/codegg-core/src/session/schema.rs`. Corrected 15 stale refs, in two
@@ -488,3 +527,6 @@ Confirmed correct as written: `SnapshotManager` (`:55`), `diff_files`
 `FileSnapshot` (4), `Snapshot` (5), `SnapshotView` (5), `FileState`,
 `EditFileState` (4), `EditCheckpoint` (8), and the four `diff.rs` types, plus
 the documented SQL DDL for both tables and all three indexes.
+
+The 2026-10-06 note's claim that v46 creates both `edit_restore_operation`
+and `edit_checkpoint` was wrong and is corrected in the 2026-10-23 pass above.

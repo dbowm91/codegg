@@ -263,7 +263,7 @@ paths = [
   "src/managed_process.rs",
   "src/scheduler/admission.rs",
 ]
-targets = ["interactive_process_sessions"]
+targets = ["interactive_process_attach_resume"]
 
 # The bounded attach/resume protocol layered over the PTY engine.
 [[groups]]
@@ -283,7 +283,7 @@ paths = [
   "src/tui/interactive_terminal.rs",
   "src/tui/terminal.rs",
 ]
-targets = ["interactive_terminal_tui"]
+targets = ["interactive_process_attach_resume"]
 
 # Live Eggwork remote execution against a real node.
 [[groups]]
@@ -675,6 +675,15 @@ targets = [
 ]
 
 # The context model, the decision runtime, and model routing.
+#
+# `reasoning_overlay_narrowing` is the cross-crate proof that a discovery
+# overlay may only NARROW the compiled adapter baseline
+# (`resolve_reasoning_capability`, under `model_profile/`). It is owned here
+# because the guard resolves a group's targets within the group's own member,
+# and the test target lives in `codegg-core`. The overlay *parsing* it drives
+# lives in `codegg-providers` (`eggpool.rs`); a change there pulls
+# `codegg-core` in as a dependent and therefore contributes this target as
+# part of that member's full surface, so neither side of the path is uncovered.
 [[groups]]
 id = "core_context_decision"
 member = "codegg-core"
@@ -687,6 +696,7 @@ paths = [
 targets = [
   "context",
   "decision_runtime_fixtures",
+  "reasoning_overlay_narrowing",
 ]
 
 # The durable session-launch store: the idempotency contract, the stage

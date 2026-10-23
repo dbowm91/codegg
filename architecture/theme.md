@@ -15,6 +15,21 @@ projections convert it to ratatui styles. The two never mix.
 
 `src/theme/` — 10 source files, all in one directory.
 
+| File | Role |
+|------|------|
+| `src/theme/mod.rs` | Module root; re-exports `Rgb`, `ThemeError`, the registry and the schema types |
+| `src/theme/schema.rs` | `SemanticTheme`, `ThemeSource` and the eight colour groups |
+| `src/theme/color.rs` | `Rgb` colour type and `ThemeColor` parsing |
+| `src/theme/error.rs` | `ThemeError` |
+| `src/theme/registry.rs` | `ThemeRegistry`, bundled themes, resolution, user-theme loading |
+| `src/theme/halloy.rs` | Halloy-format importer |
+| `src/theme/native.rs` | Native codegg TOML importer |
+| `src/theme/target.rs` | ratatui projection (`SemanticTheme` → `ratatui::Theme`) |
+| `src/theme/validate.rs` | Contrast checking and structural diagnostics |
+| `src/theme/theme_registry_test_helpers.rs` | `pub(crate)` test-only helpers (`mod.rs:36`) |
+
+The bundled themes live outside the crate, in `assets/themes/halloy/`.
+
 ## How It Works
 
 ### Pipeline
@@ -35,21 +50,40 @@ Single source of truth for available themes. Owns:
 
 - **Bundled themes**: 50 Halloy-format themes from `assets/themes/halloy/`
   via `include_str!`
-- **User themes**: Loaded from `~/.config/codegg/themes` or directories
-  in `[theme].directories`
+- **User themes**: Loaded from the directories named in `[theme].directories`,
+  and from an explicit `[theme].path`. There is **no implicit default
+  themes directory** — a theme under `~/.config/codegg/themes` is only
+  loaded if that path is listed in `[theme].directories`.
 - **Diagnostics**: Accumulated during loading and validation
 
 **Loading**:
 1. `load_builtins()` — Parse all bundled Halloy themes
 2. `load_with_config(cfg)` — Built-ins + user directories + explicit path
-   + validation
-3. `load_dir(dir)` — Load all `*.toml` files from a directory
+   + validation. Takes the *config* type `Option<&ThemeConfig>` and
+   delegates to `load_with_resolution(&ThemeResolutionConfig)`, which takes
+   the runtime resolution type
+3. `load_dir(dir)` — Load all `*.toml` files from a directory (top-level
+   files only; subdirectories are ignored)
 4. `load_file_auto(path)` — Auto-detect Halloy vs native format
 
 **Resolution**:
 ```
 requested name → fallback name → "cyber-red" (default) → any theme → placeholder
 ```
+
+That chain is `ThemeRegistry::resolve(&ThemeResolutionConfig)`. The
+free function `resolve_theme_for_app` is a *different, shorter* chain:
+requested name → fallback name → a theme whose id is literally `"dark"` →
+the legacy `Theme::dark()` static palette.
+
+**That `"dark"` branch never fires for a bundled theme.** Theme ids are the
+kebab-case slug of the file stem, and none of the 50 bundled themes slugs to
+`dark` — the closest names are `dark-green`, `flexor-dark`, `halcyon-dark`,
+`macaw-dark`, `one-dark`, and `solarized-dark`. The branch is reachable only
+when a *user* theme happens to use the id `dark`. Note also that this chain
+does **not** consult `DEFAULT_THEME_ID` (`cyber-red`, `registry.rs:681`),
+so it is not the same fallback the `ThemeRegistry::resolve` path uses; see
+the source-verification note for whether that is intended.
 
 `ThemeResolutionConfig` drives resolution: `name`, `source`, `path`,
 `directories`, `fallback`, `validate_contrast`.
@@ -86,6 +120,10 @@ All three of these go through `lookup` and must keep doing so:
 - `ThemeRegistry::get` / `get_tui` — the picker, `/theme use <name>`
 - `ThemeRegistry::resolve` — `[theme].name` in config
 - `App::apply_persisted_preferences` — the persisted `theme.active` row
+
+`lookup` itself is **private** (`fn lookup`, `registry.rs:578`); these are
+its public callers. `get_tui_arc` and `resolve_tui_arc` are the `Arc`
+conveniences for `UiState::theme`.
 
 The ratatui projection carries both (`Theme { id, name, .. }`), so the picker
 emits `ThemeCommit { theme_id }` / `ThemePreviewChanged { theme_id }` and
@@ -147,10 +185,12 @@ surface — `selection_text` over `selection`, `accent_text` over
 `accent_primary`. They are **derived, never authored**; see "Derived tokens" in
 the Invariants section for why the Halloy format cannot supply them.
 
-`Theme::selection_style()` and `Theme::highlight_style()` return
-`fg(selection_text).bg(selection)`. Painting the *accent* as a foreground over a
-different fill was the previous behaviour and it made a selected row's text the
-same colour as the accents around it.
+`Theme::selection_style()` and `Theme::highlight_style()` (on the legacy
+`src/tui/theme.rs::Theme`, **not** the ratatui projection in
+`src/theme/target.rs`) return `fg(selection_text).bg(selection)`. Painting
+the *accent* as a foreground over a different fill was the previous
+behaviour and it made a selected row's text the same colour as the accents
+around it.
 
 ### ThemeRegistry (`src/theme/registry.rs`)
 
@@ -161,8 +201,10 @@ pub struct ThemeRegistry { ... }
 Accessed via `App::theme_registry: Arc<ThemeRegistry>`.
 
 Key functions:
-- `load_with_config(cfg)` — main constructor
-- `resolve_theme_for_app(config, registry)` — resolution entry point
+- `load_with_config(cfg)` — main constructor (config type)
+- `load_with_resolution(cfg)` — same, taking the runtime resolution type
+- `resolve_theme_for_app(registry, name, fallback)` — resolution entry
+  point for a plain name/fallback pair
 - `builtin_fallback()` — hardcoded dark theme placeholder
 - `expand_home(path)` — path expansion helper
 
@@ -201,7 +243,12 @@ heuristic detects this format. All 50 bundled themes use this format.
 ### Validation (`src/theme/validate.rs`)
 
 - **Contrast checking**: WCAG contrast ratio validation between
-  background/foreground and other color pairs
+  background/foreground and other color pairs. The bar for a foreground
+  drawn on a selection fill is `SELECTION_TEXT_RATIO` = 3.0
+  (`validate.rs:57`), matching `MIN_DERIVED_TEXT_RATIO` in
+  `src/theme/schema.rs:79`; accent pairs use `ACCENT_RATIO`. Each pair is
+  checked by the `check` helper (`validate.rs:160`), which emits a
+  `ThemeDiagnostic::warn` when the ratio falls below the threshold.
 - **Structural diagnostics**: Missing fields, invalid hex values
 - **ThemeDiagnostic** (`src/theme/validate.rs:16`): `level`
   (`ThemeDiagnosticLevel::Warning` or `::Error`), `theme_id`, optional
@@ -292,6 +339,19 @@ the last-resort placeholder.
 
 ```bash
 cargo test -p codegg -- theme    # Theme module tests
+
+# Registry count and name-resolution guards
+cargo test -p codegg -- builtins_load
+cargo test -p codegg -- every_builtin_display_name_resolves
+cargo test -p codegg -- lookup_tolerates_casing_and_separator_drift
+
+# Render-level guards (the root package's integration tests are families,
+# so the member is selected by name after `--`)
+cargo test --test tui_render -- theme_selection_tokens
+cargo test --test tui_render -- tui_theme_source_of_truth
+
+# Source guard against hardcoded selection colours
+python3 scripts/check_no_hardcoded_selection_colours.py
 ```
 
 ## Related Docs
@@ -304,17 +364,16 @@ cargo test -p codegg -- theme    # Theme module tests
 Verified 2026-10-06 against `src/theme/` (10 source files, as stated) and
 `assets/themes/halloy/`: 50 bundled themes, all Halloy-format, embedded via
 50 `include_str!` calls in `BUILTIN_THEME_FILES`
-(`registry.rs:36`); `DEFAULT_THEME_ID = "cyber-red"` (`registry.rs:652`);
-`SemanticTheme` (`schema.rs:17`) and all 11 of its fields; `ThemeSource`
+(`registry.rs:36`); `DEFAULT_THEME_ID = "cyber-red"`; `SemanticTheme`
+(`schema.rs:17`) and all 11 of its fields; `ThemeSource`
 (`schema.rs:32`); every color group field list (`BaseColors` 2,
 `UiColors` 11 (9 authored + `selection_text` and `accent_text`, both derived), `TextColors` 2, `StatusColors` 6, `ConversationColors` 6,
 `CodeColors` 2, `DiffColors` 3, `AgentColors` 5); `ThemeResolutionConfig`
-(`registry.rs:313`) with exactly the six documented fields; registry
-entry points `load_builtins` (`:363`), `load_with_config` (`:411`),
-`load_dir` (`:487`), `load_file_auto` (`:514`), `expand_home` (`:638`),
-`builtin_fallback` (`:664`), `resolve_theme_for_app` (`:733`);
-`looks_like_halloy` (`halloy.rs:387`); `Theme::from(&SemanticTheme)`
-(`target.rs:52`); and contrast checking (`validate.rs:148`). The only
+with exactly the six documented fields; the registry entry points
+`load_builtins`, `load_with_config`, `load_dir`, `load_file_auto`,
+`expand_home`, `builtin_fallback`, `resolve_theme_for_app`;
+`looks_like_halloy`; `Theme::from(&SemanticTheme)` (`target.rs:52`); and
+contrast checking. The only
 correction was `ThemeDiagnostic`'s optional field, which is a color-field
 name rather than a file path.
 
@@ -349,3 +408,73 @@ Tests: `tests/tui_render/theme_selection_tokens.inc` (9 tests, incl. the 50-them
 `tests/tui_render/tui_theme_source_of_truth.inc` (render-level staleness),
 `scripts/check_no_hardcoded_selection_colours.py` (source guard, wired into
 `verify.sh quick`).
+
+### 2026-10-23 — deep-dive pass
+
+Verified against `src/theme/` (all 10 files), `assets/themes/halloy/`,
+`crates/codegg-config/src/schema.rs`, `src/tui/theme.rs`,
+`tests/tui_render/` and `scripts/`.
+
+Corrections made in this pass:
+
+- **The "User themes" claim was wrong.** It said user themes load from
+  `~/.config/codegg/themes`. There is **no implicit default themes
+  directory** anywhere in the code — that path appears only in a doc
+  comment on `src/theme/registry.rs:6`. `ThemeRegistry::load_with_resolution`
+  (`registry.rs:418`) loads user directories *only* from
+  `ThemeResolutionConfig::directories`, plus an explicit
+  `ThemeResolutionConfig::path`. Restated.
+- **`resolve_theme_for_app` had the wrong signature and a conflated
+  resolution chain.** The document listed it as
+  `resolve_theme_for_app(config, registry)`; the real signature is
+  `resolve_theme_for_app(registry, name, fallback)` (`registry.rs:767`).
+  It also has its own *shorter* chain than `ThemeRegistry::resolve`:
+  requested → fallback → a theme whose id is literally `"dark"` → the
+  legacy `Theme::dark()` static palette. The documented five-step chain
+  (requested → fallback → `cyber-red` → any theme → `builtin_fallback()`)
+  belongs to `ThemeRegistry::resolve` (`registry.rs:628`) and is now
+  attributed to it.
+- **`Theme::selection_style()` / `Theme::highlight_style()` were ambiguous.**
+  Two types are named `Theme`: the ratatui projection
+  (`src/theme/target.rs`) and the legacy static palette
+  (`src/tui/theme.rs`). The two style methods exist only on the legacy
+  one; the projection exposes `selection` / `selection_dim` /
+  `selection_text` as plain fields. Named the owning type.
+- **Every line reference in the 2026-10-06 section had drifted** by more
+  than five lines, so they were replaced with symbol names. Current
+  anchors, for the record: `BUILTIN_THEME_FILES` `registry.rs:36`;
+  `ThemeResolutionConfig` `:313`; `load_builtins` `:366`;
+  `load_with_config` `:414`; `load_with_resolution` `:418`; `load_dir`
+  `:490`; `load_file_auto` `:517`; `lookup` `:578`; `get` `:591`;
+  `get_tui` `:596`; `resolve` `:628`; `expand_home` `:667`;
+  `DEFAULT_THEME_ID` `:681`; `builtin_fallback` `:693`;
+  `resolve_theme_for_app` `:767`; `looks_like_halloy` `halloy.rs:488`;
+  `Theme::from(&SemanticTheme)` `target.rs:52`; `ThemeDiagnostic`
+  `validate.rs:16`; `SELECTION_TEXT_RATIO` `validate.rs:57`;
+  `MIN_DERIVED_TEXT_RATIO` `schema.rs:79`; `normalize_id` `schema.rs:177`.
+- **Added a per-file table for `src/theme/`** — the doc asserted "10
+  source files" without saying which, and `theme_registry_test_helpers.rs`
+  is `pub(crate)` rather than a public module (`mod.rs:36`).
+- **Added `load_with_resolution`** alongside `load_with_config`: the
+  latter takes the *config* type `Option<&ThemeConfig>` and delegates to
+  the former, which takes the runtime `ThemeResolutionConfig`.
+- **Named the contrast thresholds** (`SELECTION_TEXT_RATIO` = 3.0,
+  `ACCENT_RATIO`) and the `check` helper that emits the warning.
+- **Expanded the Testing section** with the registry guards, the two
+  `tui_render` family members (correctly selected with `-- <member>`),
+  and the `check_no_hardcoded_selection_colours.py` source guard.
+
+Verified accurate and left unchanged: the 10-file count and the file
+roster; 50 bundled themes in `assets/themes/halloy/` embedded via 50
+`include_str!` calls; the "33 of the 50 bundled themes have a `name` that
+is not their `id`" measurement (re-counted from `BUILTIN_THEME_FILES`);
+`SemanticTheme` and its 11 fields; `ThemeSource` and its four variants
+with `Inline` default; every colour-group field list; the
+`ThemeResolutionConfig` / `ThemeConfig` six-field sets;
+`normalize_id`; the `BTreeMap` ordering rule; the duplicate-id
+diagnostic; the "0 of 50 themes set `foreground_selected`" measurement and
+its consequence for the derived tokens; the 31 static palettes in
+`src/tui/theme.rs` (re-counted: 31 `ThemeData` constructors from `dark()`
+to `dracula_soft()`); the 9 tests in
+`tests/tui_render/theme_selection_tokens.inc`; and the existence of
+`scripts/check_no_hardcoded_selection_colours.py`.

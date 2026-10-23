@@ -25,6 +25,17 @@ use crate::tool::task::TaskTool;
 
 const VERIFIER_AGENT: &str = "verifier";
 const MAX_PRODUCERS_PER_CYCLE: usize = 3;
+/// The verifier's hard deny ceiling, applied in Rust independently of the
+/// per-agent permission map in `assets/agents/verifier.toml`.
+///
+/// This list is deliberately a **superset** of the tools that exist today:
+/// `python` and `permission` name tools the registry has never had (the
+/// Python tool is `python_script`, and the human-interaction tool is
+/// `question`, both of which are listed here under their real names). They
+/// are kept so that a tool introduced later under either name is denied by
+/// default rather than falling through the ceiling. Removing an entry from a
+/// deny list widens it, so prune this list only alongside a deliberate
+/// decision to allow that tool.
 const VERIFIER_DENIED_TOOLS: &[&str] = &[
     "write",
     "edit",

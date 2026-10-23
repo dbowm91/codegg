@@ -48,9 +48,12 @@ abstraction.
 ## Purpose
 
 - Tool registry management (registration, lookup, filtering, definitions)
-- Built-in tool implementations (39 always-registered tools in
-  `with_options()`, plus conditional eggsact, evidence, memory, extension,
-  todo-read, work-plan, context, and disabled-backend tools)
+- Built-in tool implementations (67 registration sites in `with_options()` —
+  54 `register` + 13 `register_boxed` — resolving 40 unconditionally
+  registered tool names plus conditional eggsact, evidence, memory,
+  extension, todo, work-plan, context, and disabled-backend variants; 61
+  distinct production tool names exist across `src/tool/` and
+  `src/context/`)
 - Tool execution with permission checking, structured provenance, and
   backend-aware diagnostics
 - Backend abstraction (native, MCP, shell, builtin legacy) via
@@ -143,7 +146,18 @@ src/tool/
 ├── image.rs            # DALL-E image generation
 ├── tool_search.rs      # On-demand tool discovery
 ├── lsp.rs              # LSP client tools (wraps egglsp::LspService)
+├── lsp_read.rs         # Hidden program-only LSP read adapter (ProgrammaticOnly)
+├── lsp_preview_apply.rs# Direct-only checked LSP preview application
 ├── security.rs         # Security scanning (wraps eggsentry)
+├── git_read.rs         # Hidden program-only Git read adapter + git_query facade
+├── goal.rs             # goal_get / goal_update_progress / goal_request_completion
+├── job.rs              # Background job inspection and control
+├── ci_watch.rs         # GitHub Actions workflow-run watch
+├── work_order.rs       # Durable future-session creation
+├── work_plan.rs        # work_plan_get / work_plan_update_item
+├── disclosure.rs       # disclosure_for(): Core / Deferred / Hidden / ProfileSpecific
+├── authorization.rs    # CommandPreflightResult and the authority handoff types
+├── process_admission.rs# M005 C005 shared-process admission policy
 ├── deterministic.rs    # EggsactTool wrapper, build_eggsact_tools()
 └── ...
 ```
@@ -220,7 +234,7 @@ ownership.
 
 ## Tool Trait
 
-Defined in `src/tool/mod.rs:157-238`:
+Defined in `src/tool/mod.rs:163-256`:
 
 ```rust
 #[async_trait]
@@ -256,7 +270,7 @@ causally classifiable", never "forbidden"; pilot native tools override it with
 
 ### ToolCategory
 
-Defined in `src/tool/mod.rs:133-142`, the category drives permission
+Defined in `src/tool/mod.rs:139-150`, the category drives permission
 gating and plan-mode filtering:
 
 ```rust
@@ -330,18 +344,49 @@ Operator views (`/tool-backends`, diagnostics) report registered
 capability, not just the currently advertised prompt slice. Deferred
 tools are not hidden from operators.
 
-### Always-Registered Tools (39)
+### Always-Registered Tools (40 names)
 
-Registered unconditionally in `with_options()` (`src/tool/mod.rs:408`).
-There are 46 unconditional `registry.register(...)` call sites
-(`src/tool/mod.rs:512-974`) covering 39 distinct tools: `todowrite` has two
-sites (policy branch and no-session fallback), and `lsp`/`security` each have
-four sites (native, disabled stub, MCP-with-fallback, MCP-no-fallback) that
-always register exactly one variant. A further 17 sites are gated
-(see the conditional sections below), and the `for tool in visible/deferred`
-loops at `src/tool/mod.rs:935`/`:938` each register many tools, so
-`grep -c '\.register(' src/tool/mod.rs` (= 64 sites including the
-`catalog.register` call inside `ToolRegistry::register`) is not a tool count.
+`ToolRegistry::with_options()` (`src/tool/mod.rs:587`) contains **67**
+registration call sites — 54 `registry.register(..)` and 13
+`registry.register_boxed(..)`. 37 of those sites are unconditional; the
+remaining 30 sit behind conditionals (see the conditional sections below).
+
+Counting *distinct names* rather than sites: the 37 unconditional sites
+each register a different tool, and three more names are registered by
+mutually exclusive variant sites that always resolve to exactly one
+variant — `lsp` (native / disabled stub / MCP-with-fallback /
+MCP-no-fallback, plus the constrained-profile disabled stub), `lsp_read`
+(constrained stub vs. native adapter), and `security` (native / disabled
+stub / MCP-with-fallback / MCP-no-fallback). That is **40 distinct names
+registered for every registry configuration**. `todowrite` is *not* in
+that set — see the todo section below.
+
+Two adjacent counts are load-bearing and easy to conflate with the above:
+
+- **75 distinct production tool names** — the `name()` values of the 67
+  production `impl Tool for` blocks under `src/` (5 of them resolve the name
+  at runtime), **plus** the 13 `eggsact` deterministic validator names, which
+  resolve at runtime from `self.codegg_name` and are therefore counted at
+  their `EggsactTool::new()` call sites in `src/tool/deterministic.rs`
+  (62 literal + 13 runtime-named). The scan covers the **whole `src/` tree**,
+  not only `src/tool/` and `src/context/`: a production `Tool` impl may live
+  with the subsystem that owns the tool's behaviour, and `python_script`
+  (`src/python_script/tool.rs`) is one — it is registered unconditionally by
+  `with_options()` yet lives outside the registry directory, so a scan scoped
+  to `src/tool/` + `src/context/` undercounts the production surface by one.
+  This set is a superset of the registered names: `lsp_preview_apply`,
+  `goal_get`, `goal_request_completion`, `goal_update_progress`, and
+  `work_order` are registered later by `build_session_tool_registry()`
+  (`src/tool/factory.rs`), and `batch` (`src/tool/batch.rs`) has a
+  production `Tool` impl but no production registration at all.
+- **83 tool source files** — `src/tool/**.rs`, including `src/tool/bash/`
+  and excluding the `src/tool/bash/tests/` fixture.
+
+`grep -c '\.register(' src/tool/mod.rs` (= 55) is not a tool count
+either: it is the 54 `registry.register(..)` sites plus the
+`catalog.register` call inside `ToolRegistry::register`. The two
+deterministic-tool loops at `src/tool/mod.rs:1274`/`:1277` each register
+many tools.
 
 Disclosure is resolved by `disclosure_for()` in `src/tool/disclosure.rs:61`
 (`Core` = ordinary immediate, `Deferred` = discoverable, `Hidden` = never
@@ -366,7 +411,6 @@ advertised):
 | **question** | Core | `question.rs` | Ask user clarifying questions. |
 | **mcp_resource_search** | Deferred | `mcp_resource.rs` | Search MCP-exposed resources. |
 | **mcp_resource_read** | Deferred | `mcp_resource.rs` | Read one MCP-exposed resource by URI. |
-| **todowrite** | Core | `todo.rs` | Create/update todo items. Always registered: policy-gated with persistence when `todo_state`+`todo_policy` are present, otherwise the canonical in-memory `TodoWriteTool`. |
 | **skill** | Core | `skill.rs` | Load a skill (SKILL.md) by name into context. |
 | **skill_proposal** | Deferred | `skill_proposal.rs` | Submit one user-authorized portable SKILL.md proposal for preview. `SafeMutating`, `DirectOnly` (agent loop only; subagents and Tool Programs denied), `NonIdempotent`, no retry. Requires an active `/skill-promote` request ID plus matching session/project/habit scope and fresh fingerprint/revision; never writes a skill root. |
 | **apply_patch** | Core | `apply_patch.rs` | Apply unified diff patches (update/create/delete/move). |
@@ -388,6 +432,8 @@ advertised):
 | **plan_exit** | Core | `plan.rs` | Exit plan mode. |
 | **invalid** | Hidden | `invalid.rs` | Catch-all for malformed tool calls. Registered but never in definitions/discovery. |
 | **tool_search** | Core | `tool_search.rs` | On-demand discovery via multiword catalog ranking. Returns compact authorized descriptors, capped at 10 by default; empty queries browse authorized results in bounded pages. Exact names can request one schema. |
+| **job** | Core | `job.rs` | Inspect and control the session's own background jobs (`status`/`wait`/`cancel`/`output`). Category: `ShellExec`. |
+| **ci_watch** | Core | `ci_watch.rs` | Watch one GitHub Actions workflow run to completion (`create`/`status`/`cancel`/`list`). Category: `ShellExec`. |
 
 ### Conditional: Eggsearch Wrappers (7 tools)
 
@@ -417,21 +463,25 @@ Raw `mcp__eggsearch__*` tools hidden by default
 | **lsp_preview_apply** | Session-scoped native | Deferred, direct-only checked LSP preview application. Registered only with pool, workspace locks, shared LSP service, and preview handle; unavailable to Tool Programs. |
 | **security** | Native or DisabledTool | Security scanning. Same backend logic as LSP. Deferred for ordinary coding; immediate for `security-review` role. |
 
-### Conditional: Todo Tools (1-2 tools)
+### Conditional: Todo Tools (0-2 tools)
 
-`todowrite` is always registered (see the table above); only `todoread` is
-policy-gated via `TaskStatePolicy`:
+`todowrite` and `todoread` are both policy-gated via `TaskStatePolicy`
+(`src/tool/mod.rs:864-896`):
 
 | Tool | Condition | Description |
 |------|-----------|-------------|
-| **todoread** | `allow_model_todo_read` | Read todo items. |
-| **todowrite** | `allow_model_todo_write && mode != Disabled` | Policy-gated variant with session persistence. |
-| **todowrite** (no session context) | `todo_state` and `todo_policy` both `None` | Canonical `TodoWriteTool` with default in-memory state and the explicit-todo policy (no session persistence). The legacy `TodoTool` duplicate was removed in M001. |
+| **todowrite** | `todo_state` or `todo_policy` is `None` | Canonical `TodoWriteTool` with default in-memory state and the explicit-todo policy (no session persistence). The legacy `TodoTool` duplicate was removed in M001. |
+| **todowrite** | `todo_state` and `todo_policy` both `Some`, and `policy.mode != Disabled && policy.allow_model_todo_write` | Policy-gated variant, with session persistence when `pool` + `session_id` are also present. |
+| **todoread** | `todo_state` and `todo_policy` both `Some`, and `policy.allow_model_todo_read` | Read todo items. |
+
+`todowrite` is therefore **not** unconditionally registered: with both
+options present and the policy refusing model todo writes, no todo tool is
+registered at all.
 
 ### Conditional: Memory Tools (2 tools)
 
 Registered only when `ToolRegistryOptions.memory_store` is `Some`
-(`src/tool/mod.rs:617-626`); scope derives from
+(`src/tool/mod.rs:844-853`); scope derives from
 `MemoryReadScope::for_project(project_identity)`:
 
 | Tool | Disclosure | Description |
@@ -442,7 +492,7 @@ Registered only when `ToolRegistryOptions.memory_store` is `Some`
 ### Conditional: Extension Tools (2 tools)
 
 Registered only when `ToolRegistryOptions.extension_catalog` is `Some`
-(`src/tool/mod.rs:627-634`):
+(`src/tool/mod.rs:854-861`):
 
 | Tool | Disclosure | Description |
 |------|------------|-------------|
@@ -452,7 +502,7 @@ Registered only when `ToolRegistryOptions.extension_catalog` is `Some`
 ### Conditional: WorkPlan Tools (2 tools)
 
 Registered only when both `pool` and `session_id` are `Some`
-(`src/tool/mod.rs:675-683`):
+(`src/tool/mod.rs:902-909`):
 
 | Tool | Disclosure | Description |
 |------|------------|-------------|
@@ -479,7 +529,7 @@ structured_data_compare, text_fingerprint.
 
 ## ToolRegistry
 
-Manages registration and lookup at `src/tool/mod.rs:249-258`:
+Manages registration and lookup at `src/tool/mod.rs:342-361` (12 fields):
 
 ```rust
 pub struct ToolRegistry {
@@ -491,6 +541,10 @@ pub struct ToolRegistry {
     sandbox_profile: SandboxProfile, // M005 resolved profile
     lsp_preview_registry: Option<LspPreviewRegistryHandle>,
     lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    decision_engine: Arc<dyn codegg_core::decision::DecisionEngine>,
+    decision_backend: crate::tool_advisor::DecisionBackendResolution,
+    advisor_mode: crate::tool_advisor::AdvisorMode,
+    process_admission: Option<SharedProcessAdmission>, // M005 C005
 }
 ```
 
@@ -518,12 +572,13 @@ pub struct ToolRegistry {
 
 ### ToolRegistryOptions
 
-Centralizes all knobs that influence registration (`src/tool/mod.rs:276`,
-29 fields):
+Centralizes all knobs that influence registration (`src/tool/mod.rs:376`,
+38 fields):
 
 ```rust
 pub struct ToolRegistryOptions {
     pub tool_advisor: Option<ToolAdvisorConfig>,
+    pub decision_engine: Option<DecisionEngineConfig>,
     pub todo_state: Option<Arc<Mutex<TodoState>>>,
     pub todo_policy: Option<TaskStatePolicy>,
     pub pool: Option<SqlitePool>,
@@ -540,18 +595,26 @@ pub struct ToolRegistryOptions {
     pub deterministic_config: Option<DeterministicToolsRuntimeConfig>,
     pub preflight_config: Option<PreflightRuntimeConfig>,
     pub run_store: Option<Arc<dyn RunStore>>,
+    pub publication: Option<Arc<GitIndexPublisher>>,
     pub submission: Option<Arc<JobSubmissionService>>,
     pub command_intent: Option<CommandIntentConfig>,
+    pub windows_shell: Option<WindowsShellKind>,
     pub workspace_root: Option<PathBuf>,
     pub child_git_policy: Option<ChildGitPolicy>,
+    pub git_read_only: Option<String>,
     pub asset_snapshot: Option<Arc<ProjectAssetSnapshot>>,
     pub asset_pin: Option<Arc<Mutex<RuntimeAssetPin>>>,
     pub notification_service: Option<Arc<ToolProgramNotificationService>>,
+    pub job_notification_service: Option<Arc<JobNotificationService>>,
+    pub ci_watch_service: Option<Arc<CiWatchService>>,
     pub search_runtime: Option<SearchRuntimeContext>,
+    pub research_provider: Option<Arc<dyn Provider>>,
+    pub research_model: Option<String>,
     pub sandbox_profile: Option<SandboxProfile>, // M005: None = WorkspaceWrite default
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub project_identity: Option<String>,
     pub extension_catalog: Option<Arc<crate::plugin::marketplace::MarketplaceService>>,
+    pub process_admission: Option<SharedProcessAdmission>, // M005 C005
 }
 ```
 
@@ -665,7 +728,7 @@ construction (`worker.rs`).
 ### execute_capture (Central Execution Path)
 
 `ToolRegistry::execute_capture(name, input, ctx)` at
-`src/tool/mod.rs:1317-1349` is the central execution path for native
+`src/tool/mod.rs:1701-1733` is the central execution path for native
 tools. It calls `Tool::execute_structured()` internally, populates
 a fallback `ToolProvenance::legacy(...)` for tools that do not override
 it, and records provenance via `tracing::debug!`. The returned
@@ -685,10 +748,14 @@ and callable by name for diagnostics.
 
 ## ToolCatalog
 
-Metadata management and search at `src/tool/catalog.rs:170-178`:
+Metadata management and search at `src/tool/catalog.rs:193-195`:
 
 ```rust
 pub struct ToolCatalog {
+    inner: Arc<RwLock<ToolCatalogState>>,
+}
+
+struct ToolCatalogState {
     tools: HashMap<String, ToolMetadata>,
     deferred_load: Vec<String>,
     search_mode: SearchMode,
@@ -699,9 +766,14 @@ pub struct ToolCatalog {
 ```
 
 `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`).
+The catalog is cheaply cloneable: a clone shares the same
+`Arc<RwLock<ToolCatalogState>>`.
 
 Search supports keyword (case-insensitive substring) and BM25 ranking
 modes. BM25 caches are recomputed on each registration when active.
+`ToolCatalog::rank_descriptors()` (`src/tool/catalog.rs:220`) is the
+shared scoring entry point used by both live discovery and the offline
+advisor benchmark.
 
 ## Tool Backend Diagnostics
 
@@ -783,9 +855,11 @@ means "construct the tool anyway":
   if invoked. `ToolRegistry::register_boxed` exists because a stub and the real
   tool it replaces are unrelated concrete types.
 - The tool `Default` constructors (`read`, `write`, `edit`, `glob`, `grep`,
-  `list`, `diff`, `apply_patch`, `replace`, `lsp`, `lsp_read`, `git`,
-  `git_read`, `commit`, `review`, `research`, `skill`, `backend`) seed
-  `unresolved_workspace_root()` instead of the process cwd.
+  `diff`, `apply_patch`, `replace`, `lsp`, `lsp_read`, `git`, `git_read`,
+  `commit`, `review`, `backend`) seed `unresolved_workspace_root()`
+  (`src/tool/util.rs:39`) instead of the process cwd. `list`, `research`,
+  and `skill` carry an `Option<PathBuf>` root instead of the sentinel; they
+  resolve their root from the caller's execution context instead.
 - `validate_path` / `validate_target_path` recognise that sentinel and return
   `MissingWorkspaceRoot` before canonicalizing. That single choke point is what
   makes every `allowed_root` consumer fail closed without each tool repeating
@@ -797,6 +871,29 @@ means "construct the tool anyway":
 remedy is to resolve one — never to widen the search. `ToolBroker` classifies
 it as `missing_workspace_root`, and progress recovery treats it as a
 deterministic tool error rather than a transport fault.
+
+## Process admission is refused before the process exists (M005 C005)
+
+The `Tool` trait's **default** `execute_structured` is the widest net for the
+process-admission gate: it calls
+`crate::tool::process_admission::admit_tool_process(self.name(), ctx.as_ref())`
+*before* delegating to `execute()`
+(`src/tool/mod.rs:194-212`, the gate call at `:209`). The gate classifies the tool against the
+capability table and refuses an unqualified process surface at the tool
+boundary — before the tool runs, and therefore before any process exists.
+
+Two rules follow:
+
+- A tool that **overrides** `execute_structured` must perform the same check.
+  The default is deliberately the widest net so that a tool which starts a
+  process cannot slip through by forgetting to consult the gate.
+- The broker refuses the same surfaces at its own final dispatch, with a
+  distinct typed error (`BrokerError::ProcessDenied`) rather than a generic
+  execution failure. See `architecture/tool_broker.md`.
+
+The gate is opt-in by construction: `ToolRegistryOptions.process_admission`
+carries the resolved `SharedProcessAdmission` policy, and
+`BrokerInvocationContext.process_admission` carries it per call.
 
 ## ToolContracts and the Canonical Broker
 
@@ -855,6 +952,68 @@ reconciliation without replay, and cancellation during backoff.
 
 ## Source Verification
 
+Verified 2026-10-23 against source. The registration counts in this document
+were re-derived from `src/tool/mod.rs` and reconciled with the
+`architecture/overview.md` "Verified counts" table (measured 2026-10-23),
+which is the single source of truth for counts. Corrected:
+
+- Always-registered count: "39" → **40 distinct names**; the supporting
+  "46 unconditional register sites" → **37 unconditional sites of 67 total**
+  (54 `registry.register` + 13 `registry.register_boxed`). `todowrite` was
+  moved out of the always-registered table into the todo conditional
+  section: with both `todo_state` and `todo_policy` present and the policy
+  refusing model todo writes, no todo tool is registered.
+- `grep -c '\.register(' src/tool/mod.rs` = **55** (54 sites + the
+  `catalog.register` call inside `ToolRegistry::register`), not 64.
+- Registration loops `src/tool/mod.rs:935`/`:938` → `:1274`/`:1277`.
+- `with_options()` `src/tool/mod.rs:408` → `:587`.
+- `trait Tool` `:157-238` → `:163-256`; `ToolCategory` `:133-142` →
+  `:139-150`.
+- `ToolRegistry` `:249-258` → `:342-361`, and 8 → **12 fields** (added
+  `decision_engine`, `decision_backend`, `advisor_mode`,
+  `process_admission`).
+- `ToolRegistryOptions` `:276` → `:376`, and 29 → **38 fields** (added
+  `decision_engine`, `publication`, `windows_shell`, `git_read_only`,
+  `notification_service`, `job_notification_service`, `ci_watch_service`,
+  `research_provider`, `research_model`, `process_admission`).
+- `execute_capture` `:1317-1349` → `:1701-1733`.
+- `ToolCatalog` `src/tool/catalog.rs:170-178` → `:193-195`; the struct is now
+  a single `inner: Arc<RwLock<ToolCatalogState>>` field, and the seven
+  former fields live on the private `ToolCatalogState` (`:198-208`).
+- Conditional registration blocks: memory `:617-626` → `:844-853`;
+  extension `:627-634` → `:854-861`; work plan `:675-683` → `:902-909`.
+- `python_script` name `src/python_script/tool.rs:444` → `:467`
+  (`PythonScriptTool` struct at `:253`).
+- The sentinel-seeding `Default` constructor list dropped `list`, `research`,
+  and `skill` (none of them seeds `unresolved_workspace_root()`; the first
+  carries `Option<PathBuf>` and the other two resolve their root from the
+  execution context).
+
+Added: the always-registered table gained the two missing unconditional
+tools (`job`, `ci_watch`, both `ShellExec`); the always-registered section
+now states the 75-name production surface, the 83 tool source files, and
+the fact that `lsp_preview_apply` / `goal_*` / `work_order` are registered
+by `build_session_tool_registry()` (`src/tool/factory.rs`) rather than by
+`with_options()`; the "Where It Lives" tree gained the omitted modules
+(`git_read.rs`, `lsp_read.rs`, `lsp_preview_apply.rs`, `goal.rs`, `job.rs`,
+`ci_watch.rs`, `work_order.rs`, `work_plan.rs`, `disclosure.rs`,
+`authorization.rs`, `process_admission.rs`).
+
+Verified accurate: `disclosure_for()` at `src/tool/disclosure.rs:61`;
+`tool_category_for_name()` at `src/permission/mod.rs:151`;
+`unresolved_workspace_root()` / `validate_path` / `validate_target_path` /
+`canonicalize_path` / `check_path_for_symlinks` at `src/tool/util.rs:39` /
+`:72` / `:112` / `:284` / `:294`; `build_eggsact_tools()` at
+`src/tool/deterministic.rs:106`; `UnrootedTool` and `DisabledTool` in
+`src/tool/disabled.rs`; `ToolRegistry::register` / `register_boxed` at
+`src/tool/mod.rs:1415`/`:1425`; the 4 `ToolCategory` variants; the
+`ToolResult` shape; the 7 eggsearch wrappers; the 13 deterministic tools
+(8 always-visible + 5 deferred); `multiedit` and `src/agent/team.rs` both
+absent as documented; the `task` action list (`spawn_many`,
+`wait_group`, `status_group`, `cancel_group`, `wait`, `cancel`,
+`message`, `interrupt`, `converge`); and the `verify` action allow-list
+(`check`, `build`, `lint`, `typecheck`, `format_check`, `auto`).
+
 Verified 2026-10-06 against source. Corrected: always-registered tool count
 "~31" → 39 distinct tools from 46 unconditional register sites
 (`src/tool/mod.rs:408` `with_options()`, sites `:512-974`), with the
@@ -888,3 +1047,16 @@ extension-catalog block `583-590`->`627-634`, the WorkPlan pool/session block
 was re-checked to land on the same construct it previously named. Confirmed
 unchanged by that commit: the disclosed tool set, the
 `off`/`observe`/`rerank`/`promote` semantics, and every tool name in the tables.
+
+Corrected 2026-10-23: the production tool-name count was **75**, not 62. The
+count is the `name()` values of the 67 production `impl Tool for` blocks under
+`src/` **plus** the 13 `eggsact` deterministic validator names, which resolve
+at runtime from `self.codegg_name` and so are invisible to a literal-name scan
+of the impl blocks. They are counted instead at their `EggsactTool::new()`
+call sites in `src/tool/deterministic.rs` — 8 always-visible and 5 deferred, as
+`codegg doctor deterministic-tools` reports. Two runtime-named families were
+checked and deliberately add nothing: `DisabledTool` carries the name of the
+tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards
+its inner tool's name. Re-measure with `python3 scripts/measure_overview_counts.py`;
+the method and the correction history are in
+[count_audit_history.md](count_audit_history.md).

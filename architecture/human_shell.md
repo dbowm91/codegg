@@ -8,7 +8,7 @@ and a promotion model that keeps ephemeral commands out of model context.
 
 ## Where It Lives
 
-`src/shell/` — 11 files:
+`src/shell/` — 12 files:
 
 | File | Contents |
 |------|----------|
@@ -165,7 +165,7 @@ pub enum PromptSubmissionKind { Chat(String), Slash(String), HumanShell { comman
 `!cmd` → `promote_after=false`, `\!cmd` → `Chat("!cmd")`, `/cmd` →
 `Slash`, empty/`!`/`!!` → `Chat`.
 
-### ShellRuntime (`runtime.rs:9`)
+### ShellRuntime (`src/shell/runtime.rs`)
 
 Builds a typed `$SHELL -lc` request and sends events over
 `mpsc::Sender<ShellEvent>`. Generic timeout, cancellation, process-group,
@@ -174,27 +174,27 @@ Plugin service integration remains available via `with_plugin_service()` for
 shell environment lifecycle hooks. See
 `architecture/process-tool-execution-ownership.md`.
 
-### ShellOutputStore (`store.rs:96`)
+### ShellOutputStore (`src/shell/store.rs`)
 
 Bounded `VecDeque<ShellOutputEntry>`. Defaults: 100 entries, 1 MB per-command
 byte budget (`max_bytes_per_command`), 8 MB total (`max_total_bytes`).
 Retained output per stream is bounded separately by `BoundedOutput`:
 `HEAD_CAP` 256 KiB + `TAIL_CAP` 256 KiB = **512 KiB retained** per stream,
 with `omitted_bytes` tracking what the tail dropped (the overflow is drained
-from the *front* of the tail, `store.rs:51-54`). Evicts oldest by count
+from the *front* of the tail, in `BoundedOutput::push`). Evicts oldest by count
 first, then by total bytes, both `pop_front` — but the byte loop stops at one
-remaining entry (`store.rs:253-272`), so a single oversized command is never
-evicted. `ShellOutputEntry` includes `promoted: bool` and
+remaining entry (`ShellOutputStore::evict()`), so a single oversized command is
+never evicted. `ShellOutputEntry` includes `promoted: bool` and
 `promote_after: bool` (set from `capture_policy`).
 
-### CommandOutputStore (`projection.rs:391`)
+### CommandOutputStore (`src/shell/projection.rs`)
 
 Raw byte store. 32 MiB/stream cap, 64 MiB total, 100 entries. LRU
 eviction. Handles: `cmd://<id>/stdout`, `cmd://<id>/stderr`. Supports
 `expand()`, `expand_stream()`, `parse_handle()`,
 `parse_handle_with_range()`.
 
-### ProjectionSelector (`projector.rs:2991`)
+### ProjectionSelector (`src/shell/projector.rs`)
 
 `with_defaults()` — conservative chain without RTK.
 `with_rtk(config)` — adds RTK projector.
@@ -202,7 +202,7 @@ eviction. Handles: `cmd://<id>/stdout`, `cmd://<id>/stderr`. Supports
 `project(request, store)` — selects projector, applies redaction hook,
 returns `ProjectionResult`.
 
-### Redactor (`redactor.rs:386`)
+### Redactor (`src/shell/redactor.rs`)
 
 Seven rules: `AuthorizationRule` (bearer/basic/api-key),
 `EnvSecretRule` (UPPERCASE var assignments with sensitive keywords),
@@ -280,10 +280,15 @@ cargo test -p codegg --lib shell::digest         # failure extraction
 cargo test -p codegg --lib shell::redactor       # seven rules, false positives
 cargo test -p codegg --lib shell::rtk            # discovery, eligibility, wrapper grammar
 cargo test -p codegg --lib shell::projector      # selector, native projectors, redaction hook
-cargo test --test shell_projection_harness       # 11 invariant tests over fixture corpus
-cargo test --test shell_projection_phase10       # 33 context budget tests
+cargo test --test core_daemon -- shell_projection_harness   # 11 invariant tests over fixture corpus
+cargo test --test core_daemon -- shell_projection_phase10   # 33 context budget tests
 CODEGG_RTK_INTEGRATION=1 cargo test -p codegg --lib shell::rtk -- rtk_integration  # env-gated
 ```
+
+`shell_projection_harness` and `shell_projection_phase10` are members of the
+`core_daemon` integration-test family (`tests/core_daemon/`); the family is
+the single Cargo test target declared in the root `Cargo.toml`, so each member
+name must be passed as a filter after `--`.
 
 ## Related Docs
 
@@ -291,32 +296,11 @@ CODEGG_RTK_INTEGRATION=1 cargo test -p codegg --lib shell::rtk -- rtk_integratio
   references `crate::shell` types; `ShellOrigin::AgentTool` is declared but
   never constructed)
 - [human-shell/SKILL.md](../.opencode/skills/human-shell/SKILL.md)
-- [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md)
-
-## Source verification
-
-Verified 2026-10-06 against `src/shell/` (11 files, as tabulated):
-`ShellRuntime` (`runtime.rs:9`), `ShellOutputStore` (`store.rs:96`),
-`CommandOutputStore` (`projection.rs:391`), `ProjectionSelector`
-(`projector.rs:2991`), `Redactor` (`redactor.rs:386`); the seven
-`RedactRule` impls (`redactor.rs:56-253`, including `ProviderTokenRule`
-at 205); `HEAD_CAP`/`TAIL_CAP` = 256 KiB each (`store.rs:10-11`);
-`COMMAND_OUTPUT_MAX_RETAINED_BYTES` 64 MiB, `..._SINGLE_STREAM_BYTES`
-32 MiB, `..._HISTORY_ENTRIES` 100 (`projection.rs:369-375`);
-`RtkProjector::MAX_STDERR_WARNING_BYTES = 512` (`rtk.rs:610`); and
-`HumanShellConfig` defaults 100 / 1,000,000 / 8,000,000 / 300s
-(`crates/codegg-config/src/schema.rs:2955-2996`). The prior "1 MB/cmd
-(head 256KB + tail 256KB)" wording was arithmetically wrong — head plus
-tail is 512 KiB, distinct from the 1 MB per-command eviction budget.
-
-Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
-ownership migration and M006 closure"), which inserted `DecisionEngineConfig`
-near the top of `crates/codegg-config/src/schema.rs` and shifted later
-declarations. Corrected: the `HumanShellConfig` range `2914-2955`
-->`2955-2996` in the working tree; both endpoints were re-checked to land on the
-struct declaration and the same trailing `auto_promote_bangbang` default, so the
-range still spans exactly the same members. No `src/shell/` reference in this
-document was affected by that commit.
+- [process-tool-execution-ownership.md](process-tool-execution-ownership.md) —
+  the shared managed-process contract `ShellRuntime` delegates to
+- The phase-by-phase status of the projection pipeline is tabulated in
+  "Archived Phase Status" below; the original roadmap file it was written
+  against no longer exists under `plans/`.
 
 ## Archived Phase Status
 
@@ -335,6 +319,29 @@ document was affected by that commit.
 
 ## Source verification
 
+Verified 2026-10-06 against `src/shell/`:
+`ShellRuntime` (`runtime.rs:9`), `ShellOutputStore` (`store.rs:96`),
+`CommandOutputStore` (`projection.rs:391`), `ProjectionSelector`
+(`projector.rs:2991`), `Redactor` (`redactor.rs:386`); the seven
+`RedactRule` impls (`redactor.rs:56-253`, including `ProviderTokenRule`
+at 205); `HEAD_CAP`/`TAIL_CAP` = 256 KiB each (`store.rs:10-11`);
+`COMMAND_OUTPUT_MAX_RETAINED_BYTES` 64 MiB, `..._SINGLE_STREAM_BYTES`
+32 MiB, `..._HISTORY_ENTRIES` 100 (`projection.rs:369-375`);
+`RtkProjector::MAX_STDERR_WARNING_BYTES = 512` (`rtk.rs:610`); and
+`HumanShellConfig` defaults 100 / 1,000,000 / 8,000,000 / 300s
+(`crates/codegg-config/src/schema.rs`). The prior "1 MB/cmd
+(head 256KB + tail 256KB)" wording was arithmetically wrong — head plus
+tail is 512 KiB, distinct from the 1 MB per-command eviction budget.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which inserted `DecisionEngineConfig`
+near the top of `crates/codegg-config/src/schema.rs` and shifted later
+declarations. Corrected: the `HumanShellConfig` range `2914-2955`
+->`2955-2996` in the working tree; both endpoints were re-checked to land on the
+struct declaration and the same trailing `auto_promote_bangbang` default, so the
+range still spans exactly the same members. No `src/shell/` reference in this
+document was affected by that commit.
+
 Re-verified 2026-10-10 against `src/tui/app/mod.rs`,
 `src/tui/commands/shell.rs`, `src/tui/app/prompt_turn.rs`,
 `src/tui/runtime/event_loop.rs`, and `crates/codegg-config/src/schema.rs`:
@@ -345,3 +352,48 @@ timeout, ANSI, and automatic `!!` behavior are read at startup and reload.
 The WebSocket adapter has no staged-context request, so evidence is placed in
 an empty composer for explicit remote submission and queue delivery is not
 treated as acknowledgement.
+
+Verified 2026-10-23 against `src/shell/` (12 files, as tabulated),
+`crates/codegg-config/src/schema.rs`, the root `Cargo.toml` test targets, and
+`tests/core_daemon/mod.rs`. Corrected:
+
+- **File count 11 → 12.** The table already listed twelve files; the count in
+  the heading did not match it.
+- **Config line ref replaced by symbol name.** `HumanShellConfig` had drifted
+  from the cited `schema.rs:2955-2996`; it is now referenced by declaration
+  name and file.
+- **Dead reference removed.** `plans/shell_output_projection_rtk_roadmap.md` no
+  longer exists anywhere under `plans/` (the projection phases it tracked are
+  all landed and tabulated in "Archived Phase Status" below). The Related Docs
+  list now points at the in-document phase table and at
+  `architecture/process-tool-execution-ownership.md`, which does exist.
+- **Test commands corrected.** `cargo test --test shell_projection_harness`
+  and `cargo test --test shell_projection_phase10` selected zero tests: both
+  are members of the `core_daemon` family. They are now
+  `cargo test --test core_daemon -- shell_projection_harness` (and
+  `... -- shell_projection_phase10`).
+- **Two `## Source verification` headings merged into one section**, keeping
+  the 2026-10-06, 2026-10-10, and 2026-10-23 entries in order.
+- **Stale `src/shell/` line refs replaced by symbol names** for
+  `ShellRuntime`, `ShellOutputStore`, `CommandOutputStore`,
+  `ProjectionSelector`, `Redactor`, `BoundedOutput::push()`, and
+  `ShellOutputStore::evict()`.
+
+Verified accurate: the twelve-file inventory; `ShellOrigin` /
+`ShellCapturePolicy` / `ShellPromotionMode` / `ShellEnvPolicy` /
+`ShellStatus` / `PromptSubmissionKind` variant lists; the `ShellRequest`
+field list; `classify_prompt_submission()`'s handling of `!!cmd`, `!cmd`,
+`\!cmd`, `/cmd`, and empty input; `HEAD_CAP`/`TAIL_CAP` = 256 KiB each;
+`COMMAND_OUTPUT_MAX_RETAINED_BYTES` 64 MiB,
+`COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES` 32 MiB, and
+`COMMAND_OUTPUT_HISTORY_ENTRIES` 100; `RtkProjector::MAX_STDERR_WARNING_BYTES`
+= 512; the seven `RedactRule` implementations and the `[REDACTED:<rule-class>]`
+marker; the five native projectors (`GitStatus`, `GitDiff`, `GitLog`,
+`CargoCheck`, `CargoTest`) and the selector chain; the `HumanShellConfig`
+defaults (100 entries, 1,000,000 bytes per command, 8,000,000 bytes total,
+300s timeout, `auto_promote_bangbang` true) and the `ShellOutputConfig`
+defaults (`safe`, `retain_raw` true, `model_only`, 4000 tokens, 200000 TUI
+bytes, `show_projection_metadata` true, `prefer_native_projectors` true); the
+daemon run registry caps (8 runs per principal, 512 total, `RUN_TTL_MS` =
+10 minutes); and the claim that `ShellOrigin::AgentTool` is declared but never
+constructed.

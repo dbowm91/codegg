@@ -11,6 +11,9 @@
 //! ADR-0004 (`plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`),
 //! and the execution-reliability roadmap M003.
 
+use codegg_protocol::core::{
+    ReasoningOverride, MAX_REASONING_BUDGET_TOKENS, MAX_REASONING_LABEL_BYTES,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
@@ -665,6 +668,14 @@ pub struct RuntimePreference {
     /// convenience default snapshotted into `WorkOrderCreateRequest` at
     /// creation time; never execution authority.
     pub last_task_model_id: Option<String>,
+    /// Provider reasoning control M002: the daemon-owned, principal-scoped
+    /// extended-thinking selection.
+    ///
+    /// `None` means "no explicit selection": the turn then inherits the
+    /// agent / model-profile default. An `Effort` selection carries an
+    /// **open, provider-scoped** label verbatim — it is never folded onto
+    /// one of the known convenience labels.
+    pub reasoning_selection: Option<ReasoningOverride>,
     pub revision: u64,
     pub updated_at_ms: i64,
 }
@@ -833,7 +844,9 @@ impl RuntimePreferenceStore {
     /// Read the preference row for `principal_id`. Unknown mode/profile
     /// strings in a corrupt row degrade conservatively to `None` (the
     /// caller falls back to `Interactive`/`WorkspaceWrite`) rather than
-    /// failing the whole read.
+    /// failing the whole read. A corrupt reasoning selection degrades the
+    /// same way: it is not authority, so it reads as "no explicit
+    /// selection" instead of failing the whole read.
     pub async fn get(
         &self,
         principal_id: &str,
@@ -844,6 +857,7 @@ impl RuntimePreferenceStore {
             SELECT principal_id, approval_mode, sandbox_profile, network_intent,
                    last_provider_connection_id, last_model_id,
                    last_task_provider_connection_id, last_task_model_id,
+                   reasoning_selection,
                    revision, updated_at
             FROM runtime_preferences WHERE principal_id = ?1
             "#,
@@ -967,14 +981,17 @@ impl RuntimePreferenceStore {
             ),
             None => (None, None),
         };
+        // M002 reasoning selection survives policy writes untouched.
+        let reasoning_selection = current_reasoning_selection(current.as_ref());
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile,
                  last_provider_connection_id, last_model_id,
                  last_task_provider_connection_id, last_task_model_id,
+                 reasoning_selection,
                  revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(principal_id) DO UPDATE SET
                 approval_mode = excluded.approval_mode,
                 sandbox_profile = excluded.sandbox_profile,
@@ -989,6 +1006,7 @@ impl RuntimePreferenceStore {
         .bind(model_id)
         .bind(task_connection_id)
         .bind(task_model_id)
+        .bind(reasoning_selection)
         .bind(next_revision as i64)
         .bind(now)
         .execute(&self.pool)
@@ -1046,14 +1064,17 @@ impl RuntimePreferenceStore {
             ),
             None => (None, None),
         };
+        // M002 reasoning selection survives ordinary model writes.
+        let reasoning_selection = current_reasoning_selection(current_row.as_ref());
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile,
                  last_provider_connection_id, last_model_id,
                  last_task_provider_connection_id, last_task_model_id,
+                 reasoning_selection,
                  revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(principal_id) DO UPDATE SET
                 last_provider_connection_id = excluded.last_provider_connection_id,
                 last_model_id = excluded.last_model_id,
@@ -1068,6 +1089,7 @@ impl RuntimePreferenceStore {
         .bind(model_id)
         .bind(task_connection_id)
         .bind(task_model_id)
+        .bind(reasoning_selection)
         .bind(next_revision as i64)
         .bind(now)
         .execute(&self.pool)
@@ -1128,14 +1150,17 @@ impl RuntimePreferenceStore {
             ),
             None => (None, None),
         };
+        // M002 reasoning selection survives Task-composer writes.
+        let reasoning_selection = current_reasoning_selection(current_row.as_ref());
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile,
                  last_provider_connection_id, last_model_id,
                  last_task_provider_connection_id, last_task_model_id,
+                 reasoning_selection,
                  revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(principal_id) DO UPDATE SET
                 last_task_provider_connection_id = excluded.last_task_provider_connection_id,
                 last_task_model_id = excluded.last_task_model_id,
@@ -1150,6 +1175,7 @@ impl RuntimePreferenceStore {
         .bind(session_model_id)
         .bind(connection_id)
         .bind(model_id)
+        .bind(reasoning_selection)
         .bind(next_revision as i64)
         .bind(now)
         .execute(&self.pool)
@@ -1208,14 +1234,17 @@ impl RuntimePreferenceStore {
             ),
             None => (None, None),
         };
+        // M002 reasoning selection survives single-field writes.
+        let reasoning_selection = current_reasoning_selection(current.as_ref());
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile, network_intent,
                  last_provider_connection_id, last_model_id,
                  last_task_provider_connection_id, last_task_model_id,
+                 reasoning_selection,
                  revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(principal_id) DO UPDATE SET
                 approval_mode = excluded.approval_mode,
                 sandbox_profile = excluded.sandbox_profile,
@@ -1232,6 +1261,7 @@ impl RuntimePreferenceStore {
         .bind(model_id)
         .bind(task_connection_id)
         .bind(task_model_id)
+        .bind(reasoning_selection)
         .bind(next_revision as i64)
         .bind(now)
         .execute(&self.pool)
@@ -1241,6 +1271,192 @@ impl RuntimePreferenceStore {
             .await?
             .ok_or_else(|| PreferenceError::Storage("preference write lost".into()))
     }
+
+    /// Provider reasoning control M002: persist the caller's durable,
+    /// principal-scoped extended-thinking selection.
+    ///
+    /// The selection is **open**: an effort label is a provider-scoped
+    /// string carried verbatim, never folded onto a closed level set. Its
+    /// shape is validated here, at the store boundary, and is never
+    /// trusted verbatim.
+    ///
+    /// `None` clears the selection, which puts the next turn back on the
+    /// agent / model-profile default.
+    ///
+    /// The write is **revision-gated in the statement itself**: the upsert
+    /// carries the revision this call observed as a predicate, so a writer
+    /// that lands between this call's read and its write loses the
+    /// compare-and-swap instead of overwriting the other writer's value.
+    /// Two frontends racing a selection change therefore converge on one
+    /// winner and one [`PreferenceError::Conflict`], never on a silent
+    /// last-write-wins.
+    ///
+    /// `expected_revision` is the revision the *caller* believes is
+    /// current. `Some(expected)` refuses up front when the stored revision
+    /// has already moved past it. `None` means the caller does not assert a
+    /// revision, but the write is still gated on the revision this call
+    /// observed, so a concurrent write is a typed conflict rather than a
+    /// lost update.
+    ///
+    /// Every other preference dimension is preserved untouched.
+    pub async fn set_reasoning_selection(
+        &self,
+        principal_id: &str,
+        selection: Option<&ReasoningOverride>,
+        expected_revision: Option<u64>,
+    ) -> Result<RuntimePreference, PreferenceError> {
+        validate_principal_id(principal_id)?;
+        let encoded = encode_reasoning_selection(selection)?;
+        let current = self.get(principal_id).await?;
+        let (current_revision, current_row) = match current {
+            Some(p) => (p.revision, Some(p)),
+            None => (0, None),
+        };
+        if let Some(expected) = expected_revision {
+            if expected != current_revision {
+                return Err(PreferenceError::Conflict {
+                    expected,
+                    current: current_revision,
+                });
+            }
+        }
+        let next_revision = current_revision.saturating_add(1).max(1);
+        let now = now_millis();
+        let approval_mode = current_row
+            .as_ref()
+            .and_then(|p| p.approval_mode.map(|m| m.as_str().to_owned()));
+        let sandbox_profile = current_row
+            .as_ref()
+            .and_then(|p| p.sandbox_profile.map(|s| s.as_str().to_owned()));
+        let (connection_id, model_id) = match current_row.as_ref() {
+            Some(p) => (
+                p.last_provider_connection_id.clone(),
+                p.last_model_id.clone(),
+            ),
+            None => (None, None),
+        };
+        let (task_connection_id, task_model_id) = match current_row.as_ref() {
+            Some(p) => (
+                p.last_task_provider_connection_id.clone(),
+                p.last_task_model_id.clone(),
+            ),
+            None => (None, None),
+        };
+        let write = RuntimePreferenceWrite {
+            principal_id: principal_id.to_owned(),
+            approval_mode,
+            sandbox_profile,
+            last_provider_connection_id: connection_id,
+            last_model_id: model_id,
+            last_task_provider_connection_id: task_connection_id,
+            last_task_model_id: task_model_id,
+            reasoning_selection: encoded,
+        };
+        if !self
+            .upsert_reasoning_selection(&write, current_revision, next_revision, now)
+            .await?
+        {
+            // The compare-and-swap rejected the write: another writer moved
+            // the row's revision between this call's read and its write. The
+            // write did **not** land, so the caller's choice is not lost —
+            // it is reported as a typed conflict it can retry.
+            let current = self
+                .get(principal_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|p| p.revision)
+                .unwrap_or(current_revision);
+            return Err(PreferenceError::Conflict {
+                expected: current_revision,
+                current,
+            });
+        }
+        self.get(principal_id)
+            .await?
+            .ok_or_else(|| PreferenceError::Storage("preference write lost".into()))
+    }
+
+    /// The reasoning-selection write's compare-and-swap.
+    ///
+    /// `Ok(true)` means the row was written. `Ok(false)` means the row's
+    /// revision was no longer `observed_revision` when the statement
+    /// landed, so the statement's `DO UPDATE` was skipped and **nothing
+    /// was written**.
+    ///
+    /// The revision predicate lives inside the statement on purpose. A
+    /// revision check performed before the write is a check another writer
+    /// can invalidate between the check and the write, which is how a
+    /// read-then-write gate turns into a silent last-write-wins.
+    async fn upsert_reasoning_selection(
+        &self,
+        write: &RuntimePreferenceWrite,
+        observed_revision: u64,
+        next_revision: u64,
+        now: i64,
+    ) -> Result<bool, PreferenceError> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO runtime_preferences
+                (principal_id, approval_mode, sandbox_profile,
+                 last_provider_connection_id, last_model_id,
+                 last_task_provider_connection_id, last_task_model_id,
+                 reasoning_selection,
+                 revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(principal_id) DO UPDATE SET
+                reasoning_selection = excluded.reasoning_selection,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at
+            WHERE runtime_preferences.revision = ?11
+            "#,
+        )
+        .bind(write.principal_id.as_str())
+        .bind(write.approval_mode.clone())
+        .bind(write.sandbox_profile.clone())
+        .bind(write.last_provider_connection_id.clone())
+        .bind(write.last_model_id.clone())
+        .bind(write.last_task_provider_connection_id.clone())
+        .bind(write.last_task_model_id.clone())
+        .bind(write.reasoning_selection.clone())
+        .bind(next_revision as i64)
+        .bind(now)
+        .bind(observed_revision as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+/// The values one reasoning-selection write carries.
+///
+/// A reasoning write only ever replaces the reasoning column. Every other
+/// column is carried forward from the row that was read, so a reasoning
+/// write never disturbs the approval, sandbox, or model-preference scopes.
+#[derive(Debug, Clone, Default)]
+struct RuntimePreferenceWrite {
+    principal_id: String,
+    approval_mode: Option<String>,
+    sandbox_profile: Option<String>,
+    last_provider_connection_id: Option<String>,
+    last_model_id: Option<String>,
+    last_task_provider_connection_id: Option<String>,
+    last_task_model_id: Option<String>,
+    reasoning_selection: Option<String>,
+}
+
+/// The stored reasoning selection of `current`, re-encoded for an
+/// upsert that must preserve it.
+///
+/// A decoded selection already passed the shape check, so this cannot
+/// fail; a corrupt stored value decodes to `None` and is written back as
+/// `NULL` (a corrupt value is not authority).
+fn current_reasoning_selection(current: Option<&RuntimePreference>) -> Option<String> {
+    current
+        .and_then(|p| p.reasoning_selection.as_ref())
+        .and_then(|selection| encode_reasoning_selection(Some(selection)).ok())
+        .flatten()
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1253,6 +1469,7 @@ struct RuntimePreferenceRow {
     last_model_id: Option<String>,
     last_task_provider_connection_id: Option<String>,
     last_task_model_id: Option<String>,
+    reasoning_selection: Option<String>,
     revision: i64,
     updated_at: i64,
 }
@@ -1276,9 +1493,78 @@ impl RuntimePreferenceRow {
                 self.last_task_provider_connection_id,
             ),
             last_task_model_id: sanitize_identity(self.last_task_model_id),
+            reasoning_selection: decode_reasoning_selection(self.reasoning_selection),
             revision: self.revision.max(0) as u64,
             updated_at_ms: self.updated_at,
         }
+    }
+}
+
+/// Decode a stored reasoning selection.
+///
+/// The durable value is the protocol's own serialized shape, so there is
+/// no second vocabulary to keep in sync. A value that does not decode —
+/// or that no longer passes the shape check — is **not authority**: it
+/// degrades to "no explicit selection" rather than failing the read.
+fn decode_reasoning_selection(value: Option<String>) -> Option<ReasoningOverride> {
+    let raw = value?;
+    let decoded: ReasoningOverride = serde_json::from_str(&raw).ok()?;
+    validate_reasoning_selection(&decoded).ok()?;
+    Some(decoded)
+}
+
+/// Encode a reasoning selection for durable storage.
+///
+/// `None` is stored as `NULL` ("no explicit selection").
+fn encode_reasoning_selection(
+    selection: Option<&ReasoningOverride>,
+) -> Result<Option<String>, PreferenceError> {
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    validate_reasoning_selection(selection)?;
+    let encoded = serde_json::to_string(selection).map_err(|e| {
+        PreferenceError::Validation(format!("reasoning selection is not encodable: {e}"))
+    })?;
+    Ok(Some(encoded))
+}
+
+/// Validate the shape of a reasoning selection at the store boundary.
+///
+/// The label is **open**: it is not matched against a closed set, and it
+/// is preserved verbatim. What is checked is that it is a plausible
+/// label — non-empty, bounded in length, and free of control characters
+/// (including NUL), so a hostile or mistaken value cannot become an
+/// unbounded durable value.
+fn validate_reasoning_selection(selection: &ReasoningOverride) -> Result<(), PreferenceError> {
+    match selection {
+        ReasoningOverride::Effort { level } => {
+            if level.trim().is_empty() {
+                return Err(PreferenceError::Validation(
+                    "reasoning label must not be empty".into(),
+                ));
+            }
+            if level.len() > MAX_REASONING_LABEL_BYTES {
+                return Err(PreferenceError::Validation(format!(
+                    "reasoning label must be at most {MAX_REASONING_LABEL_BYTES} bytes"
+                )));
+            }
+            if level.chars().any(|c| c.is_control()) {
+                return Err(PreferenceError::Validation(
+                    "reasoning label must not contain control characters".into(),
+                ));
+            }
+            Ok(())
+        }
+        ReasoningOverride::Budget { tokens } => {
+            if *tokens == 0 || *tokens > MAX_REASONING_BUDGET_TOKENS {
+                return Err(PreferenceError::Validation(format!(
+                    "reasoning budget must be 1..={MAX_REASONING_BUDGET_TOKENS} tokens"
+                )));
+            }
+            Ok(())
+        }
+        ReasoningOverride::Off => Ok(()),
     }
 }
 
@@ -1322,7 +1608,9 @@ fn now_millis() -> i64 {
 
 /// Additive M003 schema for `runtime_preferences`. Safe on existing
 /// databases via `IF NOT EXISTS`. Fresh databases include the M003
-/// Task-composer columns; pre-M003 databases gain them via `migrate_v62`.
+/// Task-composer columns and the M002 reasoning-selection column;
+/// pre-M003 databases gain the former via `migrate_v62` and pre-M002
+/// databases gain the latter via `migrate_v84`.
 pub const RUNTIME_PREFERENCE_SCHEMA_STATEMENTS: &[&str] = &[
     r#"
     CREATE TABLE IF NOT EXISTS runtime_preferences (
@@ -1334,6 +1622,7 @@ pub const RUNTIME_PREFERENCE_SCHEMA_STATEMENTS: &[&str] = &[
         last_model_id TEXT CHECK (last_model_id IS NULL OR length(last_model_id) <= 512),
         last_task_provider_connection_id TEXT CHECK (last_task_provider_connection_id IS NULL OR length(last_task_provider_connection_id) <= 512),
         last_task_model_id TEXT CHECK (last_task_model_id IS NULL OR length(last_task_model_id) <= 512),
+        reasoning_selection TEXT CHECK (reasoning_selection IS NULL OR length(reasoning_selection) <= 512),
         revision INTEGER NOT NULL CHECK (revision >= 0),
         updated_at INTEGER NOT NULL
     )
@@ -1354,6 +1643,25 @@ pub const RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS: &[&str] = &[
     "ALTER TABLE runtime_preferences ADD COLUMN last_task_model_id TEXT",
 ];
 
+/// Additive M002 provider-reasoning migration statements for
+/// `runtime_preferences`.
+///
+/// Applied by `migrate_v88` on pre-M002 databases. Plain `ADD COLUMN`
+/// keeps every existing row untouched — approval, sandbox, model and
+/// Task preferences are all preserved — and the new column defaults to
+/// `NULL` ("no explicit reasoning selection"). The column holds the
+/// protocol's own serialized selection shape, so there is no second
+/// vocabulary; the label inside it is an open, provider-scoped string.
+/// Bounds are enforced in Rust (`validate_reasoning_selection` on write,
+/// `decode_reasoning_selection` on read).
+///
+/// The migration was `migrate_v84` on the provider-reasoning-control branch
+/// and is **v88** in the merged tree: `main` had already published v84 (the
+/// additive network-intent preference below) and v85 through v87, so the
+/// branch yields the lower number to `main`.
+pub const RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS: &[&str] =
+    &["ALTER TABLE runtime_preferences ADD COLUMN reasoning_selection TEXT"];
+
 /// M005 offline networking opt-in. Existing principals remain unrestricted
 /// because the nullable value resolves to `LegacyUnrestricted`.
 pub const RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS: &[&str] = &[
@@ -1363,7 +1671,8 @@ pub const RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
     use std::time::Duration;
 
     async fn temp_pool() -> SqlitePool {
@@ -1373,6 +1682,32 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("in-memory db");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
+    /// A shared in-memory pool with several connections.
+    ///
+    /// A single-connection pool cannot express a write race: the pool
+    /// serializes the two writers, so the second one reads the first one's
+    /// committed revision and the race never happens. The shared cache gives
+    /// every connection the same database, so both writers really do read
+    /// the same row.
+    async fn shared_pool() -> SqlitePool {
+        let name = format!("runtime_preference_{}", uuid::Uuid::new_v4().simple());
+        let opts = SqliteConnectOptions::from_str(&format!("file:{name}?mode=memory&cache=shared"))
+            .expect("sqlite options")
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(opts)
+            .await
+            .expect("shared in-memory db");
         crate::session::schema::migrate(&pool)
             .await
             .expect("migrate");
@@ -1522,6 +1857,416 @@ mod tests {
         assert_eq!(third.approval_mode, Some(ApprovalMode::Yolo));
     }
     #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_round_trips_an_open_label_verbatim() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let selection = ReasoningOverride::Effort {
+            level: "xhigh".to_string(),
+        };
+        let written = store
+            .set_reasoning_selection("local-owner", Some(&selection), None)
+            .await
+            .unwrap();
+        assert_eq!(written.reasoning_selection, Some(selection.clone()));
+        let read = store.get("local-owner").await.unwrap().unwrap();
+        assert_eq!(
+            read.reasoning_selection,
+            Some(selection),
+            "an open vendor label must survive the store verbatim"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_is_absent_until_it_is_written() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        assert!(store.get("local-owner").await.unwrap().is_none());
+        let written = store
+            .set_approval_mode("local-owner", ApprovalMode::Interactive, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            written.reasoning_selection, None,
+            "no explicit selection means the agent / model-profile default"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_write_is_revision_gated() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let first = store
+            .set_reasoning_selection(
+                "local-owner",
+                Some(&ReasoningOverride::Effort {
+                    level: "high".to_string(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        let err = store
+            .set_reasoning_selection(
+                "local-owner",
+                Some(&ReasoningOverride::Off),
+                Some(first.revision + 5),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PreferenceError::Conflict { .. }),
+            "a stale write must conflict, never last-write-wins"
+        );
+        let current = store.get("local-owner").await.unwrap().unwrap();
+        assert_eq!(
+            current.reasoning_selection,
+            Some(ReasoningOverride::Effort {
+                level: "high".to_string()
+            }),
+            "the losing write must not have landed"
+        );
+    }
+
+    /// The revision gate must live **inside** the write, not beside it.
+    ///
+    /// A gate that reads the revision and then writes is a check another
+    /// writer can invalidate between the check and the write. This test
+    /// reproduces exactly that window deterministically: a writer that
+    /// observed revision 0 lands its write after another writer has
+    /// already moved the row to revision 1.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stale_reasoning_write_is_rejected_by_the_statement_itself() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let selection = ReasoningOverride::Effort {
+            level: "high".to_string(),
+        };
+        let first = store
+            .set_reasoning_selection("local-owner", Some(&selection), None)
+            .await
+            .unwrap();
+        assert_eq!(first.revision, 1);
+
+        let stale = RuntimePreferenceWrite {
+            principal_id: "local-owner".to_string(),
+            reasoning_selection: encode_reasoning_selection(Some(&ReasoningOverride::Off)).unwrap(),
+            ..RuntimePreferenceWrite::default()
+        };
+        let landed = store
+            .upsert_reasoning_selection(&stale, 0, 1, now_millis())
+            .await
+            .unwrap();
+        assert!(
+            !landed,
+            "a write based on a revision that moved must not land"
+        );
+        let current = store.get("local-owner").await.unwrap().unwrap();
+        assert_eq!(
+            current.revision, 1,
+            "the losing write must not move the row's revision"
+        );
+        assert_eq!(
+            current.reasoning_selection,
+            Some(selection),
+            "the winning value must survive the rejected write"
+        );
+    }
+
+    /// Two writers racing the same revision converge on one winner and one
+    /// typed conflict. A silent last-write-wins would let the loser's value
+    /// land and leave the caller believing its own write succeeded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_concurrent_reasoning_writes_produce_one_winner_and_one_conflict() {
+        let pool = shared_pool().await;
+        let store = RuntimePreferenceStore::new(pool.clone());
+        store
+            .set_reasoning_selection(
+                "local-owner",
+                Some(&ReasoningOverride::Effort {
+                    level: "low".to_string(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        for _round in 0..16 {
+            let before = store.get("local-owner").await.unwrap().unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+            let mut handles = Vec::new();
+            for label in ["xhigh", "max"] {
+                let store = RuntimePreferenceStore::new(pool.clone());
+                let barrier = barrier.clone();
+                let expected = before.revision;
+                handles.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    let selection = ReasoningOverride::Effort {
+                        level: label.to_string(),
+                    };
+                    store
+                        .set_reasoning_selection("local-owner", Some(&selection), Some(expected))
+                        .await
+                }));
+            }
+            let mut winners = 0;
+            let mut conflicts = 0;
+            for handle in handles {
+                match handle.await.expect("writer task") {
+                    Ok(_) => winners += 1,
+                    Err(PreferenceError::Conflict { .. }) => conflicts += 1,
+                    Err(other) => panic!("unexpected write error: {other:?}"),
+                }
+            }
+            assert_eq!(winners, 1, "exactly one writer may win the round");
+            assert_eq!(conflicts, 1, "the other writer must see a typed conflict");
+            let after = store.get("local-owner").await.unwrap().unwrap();
+            assert_eq!(
+                after.revision,
+                before.revision + 1,
+                "a racing round advances the revision exactly once"
+            );
+        }
+    }
+
+    /// The durable selection outlives the process that wrote it.
+    ///
+    /// A `sqlite::memory:` pool cannot show this: it is a different
+    /// database on every open, so a read after a "restart" would prove
+    /// nothing. This test writes to a file-backed database, closes it, and
+    /// reopens it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_survives_a_restart() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("runtime_preferences.sqlite");
+        let url = format!("sqlite://{}", path.display());
+        let options = || {
+            SqliteConnectOptions::from_str(&url)
+                .expect("sqlite options")
+                .create_if_missing(true)
+                .foreign_keys(true)
+                .busy_timeout(Duration::from_secs(5))
+        };
+        let selection = ReasoningOverride::Effort {
+            level: "xhigh".to_string(),
+        };
+        {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect_with(options())
+                .await
+                .expect("connect file-backed db");
+            crate::session::schema::migrate(&pool)
+                .await
+                .expect("migrate");
+            let store = RuntimePreferenceStore::new(pool.clone());
+            let written = store
+                .set_reasoning_selection("local-owner", Some(&selection), None)
+                .await
+                .unwrap();
+            assert_eq!(written.revision, 1);
+            pool.close().await;
+        }
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(options())
+            .await
+            .expect("reconnect file-backed db");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        let store = RuntimePreferenceStore::new(pool);
+        let read = store.get("local-owner").await.unwrap().unwrap();
+        assert_eq!(
+            read.reasoning_selection,
+            Some(selection),
+            "the durable selection must survive the daemon restarting"
+        );
+        assert_eq!(read.revision, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_survives_unrelated_preference_writes() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let selection = ReasoningOverride::Effort {
+            level: "max".to_string(),
+        };
+        store
+            .set_reasoning_selection("local-owner", Some(&selection), None)
+            .await
+            .unwrap();
+        store
+            .set_approval_mode("local-owner", ApprovalMode::Automatic, None)
+            .await
+            .unwrap();
+        store
+            .set_model_preference("local-owner", Some("conn-1"), Some("model-1"), None)
+            .await
+            .unwrap();
+        store
+            .set_task_model_preference("local-owner", Some("conn-2"), Some("model-2"), None)
+            .await
+            .unwrap();
+        let current = store.get("local-owner").await.unwrap().unwrap();
+        assert_eq!(current.reasoning_selection, Some(selection));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_can_be_cleared() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        store
+            .set_reasoning_selection(
+                "local-owner",
+                Some(&ReasoningOverride::Effort {
+                    level: "high".to_string(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        let cleared = store
+            .set_reasoning_selection("local-owner", None, None)
+            .await
+            .unwrap();
+        assert_eq!(cleared.reasoning_selection, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_rejects_an_implausible_label() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let too_long = ReasoningOverride::Effort {
+            level: "x".repeat(MAX_REASONING_LABEL_BYTES + 1),
+        };
+        let err = store
+            .set_reasoning_selection("local-owner", Some(&too_long), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PreferenceError::Validation(_)),
+            "an unbounded label must be refused at the store boundary"
+        );
+        let control = ReasoningOverride::Effort {
+            level: "xhigh\0y".to_string(),
+        };
+        let err = store
+            .set_reasoning_selection("local-owner", Some(&control), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PreferenceError::Validation(_)));
+        let zero_budget = ReasoningOverride::Budget { tokens: 0 };
+        let err = store
+            .set_reasoning_selection("local-owner", Some(&zero_budget), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PreferenceError::Validation(_)));
+        assert!(
+            store.get("local-owner").await.unwrap().is_none(),
+            "a refused write must leave nothing behind"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_corrupt_reasoning_selection_degrades_to_no_selection() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        store
+            .set_reasoning_selection(
+                "local-owner",
+                Some(&ReasoningOverride::Effort {
+                    level: "high".to_string(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE runtime_preferences SET reasoning_selection = 'not-json' WHERE principal_id = ?1",
+        )
+        .bind("local-owner")
+        .execute(store.pool())
+        .await
+        .unwrap();
+        let current = store.get("local-owner").await.unwrap().unwrap();
+        assert_eq!(
+            current.reasoning_selection, None,
+            "a corrupt stored value is not authority"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_selection_migration_is_additive_and_preserves_rows() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        // A pre-reasoning-migration `runtime_preferences` table: no reasoning
+        // column. It **does** carry `network_intent`, because in the merged
+        // tree the reasoning migration is v88 and runs *after* main's v84
+        // network-intent migration — a database in the state this migration
+        // expects already has that column. The fixture states the real
+        // migration order rather than an obsolete one.
+        sqlx::query(
+            r#"
+            CREATE TABLE runtime_preferences (
+                principal_id TEXT PRIMARY KEY,
+                approval_mode TEXT,
+                sandbox_profile TEXT,
+                network_intent TEXT,
+                last_provider_connection_id TEXT,
+                last_model_id TEXT,
+                last_task_provider_connection_id TEXT,
+                last_task_model_id TEXT,
+                revision INTEGER NOT NULL CHECK (revision >= 0),
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO runtime_preferences
+             (principal_id, approval_mode, sandbox_profile, network_intent,
+              last_provider_connection_id, last_model_id,
+              last_task_provider_connection_id, last_task_model_id,
+              revision, updated_at)
+             VALUES ('erin', 'yolo', 'workspace_write', 'offline_required',
+                     'conn-s', 'model-s', 'conn-t', 'model-t', 3, 7)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for statement in RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let column_exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('runtime_preferences') WHERE name = 'reasoning_selection'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(column_exists, 1, "migrate_v88 must add the column");
+        let store = RuntimePreferenceStore::new(pool);
+        let pref = store.get("erin").await.unwrap().unwrap();
+        // Every pre-existing dimension survives the additive migration.
+        assert_eq!(pref.revision, 3);
+        assert_eq!(pref.approval_mode, Some(ApprovalMode::Yolo));
+        assert_eq!(pref.sandbox_profile, Some(SandboxProfile::WorkspaceWrite));
+        assert_eq!(
+            pref.network_intent,
+            Some(NetworkIntent::OfflineRequired),
+            "the reasoning migration must not disturb main's network-intent column"
+        );
+        assert_eq!(pref.last_provider_connection_id.as_deref(), Some("conn-s"));
+        assert_eq!(pref.last_model_id.as_deref(), Some("model-s"));
+        assert_eq!(
+            pref.last_task_provider_connection_id.as_deref(),
+            Some("conn-t")
+        );
+        assert_eq!(pref.last_task_model_id.as_deref(), Some("model-t"));
+        // The new column defaults to "no explicit selection".
+        assert_eq!(pref.reasoning_selection, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn runtime_preference_cas_conflicts_instead_of_last_write_wins() {
         let store = RuntimePreferenceStore::new(temp_pool().await);
         let first = store
@@ -1620,6 +2365,15 @@ mod tests {
         for statement in RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
+        // A real legacy database also received `migrate_v88`, which adds the
+        // M002 reasoning column. The read path selects that column, so a
+        // database that never received it cannot be read at all — the
+        // migration chain is what makes the row readable, not the row.
+        for statement in RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        // And `migrate_v84`, which adds the M005 network-intent column; the
+        // read path selects that one too.
         for statement in RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
@@ -1815,6 +2569,7 @@ mod tests {
             last_model_id: Some("model-1".into()),
             last_task_provider_connection_id: None,
             last_task_model_id: None,
+            reasoning_selection: None,
             revision: 1,
             updated_at_ms: 0,
         };
@@ -1923,6 +2678,7 @@ mod tests {
             last_model_id: Some("model-1".into()),
             last_task_provider_connection_id: Some("conn-t".into()),
             last_task_model_id: Some("model-t".into()),
+            reasoning_selection: None,
             revision: 1,
             updated_at_ms: 0,
         };
@@ -1941,6 +2697,7 @@ mod tests {
                         | "last_model_id"
                         | "last_task_provider_connection_id"
                         | "last_task_model_id"
+                        | "reasoning_selection"
                         | "revision"
                         | "updated_at_ms"
                 ),

@@ -68,14 +68,20 @@ to violate.
 ```bash
 cargo test -p codegg mcp::
 cargo test -p codegg plugin::
-cargo test --test mcp            # MCP client integration tests
-cargo test --test mcp_reconnect  # reconnect path
-cargo test --test fake_eggsearch_mcp
+cargo test --test config_provider -- mcp            # MCP client integration tests
+cargo test --test config_provider -- mcp_reconnect  # reconnect path
+cargo test --test config_provider -- fake_eggsearch_mcp
 PYTHONPATH=examples/plugins/sdk-python \
   python3 -m unittest discover examples/plugins/sdk-python/tests   # separate SDK
 cargo test -p codegg --features plugins  # WASM-gated paths (via verify full)
 ./scripts/validate_plugin_ui.sh
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The three MCP members live
+in the `config_provider` family, so the correct form is
+`cargo test --test config_provider -- <member>`.
 
 Docs: `docs/MCP.md` and `docs/PLUGINS.md` are user integration notes;
 `architecture/` is authoritative.
@@ -105,3 +111,28 @@ not `runtime/builtin.rs`, which holds `BuiltinRuntime`/
 mcp_no_hanging_promises` command, which no longer exists in `tests/`
 (`tests/config_provider/mcp.inc` and `tests/config_provider/mcp_reconnect.inc` do). Claims without a
 traceable source were removed rather than guessed.
+
+Second pass (2026-10-23): re-verified against `src/mcp/{mod,auth,cli,ide_server,local,remote}.rs`,
+`src/plugin/{service,registry,manifest,policy,permission,install,api,event_bus,loader,lifecycle,activation,management,management_ui,marketplace,hooks}.rs`,
+`src/plugin/runtime/{process,wasm,wasm_cache,builtin}.rs`,
+`src/plugin/builtin/{codex,copilot,gitlab,poe}.rs`,
+`src/search_backend/`, `crates/codegg-config/src/schema.rs`,
+`crates/codegg-protocol/src/ui.rs`, `scripts/validate_plugin_ui.sh`, and the
+`config_provider` test family.
+
+Confirmed unchanged: `Config.mcp` being
+`Option<HashMap<String, McpEntry>>` (`crates/codegg-config/src/schema.rs:245`),
+which is what makes the "`mcp.servers` registers a phantom entry" rule
+correct; the decrypt-only `CODEGG_ENC_v1` reader
+(`src/mcp/auth.rs:22`, `LEGACY_MAGIC_BYTES`); the manifest filename rule
+(`src/plugin/loader.rs:61`, `plugin_dir.join("manifest.toml")`); the native
+auth hook handlers living in `src/plugin/builtin/` (`codex.rs`, `copilot.rs`,
+`gitlab.rs`, `poe.rs`) rather than in `runtime/builtin.rs`; the existence of
+`scripts/validate_plugin_ui.sh`; and the WASM feature gating.
+
+Corrected: the three MCP integration-test commands named targets that do not
+exist. `mcp.inc`, `mcp_reconnect.inc`, and `fake_eggsearch_mcp.inc` are
+members of the `config_provider` family, so `cargo test --test <member>`
+selected zero tests and exited 0; they now read
+`cargo test --test config_provider -- <member>`.
+

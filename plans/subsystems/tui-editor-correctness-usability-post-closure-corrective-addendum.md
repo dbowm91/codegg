@@ -1,6 +1,6 @@
 # TUI Editor Correctness/Usability — Post-Closure Corrective Addendum
 
-Status: active (C003/C004/C005/C006 closed; workstream complete, no further corrective registered)
+Status: closed (C003–C006 closed; workstream complete, no further corrective registered)
 
 Parent historical roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` (C001, C002, M003, M004 recorded closed; keep their closures immutable).
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`, reviewed 2026-10-13. Implementation agents MUST recheck current head and unrelated changes.
@@ -127,3 +127,11 @@ This is a new post-closure finding under the original C005 implementation; it do
 **Verification and closure:** deterministic cancellation/permit race, worker panic/error/abort-before-start, full serialized-byte assertions on nested single-root and escape-heavy responses, all-roots-removed truncation, no O(n²) full reserialization, authorization/static guards, focused integration, quick verification, Clippy/format and exact-head hosted CI. Strict closure requires actual results, exact implementation SHA and `plans/closure/tui-editor-correctness-usability-post-closure-corrective/006-status.md`. Otherwise label conditional; do not claim tests executed by this planning registration.
 
 **Handoff:** C006 is implemented and closed. Historical C003/C004/C005 closures stay unchanged; the existing approved directory-listing architecture is preserved. No further corrective is registered in this workstream.
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- Closure records `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md` through `006-status.md` each carry `Status: closed`.
+- The header already said *workstream complete, no further corrective registered* — a complete workstream is *closed*, not *active*. The two clauses contradicted each other.
+- `plans/registry.md` now reads *closed (C003–C006 closed)*.

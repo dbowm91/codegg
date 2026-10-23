@@ -10,6 +10,7 @@ pub mod auth_types;
 pub mod azure;
 pub mod bedrock;
 pub mod cache;
+pub mod capability;
 pub mod circuit;
 pub mod cloudflare;
 pub mod connection;

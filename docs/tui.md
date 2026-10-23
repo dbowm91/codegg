@@ -1068,6 +1068,63 @@ Opening the box takes an async create-and-attach round trip against the daemon.
 Until it completes there is no box, so keystrokes keep going to the composer —
 type the command again once the box is up rather than assuming `i` was eaten.
 
+## Reasoning control
+
+`/reasoning` chooses how much the model is asked to think. `/thinking` is a
+different control and stays different: `/thinking` decides whether reasoning
+text is *rendered*, and `/reasoning` decides what the model is *asked to do*.
+
+The selection is kept by the daemon against your own account, so it applies to
+every turn that starts afterwards — including turns you start from another
+window, and including the next one after a restart. The status bar at the
+bottom of the screen always shows the current selection (`reasoning: high`,
+`reasoning: off`, `reasoning: default`), next to the approval and sandbox
+policy, so you do not have to run the command to find out what the next turn
+will use.
+
+The options are the ones your model actually accepts, not a fixed ladder:
+
+- The effort labels come from the model, in the model's own order. A model
+  that accepts `low`, `medium`, `high`, `xhigh`, and `max` offers exactly
+  those.
+- **Off** appears only when the model can turn reasoning off. A model that
+  always reasons has no off, and the command says so instead of looking
+  broken.
+- A fixed thinking budget appears only when the model accepts one and the
+  value is inside the model's accepted range.
+
+When CodeGG has no published capability for the model — which includes
+OpenAI-compatible endpoints and local servers, where whether `reasoning_effort`
+is honoured depends on the deployment rather than on the vendor — the command
+falls back to the known labels (`minimal`, `low`, `medium`, `high`) and says
+that it is a fallback. That is a convenience ladder, not a statement about
+your model, and the command never presents it as one.
+
+**The daemon still has the last word on that fallback.** A model nobody has
+published a reasoning contract for is *unknown*, not permissive, so the daemon
+refuses an explicit reasoning selection on it rather than forwarding it on a
+guess. The refusal names the model and the dimension, and nothing is sent to
+the provider. If you use an endpoint whose deployment does honour
+`reasoning_effort`, declare what it accepts in your config — the
+`model_profile.<model>.reasoning_capability` block in `codegg.example.jsonc`
+shows the shape — and the same command then offers that model's own options
+and accepts them.
+
+Two things can go wrong, and both are reported rather than swallowed:
+
+- The provider drops the setting on the wire. Some adapters remove
+  `reasoning_effort` from the request body entirely, so the selection is
+  accepted and then ignored. The confirmation is a warning for those
+  providers.
+- The daemon refuses the selection. The reason is shown — a concurrent write
+  from somewhere else, a label this daemon does not accept, or a model that
+  does not accept that selection — and the status row goes back to the
+  daemon's value.
+
+The daemon's value always wins. If the selection was changed elsewhere, or
+the daemon narrows it, the status row is corrected to match, and the turn
+that follows uses the daemon's selection rather than a stale local copy.
+
 ## Approval and sandbox
 
 Two independent dimensions. Approval decides *who answers an escalation*;
@@ -2141,3 +2198,51 @@ and a panel with nothing loaded in it says nothing either.
 - `docs/tools.md` — what the agent can actually call
 - `docs/themes.md` — theme authoring
 - `docs/TROUBLESHOOTING.md` — common failures
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Launch flags (`-c`, `-s`, `--fork`, `--no-session`, `-m`, `-a`, `--cwd`,
+  `-p`/`--run`, `--standalone`) and the policy flags
+  (`--approval-mode`, `--sandbox`, `--yolo`): `src/main.rs` (`Cli`,
+  `ExecutionPolicyArgs`).
+- Default keybindings and their descriptions: `src/tui/input.rs`
+  (`default_bindings_internal`) and the `Action` description list —
+  `Ctrl+T` (tasks), `Ctrl+B` (sidebar), `Shift+N`/`Shift+P`/`Shift+X`
+  (buffer tabs), `Shift+F` (project picker), `Shift+S` (panel manager),
+  `Ctrl+Alt+S` (sidebar focus), `Ctrl+Alt+N`/`Ctrl+Alt+B` (project tabs),
+  `Ctrl+O` (Workspace view), `Shift+Q` (panel exit), `Ctrl+C` (interrupt).
+- `Ctrl+Q` is the quit arm alongside `q`: `src/tui/commands/exit_control.rs`.
+- The three-second exit arm window: `src/tui/app/state/prompt.rs`
+  (`EXIT_ARM_WINDOW`).
+- The 16-tab caps: `src/tui/app/state/subagent_tabs.rs`
+  (`MAX_OPEN_SUBAGENT_TABS`) and `src/tui/app/state/project_picker.rs`
+  (`MAX_OPEN_PROJECT_TABS`).
+- `/projects`, `/workspaces`, `/workspace`, `/panels`, `/files`, `/diff`,
+  `/plan`, `/keybinds`, `/theme`, `/skills`, `/reload`, `/skill-promote`,
+  `/skill-proposals`, `/skill-proposal`: `src/tui/command.rs`.
+- Editor function keys — F2 diagnostics, F3 hover, F4 definition, F5
+  references, F6 document symbols, F7 workspace symbols, F8 completion, F9
+  semantic-token refresh: `src/tui/commands/editor.rs`.
+- Editor bounds: 5,000-line built-in highlighting scan
+  (`src/tui/editor_highlight.rs`), 1,000-token semantic cap
+  (`crates/codegg-protocol/src/lsp.rs`, `MAX_LSP_SEMANTIC_TOKENS`), 32 KiB
+  render line and 256 KiB frame source (`src/tui/editor.rs`), and the 2 MiB
+  editor search bound (`src/tui/editor.rs`, `MAX_EDITOR_SEARCH_BYTES`).
+- Directory listing bounds — 100,000 entries examined, 4,096 nodes kept, a
+  three-level walk window, and the 512 KiB response cap:
+  `src/directory_listing.rs` and
+  `crates/codegg-protocol/src/document.rs`
+  (`MAX_DIRECTORY_LISTING_RESPONSE_BYTES`).
+- Human shell caps — 1 MB per command, 8 MB total, 100 commands, 300 s
+  timeout (`src/shell/types.rs`), and the 256 KiB head plus 256 KiB tail
+  retention (`src/shell/store.rs`).
+- Approval modes `interactive` / `automatic` / `yolo` and sandbox profiles
+  `read-only` / `workspace-write` / `full-host`:
+  `src/policy_surface.rs` and `codegg_core::approval::SandboxProfile`.
+- Permission dialog keys: `src/tui/components/dialogs/permission.rs`.
+- Theme subcommands and the `<name>` shorthand:
+  `src/tui/app/mod.rs` (`handle_theme_command`).
+- The 50 bundled Halloy themes and the `cyber-red` default:
+  `assets/themes/halloy/`, `src/theme/registry.rs`.

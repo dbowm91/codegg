@@ -320,7 +320,8 @@ pub async fn prove_identity(
             "repository_subject_capture_failed",
             format!("CodeGG subject capture failed: {error:?}"),
         )
-    })?;
+    })?
+    .into_value();
     let e2 = eggplan_subject_fingerprint(store)?;
     prove_identity_from_captures(relation, store.repository_id(), e1, codegg_subject, e2)
 }

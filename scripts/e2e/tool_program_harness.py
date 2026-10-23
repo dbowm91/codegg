@@ -62,12 +62,21 @@ class HarnessReport:
         return "\n".join(lines)
 
 
+# The root package's integration tests are families: one Cargo target per
+# subject area (`tool_programs`), with the individual suites as members of it.
+# `--test` names the *target*, so naming a member there selects nothing —
+# cargo errors out with "no test target named ..." and every scenario in
+# this harness fails. The member is a name filter that goes after the `--`
+# separator: `cargo test -p codegg --test tool_programs -- <member>`.
+TOOL_PROGRAM_TEST_TARGET = "tool_programs"
+
+
 def run_cargo_test(test_name: str, extra_args: Optional[list] = None) -> tuple:
     """Run a cargo test and return (success, duration_ms, output)."""
-    cmd = ["cargo", "test", "-p", "codegg", "--test", test_name]
+    cmd = ["cargo", "test", "-p", "codegg", "--test", TOOL_PROGRAM_TEST_TARGET]
     if extra_args:
         cmd.extend(extra_args)
-    cmd.extend(["--", "--test-threads=1"])
+    cmd.extend(["--", test_name, "--test-threads=1"])
 
     start = time.monotonic()
     result = subprocess.run(

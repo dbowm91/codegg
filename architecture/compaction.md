@@ -19,7 +19,7 @@ fallback.
 | `src/agent/compaction.rs` | Compatibility re-export only; no production implementation |
 | `src/agent/context_frame.rs` | `ContextFrame`, `ContextLedgerState` — post-compaction context snapshot |
 | `src/agent/context_runtime.rs` | `compact_if_needed()` — integration point called each turn |
-| `crates/codegg-config/src/schema.rs` | `CompactionConfig`, `CompactionModeConfig`, `CompactionPolicyConfig` |
+| `crates/codegg-config/src/schema.rs` | `CompactionConfig` (`:1767`), `CompactionModeConfig` (`:1749`), `CompactionPolicyConfig` (`:1757`) |
 | `tests/agent_loop/compaction.inc` | Module-level integration tests |
 
 ## How It Works
@@ -439,9 +439,9 @@ steering are never reset.
   restart/race/contention/security/migration guards
 - Narrowest run:
   ```bash
-  cargo test -p codegg --test compaction
-  cargo test --test context_continuity_m004 --locked -- --test-threads=1
-  cargo test --test context_epoch_handoff --locked -- --test-threads=1
+  cargo test --test agent_loop -- compaction
+  cargo test --test agent_loop -- context_continuity_m004 --locked -- --test-threads=1
+  cargo test --test agent_loop -- context_epoch_handoff --locked -- --test-threads=1
   ```
 
 ## Related Docs
@@ -464,8 +464,9 @@ variants and every cell of the policy value table (`max_tool_output_tokens`
 2000/1000/500/200/MAX, `keep_recent_messages` 8/4/2/1/999,
 `max_summary_tokens` 1200/800/400/200/2000 — `compaction.rs:673-699`), the
 500-char tool-output truncation (`compaction.rs:289`), the 60s/120s LLM
-timeouts (`compaction.rs:1523`/`:427`), all 16 `compaction.*` config keys
-(`crates/codegg-config/src/schema.rs:1370-1387`) with verified defaults
+timeouts (`compaction.rs:1523`/`:427`), all 17 `compaction.*` config keys
+(`crates/codegg-config/src/schema.rs:1767-1785`; the span was re-anchored
+again on 2026-10-23, see the third pass below) with verified defaults
 (threshold 0.7 at `compaction.rs:780`, reserved 16000 at `:781`, max_events 50
 at `:798`), and every M003 evidence bound (64 refs, 256 KiB total, 64 KiB per
 artifact, 280-char summaries — `src/context/evidence.rs:34-40`), the
@@ -475,8 +476,9 @@ artifact, 280-char summaries — `src/context/evidence.rs:34-40`), the
 
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
 ownership migration and M006 closure"), which added 30 lines near the top of
-`crates/codegg-config/src/schema.rs`. Corrected: the 16 `compaction.*` config-key
-span `1335-1352`->`1370-1387`, re-checked to span exactly the same
+`crates/codegg-config/src/schema.rs`. Corrected: the 17 `compaction.*` config-key
+span `1335-1352`->`1370-1387` (re-anchored again to `1767-1785` on
+2026-10-23), re-checked to span exactly the same
 `CompactionConfig` body. The verified defaults (threshold 0.7, reserved 16000,
 max_events 50) and the timeouts are unchanged.
 
@@ -486,7 +488,8 @@ Second pass (2026-10-06) against `src/context/compaction.rs`,
 - **"Where It Lives" pointed at a path that does not exist**:
   `src/config/schema.rs`. The `CompactionConfig` / `CompactionModeConfig` /
   `CompactionPolicyConfig` types live in the extracted config crate at
-  `crates/codegg-config/src/schema.rs:1369` / `:1351` / `:1359`. There is no
+  `crates/codegg-config/src/schema.rs:1369` / `:1351` / `:1359` (all three
+  re-anchored again on 2026-10-23 to `:1767` / `:1749` / `:1757`). There is no
   `src/config/` directory.
 - Verified accurate: every type heading line anchor (`ContextTracker`:23,
   `CompactionStrategy`:198, `CompactionMode`:654, `CompactionPolicy`:662,
@@ -501,3 +504,34 @@ Second pass (2026-10-06) against `src/context/compaction.rs`,
   32-item evidence cap (`continuation.rs:74`), the four M003 evidence bounds
   (`evidence.rs:33-40`), and the Hybrid/Balanced `unwrap_or` defaults
   (`compaction.rs:760`/`:771`).
+
+Third pass (2026-10-23) against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: the `compaction.*` config-key span had drifted again.
+  `CompactionConfig` is now `crates/codegg-config/src/schema.rs:1767`
+  (body `1767-1785`), with `CompactionModeConfig` at `:1749` and
+  `CompactionPolicyConfig` at `:1757`. The previous `1369` / `1351` / `1359`
+  / `1370-1387` anchors are stale.
+- **Corrected**: the key count. `CompactionConfig` has **17** keys, not 16 —
+  the 17 rows in the Configuration Surface table are exactly the struct's
+  fields. The "all 16 `compaction.*` config keys" phrasing in the earlier
+  verification entries is wrong; the later entry in the same section already
+  said 17, and the table was right.
+- **Corrected**: the three `cargo test --test <name>` invocations were
+  rewritten to the family form. `compaction`, `context_continuity_m004`, and
+  `context_epoch_handoff` are all members of the `agent_loop` family; a bare
+  `--test <name>` no longer selects a single member.
+- **Verified accurate**: every type heading line anchor (`ContextTracker`:23,
+  `CompactionStrategy`:198, `CompactionMode`:654, `CompactionPolicy`:662,
+  `ResolvedCompactionConfig`:703, `EvidenceRef`:1197,
+  `ProgrammaticCompactionState`:1243, `CompactionInput`/`CompactionOutput`
+  1250/1262); `ContextTracker` 7 fields; `EvidenceRef` 9 fields; the 10
+  `EvidenceKind` variants (`UserMessage`, `AssistantMessage`, `ToolCall`,
+  `ToolResult`, `TestRun`, `FilePath`, `Command`, `Diff`, `SecurityFinding`,
+  `Todo`); the 5-variant policy table with every cell
+  (`compaction.rs:672-699`); the 500-char tool-output truncation
+  (`compaction.rs:289`); the 60s/120s LLM timeouts (`:1523`/`:427`); the
+  20,000-token / 8,000-char intent-spine bounds
+  (`src/context/continuation.rs:61`/`:65`); the 32-item evidence cap
+  (`continuation.rs:74`); and the four M003 evidence bounds
+  (`src/context/evidence.rs:33-40`).

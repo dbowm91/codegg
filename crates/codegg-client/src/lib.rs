@@ -20,8 +20,8 @@ mod windows_pipe_security;
 mod windows_process;
 
 pub use compose::{
-    compose_turn_submit, ComposerError, PromptIntent, PromptIntentState, TurnSubmitInput,
-    MAX_PROMPT_TEXT_CHARS,
+    compose_turn_submit, reasoning_options, ComposerError, PromptIntent, PromptIntentState,
+    TurnSubmitInput, MAX_PROMPT_TEXT_CHARS,
 };
 pub use connect::{connect_or_start_local_daemon, LocalDaemonOptions, LocalDaemonOutcome};
 pub use document::{

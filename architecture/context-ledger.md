@@ -272,8 +272,8 @@ layered config file — see `architecture/config.md`):
 
 ## Integration with AgentLoop
 
-Two tool result insertion sites (`src/agent/loop.rs:1764` and
-`src/agent/follow_up.rs:280`) use the same semantics: checked handle building,
+Two tool result insertion sites (`src/agent/loop.rs:1935` and
+`src/agent/follow_up.rs:677`) use the same semantics: checked handle building,
 config gating, store failure logging, no unrecoverable handles. Both read the
 turn index from `self.state.turn_count`, so every tool result in one provider
 turn shares an index.
@@ -297,8 +297,8 @@ integration tests covering projection, artifact, ledger, and config gating.
 
 ```bash
 cargo test -p codegg context::
-cargo test -p codegg --test context_projection_adversarial
-cargo test -p codegg --test tool_program_context_artifacts
+cargo test --test command_git -- context_projection_adversarial
+cargo test --test tool_programs -- tool_program_context_artifacts
 ```
 
 ## Related Docs
@@ -351,3 +351,41 @@ Second pass (2026-10-06) against all of `src/context/`,
   8 fields (`projection.rs:11`), `read_tool` defaults (`read_tool.rs:70-75`),
   and that `context_read` registration depends only on `artifact_store`
   (`src/tool/factory.rs:113-118`).
+
+Third pass (2026-10-23) against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: both insertion-site line numbers had drifted —
+  `src/agent/loop.rs:1764` → `:1935` (`ContextHandle::build_tool`) and
+  `src/agent/follow_up.rs:280` → `:677` (the same `build_tool` call; the
+  matching `project_tool_output` calls are at `src/agent/loop.rs:1989` and
+  `src/agent/follow_up.rs:737`).
+- **Corrected**: `src/tool/factory.rs:113-118` → `:135-141`
+  (`artifact_store_enabled`, `context_read_enabled`, and the
+  `Arc<dyn ContextArtifactStore>` binding).
+- **Corrected**: the `context_read` default references now name the constants
+  rather than a line — the parameter schema declares `offset` default `0` and
+  `max_bytes` default `20000` with `maximum: 64000`
+  (`src/context/read_tool.rs:48-56`), and the hard page bound is
+  `MAX_PAGE_BYTES = 64_000` (`src/context/read_tool.rs:7`).
+- **Corrected**: the two `cargo test --test <name>` invocations were rewritten
+  to the family form the repository now uses. `context_projection_adversarial`
+  is a member of the `command_git` family and `tool_program_context_artifacts`
+  is a member of the `tool_programs` family; `cargo test --test <name>` no
+  longer selects a single member.
+- **Verified accurate**: all 20 `src/context/*.rs` files carry their own
+  `mod tests`, and `src/context/mod.rs:58` holds the module-root integration
+  tests; `ContextArtifact` 11 fields (`artifact.rs:34`); `ArtifactKind` 8
+  variants (`artifact.rs:11`); `FileArtifactStore` (`artifact.rs:129`) writing
+  under `.codegg/context_artifacts` (`artifact.rs:134-141`); the 3-method
+  `ContextArtifactStore` trait (`artifact.rs:53`); the 10 MiB record bound
+  (`artifact.rs:152`); `ContextHandle` 2 fields / 2 variants
+  (`handle.rs:13`/`19`) and all seven documented methods; `ProjectionConfig`
+  5 fields + defaults (`projection.rs:23`); `ToolOutputProjection` 8 fields
+  (`projection.rs:11`); every `ContextLedgerState` cap and dedup rule
+  (`src/agent/context_frame.rs` — `MAX_CONTINUATION_ARTIFACT_HANDLES = 32`
+  and `bounded_artifact_handles` at `:7-28`, `ContextLedgerState` at `:30`);
+  all four M003 evidence bounds (`src/context/evidence.rs:33-40`); the five
+  `[context]` config keys with their defaults
+  (`crates/codegg-config/src/schema.rs:972`); and the accepted user config
+  filenames `codegg.jsonc` / `codegg.json`
+  (`crates/codegg-config/src/paths.rs:46-73`).

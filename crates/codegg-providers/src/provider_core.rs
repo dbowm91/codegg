@@ -162,15 +162,52 @@ pub struct ProviderCapabilities {
     ///
     /// True exactly for the adapters that call
     /// `wire::omit_openai_fields(.., ["response_format", "reasoning_effort"])`
-    /// — Azure, OpenRouter, and OpenCode Zen. A user who selects an effort or
-    /// a thinking budget on such a provider gets silence, not an error, so the
-    /// frontend needs this to warn rather than let the setting look broken.
+    /// — Azure, OpenRouter, and OpenCode Zen — and for every provider
+    /// built on the **generic OpenAI-compatible contract**
+    /// ([`OPENAI_COMPATIBLE_STRIPPING_PROVIDERS`]), whose body builder omits
+    /// the field too. A user who selects an effort or a thinking budget on
+    /// such a provider gets silence, not an error, so the frontend needs this
+    /// to warn rather than let the setting look broken.
     ///
     /// This is deliberately NOT the inverse of "supports reasoning": most
     /// providers simply pass the field through without declaring anything, so
     /// `false` means "does not strip", never "cannot reason".
     pub strips_reasoning_effort: bool,
 }
+
+/// The provider ids whose request adapter is the generic OpenAI-compatible
+/// contract.
+///
+/// That contract intentionally omits `reasoning_effort` from the encoded
+/// body, so every provider built on it drops the field — silently. The
+/// list is the *coverage* half of `ProviderCapabilities::strips_reasoning_effort`:
+/// a provider that is not listed does not strip, and a provider that is
+/// listed but does not strip is a bug the behaviour test catches.
+///
+/// `openai_compatible` is the canonical id of a custom OpenAI-compatible
+/// connection, and `eggpool` is deliberately **absent**: it is its own
+/// adapter, not the generic contract.
+const OPENAI_COMPATIBLE_STRIPPING_PROVIDERS: &[&str] = &[
+    "openai_compatible",
+    "xai",
+    "mistral",
+    "groq",
+    "deepinfra",
+    "cerebras",
+    "cohere",
+    "together",
+    "perplexity",
+    "venice",
+    "generalcompute",
+    "sap_ai_core",
+    "zenmux",
+    "kilo",
+    "vercel_ai_gateway",
+    "vertex",
+    "cloudflare",
+    "gitlab",
+    "copilot",
+];
 
 impl ProviderCapabilities {
     /// Get capabilities for a specific provider by ID.
@@ -215,6 +252,14 @@ impl ProviderCapabilities {
                 strips_reasoning_effort: true,
                 ..Default::default()
             },
+            // The generic OpenAI-compatible contract omits the field too.
+            // Its omission is intentional, so the adapter is unchanged; what
+            // was missing is the flag's coverage, which left the frontend's
+            // "drops this setting" warning silent for the whole family.
+            id if OPENAI_COMPATIBLE_STRIPPING_PROVIDERS.contains(&id) => Self {
+                strips_reasoning_effort: true,
+                ..Default::default()
+            },
             _ => Self::default(),
         }
     }
@@ -233,6 +278,40 @@ impl ProviderCapabilities {
     }
 }
 
+/// The explicit reasoning control a provider request carries.
+///
+/// A request distinguishes three states, and the wire treats them
+/// differently. Collapsing "no preference" and "explicitly off" into one
+/// shape is what made the previous bridge lossy: both produced the same
+/// canonical intent, so a user who turned reasoning off and a user who never
+/// asked were indistinguishable to every provider surface.
+///
+/// - `Unspecified` — no explicit instruction. The request's own selection
+///   (`ChatRequest::reasoning_effort` / `ChatRequest::thinking_budget`)
+///   applies; with no selection either, the provider's own default applies
+///   and the encoded body carries no reasoning field at all.
+/// - `Disabled` — reasoning was explicitly turned off for this request. This
+///   is a wire-visible instruction, not the absence of one.
+/// - `Enabled` — reasoning is on with no depth label: the binary
+///   thinking-on dimension a provider exposes instead of an effort ladder.
+///
+/// The concrete selection is deliberately *not* modelled here. The effort
+/// label stays a `String` in `ChatRequest::reasoning_effort` and the token
+/// budget stays a `usize` in `ChatRequest::thinking_budget`, so a
+/// provider-scoped label such as `xhigh` reaches the wire verbatim instead
+/// of being validated against a closed CodeGG enum.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReasoningControl {
+    /// No explicit instruction: the request's own selection, or the
+    /// provider's default, applies.
+    #[default]
+    Unspecified,
+    /// Reasoning was explicitly turned off for this request.
+    Disabled,
+    /// Reasoning is on with no depth label.
+    Enabled,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProviderRequestContext {
     /// Canonical conversation identity projected by the owning runtime.
@@ -243,6 +322,13 @@ pub struct ProviderRequestContext {
     /// Immutable, conservative model-adapter projection for provider wire
     /// encoding. It carries no endpoint, credential, or arbitrary headers.
     pub wire_policy: Option<Arc<ProviderWirePolicy>>,
+    /// The explicit reasoning control for this request.
+    ///
+    /// `Disabled` is a wire-visible instruction and is distinct from
+    /// `Unspecified`. The concrete effort label and token budget stay on
+    /// [`ChatRequest`] itself, so this field carries only what those two
+    /// cannot express.
+    pub reasoning: ReasoningControl,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -270,8 +356,21 @@ pub struct ChatRequest {
     pub top_p: Option<f64>,
     pub max_tokens: Option<usize>,
     pub response_format: Option<ResponseFormat>,
+    /// A fixed thinking-token budget, carried to the wire verbatim.
+    ///
+    /// Mutually exclusive with [`ChatRequest::reasoning_effort`].
     pub thinking_budget: Option<usize>,
+    /// A provider-scoped reasoning effort label, carried to the wire
+    /// verbatim.
+    ///
+    /// A `String` on purpose: the vocabulary is provider-scoped and open, so
+    /// a vendor label such as `xhigh` is not rejected by a closed CodeGG
+    /// enum. Mutually exclusive with [`ChatRequest::thinking_budget`].
     pub reasoning_effort: Option<String>,
+    /// The provider-facing projection for this request: the canonical
+    /// conversation identity, the immutable adapter wire policy, and the
+    /// explicit [`ReasoningControl`] that the concrete selection above
+    /// cannot express.
     pub context: ProviderRequestContext,
 }
 
@@ -2060,8 +2159,34 @@ mod tests {
     }
 
     #[test]
+    fn the_generic_openai_compatible_contract_also_strips_reasoning_effort() {
+        // The generic compatible contract omits the field on purpose, so the
+        // adapter is unchanged — but the capability flag has to say so, or the
+        // frontend's "drops this setting" warning stays silent for the whole
+        // family.
+        let provider = crate::openai_compatible::OpenAiCompatibleProvider::simple(
+            "openai_compatible",
+            "Compatible",
+            "k",
+            "https://example.invalid/v1",
+        );
+        let body = provider.build_body(&effort_request());
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "the generic compatible contract is declared as stripping reasoning_effort but kept it"
+        );
+    }
+
+    #[test]
     fn strips_reasoning_effort_flag_matches_the_declared_provider_list() {
         for id in ["azure", "openrouter", "opencode_zen"] {
+            assert!(
+                ProviderCapabilities::for_provider(id).strips_reasoning_effort,
+                "{id} strips reasoning_effort on the wire but the capability flag says otherwise"
+            );
+        }
+        // The generic OpenAI-compatible family strips it too.
+        for id in OPENAI_COMPATIBLE_STRIPPING_PROVIDERS {
             assert!(
                 ProviderCapabilities::for_provider(id).strips_reasoning_effort,
                 "{id} strips reasoning_effort on the wire but the capability flag says otherwise"
@@ -2071,6 +2196,8 @@ mod tests {
         // warn users who are in fact getting the behavior they asked for.
         assert!(!ProviderCapabilities::for_provider("openai").strips_reasoning_effort);
         assert!(!ProviderCapabilities::for_provider("anthropic").strips_reasoning_effort);
+        // `eggpool` is its own adapter, not the generic compatible contract.
+        assert!(!ProviderCapabilities::for_provider("eggpool").strips_reasoning_effort);
         // Unknown providers default to not stripping rather than warning
         // speculatively.
         assert!(

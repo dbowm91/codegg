@@ -25,13 +25,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use codegg::git_publication::{
     reconcile_git_index_publications_at_startup, GitIndexPublicationConflict,
-    GitIndexPublicationOutcome, GitIndexPublicationRequest, GitIndexPublisher, GitIndexStaging,
-    GitIndexStagingRequest, ObtainedNetworkBoundary,
+    GitIndexPublicationOutcome, GitIndexPublicationRefusal, GitIndexPublicationRequest,
+    GitIndexPublisher, GitIndexStaging, GitIndexStagingRequest, ObtainedNetworkBoundary,
 };
 use codegg_core::git_publication::{
     GitIndexPublicationIntent, GitIndexPublicationState, GitIndexPublicationStore, IndexFingerprint,
 };
 use common::pool::isolated_pool;
+use egggit::GitReadConsistency;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
@@ -788,5 +789,486 @@ async fn a_non_add_mutation_is_never_published() {
     assert!(
         branches.contains("side"),
         "the branch was not created: {branches:?}"
+    );
+}
+
+// ── The C007 publication invariants ─────────────────────────────────
+//
+// The closure record claims four invariants of the publication vertical.
+// These tests are the regression cover for them:
+//
+// 1. the real `Add` dispatch runs its **preflight** before the publisher is
+//    consulted;
+// 2. the publisher's scratch root is scoped **outside** the repository;
+// 3. the publisher never invokes a repository-declared clean/smudge filter;
+// 4. a live-class prepared index is refused **before** any mutation.
+
+/// The bytes of the repository's refs, as a byte-identity witness.
+///
+/// A publication publishes the index. It must not touch a ref, so this
+/// reads every ref file plus `HEAD` and `packed-refs`: a change to any of
+/// them shows up as a difference.
+fn refs_bytes(gitdir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, found: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, found);
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            found.push((relative, bytes));
+        }
+    }
+
+    let mut found = Vec::new();
+    let refs = gitdir.join("refs");
+    walk(&refs, &refs, &mut found);
+    for name in ["HEAD", "packed-refs"] {
+        if let Ok(bytes) = std::fs::read(gitdir.join(name)) {
+            found.push((PathBuf::from(name), bytes));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The repository-relative paths that are staged right now.
+fn staged_paths(repo: &Path) -> Vec<String> {
+    run_git(repo, &["diff", "--cached", "--name-only"])
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// C007: the real `Add` dispatch runs its preflight before the publisher is
+/// consulted.
+///
+/// The `Add` arm's preflight is the execution-policy classification of the
+/// rendered argv (`git add …`). `git add` may run a clean/smudge filter, so
+/// the policy classifies it as requiring the contained-execution tier; the
+/// policy this crate carries cannot provide that tier, so the preflight
+/// refuses with the typed `BackendUnavailable` outcome.
+///
+/// That refusal is what makes the claim checkable: a publisher that was
+/// configured and ready still saw nothing, because the preflight refused
+/// **first**. The repository's index and refs are byte-identical afterwards
+/// and the publication journal holds no row.
+#[tokio::test]
+async fn the_real_add_dispatch_preflight_refuses_before_the_publisher_is_consulted() {
+    let pool = isolated_pool().await;
+    let temp = TempDir::new().unwrap();
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let gitdir = repo_gitdir(&repo);
+
+    // A change an in-place `git add` would stage, so "refused" is
+    // distinguishable from "silently staged".
+    std::fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let index_before = read_bytes(&gitdir.join("index")).expect("index exists");
+    let refs_before = refs_bytes(&gitdir);
+
+    // A publisher that is configured and would publish if it were reached.
+    let publisher = Arc::new(publisher(&pool, &scratch, LocalGitStaging));
+    let executor = codegg::git_mutations::GitMutationExecutor::new()
+        .with_env_policy(codegg::git_mutations::GitEnvPolicy::default())
+        .with_publication(publisher);
+
+    let root = codegg_git::path::RepoRoot::new(&repo).expect("repo root");
+    let path = codegg_git::path::RepoPath::new(&root, "tracked.txt").expect("repo path");
+    let operation = codegg_git::GitOperation::Add { paths: vec![path] };
+
+    let error = executor
+        .execute(&operation, &repo)
+        .await
+        .expect_err("the preflight refuses the add");
+    match &error {
+        codegg::git_mutations::GitMutationError::Policy(outcome) => {
+            assert!(
+                matches!(
+                    outcome,
+                    egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities }
+                        if !capabilities.is_empty()
+                ),
+                "expected the typed backend refusal, got {outcome:?}"
+            );
+        }
+        other => panic!("expected the preflight's policy refusal, got {other:?}"),
+    }
+
+    // The repository is byte-identical: the preflight refused before any
+    // child ran and before the publisher was consulted.
+    assert_eq!(
+        read_bytes(&gitdir.join("index")),
+        Some(index_before.clone()),
+        "a refused Add must not touch the index"
+    );
+    assert_eq!(
+        refs_bytes(&gitdir),
+        refs_before,
+        "a refused Add must not touch a ref"
+    );
+    assert!(
+        staged_paths(&repo).is_empty(),
+        "a refused Add must not stage anything"
+    );
+
+    // The publisher was never consulted: the journal holds no row.
+    let store = GitIndexPublicationStore::new(pool);
+    assert!(
+        store.list_unresolved(16).await.unwrap().is_empty(),
+        "the preflight must refuse before the publisher records an intent"
+    );
+
+    // The refusal belongs to the `Add` arm's preflight and not to the
+    // executor: the same executor, with the same publisher, still serves a
+    // non-`Add` mutation through the legacy route.
+    let operation = codegg_git::GitOperation::BranchCreate {
+        name: codegg_git::BranchName::new("side").expect("branch name"),
+        start_point: None,
+        force: false,
+    };
+    let result = executor
+        .execute(&operation, &repo)
+        .await
+        .expect("the legacy route still serves a non-Add mutation");
+    assert!(result.success, "the legacy route failed: {result:?}");
+}
+
+/// C007: the publisher's scratch is scoped **outside** the repository.
+///
+/// A scratch root inside the repository would put the private index — and
+/// every other staging artifact — inside the very tree the publication is
+/// about to change, so a failed publication could leave the user's worktree
+/// littered with daemon-owned state. The publisher refuses such a scratch,
+/// and it refuses before the repository is touched.
+#[tokio::test]
+async fn a_scratch_root_inside_the_repository_is_refused_before_the_repository_changes() {
+    let pool = isolated_pool().await;
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let gitdir = repo_gitdir(&repo);
+
+    // The scratch root is *inside* the repository.
+    let scratch = repo.join("publisher-scratch");
+
+    std::fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let index_before = read_bytes(&gitdir.join("index")).expect("index exists");
+    let refs_before = refs_bytes(&gitdir);
+
+    let publisher = publisher(&pool, &scratch, LocalGitStaging);
+    let outcome = publisher
+        .publish_add(&request(&repo, &["tracked.txt"], "scratch-inside"))
+        .await
+        .expect("publish");
+
+    match outcome {
+        GitIndexPublicationOutcome::Refused(GitIndexPublicationRefusal::BackendNotConfigured {
+            reason,
+        }) => assert!(
+            reason.contains("outside the repository"),
+            "unexpected refusal reason: {reason}"
+        ),
+        other => panic!("expected the scoped-scratch refusal, got {other:?}"),
+    }
+
+    // The repository is byte-identical: the refusal came before the
+    // staging and before the journal.
+    assert_eq!(
+        read_bytes(&gitdir.join("index")),
+        Some(index_before.clone()),
+        "a refused publication must not touch the index"
+    );
+    assert_eq!(
+        refs_bytes(&gitdir),
+        refs_before,
+        "a refused publication must not touch a ref"
+    );
+    assert!(
+        staged_paths(&repo).is_empty(),
+        "a refused publication must not stage anything"
+    );
+
+    // Nothing was recorded: the refusal precedes the journal.
+    let store = GitIndexPublicationStore::new(pool);
+    assert!(store.get("scratch-inside").await.unwrap().is_none());
+}
+
+/// A hostile clean/smudge filter command.
+///
+/// It records that it ran — by creating the sentinel — and rewrites the
+/// content, so a publication that *applied* the filter would publish
+/// different bytes than the worktree holds.
+fn filter_script(sentinel: &Path) -> String {
+    format!(
+        "#!/bin/sh\ncat >/dev/null\n: > '{path}'\nprintf 'FILTERED\\n'\n",
+        path = sentinel.display()
+    )
+}
+
+/// Declare the hostile filter in the repository's own metadata.
+///
+/// `.gitattributes` names the filter and `.git/config` gives it a command,
+/// which is exactly the metadata a hostile repository ships.
+fn declare_filter(repo: &Path, command: &str) {
+    std::fs::write(
+        repo.join(".gitattributes"),
+        "*.bin filter=codegg-hostile-filter\n",
+    )
+    .unwrap();
+    run_git(
+        repo,
+        &["config", "filter.codegg-hostile-filter.clean", command],
+    );
+    run_git(
+        repo,
+        &["config", "filter.codegg-hostile-filter.smudge", command],
+    );
+}
+
+/// C007: the publisher never invokes a repository-declared clean/smudge
+/// filter.
+///
+/// The staging child reads the **daemon-authored** private gitdir, whose
+/// configuration contains no `filter.*` section at all, so Git has no
+/// command to run for the filter the repository names and passes the
+/// content through unchanged.
+///
+/// The absence assertion would be vacuous if the filter could never have
+/// run, so the test carries two positive controls: the filter command is
+/// run directly, and Git is shown to invoke the repository-declared filter
+/// for the same path in a separate repository. Both must produce the
+/// sentinel, or the test fails loudly.
+#[tokio::test]
+async fn the_publisher_never_invokes_a_repository_declared_clean_filter() {
+    let pool = isolated_pool().await;
+    let temp = TempDir::new().unwrap();
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // The filter's own scratch: the command and the sentinel live under a
+    // temporary directory, never at a fixed or shared location.
+    let filter_dir = TempDir::new().unwrap();
+    let sentinel = filter_dir.path().join("clean-filter-sentinel");
+    let command = filter_dir.path().join("clean-filter.sh");
+    std::fs::write(&command, filter_script(&sentinel)).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let clean_command = format!("sh '{}'", command.display());
+
+    // ── Positive control 1: the command itself can produce the sentinel.
+    let mut child = Command::new("sh")
+        .arg(&command)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the filter command runs");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin is piped")
+            .write_all(b"PAYLOAD\n")
+            .expect("the filter command accepts the content");
+    }
+    let output = child
+        .wait_with_output()
+        .expect("the filter command finishes");
+    assert!(
+        output.status.success(),
+        "the filter command failed: {output:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        "FILTERED\n",
+        "the filter must rewrite the content, or the published bytes prove nothing"
+    );
+    assert!(
+        sentinel.exists(),
+        "the filter command must be able to create the sentinel, or the absence assertion below \
+         would be vacuous"
+    );
+    std::fs::remove_file(&sentinel).unwrap();
+
+    // ── Positive control 2: Git itself invokes the declared filter.
+    //
+    // The same repository metadata, in a separate repository, so Git runs
+    // the filter for the same path in this environment.
+    let control_repo = temp.path().join("control-repo");
+    std::fs::create_dir_all(&control_repo).unwrap();
+    init_repo(&control_repo);
+    declare_filter(&control_repo, &clean_command);
+    std::fs::write(control_repo.join("payload.bin"), "PAYLOAD\n").unwrap();
+    run_git(&control_repo, &["add", "--", "payload.bin"]);
+    assert!(
+        sentinel.exists(),
+        "Git must invoke the repository-declared clean filter for the covered path, or the \
+         absence assertion below would be vacuous"
+    );
+    assert_eq!(
+        run_git(&control_repo, &["show", ":payload.bin"]),
+        "FILTERED\n",
+        "the control must show the declared filter applied"
+    );
+    std::fs::remove_file(&sentinel).unwrap();
+
+    // ── The repository under test declares the same hostile filter.
+    declare_filter(&repo, &clean_command);
+    std::fs::write(repo.join("payload.bin"), "PAYLOAD\n").unwrap();
+
+    let publisher = publisher(&pool, &scratch, LocalGitStaging);
+    let outcome = publisher
+        .publish_add(&request(&repo, &["payload.bin"], "filter-free"))
+        .await
+        .expect("publish");
+    let receipt = match outcome {
+        GitIndexPublicationOutcome::Committed(receipt) => receipt,
+        other => panic!("expected a committed publication, got {other:?}"),
+    };
+    assert_eq!(receipt.staged_paths, vec!["payload.bin".to_string()]);
+
+    // The filter never ran.
+    assert!(
+        !sentinel.exists(),
+        "the publisher invoked the repository-declared clean filter"
+    );
+
+    // The ordinary path still works: the publication committed and the
+    // published blob is the **unfiltered** worktree content.
+    let staged = run_git(&repo, &["ls-files", "--stage", "payload.bin"]);
+    assert!(
+        staged.contains("payload.bin"),
+        "the published index must hold the path, got {staged:?}"
+    );
+    assert_eq!(
+        run_git(&repo, &["show", ":payload.bin"]),
+        "PAYLOAD\n",
+        "the published blob must be the unfiltered content"
+    );
+}
+
+/// A staging step that observed the repository's index **live**.
+///
+/// The publisher's compare-and-swap can only be trusted when the staged
+/// content and the fingerprint it swaps against describe the same
+/// generation. A live read cannot promise that, so the publisher refuses
+/// it.
+struct LiveMutableStaging;
+
+#[async_trait]
+impl GitIndexStaging for LiveMutableStaging {
+    async fn stage(
+        &self,
+        request: &GitIndexStagingRequest,
+    ) -> Result<ObtainedNetworkBoundary, String> {
+        LocalGitStaging.stage(request).await
+    }
+
+    fn observed_consistency(&self) -> GitReadConsistency {
+        GitReadConsistency::LiveMutable
+    }
+}
+
+/// C003: the publisher refuses a live-class prepared index before any
+/// mutation.
+///
+/// A live-class preparation was read from a concurrently mutable
+/// repository, so its staged content and its compare-and-swap operand may
+/// not describe the same generation. The refusal is a *fence*: it runs
+/// before the lock, before the journal, and before any object import, so
+/// the real index and the refs are byte-identical afterwards and the
+/// journal holds no row.
+#[tokio::test]
+async fn a_live_class_prepared_index_is_refused_before_any_mutation() {
+    let pool = isolated_pool().await;
+    let temp = TempDir::new().unwrap();
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let gitdir = repo_gitdir(&repo);
+
+    std::fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+    let index_before = read_bytes(&gitdir.join("index")).expect("index exists");
+    let refs_before = refs_bytes(&gitdir);
+    let objects_before = loose_objects(&gitdir.join("objects"));
+
+    let store = Arc::new(GitIndexPublicationStore::new(pool.clone()));
+    let live_publisher = GitIndexPublisher::new(
+        store,
+        scratch.clone(),
+        Arc::new(LiveMutableStaging),
+        Duration::from_secs(30),
+    );
+    let outcome = live_publisher
+        .publish_add(&request(&repo, &["tracked.txt"], "live-class"))
+        .await
+        .expect("publish");
+
+    assert_eq!(
+        outcome,
+        GitIndexPublicationOutcome::Refused(GitIndexPublicationRefusal::StagingNotCaptured {
+            class: GitReadConsistency::LiveMutable,
+        })
+    );
+
+    // Nothing was written: the refusal came before the lock, before the
+    // journal and before any object import.
+    assert_eq!(
+        read_bytes(&gitdir.join("index")),
+        Some(index_before.clone()),
+        "a refused publication must not touch the index"
+    );
+    assert_eq!(
+        refs_bytes(&gitdir),
+        refs_before,
+        "a refused publication must not touch a ref"
+    );
+    assert_eq!(
+        loose_objects(&gitdir.join("objects")),
+        objects_before,
+        "a refused publication must not import an object"
+    );
+    assert!(!gitdir.join("index.lock").exists());
+
+    // No journal row was written for the refused intent.
+    let store = GitIndexPublicationStore::new(pool.clone());
+    assert!(store.get("live-class").await.unwrap().is_none());
+    assert!(store.list_unresolved(16).await.unwrap().is_empty());
+
+    // The fence does not break the ordinary captured path.
+    let publisher = publisher(&pool, &scratch, LocalGitStaging);
+    let outcome = publisher
+        .publish_add(&request(&repo, &["tracked.txt"], "captured-class"))
+        .await
+        .expect("publish");
+    let receipt = match outcome {
+        GitIndexPublicationOutcome::Committed(receipt) => receipt,
+        other => panic!("expected a committed publication, got {other:?}"),
+    };
+    assert_eq!(receipt.consistency, GitReadConsistency::CapturedNotCurrent);
+    assert_ne!(
+        read_bytes(&gitdir.join("index")),
+        Some(index_before),
+        "the ordinary captured path must still publish"
     );
 }

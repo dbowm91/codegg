@@ -10,7 +10,7 @@
 > (recommendations, `schema_version`, encryption-at-rest) remain
 > unimplemented and are stated prospectively below; they are not
 > stale. Its *measured* defaults and API claims were re-verified
-> against current source on 2026-10-06 — see "Source Verification"
+> against current source on 2026-10-23 — see "Source Verification"
 > at the end.
 
 ## Risk Summary
@@ -20,7 +20,7 @@
 | 1 | Stale evidence served as fresh | Low | Medium | Mitigated (TTL, file hash, generation checks) |
 | 2 | Cross-workspace information leak | Low | High | Mitigated (root-scoped keys, no cross-root lookup) |
 | 3 | Plaintext source snippets on disk | Medium | High | **Requires mitigation** before disk persistence ships |
-| 4 | Schema version downgrade attack | Low | Medium | Mitigated (version check + drop) |
+| 4 | Schema version downgrade attack | Low | Medium | Designed in (not implemented — no `schema_version` field exists today) |
 | 5 | Cache poisoning via file modification | Low | Medium | Mitigated (file hash validation) |
 | 6 | Unbounded disk growth | Low | Low | Mitigated (max_entries/max_bytes caps) |
 | 7 | Secrets leaked from cached source | Medium | High | **Requires mitigation** before disk persistence ships |
@@ -38,7 +38,14 @@ Disk persistence would serialize `LspContextPacket` entries. Each packet contain
 - `range` / `line` / `column` — location within the file
 - `message` — human-readable text (diagnostic messages, hover content, completion text)
 - `symbol` — optional symbol name
+- `source` — optional `AgentContextSource` (where in the agent workflow the evidence originated)
 - `provenance` — server ID, generation, operation name, freshness timestamp
+- `score` — `LspContextScore`, the ranking metadata used to order items
+- `payload` — optional `serde_json::Value` carrying structured payload for complex evidence types
+
+Every one of these types is `Serialize`/`Deserialize` today (see
+§10 "Current state"), so the list above is exactly what a disk
+persistence layer would put on disk.
 
 **Preview artifacts** (`Vec<LspPreviewArtifact>`):
 - Unified diff patches with file paths and patch text
@@ -85,14 +92,22 @@ Each workspace root gets a subdirectory identified by a normalized hash of its c
 
 | Trigger | Behavior |
 |---------|----------|
-| `/lsp-cache-clear` | Removes all entries for a specific workspace root |
-| `/lsp-cache-clear --all` | Removes the entire cache directory |
-| TTL expiry | Entries older than `ttl_seconds` (default 300s) are dropped on read; not proactively cleaned from disk |
-| Schema version mismatch | Entry is dropped silently when version does not match current code |
+| `/lsp-cache-clear` (no argument) | Removes **every** cache entry — the in-memory equivalent of `--all` |
+| `/lsp-cache-clear --all` | Same as the no-argument form: clears the whole cache |
+| `/lsp-cache-clear <path>` | Removes only the entries for that workspace root (`clear_semantic_cache_for_root`) |
+| TTL expiry | Entries older than `ttl_seconds` (default 300s) are dropped on read: `LspSemanticCache::get` finds the entry expired, counts a stale miss, and removes it from the map |
+| Schema version mismatch | **Not implemented.** There is no `schema_version` field on the key or the packet today; see §8 for the designed-in rule |
 | App uninstall | Depends on whether cache dir is in an app-specific location; `dirs::cache_dir()` is shared, so uninstall alone may not clear it |
 | Manual deletion | User can `rm -rf` the cache directory at any time |
 
-**Gap**: There is no proactive background cleanup of expired disk entries. Stale entries persist on disk until accessed or manually cleared.
+The clear commands are TUI slash commands dispatched through
+`BuiltinSlashAction::LspCacheClear` / `LspCacheStatus`
+(`src/tui/app/mod.rs`), and they act on the in-memory cache only. There
+is no disk directory to remove today.
+
+**Gap**: There is no proactive background cleanup of expired entries. Stale
+entries are removed when they are read or when a clear command runs; nothing
+sweeps the cache on a timer.
 
 ---
 
@@ -177,11 +192,41 @@ Cached evidence can inadvertently contain:
 
 ## 10. How Users Disable It
 
-- Default config: `mode = "disabled"` — no disk writes occur.
-- To enable: User must explicitly set `mode = "disk"` in `[lsp_semantic_cache]` config.
+- Default config: `mode = "disabled"` — no cache writes occur at all.
+- The config surface is the **top-level** `lsp_semantic_cache` object in the
+  JSON/JSONC config (`codegg.jsonc` / `codegg.json` / `config.json` — this
+  project's config format is JSON, not TOML):
+
+  ```jsonc
+  "lsp_semantic_cache": {
+    "mode": "disabled",   // "disabled" (default) | "memory"
+    "max_entries": 64,
+    "max_bytes": 4194304,
+    "ttl_seconds": 300
+  }
+  ```
+
+- The mode mapping is **fail-closed**: `convert_lsp_cache_config`
+  (`src/tool/mod.rs`) recognizes exactly `"memory"` and maps every other
+  value — including a hypothetical `"disk"` — to `LspCacheMode::Disabled`.
+  A config typo therefore disables the cache rather than selecting an
+  unimplemented mode.
 - The cache never enables itself. No auto-upgrade from memory to disk mode.
-- `/lsp-cache-status` displays current mode and entry count.
-- `/lsp-cache-clear --all` removes all disk artifacts.
+- `/lsp-cache-status` displays the current mode (`memory` or `disabled`),
+  entry count, byte size, hits, misses, stale misses, and evictions.
+- `/lsp-cache-clear` (and `/lsp-cache-clear --all`) clears the **in-memory**
+  cache; `/lsp-cache-clear <path>` clears one workspace root. There are no
+  disk artifacts to remove today.
+
+### Current state: what actually exists today
+
+| Property | Status |
+|----------|--------|
+| `LspCacheMode` variants | `Disabled` (default) and `Memory` only — no `Disk` variant |
+| Persistence | In-memory only. `crates/egglsp/src/cache.rs` contains no filesystem write at all |
+| Serialization | `LspContextPacket`, `LspContextItem`, `LspCacheKey`, and `LspPreviewArtifact` **all derive `Serialize`/`Deserialize`**, and `crates/egglsp/tests/lsp_cache_benchmark.rs` already round-trips a packet through JSON (`test_packet_serialization_performance`) |
+| What is missing | The **store**, not the encoding. A disk mode would be a new persistence layer over an already-serializable packet type |
+| Wire path | `LspTool::lsp_cache_config` (`src/tool/mod.rs`) carries an optional `egglsp::cache::LspCacheConfig`; `None` means `LspCacheConfig::default()` (disabled) |
 
 ---
 
@@ -321,27 +366,89 @@ The in-memory-only cache (`mode = "memory"`) has acceptable privacy characterist
 
 ## Source Verification
 
-Verified 2026-10-06 against `crates/egglsp/src/cache.rs` and
-`crates/egglsp/src/context.rs`. This document's design/forward-looking claims
-are prospective by intent; only the measured claims below were checked.
+Re-verified 2026-10-23 against `crates/egglsp/src/cache.rs`,
+`crates/egglsp/src/context.rs`, `crates/egglsp/src/download.rs`,
+`crates/egglsp/tests/lsp_cache_benchmark.rs`,
+`crates/codegg-config/src/schema.rs`, `crates/codegg-config/src/paths.rs`,
+`src/tool/mod.rs`, `src/tool/lsp.rs`, and `src/tui/command.rs`.
+This document's design/forward-looking claims are prospective by intent;
+only the measured claims below were checked.
 
-Confirmed accurate, no change needed:
-- `LspCacheMode` (`cache.rs:53`) still has exactly 2 variants, `Disabled`
-  (default) and `Memory` — no `Disk` variant has been added, so the document's
-  central premise still holds.
-- Cache defaults are exactly as documented (`cache.rs:39`-`:41`):
-  `max_entries: 64`, `max_bytes: 4 * 1024 * 1024` (4 MiB), `ttl_seconds: 300`.
-- `max_entries`/`max_bytes` enforcement is LRU-style, evicting oldest entries
-  (`cache.rs:525`-`:548`).
-- `clear_for_root(root)` exists (`cache.rs:470`) and is scoped to one root;
-  `test_clear_for_root_does_not_affect_other_roots` (`cache.rs:1134`) asserts
-  no cross-root effect.
-- Cache keys carry `workspace_root: PathBuf` (`cache.rs:69`) and
-  `input_hashes: BTreeMap<PathBuf, String>` (`cache.rs:73`), and key equality
-  compares both (`cache.rs:156`, `:160`).
-- `egglsp::download::cache_dir()` exists (`crates/egglsp/src/download.rs:10`),
-  matching the storage-location pattern in section 2.
-- `LspContextItem` fields match section 1: `kind`, `file`, `range`, `line`,
-  `column`, `message`, `symbol` (`context.rs:363`-`:383`).
-- The `/lsp-cache-clear` and `/lsp-cache-status` commands referenced in
-  sections 4 and 10 exist (`src/tui/app/mod.rs:5728`, `:12529`).
+**Corrections made (2026-10-23).**
+
+- **§4, clear-command behavior.** The previous revision said
+  `/lsp-cache-clear` "removes all entries for a specific workspace root".
+  The bare form clears the **whole** cache: the TUI handler
+  (`BuiltinSlashAction::LspCacheClear` in `src/tui/app/mod.rs`) treats an
+  empty argument and `--all` identically and calls
+  `LspTool::clear_semantic_cache`. The root-scoped form is
+  `/lsp-cache-clear <path>`, which calls
+  `LspTool::clear_semantic_cache_for_root` →
+  `LspSemanticCache::clear_for_root`.
+- **§4, TTL row.** Entries expire on read, not on a timer: a read of an
+  expired entry counts a stale miss and removes the entry from the map.
+  There is no proactive sweep.
+- **§4, schema-version row.** There is no `schema_version` field on
+  `LspCacheKey` or `LspContextPacket` today; the row now says the rule is
+  **not implemented**, and Risk Summary row 4 now reads "Designed in
+  (not implemented)" instead of "Mitigated".
+- **§10, config surface.** The config format for this project is
+  **JSON/JSONC** (`codegg.jsonc` / `codegg.json` / `config.json` per
+  `crates/codegg-config/src/paths.rs`), so the previous `[lsp_semantic_cache]`
+  TOML-table syntax was wrong; the section now shows the JSONC object and
+  names the key as the **top-level** `lsp_semantic_cache` field on `Config`
+  (`crates/codegg-config/src/schema.rs`). Added the fail-closed mode
+  mapping in `convert_lsp_cache_config` (`src/tool/mod.rs`): only
+  `"memory"` is recognized, and every other value maps to
+  `LspCacheMode::Disabled`.
+- **§10, status output.** `/lsp-cache-status` reports mode, entries,
+  bytes, hits, misses, stale misses, and evictions — not mode and entry
+  count alone.
+- **§1, evidence-item fields.** `LspContextItem` also carries `source`
+  (`Option<AgentContextSource>`) and `score` (`LspContextScore`); both
+  are listed now.
+- **Added §10 "Current state".** The previous revision did not record
+  that `LspContextPacket`, `LspContextItem`, `LspCacheKey`, and
+  `LspPreviewArtifact` all derive `Serialize`/`Deserialize`
+  (`crates/egglsp/src/context.rs`, `crates/egglsp/src/cache.rs`), and that
+  `crates/egglsp/tests/lsp_cache_benchmark.rs` already round-trips a
+  packet through JSON (`test_packet_serialization_performance`). The
+  missing piece in a disk mode is therefore the **store**, not the
+  encoding — the document now says so explicitly, because "the packet
+  types are not serializable" would be the wrong reason to believe disk
+  persistence is blocked.
+
+**Confirmed accurate, no change needed.**
+
+- `LspCacheMode` (`crates/egglsp/src/cache.rs`) still has exactly 2
+  variants, `Disabled` (default) and `Memory` — no `Disk` variant has
+  been added, so the document's central premise still holds.
+- Cache defaults are exactly as documented
+  (`LspCacheConfig::default` in `crates/egglsp/src/cache.rs`):
+  `max_entries: 64`, `max_bytes: 4 * 1024 * 1024` (4 MiB),
+  `ttl_seconds: 300`.
+- `max_entries`/`max_bytes` enforcement is LRU-style, evicting oldest
+  entries (`LspSemanticCache::evict_if_needed`).
+- `clear_for_root(root)` exists and is scoped to one root;
+  `test_clear_for_root_does_not_affect_other_roots` asserts no cross-root
+  effect.
+- Cache keys carry `workspace_root: PathBuf` and
+  `input_hashes: BTreeMap<PathBuf, String>`, and key equality compares
+  both. The key carries **no** workspace-content hash, no schema version,
+  and no requesting principal — as documented.
+- `egglsp::download::cache_dir()` exists
+  (`crates/egglsp/src/download.rs`) and resolves to
+  `dirs::cache_dir()/codegg/lsp`, matching the storage-location pattern
+  in section 2. That directory holds **downloaded LSP server binaries**,
+  not semantic-cache entries.
+- `crates/egglsp/src/cache.rs` contains no filesystem write: the module
+  has no `fs::write`/`File::create`, so nothing persists today.
+- `LspPreviewArtifact` carries unified diff patches
+  (`patches: Vec<PreviewFilePatch>`), as section 1 states.
+- `LspContextItem.payload` is `Option<serde_json::Value>`, as section 7
+  states.
+- The `/lsp-cache-clear` and `/lsp-cache-status` commands exist and are
+  registered in `src/tui/command.rs`
+  (`BuiltinSlashAction::LspCacheClear` / `LspCacheStatus`); the previous
+  revision's `src/tui/app/mod.rs:5728`/`:12529` line references had
+  drifted and are now given as symbols.

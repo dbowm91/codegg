@@ -32,6 +32,10 @@ pub(super) mod provider_connections;
 /// Public so the `TuiCommand` delete-completion variant and the integration
 /// target can both reach the applier without a test-only App shim.
 pub mod queue;
+/// Provider reasoning control M004: the `/reasoning` option surface and its
+/// daemon write path. Public so the `TuiCommand` completion variants (which
+/// name its payload types) stay well-formed.
+pub mod reasoning;
 pub(super) mod research;
 pub(super) mod run_rerun;
 pub(super) mod security;

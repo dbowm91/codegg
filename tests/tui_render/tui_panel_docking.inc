@@ -394,7 +394,7 @@ fn a_clear_on_an_unknown_handle_reports_failure() {
 /// Built by driving the controller directly rather than through the daemon
 /// completions: `InteractiveOutputChunk` is private to the crate, and what
 /// these tests assert is that a *keystroke* reaches navigation state. The
-/// attach transport itself is `interactive_terminal_tui.rs`'s job.
+/// attach transport itself is `src/interactive_process_attach.rs`'s job.
 ///
 /// Put a live, attached terminal behind `handle` with a screen exactly
 /// `screen_rows` tall.

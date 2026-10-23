@@ -120,7 +120,9 @@ silent swallow that would leave the renderer permanently deaf. Presentation
 (`present.rs`) is a pure bounded view: only `Public` + User/Assistant/
 Tool content renders (raw tool args/output never serialize), with tail
 caps (100 messages / 20 tools / 10 runs-jobs-subagents / 5 recent / 16
-handles) and a non-authoritative cursor diagnostic.
+handles) and a non-authoritative cursor diagnostic. Two further caps bound
+the pending-interaction surfaces: 16 pending permissions and 16 pending
+questions per view (`present.rs:55-57`).
 
 Prompt submission is at-most-once through `CoreRequest::SessionPromptSubmit`
 (`prompt.rs`): the renderer sends opaque text plus plan-mode only, the
@@ -148,6 +150,33 @@ reconnect, project-catalog invalidation, renderer reload, native close, TUI
 coexistence, explicit-path autostart, and daemon survival
 (`apps/desktop/e2e/specs/`, entry point `apps/desktop/e2e/run-e2e.sh`,
 hosted in `.github/workflows/desktop-e2e.yml` on Linux/WebKitGTK/xvfb).
+
+### The hosted qualification is paused (2026-10-23)
+
+Development on the desktop foundation line is paused, so the hosted
+qualification **no longer runs on push or on pull requests**:
+`.github/workflows/desktop-e2e.yml` is **manual dispatch only** until that
+line resumes, and its name carries the "(paused)" marker so the state is
+visible in the Actions list rather than inferred.
+
+The pause is not a claim that the trajectory passes. It had already been red
+on `main`: `main`'s own most recent run (`39679968444` at `53d9fc9fd`) fails
+with `element ("[data-testid="permission-list"]") still not existing after
+120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5` — the same
+file, the same line and the same timeout — and the nine runs behind it are
+consecutive failures. The defect is the desktop line's own, so a hosted run
+on every desktop-tree change bought no signal.
+
+Everything else on this page is unchanged. The trajectory, the spec files,
+the `desktop-e2e` Cargo feature and its authority boundary, and the
+`check-desktop-boundary.sh` guard all stand; what is paused is the *hosted
+qualification*, not the capability and not its boundary. The workflow's path
+filters are preserved in its own header so that restoring the triggers is a
+copy-paste.
+
+Until the lane resumes, the desktop foundation's hosted evidence is the
+`CI / verify` lane plus the local `apps/desktop` host and renderer checks —
+which the root workspace's gate does not compile, so they are run by hand.
 
 Test instrumentation never widens production authority:
 
@@ -262,6 +291,92 @@ Node, WebKitGTK, or the desktop Cargo workspace; `scripts/check-desktop-boundary
 guards that separation and the renderer authority inventory.
 
 ## Source verification
+
+Verified 2026-10-23 against `apps/desktop/`: `src-tauri/Cargo.toml`,
+`src-tauri/tauri.conf.json`, `src-tauri/src/{lib,bridge,lifecycle,route,projection,present,prompt,control,artifact}.rs`,
+`src-tauri/src/bin/desktop_e2e_fixture.rs`, `src-tauri/capabilities/main.json`,
+`src/{bridge-types.ts,bridge.ts}`, `package.json`, `scripts/{stage-daemon.sh,check-bindings.mjs}`,
+`e2e/{run-e2e.sh,build-e2e-app.sh,capabilities/e2e.json,specs/}`,
+the root `Cargo.toml`, `scripts/check-desktop-boundary.sh`, and
+`.github/workflows/desktop-e2e.yml`.
+- **Verified the pause claim still holds**: `.github/workflows/desktop-e2e.yml`
+  is named `Desktop E2E (paused)` and its only trigger is
+  `on: workflow_dispatch:` — no `push`, no `pull_request`. The preserved
+  path filters are in the workflow header, and the recorded failure
+  (`element ("[data-testid="permission-list"]") still not existing after
+  120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169`) still
+  matches the file — line 169 is the `waitForExist` on `permission-list`
+  with the `timeout: 120_000` option.
+- **Verified the toolchain pins**: `rust-version = "1.90"` at
+  `src-tauri/Cargo.toml:6`, `tauri = { version = "2.12" }` at
+  `src-tauri/Cargo.toml:20`, and the root `rust-version = "1.89"` at
+  `Cargo.toml:12`. `apps/desktop/src-tauri` is in the root workspace's
+  `exclude` list (`Cargo.toml:6`) and declares its own `[workspace]`
+  (`src-tauri/Cargo.toml:8-10`).
+- **Verified the host module set**: `apps/desktop/src-tauri/src/` holds
+  exactly `artifact`, `bridge`, `control`, `lib`, `lifecycle`, `main`,
+  `present`, `projection`, `prompt`, `route`, plus
+  `src/bin/desktop_e2e_fixture.rs`. The doc's module list matches.
+- **Verified the bridge command inventory**: all 19 documented commands
+  exist in `src-tauri/src/lib.rs` — `desktop_connect` (`:655`),
+  `desktop_connection_snapshot` (`:760`), `desktop_project_list` (`:775`),
+  `desktop_subscribe_events` (`:810`), `desktop_unsubscribe_events`
+  (`:820`), `desktop_disconnect` (`:831`), `desktop_project_detail`
+  (`:840`), `desktop_workspace_select` (`:848`), `desktop_session_list`
+  (`:859`), `desktop_session_open` (`:867`), `desktop_session_create`
+  (`:876`), `desktop_prompt_submit` (`:888`), `desktop_artifact_read`
+  (`:903`), `desktop_control_refresh` (`:919`),
+  `desktop_permission_respond` (`:927`), `desktop_question_respond`
+  (`:939`), `desktop_projection_start` (`:954`),
+  `desktop_projection_stop` (`:963`), `desktop_projection_current`
+  (`:972`), and `desktop_projection_subscribe` (`:979`).
+  `MAX_PROJECTS = 50` at `src-tauri/src/lib.rs:35`.
+- **Added the two missing presentation caps**: `MAX_PENDING_PERMISSIONS = 16`
+  and `MAX_PENDING_QUESTIONS = 16`
+  (`src-tauri/src/present.rs:55-57`) were absent from the doc's tail-cap
+  list, which named only the other seven.
+- **Verified the trust-boundary claims**: `src-tauri/capabilities/main.json`
+  declares `main-capability` for the `main` window with an empty
+  `permissions` array; the CSP in `src-tauri/tauri.conf.json:10` is
+  `default-src 'self' asset: http://tauri.localhost; connect-src ipc:
+  http://ipc.localhost; ...; script-src 'self'` — local assets and IPC
+  only, no CDN script source, no `unsafe-eval`; and the packaged daemon
+  resource is `"resources": { "binaries/codegg": "codegg" }`
+  (`tauri.conf.json:12`), staged by `scripts/stage-daemon.sh` (which reads
+  `CODEGG_DAEMON_EXECUTABLE` or falls back to
+  `$repo_root/target/debug/codegg`).
+- **Verified the E2E instrumentation claims**: the `e2e-anchor` hidden
+  blank window is created under the `desktop-e2e` feature
+  (`src-tauri/src/lib.rs:1061-1071`, `about:blank`, `visible(false)`); the
+  `desktop-e2e` build refuses to connect unless `CODEGG_DAEMON_HOME` is
+  set and temp-scoped (`src-tauri/src/lib.rs:584-602`); the fixture
+  transport is a Unix-domain socket rather than stdio
+  (`src-tauri/src/bin/desktop_e2e_fixture.rs:10,62`); and
+  `scripts/check-desktop-boundary.sh` rejects any `core_request`,
+  `read_file`, or `invoke.*shell` in the renderer/host sources
+  (`:23`), requires the `desktop-e2e` feature to enable exactly
+  `tauri-plugin-wdio-webdriver` (`:31`), requires that dependency to stay
+  optional (`:35`), rejects the backend `tauri-plugin-wdio` crate
+  (`:39`), and asserts the production capability's `permissions` is empty
+  (`:92`).
+- **Verified the E2E layout**: `apps/desktop/e2e/specs/` holds exactly
+  `m003-autostart.e2e.ts`, `m003-lifecycle.e2e.ts`, and
+  `m004-session.e2e.ts`; the live-turn leg is at
+  `m004-session.e2e.ts:156`; `e2e/run-e2e.sh` and `e2e/build-e2e-app.sh`
+  exist; the template capability is `e2e/capabilities/e2e.json`.
+- **Verified the npm surface**: `package.json` defines `dev`, `build`,
+  `typecheck`, `test`, `tauri`, `bindings:check`, `stage:daemon`, and
+  `test:e2e`. `scripts/check-bindings.mjs` compares `src/bridge-types.ts`
+  against `src-tauri/src/bridge.rs` field by field.
+- Verified accurate, no change: the bridge DTO names and the
+  camelCase sync across `src/bridge-types.ts`, `src/bridge.ts`, and
+  `src-tauri/src/bridge.rs`; the C002 linearization rules and the
+  `SubscriptionRegistry` compare-by-id cleanup (`lifecycle.rs:40-52`); the
+  M004 route/projection/prompt/control/artifact contracts
+  (`route.rs:61` `RouteState.responding`, `projection.rs:56`
+  `ProjectionOwner`, `prompt.rs:138` `CoreRequest::SessionPromptSubmit`,
+  `present.rs:80-85` the `Public` + User/Assistant/Tool filter); and the
+  "Deferred surfaces" list.
 
 Verified 2026-10-06 against `apps/desktop/`: the standalone Rust 1.90 /
 Tauri 2.12 pins (`src-tauri/Cargo.toml:6, 20`) against root `rust-version

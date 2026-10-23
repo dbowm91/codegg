@@ -83,6 +83,7 @@ pub mod staging;
 use std::path::PathBuf;
 
 use codegg_core::git_publication::{GitIndexPublicationState, IndexFingerprint};
+use egggit::GitReadConsistency;
 
 pub use publisher::{GitIndexPublicationError, GitIndexPublisher, PreparedPrivateIndex};
 pub use reconciler::{
@@ -240,6 +241,15 @@ pub struct GitIndexPublicationReceipt {
     /// network would leave "there was no boundary" and "the boundary was not
     /// surfaced" indistinguishable.
     pub network_boundary: ObtainedNetworkBoundary,
+    /// The consistency class the published index generation was captured
+    /// under.
+    ///
+    /// The publisher compares and swaps against the fingerprint of the index
+    /// generation it captured, so the receipt states which class that
+    /// generation was. A publication is never committed from a live-class
+    /// generation: a live read may be torn by an outside writer, and a
+    /// torn generation has no fingerprint to swap against.
+    pub consistency: GitReadConsistency,
     /// When the publication committed.
     pub published_at_ms: i64,
 }
@@ -346,6 +356,18 @@ pub enum GitIndexPublicationRefusal {
         /// What the staging child reported.
         reason: String,
     },
+    /// The staged index was not captured from a generation the publisher can
+    /// compare and swap against.
+    ///
+    /// A live-class staging read the repository's index from a concurrently
+    /// mutable repository, so the staged content and the compare-and-swap
+    /// operand may not describe the same generation. Publishing it would
+    /// overwrite a concurrent writer's index, so the publication is refused
+    /// instead.
+    StagingNotCaptured {
+        /// The consistency class the staging reported.
+        class: GitReadConsistency,
+    },
 }
 
 impl GitIndexPublicationRefusal {
@@ -359,6 +381,7 @@ impl GitIndexPublicationRefusal {
             }
             GitIndexPublicationRefusal::PathsUnsupported { .. } => "paths_unsupported",
             GitIndexPublicationRefusal::StagingFailed { .. } => "staging_failed",
+            GitIndexPublicationRefusal::StagingNotCaptured { .. } => "staging_not_captured",
         }
     }
 }
@@ -380,6 +403,13 @@ impl std::fmt::Display for GitIndexPublicationRefusal {
             }
             GitIndexPublicationRefusal::StagingFailed { reason } => {
                 write!(f, "the staging step failed: {reason}")
+            }
+            GitIndexPublicationRefusal::StagingNotCaptured { class } => {
+                write!(
+                    f,
+                    "the staged index was not captured from a comparable generation \
+                     (consistency class {class}), so it cannot be published"
+                )
             }
         }
     }

@@ -91,7 +91,8 @@ sessions whose `workspace_id` is `NULL` until rebound via
 
 ## Storage
 
-Schema migration v22 (`crates/codegg-core/src/session/schema.rs:1125`) adds:
+Schema migration v22 (`crates/codegg-core/src/session/schema.rs`, `migrate_v22`)
+adds:
 
 ```sql
 CREATE TABLE workspace (
@@ -127,9 +128,20 @@ transaction. Missing or ambiguous lineage is retained as a diagnostic.
 Repository lineage can be shared by separate project roots; it never selects
 another root's project binding.
 
+Reconciliation is the *catalog's* auto-provisioning rule: a previously
+unseen workspace root gets **its own** logical project. That is right for a
+directory the user opens and wrong for a launch, which is why a checkout
+launch binds through the explicit `ProjectStorage::bind_checkout_workspace`
+path instead (M006). See `architecture/session_launch.md` and
+`architecture/project_identity_storage.md`.
+
 ## Protocol
 
-- DTO: `WorkspaceSnapshot { workspace_id, canonical_root, display_name, active_sessions }` in `crates/codegg-protocol/src/dto.rs:462`.
+- DTO: `WorkspaceSnapshot` in `crates/codegg-protocol/src/dto.rs` —
+  `workspace_id`, `canonical_root`, `display_name`, `created_at`,
+  `last_opened_at`, `archived_at`, `active_sessions`, plus the Phase 3
+  service-bundle fields `services_active`, `active_leases`, and
+  `config_revision`.
 - Requests: `CoreRequest::WorkspaceRegister { root }`
   (LocalOwner/proven-local only: `opaque` + `project.configure`; no
   project locator, so team principals fail closed with
@@ -154,11 +166,11 @@ another root's project binding.
 
 ## Propagation
 
-- `TurnRunInput` (`src/agent/turn_runtime.rs:84`) carries
+- `TurnRunInput` (`src/agent/turn_runtime.rs`) carries
   `execution: Arc<ExecutionContext>`. The turn runtime uses
   `execution.workspace_root` for LSP context, Git context, project
   instructions, prompt loading, and tool registry construction.
-- `ToolRegistryOptions` (`src/tool/mod.rs:276`) carries `workspace_root`.
+- `ToolRegistryOptions` (`src/tool/mod.rs`) carries `workspace_root`.
   `build_session_tool_registry` (`src/tool/factory.rs`) anchors `RunStore`
   at `workspace_root/.codegg/runs/` and propagates `workspace_root` into
   tool options.
@@ -218,10 +230,15 @@ projections untouched. Its `--fixture` mode verifies the negative case.
 Run the narrowest scope that covers your change:
 
 ```bash
-cargo test --test workspace_isolation
+cargo test --test agent_loop -- workspace_isolation
 cargo test -p codegg-core workspace
 python3 scripts/check_daemon_cwd_usage.py
 ```
+
+`tests/agent_loop/` is a **family**: one executable per subject area,
+selected with `--test agent_loop -- <member>`. A bare
+`cargo test --test workspace_isolation` selects zero tests and still
+exits 0.
 
 ## See Also
 
@@ -250,22 +267,62 @@ resolver and succeeds only for an existing unique project/workspace binding.
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/workspace.rs`,
+Verified 2026-10-23 against `crates/codegg-core/src/workspace.rs`,
 `crates/codegg-core/src/session/schema.rs`,
-`crates/codegg-core/src/identity.rs`, `src/agent/turn_runtime.rs`, and
-`src/tool/mod.rs`. Corrected the v22 migration ref
-`schema.rs:1064` → `:1125` (the `CREATE TABLE workspace` statement), the
-`TurnRunInput` ref `turn_runtime.rs:126` → `:84`, the
-`ToolRegistryOptions` ref `tool/mod.rs:293` → `:272`, and anchored
-`WorkspaceSnapshot` to `crates/codegg-protocol/src/dto.rs:462`. Added the
-omitted `WorkspaceRecord::id: WorkspaceId` field, so the key-type entry now
-lists all six persisted fields. Verified accurate: the six
-`PathPolicyError` variants, all six `ExecutionContext` fields, the three
-`resolve_*` path-policy helpers, both `WorkspaceStore` implementations,
-and the `ProjectBinding` optional `WorktreeId` / `NodeId` description.
+`crates/codegg-core/src/identity.rs`,
+`crates/codegg-core/src/project_storage.rs`,
+`crates/codegg-protocol/src/dto.rs`, `crates/codegg-protocol/src/core.rs`,
+`src/agent/turn_runtime.rs`, `src/tool/mod.rs`, `src/tool/factory.rs`,
+`src/core/daemon_refresh.rs`, `scripts/check_daemon_cwd_usage.py`,
+`scripts/check_identity_path_usage.py`, `tests/agent_loop/mod.rs`, and
+`Cargo.toml`.
 
-Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
-ownership migration and M006 closure"), which rewrote `src/tool/mod.rs`.
-Corrected: the `ToolRegistryOptions` ref `272`->`276`, re-checked to land on the
-struct declaration; the `workspace_root` field it is cited for is unchanged.
-The `codegg-core` workspace refs in this document were not affected.
+Two earlier passes (2026-10-06) corrected a set of line references; those
+references have drifted again, so every line-number reference in the body
+has been replaced with a **symbol name** — the durable fix. Current
+locations of the previously-cited symbols:
+`WorkspaceId` (`crates/codegg-core/src/workspace.rs:39`),
+`WorkspaceRecord` (`:106`), `PathPolicyError` (`:123`), `WorkspaceStore`
+(`:171`), `SqliteWorkspaceStore` (`:190`), `InMemoryWorkspaceStore`
+(`:335`), `WorkspaceRegistry` (`:414`), `ExecutionContext` (`:655`),
+`get_or_register` (`:480`), `canonicalize_workspace_root` (`:615`),
+`resolve_relative_cwd` (`:725`), `resolve_read_path` (`:748`),
+`resolve_write_path` (`:756`), the v22 `CREATE TABLE workspace` statement
+(`crates/codegg-core/src/session/schema.rs:1202`, `migrate_v22` at
+`:1199`), `WorkspaceSnapshot` (`crates/codegg-protocol/src/dto.rs:1012`),
+`TurnRunInput` (`src/agent/turn_runtime.rs:84`), and
+`ToolRegistryOptions` (`src/tool/mod.rs:376`, its `workspace_root` field
+at `:460`).
+
+Substantive corrections made in this pass:
+
+- **The `WorkspaceSnapshot` DTO field list was incomplete.** It carries
+  ten fields, not four: `workspace_id`, `canonical_root`, `display_name`,
+  `created_at`, `last_opened_at`, `archived_at`, `active_sessions`, and
+  the Phase 3 service-bundle fields `services_active`, `active_leases`,
+  `config_revision`.
+- **The catalog auto-provisioning rule is now stated next to the
+  reconciliation path.** `ProjectStorage::reconcile_workspace_path` gives
+  every previously unseen workspace root **its own** logical project —
+  right for a directory the user opens, wrong for a launch. The explicit
+  alternative, `ProjectStorage::bind_checkout_workspace`, is
+  cross-referenced to `architecture/session_launch.md` and
+  `architecture/project_identity_storage.md`.
+- **The test command was wrong.** `cargo test --test workspace_isolation`
+  selects zero tests: `tests/agent_loop/` is a family. The command is now
+  `cargo test --test agent_loop -- workspace_isolation`.
+
+Confirmed accurate and left unchanged: the six `PathPolicyError`
+variants, the six `ExecutionContext` fields, the three `resolve_*` path
+helpers and their rules, the six persisted `WorkspaceRecord` fields, both
+`WorkspaceStore` implementations, the root-validation rules (absolute
+required, symlink/file/nonexistent rejected), the v22 SQL, the v25
+`workspace_project_binding` relation, the `WorkspaceRegister` /
+`WorkspaceList` / `WorkspaceArchive` / `WorkspaceSnapshotRequest`
+requests and their authority notes, `CoreDaemon::bind_runtime_for_session`
+(`src/core/daemon_refresh.rs`), the unbound-session rejection
+(`ContextResolutionError::SessionBindingNotResolved`), the 19
+`typed_identity!` newtypes in `identity.rs` (a count that matches
+`architecture/overview.md`), and the `check_daemon_cwd_usage.py`
+scanned-surface list and its two whole-file exemptions
+(`src/main.rs`, `src/exec.rs`).

@@ -56,9 +56,9 @@ belong.
 
 | Capability | Authority | Production consumer | User-reachable path | Evidence |
 |---|---|---|---|---|
-| group join | `crates/codegg-core/src/agent_run_group.rs` — `AgentRunGroupService` | `src/tool/task.rs` — `.create(NewAgentRunGroup {` | agent → `task` tool, `action=create_group` | `tests/workstream_claim_m003.rs`; closure `001-status.md` |
-| blackboard claim | `crates/codegg-core/src/workstream_claim.rs` — `WorkstreamClaimStore` | `src/tool/task.rs` — `.claim(codegg_core::workstream_claim::NewWorkstreamClaim {` | agent → `task` tool, `action=claim` | `tests/workstream_claim_m003.rs`; closure `003-status.md` |
-| peer event | `crates/codegg-core/src/bus/events.rs` — `AppEvent::AgentRunGroupUpdated` | `src/agent/follow_up.rs` — `fn inject_peer_observations` | agent turn → peer hint injected at a provider boundary | `src/agent/follow_up.rs:772`; closure `009-status.md` |
+| group join | `crates/codegg-core/src/agent_run_group.rs` — `AgentRunGroupService` | `src/tool/task.rs` — `.create(NewAgentRunGroup {` | agent → `task` tool, `action=create_group` | `tests/core_daemon/workstream_claim_m003.inc`; closure `001-status.md` |
+| blackboard claim | `crates/codegg-core/src/workstream_claim.rs` — `WorkstreamClaimStore` | `src/tool/task.rs` — `.claim(codegg_core::workstream_claim::NewWorkstreamClaim {` | agent → `task` tool, `action=claim` | `tests/core_daemon/workstream_claim_m003.inc`; closure `003-status.md` |
+| peer event | `crates/codegg-core/src/bus/events.rs` — `AppEvent::AgentRunGroupUpdated` | `src/agent/follow_up.rs` — `fn inject_peer_observations` | agent turn → peer hint injected at a provider boundary | `src/agent/follow_up.rs` (`inject_peer_observations`); closure `009-status.md` |
 | session-worktree launch | `crates/codegg-core/src/session_launch.rs` — `SessionLaunchService` | `src/core/session_launch.rs` — `pub async fn launch(` | `codegg launch` (CLI `src/main.rs:2281`) and the TUI worktree actions | `tests/core_daemon/session_launch_service.inc`; closure `006-status.md` |
 | group lease | `crates/codegg-core/src/worktree_service.rs` — `WorktreeService::acquire_lease` | `src/core/writer_fence.rs` — `async fn shared_group(` | agent → `task` tool, `placement=serialized_shared` | `tests/shared_checkout_c006.rs`; closure `006-status.md` (C006) |
 | build optimization | `crates/codegg-core/src/jobs/quota.rs` — `ResourceClass::Build` | `src/scheduler/submission.rs` — `apply_resource_policy(&mut spec);` | any build or format job in one workspace | `tests/scheduler_jobs/build_quota_admission.inc`; closure `007-status.md` |
@@ -85,8 +85,8 @@ there, which is the failure mode a static check can honestly see.
 The peer event row carries a clause the other rows do not need: a peer
 observation is **untrusted coordination data, not an instruction**. The
 producer stamps it `trust_class: "host_observation_hint"` and prefixes it with
-an explicit preamble
-(`src/agent/follow_up.rs:34`). A comparison arm that let a peer payload become
+an explicit preamble (built in `peer_observation_message` in
+`src/agent/follow_up.rs`). A comparison arm that let a peer payload become
 an instruction would be comparing a different agent, so the matrix records the
 trust class as part of the contract rather than as an implementation detail.
 
@@ -107,7 +107,7 @@ gate. The **status** column is the frozen fact the comparison runs against.
 
 S4 is the only configuration that places two children on **one** checkout. It
 is reached only by an explicit opt-in — the `task` tool's `placement`
-parameter (`src/tool/task.rs:2325`), gated by
+parameter (parsed by `parse_run_placement` in `src/tool/task.rs`), gated by
 `shared_checkout_availability()`
 (`crates/codegg-core/src/run_placement.rs:126`). It is never inferred from a
 group, a session or a model request.
@@ -167,16 +167,48 @@ recorded decision with evidence behind it, never a quiet edit.
 ```bash
 python3 scripts/check_blackboard_contract_matrix.py --self-test  # prove it bites
 python3 scripts/check_blackboard_contract_matrix.py               # check the tree
-cargo test --test blackboard_trajectory_m008                      # the S0–S4 trajectory
-CODEGG_RUN_M008_ECONOMICS=1 cargo test --test blackboard_economics_m008 -- --nocapture
+cargo test --test agent_loop -- blackboard_trajectory_m008        # the S0–S4 trajectory
+CODEGG_RUN_M008_ECONOMICS=1 cargo test --test agent_loop -- blackboard_economics_m008 -- --nocapture
 ```
 
 ## Source verification
 
-The matrix was written against the tree at
+The matrix was first written against the tree at
 `012ece80a` (the M005 writer-containment line merged into `main` as
 `53d9fc9fd`). Every consumer line was read in that tree, and every file:line
 in the matrix was confirmed by grep against it. The guard
 (`scripts/check_blackboard_contract_matrix.py`) re-checks the consumers on
 every run, so a matrix that drifts fails CI rather than quietly describing a
 tree that no longer exists.
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file
+existence only; no build or test run). Checked:
+
+- All five paths in **Where It Lives** exist.
+- Every **Production consumer** marker still occurs in its named file: the two
+  `src/tool/task.rs` markers, `fn inject_peer_observations` in
+  `src/agent/follow_up.rs`, `pub async fn launch(` in `src/core/session_launch.rs`,
+  `async fn shared_group(` in `src/core/writer_fence.rs`, and
+  `apply_resource_policy(&mut spec);` in `src/scheduler/submission.rs`.
+- Every **Authority** symbol exists: `AgentRunGroupService`
+  (`crates/codegg-core/src/agent_run_group.rs`), `WorkstreamClaimStore`
+  (`crates/codegg-core/src/workstream_claim.rs`), `AppEvent::AgentRunGroupUpdated`
+  (`crates/codegg-core/src/bus/events.rs`), `SessionLaunchService`
+  (`crates/codegg-core/src/session_launch.rs`), `WorktreeService::acquire_lease`
+  (`crates/codegg-core/src/worktree_service.rs`), and `ResourceClass::Build`
+  (`crates/codegg-core/src/jobs/quota.rs`).
+- **Corrected**: the two `tests/workstream_claim_m003.rs` references — that file
+  no longer exists; the fixture is now a family member at
+  `tests/core_daemon/workstream_claim_m003.inc`. The `src/agent/follow_up.rs:772`
+  and `src/agent/follow_up.rs:34` point-in-time line numbers were replaced by
+  the symbol names `inject_peer_observations` and `peer_observation_message`
+  (the preamble builder), per this document's own "a line number in a table like
+  this is a point-in-time fact" rule. The `src/tool/task.rs:2325` placement
+  reference now names `parse_run_placement`. The two `cargo test --test <name>`
+  invocations were rewritten to the family form the repository now uses
+  (`--test agent_loop -- <member>`).
+- **Verified accurate**: `shared_checkout_availability()` and
+  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` at
+  `crates/codegg-core/src/run_placement.rs` (the qualified table is
+  `["linux", "macos"]`); `codegg launch` at `src/main.rs` (`async fn cmd_launch`);
+  the S0–S4 configuration table; the platform matrix.

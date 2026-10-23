@@ -49,8 +49,23 @@ directory.
   `JobKind::Format` — precisely the two kinds that used to hold the
   global key. The taxonomy is closed *in code* so that no caller, and no
   model, can introduce a namespace to obtain capacity.
+  `ResourceClass::for_job_kind` is the only mapping from a job kind to a
+  class, and it returns `None` for every other kind.
 - `KeyedQuotaRequest { key, slots }` — a request to consume weighted
-  slots in one scope. The key is `<namespace>:<scope>`.
+  slots in one scope. The key is `<namespace>:<scope>`
+  (`ResourceClass::quota_key`). `KeyedQuotaRequest::unbound(class)` is the
+  kind-derived, unscoped request; `KeyedQuotaRequest::for_workspace(class,
+  workspace_id)` is the bound one.
+- `MAX_QUOTA_KEY_BYTES` (256) and `MAX_QUOTA_SLOTS` (64) — the structural
+  bounds a request must satisfy to be checkable at all.
+
+Two enforcement points live outside `codegg-core`:
+
+- `src/scheduler/admission.rs` — `AdmissionController` owns the
+  reservation, the limit lookup (`quota_limit`), and the refusal
+  decisions.
+- `src/scheduler/submission.rs` — `JobSubmissionService::apply_resource_policy`
+  owns the scope binding.
 
 `ResourceRequest` gained a serde-defaulted `keyed_quotas` field, so a
 request persisted before M007 decodes unchanged and keeps its historical
@@ -70,6 +85,43 @@ A request naming a namespace the controller does not know is **refused**
 (`UnschedulableReason::UnknownQuotaNamespace`), not ignored. An
 unenforced bound that was silently dropped would be a lie: the job would
 report a reservation it never held.
+
+The controller resolves the limit itself, in
+`AdmissionController::quota_limit`: a request whose namespace is
+`ResourceClass::Build`'s resolves to
+`scheduler.quota.max_concurrent_builds_per_workspace`, and **every other
+namespace resolves to `None`** — which the reservation path refuses.
+
+## How one request is resolved
+
+`AdmissionController` evaluates each `KeyedQuotaRequest` in a fixed order.
+The first step that fires decides the job's fate; nothing is reserved
+until every step has passed.
+
+| # | Condition | Decision | Why |
+|---|-----------|----------|-----|
+| 1 | The request is structurally unusable | `Impossible(UnknownQuotaNamespace)` | A request that cannot be checked is a request that cannot be enforced. |
+| 2 | The namespace is not a known class | `Impossible(UnknownQuotaNamespace)` | An unenforced bound, silently dropped, would be a lie. |
+| 3 | `slots > limit` | `Impossible(QuotaExceedsLimit)` | The limit is configuration-owned; this is an admin matter, not a transient one. |
+| 4 | `slots > available` (the scope is full) | `TemporarilyBlocked(QuotaContended)` | The fair queue retries it later; it is never clamped. |
+
+Step 1 is `KeyedQuotaRequest::is_valid()`: an empty key, a key longer than
+`MAX_QUOTA_KEY_BYTES` (256), an empty namespace, or a slot count outside
+`1..=MAX_QUOTA_SLOTS` (64) makes the request unusable. The bounds exist so
+a durable request cannot grow an unbounded index entry, and so a request
+larger than the bound is **refused rather than clamped** — a silently
+clamped request would report a reservation the job never held.
+
+Step 2 is the closed-taxonomy guarantee. `ResourceClass::for_job_kind`
+maps **only** `JobKind::Build` and `JobKind::Format` to
+`ResourceClass::Build`; every other kind returns `None`. Because
+`ResourceClass` is a closed enum, no caller — and no model — can mint a
+namespace to obtain capacity.
+
+`QuotaExceedsLimit` is the only one of the three refusals that is *not* an
+unknown namespace, and it is the one that makes "a job may ask for slots
+but never widen the bound" literal: a job asking for two build slots
+under a limit of one is refused, not silently reduced to one.
 
 ## The scope is bound at the submission boundary
 
@@ -141,3 +193,92 @@ event recorded.
   compiler cache.
 - It does not enable a shared checkout.
 - It does not start a model turn when a job completes.
+
+## Testing
+
+`tests/scheduler_jobs/build_quota_admission.inc` — eighteen tests, one per
+clause of the contract:
+
+- a build quota is scoped to its workspace;
+- two builds in one workspace obey the configured limit;
+- unrelated workspaces build concurrently;
+- a raised limit admits two builds in one workspace;
+- a request above the limit is `Impossible`, not merely blocked;
+- an unknown quota namespace is refused rather than ignored;
+- a malformed quota request is refused;
+- a waiting job holds no permit;
+- cancelling a waiting job releases only its own queue request;
+- a cancelled running job releases its quota when the permit drops;
+- a job without a quota is unaffected by the build limit;
+- the build class replaces the legacy global exclusivity key;
+- only `Build` and `Format` are build class;
+- the build-class scope is bound to the canonical workspace;
+- an unbound class request still carries a bound;
+- the default build limit is one;
+- a zero build limit is refused by validation;
+- an admitted build consumes its scope and no other.
+
+`tests/scheduler_jobs/scheduler_resource_profiles.inc` covers the
+`ResourceRequest::for_kind` resource table the quota rides on.
+
+```bash
+cargo test --test scheduler_jobs -- build_quota_admission
+cargo test --test scheduler_jobs -- scheduler_resource_profiles
+```
+
+`tests/scheduler_jobs/` is a **family**: one executable per subject area,
+selected with `--test scheduler_jobs -- <member>`. A bare
+`cargo test --test build_quota_admission` selects zero tests and still
+exits 0.
+
+## Source verification
+
+Verified 2026-10-23 against source. An earlier pass established this
+section; this pass re-checked every claim against the current code and
+added the material the document had not yet described.
+
+Confirmed unchanged: `crates/codegg-core/src/jobs/quota.rs` owning the typed
+contract, with `ResourceClass` (`:49`) and `KeyedQuotaRequest` (`:97`); the
+serde-defaulted `keyed_quotas` field on `ResourceRequest`
+(`crates/codegg-core/src/jobs/mod.rs:746`); the configuration-owned limit
+`scheduler.quota.max_concurrent_builds_per_workspace`
+(`crates/codegg-config/src/schema.rs:2356`, resolved in
+`src/scheduler/config.rs:148` with the default `1` at `:180`); the refusal of
+an unknown namespace (`UnschedulableReason::UnknownQuotaNamespace`,
+`src/scheduler/admission.rs:147`, raised at `:385` and `:393`); the
+submission-boundary scope binding and the legacy-key drop
+(`src/scheduler/submission.rs:603` `apply_resource_policy`, dropping
+`exclusive:workspace-mutation` at `:630`); and the bounded
+`AppEvent::JobStatusObserved` payload — `session_id`, `turn_id`, `job_id`,
+`kind`, `phase` — with its phase labels `running`, `completed`, `failed`,
+`cancelled`, `timed_out`, `interrupted`
+(`crates/codegg-core/src/bus/events.rs:420-432`).
+
+Added in this pass, because the source owns them and the document did not
+describe them:
+
+- **The four-step request resolution.** The reservation path in
+  `src/scheduler/admission.rs` evaluates each request in a fixed order:
+  structurally invalid → `Impossible(UnknownQuotaNamespace)`; unknown
+  namespace → `Impossible(UnknownQuotaNamespace)`; `slots > limit` →
+  `Impossible(QuotaExceedsLimit)`; `slots > available` →
+  `TemporarilyBlocked(QuotaContended)`. Nothing is reserved until every
+  step has passed.
+- **`AdmissionController::quota_limit`** (`src/scheduler/admission.rs:579`)
+  resolves `ResourceClass::Build`'s namespace to
+  `scheduler.quota.max_concurrent_builds_per_workspace` and **every other
+  namespace to `None`**, which the reservation path refuses.
+- **The structural bounds** `MAX_QUOTA_KEY_BYTES` (256) and
+  `MAX_QUOTA_SLOTS` (64) (`crates/codegg-core/src/jobs/quota.rs:35` and
+  `:41`), and `KeyedQuotaRequest::is_valid()`, which makes an oversized
+  key or an out-of-range slot count a refusal rather than a clamp.
+- **`ResourceClass::for_job_kind`** — the only mapping from a job kind to
+  a class; it returns `None` for every kind other than `Build` and
+  `Format`.
+- **The `unbound` / `for_workspace` constructors**, and the `<namespace>:<scope>`
+  key shape produced by `ResourceClass::quota_key`.
+- **A `## Testing` section**, with the eighteen-test contract in
+  `tests/scheduler_jobs/build_quota_admission.inc` enumerated clause by
+  clause and the family-correct run commands
+  (`cargo test --test scheduler_jobs -- build_quota_admission`).
+

@@ -87,9 +87,9 @@ attempt; it is not a second scheduler or job authority.
 ## Disposition of production process sites
 
 The machine-readable inventory in `docs/execution-ownership.toml` is the
-complete guard input; it currently declares **58 entries** (16 `scheduler`,
-13 `definition_or_adapter`, 10 `standalone_compat`, 9
-`deferred_domain_executor`, 8 `interactive`, 2 `test_only`). The table below
+complete guard input; it currently declares **60 entries** (16 `scheduler`,
+13 `definition_or_adapter`, 10 `standalone_compat`, 9 `interactive`,
+9 `deferred_domain_executor`, 3 `test_only`). The table below
 summarizes its production dispositions and additionally lists the M003 TUI projection
 surfaces, which spawn nothing and so are deliberately not manifest entries:
 
@@ -297,3 +297,20 @@ and the `Terminal` dialog forwards styled cells rather than raw escape bytes.
   path named in the disposition table exists.
 - `python3 scripts/check_execution_ownership.py` passes (`execution-ownership
   guard ok`), so the doc is in sync with the CI guard.
+
+Re-verified 2026-10-23 against source. Corrected the manifest count:
+**58 → 60** entries in `docs/execution-ownership.toml`, and the per-owner
+breakdown with it — `deferred_domain_executor` 8 → **9** and `test_only` 2 → **3**
+(the other four classifications were already correct: `scheduler` 16,
+`definition_or_adapter` 13, `standalone_compat` 10, `interactive` 9). The
+guard `scripts/check_execution_ownership.py` consumes this manifest, so the
+count is not free to drift.
+
+Confirmed unchanged: `ManagedProcessService` as the canonical owner of
+finite local process lifecycle (`src/managed_process.rs:644`) with `run`
+(`:647`), `run_streaming` (`:685`), and `run_blocking` (`:661` — a bounded
+adapter for synchronous callers that does not admit durable work);
+`EnvironmentPolicy::sanitized()` (`src/managed_process.rs:79`) as the default
+for machine/tool execution and `inherited()` (`:109`) reserved for human shell
+semantics; and the session scratch root derived from `dirs::cache_dir()`
+(`src/scratch.rs:119`), kept separate from the daemon data root.

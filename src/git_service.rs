@@ -13,6 +13,10 @@ use codegg_git::{render_argv, GitOperation};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 
+use crate::git_consistency::{
+    admit_generation_bound, live_read_capability, GitConsistencyRefusal, GitReadConsistency,
+    GitReadFact,
+};
 use crate::git_mutations::GitEnvPolicy;
 use crate::git_network_policy::redact_url_credentials_in_text;
 #[cfg(all(feature = "linux-git-test-support", target_os = "linux"))]
@@ -69,6 +73,18 @@ pub struct GitExecutionResult {
     pub success: bool,
     /// Projection hints for the TUI/model.
     pub projection_hints: ProjectionHints,
+    /// The consistency class the read was obtained under.
+    ///
+    /// The class travels with the result so a consumer cannot receive the
+    /// bytes and forget what it was allowed to assume about them. A read
+    /// that observed one materialized object generation reports
+    /// [`GitReadConsistency::ImmutableGeneration`] or
+    /// [`GitReadConsistency::CapturedNotCurrent`]; a read that consulted no
+    /// object store reports
+    /// [`GitReadConsistency::NoObjectGeneration`]; a read served directly
+    /// from a concurrently mutable repository reports
+    /// [`GitReadConsistency::LiveMutable`].
+    pub consistency: GitReadConsistency,
 }
 
 /// Structured payload variants for different operation types.
@@ -342,6 +358,13 @@ impl GitExecutionService {
     /// provide production authorization or admission. The managed-process
     /// owner must obtain both M004 process/IPC and M005 offline-network
     /// enforcement; any missing requirement fails closed.
+    ///
+    /// The returned [`GitReadFact`] carries
+    /// [`GitReadConsistency::LiveMutable`]: this route reads the **original**
+    /// object database of a repository an outside writer may still mutate,
+    /// so it cannot claim an immutable or captured generation. A consumer
+    /// that needs one stable generation must hold the live-read capability
+    /// to admit it.
     #[cfg(all(feature = "linux-git-test-support", target_os = "linux"))]
     pub async fn execute_contained_live_read_test_only(
         &self,
@@ -350,7 +373,7 @@ impl GitExecutionService {
         git_binary: &Path,
         provenance_label: &str,
         measure_child_resources: bool,
-    ) -> Result<ManagedProcessResult, GitServiceError> {
+    ) -> Result<GitReadFact<ManagedProcessResult>, GitServiceError> {
         if !matches!(
             operation,
             GitOperation::Status { .. }
@@ -463,7 +486,10 @@ impl GitExecutionService {
                 "test-only live Git launch returned without obtained enforcement".into(),
             ));
         }
-        Ok(result)
+        // The route read the original object database of a repository an
+        // outside writer may still mutate, so the truthful class is
+        // `LiveMutable` — never an immutable or captured generation.
+        Ok(GitReadFact::new(result, GitReadConsistency::LiveMutable))
     }
 
     /// Run one private-index `git add` through the managed-process owner for
@@ -621,27 +647,40 @@ impl GitExecutionService {
         // per-command bound still reaps the process shortly after.
         let structured =
             tokio::time::timeout(self.timeout, egggit::status::repo_status(repository_root)).await;
-        let repo_status = match structured {
-            Ok(Ok(s)) => Some(RepoStatusPayload {
-                branch: s.branch,
-                is_dirty: s.is_dirty,
-                commit_hash: s.commit_hash,
-                stash_count: s.stash_count,
-            }),
+        // The structured read and the raw read are two separate spawns, each
+        // with its own prepared object view, so the composite class is the
+        // weaker of the two.
+        let (repo_status, structured_class) = match structured {
+            Ok(Ok(fact)) => {
+                let status = fact.value();
+                (
+                    Some(RepoStatusPayload {
+                        branch: status.branch.clone(),
+                        is_dirty: status.is_dirty,
+                        commit_hash: status.commit_hash.clone(),
+                        stash_count: status.stash_count,
+                    }),
+                    Some(fact.class()),
+                )
+            }
             Ok(Err(error)) => {
                 tracing::warn!(%error, "failed to parse structured git status");
-                None
+                (None, None)
             }
             Err(_) => {
                 tracing::warn!(
                     timeout_s = self.timeout.as_secs(),
                     "structured git status exceeded the service timeout"
                 );
-                None
+                (None, None)
             }
         };
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, raw_class) = self.run_git_raw(&argv, repository_root).await?;
+        let consistency = match structured_class {
+            Some(class) => class.weaker(raw_class),
+            None => raw_class,
+        };
         let payload = repo_status
             .map(GitPayload::Status)
             .unwrap_or(GitPayload::None);
@@ -659,6 +698,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -684,7 +724,7 @@ impl GitExecutionService {
             _ => (None, false, false),
         };
 
-        let diff_summary = if !is_stat && !is_name_only {
+        let (diff_summary, structured_class) = if !is_stat && !is_name_only {
             // Bounded by the service timeout for the same reason as the
             // status read above; see `execute_status`.
             match tokio::time::timeout(
@@ -693,36 +733,49 @@ impl GitExecutionService {
             )
             .await
             {
-                Ok(Ok(s)) => Some(DiffSummaryPayload {
-                    files_changed: s.files_changed,
-                    insertions: s.insertions,
-                    deletions: s.deletions,
-                    files: s
-                        .files
-                        .iter()
-                        .map(|f| ChangedFilePayload {
-                            path: f.path.clone(),
-                            kind: f.kind.as_str().to_string(),
-                        })
-                        .collect(),
-                }),
+                Ok(Ok(fact)) => {
+                    let summary = fact.value();
+                    (
+                        Some(DiffSummaryPayload {
+                            files_changed: summary.files_changed,
+                            insertions: summary.insertions,
+                            deletions: summary.deletions,
+                            files: summary
+                                .files
+                                .iter()
+                                .map(|f| ChangedFilePayload {
+                                    path: f.path.clone(),
+                                    kind: f.kind.as_str().to_string(),
+                                })
+                                .collect(),
+                        }),
+                        Some(fact.class()),
+                    )
+                }
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "failed to parse structured git diff summary");
-                    None
+                    (None, None)
                 }
                 Err(_) => {
                     tracing::warn!(
                         timeout_s = self.timeout.as_secs(),
                         "structured git diff summary exceeded the service timeout"
                     );
-                    None
+                    (None, None)
                 }
             }
         } else {
-            None
+            (None, None)
         };
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, raw_class) = self.run_git_raw(&argv, repository_root).await?;
+        // The diff path combines a structured read and a raw read, each with
+        // its own prepared object view, so the composite class is the weaker
+        // of the two.
+        let composite_class = match structured_class {
+            Some(class) => class.weaker(raw_class),
+            None => raw_class,
+        };
 
         // For non-stat, non-name-only diffs, try to parse unified diff output
         let payload = if !is_stat && !is_name_only {
@@ -743,6 +796,18 @@ impl GitExecutionService {
             Some(GitPayload::DiffText(raw.stdout.clone()))
         };
 
+        // A diff is a generation-bound consumer: its payload must describe
+        // one object generation. The fence refuses a read that observed no
+        // generation at all, and refuses a live-class read unless the caller
+        // holds the live-read capability — which no production build of this
+        // crate can obtain.
+        let admitted = admit_generation_bound(
+            GitReadFact::new(payload, composite_class),
+            live_read_capability(),
+        )?;
+        let consistency = admitted.class();
+        let payload = admitted.into_value();
+
         Ok(GitExecutionResult {
             operation: op_label,
             payload,
@@ -756,6 +821,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -770,7 +836,7 @@ impl GitExecutionService {
         });
         let op_label = "show".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         let payload = if raw.exit_code == 0 {
             Some(GitPayload::Show(parse_show_output(rev, &raw.stdout)))
@@ -791,6 +857,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -802,7 +869,7 @@ impl GitExecutionService {
         let argv = render_argv(operation);
         let op_label = "log".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         // Parse log output into structured entries
         let commits = parse_log_output(&raw.stdout);
@@ -820,6 +887,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -838,7 +906,7 @@ impl GitExecutionService {
         });
         let op_label = "blame".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         Ok(GitExecutionResult {
             operation: op_label,
@@ -853,6 +921,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -864,28 +933,39 @@ impl GitExecutionService {
         let argv = render_argv(operation);
         let op_label = "changed-files".to_string();
 
-        let changed = match egggit::diff::changed_files(repository_root, None).await {
-            Ok(files) => Some(
-                files
-                    .iter()
-                    .map(|f| ChangedFilePayload {
-                        path: f.path.clone(),
-                        kind: f.kind.as_str().to_string(),
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            Err(error) => {
-                #[cfg(test)]
-                eprintln!(
-                    "structured changed-files extraction failed: {error:?}; {}",
-                    git_test_policy_diagnostic(repository_root)
-                );
-                tracing::warn!(%error, "failed to parse structured changed files");
-                None
-            }
-        };
+        let (changed, structured_class) =
+            match egggit::diff::changed_files(repository_root, None).await {
+                Ok(fact) => {
+                    let files = fact.value();
+                    (
+                        Some(
+                            files
+                                .iter()
+                                .map(|f| ChangedFilePayload {
+                                    path: f.path.clone(),
+                                    kind: f.kind.as_str().to_string(),
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        Some(fact.class()),
+                    )
+                }
+                Err(error) => {
+                    #[cfg(test)]
+                    eprintln!(
+                        "structured changed-files extraction failed: {error:?}; {}",
+                        git_test_policy_diagnostic(repository_root)
+                    );
+                    tracing::warn!(%error, "failed to parse structured changed files");
+                    (None, None)
+                }
+            };
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, raw_class) = self.run_git_raw(&argv, repository_root).await?;
+        let consistency = match structured_class {
+            Some(class) => class.weaker(raw_class),
+            None => raw_class,
+        };
 
         let payload = changed
             .map(GitPayload::ChangedFiles)
@@ -904,6 +984,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -915,7 +996,7 @@ impl GitExecutionService {
         let argv = render_argv(operation);
         let op_label = "branch".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         // Parse branch output: lines starting with "* " are current
         let branches = raw
@@ -946,6 +1027,7 @@ impl GitExecutionService {
                 truncatable: false,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -956,7 +1038,7 @@ impl GitExecutionService {
         let argv = render_argv(&GitOperation::TagList);
         let op_label = "tag".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         let tags: Vec<String> = raw
             .stdout
@@ -978,6 +1060,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -989,7 +1072,7 @@ impl GitExecutionService {
         let argv = render_argv(operation);
         let op_label = "remote".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         // For RemoteList, parse names; for RemoteGetUrl, it's a single URL
         let payload = match operation {
@@ -1034,6 +1117,7 @@ impl GitExecutionService {
                 truncatable: false,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -1044,24 +1128,35 @@ impl GitExecutionService {
         let argv = render_argv(&GitOperation::WorktreeList);
         let op_label = "worktree".to_string();
 
-        let worktrees = match egggit::worktree::list_worktrees(repository_root).await {
-            Ok(list) => Some(
-                list.iter()
-                    .map(|w| WorktreePayload {
-                        path: w.path.clone(),
-                        branch: w.branch.clone(),
-                        is_current: w.is_current,
-                        is_detached: w.is_detached,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            Err(error) => {
-                tracing::warn!(%error, "failed to parse structured worktrees");
-                None
-            }
-        };
+        let (worktrees, structured_class) =
+            match egggit::worktree::list_worktrees(repository_root).await {
+                Ok(fact) => {
+                    let list = fact.value();
+                    (
+                        Some(
+                            list.iter()
+                                .map(|w| WorktreePayload {
+                                    path: w.path.clone(),
+                                    branch: w.branch.clone(),
+                                    is_current: w.is_current,
+                                    is_detached: w.is_detached,
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        Some(fact.class()),
+                    )
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "failed to parse structured worktrees");
+                    (None, None)
+                }
+            };
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, raw_class) = self.run_git_raw(&argv, repository_root).await?;
+        let consistency = match structured_class {
+            Some(class) => class.weaker(raw_class),
+            None => raw_class,
+        };
 
         let payload = worktrees
             .map(GitPayload::Worktrees)
@@ -1080,6 +1175,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -1090,7 +1186,7 @@ impl GitExecutionService {
         let argv = render_argv(&GitOperation::StashList);
         let op_label = "stash".to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         // Parse stash output: "stash@{0}: On branch: message"
         let stashes: Vec<StashPayload> = raw
@@ -1130,6 +1226,7 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
@@ -1143,7 +1240,7 @@ impl GitExecutionService {
         let argv = render_argv(operation);
         let op_label = operation.subcommand_name().to_string();
 
-        let raw = self.run_git_raw(&argv, repository_root).await?;
+        let (raw, consistency) = self.run_git_raw(&argv, repository_root).await?;
 
         Ok(GitExecutionResult {
             operation: op_label,
@@ -1158,17 +1255,24 @@ impl GitExecutionService {
                 truncatable: true,
                 estimated_size: raw.stdout.len(),
             },
+            consistency,
         })
     }
 
     // ── Internal helpers ────────────────────────────────────────────
 
-    /// Run a git command and capture stdout/stderr as raw strings.
+    /// Run a git command and capture stdout/stderr as raw strings, together
+    /// with the consistency class the read was obtained under.
+    ///
+    /// The class comes from the command itself: `egggit` prepares the
+    /// private object view before the child is spawned and reports the class
+    /// of the bytes that view serves, so the class describes this read rather
+    /// than the caller's guess about it.
     async fn run_git_raw(
         &self,
         argv: &[String],
         repository_root: &Path,
-    ) -> Result<RawGitOutput, GitServiceError> {
+    ) -> Result<(RawGitOutput, GitReadConsistency), GitServiceError> {
         if argv.is_empty() {
             return Err(GitServiceError::Execution("empty argv".to_string()));
         }
@@ -1192,6 +1296,9 @@ impl GitExecutionService {
                     return Err(GitServiceError::Policy(error));
                 }
             };
+            // Read the class before the child runs: it records the
+            // consistency of the object bytes this very read observes.
+            let consistency = cmd.read_consistency();
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -1224,7 +1331,7 @@ impl GitExecutionService {
             let stderr_bytes = stderr_bytes.map_err(|e| {
                 GitServiceError::Execution(format!("failed to read git stderr: {e}"))
             })?;
-            Ok::<_, GitServiceError>((status, stdout_bytes, stderr_bytes))
+            Ok::<_, GitServiceError>((status, stdout_bytes, stderr_bytes, consistency))
         })
         .await
         .map_err(|_| {
@@ -1236,18 +1343,21 @@ impl GitExecutionService {
         })?
         .map_err(|e| GitServiceError::Execution(format!("failed to run git: {e}")))?;
 
-        let (status, stdout_bytes, stderr_bytes) = output;
+        let (status, stdout_bytes, stderr_bytes, consistency) = output;
 
-        Ok(RawGitOutput {
-            // Defense-in-depth: redact any URL-embedded credentials from
-            // git-emitted bytes before they reach Tool output, payload
-            // parsers, projection, or RunStore. The corresponding argv
-            // boundary in `codegg-git::render_argv` keeps the raw URL only
-            // long enough to invoke the child process.
-            stdout: redact_url_credentials_in_text(&String::from_utf8_lossy(&stdout_bytes)),
-            stderr: redact_url_credentials_in_text(&String::from_utf8_lossy(&stderr_bytes)),
-            exit_code: status.code().unwrap_or(-1),
-        })
+        Ok((
+            RawGitOutput {
+                // Defense-in-depth: redact any URL-embedded credentials from
+                // git-emitted bytes before they reach Tool output, payload
+                // parsers, projection, or RunStore. The corresponding argv
+                // boundary in `codegg-git::render_argv` keeps the raw URL only
+                // long enough to invoke the child process.
+                stdout: redact_url_credentials_in_text(&String::from_utf8_lossy(&stdout_bytes)),
+                stderr: redact_url_credentials_in_text(&String::from_utf8_lossy(&stderr_bytes)),
+                exit_code: status.code().unwrap_or(-1),
+            },
+            consistency,
+        ))
     }
 }
 
@@ -1551,6 +1661,13 @@ pub enum GitServiceError {
     Repository(String),
     #[error("timeout: {0}")]
     Timeout(String),
+    /// A read was refused for a generation-bound consumer.
+    ///
+    /// The refusal is typed rather than a string so a caller can tell "the
+    /// read was live and the caller held no live-read capability" from "the
+    /// read never observed an object generation".
+    #[error("git read consistency refusal: {0}")]
+    Consistency(#[source] GitConsistencyRefusal),
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -2291,5 +2408,117 @@ mod tests {
             }
             other => panic!("expected Branches, got {:?}", other),
         }
+    }
+
+    // ── Read-consistency contract ──────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_ordinary_diff_carries_a_generation_consistent_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "hello");
+        std::fs::write(dir.path().join("a.txt"), "hello world").unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Diff {
+                    staged: false,
+                    stat: false,
+                    name_only: false,
+                    base_ref: None,
+                    paths: vec![],
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(
+            result.consistency.is_generation_consistent(),
+            "an ordinary snapshot diff must not claim a live or generation-free class: {}",
+            result.consistency.as_str()
+        );
+        assert!(!result.consistency.is_live());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_read_that_consulted_no_object_generation_says_so() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "content");
+
+        let svc = GitExecutionService::new();
+        // A branch listing reads no commit, tree or blob, so it observed no
+        // object generation at all and must not claim one.
+        let result = svc
+            .execute(
+                &GitOperation::BranchList {
+                    remotes: false,
+                    all: false,
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(
+            result.consistency,
+            GitReadConsistency::NoObjectGeneration,
+            "a read that consulted no object store must report that class"
+        );
+    }
+
+    #[test]
+    fn the_fence_refuses_a_live_read_without_the_capability() {
+        let fact = GitReadFact::new("payload", GitReadConsistency::LiveMutable);
+        let error = admit_generation_bound(fact, live_read_capability())
+            .expect_err("a live read must be refused without the capability");
+        let GitServiceError::Consistency(refusal) = error else {
+            panic!("expected a typed consistency refusal");
+        };
+        assert_eq!(refusal.as_str(), "live_class_without_capability");
+        assert_eq!(
+            refusal,
+            GitConsistencyRefusal::LiveClassWithoutCapability {
+                class: GitReadConsistency::LiveMutable
+            }
+        );
+    }
+
+    #[test]
+    fn the_fence_refuses_a_read_without_an_object_generation() {
+        let fact = GitReadFact::new("payload", GitReadConsistency::NoObjectGeneration);
+        let error = admit_generation_bound(fact, live_read_capability())
+            .expect_err("a read with no generation must be refused");
+        let GitServiceError::Consistency(refusal) = error else {
+            panic!("expected a typed consistency refusal");
+        };
+        assert_eq!(refusal.as_str(), "no_object_generation");
+    }
+
+    #[cfg(feature = "linux-git-test-support")]
+    #[test]
+    fn the_fence_admits_a_live_read_when_the_capability_is_held() {
+        let capability = crate::git_consistency::mint_test_only_live_read_capability();
+        let fact = GitReadFact::new("payload", GitReadConsistency::LiveMutable);
+        let admitted = admit_generation_bound(fact, Some(&capability))
+            .expect("a live read is admissible to a holder of the capability");
+        assert_eq!(admitted.class(), GitReadConsistency::LiveMutable);
+        assert_eq!(admitted.value(), &"payload");
+    }
+
+    #[cfg(not(feature = "linux-git-test-support"))]
+    #[test]
+    fn the_live_read_capability_is_unobtainable_without_the_test_only_feature() {
+        // The capability's only constructor is compiled out of `egggit`
+        // unless its test-only feature is enabled, so this build cannot admit
+        // a live-class read at all: the admission path exists, but it is
+        // unreachable without the reviewed test-only route.
+        assert!(live_read_capability().is_none());
+        let fact = GitReadFact::new("payload", GitReadConsistency::LiveMutable);
+        assert!(admit_generation_bound(fact, live_read_capability()).is_err());
     }
 }

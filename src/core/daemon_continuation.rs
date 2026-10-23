@@ -669,6 +669,15 @@ impl CoreDaemon {
             chain.job_id = Some(notice.job_id.clone());
             (owner, provenance, chain)
         };
+        // Provider reasoning control M002: a delegated idle-continuation
+        // entry carries no per-turn override, so the daemon-owned
+        // selection applies here. Resolving it at this site (rather than
+        // hard-coding `None`) keeps the persisted selection live for the
+        // delegated path.
+        let reasoning = self
+            .resolve_reasoning_selection(&notice.session_id, None, &delegated_authority)
+            .await;
+
         let admission = Box::pin(self.handle_turns_request(
             CoreRequest::TurnSubmit {
                 session_id: notice.session_id.clone(),
@@ -678,7 +687,7 @@ impl CoreDaemon {
                 agents,
                 current_agent_idx: 0,
                 messages,
-                reasoning: None,
+                reasoning,
                 human_shell_promotion_ids: Vec::new(),
             },
             &submission_id,

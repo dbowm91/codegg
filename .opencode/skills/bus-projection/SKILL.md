@@ -79,11 +79,19 @@ module with `#[cfg(all(test, unix))]`.
 ```bash
 cargo test -p codegg-core bus::
 cargo test -p codegg-protocol projection
-cargo test --test collaboration_m001_chat
-cargo test --test collaboration_m002_chat_policy
-cargo test --test collaboration_m002_chat_tui
-cargo test --test collaboration_m003_chat_actions
+cargo test --test core_daemon -- collaboration_m001_chat
+cargo test --test core_daemon -- collaboration_m002_chat_policy
+cargo test --test tui_render -- collaboration_m002_chat_tui
+cargo test --test core_daemon -- collaboration_m003_chat_actions
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The correct form is
+`cargo test --test <family> -- <member>`. Note the family split here:
+three collaboration members live in `core_daemon`, but
+`collaboration_m002_chat_tui` is a `tui_render` member, not a `core_daemon`
+one.
 
 ## See Also
 
@@ -116,3 +124,34 @@ test-module stripping was fixed to match any `cfg` predicate mentioning
 `test` (`scripts/check_projection_transport_lifecycle.py:25`), which is
 the fact the Static Guards section now records. Added that these five
 guards are change-triggered and absent from `scripts/verify.sh quick`.
+
+Fifth pass (2026-10-23): re-verified against
+`crates/codegg-core/src/bus/{global,events,mod}.rs`,
+`crates/codegg-core/src/presence.rs`,
+`crates/codegg-core/src/collaboration.rs`,
+`crates/codegg-core/src/projection_replay/`,
+`crates/codegg-protocol/src/projection/*.rs`,
+`src/core/daemon_projection.rs`, `src/core/daemon.rs`,
+`src/core/transport/daemon_socket.rs`, `src/server/routes/event.rs`,
+`src/tui/app/state/chat.rs`, `scripts/verify.sh`, and the five guard
+scripts. Confirmed unchanged: the 4096 broadcast capacity
+(`crates/codegg-core/src/bus/global.rs:13`); the sync (non-`async`) registry
+signatures `register` / `respond` / `answer_question`
+(`crates/codegg-core/src/bus/mod.rs:149,177,364,392`); the full projection
+module inventory — `adapters`, `caps`, `consumer`, `controller`, `dto`,
+`event`, `fixtures`, `limits`, `mod`, `reducer`, `replay`, `snapshot`,
+`workstream`; the `#[cfg(all(test, unix))]` gate on
+`src/core/transport/daemon_socket.rs:1367` that
+`check_projection_transport_lifecycle.py:25` strips; and that none of the
+five projection guards appear in `scripts/verify.sh`.
+
+Corrected: the four collaboration integration-test commands named targets
+that do not exist. The members are `collaboration_m001_chat.inc`,
+`collaboration_m002_chat_policy.inc`, and `collaboration_m003_chat_actions.inc`
+in the `core_daemon` family, and `collaboration_m002_chat_tui.inc` in the
+`tui_render` family — so `cargo test --test <member>` selected zero tests and
+exited 0. They now use `cargo test --test <family> -- <member>`. The
+prior revision's note that these were "four `collaboration_m00*` test
+targets (none feature-gated)" was itself the source of the stale form: they
+are family *members*, not targets.
+

@@ -10,6 +10,7 @@
 //! isolate that logic in testable helpers and expose sanitized state-path
 //! diagnostics without leaking internal layout.
 
+use crate::consistency::{GitReadConsistency, GitReadFact};
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -305,9 +306,21 @@ fn head_short(value: &str) -> String {
 /// makes no mutation. Returns `RepositoryOperationState::None` when no
 /// sentinel is present, or `RepositoryOperationState::Unknown` with a
 /// sanitized hint for unrecognized sentinels.
-pub fn detect_repository_operation_state(git_dir: &Path) -> RepositoryOperationState {
-    let git_dir = git_dir.to_path_buf();
+///
+/// The read consults the filesystem sentinel files directly and never
+/// touches an object store, so it observed **no object generation**: the
+/// carried class is [`GitReadConsistency::NoObjectGeneration`].
+pub fn detect_repository_operation_state(git_dir: &Path) -> GitReadFact<RepositoryOperationState> {
+    let state = detect_operation_state_inner(git_dir);
+    GitReadFact::new(state, GitReadConsistency::NoObjectGeneration)
+}
 
+/// The sentinel inspection behind [`detect_repository_operation_state`].
+///
+/// The class is attached by the caller because it is a property of the
+/// *read*, not of the sentinel layout.
+fn detect_operation_state_inner(git_dir: &Path) -> RepositoryOperationState {
+    let git_dir = git_dir.to_path_buf();
     // Sequencer sentinel: present whenever cherry-pick or revert is active
     // under newer Git (≥2.25). Always takes priority over the legacy
     // CHERRY_PICK_HEAD / REVERT_HEAD sentinels.
@@ -547,9 +560,13 @@ fn parse_bisect_log(git_dir: &Path) -> (Option<String>, Option<String>) {
 ///
 /// Resolves `.git` (file or directory) under the root. Returns
 /// `EgggitError::NotARepository` when no `.git` is present.
+///
+/// Like [`detect_repository_operation_state`], the read consults the
+/// filesystem sentinel files only, so the carried class is
+/// [`GitReadConsistency::NoObjectGeneration`].
 pub fn detect_operation_state_for_root(
     root: &Path,
-) -> Result<RepositoryOperationState, EgggitError> {
+) -> Result<GitReadFact<RepositoryOperationState>, EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
@@ -601,7 +618,7 @@ mod tests {
     #[test]
     fn none_when_no_sentinel() {
         let dir = tempfile::TempDir::new().unwrap();
-        let state = detect_repository_operation_state(&git_dir(dir.path()));
+        let state = detect_repository_operation_state(&git_dir(dir.path())).into_value();
         assert_eq!(state, RepositoryOperationState::None);
         assert!(state.is_clean());
     }
@@ -615,7 +632,7 @@ mod tests {
             &gd.join("MERGE_MSG"),
             "Merge branch 'feature'\n\nBody line\n",
         );
-        let state = detect_repository_operation_state(&gd);
+        let state = detect_repository_operation_state(&gd).into_value();
         match state {
             RepositoryOperationState::Merge(s) => {
                 assert_eq!(s.other_head.as_deref(), Some("abc123"));
@@ -631,7 +648,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let gd = git_dir(dir.path());
         write(&gd.join("CHERRY_PICK_HEAD"), "deadbeef\n");
-        let state = detect_repository_operation_state(&gd);
+        let state = detect_repository_operation_state(&gd).into_value();
         assert_eq!(state.family(), OperationFamily::CherryPick);
         assert!(state.action_available(RecoveryAction::Continue));
         assert!(state.action_available(RecoveryAction::Abort));
@@ -643,7 +660,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let gd = git_dir(dir.path());
         write(&gd.join("REVERT_HEAD"), "feedface\n");
-        let state = detect_repository_operation_state(&gd);
+        let state = detect_repository_operation_state(&gd).into_value();
         assert_eq!(state.family(), OperationFamily::Revert);
         assert!(state.action_available(RecoveryAction::Continue));
         assert!(state.action_available(RecoveryAction::Abort));
@@ -659,7 +676,7 @@ mod tests {
         write(&ra.join("head-name"), "main\n");
         write(&ra.join("onto-name"), "origin/main\n");
         write(&ra.join("next"), "2\n");
-        let state = detect_repository_operation_state(&gd);
+        let state = detect_repository_operation_state(&gd).into_value();
         match state {
             RepositoryOperationState::Rebase(s) => {
                 assert!(s.apply_mode);
@@ -681,7 +698,7 @@ mod tests {
             &sq.join("todo"),
             "pick abc1234 first commit subject\npick def5678 second commit subject\n",
         );
-        let state = detect_repository_operation_state(&gd);
+        let state = detect_repository_operation_state(&gd).into_value();
         match state {
             RepositoryOperationState::Sequencer(s) => {
                 assert_eq!(s.action.as_deref(), Some("pick"));
@@ -700,7 +717,7 @@ mod tests {
             &gd.join("BISECT_LOG"),
             "git bisect start\n# bad: [abc1234] bad\ngit bisect bad abc1234\n# good: [def5678] good\ngit bisect good def5678\n",
         );
-        let state = detect_repository_operation_state(&gd);
+        let state = detect_repository_operation_state(&gd).into_value();
         match state {
             RepositoryOperationState::Bisect(s) => {
                 assert_eq!(s.bad.as_deref(), Some("abc1234"));
@@ -708,6 +725,39 @@ mod tests {
             }
             other => panic!("expected Bisect, got {other:?}"),
         }
+    }
+
+    /// The sentinel read consults no object store, so it observed no object
+    /// generation and must not claim one.
+    #[test]
+    fn the_sentinel_read_reports_no_object_generation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let gd = git_dir(dir.path());
+
+        let clean = detect_repository_operation_state(&gd);
+        assert_eq!(clean.class(), GitReadConsistency::NoObjectGeneration);
+        assert!(!clean.class().is_generation_consistent());
+        assert!(!clean.class().is_live());
+
+        // A recognized sentinel does not change the class: the read is
+        // still a filesystem-only inspection.
+        write(&gd.join("MERGE_HEAD"), "abc123\n");
+        let merge = detect_repository_operation_state(&gd);
+        assert_eq!(merge.class(), GitReadConsistency::NoObjectGeneration);
+        assert!(merge.value().family() == OperationFamily::Merge);
+    }
+
+    /// The root-level convenience read carries the same class: it resolves
+    /// `.git` on the filesystem and inspects sentinels only.
+    #[test]
+    fn the_root_read_reports_no_object_generation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(&git_dir(dir.path()).join("MERGE_HEAD"), "abc123\n");
+
+        let state =
+            detect_operation_state_for_root(dir.path()).expect("a .git directory must resolve");
+        assert_eq!(state.class(), GitReadConsistency::NoObjectGeneration);
+        assert_eq!(state.value().family(), OperationFamily::Merge);
     }
 
     #[test]

@@ -109,9 +109,9 @@ scheduler.register_executor(my_exec).await?;
 ## Configuration
 
 The on-disk schema lives in `crates/codegg-config/src/schema.rs`:
-`SchedulerConfig` (`:1704`) with `SchedulerRolloutConfig` (`:1717`, default
-`Observe`), `SchedulerResourceConfig` (`:1726`),
-`SchedulerQueueConfig` (`:1736`), and `SchedulerFairnessConfig` (`:1745`).
+`SchedulerConfig` (`:2250`) with `SchedulerRolloutConfig` (`:2296`, default
+`Observe`), `SchedulerResourceConfig` (`:2305`),
+`SchedulerQueueConfig` (`:2324`), and `SchedulerFairnessConfig` (`:2333`).
 The full `[scheduler]` TOML with defaults is in `architecture/scheduler.md`.
 
 Two behaviours matter more than the numbers:
@@ -180,12 +180,13 @@ staged labels that also do not restore bypass.
 11. **`deferred_domain_executor` is not coverage.** The manifest's six
    owner classifications include `deferred_domain_executor` — a typed
    subsystem scheduled for future migration, currently a documented
-   compatibility path. 8 of the 54 declared sites carry it
+   compatibility path. 9 of the 60 declared sites carry it
    (`src/git_mutations.rs`, `src/git_network_ops.rs`,
    `src/git_recovery.rs`, `src/git_service.rs`,
    `src/plugin/runtime/process.rs`, `crates/egggit/src/`,
    `crates/codegg-core/src/worktree.rs`,
-   `crates/codegg-core/src/repository_lineage.rs`). Do not describe
+   `crates/codegg-core/src/repository_lineage.rs`,
+   `crates/codegg-core/src/project_catalog.rs`). Do not describe
    these as covered by the daemon scheduler invariant until migrated;
    see `architecture/scheduler.md` "Execution-surface inventory".
 
@@ -203,7 +204,7 @@ staged labels that also do not restore bypass.
   version. Both now agree that the `stale` parameter is the *new*
   generation and attempts whose stored generation differs are interrupted.
 - **New integration tests** (closure pass):
-  - `tests/scheduler_jobs/scheduler_submission_idempotency.inc` (11 tests)
+  - `tests/scheduler_jobs/scheduler_submission_idempotency.inc` (10 tests)
   - `tests/scheduler_jobs/scheduler_permit_lifecycle.inc` (19 tests)
   - `tests/scheduler_cancellation/scheduler_cancellation.inc` (10 tests)
   - `tests/scheduler_jobs/scheduler_restart_recovery.inc` (15 tests)
@@ -222,13 +223,13 @@ staged labels that also do not restore bypass.
 
 ## Rollout mode
 
-`SchedulerRolloutConfig` (`crates/codegg-config/src/schema.rs:1717`, aliased
+`SchedulerRolloutConfig` (`crates/codegg-config/src/schema.rs:2296`, aliased
 as `SchedulerRolloutMode` at `src/scheduler/config.rs:19`) has `Observe`
 (default), `Active`, and `Mandatory`; `ResolvedSchedulerConfig` defaults to
-`Mandatory` (`config.rs:94`). Rollout is **observability metadata, not a
+`Mandatory` (`config.rs:155`). Rollout is **observability metadata, not a
 behaviour switch**: the only consumer is `JobScheduler::is_mandatory()`
-(`scheduler.rs:307`), and the mode is otherwise only stringified into
-`SchedulerSnapshot::rollout_mode` (`scheduler.rs:1495`,
+(`scheduler.rs:522`), and the mode is otherwise only stringified into
+`SchedulerSnapshot::rollout_mode` (`scheduler.rs:1867`,
 `snapshot.rs:152`). `observe` and `active` do not restore bypass execution —
 `enabled = false` is the only setting that rejects submission, and it does so
 explicitly rather than by falling back.
@@ -359,3 +360,54 @@ holds a parent execution permit, so it cannot deadlock.
 - `.opencode/skills/permission/SKILL.md` — tool-permission boundaries
 - `docs/execution-ownership.md` + `docs/execution-ownership.toml` — the
   spawn-site inventory the static guard enforces
+
+## Source verification
+
+Verified 2026-10-23 against `src/scheduler/{mod,types,fair_queue,config,permit,admission,executor,executors,submission,events,snapshot,scheduler,tool_program_executor,tool_program_notifications}.rs`,
+`src/managed_process.rs`, `src/job_recovery.rs`,
+`src/core/daemon_bootstrap.rs`, `crates/codegg-config/src/schema.rs`,
+`crates/codegg-core/src/jobs/quota.rs`,
+`crates/codegg-core/src/process_admission.rs`,
+`crates/codegg-core/src/shared_checkout.rs`,
+`crates/codegg-core/src/run_placement.rs`,
+`crates/codegg-core/src/writer_permit.rs`, `src/core/writer_permit.rs`,
+`docs/execution-ownership.toml`, and the `scheduler_jobs` /
+`scheduler_cancellation` test families.
+
+Confirmed unchanged: every row of the module map (all fourteen listed
+`src/scheduler/` files exist, alongside `ci_watch.rs`, `eggwork.rs`,
+`idle_continuation.rs`, `schedule_driver.rs`, `schedule_materializer.rs`,
+and others not listed here); `executor_kind_for_job`
+(`src/scheduler/executor.rs:440`); `JobSubmissionService::apply_resource_policy`
+(`src/scheduler/submission.rs:603`); `JobScheduler::recover_at_startup`
+(`src/scheduler/scheduler.rs:2175`); `RecoveryReportSummary`
+(`src/job_recovery.rs:19`) and `CoreDaemon::recover_jobs`
+(`src/core/daemon_bootstrap.rs:367`); `WokeReason::Reconciled`
+(`src/scheduler/events.rs:96`); the quota key
+`scheduler.quota.max_concurrent_builds_per_workspace` defaulting to one
+(`crates/codegg-config/src/schema.rs:2353-2356`); and
+`QUALIFIED_SHARED_CHECKOUT_PLATFORMS` being exactly `["linux", "macos"]`
+(`crates/codegg-core/src/run_placement.rs:94`), which is the basis of the
+"Linux and macOS are qualified; Windows lacks a backend" statement.
+
+Corrected: the config-schema line references had all drifted by ~550 lines —
+`SchedulerConfig` `:1704` → `:2250`, `SchedulerRolloutConfig` `:1717` →
+`:2296`, `SchedulerResourceConfig` `:1726` → `:2305`, `SchedulerQueueConfig`
+`:1736` → `:2324`, `SchedulerFairnessConfig` `:1745` → `:2333`;
+`ResolvedSchedulerConfig`'s `Mandatory` default `config.rs:94` → `:155`;
+`JobScheduler::is_mandatory()` `scheduler.rs:307` → `:522`; and the
+`rollout_mode` stringification `scheduler.rs:1495` → `:1867`.
+
+Corrected a substantive count error: the execution-ownership manifest declares
+**60** sites, not 54, and **9** of them carry the `deferred_domain_executor`
+owner, not 8 — the missing site is
+`crates/codegg-core/src/project_catalog.rs`. The six owner classifications
+(`scheduler` 16, `definition_or_adapter` 13, `standalone_compat` 10,
+`interactive` 9, `deferred_domain_executor` 9, `test_only` 3) were read
+directly from the manifest.
+
+Corrected a test count: `scheduler_submission_idempotency.inc` has 10 test
+attributes (1 `#[test]`, 8 `#[tokio::test(flavor = "current_thread")]`, 1
+`#[tokio::test(flavor = "multi_thread")]`), not 11. The other eight listed
+test-file counts were re-measured and are correct.
+

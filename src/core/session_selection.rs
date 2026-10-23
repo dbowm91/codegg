@@ -31,13 +31,14 @@ use std::sync::Arc;
 use codegg_core::identity::ProviderConnectionId;
 use codegg_core::provider_connections::{
     ProviderConnection, ProviderConnectionReferenceKind, ProviderConnectionState,
-    ProviderConnectionStore, ProviderScope,
+    ProviderConnectionStore, ProviderKind, ProviderScope,
 };
 use codegg_core::session::{
     legacy_resolution, LegacyResolution, Session, SessionStore, UpdateSession,
 };
 use codegg_protocol::provider::{
-    ProviderConnectionSummaryDto, SelectedModelDto, SessionSelectionDto,
+    ProviderConnectionSummaryDto, ReasoningCapabilityAxis, ReasoningCapabilityDto,
+    SelectedModelDto, SessionSelectionDto,
 };
 
 use crate::core::eggpool::EggpoolProvisioner;
@@ -178,6 +179,11 @@ async fn resolve_for_session(
                             supports_tools: false,
                             supports_vision: false,
                             catalog_revision: catalog_revision.clone(),
+                            reasoning_capability: Some(reasoning_capability_dto(
+                                &super::load_config_or_default(),
+                                &connection.provider_kind,
+                                model_id,
+                            )),
                         }),
                         connection_revision: connection.revision,
                         catalog_revision,
@@ -229,6 +235,11 @@ async fn resolve_selection_by_connection(
     };
     let catalog_revision =
         catalog_revision_for(connection_store, connection_id, connection.revision).await?;
+    let reasoning_capability = reasoning_capability_dto(
+        &super::load_config_or_default(),
+        &connection.provider_kind,
+        &model_row.0,
+    );
     Ok(Some(ResolvedSelection {
         connection,
         catalog_revision: catalog_revision.clone(),
@@ -241,8 +252,67 @@ async fn resolve_selection_by_connection(
             supports_tools: model_row.4,
             supports_vision: model_row.5,
             catalog_revision: catalog_revision.unwrap_or_else(|| "0".to_string()),
+            reasoning_capability: Some(reasoning_capability),
         },
     }))
+}
+
+/// The reasoning capability of one model, as the wire payload.
+///
+/// The capability is resolved from the **effective** record: the compiled
+/// adapter baseline, narrowed by the operator's config override (the
+/// profile resolver applies the override before this runs). The discovery
+/// overlay is deliberately not applied — it has no live source at this
+/// baseline, and a frontend that offered a label the admission path would
+/// refuse is worse than one that offers the known-label fallback.
+///
+/// The provider segment is the connection's provider kind. A connection
+/// that is not the vendor itself — an OpenAI-compatible endpoint, an
+/// EggPool pool, an Azure deployment — matches no adapter contract, so its
+/// capability is **not established** on any dimension. That is the honest
+/// answer: whether such an endpoint honours `reasoning_effort` is a
+/// deployment fact, not a compiled-in universal.
+///
+/// The payload is always produced. An **absent** payload on the wire means
+/// the peer predates the capability; a present payload whose axes are all
+/// `unknown` means this peer publishes capabilities and this model has none
+/// established.
+pub fn reasoning_capability_dto(
+    config: &crate::config::schema::Config,
+    provider_kind: &ProviderKind,
+    model_id: &str,
+) -> ReasoningCapabilityDto {
+    let model = format!("{provider}/{model_id}", provider = provider_kind.as_str());
+    let profile = codegg_core::model_profile::ModelProfileResolver::new(config).resolve(&model);
+    // A model with no published record has no established dimension. The
+    // record's own default is exactly that: every axis unknown.
+    let record = profile.reasoning_capability.unwrap_or_default();
+    ReasoningCapabilityDto {
+        effort: capability_axis(record.effort_status),
+        accepted_effort_labels: record.accepted_effort_labels.unwrap_or_default(),
+        disable: capability_axis(record.disable_status),
+        budget: capability_axis(record.budget_status),
+        min_budget_tokens: record.min_thinking_budget.map(|tokens| tokens as u64),
+        max_budget_tokens: record.max_thinking_budget.map(|tokens| tokens as u64),
+        always_reasons: record.always_reasons,
+    }
+}
+
+/// Map one capability status onto the wire axis.
+///
+/// The wire axis keeps the five statuses distinct so a frontend can tell
+/// "nobody published this dimension" from "the model refuses it".
+fn capability_axis(
+    status: codegg_config::schema::ReasoningCapabilityStatus,
+) -> ReasoningCapabilityAxis {
+    use codegg_config::schema::ReasoningCapabilityStatus;
+    match status {
+        ReasoningCapabilityStatus::Supported => ReasoningCapabilityAxis::Supported,
+        ReasoningCapabilityStatus::Unsupported => ReasoningCapabilityAxis::Unsupported,
+        ReasoningCapabilityStatus::Unknown => ReasoningCapabilityAxis::Unknown,
+        ReasoningCapabilityStatus::Mixed => ReasoningCapabilityAxis::Mixed,
+        ReasoningCapabilityStatus::Conflicting => ReasoningCapabilityAxis::Conflicting,
+    }
 }
 
 /// Load the bounded catalog row set for a connection at its current
@@ -452,9 +522,20 @@ pub async fn list_selection_models(
         .ok_or_else(|| SelectionError::ConnectionStore("connection missing".to_string()))?;
     let catalog_revision = catalog_revision_for(connection_store, connection_id, revision).await?;
     let rows = list_models(connection_store, connection_id).await?;
+    // The capability is a property of the model *and* of the provider it is
+    // served by, so it is resolved against the connection's provider kind.
+    let provider_kind = connection_store
+        .get(connection_id)
+        .await
+        .map_err(|e| SelectionError::ConnectionStore(e.to_string()))?
+        .map(|connection| connection.provider_kind);
+    let config = super::load_config_or_default();
     let models = rows
         .into_iter()
         .map(|(id, name, context, max, tools, vision)| {
+            let reasoning_capability = provider_kind
+                .as_ref()
+                .map(|provider_kind| reasoning_capability_dto(&config, provider_kind, &id));
             codegg_protocol::provider::ProviderModelDto {
                 id,
                 name,
@@ -462,6 +543,7 @@ pub async fn list_selection_models(
                 max_output_tokens: max,
                 supports_tools: tools,
                 supports_vision: vision,
+                reasoning_capability,
             }
         })
         .collect();
@@ -564,6 +646,11 @@ pub async fn update_selection(
         .await;
 
     let summary = summary_dto_for(&connection, connection_store).await?;
+    let reasoning_capability = reasoning_capability_dto(
+        &super::load_config_or_default(),
+        &connection.provider_kind,
+        &model_row.0,
+    );
     let selected_model = SelectedModelDto {
         connection_id: connection_id.as_str().to_string(),
         model_id: model_row.0.clone(),
@@ -573,6 +660,7 @@ pub async fn update_selection(
         supports_tools: model_row.4,
         supports_vision: model_row.5,
         catalog_revision: catalog_revision_str.clone(),
+        reasoning_capability: Some(reasoning_capability),
     };
     Ok(SelectionUpdateOutcome::Updated(
         SessionSelectionDto::Selected {

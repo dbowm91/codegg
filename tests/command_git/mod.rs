@@ -49,6 +49,9 @@ pub mod git_execution_origin_matrix;
 #[path = "git_fixture_isolation.inc"]
 pub mod git_fixture_isolation;
 
+#[path = "git_hostile_metadata.inc"]
+pub mod git_hostile_metadata;
+
 #[path = "git_index_publication.inc"]
 pub mod git_index_publication;
 
@@ -57,6 +60,9 @@ pub mod git_mutations_integration;
 
 #[path = "git_network_integration.inc"]
 pub mod git_network_integration;
+
+#[path = "git_read_consistency.inc"]
+pub mod git_read_consistency;
 
 #[path = "git_noninteractive.inc"]
 pub mod git_noninteractive;

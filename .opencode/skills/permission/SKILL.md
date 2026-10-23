@@ -57,14 +57,14 @@ layers still apply on top and can only narrow further.
 ## Key Invariants
 
 - **The registries are synchronous.** `PermissionRegistry::register`
-  (`crates/codegg-core/src/bus/mod.rs:104`), `respond` (`:132`), and
-  `QuestionRegistry::register` (`:268`) / `answer_question` (`:296`) are plain
+  (`crates/codegg-core/src/bus/mod.rs:149`), `respond` (`:177`), and
+  `QuestionRegistry::register` (`:364`) / `answer_question` (`:392`) are plain
   `fn`, not `async`. They hand out `oneshot::Sender`s.
 - **Register before publishing.** Register the responder FIRST, then publish
   the `Pending` event. Publishing first leaves a window where the human answers
   before anyone is listening and the answer is dropped.
-- **Prefer the scoped variants.** `respond_scoped` (`:143`) and
-  `answer_question_scoped` (`:305`) key on `(session_id, id)`. Use them
+- **Prefer the scoped variants.** `respond_scoped` (`:188`) and
+  `answer_question_scoped` (`:401`) key on `(session_id, id)`. Use them
   whenever a session identity is available so a stale answer cannot land in a
   different session.
 - **Approval and sandbox are orthogonal axes.** `ApprovalMode` controls who
@@ -129,10 +129,10 @@ layers still apply on top and can only narrow further.
 **two** entry paths, both handled by the same helper:
 
 1. the `Escalate` verdict path directly, from the `Automatic` arm of the
-   mode match (`src/agent/tool_batch.rs:450`), and
+   mode match (`src/agent/tool_batch.rs:897-913`), and
 2. the general policy `Ask` path via `resolve_general_ask_via_human`
-   (`src/agent/tool_batch.rs:496`), whose own `Automatic` arm calls the same
-   helper at `:516`.
+   (`src/agent/tool_batch.rs:960`), whose own `Automatic` arm calls the same
+   helper at `:976-981`.
 
 The helper never accepts `Allow`/`Deny` as an input
 (`src/permission/reviewer.rs:983`) — it either returns a bounded
@@ -169,11 +169,17 @@ reviewer/router boundary will pass CI unnoticed.
 
 ```bash
 cargo test -p codegg permission::
-cargo test --test approval_reviewer     # reviewer isolation contract (9 tests)
-cargo test --test sandbox_landlock
-cargo test --test sandbox_policy_wiring
+cargo test --test security_permission -- approval_reviewer     # reviewer isolation contract (9 tests)
+cargo test --test security_permission -- sandbox_landlock
+cargo test --test security_permission -- sandbox_policy_wiring
 cargo test -p codegg-core approval
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The three sandbox/reviewer
+members live in the `security_permission` family, so the correct form is
+`cargo test --test security_permission -- <member>`.
 
 New `#[tokio::test]`s default to `current_thread`; use
 `flavor = "multi_thread", worker_threads = 2` only for real concurrency.
@@ -204,3 +210,31 @@ clamps and the `REVIEWER_ALLOWED_TOOLS` allowlist, recorded that only
 `check_sandbox_contract.py` runs in `verify.sh quick`, and added the
 `approval_reviewer` / sandbox integration test targets. Claims without a
 traceable source were removed rather than guessed.
+
+Fifth pass (2026-10-23): re-verified against
+`src/permission/{mod,modes,reviewer,approval}.rs`,
+`crates/codegg-core/src/approval.rs`,
+`crates/codegg-core/src/work_order/model.rs`,
+`crates/codegg-core/src/bus/mod.rs`, `src/agent/tool_batch.rs`,
+`tests/security_permission/approval_reviewer.inc`, `scripts/verify.sh`, and
+`.github/workflows/ci.yml`. Confirmed unchanged: `ApprovalMode`
+(`crates/codegg-core/src/approval.rs:28`), `SandboxRequest`
+(`crates/codegg-core/src/work_order/model.rs:373`), the `review`/`debug`/
+`docs` built-in modes (`src/permission/modes.rs:110,152,193`), the reviewer
+builder range `ReviewerConfig::with_model` … `with_max_equivalent_denials`
+(`src/permission/reviewer.rs:103-137`), `is_reviewer_tool_allowed` (`:71`),
+`REVIEWER_ALLOWED_TOOLS` (`:53`), `resolve_automatic_escalation` (`:992`),
+and the "9 tests" count in `approval_reviewer.inc`.
+
+Corrected: every `crates/codegg-core/src/bus/mod.rs` registry line reference
+had drifted by 45–100 lines — `register` `:104` → `:149`, `respond` `:132` →
+`:177`, `respond_scoped` `:143` → `:188`, `QuestionRegistry::register` `:268`
+→ `:364`, `answer_question` `:296` → `:392`, `answer_question_scoped` `:305`
+→ `:401`. The three `src/agent/tool_batch.rs` references were wrong by
+hundreds of lines — the `Escalate`/`Automatic` arm is at `:897-913`, not
+`:450`; `resolve_general_ask_via_human` is at `:960`, not `:496`; and its
+`Automatic` arm calls the helper at `:976-981`, not `:516`. The three
+integration-test commands named targets that do not exist; the members live
+in the `security_permission` family, so `cargo test --test <member>` selected
+zero tests and exited 0.
+

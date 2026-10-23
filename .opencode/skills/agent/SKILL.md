@@ -94,16 +94,18 @@ instructions into the candidate. See `architecture/agent.md`.
 ## Orientation Facts
 
 - **A turn is one `AgentLoop` instance.** `DefaultTurnRuntime::run_turn`
-  builds a fresh loop per turn (`src/agent/turn_runtime.rs:725`), so
+  builds a fresh loop per turn (`src/agent/turn_runtime.rs:953`, via
+  `crate::agent::agent_loop_factory::build_agent_loop` at
+  `src/agent/agent_loop_factory.rs:74`), so
   per-loop state — `AgentLoopState`, `ContextCacheStats`, `context_ledger`,
   `ExecutionLimits` — is per-turn and never spans turns.
 - **Turn phases are typed and in-memory only.** `TurnPhase`
-  (`src/agent/coordinator.rs:110`) has six variants — `Admission`,
+  (`src/agent/coordinator.rs:141`) has six variants — `Admission`,
   `ContextPreparation`, `ProviderInvocation`, `ToolExecution`, `Recovery`,
   `Completion`. `TurnLifecycle` is a sequencing aid; durable state belongs to
   run-control/RunStore/scheduler.
 - **Provider retry is bounded before visible output.** `MAX_ATTEMPTS = 3`
-  (`provider_turn.rs:64`) under one UUID-scoped attempt chain; backoff is
+  (`provider_turn.rs:65`) under one UUID-scoped attempt chain; backoff is
   1s/2s/4s capped at 30s. After a `TextDelta`/`ReasoningDelta`/
   `ToolCallStarted` the turn aborts rather than replaying, so an abandoned
   tool-call start never executes.
@@ -128,10 +130,15 @@ files `src/agent/turn_runtime.rs` and `src/agent/worker.rs` (not all of
 
 ```bash
 cargo test -p codegg agent::
-cargo test --test agent_convergence
-cargo test --test agent_loop_harness
-cargo test --test tool_program_scenarios  # programmatic tool path through the loop
+cargo test --test agent_loop -- agent_convergence
+cargo test --test agent_loop -- agent_loop_harness
+cargo test --test tool_programs -- tool_program_scenarios  # programmatic tool path through the loop
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. The correct form is
+`cargo test --test <family> -- <member>`.
 
 ## See Also
 
@@ -180,3 +187,48 @@ description to the actual `PROTECTED_GLOBS` list. The sync-registry claim
 was re-checked against `crates/codegg-core/src/bus/mod.rs:104-305`, where
 `register`/`respond`/`answer_question` are plain `fn` (not `async fn`). No stale claims
 were found in this file's existing content.
+
+Third pass (2026-10-23): re-verified against `src/agent/turn_runtime.rs`,
+`src/agent/agent_loop_factory.rs`, `src/agent/coordinator.rs`,
+`src/agent/provider_turn.rs`, `src/agent/progress_recovery.rs`,
+`crates/codegg-core/src/agent_run_group.rs`, `crates/codegg-core/src/bus/mod.rs`,
+`src/tool/task.rs`, `scripts/generate_builtin_agents.py`,
+`scripts/check_daemon_cwd_usage.py`, `scripts/check_scheduler_bypass.py`, and
+the `agent_loop` / `tool_programs` test families.
+
+Confirmed unchanged: `MAX_GROUP_MEMBERS = 16` and `MAX_GROUP_WAIT_MS = 30_000`
+(`crates/codegg-core/src/agent_run_group.rs:20-22`); the six `TurnPhase`
+variants; the `MAX_ATTEMPTS = 3` bound with 1s/2s/4s backoff capped at 30s;
+the absence of `src/agent/team.rs`; the sync (non-`async`) registry entry
+points; and the `check_daemon_cwd_usage.py` `PROTECTED_GLOBS` description —
+it guards `src/core/**` plus `src/agent/turn_runtime.rs` and
+`src/agent/worker.rs`, not all of `src/agent/`.
+
+Corrected: the per-turn loop construction was cited at
+`src/agent/turn_runtime.rs:725` (actually `:953`, where
+`crate::agent::agent_loop_factory::build_agent_loop` is called; the factory
+itself is at `src/agent/agent_loop_factory.rs:74`); `TurnPhase` at
+`src/agent/coordinator.rs:110` (actually `:141`); `MAX_ATTEMPTS` at
+`provider_turn.rs:64` (actually `:65`); and the sync-registry range
+`crates/codegg-core/src/bus/mod.rs:104-305` (the entry points are now at
+`:149`, `:177`, `:364`, `:392`, `:188`, `:401`).
+
+Corrected a stale enumeration: the `task` tool's action set was recorded as
+"sixteen" at `src/tool/task.rs:799`. There is no Rust enum at that line — the
+action set is the JSON schema `enum` array at `src/tool/task.rs:1278`, and it
+now has **twenty-two** entries: `scratch_create`, `scratch_revoke`, `spawn`,
+`converge`, `convergence_status`, `convergence_decide`, `convergence_cancel`,
+`spawn_many`, `create_group`, `status`, `get`, `message`, `interrupt`, `wait`,
+`cancel`, `status_group`, `wait_group`, `cancel_group`, `board`, `claim`,
+`release_claim`, `request_handoff`. The body's hard rule — that `board`,
+`claim`, `release_claim`, and `request_handoff` expose bounded same-group
+coordination facts and advisory intent only — was re-verified against
+`src/tool/task.rs:539,656,713,754`; `request_handoff` returns "ownership is
+unchanged", so it records intent rather than reassigning. The body still
+points at the source rather than pinning a list, so no body change was needed
+beyond this note.
+
+The three integration-test commands named targets that do not exist; the
+members live in the `agent_loop` and `tool_programs` families, so
+`cargo test --test <member>` selected zero tests and exited 0.
+

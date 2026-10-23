@@ -929,7 +929,8 @@ impl WorktreeService {
         let base_path = canonical_or_self(base_path);
         let status = egggit::status_v2::rich_repo_status(&base_path)
             .await
-            .map_err(|e| WorktreeServiceError::Git(e.to_string()))?;
+            .map_err(|e| WorktreeServiceError::Git(e.to_string()))?
+            .into_value();
         let base_commit = request.base_commit.clone().or(status.head).ok_or_else(|| {
             WorktreeServiceError::Git("repository has no commit to use as a base".into())
         })?;
@@ -946,7 +947,8 @@ impl WorktreeService {
                         WorktreeServiceError::InvalidInput(format!(
                             "cannot resolve base ref {base_ref}: {e}"
                         ))
-                    })?;
+                    })?
+                    .into_value();
                 ObjectId::new(&resolved).map_err(|e| {
                     WorktreeServiceError::InvalidInput(format!("invalid base commit from Git: {e}"))
                 })?;
@@ -1489,7 +1491,10 @@ async fn inspect_health(record: &WorktreeRecord) -> (WorktreeHealth, bool) {
     if !registered || !crate::worktree::is_git_worktree(&record.path) {
         return (WorktreeHealth::GitError, registered);
     }
-    match egggit::status_v2::rich_repo_status(&record.path).await {
+    match egggit::status_v2::rich_repo_status(&record.path)
+        .await
+        .map(|fact| fact.into_value())
+    {
         Ok(status)
             if !status.conflicted.is_empty()
                 || status.operation_state.is_some()

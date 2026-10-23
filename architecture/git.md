@@ -77,7 +77,9 @@ kill_on_drop). stdout/stderr pass through
 The trusted process policy also pins repository-controlled execution settings
 with Git `-c` options: hooks, fsmonitor, external diff, credential helpers,
 SSH command overrides, signing programs and pagers are disabled; diff/show/log
-also receive `--no-ext-diff --no-textconv`. `classify_git_request` returns a
+also receive `--no-ext-diff --no-textconv`. The environment additionally sets
+`GIT_NO_REPLACE_OBJECTS=1`, so a repository-declared `refs/replace/*` cannot
+substitute one object for another on a read. `classify_git_request` returns a
 typed `GitExecutionPolicyOutcome` before command construction. It distinguishes
 trusted non-executable requests, requests requiring contained execution or
 additional authorization, explicit authority changes, and malformed requests.
@@ -89,9 +91,109 @@ their subcommand names alone are not treated as the security boundary.
 remain available. This policy does not protect writable `.git` metadata or
 claim network isolation; those are separate Linux execution-isolation gates.
 
+**Pinned keys are not enough on their own.** A `-c` override beats the keys
+it *names*, in every configuration file the child reads — so an included file
+cannot smuggle a named key past it. It cannot beat a key it does not name,
+and two of those keys are named by the *repository*: `filter.<name>.clean`
+and `diff.<name>.command`. `git status` and `git diff` are on the trusted
+read route and both compare the working tree against the index *through the
+clean filter*, so a repository that declares a filter and ships an attribute
+that selects it gets that command executed by an ordinary read. This was
+reproduced on this host before it was fixed.
+
+`crates/egggit/src/config_surface.rs` therefore inspects the repository's
+configuration surface before the trusted route spawns. It parses the
+configuration itself (it never shells out to `git config`, which would honour
+includes and could run helpers), follows `include.path` and
+`includeIf.<condition>.path`, and is bounded on include depth, file count,
+per-file size and total bytes. It reports the dangerous **surfaces** it finds
+and never a configuration **value**, so a credential helper whose value embeds
+a password cannot leak through the report. The trusted route refuses when the
+surface declares something it cannot neutralise:
+
+| Surface | Disposition |
+|---|---|
+| `filter.<name>.process` / `.clean` / `.smudge` | refused — reachable from an ordinary `git status` or `git diff` |
+| `diff.<name>.command` | refused — a repository-chosen diff driver |
+| an inspection that was truncated | refused — "we could not check" is not "we checked and found nothing" |
+| `core.attributesFile`, `core.alternateRefsCommand`, `core.gitProxy`, `core.pager`, `core.editor`, `sequence.editor` | neutralised by the pinned override table |
+| `url.*.insteadOf`, `credential.<url>.helper`, `core.sshCommand` | reachable only from a remote operation, which the trusted route refuses |
+| `merge.<name>.driver` | reachable only from a merge operation, which the trusted route refuses |
+
+The refusal reuses the existing typed vocabulary
+(`RequiresContainedExecution` with `CleanSmudgeFilter` or
+`ExternalDiffOrTextconv`, which the route's gate turns into
+`BackendUnavailable`). No new outcome shape was invented and **no Git
+authorization was widened**: the trusted read route can now do less, not
+more.
+
+Two limits of the inspection are recorded rather than papered over. It is a
+pre-flight, so it cannot close the window between the check and the spawn.
+And it follows `includeIf` conditions **unconditionally**, because
+`onbranch:`, `gitdir:` and `hasconfig:` cannot be evaluated faithfully at
+inspection time — so it over-reports relative to what the child will
+actually read, which is the safe direction.
+
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
-exit code, and `ProjectionHints`.
+exit code, `ProjectionHints`, and the **consistency class** the read was
+obtained under (see "Read consistency" below).
+
+### Read consistency
+
+A Git read is only as trustworthy as the object generation it observed, and a
+consumer that needs one stable generation has to be able to *say* so at the
+type level rather than in prose. `crates/egggit/src/consistency.rs` owns that
+vocabulary:
+
+- **`GitReadConsistency`** is the closed class a read carries:
+  `ImmutableGeneration` (one materialized object generation), `CapturedNotCurrent`
+  (a capture that was immutable when taken and may now be stale),
+  `LiveMutable` (bytes read from a concurrently mutable repository; the
+  observation may be torn), and `NoObjectGeneration` (the read consulted no
+  object store).
+- **`GitReadFact<T>`** is a read result *together with* its class. The class
+  travels with the value, so a consumer cannot receive the bytes and forget
+  what it was allowed to assume about them. Eighteen typed `egggit` read
+  functions return it.
+- **`GenerationConsistent<T>`** is the only shape a generation-bound consumer
+  may accept, and `admit_generation_consistent` is the only way to obtain
+  one. A live-class read is **refused**, not warned about.
+- **`LiveReadCapability`** is the authority a consumer must **hold** to use a
+  live-class read — on the same footing as `DestructiveRepositoryChange` gates
+  a destructive mutation. Its only constructor is compiled out unless
+  `egggit`'s `git-live-read-test-support` feature is enabled, and the shipped
+  binary does not enable it. **A production build therefore cannot obtain the
+  capability at all.**
+- `GitReadConsistency::weaker` is the composite rule: a read assembled from
+  several Git invocations carries the **weakest** class among them.
+
+Two boundaries of the class are worth stating plainly:
+
+- **The class describes the object store only.** The private object view
+  covers the object database; refs, the index and the worktree are always read
+  live. A read that consults no object store reports `NoObjectGeneration`
+  rather than borrowing a class it did not earn.
+- **`CapturedNotCurrent` is not a weaker kind of `ImmutableGeneration`.** The
+  preparation cache is a best-effort mechanism with eviction, not a durability
+  boundary, so a cache-served read reports `CapturedNotCurrent`. It is still
+  admissible to a generation-bound consumer, because such a consumer needs
+  the *internal consistency* of the bytes; currency is a separate question
+  that the publisher's compare-and-swap answers.
+
+The root crate's fence is `src/git_consistency.rs`. `admit_generation_bound`
+maps a refusal onto the typed `GitServiceError::Consistency` variant, so a
+caller that ignores the fence still cannot turn a refusal into a payload.
+`live_read_capability()` returns `None` in every build: that is the single
+place a live route would have to change, and changing it is a reviewed
+decision rather than a build convenience.
+
+The **publication** boundary records the class too. `PreparedPrivateIndex`
+carries the class of the index generation the publication is based on, and
+`GitIndexPublicationReceipt` carries the class it was committed from. A
+live-class staging is refused before the lock is taken and before the journal
+is written: a live read may be torn by an outside writer, and a torn
+generation has no fingerprint to compare and swap against.
 
 Object-reading trusted commands use a private object view without
 `objects/info`, so a repository alternate created after admission cannot
@@ -420,23 +522,23 @@ then re-run recover: continue").
 
 | Type | File | Purpose |
 |------|------|---------|
-| `GitExecutionService` | `git_service.rs:232` | Unified read+raw executor |
-| `GitPayload` (13 variants) | `git_service.rs:42` | Structured read payloads |
-| `GitMutationExecutor` | `git_mutations.rs:477` | Mutation executor with snapshot/delta; M002 emits one structural `git_operation` per executed transition via the injected `execution_audit` + `audit_emitter` pair (silent without it). Typed, network, and recovery paths funnel through `execute`; unparsed variants emit in `run_raw_mutation`. Labels/digests via `git_audit_op_label`/`git_audit_ref_digest` (ref/remote-name only, never URLs/messages/paths); see `architecture/audit.md` "Live execution hooks (M002)" |
-| `GitEnvPolicy` | `git_mutations.rs:49` (re-export of `egggit::process::GitEnvPolicy`) | `apply()` (async) / `apply_sync()` (sync) |
+| `GitExecutionService` | `git_service.rs:282` | Unified read+raw executor |
+| `GitPayload` (13 variants) | `git_service.rs:92` | Structured read payloads |
+| `GitMutationExecutor` | `git_mutations.rs:504` | Mutation executor with snapshot/delta; M002 emits one structural `git_operation` per executed transition via the injected `execution_audit` + `audit_emitter` pair (silent without it). Typed, network, and recovery paths funnel through `execute`; unparsed variants emit in `run_raw_mutation`. Labels/digests via `git_audit_op_label`/`git_audit_ref_digest` (ref/remote-name only, never URLs/messages/paths); see `architecture/audit.md` "Live execution hooks (M002)" |
+| `GitEnvPolicy` | `git_mutations.rs:50` (re-export of `egggit::process::GitEnvPolicy`) | `apply()` (async) / `apply_sync()` (sync) |
 | `RepoSnapshot` | `codegg-git/src/workflow.rs:15` | Pre/post state capture |
 | `StateDelta` | `codegg-git/src/workflow.rs:30` | Diff between snapshots |
 | `MutationOutcome` (5 variants) | `codegg-git/src/workflow.rs:64` | Completed/NoOp/FastForward/Conflict/Rejected |
 | `MutationResult` | `codegg-git/src/workflow.rs:86` | Full mutation record |
-| `GitMutationError` (7 variants) | `git_mutations.rs:219` | Detailed error with `ExecutionContext` |
-| `NetworkEnvPolicy` | `git_network_ops.rs:46` | Extends base env with network vars |
-| `PushForce` (3 variants) | `git_network_ops.rs:187` | Normal/ForceWithLease/Force |
-| `PushRequest` | `git_network_ops.rs:228` | Push parameters |
-| `PullStrategy` (3 variants) | `git_network_ops.rs:135` | Merge/Rebase/FastForwardOnly |
-| `CleanRequest`, `CleanPreview` | `git_network_ops.rs:713,694` | Clean operation types |
+| `GitMutationError` (11 variants) | `git_mutations.rs:220` | Detailed error with `ExecutionContext` |
+| `NetworkEnvPolicy` | `git_network_ops.rs:45` | Extends base env with network vars |
+| `PushForce` (3 variants) | `git_network_ops.rs:190` | Normal/ForceWithLease/Force |
+| `PushRequest` | `git_network_ops.rs:231` | Push parameters |
+| `PullStrategy` (3 variants) | `git_network_ops.rs:138` | Merge/Rebase/FastForwardOnly |
+| `CleanRequest`, `CleanPreview` | `git_network_ops.rs:716,697` | Clean operation types |
 | `NetworkFailureKind` (7 variants) | `git_network_policy.rs:72` | Failure classification |
 | `RecoveryOutcome` (5 variants) | `git_recovery.rs:28` | Recovery result classification |
-| `GitTool` | `tool/git.rs:23` | Model-facing tool with 42 mutation actions |
+| `GitTool` | `tool/git.rs:27` | Model-facing tool with 42 mutation actions |
 
 ## Configuration Surface
 
@@ -710,7 +812,7 @@ dirty/conflicted state, validation summary, and retention attention. It does
 not expose credentials, full diffs, or authority to integrate; integration
 remains an explicit parent-side typed Git operation.
 
-### Test counts (verified 2026-10-19)
+### Test counts (verified 2026-10-19; the C003 rows re-verified 2026-10-23)
 
 Measured from the compiled test binaries' own `--list` output, not from a
 source-text grep: `cargo test -p <crate> --lib -- --list` and
@@ -720,13 +822,28 @@ grep undercounts, because a test attribute can share a line with others.
 | Module / file | #[test] + #[tokio::test] |
 |---------------|--------------------------|
 | `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 362 |
-| `egggit/operation_state.rs` | 8 |
-| `egggit` (all `src/*.rs`) | 109 |
+| `egggit/operation_state.rs` | 11 |
+| `egggit` (all `src/*.rs`) | 165 |
 | `egggit/conflict.rs` | 7 |
 | `tests/command_git/git_mutations_integration.inc` | 12 (tokio::test) |
 | `tests/command_git/git_network_integration.inc` | 29 |
 | `tests/command_git/git_recovery_integration.inc` | 19 |
-| `tests/command_git/git_index_publication.inc` | 22 (C007 private-index publication; 17 C007 + 5 shared secret-scan) |
+| `tests/command_git/git_index_publication.inc` | 21 (C007 private-index publication; 17 C007 + 4 C003 regressions) |
+| `tests/command_git/git_read_consistency.inc` | 16 (C003 read-consistency contract and fence) |
+| `tests/command_git/git_hostile_metadata.inc` | 6 (C003 hostile-configuration surface) |
+
+The `egggit` rows rose from 109 and 8 on the C003 head: the typed
+consistency contract, the configuration-surface detector, and the
+trusted-route pre-flight tests are in that crate. The
+`git_index_publication` row rose from 17: C003 added the regression tests for
+the three C007 invariants that were claimed but untested, plus the
+live-class staging refusal.
+
+These rows count the **member** of the consolidated `command_git` family, so
+they are smaller than the pre-consolidation per-file counts for the members
+that share the family's `common` helper: the 5 shared secret-scan tests live
+once in `tests/command_git/secret_scan_self_tests.inc` and are counted
+there, not in each member.
 
 ### Key test categories
 
@@ -780,7 +897,7 @@ grep undercounts, because a test attribute can share a line with others.
 - `architecture/command_intent.md` — Command intent classification and
   routing.
 - `architecture/command_routing.md` — Active routing mode.
-# Execution source subject capture
+## Execution source subject capture
 
 `egggit::capture_git_source_subject` is the read-only, governed Git owner for
 execution provenance. It captures exact HEAD and a deterministic SHA-256
@@ -791,7 +908,69 @@ callers must not downgrade to a weaker status-only identity.
 
 ## Source Verification
 
-Verified 2026-10-06 against `crates/codegg-git/src/`, `crates/egggit/src/`,
+### Pass of 2026-10-23
+
+Re-verified against `crates/codegg-git/src/`, `crates/egggit/src/`, the root
+`src/git_*.rs` / `src/tool/git.rs` modules, `src/git_publication/`, and
+`crates/codegg-core/src/{worktree.rs,worktree_service.rs,git_publication.rs}`.
+No build or test run was performed; every count below is a source-level
+measurement.
+
+- **Corrected a wrong count.** `GitMutationError` has **11** variants, not 7
+  (`src/git_mutations.rs:220`). The "Key Types & APIs" row said 7, and so did
+  the 2026-10-06 pass's "Confirmed correct as written" list — that entry has
+  been struck from the historical pass below so the record does not assert a
+  count it was wrong about.
+- **Re-anchored 11 stale `file.rs:line` refs** in "Key Types & APIs":
+  `GitExecutionService` `232`→`282`, `GitPayload` `42`→`92`,
+  `GitMutationExecutor` `477`→`504`, `GitEnvPolicy` `49`→`50`,
+  `GitMutationError` `219`→`220`, `NetworkEnvPolicy` `46`→`45`,
+  `PushForce` `187`→`190`, `PushRequest` `228`→`231`,
+  `PullStrategy` `135`→`138`, `CleanRequest`/`CleanPreview` `713,694`→`716,697`,
+  `GitTool` `23`→`27` (all in the root crate unless the file is qualified).
+- **Corrected a heading level.** "Execution source subject capture" was an
+  `#` (h1) heading inside the body; it is now `##`, matching the rest of the
+  document.
+- **Re-anchored the mutation-enum ref** to its current home: the schema
+  `mutation.enum` is at `src/tool/git.rs:179`-`:192` and holds exactly 42
+  entries; `mutation_enum_includes_phase_f_recovery_aliases`
+  (`src/tool/git.rs:1460`) cross-checks them.
+- **Confirmed correct as written**: `GitOperation` 54 variants
+  (`crates/codegg-git/src/operation.rs`), `GitRiskClass` 11 (`risk.rs`),
+  `ALLOWED_ENV_VARS` 21 and `ALWAYS_STRIPPED_ENV_VARS` 28
+  (`crates/egggit/src/process.rs:33` / `:60`),
+  `NETWORK_ALLOWED_ENV_VARS` 21 (`src/git_network_policy.rs:41`),
+  `ALLOWED_MERGE_STRATEGIES` 6 (`src/git_mutations_ops.rs:418`),
+  `GitPayload` 13, `NetworkFailureKind` 7, `RecoveryOutcome` 5,
+  `MutationOutcome` 5, `ConflictKind` 8, `RepositoryOperationState` 9,
+  `OperationFamily` 9, `PushForce` 3, `PullStrategy` 3, and the
+  `crates/codegg-git/src/workflow.rs` refs (`:15`, `:30`, `:64`, `:86`).
+- **Confirmed the "Eighteen typed `egggit` read functions" claim**: exactly 18
+  *public* `egggit` functions return `GitReadFact<T>`; six further
+  `GitReadFact` returns are private helpers.
+- **Confirmed the `GitReadConsistency` vocabulary** in
+  `crates/egggit/src/consistency.rs`, including that
+  `src/git_consistency.rs::live_read_capability` returns `None` in every
+  build.
+- **Confirmed the C007 publication path**: the `git_index_publication` journal
+  is created by `migrate_v84` (`crates/codegg-core/src/session/schema.rs:3864`);
+  the durable type is `codegg_core::git_publication`.
+- **Confirmed the C008 contained-worktree path**: `src/git_contained_worktree.rs`
+  exists, `plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`
+  exists, `WorktreeService::create_reserved`
+  (`crates/codegg-core/src/worktree_service.rs:1041`) and
+  `create_reserved_contained` (`:1109`) are the two entry points, and
+  `SandboxConfig::with_read_only_paths` / `with_expected_created_git_pointers`
+  (`src/security/sandbox.rs:462` / `:472`) are the two grant mechanisms named
+  in the text.
+- **Test-count table note**: the `git_read_consistency` row (16) and the
+  `egggit/operation_state.rs` row (11) were measured from a compiled
+  `--list` on a non-Linux host. Each file contains one `cfg`-gated
+  mutually-exclusive pair, so a Linux host lists one more in each.
+
+### Pass of 2026-10-06
+
+Verified against `crates/codegg-git/src/`, `crates/egggit/src/`,
 and the root `src/git_*.rs` / `src/tool/git.rs` modules.
 - Corrected the `GitTool` mutation count **40 → 42** (both occurrences).
   The schema `mutation.enum` at `src/tool/git.rs:140`-`:155` holds exactly 42
@@ -810,8 +989,11 @@ and the root `src/git_*.rs` / `src/tool/git.rs` modules.
 - Confirmed correct as written: `GitOperation` 54 variants, `GitRiskClass` 11,
   `ALLOWED_ENV_VARS` 21, `ALWAYS_STRIPPED_ENV_VARS` 28,
   `NETWORK_ALLOWED_ENV_VARS` 21, `ALLOWED_MERGE_STRATEGIES` 6 (`src/git_mutations_ops.rs:418`),
-  `GitPayload` 13, `GitMutationError` 7, `NetworkFailureKind` 7,
+  `GitPayload` 13, `NetworkFailureKind` 7,
   `RecoveryOutcome` 5, `MutationOutcome` 5, `ConflictKind` 8,
   `RepositoryOperationState` 9, `OperationFamily` 9, `PushForce` 3,
   `PullStrategy` 3, and the `codegg-git/src/workflow.rs` refs (`:15`, `:30`,
   `:64`, `:86`).
+
+The 2026-10-06 `GitMutationError` figure of 7 was wrong and is corrected in the
+2026-10-23 pass above; every line ref in that list has since moved again.

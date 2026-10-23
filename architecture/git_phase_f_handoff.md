@@ -3,9 +3,10 @@
 > **Historical snapshot**: This document records the state at Phase F closure (commit `08709d3`). For current architecture, see `architecture/git.md`.
 >
 > **Counts below are as-of-close and have since drifted.** Verified 2026-10-06
-> against current source; see "Snapshot drift" at the end of this document for
-> the as-of-close → current mapping. The narrative, matrix, and limitation
-> sections are left as written so the Phase F record stays intact.
+> and re-verified 2026-10-23 against current source; see "Snapshot drift" at the
+> end of this document for the as-of-close → current mapping. The narrative,
+> matrix, and limitation sections are left as written so the Phase F record
+> stays intact.
 
 ## Status
 
@@ -165,24 +166,27 @@ variant has an active code path.
 
 Snapshot taken at Phase F close (commit `08709d3`). Numbers above are
 as-of-close and are intentionally **not** rewritten. Current values verified
-2026-10-06:
+2026-10-06 and re-verified 2026-10-23:
 
 | Claim (as-of-close) | Current value | Where verified |
 |---|---|---|
-| `mutation` enum "≥35 entries" (line 46) | **42** entries | `src/tool/git.rs:140`-`:155` |
-| "402 egggit tests" (line 124) | **78 `egggit`** + **358 `codegg-git`** = 436 | `#[test]`/`#[tokio::test]` across `crates/egggit/src/*.rs` and `crates/codegg-git/src/*.rs` |
-| `cargo test -p egggit` "71 tests" (line 112) | 78 | same |
-| `cargo test -p codegg-git` "331 tests" (line 113) | 358 | same |
+| `mutation` enum "≥35 entries" (line 46) | **42** entries | `src/tool/git.rs:179`-`:192` |
+| "402 egggit tests" (line 124) | **165 `egggit`** + **360 `codegg-git`** = 525 | `#[test]`/`#[tokio::test]` across `crates/egggit/src/*.rs` and `crates/codegg-git/src/*.rs` |
+| `cargo test -p egggit` "71 tests" (line 112) | 165 | same |
+| `cargo test -p codegg-git` "331 tests" (line 113) | 360 | same |
 | `git_closure_matrix` "32 tests" (line 118) | 34 | `tests/command_git/git_closure_matrix.inc` |
 | `git_recovery_integration` "19 tests" (line 117) | 19 (unchanged) | `tests/command_git/git_recovery_integration.inc` |
-| "27 command-bearing vars" stripped (line 20) | **28** | `ALWAYS_STRIPPED_ENV_VARS` in `crates/egggit/src/process.rs:42` |
+| "27 command-bearing vars" stripped (line 20) | **28** | `ALWAYS_STRIPPED_ENV_VARS` in `crates/egggit/src/process.rs:60` |
 | "9 golden fixture files" (line 124) | **12** | `tests/fixtures/git_mutation_projection/*.toml` |
 | `git_mutation_projector` "10 tests" (line 114) | 14 | `src/git_mutation_projector.rs` |
-| `tool::git` "6 schema tests" (line 116) | 8 | `src/tool/git.rs` |
+| `tool::git` "6 schema tests" (line 116) | 13 | `src/tool/git.rs` |
 
 All counts above are `#[test]` / `#[tokio::test(…)]` attribute counts, not
 `cargo test` output — no build or test run was performed. They measure test
 *functions*; a `cargo test` run may report a different passed/ignored split.
+The `egggit` and `codegg-git` figures are source-level attribute counts, so
+they can be one lower than a compiled `--list` for any test whose attribute
+shares a line with another.
 
 Note on the "402" figure: it is this document's own 71 `egggit` + 331
 `codegg-git` summed, not 402 `egggit` tests. The per-crate figures in the
@@ -194,7 +198,47 @@ command block above are the authoritative as-of-close values.
 
 ## Source verification
 
-Verified 2026-10-06 against `src/tool/git.rs`, `src/git_mutations.rs`,
+### Pass of 2026-10-23
+
+This document is a **historical snapshot** of the Phase F closure (commit
+`08709d3`). Its as-of-close counts, the command block, the matrices, and the
+Known Limitations list are left exactly as written; only the "Snapshot drift"
+table — which carries *current* values — and the current-source references
+below were re-verified. No build or test run was performed; every count is a
+source-level `#[test]` / `#[tokio::test]` attribute count.
+
+- **Re-verified every drift-table value.** `egggit` 78 → **165** and
+  `codegg-git` 358 → **360** (the per-crate rows move with them);
+  `tool::git` schema tests 8 → **13**. The `mutation` enum (42), the closure
+  matrix (34), the recovery integration (19), the stripped env vars (28), the
+  golden fixtures (12) and the projector tests (14) are unchanged.
+- **Re-anchored the drift table's verification locations** to the current
+  source: the `mutation` schema enum is now `src/tool/git.rs:179`-`:192`
+  (was `:140`-`:155`) and `ALWAYS_STRIPPED_ENV_VARS` is
+  `crates/egggit/src/process.rs:60` (was `:42`).
+- **Re-anchored the current-source refs in the "Verified accurate as written"
+  table below**: `recover` enum `src/tool/git.rs:160` → `:199`;
+  `RunKind::GitMutation` / `PlannedBackend::Git` / `ActualBackend::Git` /
+  `RunOwnership::DelegatedBackend` `run_store.rs:216`/`:127`/`:168`/`:102` →
+  `:217`/`:128`/`:169`/`:103`; the deprecated
+  `PlannedBackend::GitMutating` / `ActualBackend::GitMutating` markers
+  `run_store.rs:129`-`:130`/`:170`-`:171` → `:131`/`:172`; the
+  `ManagedGitArgv` remote-rename fallback `git_network_ops.rs:376`/`:394` →
+  `:379`/`:397`.
+- **One historical symbol no longer exists.** The corrective-closure section
+  names `src/tool/git.rs::run_raw_subcommand` as a caller of
+  `GitEnvPolicy::apply()`. That function was removed after the Phase F
+  record; the raw-subcommand fallback now lives inline in the `git` tool's
+  dispatch (`src/tool/git.rs:439`-`:556`, with the raw audit emitted by
+  `emit_raw_git_audit` at `:1234`). The body is left as written, because the
+  claim was true when the record was written.
+- Everything else in the body was left untouched. The two corrections made in
+  the 2026-10-06 pass (force-with-lease, and the `GitMutating` grep claim)
+  still describe the contract correctly; only their line anchors moved.
+
+### Pass of 2026-10-06
+
+Verified against `src/tool/git.rs`, `src/git_mutations.rs`,
 `src/git_network_ops.rs`, `src/git_network_policy.rs`, `src/git_recovery.rs`,
 `src/command_intent/`, `crates/codegg-git/src/{operation,risk,error}.rs`,
 `crates/egggit/src/`, `crates/codegg-core/src/{run_store,worktree}.rs`, and
@@ -208,10 +252,10 @@ corrected in place, because they describe a contract rather than a count:
 
 - **Force-with-lease** (Known Limitations). The doc said the parameter is
   `force_with_lease = <old_sha>`. It is a **boolean** in the schema
-  (`src/tool/git.rs:238`-`:241`), and the tool always maps it to
+  (`src/tool/git.rs:277`), and the tool always maps it to
   `PushForce::ForceWithLease { expected_sha: None }`
-  (`src/tool/git.rs:688`-`:692`) — the `expected_sha` field exists on the
-  variant (`src/git_network_ops.rs:192`-`:195`) but the model-facing tool
+  (`src/tool/git.rs:872`) — the `expected_sha` field exists on the
+  variant (`src/git_network_ops.rs:195`-`:197`) but the model-facing tool
   never populates it. Corrected.
 - **`GitMutating` grep claim** (Migration/Deprecation Status). The doc claimed
   `grep -n "GitMutating" src/` "returns only the deprecated markers. No active
@@ -230,13 +274,13 @@ Verified accurate as written:
 
 | Claim | Source |
 |---|---|
-| `mutation` schema enum = 42 entries | `src/tool/git.rs:140`-`:155` |
-| `recover` enum = `continue`/`abort`/`skip` | `src/tool/git.rs:160` |
+| `mutation` schema enum = 42 entries | `src/tool/git.rs:179`-`:192` |
+| `recover` enum = `continue`/`abort`/`skip` | `src/tool/git.rs:199` |
 | `GitOperation` 54 variants, `GitRiskClass` 11 | `crates/codegg-git/src/operation.rs`, `risk.rs` |
-| `ALWAYS_STRIPPED_ENV_VARS` = 28 | `crates/egggit/src/process.rs:42` (re-exported through `codegg_git::process_policy`) |
-| `RunKind::GitMutation`, `PlannedBackend::Git`, `ActualBackend::Git`, `RunOwnership::DelegatedBackend` | `crates/codegg-core/src/run_store.rs:216`, `:127`, `:168`, `:102` |
-| `PlannedBackend::GitMutating` / `ActualBackend::GitMutating` deprecated | `run_store.rs:129`-`:130`, `:170`-`:171` |
+| `ALWAYS_STRIPPED_ENV_VARS` = 28 | `crates/egggit/src/process.rs:60` (re-exported through `codegg_git::process_policy`) |
+| `RunKind::GitMutation`, `PlannedBackend::Git`, `ActualBackend::Git`, `RunOwnership::DelegatedBackend` | `crates/codegg-core/src/run_store.rs:217`, `:128`, `:169`, `:103` |
+| `PlannedBackend::GitMutating` / `ActualBackend::GitMutating` deprecated | `run_store.rs:131`, `:172` |
 | `recover` operation-aware, refuses cross-op misuse | `src/git_recovery.rs` |
-| `ManagedGitArgv` fallback for `remote rename` | `src/git_network_ops.rs:376`, `:394` |
+| `ManagedGitArgv` fallback for `remote rename` | `src/git_network_ops.rs:379`, `:397` |
 | `classify_git()` exists; `ExecutionBackend::Git` used | `src/command_intent/mod.rs:436`; `plan.rs:508`, `:682` |
 | commits `08709d3`, `cb192e9`, `c2e806f`, `53b2beb`, `86c16a9`, `8d686c7` | all resolve in `git log` |

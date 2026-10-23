@@ -26,15 +26,18 @@ session/
 │                        # PartData, ToolStatus
 ├── checkpoint.rs        # CheckpointStore, Checkpoint, WorkingFile,
 │                        # SHA-256 checksum utilities
+├── continuation.rs      # Durable continuation checkpoints (M001+M004):
+│                        # typed payload/envelope, lineage, digest,
+│                        # ContinuationCheckpointStore + prepare_with_id
+├── human_shell_promotion.rs # Bounded, redacted human-shell staging
+│                        # records (human execution C004)
+├── user_prompt_queue.rs # Durable user prompt queue (M002a/M002b/M003/M007)
 ├── import.rs            # SessionImport types, validate_import_size,
 │                        # redact_for_export
 ├── row.rs               # SessionRow, MessageRow, PartRow, TodoRow,
 │                        # PermissionRow — sqlx FromRow conversions
 ├── status.rs            # SessionStatus enum, SessionState struct
-├── continuation.rs      # Durable continuation checkpoints (M001+M004):
-│                        # typed payload/envelope, lineage, digest,
-│                        # ContinuationCheckpointStore + prepare_with_id
-├── events.rs            # 20 typed SessionEvent variants, EventMeta,
+├── events.rs            # 21 typed SessionEvent variants, EventMeta,
 │                        # ToolRisk, ToolCallStatus, PlanItemStatus,
 │                        # ContextCompacted lineage fields
 ├── state.rs             # TuiSessionState — derived from events
@@ -54,7 +57,10 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **76 CREATE TABLE statements** across
+Migrations create and evolve **95 CREATE TABLE statements** covering
+**91 tables** (92 distinct `CREATE TABLE` names, less the transient
+`origin_attribution_new` rebuild name; `migration_version`,
+`origin_attribution`, and that rebuild name each appear twice) across
 these table groups:
 
 **Core session tables (v1):**
@@ -372,7 +378,7 @@ Markdown journal.
 
 **Runtime preferences (v58):**
 `runtime_preferences` — daemon-owned principal-scoped approval/sandbox/
-model preference (see `architecture/execution_reliability.md` or
+model preference (see `architecture/permission.md` or
 `approval.rs`).
 
 **WorkPlans (v59):**
@@ -387,6 +393,34 @@ Eggwork fixed-target job/attempt columns (v66),
 `work_plan_eggplan_binding` / `work_plan_eggplan_item_binding` /
 `work_order_eggplan_binding` (v68, append/replace only)
 
+**Provider credential axis and model cache (v69–v70):**
+`provider_connection_health.credential_status` (v69) — the separate
+credential-verification axis, distinct from catalog reachability; every
+pre-existing row defaults to `'unverified'`. `cached_models` is rebuilt with
+the composite primary key `(id, provider)` (v70) because the table is a
+**cross-provider** cache.
+
+**Async background jobs (v73–v78):**
+`job_background_subscription` + `job_notification` (v73),
+`job_continuation_lease` (v74), `ci_watch` (v75) with its observation-lease
+columns `claim_owner` / `claim_until` / `generation` (v76),
+`continuation_grant` + `idle_continuation` (v77), and the `origin_attribution`
+rebuild admitting the `continuation_grant` scope kind (v78, ADR-0031 — the
+same row-preserving rebuild pattern as v61).
+
+**Workstream claims (v79):**
+`workstream_claim`, `workstream_claim_dependency`, `workstream_claim_event`
+— Agent Workstream Blackboard M003. Intent only: these records never grant
+filesystem, Git, sandbox, or scheduler authority.
+
+**Managed scratch, writer permits, and the launch saga (v83–v87):**
+`agent_scratch_resource` + `agent_scratch_attempt_lease` with
+`agent_run.shared_scratch_json` (v83, managed agent scratch M002),
+`runtime_preferences.network_intent` (v84, Linux execution isolation M005),
+`git_index_publication` (v85, C007), `writer_permit` (v86, M005 corrective
+C002 — one row per managed worktree), and `session_launch` (v87, M006 — the
+durable launch saga with a closed `stage` enum).
+
 ### Column additions to session table
 
 The `session` table gains columns across multiple migrations:
@@ -396,9 +430,9 @@ v12 adds `time_deleted`, v22 adds `workspace_id`, v27 adds
 
 ### Session Columns constant
 
-The `SESSION_COLUMNS` constant (`session/mod.rs:48`) lists all 27
+The `SESSION_COLUMNS` constant (`session/mod.rs:64`) lists all 27
 session columns including the v27 provider connection selection fields.
-Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:55`).
+Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:71`).
 
 ### Session Lifecycle
 
@@ -444,12 +478,13 @@ or device secrets. See `architecture/authorization.md` and
 
 ### Event System
 
-`EventStore` (`session/store.rs:2687`) persists typed `SessionEvent`
-variants into the `session_events` table. Events are:
+`EventStore` (`session/store.rs:2811`) persists typed `SessionEvent`
+variants into the `session_events` table. There are **21** variants:
 - `GoalSet`, `PlanUpdated`, `PlanItemUpdated`
 - `AgentMessage`, `UserMessage`
 - `ToolCallStarted`, `ToolCallFinished`
 - `ToolProgramNotification` (with semantic equality for crash recovery)
+- `JobTerminalNotification` (a terminal async-background-job notice)
 - `PermissionRequested`, `PermissionResolved`
 - `FileChanged`, `TestRunStarted`, `TestRunFinished`
 - `ContextCompacted`, `ModelRouted`
@@ -475,7 +510,7 @@ commit marker.
 
 ### TUI Session State
 
-`TuiSessionState` (`session/state.rs:107`) is a fully derived
+`TuiSessionState` (`session/state.rs:112`) is a fully derived
 in-memory representation reconstructed from events via
 `from_events()`. It tracks: goal, plan, active/recent tool calls
 (capped at 50), changed files, test state, context state, model state,
@@ -540,55 +575,59 @@ pub struct Session {
 }
 ```
 
-### SessionStore (`session/store.rs:56`)
+### SessionStore (`session/store.rs:63`)
 
 | Method | Line | Description |
 |--------|------|-------------|
+| `new(pool)` | 68 | Construct from a pool |
+| `pool()` | 72 | Borrow the underlying pool |
 | `create(CreateSession)` | 76 | Create with auto UUID |
 | `create_with_id(id, input)` | 83 | Stable ID for imports |
 | `create_with_binding(input, pid, wid, src)` | 179 | Atomic session + binding |
 | `create_from_template(template, pid, dir)` | 318 | From config template |
 | `get(id)` | 341 | Get by ID (excludes soft-deleted) |
 | `list(pid, limit)` | 353 | Active sessions, paginated |
-| `list_with_offset(pid, limit, offset)` | 386 | Offset-based pagination |
-| `list_all(pid, limit)` | 452 | Includes archived, excludes deleted |
-| `list_all_with_offset(pid, limit, offset)` | 482 | Offset-based for all |
 | `list_by_canonical_project(pid, limit)` | 360 | Via session_project_binding |
+| `list_with_offset(pid, limit, offset)` | 386 | Offset-based pagination |
+| `session_count(pid)` | 405 | Active session count |
+| `message_count(sid)` | 416 | Messages in session |
+| `message_counts(sids)` | 425 | Batch message counts |
+| `list_all(pid, limit)` | 452 | Includes archived, excludes deleted |
 | `list_all_sessions(limit)` | 463 | Cross-project (import tooling) |
-| `list_deleted(pid)` | 1073 | Soft-deleted sessions |
+| `list_all_with_offset(pid, limit, offset)` | 482 | Offset-based for all |
 | `search(pid, query)` | 505 | LIKE title/slug/directory |
 | `search_all(pid, query)` | 527 | Also searches message content |
 | `find_by_tag(pid, tag)` | 550 | JSON tag matching |
 | `all_tags(pid)` | 570 | Tags with counts |
-| `session_count(pid)` | 405 | Active session count |
-| `message_count(sid)` | 416 | Messages in session |
-| `message_counts(sids)` | 425 | Batch message counts |
 | `export_session(sid)` | 593 | Full JSON export |
 | `import_session(data, new_pid)` | 674 | Import with ID remapping |
 | `import_session_with_binding(data, pid, wid, src)` | 684 | Import + binding |
 | `update(id, UpdateSession)` | 955 | Partial update (COALESCE) |
-| `delete(id)` | 1037 | Soft delete |
-| `soft_delete(id)` | 1042 | Set time_deleted |
-| `restore(id)` | 1058 | Clear time_deleted |
-| `set_tags(id, tags)` | 1085 | Replace tags |
-| `fork(id)` | 1114 | Copy with new IDs |
-| `archive(id)` | 1341 | Set time_archived |
-| `unarchive(id)` | 1357 | Clear time_archived |
-| `share_session(sid)` | 1654 | Generate share URL (7-day) |
-| `unshare_session(sid)` | 1726 | Remove share |
-| `revert_to_message(sid, mid)` | 1401 | Truncate + save revert |
-| `unrevert_session(sid)` | 1757 | Restore from revert state |
-| `generate_summary(provider, sid)` | 1552 | LLM summary |
-| `generate_title(provider, sid)` | 1588 | LLM title |
-| `get_analytics(pid)` | 1889 | Aggregate statistics |
-| `children(id)` | 1388 | Child sessions |
-| `set_share_url(id, url)` | 1372 | Direct share URL set |
+| `delete(id)` | 1047 | Soft delete |
+| `soft_delete(id)` | 1052 | Set time_deleted |
+| `restore(id)` | 1068 | Clear time_deleted |
+| `list_deleted(pid)` | 1083 | Soft-deleted sessions |
+| `set_tags(id, tags)` | 1095 | Replace tags |
+| `rebind_workspace(sid, pid, worktree)` | 1141 | Rebind a session's workspace binding |
+| `fork(id)` | 1192 | Copy with new IDs |
+| `fork_as(id, child_id)` | 1207 | Fork with a caller-chosen child id |
+| `archive(id)` | 1443 | Set time_archived |
+| `unarchive(id)` | 1459 | Clear time_archived |
+| `set_share_url(id, url)` | 1474 | Direct share URL set |
+| `children(id)` | 1490 | Child sessions |
+| `revert_to_message(sid, mid)` | 1503 | Truncate + save revert |
+| `generate_summary(provider, sid)` | 1654 | LLM summary |
+| `generate_title(provider, sid)` | 1690 | LLM title |
+| `share_session(sid)` | 1756 | Generate share URL (7-day) |
+| `unshare_session(sid)` | 1828 | Remove share |
+| `unrevert_session(sid)` | 1859 | Restore from revert state |
+| `get_analytics(pid)` | 1991 | Aggregate statistics |
 
-### TodoStore (`session/store.rs:1922`)
+### TodoStore (`session/store.rs:2046`)
 
 Methods: `new`, `list`, `set`, `add`, `update`, `remove`, `clear`
 
-### MessageStore (`session/store.rs:2127`)
+### MessageStore (`session/store.rs:2251`)
 
 Methods: `new`, `create`, `create_with_id`, `append_batch`, `get`, `list`,
 `count`, `update`, `delete`
@@ -605,33 +644,59 @@ from where the session is now, so truncating from the old end would drop the
 turn it was branched from. Only parts belonging to a copied message come
 along, since `part.message_id` is a foreign key.
 
-### PartStore (`session/store.rs:2347`)
+### PartStore (`session/store.rs:2471`)
 
 Methods: `new`, `create`, `get`, `list_by_message`, `list_by_session`,
 `update`, `delete`
 
-### PermissionStore (`session/store.rs:2465`)
+### PermissionStore (`session/store.rs:2589`)
 
 Methods: `new`, `get`, `upsert`, `delete`
 
-### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58 + v62)
+### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58 + v62 + v84)
 
 Daemon-owned principal-scoped durable preference for approval mode,
 sandbox profile, last-used provider/model identity (M003 foundation,
-M004 convergence), and the separately-scoped last Task-composer
-provider/model identity (project Work Orders M003, `migrate_v62`).
+M004 convergence), the separately-scoped last Task-composer
+provider/model identity (project Work Orders M003, `migrate_v62`), and
+the extended-thinking selection (provider reasoning control M002,
+`migrate_v84`).
 Methods: `get`, `set_approval_mode`, `set_sandbox_profile`,
-`set_model_preference`, `set_task_model_preference`.
+`set_model_preference`, `set_task_model_preference`,
+`set_reasoning_selection`.
 Revision-gated CAS (stale writes get `Conflict`, never
 last-write-wins), bounded lengths, secret-free, additive/empty on
-upgrade. The Task scope never touches the ordinary session preference
+upgrade. The reasoning-selection write carries its revision predicate
+**inside** the statement (`ON CONFLICT … DO UPDATE … WHERE
+runtime_preferences.revision = ?`), not beside it: a revision check
+performed before the write is a check another writer can invalidate
+between the check and the write, which is how a gate that reads like a
+compare-and-swap turns into a silent last-write-wins. The Task scope never touches the ordinary session preference
 (and vice versa); policy writes preserve both. Restart reloads the
 last preference; explicit turn overrides win, then project ceiling,
 then persisted, then `Interactive`/`WorkspaceWrite` defaults.
 Frontend manifests stay display hints, never authority. Protocol:
 `ApprovalPreferenceGet`, `ApprovalModeSet`, `SandboxProfileSet`,
 `TaskModelPreferenceSet`, `ExecutionPolicyGet` -> `ApprovalPreference`
-/ `ExecutionPolicy` (principal derived server-side).
+/ `ExecutionPolicy` (principal derived server-side), plus the
+provider-reasoning pair `ReasoningPreferenceGet` /
+`ReasoningPreferenceSet` -> `ReasoningPreference` and the capability
+advertisement `ReasoningCapabilities` -> `ReasoningCapabilities`.
+
+The reasoning selection (`reasoning_selection`, added by `migrate_v84` as
+one additive nullable column) is the **open, provider-scoped**
+extended-thinking selection: the effort label inside it is a free-form
+string carried verbatim, never a level on a closed enum. The stored value is
+the protocol's own serialized selection shape, so the durable column carries
+no second vocabulary. `None` means "no explicit selection", which leaves the
+agent / model-profile default in charge. The selection is resolved at turn
+admission as **explicit turn override ▸ persisted principal preference ▸
+agent / model-profile default**; the persisted value is consulted only when
+the turn carries no explicit override, and the agent-layer precedence
+(`apply_agent_config` → `apply_model_profile_defaults` →
+`apply_reasoning_override`) is unchanged. Writes to every other preference
+dimension preserve the selection untouched, and a corrupt stored value
+degrades to "no explicit selection" rather than failing the read.
 
 ### Selection/preference convergence (M004)
 
@@ -653,12 +718,12 @@ with a bounded diagnostic (never silent fallback). Guard:
 `selected_model_id` is a display hint reconciled by
 `restore::reconcile_tab_model_with_daemon` (daemon wins).
 
-### UsageStore (`session/store.rs:2530`)
+### UsageStore (`session/store.rs:2654`)
 
 Methods: `new`, `insert`, `get_session_usage`, `get_all_usage`,
 `get_session_cost_summary`
 
-### EventStore (`session/store.rs:2687`)
+### EventStore (`session/store.rs:2811`)
 
 Methods: `new`, `pool`, `append`, `append_idempotent`,
 `list_for_session`, `has_event`, `confirm_existing`
@@ -701,10 +766,10 @@ pub struct MessageData {
 }
 ```
 
-**PartData** (`session/message.rs:38`):
+**PartData** (`session/message.rs:53`):
 `Text`, `Reasoning`, `ToolCall`, `Image`, `File`
 
-**ToolStatus** (`session/message.rs:63`):
+**ToolStatus** (`session/message.rs:78`):
 `Pending` (default), `Running`, `Completed`, `Error`
 
 **SessionAnalytics** (`session/models.rs:160`):
@@ -724,8 +789,8 @@ pub struct SessionAnalytics {
 ## Configuration Surface
 
 - `CODEGG_SHARE_DURATION_DAYS` env var overrides the 7-day share
-  expiry (parsed at `session/store.rs:1629`)
-- Import size limits (`session/import.rs:69-71`):
+  expiry (parsed at `session/store.rs:1758`)
+- Import size limits (`session/import.rs:68-70`):
   `MAX_IMPORT_MESSAGES = 100_000`, `MAX_IMPORT_PARTS = 500_000`,
   `MAX_TOTAL_IMPORT_BYTES = 500 MB`
 
@@ -797,24 +862,47 @@ re-resolved enforcement.
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/session/*.rs` and
-`crates/codegg-core/src/session/schema.rs`. Corrected the `CREATE TABLE`
-count 71 → 73 and added the missing table groups (agent run domain v37–v45,
-mutation attribution/recovery v46–v50, team/audit/collaboration v51–v56, Work
-Orders v60–v63, chat policy/session control v64–v65, repository bindings
-v66–v68). Corrected every `file.rs:line` ref: `SESSION_COLUMNS` `:39` → `:48`
-and `SESSION_COLUMNS_QUALIFIED` `:46` → `:55` (27 columns confirmed by
-counting the literal), `TuiSessionState` `:112` → `:107`,
-`SessionStore` `:48` → `:56`, the five per-store `impl` blocks (TodoStore
-1918→1922, MessageStore 2123→2127, PartStore 2259→2263, PermissionStore
-2377→2381, UsageStore 2442→2446), `EventStore` 2599→2603 (both prose and
-heading), `CheckpointStore` `:48` → `:44`, `SessionAnalytics` 159→160,
-`UsageRecord` 193→194, and the import limits `:68-70` → `:69-71`. Rebuilt
-the 39-row `SessionStore` method/line table from the actual `pub async fn`
-declarations (most were off by 1-8). Added the omitted `new`/`pool`
-constructors to the store method lists and added the missing `ToolProgram
-Notification` ordering detail. Verified accurate: 20 `SessionEvent`
-variants in `events.rs`, `MAX_RECENT_TOOL_CALLS = 50`, the
-`continuation-checkpoint:` event ID prefix, the redacted tool-name list,
-`generate_slug`'s `untitled` fallback, and the `ORDER BY time_created ASC,
-id ASC` ordering.
+Verified 2026-10-23 against `crates/codegg-core/src/session/*.rs` and
+`crates/codegg-core/src/session/schema.rs`.
+
+Corrections made in this pass:
+
+- **`CREATE TABLE` count 76 → 95 statements / 91 tables** (92 distinct
+  `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild
+  name; `migration_version`, `origin_attribution`, and that rebuild name
+  each appear twice). This matches `architecture/overview.md`'s
+  "Verified counts" table.
+- **Module tree completed.** `session/human_shell_promotion.rs` and
+  `session/user_prompt_queue.rs` were missing from the "Where It Lives"
+  tree even though both are `pub mod` in `session/mod.rs` and both own
+  durable tables the doc describes in prose.
+- **SessionEvent variant count 20 → 21.** `events.rs` declares 21
+  variants; `JobTerminalNotification` was missing from the list.
+- **Line references corrected.** `SESSION_COLUMNS` `:48` → `:64` and
+  `SESSION_COLUMNS_QUALIFIED` `:55` → `:71` (27 columns confirmed by
+  counting the literal), `TuiSessionState` `:107` → `:112`,
+  `SessionStore` `:56` → `:63`, the per-store impl blocks (TodoStore
+  1922→2046, MessageStore 2127→2251, PartStore 2347→2471, PermissionStore
+  2465→2589, UsageStore 2530→2654, EventStore 2687→2811 in both the prose
+  and the heading), `PartData` `:38` → `:53`, `ToolStatus` `:63` → `:78`,
+  and the import limits `:69-71` → `:68-70`.
+- **SessionStore method/line table rebuilt** from the actual `pub async fn`
+  declarations (the old 39-row table was off by 1–160 lines on most
+  entries). The table now has 43 rows and includes the previously omitted
+  `new`, `pool`, `fork_as`, and `rebind_workspace`.
+- **Dead doc reference removed.** The `runtime_preferences` pointer named
+  `architecture/execution_reliability.md`, which does not exist; it now
+  points at `architecture/permission.md`, which owns that store.
+- **Migration coverage completed.** The table-group list stopped at v68
+  (aside from the v71/v72/v80/v81/v82 prose). Added groups for v69–v70
+  (provider credential axis, cross-provider model cache), v73–v78 (async
+  background jobs), v79 (workstream claims), and v83–v87 (managed scratch,
+  network intent, Git index publication, writer permits, the launch saga).
+
+Verified accurate, no change: the 27 `SESSION_COLUMNS` entries, the
+`MAX_RECENT_TOOL_CALLS = 50` cap, the `continuation-checkpoint:` event ID
+prefix, the redacted tool-name list, `generate_slug`'s `untitled` fallback,
+the `ORDER BY time_created ASC, id ASC` ordering, the `fork` newest-5000
+rule, the `append_batch` ordering contract, the queue C002 transaction
+narrative, and every test target named in the Testing section (all seven
+resolve to real test paths).

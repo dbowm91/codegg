@@ -30,7 +30,7 @@ review that never mutates files.
 | Sensitive path matching | `src/security/mod.rs` (`matches_sensitive_path`) |
 | Re-exports of eggsentry types for backward compat | `src/security/mod.rs` |
 | Deterministic security scanning (secrets, commands, deps) | `crates/eggsentry/src/` |
-| `codegg-sandbox-helper` binary (backend dispatch + Seatbelt FFI) | `src/bin/codegg-sandbox-helper/` |
+| `codegg-sandbox-helper` binary (backend dispatch + Seatbelt FFI) | `src/bin/codegg-sandbox-helper.rs` |
 
 ## How It Works
 
@@ -58,6 +58,10 @@ validation pipeline:
 
 Used by:
 - `src/mcp/remote.rs` — MCP remote URL validation
+- `src/research/sources/url.rs` — research source URL admission
+  (`validate_url_target`)
+- `src/tool/image.rs` — image fetch address validation and DNS revalidation
+- `src/decision.rs` — `is_internal_ip` over a resolved address set
 - External web fetch is owned by the eggsearch subprocess. CodeGG's adapter
   checks that fetch URLs are non-empty, bounded, and HTTP(S) before dispatch;
   destination resolution and SSRF enforcement remain in Eggsearch.
@@ -75,6 +79,11 @@ half:
 | Policy | `src/security/sandbox/policy.rs` | `BackendPolicy` — readable roots, writable roots, denied roots, plus the curated tool-compatible allowance sets |
 | Registry | `src/security/sandbox/backend.rs` | `BackendId`, `SandboxBackend`, the `BACKENDS` table, preference-ordered `select()` |
 | Backends | `src/security/sandbox/landlock.rs`, `seatbelt.rs` | Compiling a `BackendPolicy` into an LSM ruleset / SBPL profile |
+| Linux mount view | `src/security/sandbox/linux_mount_view.rs` | The opt-in protected-mount compiler and its enforcement scope |
+| Linux launch contract | `src/security/sandbox/linux_launch.rs` | The immutable requested-dimension model (filesystem/network/process/syscall/resource) under a parent ceiling |
+| Linux seccomp | `src/security/sandbox/linux_seccomp.rs` | The architecture-checked denylist handed to Bubblewrap |
+| Guarantee negotiation | `src/security/sandbox/guarantee.rs` | The pure `negotiate()` contract check (C042, ADR-0029, test-only) |
+| Host admission | `src/security/sandbox/host_admission.rs` | The host-capability discovery record and its maintainer-admission type |
 | Facade | `src/security/sandbox.rs` | Profiles, `SandboxConfig`, capability, enforcement, execution path, helper status protocol |
 
 **Adding a backend** is one `SandboxBackend` entry in `BACKENDS` plus its
@@ -149,6 +158,11 @@ pub struct SandboxConfig {
     pub read_only_paths: Vec<String>,      // readable, never writable
     pub expected_created_git_pointers: Vec<String>, // the only '.git' a child may create
     pub deny_paths: Vec<String>,  // operator-declared; merged with policy::sensitive_deny_paths()
+    // Internal opt-ins. No persisted config or default profile enables any
+    // of them, and each is refused unless its prerequisite tier is also set.
+    pub linux_protected_mount_view: bool,
+    pub linux_process_isolation: bool,
+    pub linux_offline_network: bool,
 }
 
 pub struct SandboxLaunchSpec {
@@ -159,6 +173,11 @@ pub struct SandboxLaunchSpec {
     pub write_paths: Vec<PathBuf>,
     pub deny_paths: Vec<PathBuf>,  // never readable/writable, regardless of profile
     pub expected_created_git_pointers: Vec<PathBuf>,
+    // The same three internal Linux opt-ins as `SandboxConfig`; they travel
+    // in the spec so the helper applies the tier it was asked for.
+    pub linux_protected_mount_view: bool,
+    pub linux_process_isolation: bool,
+    pub linux_offline_network: bool,
 }
 ```
 
@@ -619,7 +638,7 @@ paths are canonicalized so Seatbelt matches resolved paths such as
 `/private/tmp` correctly.
 
 **CANONICAL_PATHS_CACHE:** Static cache with 300s TTL and 100-entry
-cap (`sandbox.rs:568`-`:573`: `CACHE_TTL = 300s`, `MAX_CACHE_ENTRIES = 100`).
+cap (`src/security/sandbox.rs`: `CACHE_TTL = 300s`, `MAX_CACHE_ENTRIES = 100`).
 Entries older than 300s are evicted on
 access.
 
@@ -665,28 +684,43 @@ High-level facade used by the agent loop:
 pub struct SecurityService { config: SecurityConfig }
 ```
 
-Methods: `classify_tool_call(name, args)`, `classify_bash(command)`,
-`classify_git(subcommand)`, `classify_raw(classification)`,
-`format_prompt_hints(findings)`.
+Methods: `new(config)`, `enabled()`, `config()`, `classify_tool_call(name, args)`,
+`classify_bash(command)`, `classify_git(subcommand)`,
+`classify_raw(classification)`, `format_prompt_hints(findings)`.
 
 ### Security Review Workflow (`workflow/`)
 
 A read-only, evidence-based security review pipeline:
 
-1. **Diff parsing** (`diff.rs`) — parses unified diffs into
-   `ChangedHunk` structs with file paths and line ranges
-2. **Preset selection** (`enrichment.rs`) — selects review presets
-   (dependency_review, unsafe_review, web_backend, rust_cli,
-   rust_server) based on file path and content
-3. **Target building** — deduplicates review targets from hunks,
-   excludes vendor/target/node_modules/third_party/dist/build
+1. **Diff parsing** (`diff.rs`) — `parse_changed_hunks` /
+   `parse_changed_hunks_for_file` parse unified diffs into `ChangedHunk`
+   structs with file paths and line ranges
+2. **Preset selection** (`diff.rs`, `select_security_preset`) — selects
+   review presets (`dependency_review`, `unsafe_review`, `web_backend`,
+   `rust_cli`, and the `rust_server` default) from the file path and an
+   optional content hint
+3. **Target building** (`diff.rs`, `build_security_review_targets`) —
+   deduplicates review targets from hunks and applies
+   `is_security_review_excluded_path`, which skips `vendor/`,
+   `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`,
+   `__pycache__/`, `.eggs/`, `.git/`, minified `.min.js`, binary
+   extensions (but not `.lock` — it is kept for `dependency_review`),
+   and hidden files other than `.env`/`.env.*`
 4. **Preflight checks** (`preflight.rs`) — deterministic checks
    (secret filename hints, content scans)
 5. **Evidence synthesis** (`evidence.rs`) — conservative: risk markers
-   alone never produce findings; requires 2+ evidence dimensions
+   alone never produce findings (`marker_only_is_finding_eligible` is
+   always false); requires 2+ evidence dimensions
    (e.g., RiskMarker + ChangedHunk, or Preflight + ChangedHunk)
 6. **Report assembly** (`report.rs`) — produces `SecurityReviewReport`
    with targets, prompts, findings, and notes
+
+`context.rs` owns the LSP-context adapter (`SecurityContextExecutor`,
+`build_security_context_request`, `synthesize_findings`,
+`plan_security_context_escalations`), `enrichment.rs` owns the
+LSP `securityContext` enrichment pass (`SecurityContextEnrichmentResult`,
+`merge_enrichment_results`), and `receipt.rs` / `types.rs` own the
+receipt and the shared evidence types.
 
 Key invariants:
 - Findings are defensive review outputs, never proof of exploitability
@@ -705,7 +739,7 @@ Deterministic security scanning primitives:
 | `scanner.rs` | `inspect_text`, `inspect_file` — secret/unsafe-code pattern scanning with 15+ regex rules |
 | `finding.rs` | `SecurityFinding`, `SecurityReport`, `Severity`, `Confidence`, `SecurityCategory` — 16 categories |
 | `profile.rs` | `ProfileRunner` with 4 profiles: Ambient, DependencyDelta, PreCommit, SecurityReview |
-| `dependency.rs` | `detect_dependency_file`, `recommended_audit_commands` — 7 ecosystems |
+| `dependency.rs` | `detect_dependency_file`, `recommended_audit_commands` — 6 concrete ecosystems (Rust/Cargo, Node/npm, Python/pip, Python/Poetry, Docker, GitHub Actions) plus an `Unknown` variant |
 
 **Secret detection patterns** (scanner.rs): AWS keys, GitHub tokens
 (ghp/gho/ghu/ghs/ghr/github_pat), Slack tokens, npm tokens, PyPI
@@ -762,22 +796,23 @@ CodeGG-owned generic chunk accumulator remains.
 
 ### SSRF (`ssrf.rs`)
 
-- `is_internal_ip(ip: &IpAddr) -> bool` (:25)
-- `ipv6_segments_to_ipv4(ipv6: &Ipv6Addr) -> Option<Ipv4Addr>` (:60)
-- `validate_host_ip(host, port) -> Result<Vec<IpAddr>, String>` (:88)
-- `validate_url_target(raw_url) -> Result<ValidatedUrlTarget, String>` (:129)
-- `validate_url_host(url) -> Result<String, String>` (:182)
-- `revalidate_dns(host, port, validated_ips) -> Result<(), String>` (:155)
+- `is_internal_ip(ip: &IpAddr) -> bool`
+- `ipv6_segments_to_ipv4(ipv6: &Ipv6Addr) -> Option<Ipv4Addr>`
+- `validate_host_ip(host, port) -> Result<Vec<IpAddr>, String>`
+- `validate_url_target(raw_url) -> Result<ValidatedUrlTarget, String>`
+  (`pub(crate)`; also used by `src/research/sources/url.rs`)
+- `validate_url_host(url) -> Result<String, String>`
+- `revalidate_dns(host, port, validated_ips) -> Result<(), String>`
 
 ### Sandbox (`sandbox.rs`)
 
-- `SandboxConfig::enforce()` — refuses to restrict parent (:76)
+- `SandboxConfig::enforce()` — refuses to restrict parent
 - `SandboxConfig::launch_spec(target, args, cwd)` — builds child
-  launch description (:89)
+  launch description
 - `sandbox_helper_path()` — resolves trusted helper binary via the shared
-  `crate::install` sibling rule (canonical exe dir, no PATH/cwd/env; :290)
+  `crate::install` sibling rule (canonical exe dir, no PATH/cwd/env)
 - `validate_path_safety(path, allowed_paths)` — symlink check +
-  canonicalization (:509)
+  canonicalization
 - `platform_sandbox_capability()` — probes every registered backend
 - `apply_backend(spec)` — dispatches to the host's backend (helper only)
 - `probe_landlock()` / `apply_landlock(spec)` — Landlock specifically
@@ -785,8 +820,8 @@ CodeGG-owned generic chunk accumulator remains.
 
 ### Policy (`policy.rs`)
 
-- `action_for_command(classification, config) -> SecurityDecisionHint` (:23)
-- `action_for_findings(findings, config) -> SecurityDecisionHint` (:189)
+- `action_for_command(classification, config) -> SecurityDecisionHint`
+- `action_for_findings(findings, config) -> SecurityDecisionHint`
 
 ### Runtime (`runtime.rs`)
 
@@ -814,13 +849,31 @@ mode = "ambient"           # Off | Ambient | Strict | Review
 prompt_hints = true
 max_findings_in_prompt = 5
 denied_commands = []       # explicit deny list
+auto_invoke_review_agent = true
+allowed_network_domains = []
+
+# Sensitive-path globs; a match escalates for review.
+[[security.sensitive_paths]]
+glob = "~/.aws/**"
+reason = "cloud credentials"
+review_level = "high"
 
 [security.gates]
 deny_critical_commands = true # explicit opt-in best-effort text denial; omitted defaults to advisory
 ask_on_high_risk_command = true
 ask_on_network_exfiltration = true
 ask_on_secret_exposure = true
+ask_on_dependency_risk = false
+enforce_in_exec_mode = false
+
+[security.profiles]
+ambient_on_tool_call = true
+pre_commit_on_final = false
+dependency_delta_on_manifest_change = true
 ```
+
+`deny_critical_commands` is an `Option<bool>`: **omitted means advisory**, and
+only an explicit `true` opts into the best-effort text denial.
 
 **Security modes:**
 - `Off` — all checks return Observe
@@ -889,6 +942,38 @@ fallback_to_native = true  # only for mcp backend
    DACL for the current user and LocalSystem, rejects remote clients, and
    fails closed if descriptor construction fails. Live Windows access-control
    and lifecycle qualification is tracked in the desktop foundation plan.
+10. **A trusted Git read may not execute repository configuration.** The
+    trusted route pins the configuration **keys** it can name with `-c`
+    overrides and refuses the operations that consult filters and merge
+    drivers, but a pinned key only beats a key it *names*. Two executable
+    surfaces are named by the *repository* rather than by the route:
+    `filter.<name>.clean` / `.smudge` / `.process` and `diff.<name>.command`.
+    `git status` and `git diff` are on the trusted read route and both
+    compare the working tree against the index **through the clean filter**,
+    so a repository that declares a filter and ships an attribute that
+    selects it gets that command executed by an ordinary read. This was
+    reproduced on this host before it was fixed.
+    `crates/egggit/src/config_surface.rs` therefore inspects the repository's
+    configuration surface before the trusted route spawns: it parses the
+    configuration itself (never `git config`, which would honour includes and
+    could run helpers), follows `include.path` and `includeIf.<condition>.path`,
+    and is bounded on include depth, file count, per-file size and total
+    bytes. The report carries dangerous **surfaces** and never a
+    configuration **value**, so a credential helper whose value embeds a
+    password cannot leak through it. The route refuses a filter command, a
+    repository-chosen diff driver, and any inspection that was truncated —
+    "we could not check" is not "we checked and found nothing".
+    Two limits are recorded rather than papered over: the inspection is a
+    pre-flight and cannot close the check-then-spawn window, and it follows
+    `includeIf` conditions unconditionally because they cannot be evaluated
+    faithfully at inspection time, so it **over-reports** — the safe
+    direction. See `architecture/git.md` "Read path" and "Read consistency".
+11. **A live Git read is not admissible to a generation-bound consumer
+    without an authority.** Containment and consistency are orthogonal: a
+    perfectly contained read of a concurrently mutable repository is still a
+    `LiveMutable` read. The class travels with the read result, and the
+    capability that authorises using a live-class read is compiled out of a
+    production build, so the fence cannot be relaxed by accident.
 
 ## Testing
 
@@ -900,8 +985,10 @@ cargo test -p codegg --lib security::ssrf
 cargo test -p codegg --lib security::sandbox
 
 # End-to-end containment: runs the real helper and asserts observed
-# enforcement on whichever backend this host provides
-cargo test -p codegg --test sandbox_containment
+# enforcement on whichever backend this host provides.
+# The root package's integration tests are families — select the member
+# with `-- <member>`.
+cargo test -p codegg --test security_permission -- sandbox_containment
 
 # Policy tests
 cargo test -p codegg --lib security::policy
@@ -921,6 +1008,11 @@ cargo test -p eggsentry
 # WebFetch bounded-body and static-routing tests
 cargo test -p codegg --lib tool::webfetch
 ```
+
+The `security_permission` family also carries `ssrf.inc`,
+`sandbox_landlock.inc`, `sandbox_policy_wiring.inc`,
+`linux_native_scratch_containment.inc`, `permission.inc`,
+`doom_loop.inc`, `approval_reviewer.inc`, and `path_traversal.inc`.
 
 ## Approval-vs-security boundary (M003, ADR-0004)
 
@@ -975,27 +1067,62 @@ unsupported-host `Unavailable` path.
 - [tool.md](tool.md) — Uses security validation
 - [permission.md](permission.md) — Path permissions
 - [native_crates.md](native_crates.md) — eggsentry crate details
+- [approval_reviewer.md](approval_reviewer.md) — The bounded Automatic reviewer
+- [audit.md](audit.md) — The durable audit trail
+- [preflight.md](preflight.md) — The advisory command preflight
 
 ## Source Verification
 
-Verified 2026-10-06 against `src/security/` and `crates/eggsentry/src/`.
-- Corrected 9 stale `file.rs:line` refs. All six SSRF entry points had
-  drifted by ~3 lines: `validate_url_target` `129`→`126` (it is `pub(crate)`),
-  `validate_url_host` `182`→`179`, `validate_host_ip` `88`→`85`,
-  `revalidate_dns` `155`→`152`, `is_internal_ip` `25`→`22`,
-  `ipv6_segments_to_ipv4` `60`→`57`. Also
-  `matches_sensitive_path` `mod.rs:65`→`:64` and the eggsentry list
-  `classify_git_subcommand` `503`→`505`, `classify_tool_call` `507`→`509`.
-- Corrected the canonical-paths cache ref: `sandbox.rs:453-458` pointed at
-  `resolve_executable`. The cache is `CANONICAL_PATHS_CACHE` at
-  `sandbox.rs:568` with `CACHE_TTL = 300s` (`:573`) and
-  `MAX_CACHE_ENTRIES = 100` (`:572`) — the documented 300s TTL and 100-entry
-  cap were correct, only the line range was stale.
-- Marked `inspect_file` as `async` (`crates/eggsentry/src/scanner.rs:402`).
+Verified 2026-10-23 against `src/security/` (all of it), `src/bin/codegg-sandbox-helper.rs`,
+`crates/eggsentry/src/`, `crates/codegg-config/src/schema.rs`, and
+`crates/codegg-core/src/approval.rs`.
 
-Confirmed accurate, no change: `classify_bash_command`
-(`command.rs:201`), `inspect_text` (`scanner.rs:319`), and
-`ProfileRunner::inspect_paths` (`profile.rs:48`). The eggsentry items live in
-`crates/eggsentry/src/`, not `src/security/` (whose `workflow/` submodules are
-`context`, `diff`, `enrichment`, `evidence`, `mod`, `preflight`, `receipt`,
-`report`, `types`).
+- **Fixed a dead path.** The "Where It Lives" table pointed at
+  `src/bin/codegg-sandbox-helper/`; the helper is a single file,
+  `src/bin/codegg-sandbox-helper.rs` (`Cargo.toml` bin target at the
+  same path). The directory does not exist.
+- **Corrected the stale `file.rs:line` anchors.** The 2026-10-06 pass
+  corrected the *prose* refs but left the "Key Types & APIs" list on the
+  pre-correction numbers, so the two halves of the document disagreed.
+  All SSRF entries now name the symbol (the prose refs were already
+  right: `is_internal_ip` 22, `ipv6_segments_to_ipv4` 57,
+  `validate_host_ip` 85, `validate_url_target` 126, `validate_url_host`
+  179, `revalidate_dns` 152). The sandbox entries had drifted much
+  further: `SandboxConfig::enforce()` 76→514, `launch_spec` 89→531,
+  `sandbox_helper_path` 290→984, `validate_path_safety` 509→1141,
+  `CANONICAL_PATHS_CACHE` 568→1085, `MAX_CACHE_ENTRIES` 572→1089,
+  `CACHE_TTL` 573→1090. `action_for_findings` 189→191.
+- **Fixed a wrong file attribution.** Review-preset selection
+  (`select_security_preset`) lives in `src/security/workflow/diff.rs`,
+  not `enrichment.rs`. The preset names in the document were correct.
+- **Filled the sandbox layer table.** `linux_launch.rs`,
+  `linux_seccomp.rs`, `guarantee.rs`, and `host_admission.rs` were
+  missing from the layer table; all four are real modules with public
+  API.
+- **Filled the `SandboxConfig` / `SandboxLaunchSpec` shapes.** Both
+  carry three internal Linux opt-in flags
+  (`linux_protected_mount_view`, `linux_process_isolation`,
+  `linux_offline_network`) that the document omitted; none is enabled
+  by a persisted profile.
+- **Filled the security config surface.** Added
+  `ask_on_dependency_risk`, `enforce_in_exec_mode`, `[security.profiles]`,
+  `[[security.sensitive_paths]]`, `allowed_network_domains`, and
+  `auto_invoke_review_agent`. Confirmed `deny_critical_commands` is an
+  `Option<bool>` whose omitted value is advisory.
+- **Fixed the dependency-ecosystem count.** `DependencyEcosystem` has
+  6 concrete ecosystems plus an `Unknown` variant, not 7 ecosystems.
+- **Fixed the test command.** The root package's integration tests are
+  families; `sandbox_containment` is a member of the `security_permission`
+  family, so the command is
+  `cargo test -p codegg --test security_permission -- sandbox_containment`.
+- **Fixed the SSRF consumer list.** `src/research/sources/url.rs`,
+  `src/tool/image.rs`, and `src/decision.rs` also use this module.
+- Confirmed accurate, no change: the `is_internal_ip` range table, the
+  `action_for_command` decision order, `SecurityAction`/`SecurityDecisionHint`,
+  the `SecurityService` facade, `matches_sensitive_path` (`mod.rs:64`),
+  the 16 `SecurityCategory` variants, the 4 `SecurityProfile` variants,
+  and every eggsentry entry point
+  (`classify_bash_command` `command.rs:201`, `classify_git_subcommand`
+  `505`, `classify_tool_call` `509`, `inspect_text` `scanner.rs:319`,
+  `inspect_file` `scanner.rs:402`, `ProfileRunner::inspect_paths`
+  `profile.rs:48`).

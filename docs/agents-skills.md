@@ -24,7 +24,7 @@ Ten agents ship with CodeGG. Their source of truth is `assets/agents/*.toml`.
 | `general` | `executor` | Subagent | Subagent without todo/goal management |
 | `research` | `researcher` | All | Long-horizon research via the `research` tool, with `websearch` for quick lookups |
 | `security-review` | `security_reviewer` | Subagent | Defensive security review of changed code, using `securityContext` and deterministic scanning |
-| `verifier` | `semantic_verifier` | Subagent | Independent, read-only semantic verification of a producer result |
+| `verifier` | `semantic_verifier` | Subagent | Independent, read-only semantic verification of a producer result (hidden, runtime-driven) |
 | `compaction` | `compactor` | Subagent | Context compaction (hidden, runtime-driven) |
 | `summary` | `summarizer` | Subagent | Session summaries (hidden, runtime-driven) |
 | `title` | `title` | Subagent | Session titles (hidden, runtime-driven) |
@@ -177,8 +177,8 @@ Agents are discovered from two directories, plus the config file:
 | Project | `<project>/.codegg/agents/` |
 
 `<config dir>` is `~/.config` on Linux and `~/Library/Application Support` on
-macOS, so the global path is `~/.config/codegg/codegg/agents` and
-`~/Library/Application Support/codegg/codegg/agents` respectively.
+macOS, so the global path is `~/.config/codegg/agents` and
+`~/Library/Application Support/codegg/agents` respectively.
 
 Resolution order, lowest priority first: built-ins, then global agent files,
 then project agent files, then the config file's `agent` map. A later
@@ -389,3 +389,39 @@ that can contribute their own tools and commands. See `docs/PLUGINS.md`.
 - `docs/tools.md` — what an agent's permissions actually gate
 - `docs/tui.md` — approval and sandbox selection
 - `docs/security-semantics.md` — deterministic security gating
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Ten built-in agents and their `name`/`role`/`mode`/`hidden` values: the ten
+  `assets/agents/*.toml` files. `verifier` carries `hidden = true`, so it is
+  the fourth runtime-driven hidden agent; the table was corrected to say so.
+- Global agent root `<config dir>/codegg/agents/`: `src/agent/registry.rs`
+  (`dirs::config_dir().join("codegg").join("agents")`) and
+  `src/agent/asset_context.rs` (`default_global_agents_root`). The prose
+  previously double-appended `codegg`; it now reads `~/.config/codegg/agents`
+  and `~/Library/Application Support/codegg/agents`.
+- Project agent root `<project>/.codegg/agents/`:
+  `src/agent/registry.rs` and `src/agent/definition.rs`.
+- Resolution order (built-ins → global files → project files → config `agent`
+  map) and the overlay semantics: `src/agent/registry.rs`.
+- Recognized `[agent]` keys and the `[agent.permissions]` table name:
+  `src/agent/file_agents.rs` (`TomlAgentInner`) and the built-in
+  `assets/agents/*.toml` files.
+- `/init` slash command and the `codegg:init:start` / `codegg:init:end`
+  markers: `src/tui/command.rs` and `src/agent/bootstrap.rs`.
+- `/init` draft, publish (`a`), and cancel (`Esc`): `src/tui/commands/project_init.rs`
+  and `src/tui/components/dialogs/info.rs`.
+- Skill project roots (12), config-dir vendor roots (9), and home-discovery
+  roots (8): `src/skills/registry.rs`.
+- Skill ancestor scan bound of eight levels: `src/skills/registry.rs`
+  (`MAX_ANCESTOR_DEPTH`).
+- `skills.paths` semantics (used directly, no `<vendor>/skills` join) and
+  `skills.enabled`: `crates/codegg-config/src/schema.rs` (`SkillsConfig`) and
+  `src/skills/registry.rs`.
+- Discovery caps in `AssetDiscoveryConfig`:
+  `src/skills/source.rs`.
+- `/skills`, `/reload`, `/skill-promote`, `/skill-proposals`,
+  `/skill-proposal`: `src/tui/command.rs`.
+- Example agent files: `examples/agents/`.

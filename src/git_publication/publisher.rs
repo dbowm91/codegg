@@ -13,6 +13,7 @@ use codegg_core::git_publication::{
     GitIndexPublicationIntent, GitIndexPublicationState, GitIndexPublicationStore,
     GitIndexPublicationStoreError, IndexFingerprint,
 };
+use egggit::GitReadConsistency;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -289,6 +290,13 @@ impl GitIndexPublisher {
             gitdir_dev: dev,
             gitdir_ino: ino,
             network_boundary,
+            // The publisher captured the repository's index bytes into the
+            // private gitdir, so the observed generation is a captured one.
+            // The staging's own class is folded in: a staging that read the
+            // live index would make the whole preparation weaker than the
+            // capture alone.
+            consistency: GitReadConsistency::CapturedNotCurrent
+                .weaker(self.staging.observed_consistency()),
         })
     }
 
@@ -308,6 +316,19 @@ impl GitIndexPublisher {
         request: &GitIndexPublicationRequest,
         prepared: &PreparedPrivateIndex,
     ) -> Result<GitIndexPublicationOutcome, GitIndexPublicationError> {
+        // The admissibility fence runs **before** anything is written. A
+        // staging that observed a live class read the repository's index from
+        // a concurrently mutable repository, so the staged content and the
+        // compare-and-swap operand may not describe the same generation and
+        // there is no fingerprint to swap against. Refusing here leaves the
+        // real index and the journal untouched.
+        if !prepared.consistency.is_generation_consistent() {
+            return Ok(GitIndexPublicationOutcome::Refused(
+                GitIndexPublicationRefusal::StagingNotCaptured {
+                    class: prepared.consistency,
+                },
+            ));
+        }
         let published = prepared.published_index_fingerprint.clone();
         let root = canonicalize_existing(&request.repository_root)?;
         let gitdir = resolve_gitdir(&root).map_err(GitIndexPublicationError::Staging)?;
@@ -366,6 +387,10 @@ impl GitIndexPublisher {
                         // about the network, and it never claims a boundary
                         // the staging did not obtain.
                         network_boundary: prepared.network_boundary.clone(),
+                        // The receipt states the class of the generation the
+                        // publication was based on, so a caller never has to
+                        // infer it from the fingerprint.
+                        consistency: prepared.consistency,
                         published_at_ms: now_ms(),
                     },
                 ))
@@ -551,6 +576,17 @@ pub struct PreparedPrivateIndex {
     /// It is copied verbatim into the publication receipt, so the receipt
     /// can never claim a boundary the staging did not obtain.
     pub network_boundary: ObtainedNetworkBoundary,
+    /// The consistency class of the index generation this publication is
+    /// based on.
+    ///
+    /// The publisher captures the repository's index bytes into the private
+    /// gitdir, so the generation it observed is a **captured** generation: it
+    /// was immutable when it was taken and may now be stale relative to the
+    /// repository. The compare-and-swap against
+    /// [`PreparedPrivateIndex::expected_index_fingerprint`] is what turns a
+    /// captured generation into a safe publication, and it can only do that
+    /// if the generation was captured at all.
+    pub consistency: GitReadConsistency,
 }
 
 /// How a publication attempt ended before it could commit.

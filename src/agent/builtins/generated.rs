@@ -313,8 +313,6 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
                 ("list".to_string(), "allow".to_string()),
                 ("lsp".to_string(), "allow".to_string()),
                 ("lsp_preview_apply".to_string(), "deny".to_string()),
-                ("permission".to_string(), "deny".to_string()),
-                ("python".to_string(), "deny".to_string()),
                 ("python_script".to_string(), "deny".to_string()),
                 ("question".to_string(), "deny".to_string()),
                 ("read".to_string(), "allow".to_string()),

@@ -3,6 +3,11 @@ name: architecture-review
 description: Guide for reviewing architecture documentation against actual codebase in codegg
 version: 2.0.0
 process: parallel-subagent
+tags:
+  - architecture
+  - documentation
+  - audit
+  - review
 ---
 
 # Architecture Review Skill
@@ -24,12 +29,32 @@ DB tables, layout version, test files, guard scripts). Verify each count
 against the `Source` column listed there, fix `overview.md` first if the
 code moved on, then align every other document to it.
 
-Snapshot re-measured 2026-10-06 (re-verify; do not trust blindly): 63 tool
-registration call sites in `src/tool/mod.rs::with_options()`, 39 LSP server
-definitions (`crates/egglsp/src/server.rs::server_definitions()`), 58
-`AppEvent` variants, 154 built-in slash commands, 10 built-in agents, 73
-`CREATE TABLE` tables / storage layout 68, 215 integration test files, 85
-architecture docs, 41 `check_*` guards.
+Do not trust any snapshot, including this one. Re-measure with
+`python3 scripts/measure_overview_counts.py`, which applies each row's
+`Source` method from the `overview.md` table and prints one row per count.
+
+Snapshot re-measured 2026-10-23 (a stale-trip alarm, not evidence): 67 tool
+registrations in `src/tool/mod.rs::with_options()` (54 `register` + 13
+`register_boxed`), 75 distinct production tool names, 39 LSP server
+definitions (`crates/egglsp/src/server.rs::server_definitions()`), 61
+`AppEvent` variants, 168 built-in slash commands, 10 built-in agents, 91
+`CREATE TABLE` tables / storage layout 87, 321 integration test files, 92
+architecture docs, 76 `check_*` guards of which CI runs 36.
+
+**Scope the production-tool row to the whole `src/` tree.** It previously
+measured `src/tool/` + `src/context/` only, which hid `python_script` — a
+production tool registered unconditionally by `with_options()` that lives in
+`src/python_script/`. A measure scoped to where you *expect* to find
+something will not find the thing that lives somewhere else.
+
+**A literal-name scan is not a name inventory.** The same row also missed the
+13 `eggsact` deterministic validators, whose `impl Tool for EggsactTool`
+returns `self.codegg_name` instead of a literal — so they are counted at
+their `EggsactTool::new()` call sites, giving 75 (62 literal + 13
+runtime-named). The same caution applies to a row whose *label* is narrower
+than its measure: "CI guard scripts" was published as 76 (every
+`scripts/check_*`) when CI actually runs 36, and the row is now split into
+"Guard scripts (all)" and "CI guard scripts".
 
 ## Review Process
 
@@ -46,24 +71,31 @@ Launch subagents for each batch of related architecture files. Each subagent:
 ### Batch Structure
 
 Derive batches from the `architecture/overview.md` Module Map so every
-document is covered. The table below covers all 85 docs as of 2026-10-06;
+document is covered. The table below covers all 92 docs as of 2026-10-23;
 if `overview.md` lists documents not present here, extend the batches
 rather than silently skipping them.
 
+A batch holding one very large document (`lsp.md`, `tui.md`) may be split
+into two sub-agents that own disjoint files. Splitting is preferred over
+dropping a document: a subagent that reads many large files at once can hit
+a token-per-minute rate limit, so instruct each to work **one document at a
+time** and to edit as it goes rather than batching all edits to the end.
+
 | Batch | Files | Focus |
 |-------|-------|-------|
-| 0 | overview.md | Meta-document, module table, verified counts |
-| 1 | agent.md, agent-tool-surface.md, compaction.md, cache-aware-context.md, context-ledger.md, context-compaction-ownership.md, model_profile_task_state.md, goal.md, research.md, work_orders.md, work_plan.md | Agent context and execution |
-| 2 | command_intent.md, command_planner.md, command_routing.md, exec.md, test_runner.md, python_scripting.md | Command pipeline and execution |
+| 0 | overview.md, count_audit_history.md | Meta-document, module map, verified counts and their measurement history |
+| 1 | agent.md, agent-tool-surface.md, compaction.md, cache-aware-context.md, context-ledger.md, context-compaction-ownership.md, model_profile_task_state.md, goal.md, research.md, work_orders.md, work_plan.md, blackboard_contract_matrix.md | Agent context and execution |
+| 2 | command_intent.md, command_planner.md, command_routing.md, exec.md, test_runner.md, python_scripting.md, human_shell.md | Command pipeline and execution |
 | 3 | tool.md, tool_broker.md, tool_programs.md, tool_program_language.md, deterministic_tools.md, preflight.md, tool-advisor.md, tool-advisor-framework-spike.md | Tool layer and programs |
-| 4 | git.md, git_phase_f_handoff.md, git_polish_verification_handoff.md, worktree.md, snapshot.md, run_store.md | Git, worktree, run artifacts |
-| 5 | session.md, storage.md, project_catalog.md, project_identity_storage.md, identity.md | Persistence and identity |
-| 6 | core.md, client.md, server.md, acp.md, protocol.md, presence.md, collaboration.md | Core facade and transport |
-| 7 | provider.md, model-adapters.md, resilience.md, retry.md, error.md, config.md, codegg_core.md, native_crates.md | Providers, config, crates |
-| 8 | permission.md, security.md, auth.md, crypto.md, authorization.md, audit.md, approval_reviewer.md | Security and authorization |
-| 9 | mcp.md, lsp.md, lsp_disk_cache_threat_model.md, plugin.md, hooks.md, ide.md, search_backend.md | External integrations |
-| 10 | tui.md, command.md, theme.md, human_shell.md, skills.md, bus.md, projection.md, document.md, desktop.md | TUI, commands, events |
-| 11 | jobs.md, scheduler.md, workspace.md, workspace_services.md, memory.md, tts.md, upgrade.md, util.md, testing.md, process-tool-execution-ownership.md | Daemon services and support |
+| 4 | git.md, git_phase_f_handoff.md, git_polish_verification_handoff.md, worktree.md, snapshot.md, run_store.md, writer_permit.md | Git, worktree, run artifacts, writer permit |
+| 5 | session.md, storage.md, project_catalog.md, project_identity_storage.md, identity.md, codegg_core.md, native_crates.md | Persistence and identity |
+| 6 | core.md, client.md, server.md, acp.md, protocol.md, presence.md, collaboration.md, desktop.md | Core facade and transport |
+| 7 | provider.md, model-adapters.md, resilience.md, retry.md, error.md, config.md, auth.md, crypto.md | Providers, config, crates |
+| 8 | permission.md, security.md, authorization.md, audit.md, approval_reviewer.md, lsp_disk_cache_threat_model.md | Security and authorization |
+| 9 | mcp.md, plugin.md, hooks.md, ide.md, search_backend.md, skills.md, windows-mxc-feasibility.md | External integrations |
+| 10 | lsp.md | Language Server Protocol (authoritative `egglsp`) |
+| 11 | tui.md, command.md, theme.md, document.md, bus.md, projection.md | TUI, commands, events |
+| 12 | jobs.md, scheduler.md, workspace.md, workspace_services.md, memory.md, tts.md, upgrade.md, util.md, testing.md, process-tool-execution-ownership.md, build_admission.md, session_launch.md, workstream_claims.md | Daemon services and support |
 
 ### Phase 2: Consolidation
 
@@ -158,16 +190,28 @@ LSP server definitions (struct definition is not a server entry),
 names vs `STORAGE_LAYOUT_VERSION`, and env-var vs config-defined
 providers.
 
+## See Also
+
+- `architecture/overview.md` — the authoritative module map and the
+  `## Verified counts` table this skill's count snapshot mirrors
+- `architecture/count_audit_history.md` — how each count was measured, and the
+  reconciliation history that pinned them
+- `architecture/testing.md` — the test taxonomy the integration-test-file count
+  depends on
+- `.opencode/skills/documentation/SKILL.md` — the doc-writing discipline that
+  this review process feeds
+- `scripts/measure_overview_counts.py` — the measurement tool the count
+  snapshot must be re-derived with
+
 ## Source verification
 
 Verified 2026-10-06 against `architecture/overview.md` (its `## Verified
-counts` table at `architecture/overview.md:263-292` and its `## Static
-guards` section), a full `architecture/*.md` listing diffed against the
+counts` table and its `## Static guards` section), a full `architecture/*.md` listing diffed against the
 batch table, and direct measurement (`src/tool/mod.rs`,
 `crates/egglsp/src/server.rs`, `crates/codegg-core/src/bus/events.rs`,
-`src/tui/command.rs:1104-1107`, `assets/agents/*.toml`,
+`src/tui/command.rs`, `assets/agents/*.toml`,
 `crates/codegg-core/src/session/schema.rs`,
-`crates/codegg-core/src/storage/mod.rs:39`, `tests/*.rs`,
+`crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION`, `tests/*.rs`,
 `scripts/check_*`). Corrected: the count snapshot (53 tool registrations /
 53 `AppEvent` variants / 139 slash commands / 71 tables / layout 56 / 189
 integration tests / 77 docs / 21 guards → 63 / 58 / 154 / 73 / 68 / 215 /
@@ -178,3 +222,24 @@ as of 2026-10-06) with the eight uncovered documents added to the batches
 core" and "15 env-var providers" figures — neither is in the authoritative
 table and neither has a traceable source. Claims without a traceable source
 were removed rather than guessed.
+
+Fourth pass (2026-10-23): re-ran `python3 scripts/measure_overview_counts.py`
+against the live tree and confirmed **every figure** in this skill's "Count
+Source of Truth" snapshot agrees with the authoritative `## Verified counts`
+table — 67 tool registrations (54 `register` + 13 `register_boxed`), 62
+distinct production tool names, 39 LSP server definitions, 61 `AppEvent`
+variants, 168 built-in slash commands, 10 built-in agents, 91 tables /
+storage layout 87, 321 integration test files, 92 architecture docs, 76
+`check_*` guards (`ls scripts/check_* | wc -l` → 76). Also diffed the batch
+table's document list against `architecture/*.md`: 92 covered, 0 missing,
+0 extra. Corrected three stale line references that had drifted past the
+5-line tolerance: the `## Verified counts` table moved to
+`architecture/overview.md:298-336` (was `:263-292`); the built-in slash
+command tripwire is the assertion `built_in_command_count_matches_release_docs`
+at `src/tui/command.rs:1250` (was `:1104-1107`, which now points at
+`CommandRegistry::commands()`); and `STORAGE_LAYOUT_VERSION` is at
+`crates/codegg-core/src/storage/mod.rs:48` (was `:39`, which now points at the
+const's doc comment). Line-number references to that table are fragile — the
+table's position moves whenever a row is added — so the body now names the
+section rather than pinning its range.
+

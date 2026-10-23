@@ -262,12 +262,12 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 cargo test -p codegg --lib plugin --all-features
 
 # Workspace isolation
-cargo test --test workspace_isolation
+cargo test --test agent_loop -- workspace_isolation
 
 # Adversarial tests
-cargo test --test command_routing_adversarial
-cargo test --test python_sandbox_adversarial
-cargo test --test context_projection_adversarial
+cargo test --test command_git -- command_routing_adversarial
+cargo test --test tool_programs -- python_sandbox_adversarial
+cargo test --test command_git -- context_projection_adversarial
 
 # Real LSP smoke tests (requires installed servers)
 cargo test -p egglsp --features lsp-real-server-tests \
@@ -346,13 +346,20 @@ starving subprocess timing tests). That is why it is sound despite
 process-global env
 mutation throughout the test code: unlike `cargo test --test-threads=N`,
 no two tests ever share an address space, so intra-suite env races are
-impossible by construction (verified by audit 2026-09-25). The five
+impossible by construction (verified by audit 2026-09-25). The four
 sleep/timeout-bound heavy binaries (`eggwork_remote_execution_live`,
-`interactive_process_attach_resume`, `interactive_process_sessions`,
-`interactive_terminal_tui`, `scheduler_cancellation`) run alone via
-`threads-required = "num-cpus"`. `scheduler_cancellation` joined this list
-2026-09-25 after real-`sleep` token assertions flaked twice under parallel
-load while passing serially.
+`interactive_process_attach_resume`, `scheduler_cancellation`,
+`causal_observe_replay`) run alone via `threads-required = "num-cpus"`.
+`scheduler_cancellation` joined
+this list 2026-09-25 after real-`sleep` token assertions flaked twice under
+parallel load while passing serially; `causal_observe_replay` joined
+2026-10-16 after two hosted CI runs exceeded its frozen p95 gate while other
+workspace binaries ran concurrently.
+`interactive_process_sessions` and `interactive_terminal_tui` left this list
+on 2026-10-23: both were absorbed into the `interactive_process_attach_resume`
+family, so their executables no longer exist, and the merged executable keeps
+this family's exclusive slot. Three exclusive executables cost three serial
+slots for 40 test functions; one costs one.
 The profile is workspace-wide only — subset runs (`-p <crate>`) use the
 default or timing profile, because the heavy-binary filter strictly
 requires its binaries to exist.
@@ -439,10 +446,15 @@ above.
 
 ### Known macOS-local failures
 
-On **macOS** the workspace suite has six failures that are **not** regressions.
-Each was proved pre-existing by checking out the baseline commit `2c1953347`
-into a separate worktree and running the same tests there; the baseline probe
-is recorded in `plans/closure/ci-test-throughput-recovery/004-status.md` §8.1.
+On **macOS** the workspace suite has **seven** failures that are **not**
+regressions. The first six were proved pre-existing by checking out the
+baseline commit `2c1953347` into a separate worktree and running the same
+tests there; the baseline probe is recorded in
+`plans/closure/ci-test-throughput-recovery/004-status.md` §8.1. The seventh
+arrived on `main` after that probe, so it is proved against `origin/main`'s
+own copy of the file instead; it is recorded in
+`plans/closure/ci-test-throughput-recovery/008-merge-and-absorption-status.md`
+§7.
 
 | Test | Why it fails on macOS |
 |---|---|
@@ -452,11 +464,42 @@ is recorded in `plans/closure/ci-test-throughput-recovery/004-status.md` §8.1.
 | `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace` | The standalone shell's output does not arrive within the test's own wait. |
 | `scratch_cache_root_contract::the_default_cache_root_is_the_home_directory_cache` | The test expects `$HOME/.cache`; macOS's cache directory is `$HOME/Library/Caches`. |
 | `scratch_cache_root_contract::an_explicit_cache_home_is_the_root_the_allocator_uses` | Same convention mismatch. |
+| `contained_worktree_c008::the_grant_names_only_the_administration_directory` | The test needs the Linux protected-mount view, so the containment grant cannot be built here: `the worktree child could not be contained: permission denied: protected mount view is available only on Linux`. The target is Linux-targeted and is exercised by the hosted `Linux M004 process and IPC qualification` lane, not by a local gate. |
 
 Do not "fix" these by editing the assertions — they are testing the Linux
 contract on a platform that does not provide it. When a *new* failure appears
 next to these, it is real: check it against the baseline before assuming the
 same class.
+
+### Known macOS-local gate failures
+
+The **clippy gate** is also red on macOS, and for `origin/main`'s own reasons
+rather than for anything the test layout did. The gate's command is the one
+`scripts/verify.sh full` runs:
+
+```bash
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+On macOS it reports **nine** distinct findings across two targets — the **lib**
+(7) and the **lib test** (2: `new` and `new_with_network_intent` at
+`src/lsp/m004.rs:106`, and `spec_with` at `src/managed_process.rs:2715`) —
+because the lib's failure stops the build before the **bin** is reached. A run
+**without** `-D warnings` reaches the bin and reports a **tenth**: `unused
+import: Seek` at `src/bin/codegg-sandbox-helper.rs:30`, whose only use is the
+`file.seek(…)` at line 594 inside a `#[cfg(target_os = "linux")]` function.
+Every one of the ten is code that no macOS path calls, so the hosted Linux
+runner — where the code *is* called — sees no finding at all.
+
+**So `scripts/verify.sh full` is red on macOS on `origin/main` today, for this
+reason and no other; `scripts/verify.sh quick` is green there.** The affected
+files are `origin/main`'s, byte-identical to the ones the CI/test-throughput
+line recorded, and the disposition is recorded in
+`plans/closure/ci-test-throughput-recovery/008-merge-and-absorption-status.md`
+§7. The local consequence worth stating is the one the line's own §2.9 repair
+showed: a dead-code finding in a **test target** is invisible to local macOS
+clippy, because the lib fails first, so the hosted Linux runner is the only
+authority for that class.
 
 ### Root integration-test families
 The root package's integration tests are **families**: a directory under
@@ -484,13 +527,16 @@ Consequences worth knowing:
   unit of selection is the family. `cargo test --test <family> -- <member>`
   still narrows to one member, because libtest's filter is a substring match
   on the full test path.
-- **The `ci` profile's whole-binary exclusions still resolve.** The six
+- **The `ci` profile's whole-binary exclusions still resolve.** The four
   binaries that reserve the runner for themselves
   (`eggwork_remote_execution_live`, `interactive_process_attach_resume`,
-  `interactive_process_sessions`, `interactive_terminal_tui`,
-  `scheduler_cancellation`, `causal_observe_replay`) are each a family of
-  one and keep their exact target name. Their flake rationale stays attached
+  `scheduler_cancellation`, `causal_observe_replay`) each keep their exact
+  target name. Their flake rationale stays attached
   to the binary that flaked, not to the family.
+  `interactive_process_attach_resume` is the one **family of three** in the
+  list since 2026-10-23, when it absorbed `interactive_process_sessions` and
+  `interactive_terminal_tui`: two more exclusive executables became one, and
+  the merged binary keeps the slot the three had between them.
 - **`tests/common/` is a helper tree, not a target.** It is bound once per
   family that uses it, through `#[path = "../common/mod.rs"]`, and the
   members reach it with `use super::common;`.
@@ -1012,6 +1058,11 @@ The one place that needs the unstripped binary is the desktop bundle, which
 ships the root daemon: `.github/workflows/desktop-e2e.yml` builds it with
 `--config 'profile.dev.strip="none"'` so crash symbolication is preserved.
 That workflow runs no test suite, so it has no double compile to reclaim.
+**That workflow is manual dispatch only since 2026-10-23** — the desktop
+foundation's development is paused, so the hosted visible-window qualification
+no longer runs on push or on pull requests. See `desktop.md` §"The hosted
+qualification is paused (2026-10-23)" for the evidence and for what restoring
+it costs.
 
 Release artifacts are unaffected: `[profile.release]` already had
 `strip = true`, and it is a separate profile.

@@ -2,6 +2,26 @@
 
 Status: active
 
+> **Development paused 2026-10-23.** The roadmap's status stays `active` —
+> the status vocabulary has no `paused` value, and inventing one would change
+> the vocabulary every other subsystem is read through. What is paused is the
+> *work*, and it is paused by the owner's decision, not by a dependency.
+>
+> Concretely: the hosted visible-window qualification
+> (`.github/workflows/desktop-e2e.yml`) is now **manual dispatch only** and no
+> longer runs on push or on pull requests, because development on this line
+> has stopped for now. The lane had already been red on `main` — its own run
+> `39679968444` at `53d9fc9fd` fails with
+> `element ("[data-testid="permission-list"]") still not existing after
+> 120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5`, and the
+> nine runs behind it are consecutive failures — so the hosted run bought no
+> signal while it cost a runner every time the desktop tree changed.
+>
+> Nothing about the capability, its boundary, or its closure records changes.
+> `architecture/desktop.md` §"The hosted qualification is paused (2026-10-23)"
+> carries the full note, and the workflow's own header carries the path
+> filters needed to restore the triggers when this line resumes.
+
 Repository audit baseline: `f388689094866fe4ab8b1bf1dafa680516805ad2`
 
 Long-term references:
