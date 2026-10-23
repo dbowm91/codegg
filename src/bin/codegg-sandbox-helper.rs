@@ -27,7 +27,11 @@ use std::ffi::CString;
 #[cfg(unix)]
 use std::fs::{self, File};
 #[cfg(unix)]
-use std::io::{Seek, Write};
+use std::io::Write;
+// `Seek` is used only by the Linux seccomp filter builder, so it is gated
+// with the function that uses it rather than with the whole unix target.
+#[cfg(target_os = "linux")]
+use std::io::Seek;
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
 #[cfg(unix)]

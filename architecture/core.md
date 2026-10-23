@@ -913,6 +913,25 @@ violation present. Use `--self-test` to confirm the guard still discriminates.
 
 See `crates/codegg-core/src/workspace.rs` for the full contract.
 
+### Tool-call boundary (the broker)
+
+Every daemon-owned path that reaches a tool goes through `ToolBroker`
+(`src/tool/broker.rs`), which owns the caller policy, the authority-grant
+scope check, the input bounds and the deadline precheck. The daemon never
+dispatches a tool itself.
+
+**Static guard**: `scripts/check_tool_broker_boundary.py` enforces that
+boundary in `scripts/verify.sh quick` and in CI. It distinguishes a registry
+dispatch (`ToolRegistry::execute_capture`) — always a crossing outside the
+registry's own module — from a tool-instance dispatch
+(`Tool::execute`/`Tool::execute_structured`), which is intra-tool delegation
+inside `src/tool/` and a crossing outside it. One recorded exception exists,
+the M006 Automatic approval reviewer's investigation call, scoped to one call
+in one function with a named owner; see
+[tool_broker.md](tool_broker.md) §"The broker boundary guard" and
+`architecture/approval_reviewer.md`. The guard's `--self-test` injects a
+violating call and shows it is rejected.
+
 ### Scheduler-owned execution (Phase 5 cutover)
 
 Daemon-owned heavy work crosses `JobSubmissionService` before admission. The

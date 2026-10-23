@@ -80,6 +80,16 @@ run_guards() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    # The tool-call analogue of the execution-ownership guard: the broker is
+    # the only production path from a subsystem to a tool. It sits here
+    # because it constrains the same question — who may execute what — for
+    # tool dispatch instead of process dispatch.
+    echo "==> python3 scripts/check_tool_broker_boundary.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_broker_boundary.py --self-test)
+
+    echo "==> python3 scripts/check_tool_broker_boundary.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_broker_boundary.py)
+
     echo "==> python3 scripts/check_network_intent_owner_wiring.py"
     (cd "$REPO_ROOT" && python3 scripts/check_network_intent_owner_wiring.py)
 

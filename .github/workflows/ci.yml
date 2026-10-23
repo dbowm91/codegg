@@ -111,6 +111,12 @@ jobs:
       - name: Execution ownership guard
         run: python3 scripts/check_execution_ownership.py
 
+      - name: Tool broker boundary self-test
+        run: python3 scripts/check_tool_broker_boundary.py --self-test
+
+      - name: Tool broker boundary guard
+        run: python3 scripts/check_tool_broker_boundary.py
+
       - name: TUI project authority guard
         run: python3 scripts/check_tui_project_authority.py
 

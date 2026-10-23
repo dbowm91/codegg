@@ -1128,9 +1128,9 @@ fn build_m004_pty_spec(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (profile, ctx, cwd);
-        return Err(InteractiveError::SpawnFailed(
+        Err(InteractiveError::SpawnFailed(
             "constrained PTY M004 launch is available only on Linux".into(),
-        ));
+        ))
     }
     #[cfg(target_os = "linux")]
     {
@@ -1466,7 +1466,11 @@ async fn spawn_unix_child(
     ctx: &Arc<ExecutionContext>,
     handle: &str,
     sandbox_spec: Option<crate::security::sandbox::SandboxLaunchSpec>,
-    shutdown: &CancellationToken,
+    // The shutdown token is observed only by the sandboxed interactive child,
+    // which exists on Linux alone. The parameter is cfg-split rather than
+    // suppressed so the non-Linux build carries no dead binding.
+    #[cfg(target_os = "linux")] shutdown: &CancellationToken,
+    #[cfg(not(target_os = "linux"))] _shutdown: &CancellationToken,
     slave_fd: OwnedFd,
 ) -> io::Result<SpawnedChild> {
     use std::os::unix::ffi::OsStrExt;

@@ -101,25 +101,13 @@ impl M004LspServiceScope {
         Ok(Arc::new(Self { service, shutdown }))
     }
 
-    #[cfg(not(target_os = "linux"))]
-    #[cfg(test)]
-    pub(crate) fn new(
-        _profile: SandboxProfile,
-        _workspace_root: PathBuf,
-        _config: egglsp::config::LspConfig,
-    ) -> Result<Arc<Self>, String> {
-        Err("constrained M004 LSP launches are available only on Linux".into())
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn new_with_network_intent(
-        _profile: SandboxProfile,
-        _network_intent: codegg_core::approval::NetworkIntent,
-        _workspace_root: PathBuf,
-        _config: egglsp::config::LspConfig,
-    ) -> Result<Arc<Self>, String> {
-        Err("constrained M004 LSP launches are available only on Linux".into())
-    }
+    // There is no non-Linux constructor. The only production caller
+    // (`src/agent/turn_runtime.rs`) is Linux-gated and yields `None` on every
+    // other target, and the only test callers live in Linux-gated test
+    // modules. A non-Linux stub existed only so a Linux-gated call site could
+    // compile; with the call site already platform-split the stub had no
+    // caller left, and compiling it on macOS made the lint gate report it as
+    // dead code.
 
     pub(crate) fn service(&self) -> Arc<egglsp::service::LspService> {
         self.service.clone()

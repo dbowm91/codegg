@@ -381,6 +381,16 @@ list):
 - `ToolBroker` is the only production tool-call boundary. Heavy work (tests, managed
   processes, subagent dispatch, tool programs) goes `JobSubmissionService` →
   `JobScheduler`, never direct executor calls. See `architecture/tool_broker.md`.
+  `scripts/check_tool_broker_boundary.py` enforces this in `verify.sh quick` and
+  CI: a **registry dispatch** (`ToolRegistry::execute_capture`) is a crossing
+  everywhere outside the registry's own module, and a **tool-instance dispatch**
+  (`Tool::execute`/`Tool::execute_structured`) is intra-tool delegation inside
+  `src/tool/` and a crossing outside it. One **recorded exception** exists — the
+  M006 Automatic approval reviewer's investigation call, which cannot be routed
+  through the broker because the broker requires a verified authority grant the
+  reviewer cannot hold without approving its own investigation. The exception is
+  scoped to one call in one function, is recorded in the guard with its owner,
+  and widening it is a deliberate edit to that guard.
 - `egggit` never mutates; mutations live in `src/git_mutations.rs` (+ network/config
   policy in `src/git_network_policy.rs`). See `architecture/git.md`.
 - Daemon is a user-scoped singleton (`flock` on `daemon.lock`; `CODEGG_DAEMON_HOME`
