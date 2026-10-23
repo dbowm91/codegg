@@ -111,7 +111,7 @@ def run_sustained_scenario(binary: Path, model: str, *, budget_policy: budget.Bu
 
     guard = budget.SpendGuard(budget_policy)
     lane_root = (root or supervisor.lane_root("sus")).resolve()
-    lane_root.mkdir(parents=True, exist_ok=True)
+    supervisor.private_dir(lane_root)
 
     started = time.monotonic()
     trials: list[dict[str, Any]] = []

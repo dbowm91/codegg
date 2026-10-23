@@ -417,7 +417,7 @@ def run_case(binary: Path, case: AutonomyCase, model: str, *,
     guard.admit()
 
     lane_root = lane_root.resolve()
-    lane_root.mkdir(parents=True, exist_ok=True)
+    supervisor.private_dir(lane_root)
     # The daemon binds its control socket inside the lane. A lane whose socket
     # path does not fit the platform's ``sun_path`` limit cannot start, and
     # the daemon's own failure message names the socket rather than the

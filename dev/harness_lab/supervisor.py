@@ -155,6 +155,33 @@ def lane_root(name: str) -> Path:
     return root
 
 
+def private_dir(path: Path) -> Path:
+    """Create ``path`` as a private directory the product will accept.
+
+    The daemon's scratch allocator refuses a cache root that is group- or
+    world-writable (``ensure_private_parent`` in ``src/scratch.rs``), and a
+    directory created with the process umask is ``0777 & ~umask``. On a host
+    whose umask grants group-write (``0002``) the lane's ``XDG_CACHE_HOME``
+    would therefore be ``0775`` and the daemon would refuse it — a failure
+    that depends on the operator's umask rather than on the code. The lane's
+    directories are created private instead, so the qualification does not
+    follow the umask.
+
+    An existing directory is narrowed only when this user owns it; one owned
+    by another user is left alone, so the product's refusal still stands.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if hasattr(os, "getuid"):
+        try:
+            owned = path.lstat().st_uid == os.getuid()
+        except OSError:
+            owned = False
+        if owned:
+            os.chmod(path, 0o700)
+    return path
+
+
+
 @dataclass(frozen=True)
 class SubjectSpec:
     lane_id: str
@@ -196,7 +223,7 @@ class SubjectSpec:
             "RUST_LOG": "error",
         })
         for key in ("config", "codegg", "daemon", "data", "home", "xdg-data", "cache", "state", "runtime", "scratch", "artifacts", "cargo-home"):
-            (self.root / key).mkdir(parents=True, exist_ok=True)
+            private_dir(self.root / key)
         return env
 
 
@@ -596,7 +623,7 @@ def run_smoke(binary: Path, subjects: int = 2, timeout: float = 20.0, output_dir
             raise HarnessError("experiment output must be outside the candidate worktree")
         if experiment_root.exists() and any(experiment_root.iterdir()):
             raise HarnessError(f"output directory must be empty: {experiment_root}")
-        experiment_root.mkdir(parents=True, exist_ok=True)
+        private_dir(experiment_root)
     specs = []
     for index in range(subjects):
         workspace = (experiment_root / f"workspace-{index + 1}").resolve()
@@ -702,8 +729,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
     trial_started = time.monotonic()
     binary = binary.resolve()
     with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
-        root = lane_root("tool-" + uuid.uuid4().hex[:8])
-        root.mkdir(parents=True, exist_ok=True)
+        root = private_dir(lane_root("tool-" + uuid.uuid4().hex[:8]))
         workspace = root / "workspace"
         workspace.mkdir()
         target = (workspace / expected_file).resolve(strict=False)
@@ -1062,8 +1088,7 @@ def run_exec_trial(binary: Path, profile: str, timeout: float, *,
         raise HarnessError("profile must be full-host or workspace-write")
     trial_started = time.monotonic()
     binary = binary.resolve()
-    root = lane_root("exec-" + uuid.uuid4().hex[:8])
-    root.mkdir(parents=True, exist_ok=True)
+    root = private_dir(lane_root("exec-" + uuid.uuid4().hex[:8]))
     workspace = root / "workspace"
     workspace.mkdir()
     provider = None
