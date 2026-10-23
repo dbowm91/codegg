@@ -1,44 +1,22 @@
 //! The composer's Normal-mode claim table.
 //!
-//! # What this table is
+//! # The fallthrough rule
 //!
 //! In the main buffer's **Normal** mode the composer owns a closed set of
-//! letters. This module is the single, enumerable statement of which letters
-//! it owns and what each one means. The app's global binding map
+//! letters, and this module is the single, enumerable statement of which
+//! letters it owns and what each one means. The app's global binding map
 //! (`src/tui/input.rs`) is consulted only for letters the composer does *not*
 //! claim.
-//!
-//! The rule that makes the table worth having is the **fallthrough rule**:
 //!
 //! > A claimed letter is consumed by the composer even when the composer's
 //! > verb is currently a no-op. It must not silently become an unrelated app
 //! > action.
 //!
-//! The interactive terminal panel already solves the same problem on a
-//! non-document surface, and its dispatch comment records the failure mode
-//! verbatim: *"a focused panel is consulted before Normal-mode actions, so an
-//! unclaimed `d` would silently become `OpenDiff` and never delete anything."*
-//! The panel's answer is to claim `d` unconditionally, even with an empty
-//! selection. The composer takes the same answer, and takes it **before** any
-//! verb exists.
-//!
-//! # Why the table is all live
-//!
 //! A reserved claim still **owns** the key — the fallthrough rule is the whole
 //! point — so a reserved `d` cannot quietly become `OpenDiff` while
-//! delete-selection is pending. What is pending is the *behaviour*.
-//!
-//! The verbs landed in three milestones: M004 (motion), M005 (selection and
-//! clipboard) and M006 (undo, redo and the insert transitions). All three are
-//! done, so every claim in the table is **live**: there is no letter the
-//! composer swallows and does nothing with.
-//!
-//! `i` was live from the start for a hard reason rather than a convenient one: it
-//! is the app's **only** route back to Insert mode, so a reserved `i` would
-//! consume the key, do nothing, and strand the user in Normal mode with no way
-//! to type at all. What it runs is the app's *existing* transition — the gesture
-//! that used to live in the `None` arm of the key chain — moved into the table
-//! so that the table is the one place that says who owns the key.
+//! delete-selection is pending. What is pending is the *behaviour*. `i` is the
+//! app's **only** route back to Insert mode, so a reserved `i` would strand
+//! the user in Normal mode with no way to type at all.
 //!
 //! # Scope
 //!
@@ -75,6 +53,8 @@
 //! itself a claimed letter, or a capital claim that is not reachable under
 //! both key encodings. The table is the guard's input, so the table is the
 //! source of truth — there is deliberately no second copy of it anywhere.
+//!
+//! See `architecture/tui.md` for the full contract.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 

@@ -1,76 +1,16 @@
 //! # Terminal User Interface (TUI)
 //!
-//! ## Architecture Overview
+//! The TUI owns one [`App`] and the state domains it holds — UI, session,
+//! prompt, messages, dialog, and agent state — beside the component, input,
+//! layout, theme, route, and command modules.
 //!
-//! The TUI is structured around several key components:
+//! Input arrives on crossterm's [`EventStream`], is routed by
+//! [`App::on_key`](app::App::on_key) / [`App::on_mouse`](app::App::on_mouse)
+//! against the binding maps, mutates state, and re-renders through
+//! [`App::render`](app::App::render). The render order is header, viewport,
+//! prompt, footer, sidebar, dialog, completions, then toasts.
 //!
-//! - [`App`]: Main application state and event handling
-//! - [`components`]: Reusable UI widgets (messages, prompt, sidebar, etc.)
-//! - [`input`]: Keyboard event handling and keybindings
-//! - [`layout`]: Layout management and area calculations
-//! - [`theme`]: Color themes and styling
-//! - [`route`]: Route/state machine management
-//! - [`command`]: Slash command registry
-//!
-//! ## State Management
-//!
-//! The [`App`] struct is organized into several state domains:
-//!
-//! - [`UiState`](app::UiState): UI state (theme, layout, dialogs, routes)
-//! - [`SessionState`](app::SessionState): Session management
-//! - [`PromptState`](app::PromptState): Prompt input state
-//! - [`MessagesState`](app::MessagesState): Message history and display
-//! - [`DialogState`](app::DialogState): Dialog visibility and data
-//! - [`AgentState`](app::AgentState): Agent and model configuration
-//!
-//! ### State Flow
-//!
-//! ## Rendering
-//!
-//! Rendering uses ratatui's widget model. The main render loop in
-//! [`run_event_loop`] handles:
-//! - Panic recovery via [`catch_unwind`](std::panic::catch_unwind)
-//! - Error boundary display via [`render_error`](app::App::render_error)
-//! - Terminal resize handling
-//!
-//! ### Render Order
-//!
-//! 1. **Header**: Agent name, model, session info
-//! 2. **Viewport**: Messages (Home or Session view)
-//! 3. **Prompt**: Input area with status indicator
-//! 4. **Footer**: Token counts, session status
-//! 5. **Sidebar**: Optional session/agent info panel
-//! 6. **Dialog**: Modal overlay (if open)
-//! 7. **Completions**: Slash/file completion popup (if active)
-//! 8. **Toasts**: Notification messages
-//!
-//! ## Event Flow
-//!
-//! ```text
-//! Terminal Input ──► EventStream ──► on_key() / on_mouse()
-//!                                       │
-//!                                       ▼
-//!                              ┌─────────────────┐
-//!                              │ Route to State  │
-//!                              │ - dialog_key    │
-//!                              │ - prompt_key    │
-//!                              │ - binding_action│
-//!                              └─────────────────┘
-//!                                       │
-//!                                       ▼
-//!                              ┌─────────────────┐
-//!                              │ State Mutation  │
-//!                              │ - update state  │
-//!                              │ - open/close    │
-//!                              └─────────────────┘
-//! ```
-//!
-//! 1. Terminal events are captured via crossterm's [`EventStream`]
-//! 2. Events are routed to [`App::on_key`](app::App::on_key) or [`App::on_mouse`](app::App::on_mouse)
-//! 3. Key events are matched against bindings, routed to dialog/prompt handlers
-//! 4. State changes trigger re-renders via [`App::render`](app::App::render)
-//!
-//! ## Error Handling
+//! See `architecture/tui.md` for the full contract.
 
 pub mod app;
 pub mod async_cmd;

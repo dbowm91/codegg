@@ -1,81 +1,23 @@
 //! Restart coordination for LSP clients.
 //!
-//! ## Design
-//!
-//! The coordinator never reconstructs a hard-coded `src/lib.rs`
-//! path. It uses the persisted [`LspClientDescriptor`] (populated
-//! on first publish) and the currently open document registry
-//! (read at restart time) to pick a seed file.
-//!
-//! ## Ownership model (Pass 1, Phase 3 final closure)
+//! The coordinator owns the retry, backoff, exhaustion, cancellation,
+//! document replay, and ownership-restoration flow, and it is the single
+//! entry point for both manual and automatic restart.
 //!
 //! **Cancellation is intent, not completion.** `cancel_restart_ownership`
-//! signals intent via the lease's cancellation token but does
-//! NOT remove the ownership entry. The entry remains installed
-//! in the map until the in-flight owner explicitly releases
-//! the lease — which **first removes the entry and then
-//! broadcasts** [`RestartCompletion::Finished`] on the
-//! completion channel. This remove-before-signal ordering is
-//! the single synchronization boundary: any waiter that
-//! observes `Finished` is guaranteed the slot is free and a
-//! new acquisition may proceed immediately. There is no
-//! post-check race window between signal and slot release.
+//! signals intent through the lease's cancellation token but does NOT remove
+//! the ownership entry. The entry stays installed until the in-flight owner
+//! explicitly releases the lease, and that release **first removes the entry
+//! and then broadcasts** [`RestartCompletion::Finished`]. That
+//! remove-before-signal ordering is the single synchronization boundary: a
+//! waiter that observes `Finished` is guaranteed the slot is free, so a new
+//! acquisition may proceed immediately.
 //!
-//! ## Algorithm (Phase 3 final closure)
+//! The coordinator never reconstructs a hard-coded `src/lib.rs` path: it
+//! uses the persisted [`LspClientDescriptor`] and the currently open
+//! document registry to pick a seed file.
 //!
-//! 1. Acquire per-key restart ownership (see [`acquire_restart_ownership`]).
-//! 2. Snapshot the authoritative generation as `expected_generation`.
-//! 3. Reserve one restart attempt atomically under
-//!    `restart_attempts < max_attempts` (see [`RestartShared::reserve_restart_attempt`]).
-//! 4. Perform cancellable backoff (`backoff_delay(attempt)` chunks).
-//! 5. Compute one replacement generation via
-//!    [`RestartShared::next_generation_for_key`] — the coordinator
-//!    owns generation selection.
-//! 6. Invoke the reinit closure to spawn/initialize the
-//!    replacement. The closure returns a structured
-//!    [`UnpublishedReplacement`] carrying the client and its
-//!    bound generation.
-//! 7. If the lease token fires BEFORE publication, terminate
-//!    the unpublished runtime and remove the unpublished
-//!    client (Pass 4 generation-scoped cleanup).
-//! 8. Publish the replacement (insert into the live clients
-//!    map). This is the **publication boundary** — once the
-//!    replacement is visible to other readers, the coordinator
-//!    MUST NOT abort on a lease-token cancellation (Pass 3).
-//! 9. Install retained diagnostics (preserves provenance:
-//!    `server_generation` and `post_restart`).
-//! 10. Replay documents.
-//! 11. Execute the readiness policy via
-//!     [`RestartShared::wait_for_readiness`]. Live but
-//!     timed-out readiness returns
-//!     [`RestartOutcome::Degraded { reason }`]; consumed
-//!     attempt remains consumed and `last_healthy_at` is NOT
-//!     updated (Pass 6).
-//! 12. Transition operational state to `Ready` and call
-//!     [`RestartShared::set_last_healthy_now`] on success.
-//! 13. Release the lease via [`RestartLease::release`] (async).
-//!     The release path **first removes the owner-ID-matched
-//!     entry** from `restart_tasks`, then broadcasts
-//!     [`RestartCompletion::Finished`] on the completion
-//!     channel. Waiters that observe `Finished` are guaranteed
-//!     the slot is free and a new acquisition may proceed
-//!     immediately.
-//!
-//! ### Outcomes
-//!
-//! - [`RestartOutcome::Ready`] — replacement is published,
-//!   operational, and reached readiness.
-//! - [`RestartOutcome::Degraded { reason }`] — replacement is
-//!   published and operational but readiness timed out. The
-//!   client remains usable; the consumed attempt is not refunded.
-//! - [`LspError::ServerRestarted`] — a newer generation was
-//!   observed at any boundary.
-//! - [`LspError::InitializationCancelled`] — the lease token
-//!   fired (or the service transitioned out of `Running`)
-//!   before publication, or the in-flight owner's wait timed
-//!   out.
-//! - [`LspError::LaunchFailed`] — the restart budget was
-//!   exhausted without a successful reinit.
+//! See `architecture/lsp.md` for the full contract.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

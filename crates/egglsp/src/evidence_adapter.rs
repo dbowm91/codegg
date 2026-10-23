@@ -1,75 +1,42 @@
 //! Production adapter that implements [`LspEvidenceProvider`] over
 //! [`LspService`] and [`LspOperations`].
 //!
-//! # Purpose
+//! # Sequential side-channel contract
 //!
-//! [`LspEvidenceProvider`] is intentionally a tuple-returning trait
-//! so the collector can be exercised with lightweight mocks. The
-//! production path, however, needs to surface real per-call
-//! provenance — server_id, server_generation, capability decision,
-//! freshness, post-restart flag — so downstream renderers can
-//! distinguish stale evidence from fresh.
+//! The per-call provenance slot (`last_provenance`) is a **single shared
+//! `Option<LspEvidenceProvenance>` behind a `Mutex`**, so it is NOT
+//! thread-safe under concurrent calls on the same adapter instance.
+//! Therefore:
 //!
-//! `ServiceLspEvidenceProvider` bridges that gap:
+//! 1. Each `LspEvidenceProvider` trait method invocation must complete
+//!    (return to the caller) before the next method on the same adapter
+//!    instance is invoked.
+//! 2. Callers that need the provenance for a given call MUST consume it via
+//!    [`ServiceLspEvidenceProvider::consume_provenance_for`] **before the
+//!    next provider call**; it takes the slot and validates that the recorded
+//!    operation matches the caller's expectation (a `debug_assert!` in debug
+//!    builds; a documented no-op match in release builds — the slot is still
+//!    cleared).
+//! 3. No `tokio::join!`, `futures_util::join!`, or `tokio::spawn` may invoke
+//!    two provider methods on the same adapter concurrently.
 //!
-//! - It implements [`LspEvidenceProvider`] using the typed
-//!   [`LspOperations`] and the [`DiagnosticsCollector`] for live
-//!   data.
-//! - It records per-call capability decisions and exposes them via
-//!   [`ServiceLspEvidenceProvider::last_provenance`] so callers can
-//!   enrich the items the collector produces.
-//!
-//! # Sequential side-channel contract (Pass 3 Phase 5)
-//!
-//! Therefore the adapter requires a **sequential call contract**:
-//!
-//! 1. Each `LspEvidenceProvider` trait method invocation must
-//!    complete (return to the caller) before the next method on the
-//!    same adapter instance is invoked.
-//! 2. Callers that need to observe the provenance for a given call
-//!    MUST consume it via
-//!    [`ServiceLspEvidenceProvider::consume_provenance_for`] **before
-//!    the next provider call**. This atomically takes the slot and
-//!    validates that the recorded operation matches the caller's
-//!    expectation (a `debug_assert!` in debug builds; a documented
-//!    no-op match in release builds — the slot is still cleared).
-//! 3. No `tokio::join!`, `futures_util::join!`, or `tokio::spawn` may
-//!    invoke two provider methods on the same adapter concurrently.
-//!    Each `collect_context` / `collect_hunk_context` invocation in
-//!    [`crate::evidence_collector`] already obeys this contract —
-//!    every provider call is `.await`ed sequentially.
-//!
-//! The contract is enforced by:
-//!
-//! - [`ServiceLspEvidenceProvider::consume_provenance_for`] — the
-//!   guarded accessor that takes the slot AND validates the
-//!   operation tag, panicking on mismatch in debug builds.
-//! - The doc-pinned [`crate::evidence_collector::LspEvidenceProvider`]
-//!   contract that mirrors the requirement.
-//!
-//! Future maintainers: if you need to parallelize provider calls,
-//! add a typed DTO trait (Pass 3 Option A) that carries provenance
-//! alongside the data — do NOT try to make the side-channel
-//! thread-safe.
+//! To parallelize provider calls, add a typed DTO trait that carries
+//! provenance alongside the data — do NOT make the side-channel thread-safe.
 //!
 //! # Capability gating
 //!
-//! Every read-only adapter method consults
-//! `LspService::capability_decision` for the relevant
-//! [`LspSemanticOperation`] before issuing the request:
-//!
-//! - **Supported** — issue the request normally.
-//! - **Unsupported** — return `LspError::Unavailable` with a
-//!   structured reason and stamp `last_provenance` with
-//!   `capability_decision = "unsupported"`.
-//! - **Unknown** (client still initializing) — issue the request
-//!   for backward compatibility; stamp
-//!   `capability_decision = "unknown"`.
+//! Every read-only adapter method consults `LspService::capability_decision`
+//! for the relevant [`LspSemanticOperation`] before issuing the request:
+//! **Supported** issues it, **Unsupported** returns `LspError::Unavailable`
+//! with a structured reason and stamps `last_provenance`, and **Unknown**
+//! (client still initializing) issues it for backward compatibility.
 //!
 //! The adapter never invokes `workspace/executeCommand` or any
 //! mutation-producing operation. `textDocument/rename`,
 //! `textDocument/formatting`, and `textDocument/codeAction` are
 //! not part of the trait surface.
+//!
+//! See `architecture/lsp.md` for the full contract.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
