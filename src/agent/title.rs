@@ -85,12 +85,14 @@ const MAX_STOP_REASON_CHARS: usize = 64;
 /// field:
 ///
 /// 1. `thinking_budget` / `reasoning_effort` stay **unset**. The wire bridge
-///    treats "neither set" as *thinking not requested* (`wire.rs`), and that
-///    is the only encoding the bridge supports for a disable (see
-///    `request_preparation.rs` "Off clears both fields"). Setting a budget
-///    here would *request* reasoning — and `Some(0)` is worse than that: the
-///    kernel encodes it as `thinking: {"type":"enabled","budget_tokens":0}`
-///    on the Anthropic surface, which the API rejects outright.
+///    treats "neither set" as *thinking not requested* (`wire.rs`). That is the
+///    encoding for *no preference*, not for a disable: an explicit disable is
+///    the request's own `ReasoningControl::Disabled` mark, which the bridge
+///    projects onto the kernel's `ReasoningIntent::disabled()` (see
+///    `request_preparation.rs`). Setting a budget here would *request* reasoning
+///    — and `Some(0)` is worse than that: the kernel encodes it as
+///    `thinking: {"type":"enabled","budget_tokens":0}` on the Anthropic
+///    surface, which the API rejects outright.
 /// 2. `wire_policy.enable_thinking = Some(false)` is the adapter-side toggle.
 ///    Model adapters that declare a thinking parameter otherwise default it
 ///    on (`chat_template_kwargs.enable_thinking` in the OpenAI-compatible
@@ -941,6 +943,7 @@ mod tests {
                 enable_thinking: Some(true),
                 ..Default::default()
             })),
+            ..Default::default()
         };
         let _ =
             generate_title_via_provider(&provider, "reasoning/model", "fix login", "done", context)

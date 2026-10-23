@@ -653,24 +653,50 @@ Methods: `new`, `create`, `get`, `list_by_message`, `list_by_session`,
 
 Methods: `new`, `get`, `upsert`, `delete`
 
-### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58 + v62)
+### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58 + v62 + v84)
 
 Daemon-owned principal-scoped durable preference for approval mode,
 sandbox profile, last-used provider/model identity (M003 foundation,
-M004 convergence), and the separately-scoped last Task-composer
-provider/model identity (project Work Orders M003, `migrate_v62`).
+M004 convergence), the separately-scoped last Task-composer
+provider/model identity (project Work Orders M003, `migrate_v62`), and
+the extended-thinking selection (provider reasoning control M002,
+`migrate_v84`).
 Methods: `get`, `set_approval_mode`, `set_sandbox_profile`,
-`set_model_preference`, `set_task_model_preference`.
+`set_model_preference`, `set_task_model_preference`,
+`set_reasoning_selection`.
 Revision-gated CAS (stale writes get `Conflict`, never
 last-write-wins), bounded lengths, secret-free, additive/empty on
-upgrade. The Task scope never touches the ordinary session preference
+upgrade. The reasoning-selection write carries its revision predicate
+**inside** the statement (`ON CONFLICT … DO UPDATE … WHERE
+runtime_preferences.revision = ?`), not beside it: a revision check
+performed before the write is a check another writer can invalidate
+between the check and the write, which is how a gate that reads like a
+compare-and-swap turns into a silent last-write-wins. The Task scope never touches the ordinary session preference
 (and vice versa); policy writes preserve both. Restart reloads the
 last preference; explicit turn overrides win, then project ceiling,
 then persisted, then `Interactive`/`WorkspaceWrite` defaults.
 Frontend manifests stay display hints, never authority. Protocol:
 `ApprovalPreferenceGet`, `ApprovalModeSet`, `SandboxProfileSet`,
 `TaskModelPreferenceSet`, `ExecutionPolicyGet` -> `ApprovalPreference`
-/ `ExecutionPolicy` (principal derived server-side).
+/ `ExecutionPolicy` (principal derived server-side), plus the
+provider-reasoning pair `ReasoningPreferenceGet` /
+`ReasoningPreferenceSet` -> `ReasoningPreference` and the capability
+advertisement `ReasoningCapabilities` -> `ReasoningCapabilities`.
+
+The reasoning selection (`reasoning_selection`, added by `migrate_v84` as
+one additive nullable column) is the **open, provider-scoped**
+extended-thinking selection: the effort label inside it is a free-form
+string carried verbatim, never a level on a closed enum. The stored value is
+the protocol's own serialized selection shape, so the durable column carries
+no second vocabulary. `None` means "no explicit selection", which leaves the
+agent / model-profile default in charge. The selection is resolved at turn
+admission as **explicit turn override ▸ persisted principal preference ▸
+agent / model-profile default**; the persisted value is consulted only when
+the turn carries no explicit override, and the agent-layer precedence
+(`apply_agent_config` → `apply_model_profile_defaults` →
+`apply_reasoning_override`) is unchanged. Writes to every other preference
+dimension preserve the selection untouched, and a corrupt stored value
+degrades to "no explicit selection" rather than failing the read.
 
 ### Selection/preference convergence (M004)
 

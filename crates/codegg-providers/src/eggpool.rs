@@ -12,12 +12,18 @@
 //! applies the preset default port); arbitrary compatible endpoints must use
 //! their own validation without a preset port.
 
+use codegg_config::schema::{
+    ReasoningCapabilityRecord, ReasoningCapabilityStatus, MAX_REASONING_CAPABILITY_LABELS,
+    MAX_REASONING_CAPABILITY_LABEL_BYTES,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::sync::Notify;
 use url::Url;
@@ -208,10 +214,527 @@ pub struct EggpoolModelSummary {
 
 /// Successful probe output.  The digest is computed from the sorted bounded
 /// summaries, so response order and irrelevant provider fields do not matter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The retained thinking-capability overlay rides **alongside** the models,
+/// never inside them: the digest hashes `id` and `name` only, and that is
+/// load-bearing, because the digest is the revision-scoped `catalog_revision`
+/// that stored last-used-model preferences are keyed against.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EggpoolProbeSummary {
     pub models: Vec<EggpoolModelSummary>,
     pub digest: String,
+    /// The thinking-capability overlays the response published.
+    ///
+    /// Empty when the provider published no contract. The overlay is
+    /// **not** part of `digest`: it has its own revision.
+    pub capability_overlay: EggpoolCapabilityOverlay,
+}
+
+// ---------------------------------------------------------------------------
+// The discovery overlay (ADR-0050, milestone 005).
+//
+// A provider may publish a thinking-capability contract alongside a model in
+// its catalog response. The contract is **untrusted input**: it may only
+// **narrow** the compiled adapter baseline, it is parsed into a bounded,
+// typed shape before any use, and it is held apart from the model summary so
+// the model catalog revision keeps its current meaning and its current
+// inputs.
+//
+// The pinned upstream publishes **no** capability block on `/v1/models` at
+// all — the one capability shape it exposes at runtime rides an
+// integrations-profile route CodeGG does not call — so the machinery below
+// is forward-compatible and inert at this baseline. It is written against
+// both shapes a provider could publish: the flat `thinking` capability and
+// the documented `control_contract.accepted_efforts` shape.
+// ---------------------------------------------------------------------------
+
+/// The largest thinking-budget bound an overlay may retain, in tokens.
+///
+/// A bound above this is not a bound, it is untrusted content that would
+/// inflate the option surface. The bound is discarded rather than clamped:
+/// a clamped bound would be a number the provider never published.
+pub const MAX_OVERLAY_THINKING_BUDGET_TOKENS: usize = 16_777_216;
+
+/// The locations of a published thinking-capability block inside one catalog
+/// entry.
+///
+/// The documented envelope nests the capability under
+/// `eggpool.capabilities.thinking`; the flat runtime capability sits at
+/// `capabilities.thinking`, or directly on the entry as `thinking`. All
+/// three are read, because none of them is published today.
+const OVERLAY_CAPABILITY_PATHS: [&str; 3] = [
+    "/eggpool/capabilities/thinking",
+    "/capabilities/thinking",
+    "/thinking",
+];
+
+/// The keys a published accepted-effort ladder may use.
+///
+/// The documented contract shape spells it `accepted_efforts`; the flat
+/// runtime capability spells it `supported_efforts`.
+const OVERLAY_LABEL_KEYS: [&str; 2] = ["accepted_efforts", "supported_efforts"];
+
+/// A bounded, typed thinking-capability overlay retained for one model.
+///
+/// The overlay carries the **narrowing** record — the only part that ever
+/// reaches the capability resolution — plus the provider's always-reasons
+/// claim, which is retained for reporting and deliberately **not** part of
+/// the record: the compiled baseline owns the always-reasons property
+/// (ADR-0050 §1), and a provider's advertisement is not an authority over
+/// its own model's behaviour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EggpoolThinkingOverlay {
+    record: ReasoningCapabilityRecord,
+    always_reasons_claim: Option<bool>,
+}
+
+impl EggpoolThinkingOverlay {
+    /// The narrowing record.
+    ///
+    /// This is what the capability resolution consumes. It declares only
+    /// what the provider published, and every dimension it declares is a
+    /// narrowing of the compiled baseline.
+    pub fn record(&self) -> &ReasoningCapabilityRecord {
+        &self.record
+    }
+
+    /// The provider's always-reasons claim, if it published one.
+    ///
+    /// Retained for reporting only. It is never part of [`Self::record`],
+    /// so the overlay can never change the always-reasons property.
+    pub fn always_reasons_claim(&self) -> Option<bool> {
+        self.always_reasons_claim
+    }
+}
+
+/// The thinking-capability overlays retained from one catalog response.
+///
+/// The aggregate is immutable and is replaced as a whole, so a reader
+/// observes either the whole previous overlay or the whole next one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EggpoolCapabilityOverlay {
+    /// The catalog revision this overlay belongs to.
+    ///
+    /// Empty until a caller binds it: the daemon computes the catalog
+    /// revision *after* routing qualification, so the probe cannot know it.
+    /// Holding it here makes the overlay **revision-scoped**, like the
+    /// catalog rows it belongs to, so a reader can tell an overlay that
+    /// belongs to the current catalog from one that does not.
+    catalog_revision: String,
+    /// The capability revision: a digest over the overlay content alone.
+    ///
+    /// It is deliberately **separate** from the model catalog revision. The
+    /// catalog revision hashes `id` and `name` only, so folding the
+    /// capability into it would invalidate every stored last-used-model
+    /// preference and split the revision-scoped model rows.
+    capability_revision: String,
+    /// The per-model overlays, keyed by model id.
+    overlays: BTreeMap<String, EggpoolThinkingOverlay>,
+}
+
+impl EggpoolCapabilityOverlay {
+    /// Build the aggregate from the per-model overlays a response carried.
+    ///
+    /// The capability revision is computed over the overlay content alone.
+    pub fn new(overlays: BTreeMap<String, EggpoolThinkingOverlay>) -> Self {
+        let capability_revision = digest_overlays(&overlays);
+        Self {
+            catalog_revision: String::new(),
+            capability_revision,
+            overlays,
+        }
+    }
+
+    /// The catalog revision this overlay belongs to.
+    pub fn catalog_revision(&self) -> &str {
+        &self.catalog_revision
+    }
+
+    /// The capability revision: a digest over the overlay content alone.
+    pub fn capability_revision(&self) -> &str {
+        &self.capability_revision
+    }
+
+    /// Whether the provider published no thinking-capability contract.
+    pub fn is_empty(&self) -> bool {
+        self.overlays.is_empty()
+    }
+
+    /// The overlay for one model, if the provider published one for it.
+    pub fn for_model(&self, model_id: &str) -> Option<&EggpoolThinkingOverlay> {
+        self.overlays.get(model_id)
+    }
+
+    /// Every retained overlay, keyed by model id.
+    pub fn overlays(&self) -> &BTreeMap<String, EggpoolThinkingOverlay> {
+        &self.overlays
+    }
+
+    /// Bind this overlay to a catalog revision.
+    ///
+    /// Binding it is what makes it revision-scoped: a reader that resolved
+    /// a different catalog revision treats the overlay as absent, so it
+    /// falls back to the compiled baseline rather than narrowing with
+    /// another revision's contract.
+    pub fn with_catalog_revision(mut self, revision: &str) -> Self {
+        self.catalog_revision = revision.to_owned();
+        self
+    }
+}
+
+impl Default for EggpoolCapabilityOverlay {
+    fn default() -> Self {
+        Self::new(BTreeMap::new())
+    }
+}
+
+/// The holder for one connection's capability overlay.
+///
+/// The overlay is **replaced atomically**: the whole value is swapped under
+/// a write lock, and a reader clones the current `Arc` and releases the
+/// lock. A reader therefore observes either the whole previous overlay or
+/// the whole next one, never a half-replaced one — the same all-or-nothing
+/// property the catalog rows get from the refresh transaction. The lock is
+/// never held across an await; the critical section is one `Arc` clone.
+#[derive(Debug)]
+pub struct EggpoolCapabilityOverlaySlot {
+    current: RwLock<Arc<EggpoolCapabilityOverlay>>,
+}
+
+impl EggpoolCapabilityOverlaySlot {
+    /// A slot holding no overlay.
+    pub fn new() -> Self {
+        Self {
+            current: RwLock::new(Arc::new(EggpoolCapabilityOverlay::default())),
+        }
+    }
+
+    /// Replace the overlay as a whole.
+    ///
+    /// The swap is the only write path: there is no way to mutate an
+    /// installed overlay in place, so a reader can never observe a partial
+    /// update.
+    pub fn replace(&self, overlay: EggpoolCapabilityOverlay) {
+        let mut current = self
+            .current
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = Arc::new(overlay);
+    }
+
+    /// The current overlay.
+    ///
+    /// The returned `Arc` is a whole snapshot: the request path reads it
+    /// and never mutates it.
+    pub fn load(&self) -> Arc<EggpoolCapabilityOverlay> {
+        let current = self
+            .current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&current)
+    }
+}
+
+impl Default for EggpoolCapabilityOverlaySlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Compute the deterministic capability revision for a set of retained
+/// overlays.
+///
+/// The digest covers the overlay content alone — never the model summary —
+/// so a capability change is detectable without disturbing the model
+/// catalog revision. The overlays are visited in model-id order and each
+/// ladder is sorted, so the response's ordering does not move the revision.
+pub fn digest_overlays(overlays: &BTreeMap<String, EggpoolThinkingOverlay>) -> String {
+    let mut hasher = Sha256::new();
+    for (model_id, overlay) in overlays {
+        hash_string(&mut hasher, model_id);
+        let record = &overlay.record;
+        hash_string(&mut hasher, status_token(record.effort_status));
+        match &record.accepted_effort_labels {
+            Some(labels) => {
+                hash_string(&mut hasher, "labels");
+                for label in labels {
+                    hash_string(&mut hasher, label);
+                }
+            }
+            None => hash_string(&mut hasher, "no-labels"),
+        }
+        hash_string(&mut hasher, status_token(record.disable_status));
+        hash_string(&mut hasher, status_token(record.budget_status));
+        match record.min_thinking_budget {
+            Some(value) => hash_string(&mut hasher, &value.to_string()),
+            None => hash_string(&mut hasher, "no-min"),
+        }
+        match record.max_thinking_budget {
+            Some(value) => hash_string(&mut hasher, &value.to_string()),
+            None => hash_string(&mut hasher, "no-max"),
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// The stable token one capability status hashes as.
+fn status_token(status: ReasoningCapabilityStatus) -> &'static str {
+    match status {
+        ReasoningCapabilityStatus::Supported => "supported",
+        ReasoningCapabilityStatus::Unsupported => "unsupported",
+        ReasoningCapabilityStatus::Unknown => "unknown",
+        ReasoningCapabilityStatus::Mixed => "mixed",
+        ReasoningCapabilityStatus::Conflicting => "conflicting",
+    }
+}
+
+/// What a published effort ladder turned out to be.
+enum OverlayLabels {
+    /// No ladder was published.
+    Absent,
+    /// A bounded, deduplicated ladder.
+    Present(Vec<String>),
+    /// A ladder was published but it is malformed or oversized.
+    Malformed,
+}
+
+/// What a published thinking-budget bound turned out to be.
+enum OverlayBound {
+    /// No bound was published.
+    Absent,
+    /// A bound was published but it is malformed or oversized.
+    Malformed,
+    /// A usable bound.
+    Present(usize),
+}
+
+/// Parse the published thinking-capability contract of one catalog entry.
+///
+/// Returns `None` when the entry carries no usable contract, and a record
+/// whose dimensions are `Unknown` where the published content is malformed,
+/// oversized, or of the wrong type. The parse never fails: a malformed
+/// contract must not break catalog discovery.
+fn parse_thinking_overlay(entry: &Value) -> Option<EggpoolThinkingOverlay> {
+    let thinking = OVERLAY_CAPABILITY_PATHS
+        .iter()
+        .find_map(|path| entry.pointer(path))
+        .filter(|value| value.is_object())?;
+    let contract = thinking
+        .get("control_contract")
+        .filter(|value| value.is_object());
+
+    // The always-reasons claim is retained for reporting only; it never
+    // reaches the narrowing record.
+    let always_reasons_claim = overlay_always_reasons(thinking, contract);
+
+    // The effort dimension: the published ladder and the published status.
+    //
+    // One rule set governs every dimension: malformed content takes the
+    // dimension with it, a contradiction degrades it, and a published
+    // ladder is itself a declaration of the dimension it belongs to.
+    let labels = match overlay_labels_field(thinking, contract) {
+        None => OverlayLabels::Absent,
+        Some(value) => parse_overlay_labels(value),
+    };
+    let published_effort_status =
+        parse_overlay_status(overlay_status_field(thinking, contract, "effort").as_deref());
+    let (effort_status, accepted_effort_labels) = match labels {
+        // Malformed content takes the dimension with it.
+        OverlayLabels::Malformed => (ReasoningCapabilityStatus::Unknown, None),
+        OverlayLabels::Absent => match published_effort_status {
+            // A supported effort dimension must carry a ladder. Without one
+            // the status would be a claim the provider did not publish.
+            ReasoningCapabilityStatus::Supported => (ReasoningCapabilityStatus::Unknown, None),
+            status => (status, None),
+        },
+        OverlayLabels::Present(labels) => match published_effort_status {
+            // A ladder beside a refusal contradicts the refusal.
+            ReasoningCapabilityStatus::Unsupported => (ReasoningCapabilityStatus::Unknown, None),
+            // A published ladder is itself a declaration that the effort
+            // dimension is supported.
+            ReasoningCapabilityStatus::Unknown => {
+                (ReasoningCapabilityStatus::Supported, Some(labels))
+            }
+            status => (status, Some(labels)),
+        },
+    };
+
+    // The disable dimension: may reasoning be turned off at all?
+    let disable_status =
+        parse_overlay_status(overlay_status_field(thinking, contract, "toggle").as_deref());
+
+    // The budget dimension: is a fixed token budget accepted, and within
+    // which bounds?
+    let published_budget_status =
+        parse_overlay_status(overlay_status_field(thinking, contract, "budget").as_deref());
+    let published_bounds = match (
+        overlay_bound_field(thinking, contract, "budget_tokens_min"),
+        overlay_bound_field(thinking, contract, "budget_tokens_max"),
+    ) {
+        // Malformed content takes the dimension with it.
+        (OverlayBound::Malformed, _) | (_, OverlayBound::Malformed) => None,
+        // A range whose minimum exceeds its maximum is not a range.
+        (OverlayBound::Present(min), OverlayBound::Present(max)) if min > max => None,
+        (OverlayBound::Present(min), OverlayBound::Present(max)) => Some((Some(min), Some(max))),
+        (OverlayBound::Present(min), OverlayBound::Absent) => Some((Some(min), None)),
+        (OverlayBound::Absent, OverlayBound::Present(max)) => Some((None, Some(max))),
+        (OverlayBound::Absent, OverlayBound::Absent) => Some((None, None)),
+    };
+    let (budget_status, min_thinking_budget, max_thinking_budget) = match published_bounds {
+        None => (ReasoningCapabilityStatus::Unknown, None, None),
+        Some((min, max)) => match published_budget_status {
+            // A range beside a refusal contradicts the refusal.
+            ReasoningCapabilityStatus::Unsupported if min.is_some() || max.is_some() => {
+                (ReasoningCapabilityStatus::Unknown, None, None)
+            }
+            // A published range is itself a declaration that a fixed
+            // budget is accepted.
+            ReasoningCapabilityStatus::Unknown if min.is_some() || max.is_some() => {
+                (ReasoningCapabilityStatus::Supported, min, max)
+            }
+            status => (status, min, max),
+        },
+    };
+
+    let record = ReasoningCapabilityRecord {
+        effort_status,
+        accepted_effort_labels,
+        disable_status,
+        budget_status,
+        min_thinking_budget,
+        max_thinking_budget,
+        // The always-reasons property belongs to the compiled baseline.
+        always_reasons_status: ReasoningCapabilityStatus::Unknown,
+        always_reasons: None,
+    };
+
+    if !record_declares_anything(&record) {
+        // Nothing usable was published: there is no overlay.
+        return None;
+    }
+
+    Some(EggpoolThinkingOverlay {
+        record,
+        always_reasons_claim,
+    })
+}
+
+/// Whether a record declares no dimension at all.
+fn record_declares_anything(record: &ReasoningCapabilityRecord) -> bool {
+    record.effort_status != ReasoningCapabilityStatus::Unknown
+        || record.accepted_effort_labels.is_some()
+        || record.disable_status != ReasoningCapabilityStatus::Unknown
+        || record.budget_status != ReasoningCapabilityStatus::Unknown
+        || record.min_thinking_budget.is_some()
+        || record.max_thinking_budget.is_some()
+}
+
+/// Read one published status string, preferring the documented
+/// `control_contract` spelling over the flat one.
+fn overlay_status_field(thinking: &Value, contract: Option<&Value>, key: &str) -> Option<String> {
+    contract
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .or_else(|| thinking.get(key).and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+/// Read the published accepted-effort ladder, whichever key carries it.
+fn overlay_labels_field<'a>(thinking: &'a Value, contract: Option<&'a Value>) -> Option<&'a Value> {
+    for source in [contract, Some(thinking)].into_iter().flatten() {
+        for key in OVERLAY_LABEL_KEYS {
+            if let Some(value) = source.get(key) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Read one published thinking-budget bound.
+fn overlay_bound_field(thinking: &Value, contract: Option<&Value>, key: &str) -> OverlayBound {
+    let raw = contract
+        .and_then(|value| value.get(key))
+        .or_else(|| thinking.get(key));
+    match raw {
+        None => OverlayBound::Absent,
+        Some(value) => match value.as_u64() {
+            Some(tokens) => match usize::try_from(tokens) {
+                Ok(tokens) if tokens > 0 && tokens <= MAX_OVERLAY_THINKING_BUDGET_TOKENS => {
+                    OverlayBound::Present(tokens)
+                }
+                _ => OverlayBound::Malformed,
+            },
+            None => OverlayBound::Malformed,
+        },
+    }
+}
+
+/// Read the provider's always-reasons claim.
+fn overlay_always_reasons(thinking: &Value, contract: Option<&Value>) -> Option<bool> {
+    contract
+        .and_then(|value| value.get("always_reasons"))
+        .or_else(|| thinking.get("always_reasons"))
+        .and_then(Value::as_bool)
+}
+
+/// Parse one published capability status.
+///
+/// The provider's vocabulary is the kernel's: `supported`, `unsupported`,
+/// `unknown`, `mixed`. An unrecognised spelling is not a status; it
+/// degrades to `Unknown` rather than being guessed at.
+fn parse_overlay_status(value: Option<&str>) -> ReasoningCapabilityStatus {
+    match value
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("supported") => ReasoningCapabilityStatus::Supported,
+        Some("unsupported") => ReasoningCapabilityStatus::Unsupported,
+        Some("mixed") => ReasoningCapabilityStatus::Mixed,
+        _ => ReasoningCapabilityStatus::Unknown,
+    }
+}
+
+/// Parse a published accepted-effort ladder into a bounded, deduplicated set.
+///
+/// The ladder is **deduplicated** (a repeated label is the same label) and
+/// **bounded**: at most [`MAX_REASONING_CAPABILITY_LABELS`] labels, each at
+/// most [`MAX_REASONING_CAPABILITY_LABEL_BYTES`] bytes. Content that
+/// violates a bound is discarded whole — the dimension degrades to
+/// `Unknown` — rather than truncated, because a truncated ladder would
+/// present a subset as if it were the published one.
+fn parse_overlay_labels(value: &Value) -> OverlayLabels {
+    let Some(array) = value.as_array() else {
+        return OverlayLabels::Malformed;
+    };
+    if array.is_empty() {
+        // An empty ladder publishes no label, so it declares no ladder at
+        // all. It is not "this model accepts no effort", which would be a
+        // claim the provider never made.
+        return OverlayLabels::Absent;
+    }
+    if array.len() > MAX_REASONING_CAPABILITY_LABELS {
+        return OverlayLabels::Malformed;
+    }
+    let mut labels: Vec<String> = Vec::with_capacity(array.len());
+    for entry in array {
+        let Some(label) = entry.as_str() else {
+            return OverlayLabels::Malformed;
+        };
+        if label.is_empty()
+            || label.trim() != label
+            || label.len() > MAX_REASONING_CAPABILITY_LABEL_BYTES
+        {
+            return OverlayLabels::Malformed;
+        }
+        if !labels.iter().any(|existing| existing == label) {
+            labels.push(label.to_owned());
+        }
+    }
+    // Sorted, so the ladder's published order does not move the capability
+    // revision.
+    labels.sort();
+    OverlayLabels::Present(labels)
 }
 
 /// Normalize an Eggpool/OpenAI-compatible base URL.
@@ -326,6 +849,21 @@ pub fn parse_compatible_models_response(
 ) -> Result<Vec<EggpoolModelSummary>, EggpoolProbeError> {
     let summary = parse_summary(body, options)?;
     Ok(summary.models)
+}
+
+/// Parse a bounded `/models` response into its models **and** the
+/// thinking-capability overlays the response published.
+///
+/// This is the same parse the probe performs, exposed so a caller can
+/// retain a published contract without a network round trip. The overlay
+/// is **absent** — and the returned aggregate empty — when the response
+/// carries no contract.
+pub fn parse_compatible_models_response_with_overlays(
+    body: &[u8],
+    options: &EggpoolProbeOptions,
+) -> Result<(Vec<EggpoolModelSummary>, EggpoolCapabilityOverlay), EggpoolProbeError> {
+    let summary = parse_summary(body, options)?;
+    Ok((summary.models, summary.capability_overlay))
 }
 
 /// An Eggfetch-backed Eggpool probe.  The API key is private and has no public
@@ -1025,6 +1563,7 @@ fn parse_summary(
     }
 
     let mut models = BTreeMap::new();
+    let mut overlays: BTreeMap<String, OverlayCandidate> = BTreeMap::new();
     for item in data {
         let id = item
             .get("id")
@@ -1048,6 +1587,23 @@ fn parse_summary(
                 }
             })
             .or_insert_with(|| name.to_owned());
+
+        // The published thinking-capability contract is **retained**, not
+        // discarded. It is held apart from the model summary so the
+        // catalog digest keeps hashing `id` and `name` only.
+        let overlay = parse_thinking_overlay(item);
+        match overlays.entry(id.to_owned()) {
+            Entry::Vacant(slot) => {
+                slot.insert(match overlay {
+                    Some(overlay) => OverlayCandidate::One(overlay),
+                    None => OverlayCandidate::Absent,
+                });
+            }
+            Entry::Occupied(mut slot) => {
+                let existing = slot.insert(OverlayCandidate::Absent);
+                slot.insert(merge_overlay_candidate(existing, overlay));
+            }
+        }
     }
 
     if models.is_empty() {
@@ -1059,7 +1615,57 @@ fn parse_summary(
         .map(|(id, name)| EggpoolModelSummary { id, name })
         .collect::<Vec<_>>();
     let digest = digest_models(&models);
-    Ok(EggpoolProbeSummary { models, digest })
+    let capability_overlay = EggpoolCapabilityOverlay::new(
+        overlays
+            .into_iter()
+            .filter_map(|(model_id, candidate)| match candidate {
+                OverlayCandidate::One(overlay) => Some((model_id, overlay)),
+                OverlayCandidate::Absent | OverlayCandidate::Conflicting => None,
+            })
+            .collect(),
+    );
+    Ok(EggpoolProbeSummary {
+        models,
+        digest,
+        capability_overlay,
+    })
+}
+
+/// The overlay candidates seen for one model id.
+///
+/// A duplicate id is one catalog entry, so two different contracts for the
+/// same id are ambiguous and neither is retained.
+enum OverlayCandidate {
+    /// No contract was published for this id.
+    Absent,
+    /// Exactly one contract was published for this id.
+    One(EggpoolThinkingOverlay),
+    /// Two different contracts were published for this id.
+    Conflicting,
+}
+
+/// Merge a newly seen contract into the candidates for one model id.
+///
+/// The merge is order-independent: one contract wins whether it was seen
+/// first or last, and two different contracts leave the id without an
+/// overlay.
+fn merge_overlay_candidate(
+    existing: OverlayCandidate,
+    incoming: Option<EggpoolThinkingOverlay>,
+) -> OverlayCandidate {
+    match (existing, incoming) {
+        (OverlayCandidate::Conflicting, _) => OverlayCandidate::Conflicting,
+        (OverlayCandidate::Absent, None) => OverlayCandidate::Absent,
+        (OverlayCandidate::Absent, Some(overlay)) => OverlayCandidate::One(overlay),
+        (OverlayCandidate::One(current), None) => OverlayCandidate::One(current),
+        (OverlayCandidate::One(current), Some(incoming)) => {
+            if current == incoming {
+                OverlayCandidate::One(current)
+            } else {
+                OverlayCandidate::Conflicting
+            }
+        }
+    }
 }
 
 /// Compute the deterministic catalog revision for a bounded normalized model
@@ -1611,5 +2217,413 @@ mod tests {
             Err(_) => panic!("cancellation during body collection was not prompt"),
         }
         server.abort();
+    }
+
+    // ------------------------------------------------------------------
+    // The discovery overlay (ADR-0050, milestone 005).
+    // ------------------------------------------------------------------
+
+    /// A flat `thinking` capability — the shape the pinned upstream exposes
+    /// at runtime, on the integrations-profile route it does not publish.
+    const FLAT_THINKING_RESPONSE: &str = r#"{"data":[{"id":"m","name":"m","capabilities":{"thinking":{"status":"supported","toggle":"unsupported","effort":"supported","budget":"supported","supported_efforts":["low","medium","high"],"budget_tokens_min":1024,"budget_tokens_max":128000}}}]}"#;
+
+    /// The documented `control_contract.accepted_efforts` shape.
+    const DOCUMENTED_CONTRACT_RESPONSE: &str = r#"{"data":[{"id":"m","name":"m","eggpool":{"provider_id":"p","base_model_id":"m","capabilities":{"thinking":{"status":"supported","control_contract":{"toggle":"unsupported","effort":"supported","budget":"supported","accepted_efforts":["low","medium","high"]},"budget_tokens_min":1024,"budget_tokens_max":128000}}}}]}"#;
+
+    /// A response with no capability block at all.
+    const PLAIN_RESPONSE: &str =
+        r#"{"data":[{"id":"m","name":"m","object":"model","owned_by":"eggpool"}]}"#;
+
+    fn labels(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn parse(body: &str) -> EggpoolProbeSummary {
+        parse_summary(body.as_bytes(), &EggpoolProbeOptions::default())
+            .expect("the response parses")
+    }
+
+    /// A response whose one model publishes the given effort ladder.
+    fn response_with_ladder(model: &str, ladder: &[&str]) -> String {
+        let ladder = ladder
+            .iter()
+            .map(|label| format!("\"{label}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"data\":[{{\"id\":\"{model}\",\"name\":\"{model}\",\"thinking\":{{\"effort\":\"supported\",\"supported_efforts\":[{ladder}]}}}}]}}"
+        )
+    }
+
+    #[test]
+    fn the_catalog_parse_retains_a_flat_thinking_contract() {
+        let summary = parse(FLAT_THINKING_RESPONSE);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the published contract is retained");
+        let record = overlay.record();
+        assert_eq!(record.effort_status, ReasoningCapabilityStatus::Supported);
+        let expected = labels(&["high", "low", "medium"]);
+        assert_eq!(
+            record.accepted_effort_labels.as_deref(),
+            Some(expected.as_slice())
+        );
+        assert_eq!(
+            record.disable_status,
+            ReasoningCapabilityStatus::Unsupported
+        );
+        assert_eq!(record.budget_status, ReasoningCapabilityStatus::Supported);
+        assert_eq!(record.min_thinking_budget, Some(1024));
+        assert_eq!(record.max_thinking_budget, Some(128_000));
+        assert!(
+            record.validate().is_empty(),
+            "the retained overlay must be a well-formed record: {:?}",
+            record.validate()
+        );
+    }
+
+    #[test]
+    fn the_catalog_parse_retains_the_documented_control_contract_shape() {
+        let summary = parse(DOCUMENTED_CONTRACT_RESPONSE);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the published contract is retained");
+        let record = overlay.record();
+        assert_eq!(record.effort_status, ReasoningCapabilityStatus::Supported);
+        let expected = labels(&["high", "low", "medium"]);
+        assert_eq!(
+            record.accepted_effort_labels.as_deref(),
+            Some(expected.as_slice())
+        );
+        assert_eq!(
+            record.disable_status,
+            ReasoningCapabilityStatus::Unsupported
+        );
+        assert_eq!(record.budget_status, ReasoningCapabilityStatus::Supported);
+        assert_eq!(record.min_thinking_budget, Some(1024));
+        assert_eq!(record.max_thinking_budget, Some(128_000));
+    }
+
+    #[test]
+    fn a_response_without_a_contract_retains_no_overlay() {
+        let summary = parse(PLAIN_RESPONSE);
+        assert!(
+            summary.capability_overlay.is_empty(),
+            "a response with no capability block carries no overlay"
+        );
+        assert!(summary.capability_overlay.for_model("m").is_none());
+    }
+
+    #[test]
+    fn the_catalog_digest_is_unchanged_by_the_contracts_presence() {
+        let plain = parse(PLAIN_RESPONSE);
+        let with_flat = parse(FLAT_THINKING_RESPONSE);
+        let with_documented = parse(DOCUMENTED_CONTRACT_RESPONSE);
+        assert_eq!(
+            plain.digest, with_flat.digest,
+            "the catalog digest hashes id and name only, so a published contract must not move it"
+        );
+        assert_eq!(plain.digest, with_documented.digest);
+        // The digest is still the digest of the models it was computed from.
+        assert_eq!(plain.digest, digest_models(&plain.models));
+    }
+
+    #[test]
+    fn the_capability_revision_moves_with_the_content_and_not_with_the_ordering() {
+        let flat = parse(FLAT_THINKING_RESPONSE);
+        let documented = parse(DOCUMENTED_CONTRACT_RESPONSE);
+        // The two wire shapes express the same capability, so they share a
+        // capability revision: the revision is over the capability, not
+        // over the spelling the provider happened to use.
+        assert_eq!(
+            flat.capability_overlay.capability_revision(),
+            documented.capability_overlay.capability_revision(),
+        );
+        assert_ne!(
+            flat.capability_overlay.capability_revision(),
+            parse(PLAIN_RESPONSE)
+                .capability_overlay
+                .capability_revision(),
+            "a response with no contract must not share a revision with one that has"
+        );
+
+        let first = parse(
+            r#"{"data":[{"id":"a","name":"a","thinking":{"effort":"supported","supported_efforts":["low"]}},{"id":"b","name":"b","thinking":{"effort":"supported","supported_efforts":["high"]}}]}"#,
+        );
+        let reordered = parse(
+            r#"{"data":[{"id":"b","name":"b","thinking":{"effort":"supported","supported_efforts":["high"]}},{"id":"a","name":"a","thinking":{"effort":"supported","supported_efforts":["low"]}}]}"#,
+        );
+        assert_eq!(
+            first.capability_overlay.capability_revision(),
+            reordered.capability_overlay.capability_revision(),
+            "the response's ordering must not move the capability revision"
+        );
+        assert_eq!(first.digest, reordered.digest);
+
+        let changed = parse(
+            r#"{"data":[{"id":"a","name":"a","thinking":{"effort":"supported","supported_efforts":["medium"]}},{"id":"b","name":"b","thinking":{"effort":"supported","supported_efforts":["high"]}}]}"#,
+        );
+        assert_ne!(
+            first.capability_overlay.capability_revision(),
+            changed.capability_overlay.capability_revision(),
+            "a changed contract must move the capability revision"
+        );
+    }
+
+    #[test]
+    fn an_oversized_label_list_degrades_the_effort_dimension_to_unknown() {
+        let oversized: Vec<String> = (0..(MAX_REASONING_CAPABILITY_LABELS + 1))
+            .map(|index| format!("\"level-{index}\""))
+            .collect();
+        let body = format!(
+            "{{\"data\":[{{\"id\":\"m\",\"name\":\"m\",\"thinking\":{{\"toggle\":\"unsupported\",\"effort\":\"supported\",\"supported_efforts\":[{}]}}}}]}}",
+            oversized.join(",")
+        );
+        let summary = parse(&body);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        assert_eq!(
+            overlay.record().effort_status,
+            ReasoningCapabilityStatus::Unknown,
+            "an oversized ladder must degrade the dimension, not be truncated"
+        );
+        assert!(overlay.record().accepted_effort_labels.is_none());
+        // The dimension that was published soundly still stands.
+        assert_eq!(
+            overlay.record().disable_status,
+            ReasoningCapabilityStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn an_over_long_label_degrades_the_effort_dimension_to_unknown() {
+        let long = "x".repeat(MAX_REASONING_CAPABILITY_LABEL_BYTES + 1);
+        let body = format!(
+            "{{\"data\":[{{\"id\":\"m\",\"name\":\"m\",\"thinking\":{{\"toggle\":\"unsupported\",\"effort\":\"supported\",\"supported_efforts\":[\"{long}\"]}}}}]}}"
+        );
+        let summary = parse(&body);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        assert_eq!(
+            overlay.record().effort_status,
+            ReasoningCapabilityStatus::Unknown
+        );
+        assert!(overlay.record().accepted_effort_labels.is_none());
+    }
+
+    #[test]
+    fn duplicate_labels_are_deduplicated() {
+        let body = r#"{"data":[{"id":"m","name":"m","thinking":{"effort":"supported","supported_efforts":["low","low","medium","low"]}}]}"#;
+        let summary = parse(body);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        let expected = labels(&["low", "medium"]);
+        assert_eq!(
+            overlay.record().accepted_effort_labels.as_deref(),
+            Some(expected.as_slice())
+        );
+        assert!(overlay.record().validate().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_budget_range_degrades_the_budget_dimension_to_unknown() {
+        let body = r#"{"data":[{"id":"m","name":"m","thinking":{"toggle":"unsupported","budget":"supported","budget_tokens_min":2000,"budget_tokens_max":1000}}]}"#;
+        let summary = parse(body);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        let record = overlay.record();
+        assert_eq!(record.budget_status, ReasoningCapabilityStatus::Unknown);
+        assert!(record.min_thinking_budget.is_none());
+        assert!(record.max_thinking_budget.is_none());
+        // The dimension that was published soundly still stands.
+        assert_eq!(
+            record.disable_status,
+            ReasoningCapabilityStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn an_oversized_budget_bound_degrades_the_budget_dimension_to_unknown() {
+        let body = format!(
+            "{{\"data\":[{{\"id\":\"m\",\"name\":\"m\",\"thinking\":{{\"toggle\":\"unsupported\",\"budget\":\"supported\",\"budget_tokens_max\":{}}}}}]}}",
+            MAX_OVERLAY_THINKING_BUDGET_TOKENS + 1
+        );
+        let summary = parse(&body);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        assert_eq!(
+            overlay.record().budget_status,
+            ReasoningCapabilityStatus::Unknown
+        );
+        assert!(overlay.record().max_thinking_budget.is_none());
+    }
+
+    #[test]
+    fn a_malformed_contract_does_not_fail_the_catalog_probe() {
+        // The ladder is the wrong type, the status is nonsense, and the
+        // budget bound is not a number: every dimension degrades, the
+        // soundly published one still stands, and the probe still succeeds.
+        let body = r#"{"data":[{"id":"m","name":"m","thinking":{"toggle":"unsupported","effort":"maybe","supported_efforts":[1,2,3],"budget_tokens_max":"lots"}}]}"#;
+        let summary = parse(body);
+        assert_eq!(summary.models.len(), 1);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        let record = overlay.record();
+        assert_eq!(record.effort_status, ReasoningCapabilityStatus::Unknown);
+        assert!(record.accepted_effort_labels.is_none());
+        assert_eq!(record.budget_status, ReasoningCapabilityStatus::Unknown);
+        assert!(record.max_thinking_budget.is_none());
+        assert_eq!(
+            record.disable_status,
+            ReasoningCapabilityStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn a_contract_for_one_model_does_not_leak_into_another_models_record() {
+        let body = r#"{"data":[{"id":"a","name":"a","thinking":{"effort":"supported","supported_efforts":["low"]}},{"id":"b","name":"b"}]}"#;
+        let summary = parse(body);
+        assert!(summary.capability_overlay.for_model("a").is_some());
+        assert!(
+            summary.capability_overlay.for_model("b").is_none(),
+            "a contract for one model must not leak into another model's record"
+        );
+    }
+
+    #[test]
+    fn two_different_contracts_for_one_id_retain_no_overlay() {
+        let body = r#"{"data":[{"id":"m","name":"m","thinking":{"effort":"supported","supported_efforts":["low"]}},{"id":"m","name":"m","thinking":{"effort":"supported","supported_efforts":["high"]}}]}"#;
+        let summary = parse(body);
+        assert_eq!(summary.models.len(), 1);
+        assert!(
+            summary.capability_overlay.for_model("m").is_none(),
+            "two different contracts for one id are ambiguous, so neither is retained"
+        );
+    }
+
+    #[test]
+    fn the_always_reasons_claim_is_retained_but_never_reaches_the_record() {
+        let body = r#"{"data":[{"id":"m","name":"m","thinking":{"always_reasons":true,"effort":"supported","supported_efforts":["low"]}}]}"#;
+        let summary = parse(body);
+        let overlay = summary
+            .capability_overlay
+            .for_model("m")
+            .expect("the contract is retained");
+        assert_eq!(
+            overlay.always_reasons_claim(),
+            Some(true),
+            "the provider's claim is retained for reporting"
+        );
+        assert_eq!(
+            overlay.record().always_reasons,
+            None,
+            "the compiled baseline owns the always-reasons property"
+        );
+        assert_eq!(
+            overlay.record().always_reasons_status,
+            ReasoningCapabilityStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn the_overlay_is_replaced_atomically() {
+        let slot = EggpoolCapabilityOverlaySlot::new();
+        let first = parse(&response_with_ladder("m", &["low"])).capability_overlay;
+        let second = parse(&response_with_ladder("m", &["medium"])).capability_overlay;
+
+        slot.replace(first.clone());
+        let held = slot.load();
+        slot.replace(second.clone());
+
+        assert_eq!(
+            held.capability_revision(),
+            first.capability_revision(),
+            "a reader that already holds a snapshot keeps seeing the whole previous overlay"
+        );
+        assert_eq!(
+            held.for_model("m")
+                .and_then(|overlay| overlay.record().accepted_effort_labels.clone()),
+            Some(labels(&["low"]))
+        );
+        assert_eq!(
+            slot.load().capability_revision(),
+            second.capability_revision(),
+            "a new reader sees the whole new overlay"
+        );
+    }
+
+    #[test]
+    fn a_reader_never_observes_a_partially_replaced_overlay() {
+        let slot = Arc::new(EggpoolCapabilityOverlaySlot::new());
+        let first = parse(&response_with_ladder("m", &["low"])).capability_overlay;
+        let second = parse(&response_with_ladder("m", &["medium"])).capability_overlay;
+        slot.replace(first.clone());
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_slot = Arc::clone(&slot);
+        let reader_stop = Arc::clone(&stop);
+        let reader = thread::spawn(move || {
+            let mut observed = Vec::new();
+            while !reader_stop.load(Ordering::Acquire) {
+                let snapshot = reader_slot.load();
+                // Every observed snapshot is a whole overlay: the model is
+                // always present and its ladder is always one of the two
+                // published ones, never a mixture of the two.
+                let ladder = snapshot
+                    .for_model("m")
+                    .expect("the model is always present")
+                    .record()
+                    .accepted_effort_labels
+                    .clone()
+                    .expect("a published ladder");
+                observed.push(ladder);
+            }
+            observed
+        });
+
+        for _ in 0..500 {
+            slot.replace(first.clone());
+            slot.replace(second.clone());
+        }
+        stop.store(true, Ordering::Release);
+        let observed = reader.join().expect("the reader finishes");
+
+        let low = labels(&["low"]);
+        let medium = labels(&["medium"]);
+        for ladder in observed {
+            assert!(
+                ladder == low || ladder == medium,
+                "a reader observed a partially replaced overlay: {ladder:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_direct_provider_connection_has_no_overlay() {
+        let options = EggpoolProbeOptions::default();
+        let with_contract = br#"{"data":[{"id":"m","name":"m","thinking":{"effort":"supported","supported_efforts":["low"]}}]}"#;
+        let without_contract = br#"{"data":[{"id":"m","name":"m"}]}"#;
+        // The direct-provider parser projects the response to models only:
+        // it has nowhere to carry an overlay, so a published contract
+        // changes nothing about what a direct provider connection sees.
+        assert_eq!(
+            parse_compatible_models_response(with_contract, &options).expect("the response parses"),
+            parse_compatible_models_response(without_contract, &options)
+                .expect("the response parses"),
+        );
     }
 }

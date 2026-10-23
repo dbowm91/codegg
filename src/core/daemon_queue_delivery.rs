@@ -323,6 +323,15 @@ impl CoreDaemon {
             (owner, provenance, chain, bytes)
         };
 
+        // Provider reasoning control M002: resolve the daemon-owned
+        // selection **at delivery time**, not at enqueue time. The model
+        // chosen at delivery may differ from the one at enqueue, and a
+        // selection captured in the queue entry would be stale against it.
+        // The queue entry therefore carries no selection at all.
+        let reasoning = self
+            .resolve_reasoning_selection(session_id, None, &authority)
+            .await;
+
         let admission = Box::pin(self.handle_turns_request(
             CoreRequest::TurnSubmit {
                 session_id: session_id.to_owned(),
@@ -332,7 +341,7 @@ impl CoreDaemon {
                 agents,
                 current_agent_idx: 0,
                 messages,
-                reasoning: None,
+                reasoning,
                 human_shell_promotion_ids: Vec::new(),
             },
             &submission_id,

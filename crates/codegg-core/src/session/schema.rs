@@ -283,6 +283,11 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 87 {
         migrate_and_record(pool, 87).await?;
     }
+    // The provider-reasoning-control branch's reasoning-selection column was
+    // v84 on that branch and is v88 here: `main` had already published v84.
+    if current_version < 88 {
+        migrate_and_record(pool, 88).await?;
+    }
 
     Ok(())
 }
@@ -382,6 +387,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             85 => migrate_v85(&mut tx).await?,
             86 => migrate_v86(&mut tx).await?,
             87 => migrate_v87(&mut tx).await?,
+            88 => migrate_v88(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3683,6 +3689,42 @@ async fn migrate_v87(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .execute(&mut **tx)
             .await
             .map_err(|error| StorageError::Migration(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Provider reasoning control M002: the daemon-owned, principal-scoped
+/// extended-thinking selection.
+///
+/// One additive nullable column on `runtime_preferences`. Plain
+/// `ADD COLUMN` keeps every existing row untouched — approval, sandbox,
+/// session model and Task-composer preferences are all preserved — and
+/// the new column defaults to `NULL` ("no explicit selection"). The
+/// stored value is the protocol's own serialized selection shape, so the
+/// durable column carries no second vocabulary; the label inside it is an
+/// open, provider-scoped string. Bounds are enforced in Rust, not by the
+/// schema, on a migrated database.
+///
+/// This migration was **v84** on the provider-reasoning-control branch and is
+/// **v88** in the merged tree. `main` had already published v84 (the additive
+/// network-intent preference), v85 (the private index publication journal), v86
+/// (the durable checkout writer permit) and v87, so the branch yields the lower
+/// numbers to `main` — the same rule the ADR renumbering follows. No published
+/// database changes meaning: v88 is additive and runs after every version `main`
+/// can produce.
+async fn migrate_v88(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    // The column needs its table. The schema constant's create-if-absent
+    // statement is a no-op on a real database (the table was created by
+    // `migrate_v58`) and creates the table on a database that never had
+    // one, so the `ALTER TABLE` below always has a target.
+    for statement in crate::approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    for statement in crate::approval::RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS {
+        add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
     }
     Ok(())
 }

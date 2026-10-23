@@ -45,7 +45,15 @@ use crate::error::StorageError;
 /// v84/v85 to v86/v87 during the third reconciliation with `main`, which
 /// had already published v84 and v85. The constant tracks the highest
 /// wired migration, which is now v87.
-pub const STORAGE_LAYOUT_VERSION: u32 = 87;
+///
+/// The provider-reasoning-control branch's `migrate_v84` -- the additive
+/// `runtime_preferences.reasoning_selection` column -- was renumbered to
+/// **v88** in the same reconciliation, because `main` had published v84
+/// (the additive network-intent preference) and v85 (the private index
+/// publication journal). The constant therefore moves 87 → 88. The
+/// renumbering is additive and changes the meaning of no published
+/// database: v88 is a new migration above every published one.
+pub const STORAGE_LAYOUT_VERSION: u32 = 88;
 
 pub struct Database {
     pool: SqlitePool,

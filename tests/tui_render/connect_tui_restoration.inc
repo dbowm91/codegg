@@ -105,6 +105,7 @@ fn fake_models(provider_id: &str) -> Vec<ProviderModelDto> {
         max_output_tokens: Some(4096),
         supports_tools: true,
         supports_vision: false,
+        reasoning_capability: None,
     }]
 }
 

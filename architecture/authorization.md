@@ -467,20 +467,20 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering: **257 native operations** — 257 match arms carrying 257
-distinct operation names, covering all **263 `CoreRequest` variants**
-(239 struct-bodied + 24 unit). The three numbers are different
+rendering: **260 native operations** — 260 match arms carrying 260
+distinct operation names, covering all **266 `CoreRequest` variants**
+(240 struct-bodied + 26 unit). The three numbers are different
 things and are not interchangeable:
 
-- **263** — `CoreRequest` variants in `crates/codegg-protocol/src/core.rs`.
-- **257** — distinct operation names, one per `operation_descriptor`
+- **266** — `CoreRequest` variants in `crates/codegg-protocol/src/core.rs`.
+- **260** — distinct operation names, one per `operation_descriptor`
   arm. Several variants share one operation name (for example
   `document_read` covers `DocumentOpen`, `DocumentSnapshotGet`,
-  `DocumentStatusGet`, and `DocumentClose`), so 257 names cover 263
+  `DocumentStatusGet`, and `DocumentClose`), so 260 names cover 266
   variants.
-- **247** — entries in `representative_requests()`. That list is a
+- **250** — entries in `representative_requests()`. That list is a
   **sample**, not the operation set: it carries one request per
-  operation for 247 of the 257 operations, and **10 operations have no
+  operation for 250 of the 260 operations, and **10 operations have no
   representative request at all** — `document_read`, `document_create`,
   `document_delete`, `document_modify`, `document_capabilities`,
   `project_delete`, `project_init_draft`, `project_init_publish`,
@@ -499,7 +499,10 @@ adds seventeen `work_order_*` rows below, all project-scoped on
 `session.create`/`session.read` (repository binding adds `work_plan_*`
 plus `work_order_bind_repository` on the same gates); M005 adds four
 `work_order_trigger_*` management rows on the same gates (firing is
-not a Core operation):
+not a Core operation); provider reasoning control M002 adds three global
+rows below — `reasoning_preference_get`, `reasoning_preference_set`, and the
+`reasoning_capabilities` negotiation row, all principal-scoped like the
+approval preferences and never project-keyed):
 
 | Operation | Scope | Capability |
 | `active_goal_load` | via_session | `session.read` |
@@ -564,6 +567,9 @@ not a Core operation):
 | `eggpool_connection_create` | opaque | `project.configure` |
 | `eggpool_connection_status` | opaque | `project.read` |
 | `execution_policy_get` | global | `none` |
+| `reasoning_capabilities` | global | `none` |
+| `reasoning_preference_get` | global | `none` |
+| `reasoning_preference_set` | global | `none` |
 | `goal_checkpoint` | via_session | `session.create` |
 | `goal_clear` | via_session | `session.create` |
 | `goal_done` | via_session | `session.create` |
@@ -877,11 +883,11 @@ Verified 2026-10-23 against `crates/codegg-core/src/authorization/policy.rs`
 **Counts re-measured.** Extracted every operation-name literal from the
 `operation_descriptor` body (both the single-line
 `OperationDescriptor::new("name", …)` arms and the multi-line form):
-**257 arms carrying 257 distinct operation names**. Mapped all **263**
+**260 arms carrying 260 distinct operation names**. Mapped all **266**
 `CoreRequest` variants onto those arms — the match is exhaustive with no
-wildcard arm — and counted the `representative_requests()` list at **247**
-entries. Corrected the prose counts "228 native operations" → **257**, and the
-stale "226 operations" / "226 doc rows" → **257** operations and **257** doc
+wildcard arm — and counted the `representative_requests()` list at **250**
+entries. Corrected the prose counts "228 native operations" → **260**, and the
+stale "226 operations" / "226 doc rows" → **260** operations and **260** doc
 rows. Corrected the stale collaboration group size: M001 contributes
 **thirteen** `chat_*` rows (twelve on `project.chat` plus the global
 `chat_capabilities` negotiation row), not twelve; confirmed M003's three
@@ -900,7 +906,10 @@ The table was regenerated directly from the source arms — every row's scope
 and capability was re-derived from its `OperationDescriptor::new` arguments
 and the `Capability` serde wire names in `crates/codegg-core/src/team.rs` —
 and re-sorted alphabetically. The doc table and the source operation-name
-set now agree exactly: 257 rows, 257 names, zero additions, zero removals.
+set now agree exactly: 260 rows, 260 names, zero additions, zero removals.
+This merged tree also carries M002's three provider reasoning-control
+operations (`reasoning_preference_get`, `reasoning_preference_set`,
+`reasoning_capabilities`), so the table agrees with the source at 260.
 
 **Sample-vs-set claim corrected.** `representative_requests()` is a sample,
 not the operation set: 10 operations have no representative request at all
@@ -914,7 +923,7 @@ not the operation set: 10 operations have no representative request at all
 admits **eight** scope kinds (`session`, `turn`, `run`, `job`, `worktree`,
 `provider`, `work_order`, `continuation_grant`) — Rust allow-list and SQL
 `CHECK` agree — not the four the previous revision listed. Corrected the
-storage layout figure **68 → 87**
+storage layout figure **68 → 88**
 (`crates/codegg-core/src/storage/mod.rs:STORAGE_LAYOUT_VERSION`). Corrected
 the attribution writer: `record_origin_with_decision` is a `CoreDaemon`
 method that writes through `OriginAttributionStore::record`, not a method on
@@ -948,3 +957,43 @@ operation), the `node_telemetry_read` operation's `node.target` gate, the
 eight attribution scope kinds, and the `send_now` divergence from the six
 owner-gated queue mutations.
 
+
+Verified 2026-10-21 against `crates/codegg-core/src/authorization/policy.rs`
+after provider reasoning control M002 added three operations. Re-extracted
+every operation-name literal from the `operation_descriptor` body and
+confirmed an exact set-diff against the doc table in both directions — 258
+source names, 258 distinct doc rows, zero additions and zero removals.
+Corrected the prose count "228 native operations" → 258. Four rows had
+drifted and were added: `document_create` and `document_delete`
+(`direct_project` / `file.modify`), `node_telemetry_read` (`opaque` /
+`node.target`), and `user_prompt_queue_send_now` (`via_session` /
+`agent.invoke`). The three M002 rows are `reasoning_preference_get`,
+`reasoning_preference_set`, and `reasoning_capabilities`, all `global` /
+`none`: the principal is derived from transport authority, the payload
+carries no identity field, and the capability advertisement is a static
+daemon-owned read.
+
+Verified 2026-10-06 against `crates/codegg-core/src/authorization/policy.rs`
+(`operation_descriptor`, `:101`-`:1243`), `crates/codegg-protocol/src/core.rs`,
+and `crates/codegg-core/src/session/schema.rs`. Rebuilt the
+operation-capability matrix to the current 226 operations: extracted every
+operation-name literal from the `operation_descriptor` body (both the
+single-line `OperationDescriptor::new("name", …)` arms and the multi-line
+form) and confirmed an exact set-diff against the doc table in both
+directions — 226 doc rows, 226 source names, zero additions and zero
+removals. Corrected the prose count "188 native operations" → 226. Corrected
+the stale collaboration group size: M001 contributes twelve `chat_*`
+operations (the source section at `policy.rs:857`-`:923`), not fourteen, and
+only `chat_capabilities` is global rather than `project.chat`; confirmed M003's
+three `chat_action_*` rows on the same gate (`policy.rs:924`) and M002's four
+chat-policy administration rows on `member.manage` (`policy.rs:947`).
+Confirmed work orders M001 is seventeen `work_order_*` rows
+(`policy.rs:1099`-`:1192`), with `work_plan_*` and
+`work_order_bind_repository` on the same `session.create`/`session.read`
+gates, and M005's four `work_order_trigger_*` rows (`policy.rs:1193`).
+Corrected `origin_attribution`: introduced by migration v53 while the catalog
+is at storage layout 68. Verified accurate: the twelve M001 chat rows, the
+four chat-policy rows, the seventeen work-order rows and the
+`work_plan_*`/`work_order_bind_repository` rows, each cross-checked against
+the `ScopeKind`/`Capability` arguments of its `OperationDescriptor::new`
+call, plus the 226-row table structure.

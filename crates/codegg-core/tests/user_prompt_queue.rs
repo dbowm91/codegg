@@ -217,6 +217,10 @@ async fn user_prompt_queue_v80_migration_creates_table_index_and_layout() {
     // The floor is asserted against the **durable** layout, not the
     // constant: a comparison between two constants has a value the
     // compiler folds away, and a folded assertion is not a test.
+    //
+    // The provider-reasoning-control branch's reasoning-selection column was
+    // v84 on that branch and is v88 in the merged tree, so it never appears in
+    // a floor or an equality here.
     assert!(
         layout >= 80,
         "the queue's v80 migration must be part of the current layout"

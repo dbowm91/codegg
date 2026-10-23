@@ -270,6 +270,9 @@ impl DaemonRequestFamily {
             CoreRequest::NetworkIntentSet { .. } => Self::Ops,
             CoreRequest::RuntimePolicySet { .. } => Self::Ops,
             CoreRequest::TaskModelPreferenceSet { .. } => Self::Ops,
+            CoreRequest::ReasoningPreferenceGet => Self::Ops,
+            CoreRequest::ReasoningPreferenceSet { .. } => Self::Ops,
+            CoreRequest::ReasoningCapabilities => Self::Ops,
             CoreRequest::ExecutionPolicyGet { .. } => Self::Ops,
             CoreRequest::MemoryForget { .. } => Self::Ops,
             CoreRequest::MemoryList { .. } => Self::Ops,
@@ -434,6 +437,7 @@ mod tests {
                 DaemonRequestFamily::Projection,
             ),
             (CoreRequest::AuditCapabilities, DaemonRequestFamily::Ops),
+            (CoreRequest::ReasoningCapabilities, DaemonRequestFamily::Ops),
             (CoreRequest::ChatCapabilities, DaemonRequestFamily::Chat),
             (
                 CoreRequest::InteractiveProcessCapabilities,

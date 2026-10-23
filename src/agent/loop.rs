@@ -54,10 +54,14 @@ const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
 pub struct AgentLoopState {
     pub current_agent: String,
-    /// Per-turn extended-thinking override chosen by the frontend.
+    /// Per-turn extended-thinking selection.
     ///
-    /// `None` inherits the agent / model-profile default. Applied after
-    /// `apply_model_profile_defaults` so an explicit user choice always wins.
+    /// The daemon owns the effective selection: an explicit per-turn
+    /// override wins, otherwise the persisted principal preference applies,
+    /// otherwise the agent / model-profile default stands. `None` means
+    /// "no explicit selection", which leaves the agent / model-profile
+    /// default untouched. Applied after `apply_model_profile_defaults` so
+    /// an explicit choice always wins.
     pub reasoning_override: Option<crate::protocol::core::ReasoningOverride>,
     pub turn_count: usize,
     pub total_tokens: usize,

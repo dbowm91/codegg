@@ -128,9 +128,9 @@ pub struct EventEnvelope<T> {
 }
 ```
 
-### CoreRequest (`core.rs:2229`)
+### CoreRequest (`core.rs:2315`)
 
-Tagged enum with 263 variants (239 struct-bodied, 24 unit). Major groups:
+Tagged enum with 266 variants (240 struct-bodied + 26 unit). Major groups:
 
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
@@ -267,11 +267,14 @@ zero, `truncated=true` when emptied),
 `InteractiveProcess*` (10), `Presence*` (3), `Chat*` (20), `Team*` (11),
 approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
 `SandboxProfileSet`, `NetworkIntentSet`, `RuntimePolicySet`,
-`TaskModelPreferenceSet`, `ExecutionPolicyGet`), and `WorkOrder*` (22).
+`TaskModelPreferenceSet`, `ExecutionPolicyGet`), provider reasoning control
+(`ReasoningPreferenceGet`, `ReasoningPreferenceSet`, `ReasoningCapabilities` —
+M002: the principal-scoped extended-thinking selection and the
+open-vocabulary capability advertisement), and `WorkOrder*` (22).
 
-### CoreResponse (`core.rs:1127`)
+### CoreResponse (`core.rs:1202`)
 
-Tagged enum with 172 variants (171 struct-bodied plus the unit `Ack`). Major
+Tagged enum with 174 variants (173 struct-bodied plus the unit `Ack`). Major
 groups:
 
 **Connection Responses**: `EggpoolConnectionCreated` (shared result shape,
@@ -339,7 +342,11 @@ interruption, and never treats raw compatibility events as projection state.
 `SessionSelectionUpdated`, `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`, `JobRecoveryReport`
 
-### CoreEvent (`core.rs:4015`)
+**Reasoning Responses**: `ReasoningPreference` carries the caller's
+principal-scoped extended-thinking selection (M002); `ReasoningCapabilities`
+carries the daemon's open-vocabulary capability advertisement (M002).
+
+### CoreEvent (`core.rs:4162`)
 
 Tagged enum with 92 variants. Major groups:
 
@@ -559,6 +566,37 @@ resolve through deterministic lookup of an existing unique locator.
   `plugin_status_items: Vec<RemoteStatusItemView>`
 - `PluginUiEffect` in both `CoreEvent` and `TuiMessage` carries a typed
   `UiEffectEnvelope` (Phase 15)
+- **Per-model reasoning capability (M004).** `ProviderModelDto` and
+  `SelectedModelDto` each carry an optional
+  `reasoning_capability: Option<ReasoningCapabilityDto>`, declared with
+  `#[serde(default, skip_serializing_if = "Option::is_none")]` — the same
+  additive-optional pattern `ConnectionHealthDto::credential_status` already
+  uses in `provider.rs`. A daemon that publishes no capability and a client
+  that predates the field therefore interoperate in both directions: an old
+  client ignores the new field, and a new client reads the absence as
+  "unknown", never as "no reasoning".
+- **`ReasoningCapabilityDto` is four independent axes**, not one verdict:
+  `effort`, `disable`, `budget`, and `always_reasons`, each a
+  `ReasoningCapabilityAxis` (`Supported | Unsupported | Unknown | Mixed |
+  Conflicting`). `Unknown` means *nobody has published a contract for this
+  dimension*; it is deliberately distinct from `Unsupported` (*the model
+  refuses this*). The payload is display and selection data only — it grants
+  no permission, and the daemon's admission policy never reads it as
+  authority.
+- **`reasoning_options(capability)` is a pure derivation**, not a contract:
+  it turns a capability into the option set a frontend may offer, and it can
+  only ever narrow what the capability permits. With no capability it falls
+  back to the known-label ladder and sets `fallback = true`, so a surface
+  that shows the ladder says so instead of presenting it as the model's
+  options.
+- **The WS-attach transport cannot write the selection.** `TuiMessage` carries
+  no `CoreRequest` variant, so a frontend attached over the remote WebSocket
+  has no channel to send `CoreRequest::ReasoningPreferenceSet` on. There,
+  `/reasoning` reports that the selection cannot be stored and leaves the
+  display alone; it does not fall back to a local value the daemon would
+  ignore. Adding the channel means adding a `TuiMessage` variant that carries
+  a core request — a protocol change that is deliberately not smuggled into
+  the frontend milestone.
 
 ## Invariants & Gotchas
 

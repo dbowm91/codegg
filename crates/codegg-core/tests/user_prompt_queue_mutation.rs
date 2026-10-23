@@ -138,6 +138,10 @@ async fn user_prompt_queue_v81_migration_creates_the_owner_table() {
     // already fails closed if the constant and the wired migration ever
     // disagree. M002b's own claim — that the owner binding bumped the layout at
     // all — is unchanged and is what the table assertions below prove.
+    //
+    // The provider-reasoning-control branch's reasoning-selection column was
+    // v84 on that branch and is v88 in the merged tree, so it never appears in
+    // a floor or an equality here.
     let layout: i64 = sqlx::query_scalar(
         "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
     )

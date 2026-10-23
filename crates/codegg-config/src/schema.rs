@@ -107,6 +107,187 @@ pub enum OrchestrationTier {
     ConvergenceCapable,
 }
 
+/// The status of one reasoning-capability dimension.
+///
+/// The vocabulary is the kernel's own (`Supported | Unsupported | Unknown |
+/// Mixed | Conflicting`), mirrored here because the kernel's type is not
+/// serializable and this record has to round-trip through adapter assets
+/// and operator configuration.
+///
+/// `Unknown` is the status of an **undeclared** dimension. It is not
+/// `Unsupported`: "nobody has published a contract for this" is not the
+/// same claim as "the model refuses this".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningCapabilityStatus {
+    /// The dimension is accepted.
+    Supported,
+    /// The dimension is refused.
+    Unsupported,
+    /// Nobody has declared the dimension.
+    #[default]
+    Unknown,
+    /// The dimension is accepted for some variants but not others.
+    Mixed,
+    /// Two sources disagree about the dimension.
+    Conflicting,
+}
+
+/// The largest accepted reasoning-effort label set a record may declare.
+pub const MAX_REASONING_CAPABILITY_LABELS: usize = 32;
+
+/// The largest accepted length of one reasoning-effort label, in bytes.
+pub const MAX_REASONING_CAPABILITY_LABEL_BYTES: usize = 64;
+
+/// The per-model reasoning capability record (ADR-0050).
+///
+/// Every dimension is independent and carries its own status, so an
+/// undeclared dimension stays `Unknown` instead of collapsing into
+/// `Unsupported`.
+///
+/// The accepted-effort-label set is an **open, provider-scoped** string
+/// set. It is never a fixed enumeration: one vendor's ladder is not
+/// another vendor's ladder, and a label is never fabricated here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReasoningCapabilityRecord {
+    /// Status of the **effort** dimension.
+    pub effort_status: ReasoningCapabilityStatus,
+    /// The accepted reasoning-effort labels.
+    ///
+    /// `None` means "no ladder was published for this model". A
+    /// `Supported` effort dimension always carries one, because a
+    /// supported dimension with no set could not be checked.
+    pub accepted_effort_labels: Option<Vec<String>>,
+
+    /// Status of the **disable** dimension: may reasoning be turned off?
+    pub disable_status: ReasoningCapabilityStatus,
+
+    /// Status of the **budget** dimension: is a fixed token budget accepted?
+    pub budget_status: ReasoningCapabilityStatus,
+    /// The smallest accepted fixed thinking budget, in tokens.
+    pub min_thinking_budget: Option<usize>,
+    /// The largest accepted fixed thinking budget, in tokens.
+    pub max_thinking_budget: Option<usize>,
+
+    /// Status of the **always-reasons** property.
+    pub always_reasons_status: ReasoningCapabilityStatus,
+    /// Whether the model always reasons.
+    ///
+    /// `Some(true)` is the always-reasons property: the model has no off
+    /// switch, so the disable dimension cannot be `Supported`.
+    pub always_reasons: Option<bool>,
+}
+
+impl ReasoningCapabilityRecord {
+    /// Validate the record's internal consistency.
+    ///
+    /// Returns one message per problem. The caller decides what to do
+    /// with them: an adapter asset that fails validation does not build,
+    /// and an operator override that fails validation is refused rather
+    /// than trusted verbatim.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        if let Some(labels) = &self.accepted_effort_labels {
+            if labels.is_empty() {
+                errors.push("accepted_effort_labels must not be empty".to_string());
+            }
+            if labels.len() > MAX_REASONING_CAPABILITY_LABELS {
+                errors.push(format!(
+                    "accepted_effort_labels declares {} labels; maximum is {MAX_REASONING_CAPABILITY_LABELS}",
+                    labels.len()
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for label in labels {
+                if label.trim().is_empty() {
+                    errors.push("accepted_effort_labels contains an empty label".to_string());
+                    continue;
+                }
+                if label.len() > MAX_REASONING_CAPABILITY_LABEL_BYTES {
+                    errors.push(format!(
+                        "accepted_effort_labels entry '{label}' exceeds {MAX_REASONING_CAPABILITY_LABEL_BYTES} bytes"
+                    ));
+                }
+                if !seen.insert(label.as_str()) {
+                    errors.push(format!(
+                        "accepted_effort_labels contains the duplicate label '{label}'"
+                    ));
+                }
+            }
+        }
+
+        match self.effort_status {
+            ReasoningCapabilityStatus::Supported => {
+                if self.accepted_effort_labels.is_none() {
+                    errors.push(
+                        "effort_status 'supported' requires an accepted_effort_labels set"
+                            .to_string(),
+                    );
+                }
+            }
+            ReasoningCapabilityStatus::Unsupported => {
+                if self.accepted_effort_labels.is_some() {
+                    errors.push(
+                        "effort_status 'unsupported' must not declare accepted_effort_labels"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                if self.accepted_effort_labels.is_some()
+                    && self.effort_status == ReasoningCapabilityStatus::Unknown
+                {
+                    errors.push(
+                        "accepted_effort_labels requires an effort_status of 'supported' or 'mixed'"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
+        if let (Some(min), Some(max)) = (self.min_thinking_budget, self.max_thinking_budget) {
+            if min > max {
+                errors.push(format!(
+                    "min_thinking_budget ({min}) exceeds max_thinking_budget ({max})"
+                ));
+            }
+        }
+        if self.budget_status == ReasoningCapabilityStatus::Unsupported
+            && (self.min_thinking_budget.is_some() || self.max_thinking_budget.is_some())
+        {
+            errors.push(
+                "budget_status 'unsupported' must not declare a thinking-budget range".to_string(),
+            );
+        }
+
+        match (self.always_reasons_status, self.always_reasons) {
+            (ReasoningCapabilityStatus::Supported, Some(true))
+            | (ReasoningCapabilityStatus::Unsupported, Some(false))
+            | (ReasoningCapabilityStatus::Unknown, None)
+            | (ReasoningCapabilityStatus::Mixed, None)
+            | (ReasoningCapabilityStatus::Conflicting, None) => {}
+            (status, always) => errors.push(format!(
+                "always_reasons ({always:?}) is inconsistent with always_reasons_status ({status:?}); \
+                 'supported' requires true, 'unsupported' requires false, and \
+                 'unknown'/'mixed'/'conflicting' require an absent value"
+            )),
+        }
+
+        if self.always_reasons == Some(true)
+            && self.disable_status == ReasoningCapabilityStatus::Supported
+        {
+            errors.push(
+                "always_reasons 'true' requires a disable_status that is not 'supported'"
+                    .to_string(),
+            );
+        }
+
+        errors
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelProfileConfig {
@@ -134,6 +315,13 @@ pub struct ModelProfileConfig {
 
     pub default_reasoning_effort: Option<String>,
     pub default_thinking_budget: Option<usize>,
+
+    /// The operator's reasoning-capability override for this model.
+    ///
+    /// It is authoritative for the dimensions it declares and may only
+    /// narrow the compiled adapter baseline: it cannot widen a
+    /// dimension's accepted set beyond what the baseline declares.
+    pub reasoning_capability: Option<ReasoningCapabilityRecord>,
 
     pub max_parallel_tools: Option<usize>,
     pub preferred_tools: Option<Vec<String>>,
@@ -3151,6 +3339,19 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+
+        if let Some(ref profiles) = self.model_profile {
+            for (model, profile) in profiles {
+                let Some(capability) = &profile.reasoning_capability else {
+                    continue;
+                };
+                for problem in capability.validate() {
+                    errors.push(format!(
+                        "model_profile.{model}.reasoning_capability: {problem}"
+                    ));
+                }
+            }
+        }
 
         if let Some(ref level) = self.log_level {
             match level.as_str() {

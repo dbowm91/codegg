@@ -1290,6 +1290,21 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::TaskModelPreferenceSet { .. } => {
             OperationDescriptor::new("task_model_preference_set", ScopeKind::Global, None)
         }
+        // Provider reasoning control M002: the reasoning selection is a
+        // daemon-owned, principal-scoped preference, exactly like the
+        // approval and Task-composer preferences beside it. The principal
+        // comes from transport authority, never from the request body, so
+        // there is no project-keyed data to scope.
+        R::ReasoningPreferenceGet => {
+            OperationDescriptor::new("reasoning_preference_get", ScopeKind::Global, None)
+        }
+        R::ReasoningPreferenceSet { .. } => {
+            OperationDescriptor::new("reasoning_preference_set", ScopeKind::Global, None)
+        }
+        // The capability advertisement is a static, daemon-owned read.
+        R::ReasoningCapabilities => {
+            OperationDescriptor::new("reasoning_capabilities", ScopeKind::Global, None)
+        }
         R::ExecutionPolicyGet { .. } => {
             OperationDescriptor::new("execution_policy_get", ScopeKind::Global, None)
         }
@@ -2352,6 +2367,12 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             model_id: None,
             expected_revision: None,
         },
+        R::ReasoningPreferenceGet,
+        R::ReasoningPreferenceSet {
+            selection: None,
+            expected_revision: None,
+        },
+        R::ReasoningCapabilities,
         R::ExecutionPolicyGet { session_id: None },
         R::WorkOrderCapabilities,
         R::WorkOrderCreate {

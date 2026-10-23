@@ -323,6 +323,35 @@ codegg models -p anthropic
 codegg -m anthropic/<model-id>
 ```
 
+### Controlling extended thinking
+
+Some models can be asked to think harder before they answer. The `/reasoning`
+command cycles the setting, and the choice is kept by the daemon against your
+own account, so it applies to every turn that starts afterwards — a prompt you
+submit from the API, a prompt you queued for later, or a follow-up turn the
+agent starts itself. A setting you pick for one turn only still wins over the
+kept one.
+
+The label is **your provider's**, not a fixed level. `minimal`, `low`,
+`medium` and `high` are the usual names, but a provider that names its own
+depth (`xhigh`, `max`, `none`, `default`) is honoured as written — the label
+reaches the provider unchanged rather than being snapped to the nearest of the
+four.
+
+The command cycles through the choices **the selected model actually accepts**,
+not a fixed ladder. A model that always reasons is never offered an off
+switch, a model that takes a thinking budget but not a named depth is offered
+the budget instead, and a model whose provider has published no reasoning
+contract at all falls back to the familiar labels and says so.
+
+A model that does not accept the setting is **refused before the request is
+sent**, not quietly ignored: the daemon checks the chosen model's published
+reasoning capability and, if the model does not accept that dimension, it
+stops there and tells you which model refused the selection. Nothing is
+dispatched to the provider. The rule is deliberately strict — a model whose
+provider has published no reasoning contract at all is refused too, rather
+than having the setting forwarded on a guess.
+
 ## See also
 
 - `architecture/provider.md` — registry, setup catalog, credential resolution

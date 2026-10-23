@@ -141,6 +141,13 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
     let mut last_render: Option<Instant> = None;
     let mut needs_render = true;
 
+    // Provider reasoning control M004: the selection is daemon state, so a
+    // frontend that starts — or reconnects — reads it from the daemon
+    // rather than from local state. The working strip's reserved row shows
+    // it, so the user does not have to run `/reasoning` to find out what
+    // the next turn will use.
+    crate::tui::commands::reasoning::start_preference_refresh(app);
+
     if let Some(ref mut watcher) = app.config_watcher {
         if let Err(e) = watcher.start().await {
             tracing::warn!("Failed to start config watcher: {}", e);

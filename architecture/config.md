@@ -389,6 +389,41 @@ Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `default_thinking_budget`, `max_parallel_tools`, `preferred_tools`,
 `disabled_tools`, `task_state_policy`.
 
+`default_reasoning_effort` is an **open, provider-scoped label** (ADR-0049),
+not a level on a closed enum: a vendor label such as `xhigh` or `max` is a
+legitimate value, and it now reaches the provider wire verbatim instead of
+being rejected as an unknown level. The four labels in
+`codegg_protocol::core::KNOWN_REASONING_EFFORT_LABELS` are a convenience set
+for the frontend's fallback cycling order only; they are not the accepted
+value set. The value is bounded (at most 64 bytes) and its shape is checked
+where it is persisted and where it reaches the wire. The effective selection
+for a turn is **explicit turn override ▸ persisted principal preference ▸
+agent / model-profile default**, so a configured label still loses to the
+user's own choice; see `architecture/provider.md`.
+
+`reasoning_capability` is the operator's **per-model reasoning capability
+override** (ADR-0050). It carries the four independent dimensions of the
+capability record — the accepted effort labels, whether reasoning can be
+disabled, whether a fixed thinking budget is accepted (and its bounds), and
+whether the model always reasons — each with a status in the kernel's
+vocabulary (`supported`, `unsupported`, `unknown`, `mixed`, `conflicting`).
+
+The override is authoritative for the dimensions it declares, but it may
+only **narrow** the compiled adapter baseline: the merged accepted-label
+set is the intersection of the two declared sets, so an override can never
+widen a dimension's accepted set beyond what the adapter declares. It may
+establish a dimension the adapter leaves undeclared — that is how an
+operator states what their own deployment accepts. A malformed override is
+refused rather than trusted, and a configuration that contradicts the
+baseline leaves the baseline standing.
+
+An undeclared dimension is `unknown`, not `unsupported`, and the local
+admission policy is **fail-closed**: a selection on a dimension nobody has
+published a contract for is refused at turn admission rather than
+forwarded optimistically. See `architecture/provider.md` for the record's
+shape and the admission policy, and `architecture/model-adapters.md` for
+the shipped baseline.
+
 ### ContextPolicyConfig (`schema.rs:1025`)
 
 Gated active context policy. First use: tool-palette reduction driven

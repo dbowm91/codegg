@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub use codegg_config::schema::{
     CompletedTodoExposure, ModelProfileConfig, OrchestrationTier, PromptProfileKind,
-    ReliabilityTier, SubagentTodoAccess, TaskStatePolicyConfig, TodoMode, TodoUpdateFrequency,
+    ReasoningCapabilityRecord, ReliabilityTier, SubagentTodoAccess, TaskStatePolicyConfig,
+    TodoMode, TodoUpdateFrequency,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +28,12 @@ pub struct ResolvedModelProfile {
 
     pub default_reasoning_effort: Option<String>,
     pub default_thinking_budget: Option<usize>,
+
+    /// The adapter-declared reasoning capability baseline for this model.
+    ///
+    /// `None` means the adapter declared no capability record at all, so
+    /// every dimension is `Unknown` — not `Unsupported`.
+    pub reasoning_capability: Option<ReasoningCapabilityRecord>,
 
     pub max_parallel_tools: Option<usize>,
     pub preferred_tools: Option<Vec<String>>,

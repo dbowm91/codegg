@@ -138,14 +138,25 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **87**, defined by
-`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:48`), and must track the
+The current layout version is **88**, defined by
+`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:56`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
 `tests/core_daemon/storage_migrations.inc` equality assertion). It is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases.
+
+Version 84 adds one additive nullable column, `runtime_preferences.reasoning_selection`,
+holding the daemon-owned extended-thinking selection (provider reasoning
+control M002). Plain `ALTER TABLE … ADD COLUMN` leaves every existing row
+untouched — approval, sandbox, session-model and Task-composer preferences
+are all preserved — and the new column defaults to `NULL` ("no explicit
+selection"). The stored value is the protocol's own serialized selection
+shape, so the durable column carries no second vocabulary; the effort label
+inside it is an open, provider-scoped string carried verbatim. Bounds are
+enforced in Rust on write and re-checked on read, not by the schema on a
+migrated database.
 
 Migration 70 rebuilds `cached_models` with the composite primary key
 `(id, provider)`. The table is a **cross-provider** discovery cache, so the
@@ -340,7 +351,7 @@ initialization. `session/schema.rs` contains **95** `CREATE TABLE`
 statements covering **91** tables (92 distinct `CREATE TABLE` names, less
 the transient `origin_attribution_new` rebuild name; `migration_version`,
 `origin_attribution`, and that rebuild name each appear twice).
-Migrations v1–v87 are all present as `migrate_v<N>` functions — 87 of
+Migrations v1–v88 are all present as `migrate_v<N>` functions — 88 of
 them, none missing (declaration order in the file is not numeric —
 `migrate_v67`, `migrate_v34`, `migrate_v33` lead, and
 `migrate_v50`/`v47`/`v46`/`v32` are defined at the end).
@@ -355,8 +366,9 @@ schema constant rather than inlining SQL: v55 →
 `work_order::TASK_TRIGGER_SCHEMA_STATEMENTS`, v64 →
 `collaboration::CHAT_POLICY_SCHEMA_STATEMENTS`, v65 →
 `session_control::SESSION_CONTROL_SCHEMA_STATEMENTS`, and v68 →
-`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`, and v84 →
-`approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS`.
+`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`, v84 →
+`approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS`, and v88 →
+`approval::RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS`.
 
 Key storage-layout migrations:
 - **v22**: Workspace table, `session.workspace_id` column — Phase 2

@@ -243,6 +243,47 @@ duplicate objective/progress projection. M004 activates durable rollover:
 (A-J) and `inject_installed_continuation_for_turn` restores the latest
 installed projection at turn start with newer-goal merge.
 
+### Per-Turn Reasoning Capability
+
+The resolved model profile carries a per-model **reasoning capability
+record**: the accepted reasoning-effort labels, whether reasoning can be
+turned off, whether a fixed thinking budget is accepted and within which
+bounds, and whether the model always reasons. Each dimension is
+independent and carries its own status, so an undeclared dimension is
+`Unknown` — not `Unsupported`.
+
+`codegg_core::model_profile::capability` owns three things:
+
+- `resolve_reasoning_capability(baseline, operator_override, overlay)` —
+  the effective capability for a model, resolved in the order operator
+  override, adapter baseline, discovery overlay, unknown. The resolution
+  is **read-only**: it never mutates the baseline, the configuration, or
+  any in-flight turn state, and it is resolved per turn against the
+  model that turn will actually use.
+- `merge_capability(baseline, specific)` — the narrowing merge that
+  applies when one adapter is merged over another. A merge may remove
+  from a dimension's accepted set and may never widen it.
+- `evaluate_reasoning_selection(model, selection, capability, policy,
+  target)` — the local admission check. It produces exactly one of
+  `Reject`, `WarnDrop`, `AllowWithWarning`, or `Allow`.
+
+The check applies the kernel's capability machinery, whose default policy
+is **fail-closed**: an unsupported dimension is `Reject`, an unknown one
+is `Reject`, and a mixed one is `WarnDrop`. A `Reject` is a typed refusal
+that names the model and the dimension; a `WarnDrop` drops the
+unsupported dimension and records a notice that says **what was
+dropped**. A silently dropped dimension is the defect this contract
+exists to remove.
+
+An **absent** selection is always allowed: the check exists to refuse a
+*selection* the model does not accept, not to gate ordinary turns. The
+kernel's neutral capability type is status-only — it carries no
+accepted-label list and never validates a label — so the accepted-label
+set and the budget bounds are CodeGG's own record's business.
+
+See [model-adapters.md](model-adapters.md) for the record's shape, the
+shipped baseline, and the merge and resolution rules.
+
 ### Runtime Asset Refresh
 
 `AssetRefreshCoordinator` owns one publication stream per

@@ -690,6 +690,14 @@ continuation).
 references) and openai (full Responses API, hosted programs, nested calls).
 Others default to no special capabilities.
 
+Which reasoning dimensions a *surface* can express is not a capability flag:
+it is the wire kernel's authority, and CodeGG does not re-decide it per
+provider. The representability is therefore pinned by per-surface encoding
+fixtures over the shared codec (see "Reasoning intent at the wire boundary"
+below), not implied by the bridge. The per-*model* facts — whether a model
+accepts an effort label at all, and whether it can be turned off — are a
+separate authority and are not settled here.
+
 ### ChatRequest (`provider_core.rs:264`)
 
 ```rust
@@ -715,14 +723,31 @@ runtime's canonical session identity:
 pub struct ProviderRequestContext {
     pub session_id: Option<Arc<str>>,
     pub wire_policy: Option<Arc<ProviderWirePolicy>>,
+    pub reasoning: ReasoningControl,
 }
 ```
+
+`ReasoningControl` is the request's own explicit reasoning instruction and
+carries the one state the two selection fields above cannot express:
+
+```rust
+pub enum ReasoningControl {
+    Unspecified, // no instruction: the selection, or the provider default, applies
+    Disabled,    // explicitly off — a wire-visible instruction, not an absence
+    Enabled,     // on, with no depth label: the binary thinking-on dimension
+}
+```
+
+The concrete selection stays on `ChatRequest` itself: `reasoning_effort` is a
+`String` (an open, provider-scoped label carried verbatim) and `thinking_budget`
+is a token count carried verbatim. Effort and budget are mutually exclusive.
 
 `ProviderWirePolicy` (`provider_core.rs:249`) is the immutable model-adapter
 projection carried alongside the session identity: `tool_aliases`,
 `argument_aliases`, `allow_private_reasoning_round_trip`,
 `include_reasoning_content`, `enable_thinking`, `tool_choice`, and
-`max_parallel_tools`.
+`max_parallel_tools`. It is adapter policy, not request intent: the request's
+own reasoning instruction is `ReasoningControl`, and the two are never merged.
 
 It is not model input and is never serialized into the request body. The turn
 runtime validates and attaches the existing CodeGG session identity; retries,
@@ -1153,29 +1178,359 @@ provider crate does not infer model policy from model names.
 
 ### Extended-thinking control (`/reasoning`)
 
-Extended thinking is configured in three places, applied in this order —
+Extended thinking is configured in four places, applied in this order —
 later wins:
 
 1. `ModelProfileConfig.default_reasoning_effort` /
    `default_thinking_budget` (config).
 2. Agent-level `thinking_budget` / `reasoning_effort` (`apply_agent_config`).
-3. The frontend's `/reasoning` selection, carried per turn on
+3. The daemon-owned, principal-scoped persisted selection
+   (`RuntimePreferenceStore.reasoning_selection`).
+4. The frontend's `/reasoning` selection, carried per turn on
    `CoreRequest::TurnSubmit.reasoning` (`apply_reasoning_override`).
 
-The per-turn field is **frontend-local and never persisted**: it rides each
-submit rather than becoming durable session state, so it cannot go stale
-against the selected model and needs no migration. It is
+**The vocabulary is open and provider-scoped** (ADR-0049). The effort
+selection is a free-form label, not a level on a closed enum: a vendor label
+such as `xhigh`, `max`, `none` or `default` is selectable and is carried
+verbatim from the selection to the provider wire. Nothing normalizes,
+lower-cases, translates, or folds a label onto a fixed level set. The four
+labels in `codegg_protocol::core::KNOWN_REASONING_EFFORT_LABELS`
+(`minimal`, `low`, `medium`, `high`) are a **convenience set** used only for
+the frontend's fallback cycling order when no per-model capability record is
+available; they are not a model's option set and they do not constrain what a
+label may be.
+
+**The daemon owns the durable selection.** The effective selection for a turn
+is resolved as **explicit turn override ▸ persisted principal preference ▸
+agent / model-profile default**. The persisted preference lives in
+`runtime_preferences.reasoning_selection` (migration `v84`), is scoped to the
+principal derived from transport authority, and is revision-gated: a stale
+write fails with `preference_conflict` rather than last-write-wins. It is
+resolved at **turn admission**, so it applies to a direct submit, a
+session-prompt submit, a queued-prompt delivery (resolved at *delivery* time,
+because the model chosen at delivery may differ from the one at enqueue), and
+a delegated idle continuation alike.
+
+The per-turn field is **not** frontend-local any more: `TurnSubmit.reasoning`
+is the explicit per-turn override, and the daemon's persisted selection
+applies whenever that field is absent. `TurnSubmit.reasoning` is still
 `#[serde(default)]`, so a client that predates the field still decodes and
-inherits the configured default.
+inherits the resolved selection.
 
 `ReasoningOverride::Off` clears *both* `reasoning_effort` and
-`thinking_budget`. That is the only way to express an explicit disable: the
-wire encoder (`wire.rs`) treats "neither field set" as thinking-not-requested,
-so clearing only one would leave a configured value in force.
+`thinking_budget`, **and** marks the request as an explicit disable
+(`ProviderRequestContext::reasoning = ReasoningControl::Disabled`). Clearing the
+two selection fields removes any configured selection; the explicit-disable
+mark is what carries "off" to the wire. The two are not interchangeable: the
+wire encoder reads "no preference" and "explicitly off" as different intents,
+and a surface that can express a disable emits one (`thinking:
+{"type": "disabled"}` on Anthropic Messages, `reasoning_effort: "none"` on
+OpenAI Chat Completions, `reasoning: {"effort": "none"}` on OpenAI Responses,
+`generationConfig.thinkingConfig.thinkingBudget: 0` on Gemini
+GenerateContent).
 
-Effort and budget are mutually exclusive — the encoder selects `ReasoningMode`
-from whichever is present, so leaving both set would silently prefer budget
-over the user's choice. `apply_reasoning_choice` clears the other field.
+Effort and budget are mutually exclusive — the encoder selects the mode from
+whichever is present, so leaving both set would silently prefer budget over the
+user's choice. `apply_reasoning_choice` clears the other field.
+
+### Reasoning capability negotiation
+
+Changing the protocol's effort representation is a breaking change, so the
+daemon advertises what it accepts and a client consults that advertisement
+before sending a non-enumerated label.
+
+`CoreRequest::ReasoningCapabilities` returns
+`CoreResponse::ReasoningCapabilities { capabilities }`, carrying
+`ReasoningCapabilitiesDto`:
+
+| Field | Meaning |
+|---|---|
+| `open_label_vocabulary` | the daemon accepts a label outside the known convenience set |
+| `known_labels` | the labels the daemon recognises by name, in the fallback ladder order |
+| `max_label_bytes` | the largest label the daemon accepts |
+
+The rules are:
+
+- A client that has **not observed** the advertisement sends **no**
+  non-enumerated label. `codegg-client`'s `compose_turn_submit` refuses one
+  with `ComposerError::ReasoningVocabularyUnsupported` before the request is
+  built. The known convenience labels need no advertisement: they are the
+  legacy vocabulary every daemon understands.
+- A daemon that has **not advertised** the open vocabulary refuses a
+  non-enumerated label with a typed error
+  (`reasoning_vocabulary_unsupported`), never by silently folding it onto a
+  known level and never by failing the daemon. The refusal happens at turn
+  admission, before the turn is claimed.
+
+The advertisement and the admission check read the **same** daemon-owned
+value, so "advertised" and "accepted" cannot drift apart.
+`scripts/check_reasoning_vocabulary_open.py` guards the whole contract: no
+closed effort enum may survive, the provider bridge must keep carrying the
+label verbatim, and every turn-admission path must resolve the daemon-owned
+selection.
+
+
+### Per-model reasoning capability model (ADR-0050)
+
+The vocabulary is open, so the daemon cannot tell from a label alone
+whether the model behind it accepts that label. A **capability record**
+answers that: it is a per-model statement of what the model's family
+accepts on the reasoning dimensions.
+
+The record (`codegg_config::schema::ReasoningCapabilityRecord`, re-exported
+by `codegg_core::model_profile::capability`) carries four **independent**
+dimensions, each with its own status in the kernel's vocabulary —
+`Supported | Unsupported | Unknown | Mixed | Conflicting`:
+
+| Dimension | Fields | Question it answers |
+|---|---|---|
+| effort | `effort_status`, `accepted_effort_labels` | Which reasoning-effort labels does the model accept? |
+| disable | `disable_status` | May reasoning be turned off at all? |
+| budget | `budget_status`, `min_thinking_budget`, `max_thinking_budget` | Is a fixed token budget accepted, and within which bounds? |
+| always-reasons | `always_reasons_status`, `always_reasons` | Does the model always reason? |
+
+An **undeclared** dimension is `Unknown`, never `Unsupported`: "nobody has
+published a contract for this" is not the same claim as "the model
+refuses this". The accepted-label set is an open, provider-scoped string
+set — never a fixed enumeration, never a fabricated label, and a depth
+label is never converted into a token budget.
+
+**Resolution order.** The effective capability for a model is resolved by
+`codegg_core::model_profile::capability::resolve_reasoning_capability` in
+the order **operator/config override ▸ adapter baseline ▸ discovery overlay
+▸ unknown**:
+
+1. the operator's configuration override
+   (`[model_profile.<model>].reasoning_capability`) is authoritative for
+   the dimensions it declares and may only **narrow** the compiled
+   baseline;
+2. the adapter-declared baseline is the compiled, deterministic record
+   shipped in `crates/codegg-core/assets/model-adapters/`;
+3. the discovery overlay (provider catalog metadata) may only narrow — an
+   overlay that introduces a label, a bound, or an always-reasons value the
+   effective record does not already carry is **rejected in full** and the
+   rejection is reported, never silent;
+4. the absence of a record is `Unknown`.
+
+The resolution is **read-only**: it never mutates the baseline, the
+configuration, or any in-flight turn state. The shipped baseline and the
+families deliberately left `Unknown` are documented in
+[model-adapters.md](model-adapters.md).
+
+**Admission policy.** The effective capability is applied to the turn's
+resolved selection through the kernel's `reasoning_capability_notices_neutral`
+and `ReasoningCapabilityPolicy`, and produces exactly one of:
+
+| Outcome | Meaning |
+|---|---|
+| `Reject` | The selection is refused **locally** with a typed refusal naming the model and the dimension. No provider request is dispatched. |
+| `WarnDrop` | The unsupported dimension is dropped and a notice records **what was dropped**. |
+| `AllowWithWarning` | The selection proceeds with a recorded uncertainty notice. |
+| `Allow` | The selection proceeds unchanged. |
+
+The kernel's default policy is **fail-closed** — `unsupported → Reject`,
+`unknown → Reject`, `mixed → WarnDrop` — and that is the disposition set
+ADR-0050 decided. The consequence is deliberate: a selection on a
+dimension nobody has published a contract for is refused at admission
+rather than forwarded optimistically.
+
+The kernel's neutral capability type is **status-only**: it carries no
+accepted-label list and never validates a label. The accepted-label set
+and the budget bounds therefore stay in CodeGG's record, and the kernel
+supplies the per-dimension decision.
+
+The check runs at **turn admission**
+(`src/core/daemon_turns.rs`, `CoreRequest::TurnSubmit`), after the daemon
+has resolved the effective selection (explicit override ▸ persisted
+principal preference ▸ agent / model-profile default) and before any
+provider request is dispatched. A refusal is a successful protocol
+exchange carrying a typed error — `CoreResponse::Error { code:
+"reasoning_capability_unsupported", .. }` — not a transport failure.
+
+**The typed codes a frontend has to tell apart.** Four codes coexist, and
+they arrive on **two different channels**, which is the distinction that
+matters:
+
+| Code | Channel | Meaning | The turn |
+|---|---|---|---|
+| `reasoning_vocabulary_unsupported` | `CoreResponse::Error` | The daemon has not advertised the open vocabulary, so the label itself is refused. | refused |
+| `reasoning_capability_unsupported` | `CoreResponse::Error` | The model's capability record refuses the selection. | refused |
+| `reasoning_capability_notice` | `CoreEvent::Error` (session event) | A dimension was dropped; the notice names what was dropped. | proceeds |
+| `reasoning_selection_unreadable` | `CoreEvent::Error` (session event) | The persisted selection could not be read, so the agent / model-profile default applies instead. | proceeds |
+
+The two refusals are distinguishable by `CoreResponse::Error.code`, and the
+two notices by `CoreEvent::Error.code`; the **channel** separates a refusal
+from a notice. A frontend that collapses either pair into a generic
+"turn failed" loses the distinction.
+
+A persisted selection that cannot be **read** is not authority, so the turn
+continues on the agent / model-profile default — but the loss is reported
+rather than silent. A store that cannot be read drops the choice the person
+made, and a turn that continued without saying so would hand them a
+different model behaviour with no indication that their stored choice was
+gone. The notice is **session-scoped**: the daemon's event log delivers a
+session-less event to a client only as a global event, and the WS filter
+drops a global `CoreEvent::Error`, so a session-less notice would never
+reach the client that asked for the turn.
+
+**Which dimensions each surface can express.** A surface that cannot
+express a dimension emits **no reasoning field at all**, which is why the
+capability record and the surface have to be read together:
+
+| Surface | Effort label | Fixed budget | Explicit disable |
+|---|---|---|---|
+| OpenAI Chat Completions | `reasoning_effort: "<label>"` | — | `reasoning_effort: "none"` |
+| OpenAI Responses | `reasoning: {"effort": "<label>"}` | — | `reasoning: {"effort": "none"}` |
+| Anthropic Messages | — | `thinking: {"type": "enabled", "budget_tokens": N}` | `thinking: {"type": "disabled"}` |
+| Gemini GenerateContent | — | `generationConfig.thinkingConfig.thinkingBudget: N` | `thinkingBudget: 0` |
+| Gemini Interactions | — | — | — |
+
+Two consequences follow. A model whose family is reached over the
+**Anthropic-compatible** surface cannot carry an effort label at all, so
+an effort selection on such a route produces no reasoning field. And a
+surface that cannot express a dimension makes the selection *silent*, not
+*wrong* — which is exactly why an unsupported selection is refused
+locally, with a typed error naming the model and the dimension, instead of
+being forwarded for the provider to ignore.
+
+### The frontend option surface (M004)
+
+The capability record is only useful if a frontend can turn it into the
+choices it actually offers. `reasoning_options(&Option<ReasoningCapabilityDto>)`
+in `crates/codegg-protocol/src/provider.rs` is that derivation, and it is a
+**pure function of the capability** — it never consults a provider, a
+connection, or the network.
+
+The rules are one per dimension:
+
+- **Effort** — the accepted labels, **in the capability's own order**, so the
+  cycle follows the model's ladder rather than a global one.
+- **Disable** — offered only when the model permits one.
+- **Budget** — offered only when the model accepts one *and* the value is
+  inside the capability's bounds.
+- **Always-reasons** — a model that always reasons is offered **no** off
+  switch, and the command says why instead of appearing broken.
+
+With **no** capability at all, the derivation falls back to the known-label
+ladder and sets `fallback = true`. The ladder is a convenience vocabulary, not
+a statement about the model, so a surface that shows it says so — it must not
+present the ladder as the model's options.
+
+The result is always a **subset** of what the capability permits. The
+derivation can only narrow; it can never widen a model's options, because a
+frontend that offers a choice the model refuses produces exactly the failure
+this subsystem exists to remove.
+
+The capability travels to the frontend on the model DTOs
+(`ProviderModelDto.reasoning_capability`, `SelectedModelDto.reasoning_capability`),
+declared optional and skipped when absent — so a daemon that publishes no
+capability and a client that predates the field interoperate in both
+directions, and an absent capability reads as "unknown", never as "no
+reasoning".
+
+The frontend's write path is the daemon's: `/reasoning` sends
+`CoreRequest::ReasoningPreferenceSet` with the daemon's preference revision as
+the compare-and-set, and the local display is updated from the daemon's
+**response** rather than from the option the user just picked. A refused write
+puts the daemon's last known value back and surfaces the typed refusal.
+
+### Discovery overlay from provider catalog metadata (M005)
+
+
+The third source in the resolution order above — the **discovery overlay** —
+is a provider's *published* thinking-capability contract, retained from the
+catalog response rather than discarded by it. It is the narrowest of the
+three: it may only **remove** an option the compiled adapter baseline
+offers.
+
+**Where it is retained.** `crates/codegg-providers/src/eggpool.rs` parses a
+model's catalog entry and looks for a thinking capability at
+`eggpool.capabilities.thinking`, `capabilities.thinking`, or `thinking`. Two
+shapes are read from that one block: the **flat** runtime capability
+(`supported_efforts`, `toggle`, `effort`, `budget`, `budget_tokens_min`,
+`budget_tokens_max`) and the **documented** `control_contract` shape, whose
+`accepted_efforts` and per-dimension statuses sit one level deeper. The
+retained value is an `EggpoolCapabilityOverlay`, carried on the probe summary
+in its **own field**.
+
+**It is outside the catalog digest, on purpose.** `digest_models` hashes
+`id` and `name` only, and that is load-bearing: the digest *is* the
+revision-scoped `catalog_revision` that stored last-used-model preferences
+are keyed against and that the revision-scoped `provider_connection_models`
+rows hang off. Folding the capability into it would invalidate stored
+preferences and split those rows. So the capability has its **own revision**
+— a digest over the overlay content alone — and the overlay is additionally
+**revision-scoped**: it records the catalog revision it belongs to, so an
+overlay from a superseded catalog is recognisable and can be treated as
+absent.
+
+**It may only narrow.** The overlay is parsed into the same
+`ReasoningCapabilityRecord` the resolution already consumes, and every
+dimension it declares is a narrowing of the baseline. An overlay that
+introduces a label, a bound, or an always-reasons value the effective record
+does not carry is **rejected in full** by
+`codegg_core::model_profile::capability::apply_discovery_overlay`, and the
+rejection is reported, never silent. The always-reasons property is never
+taken from a provider's advertisement: the compiled baseline owns it.
+
+**Its bounds.** The accepted-effort ladder is deduplicated and bounded (≤ 32
+labels, ≤ 64 bytes each); the thinking-budget range is bounded and must have
+`min ≤ max`. Malformed, oversized, or wrong-typed content degrades to
+`Unknown` **for that dimension** and never fails the catalog probe — a
+malformed provider response must not break model discovery. An overlay that
+declares no dimension at all is absent, and the compiled baseline stands.
+
+**It is replaced atomically.** The overlay is installed by swapping a whole
+value under one lock, so a turn never observes a partially updated capability
+and the request path cannot mutate an installed overlay.
+
+**It has no live source at this baseline.** The upstream
+`control_contract.accepted_efforts` contract is unimplemented in every
+available revision; the pinned `/v1/models` handler emits a flat four-key
+model object with no capability block; and the one capability shape upstream
+*does* expose at runtime rides an integrations-profile route CodeGG does not
+call. Every provider response therefore yields an **absent** overlay today,
+and the effective capability is the compiled baseline, exactly as before.
+This is **forward-compatible machinery, not a shipped behaviour change**. The
+route that would become the source, if a deployment ever published the
+contract on `/v1/models`, is the catalog response itself — the same body the
+probe already reads — so no new provider endpoint is required.
+
+### Reasoning intent at the wire boundary
+
+`wire.rs` projects CodeGG's request onto the kernel's canonical
+`ReasoningIntent`. The projection is lossless over the vocabulary CodeGG owns:
+
+| CodeGG request | canonical `ReasoningIntent` |
+|---|---|
+| no preference | `ReasoningIntent::default()` — `requested: None` |
+| explicit disable | `ReasoningIntent::disabled()` — `requested: Some(false)`, mode `Toggle`, `explicit_disable: true` |
+| effort label | mode `Effort`, label carried verbatim |
+| fixed budget | mode `FixedBudget`, budget carried verbatim |
+| thinking on, no depth | mode `Adaptive` |
+
+The explicit disable is the **kernel's own constructor**, not a literal:
+`explicit_disable` is never written as `false` at a construction site, because a
+hard-coded `false` is exactly the shape that made "off" unreachable.
+`scripts/check_reasoning_intent_fidelity.py` enforces both that and the
+absence of a closed CodeGG effort vocabulary in the provider crate.
+
+Which dimensions a surface can express is the kernel's authority, not
+CodeGG's. The per-surface encoding is therefore pinned by fixtures rather than
+implied by the bridge: for every surface CodeGG uses (OpenAI Chat
+Completions, OpenAI Responses, Anthropic Messages, Gemini GenerateContent) and
+every intent, the encoded body's reasoning content is asserted — including the
+cases where a surface cannot express a dimension and emits **no** reasoning
+field at all (an effort label on Anthropic Messages, a budget on the OpenAI
+surfaces).
+
+One adapter reads the request's intent directly: the generic
+OpenAI-compatible encoder expresses the thinking toggle through
+`chat_template_kwargs.enable_thinking`, so an explicit disable has to reach
+that field rather than the stripped `reasoning_effort`. It used to compute the
+wire value as `request.thinking_budget != Some(0)`, which could never be false —
+a zero budget is not a request the kernel accepts — so "off" could not be
+expressed there at all.
 
 **Adapter divergence is intentional and unmodified.** Azure, OpenRouter, and
 Zen strip the reasoning projection (`azure.rs`, `openrouter.rs`,

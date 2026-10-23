@@ -67,12 +67,30 @@ pub struct UiState {
     pub auto_scroll: bool,
     /// Show reasoning/thinking sections
     pub show_thinking: bool,
-    /// Per-turn extended-thinking setting chosen with `/reasoning`.
+    /// The extended-thinking selection chosen with `/reasoning`.
     ///
-    /// Frontend-local: sent on each `TurnSubmit` rather than persisted, so it
-    /// cannot go stale against the selected model. `Inherit` means "use the
-    /// agent / model-profile default".
+    /// This is the **daemon-owned** selection, projected for display. The
+    /// daemon resolves the selection at every turn-admission path, so the
+    /// local value is never authoritative: it is corrected from the
+    /// daemon's response whenever the two differ.
+    ///
+    /// `Inherit` means "no explicit selection": the turn takes the agent /
+    /// model-profile default.
     pub reasoning_mode: crate::protocol::core::ReasoningMode,
+    /// The reasoning capability the daemon published for each model it has
+    /// resolved, keyed by model id.
+    ///
+    /// The daemon's model-resolution response is the only source. A model
+    /// with no entry here has **no published capability**, which reads as
+    /// "not established" — never as "this model accepts nothing". The
+    /// frontend then falls back to the known-label ladder and says so.
+    pub reasoning_capabilities: HashMap<String, crate::protocol::provider::ReasoningCapabilityDto>,
+    /// The daemon's preference revision, used as the compare-and-set
+    /// revision for a reasoning write.
+    pub reasoning_preference_revision: Option<u64>,
+    /// Request generation for the reasoning read/write path. A stale
+    /// completion is dropped rather than applied.
+    pub reasoning_request: crate::tui::app::state::AsyncUiRequestState,
     /// Show message timestamps
     pub show_timestamps: bool,
     /// Route manager for Home/Session navigation

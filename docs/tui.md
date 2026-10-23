@@ -1068,6 +1068,63 @@ Opening the box takes an async create-and-attach round trip against the daemon.
 Until it completes there is no box, so keystrokes keep going to the composer —
 type the command again once the box is up rather than assuming `i` was eaten.
 
+## Reasoning control
+
+`/reasoning` chooses how much the model is asked to think. `/thinking` is a
+different control and stays different: `/thinking` decides whether reasoning
+text is *rendered*, and `/reasoning` decides what the model is *asked to do*.
+
+The selection is kept by the daemon against your own account, so it applies to
+every turn that starts afterwards — including turns you start from another
+window, and including the next one after a restart. The status bar at the
+bottom of the screen always shows the current selection (`reasoning: high`,
+`reasoning: off`, `reasoning: default`), next to the approval and sandbox
+policy, so you do not have to run the command to find out what the next turn
+will use.
+
+The options are the ones your model actually accepts, not a fixed ladder:
+
+- The effort labels come from the model, in the model's own order. A model
+  that accepts `low`, `medium`, `high`, `xhigh`, and `max` offers exactly
+  those.
+- **Off** appears only when the model can turn reasoning off. A model that
+  always reasons has no off, and the command says so instead of looking
+  broken.
+- A fixed thinking budget appears only when the model accepts one and the
+  value is inside the model's accepted range.
+
+When CodeGG has no published capability for the model — which includes
+OpenAI-compatible endpoints and local servers, where whether `reasoning_effort`
+is honoured depends on the deployment rather than on the vendor — the command
+falls back to the known labels (`minimal`, `low`, `medium`, `high`) and says
+that it is a fallback. That is a convenience ladder, not a statement about
+your model, and the command never presents it as one.
+
+**The daemon still has the last word on that fallback.** A model nobody has
+published a reasoning contract for is *unknown*, not permissive, so the daemon
+refuses an explicit reasoning selection on it rather than forwarding it on a
+guess. The refusal names the model and the dimension, and nothing is sent to
+the provider. If you use an endpoint whose deployment does honour
+`reasoning_effort`, declare what it accepts in your config — the
+`model_profile.<model>.reasoning_capability` block in `codegg.example.jsonc`
+shows the shape — and the same command then offers that model's own options
+and accepts them.
+
+Two things can go wrong, and both are reported rather than swallowed:
+
+- The provider drops the setting on the wire. Some adapters remove
+  `reasoning_effort` from the request body entirely, so the selection is
+  accepted and then ignored. The confirmation is a warning for those
+  providers.
+- The daemon refuses the selection. The reason is shown — a concurrent write
+  from somewhere else, a label this daemon does not accept, or a model that
+  does not accept that selection — and the status row goes back to the
+  daemon's value.
+
+The daemon's value always wins. If the selection was changed elsewhere, or
+the daemon narrows it, the status row is corrected to match, and the turn
+that follows uses the daemon's selection rather than a stale local copy.
+
 ## Approval and sandbox
 
 Two independent dimensions. Approval decides *who answers an escalation*;
