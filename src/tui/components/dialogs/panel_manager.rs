@@ -1,13 +1,6 @@
 //! The panel manager: pick what the side column shows, and bind a hotkey to it.
 //!
-//! One box replaces the old two-button grid. The grid was two unlabelled
-//! buttons in a 30-column overlay; this is a filtered list that names each
-//! panel, says what it is for, and shows which digit is already bound to it.
-//!
 //! ## Interaction
-//!
-//! Two modes, because this box has to answer two different questions and the
-//! keys for them collide.
 //!
 //! **Normal** (how it opens — the manager is reached with `Shift+S`, a
 //! Normal-mode chord, and is read before it is typed into):

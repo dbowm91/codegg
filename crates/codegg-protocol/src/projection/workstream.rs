@@ -1,8 +1,4 @@
 //! Pure bounded workstream view derived from one authorized session snapshot.
-//!
-//! The session projection stream remains the durable revision/replay authority;
-//! this module joins its canonical run, group, job, and worktree facts without
-//! introducing another store or execution authority.
 
 use serde::{Deserialize, Serialize};
 

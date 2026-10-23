@@ -181,11 +181,6 @@ struct WorkspaceSymbolSummary {
 /// `src/lsp/semantic_context.rs`).
 ///
 /// # Coordinate convention
-///
-/// All line/column values inside this struct are **1-indexed** (the
-/// convention used by `LocationSummary`, `DiagnosticSummary`, etc.).
-/// [`egglsp::LspContextPacket`] uses **0-indexed** lines. The bridge
-/// function handles the conversion.
 #[derive(Serialize)]
 struct SemanticContextPacket {
     file: String,
@@ -5002,7 +4997,6 @@ fn collect_cache_file_hashes_for_request(
     hashes
 }
 
-/// Build an [`egglsp::LspContextRequest`] from a
 /// [`crate::agent::turn_runtime::LspAgentContextInput`].
 fn build_lsp_context_request(
     input: &crate::agent::turn_runtime::LspAgentContextInput,

@@ -525,11 +525,6 @@ pub fn bar_width(entries: &[SubagentBarTab]) -> usize {
 }
 
 /// Truncate `text` to at most `width` display columns, with no ellipsis.
-///
-/// The same budget arithmetic as `crate::tui::wrap::ellipsize_to_width` but
-/// without the ellipsis: this is the degenerate clamp for a bar narrower than
-/// its own entries, where a trailing `…` would cost the one column the entry
-/// needed to be visible at all.
 fn truncate_to_width(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();

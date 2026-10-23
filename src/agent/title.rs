@@ -12,9 +12,6 @@
 //! in the same session retries naturally, since the title is still the
 //! creation default.
 //!
-//! This module wires the agent's contract to a lightweight one-shot
-//! provider call (no tools, no sub-agent dispatch, no scheduler work).
-//!
 //! The excerpt comes from the completed turn rather than the message table:
 //! the title task fires while the run is finishing, before
 //! [`crate::agent::transcript`] persists the turn.
@@ -63,14 +60,11 @@ const MAX_EXCERPT_SIDE_CHARS: usize = 1000;
 const TITLE_TIMEOUT_SECS: u64 = 30;
 /// Output budget for the title call.
 ///
-/// A 60-char title costs ~15-20 tokens, so the old 64-token cap left almost
-/// no headroom — and on a reasoning model the reasoning tokens are billed
-/// against the *same* output budget as the visible text. A model that thinks
-/// for 64 tokens never emits a text delta at all, the sanitizer rejects the
-/// empty string, and the session stays `"Untitled"` forever. 256 leaves ~4x
-/// the title's own cost as headroom for preamble the sanitizer strips while
-/// keeping the call bounded, one-shot, and far below a normal turn budget
-/// (the sanitizer truncates to 60 chars whatever arrives).
+/// A model that thinks for 64 tokens never emits a text delta at all, the
+/// sanitizer rejects the empty string, and the session stays `"Untitled"`
+/// forever. 256 leaves ~4x the title's own cost as headroom for preamble the
+/// sanitizer strips while keeping the call bounded, one-shot, and far below a
+/// normal turn budget (the sanitizer truncates to 60 chars whatever arrives).
 const TITLE_MAX_TOKENS: usize = 256;
 const TITLE_TEMPERATURE: f64 = 0.7;
 
@@ -180,7 +174,6 @@ pub(crate) fn sanitize_title(raw: &str) -> Option<String> {
     Some(text)
 }
 
-/// Truncate to a char boundary.
 fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()

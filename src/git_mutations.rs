@@ -31,9 +31,6 @@ use crate::git_network_policy::NetworkFailureKind;
 use crate::git_service::{GitExecutionService, GitServiceError, RawGitOutput};
 
 // ── Process environment policy ───────────────────────────────────────
-//
-// The canonical env-var lists and builder live in `egggit::process`. These
-// re-exports preserve the historical root paths used by downstream callers.
 
 /// Re-export of the canonical allowlist. See
 /// [`codegg_git::process_policy::ALLOWED_ENV_VARS`] for the source of
@@ -245,9 +242,6 @@ pub enum GitMutationError {
     StateMismatch { expected: String, actual: String },
     /// C007: the private index publication was refused because the
     /// repository changed under it.
-    ///
-    /// A conflict is a typed, retryable result. Nothing was published, and
-    /// the concurrent writer's index was not overwritten.
     #[error("git index publication conflict: {0}")]
     PublicationConflict(crate::git_publication::GitIndexPublicationConflict),
     /// C007: the private index publication was refused before it was
@@ -766,11 +760,6 @@ impl GitMutationExecutor {
     /// the workspace lease and the daemon-owned mutation authority the
     /// executor already requires, plus the path validation the caller
     /// already performed.
-    ///
-    /// The publication itself is what makes this safe: the index is staged
-    /// privately, the intent is recorded durably, and the index is replaced
-    /// under Git's own lock with a compare-and-swap against the generation
-    /// the staging observed.
     async fn execute_add_publication(
         &self,
         operation: &GitOperation,
@@ -912,10 +901,6 @@ impl GitMutationExecutor {
 }
 
 /// A short, human-readable summary of a C007 publication receipt.
-///
-/// The receipt names the single resource the publication published, so the
-/// summary says so too. A summary that implied the refs were published as
-/// well would be a false claim about the repository's state.
 fn publication_receipt_summary(
     receipt: &crate::git_publication::GitIndexPublicationReceipt,
 ) -> String {

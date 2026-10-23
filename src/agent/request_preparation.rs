@@ -1425,8 +1425,6 @@ impl AgentLoop {
 
 /// Test-only: expose `build_tool_definitions` so integration tests can
 /// assert the actual tool set the agent sends to the model.
-///
-/// **Not** intended for production use.
 #[doc(hidden)]
 impl AgentLoop {
     #[doc(hidden)]

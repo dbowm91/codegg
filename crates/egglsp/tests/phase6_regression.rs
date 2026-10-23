@@ -12,7 +12,7 @@ use egglsp::tui_summary::{
 
 /// Verify the documented server count matches the actual count.
 /// If this test fails, update architecture/lsp.md, AGENTS.md,
-/// architecture/overview.md, and .opencode/skills/lsp/SKILL.md.
+/// architecture/overview.md, and .opencode/skills/lsp-ide/SKILL.md.
 #[test]
 fn server_definition_count_matches_docs() {
     let defs = server_definitions();
@@ -20,7 +20,7 @@ fn server_definition_count_matches_docs() {
     // - architecture/lsp.md (Supported Languages section)
     // - AGENTS.md (LSP gotcha and architecture index)
     // - architecture/overview.md (Verified Counts table)
-    // - .opencode/skills/lsp/SKILL.md (server count mentions)
+    // - .opencode/skills/lsp-ide/SKILL.md (server count mentions)
     // - README.md (Features section, if it mentions a count)
     assert_eq!(
         defs.len(),

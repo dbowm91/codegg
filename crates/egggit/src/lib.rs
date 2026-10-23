@@ -1,12 +1,5 @@
 //! Read-only Git and worktree facts.
 //!
-//! `egggit` exposes a small async API for inspecting a Git repository:
-//! branch, status, diff summary, changed files, log, blame, refs, worktree
-//! facts, operation state, and patch validation. It does **not** mutate the
-//! repository: commit, worktree create/remove, and other mutating workflows
-//! stay with the host application, which owns its own permission and
-//! approval policy.
-//!
 //! ## Scope
 //!
 //! The supported contract is read-only repository facts plus deterministic
@@ -16,10 +9,6 @@
 //! hardened environment policy but enforces no permission policy itself.
 //! Callers that need mutating Git behavior own that policy outside this
 //! crate.
-//!
-//! `egggit` has no dependency on any host application. One consumer is
-//! CodeGG's workflow layer, which keeps mutation and permission checks
-//! outside this crate.
 
 pub mod blame;
 pub mod config_surface;

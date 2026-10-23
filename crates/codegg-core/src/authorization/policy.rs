@@ -915,11 +915,6 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         // `FileRead`, deliberately mirroring `lsp_preview_apply`'s
         // `ViaSession` scope rather than the generic projection stream's
         // `Opaque` + `ProjectObserve`.
-        //
-        // `ProjectObserve` is the correct gate for lifecycle projections
-        // because they carry workflow state. LSP reads and diagnostics carry
-        // source content — messages, code, and snippets — so the weaker
-        // observability capability would understate what is disclosed.
         R::LspReadGet { .. } => OperationDescriptor::new(
             "lsp_read_get",
             ScopeKind::ViaSession,

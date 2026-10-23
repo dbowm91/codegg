@@ -1,8 +1,5 @@
 //! Provider connection qualification semantics.
 //!
-//! Catalog discovery and credential verification are **separate** facts about
-//! a connection, and this module keeps them separate in the type system.
-//!
 //! The defect this replaces: provisioning treated a successful
 //! [`crate::Provider::models`] call as proof that a credential was accepted.
 //! That is false for every provider whose `models()` returns a local/static

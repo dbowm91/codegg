@@ -2,12 +2,9 @@
 //!
 //! A Git read can observe the repository under very different guarantees, and
 //! the difference decides whether the result may feed a generation-bound
-//! consumer (diff generation, index publication, merge-base computation).
-//! Historically the repository had **no** type for this: the private object
-//! view's cache made a read "immutable" or "stale" only in prose, and a
-//! contained live read was indistinguishable from a snapshot at the type
-//! level. A consumer therefore could not be prevented from treating a
-//! possibly-torn read as a stable generation.
+//! consumer (diff generation, index publication, merge-base computation). A
+//! consumer therefore could not be prevented from treating a possibly-torn
+//! read as a stable generation.
 //!
 //! This module supplies the missing vocabulary:
 //!

@@ -10,11 +10,6 @@
 //! the active tab as the return target, `Esc` pops back to the exact
 //! prior view, and `Enter` descends through the existing project-tab /
 //! Task-view machinery (no second tab model, no fabricated sessions).
-//!
-//! Async discipline mirrors `work_orders.rs`: every completion carries
-//! the dashboard `generation` plus the routing `reconnect_epoch` and
-//! is dropped at apply time after close, reconnect, revocation, or a
-//! superseding refresh.
 
 use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::protocol::work_order::{ProjectActivitySummaryDto, WorkOrderDto};

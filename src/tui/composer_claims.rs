@@ -1,70 +1,43 @@
 //! The composer's Normal-mode claim table.
 //!
-//! # What this table is
+//! # The fallthrough rule
 //!
 //! In the main buffer's **Normal** mode the composer owns a closed set of
-//! letters. This module is the single, enumerable statement of which letters
-//! it owns and what each one means. The app's global binding map
+//! letters, and this module is the single, enumerable statement of which
+//! letters it owns and what each one means. The app's global binding map
 //! (`src/tui/input.rs`) is consulted only for letters the composer does *not*
 //! claim.
-//!
-//! The rule that makes the table worth having is the **fallthrough rule**:
 //!
 //! > A claimed letter is consumed by the composer even when the composer's
 //! > verb is currently a no-op. It must not silently become an unrelated app
 //! > action.
 //!
-//! The interactive terminal panel already solves the same problem on a
-//! non-document surface, and its dispatch comment records the failure mode
-//! verbatim: *"a focused panel is consulted before Normal-mode actions, so an
-//! unclaimed `d` would silently become `OpenDiff` and never delete anything."*
-//! The panel's answer is to claim `d` unconditionally, even with an empty
-//! selection. The composer takes the same answer, and takes it **before** any
-//! verb exists.
-//!
-//! # Why the table is all live
-//!
 //! A reserved claim still **owns** the key — the fallthrough rule is the whole
 //! point — so a reserved `d` cannot quietly become `OpenDiff` while
-//! delete-selection is pending. What is pending is the *behaviour*.
-//!
-//! The verbs landed in three milestones: M004 (motion), M005 (selection and
-//! clipboard) and M006 (undo, redo and the insert transitions). All three are
-//! done, so every claim in the table is **live**: there is no letter the
-//! composer swallows and does nothing with.
-//!
-//! `i` was live from the start for a hard reason rather than a convenient one: it
-//! is the app's **only** route back to Insert mode, so a reserved `i` would
-//! consume the key, do nothing, and strand the user in Normal mode with no way
-//! to type at all. What it runs is the app's *existing* transition — the gesture
-//! that used to live in the `None` arm of the key chain — moved into the table
-//! so that the table is the one place that says who owns the key.
+//! delete-selection is pending. `i` is the app's **only** route back to
+//! Insert mode, so a reserved `i` would strand the user in Normal mode.
 //!
 //! # Scope
 //!
-//! The table applies to the **main buffer's Normal mode** only. It does not
-//! apply to the side-panel composers, the chat box, the Workspace dashboard's
-//! filter, the dialogs, or the project picker, and it does not apply in
-//! Insert mode. The claim is live only when the composer holds the keyboard
-//! (see `App::composer_holds_keyboard`) and the *resolved* mode is Normal (see
-//! `App::composer_input_mode`) — never when the raw `UiState::input_mode`
-//! field says Normal.
+//! The table applies to the **main buffer's Normal mode** only — not the
+//! side-panel composers, the chat box, the Workspace dashboard's filter, the
+//! dialogs, or the project picker — and not Insert mode. The claim is live
+//! only when the composer holds the keyboard (`App::composer_holds_keyboard`)
+//! and the *resolved* mode is Normal (`App::composer_input_mode`), never when
+//! the raw `UiState::input_mode` field says Normal.
 //!
 //! # The one conditional claim
 //!
 //! `j` and `k` are claimed only when the composer's **content does not fit
 //! its box**. The measure is the **fitted** content — the wrapped row count
-//! against the visible row count — and not the buffer's newline count: a
-//! composer whose text wraps to three rows in a three-row box *fits*, and a
-//! composer whose text wraps to four rows in a three-row box does not.
+//! against the visible row count — and not the buffer's newline count.
 //!
 //! The fit is a **cached layout fact**. The gate runs at key dispatch, before
 //! the render pass, so the numbers come from the last layout pass rather than
-//! from a second computation at dispatch time — two computations of one fact
-//! are two answers to it, and the gate and the box must not be able to
-//! disagree. A composer that has never been laid out has no measurement, and
-//! an unmeasured fit does not hold the claim: the key falls through rather
-//! than being swallowed in a state the user cannot see.
+//! from a second computation — two computations of one fact are two answers
+//! to it, and the gate and the box must not disagree. A composer that has
+//! never been laid out has no measurement, and an unmeasured fit does not
+//! hold the claim: the key falls through.
 //!
 //! # The static guard
 //!
@@ -472,11 +445,6 @@ pub const COMPOSER_CLAIMS: &[ComposerClaim] = &[
         // ADR-0042 part 4 lists `a` among the letters the composer owns, but
         // its conflict table does not mention it — a gap in an accepted ADR,
         // recorded in the roadmap rather than papered over by editing it.
-        //
-        // The measured facts settled it: `FocusSidebar` already answers to
-        // `Ctrl+Alt+S` in **both** maps, so the bare `a` was a second spelling
-        // of an action that already had one. Deleting that spelling loses no
-        // capability, and the letter joins the composer's fixed set.
         status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,

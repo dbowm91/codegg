@@ -1,9 +1,4 @@
 //! Codegg's adapter for the neutral EggPool semantic model-routing policy.
-//!
-//! Configuration parsing stays in `codegg-config`; this module performs the
-//! one-way translation into the shared compiler. It contains no provider,
-//! session, credential, or inference behavior. The root agent runtime owns
-//! selector execution and concrete provider invocation.
 
 use std::collections::BTreeMap;
 

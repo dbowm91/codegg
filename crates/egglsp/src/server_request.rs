@@ -1,10 +1,4 @@
 //! Server-request dispatcher for LSP JSON-RPC.
-//!
-//! When the language server sends a request to the client (e.g.
-//! `workspace/configuration`, `client/registerCapability`), this module
-//! classifies the method and returns an appropriate response. The background
-//! reader in [`crate::client`] calls [`dispatch_server_request`] and writes
-//! the reply back via [`crate::writer::LspWriter`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;

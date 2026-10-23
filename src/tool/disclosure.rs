@@ -12,7 +12,7 @@
 //! is still filtered through agent/session/broker/permission policy, and
 //! `tool_search` only reveals tools the current policy allows.
 //!
-//! States (see `plans/.../002-model-visible-tool-surface-minimization.md`):
+//! States (see `architecture/agent-tool-surface.md`):
 //!
 //! - `Core`: ordinary coding turn immediate (direct edit-loop primitives,
 //!   plus `tool_search` itself).

@@ -1,8 +1,4 @@
 //! LLM provider interface and implementations.
-//!
-//! This module provides the Provider trait for interacting with various LLM backends
-//! including Anthropic, OpenAI, Google Vertex, AWS Bedrock, and more. Providers handle
-//! authentication, request formatting, streaming responses, and error handling.
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -591,14 +587,6 @@ pub struct ModelInfo {
 
 pub struct ProviderRegistry {
     /// Keyed by provider id in **sorted** order.
-    ///
-    /// `ProviderRegistry::list()` feeds the model catalog, so its order decides
-    /// which provider's models come first — and consumers fall back to
-    /// `models[0]` when they have no explicit selection. A `HashMap` iterates
-    /// in `RandomState` order, which is reseeded per process, so the "first"
-    /// provider changed on every launch. That silently picked a different
-    /// provider (and a different model) each run, which in turn routed turns to
-    /// whichever backend hashed first. Sorted keys make the catalog stable.
     providers: BTreeMap<String, Box<dyn Provider>>,
 }
 
@@ -859,14 +847,6 @@ pub(crate) fn resolve_provider_credential(
 
     // Credential-store fallback.
     //
-    // A credential added through the TUI `/connect` flow is written to the
-    // credential store under the provider id and appears in neither config nor
-    // the environment. Without this fallback the resolver returns `None`, the
-    // provider is skipped during registration (`NO KEY for provider ...`), and
-    // it therefore contributes no models — so connecting a provider through
-    // the TUI appeared to have no effect at all: `/connect` reported success
-    // while `/models` stayed empty.
-    //
     // Config and env keep priority; this only supplies the missing case.
     // Expired records are treated as absent rather than as a bad key.
     //
@@ -945,10 +925,6 @@ fn ensure_api_key_credential(name: &str, resolved: &ResolvedAuth) -> Option<Cred
 }
 
 /// Register a provider that accepts a full [`Credential`] envelope.
-///
-/// This is the preferred path for OpenAI-compatible providers. It
-/// preserves `CredentialKind` (api key vs. bearer token) and any
-/// `expires_at` metadata at construction time.
 fn register_credential_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,
@@ -1005,12 +981,6 @@ fn register_credential_provider<F>(
 }
 
 /// Register a provider that only accepts a static API-key secret.
-///
-/// Resolves a credential through [`resolve_provider_credential`], then
-/// collapses it to a `String` for the factory. Bearer-style credentials
-/// produce a warning and the provider is skipped, since callers of this
-/// helper genuinely need a static API key (e.g. they use a non-Bearer
-/// auth header like `x-api-key`).
 fn register_api_key_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,
@@ -1062,11 +1032,6 @@ fn register_api_key_provider<F>(
 /// (possibly absent) `base_url` through to the factory. Uses the
 /// [`register_api_key_provider`] path because all current callers
 /// (Anthropic, OpenAI native, Google, OpenRouter) use static API keys.
-///
-/// All credential lookups flow through
-/// [`resolve_provider_credential`]; the resolver itself is responsible
-/// for honoring `ctx.legacy_api_key`. This helper does **not** read
-/// `cfg.api_key` directly so there is a single resolution path.
 fn register_config_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,

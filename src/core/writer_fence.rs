@@ -2,11 +2,6 @@
 //!
 //! # What this adapter is
 //!
-//! The tool layer (`crate::tool::writer_fence`) owns the *contract*: a tool
-//! asks the fence whether it may perform a native effect, and the fence
-//! answers with either "no scope, do as you did before" or "here is the
-//! checkout's permit, hold it until your effect settles".
-//!
 //! This module owns the *authority* behind that contract. It resolves the
 //! run's checkout scope from daemon-owned stores, contains the effect inside
 //! that scope, fails closed on effect classes this milestone has no profile

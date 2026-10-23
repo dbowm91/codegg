@@ -1,10 +1,5 @@
 //! Authoritative process runtime owner for LSP server child processes.
 //!
-//! This module owns the single `tokio::task` that watches a child
-//! process, captures its stderr, classifies the exit based on an
-//! explicit shutdown intent, and publishes exactly one
-//! [`LspProcessExitEvent`] per generation.
-//!
 //! Goals:
 //! - One task owns the `Child` handle, stderr ring buffer, intent
 //!   receiver, and kill receiver.

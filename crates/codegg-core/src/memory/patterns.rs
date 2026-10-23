@@ -1,7 +1,4 @@
 //! Rule-based pattern detection and importance scoring for memory consolidation.
-//!
-//! This module provides deterministic pattern matching to extract meaningful
-//! information from conversation history without requiring LLM inference.
 
 use crate::memory::Memory;
 use crate::session::message::{Message, PartData};

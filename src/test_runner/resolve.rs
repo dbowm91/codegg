@@ -200,11 +200,6 @@ fn resolve_file(workdir: &Path, path: &Path) -> Result<ResolvedTestCommand> {
         // Map an integration test file to its cargo test target. Bare
         // `cargo test` would silently broaden to the whole suite and discard
         // the requested file's relationship to reported failures.
-        //
-        // A file directly under `tests/` is an auto-discovered target named
-        // after its stem. A file inside a family directory is a *member* of
-        // that family's executable, so the target is the family — which is
-        // what the manifest declares.
         let stem = path.file_stem().and_then(|s| s.to_str());
         let parent = path.parent();
         let parent_name = parent.and_then(|p| p.file_name()).and_then(|n| n.to_str());

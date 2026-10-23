@@ -1,10 +1,5 @@
 //! Bounded output capture, projection metadata, and RunStore persistence.
 //!
-//! This module owns everything that happens after a child or scheduler
-//! dispatch resolves: truncating captured streams, shaping the structured
-//! result, attaching routing metadata, and persisting the caller-owned
-//! RunStore record.
-//!
 //! Contracts preserved from the pre-split implementation:
 //!
 //! - stdout/stderr are never accumulated without a cap (`max_output_lines`

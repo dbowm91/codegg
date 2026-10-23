@@ -10,11 +10,6 @@
 //! (verified phase boundary, repeated-compaction threshold, explicit
 //! operator/host request, or model-profile recovery). Unsupported profiles
 //! always stay on normal compaction.
-//!
-//! Ownership: `codegg-core::work_plan` owns the deterministic policy so
-//! host tests can assert the matrix without provider/model calls. Message
-//! reconstruction lives in `src/context/epoch.rs` as a consumer of the
-//! existing compaction/rollover owners.
 
 use serde::{Deserialize, Serialize};
 

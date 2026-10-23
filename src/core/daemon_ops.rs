@@ -1,8 +1,4 @@
 //! M002: `ops` request family for `CoreDaemon`.
-//!
-//! Audit query/export, memory, and notification routing over daemon-owned stores.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};
@@ -763,9 +759,6 @@ impl CoreDaemon {
 
 /// The effective-default preference projection for a principal that has no
 /// stored row yet.
-///
-/// No explicit selection: the turn inherits the agent / model-profile
-/// default.
 fn default_preference_dto(principal_id: String) -> crate::protocol::core::RuntimePreferenceDto {
     crate::protocol::core::RuntimePreferenceDto {
         principal_id,

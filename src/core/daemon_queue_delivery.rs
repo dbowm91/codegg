@@ -700,10 +700,6 @@ impl CoreDaemon {
     }
 
     /// Decide a stranded row's fate from its durable receipt.
-    ///
-    /// The submission id is re-derived from the entry id, so the lookup key is
-    /// known without reconstructing any authority — the row itself supplies the
-    /// identity that produced it.
     async fn receipt_resolution(&self, entry_id: &str) -> UserPromptQueueDeliveryResolution {
         let Some(pool) = self.pool.as_ref() else {
             return UserPromptQueueDeliveryResolution::Failed {

@@ -3135,11 +3135,6 @@ mod tests {
 }
 
 /// Reloading a session must reproduce the conversation, not an empty one.
-///
-/// The reported symptom was a session that came back truncated. Two things
-/// had to hold for it to be observable here: the run had to persist something
-/// in the first place, and the reader had to keep the persisted role. A reply
-/// whose only part is text used to be inferred as the user's own words.
 #[cfg(test)]
 mod transcript_reload_tests {
     use super::*;

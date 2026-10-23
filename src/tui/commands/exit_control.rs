@@ -1,14 +1,4 @@
 //! The two-press exit confirmation.
-//!
-//! Leaving the program is destructive and one keystroke away from a stray
-//! `q` or from a terminal that delivers `Ctrl+C` to a program it did not
-//! mean to stop. Both exits are therefore gated behind a second press of
-//! the **same** key inside [`EXIT_ARM_WINDOW`]: the first press clears the
-//! input field and arms the exit, the second one leaves.
-//!
-//! The shape is the stop-agent confirmation's — an armed timestamp on the
-//! prompt state, an expiry that runs on the render pump, and a line on the
-//! row above the input that names the key to press again.
 
 use std::time::Instant;
 

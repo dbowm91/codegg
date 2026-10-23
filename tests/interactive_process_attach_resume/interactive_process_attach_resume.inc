@@ -1327,7 +1327,7 @@ async fn interactive_daemon_worker_stack_probe() {
 }
 /// End-to-end daemon dispatch needs worker stacks above the default: the
 /// dispatch future is documented near the stack limit (see the 16 MiB
-/// precedent in `tests/projection_transport_real.rs`), so daemon tests
+/// precedent in `tests/server_feature/projection_transport_real.inc`), so daemon tests
 /// below run on an explicit big-stack runtime instead of the default
 /// `#[tokio::test]` threads.
 fn interactive_test_runtime() -> tokio::runtime::Runtime {

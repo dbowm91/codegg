@@ -79,11 +79,6 @@ impl PluginDialog {
     ///   column has — so without it a reader scrolled into the middle cannot
     ///   tell there is more below. It is therefore drawn on a reserved bottom
     ///   row in the hosted path too, on its own.
-    ///
-    /// The viewport below is derived from the rect actually being filled, in
-    /// this routine and nowhere else: the modal spends two more rows on the
-    /// content box's border than a column does, and a clamp derived per path
-    /// would reach a different last line in each.
     fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
         let (content_area, status_area) = match chrome {
             Chrome::Owned => {

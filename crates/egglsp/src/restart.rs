@@ -1,101 +1,17 @@
 //! Restart coordination for LSP clients.
 //!
-//! Consolidates the retry, backoff, exhaustion, cancellation,
-//! document replay, and ownership-restoration flow into a single
-//! coordinator driven by [`restart_client_coordinator`].
-//!
-//! ## Design
-//!
-//! The coordinator is a free function parameterized by a small
-//! [`RestartShared`] trait that the production `LspService`
-//! implements. Tests can plug in lightweight mock implementations
-//! of the same trait to drive the coordinator end-to-end without
-//! spawning real server processes.
-//!
-//! The coordinator never reconstructs a hard-coded `src/lib.rs`
-//! path. It uses the persisted [`LspClientDescriptor`] (populated
-//! on first publish) and the currently open document registry
-//! (read at restart time) to pick a seed file.
-//!
-//! ## Ownership model (Pass 1, Phase 3 final closure)
-//!
-//! Restart ownership is held in a per-key slot. The slot is
-//! acquired by [`acquire_restart_ownership`], released by
-//! [`RestartLease::release`] (async; production path) or
-//! [`RestartLease::Drop`] (safety fallback), and observed by
-//! [`cancel_restart_ownership`].
-//!
 //! **Cancellation is intent, not completion.** `cancel_restart_ownership`
-//! signals intent via the lease's cancellation token but does
-//! NOT remove the ownership entry. The entry remains installed
-//! in the map until the in-flight owner explicitly releases
-//! the lease — which **first removes the entry and then
-//! broadcasts** [`RestartCompletion::Finished`] on the
-//! completion channel. This remove-before-signal ordering is
-//! the single synchronization boundary: any waiter that
-//! observes `Finished` is guaranteed the slot is free and a
-//! new acquisition may proceed immediately. There is no
-//! post-check race window between signal and slot release.
+//! signals intent through the lease's cancellation token but does NOT remove
+//! the ownership entry. The entry stays installed until the in-flight owner
+//! explicitly releases the lease, and that release **first removes the entry
+//! and then broadcasts** [`RestartCompletion::Finished`]. That
+//! remove-before-signal ordering is the single synchronization boundary: a
+//! waiter that observes `Finished` is guaranteed the slot is free, so a new
+//! acquisition may proceed immediately.
 //!
-//! ## Algorithm (Phase 3 final closure)
-//!
-//! 1. Acquire per-key restart ownership (see [`acquire_restart_ownership`]).
-//! 2. Snapshot the authoritative generation as `expected_generation`.
-//! 3. Reserve one restart attempt atomically under
-//!    `restart_attempts < max_attempts` (see [`RestartShared::reserve_restart_attempt`]).
-//! 4. Perform cancellable backoff (`backoff_delay(attempt)` chunks).
-//! 5. Compute one replacement generation via
-//!    [`RestartShared::next_generation_for_key`] — the coordinator
-//!    owns generation selection.
-//! 6. Invoke the reinit closure to spawn/initialize the
-//!    replacement. The closure returns a structured
-//!    [`UnpublishedReplacement`] carrying the client and its
-//!    bound generation.
-//! 7. If the lease token fires BEFORE publication, terminate
-//!    the unpublished runtime and remove the unpublished
-//!    client (Pass 4 generation-scoped cleanup).
-//! 8. Publish the replacement (insert into the live clients
-//!    map). This is the **publication boundary** — once the
-//!    replacement is visible to other readers, the coordinator
-//!    MUST NOT abort on a lease-token cancellation (Pass 3).
-//! 9. Install retained diagnostics (preserves provenance:
-//!    `server_generation` and `post_restart`).
-//! 10. Replay documents.
-//! 11. Execute the readiness policy via
-//!     [`RestartShared::wait_for_readiness`]. Live but
-//!     timed-out readiness returns
-//!     [`RestartOutcome::Degraded { reason }`]; consumed
-//!     attempt remains consumed and `last_healthy_at` is NOT
-//!     updated (Pass 6).
-//! 12. Transition operational state to `Ready` and call
-//!     [`RestartShared::set_last_healthy_now`] on success.
-//! 13. Release the lease via [`RestartLease::release`] (async).
-//!     The release path **first removes the owner-ID-matched
-//!     entry** from `restart_tasks`, then broadcasts
-//!     [`RestartCompletion::Finished`] on the completion
-//!     channel. Waiters that observe `Finished` are guaranteed
-//!     the slot is free and a new acquisition may proceed
-//!     immediately.
-//!
-//! ### Outcomes
-//!
-//! - [`RestartOutcome::Ready`] — replacement is published,
-//!   operational, and reached readiness.
-//! - [`RestartOutcome::Degraded { reason }`] — replacement is
-//!   published and operational but readiness timed out. The
-//!   client remains usable; the consumed attempt is not refunded.
-//! - [`LspError::ServerRestarted`] — a newer generation was
-//!   observed at any boundary.
-//! - [`LspError::InitializationCancelled`] — the lease token
-//!   fired (or the service transitioned out of `Running`)
-//!   before publication, or the in-flight owner's wait timed
-//!   out.
-//! - [`LspError::LaunchFailed`] — the restart budget was
-//!   exhausted without a successful reinit.
-//!
-//! Resetting `restart_attempts` on healthy operation is the
-//! caller's responsibility (handled lazily when handling the
-//! next unexpected exit).
+//! The coordinator never reconstructs a hard-coded `src/lib.rs` path: it
+//! uses the persisted [`LspClientDescriptor`] and the currently open
+//! document registry to pick a seed file.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -931,7 +847,6 @@ pub trait RestartShared {
     /// exceeds the budget.
     async fn reserve_restart_attempt(&self, key: &str, max_attempts: u32) -> Result<u32, LspError>;
 
-    /// Reset the `restart_attempts` counter to `0` if the
     /// service has been healthy for at least
     /// `reset_after_healthy`. Returns the previous counter
     /// value when the reset was applied, or `None` when the
@@ -970,10 +885,6 @@ pub trait RestartShared {
     /// the previous generation (current - 1) and `post_restart =
     /// false`, so the freshness classifier returns `Stale` until
     /// the new server emits its own first push.
-    ///
-    /// Called by the coordinator immediately BEFORE the document
-    /// replay step, on a client that is about to be replaced. No-op
-    /// when no client is currently published for `key`.
     async fn mark_diagnostics_stale_for_key(&self, key: &str);
 
     /// Execute the configured readiness policy against the
@@ -1045,6 +956,8 @@ pub trait RestartShared {
 /// a `runtime_installed` flag so the coordinator's cleanup
 /// paths can decide whether to call the runtime-termination
 /// helper or simply remove the unpublished client.
+///
+/// See `architecture/lsp.md` for the full contract.
 pub struct UnpublishedReplacement {
     /// The newly-built client (not yet published to the live
     /// clients map from the coordinator's perspective). The
@@ -1354,19 +1267,6 @@ where
                 //    concurrent readers, so the coordinator MUST
                 //    NOT abort after this point on a lease-token
                 //    cancellation.
-                //
-                //    From here onward, the coordinator treats
-                //    the lease token as advisory. Cancellation
-                //    is logged at debug level; the coordinator
-                //    continues to a coherent `Ready` or
-                //    `Degraded` outcome. The manual caller will
-                //    revalidate the generation after owner
-                //    completion (Pass 2) and can decide whether
-                //    another restart is still needed.
-                //
-                //    Replay failure and readiness timeout remain
-                //    real outcomes — they transition to
-                //    `Degraded` or propagate an error.
                 if let Some(token) = lease_token.as_ref() {
                     if token.is_cancelled() {
                         debug!(
@@ -1396,12 +1296,6 @@ where
                 // before being marked Ready. Cold start and restart
                 // share the same readiness helper so behavior is
                 // consistent across the two paths.
-                //
-                // Pass 6 — A live replacement that times out on
-                // readiness is returned as `RestartOutcome::Degraded`
-                // (not as `LaunchFailed`). The live client remains
-                // published and observable; the caller logs
-                // degraded distinctly.
                 let readiness = shared
                     .wait_for_readiness(key, &descriptor.readiness_policy)
                     .await;
@@ -2820,13 +2714,6 @@ mod tests {
     /// post-spawn cancellation check, the cleanup must remove
     /// the unpublished client from the live clients map and
     /// return `InitializationCancelled("...after spawn")`.
-    ///
-    /// We accomplish this by cancelling the token FROM WITHIN
-    /// the reinit closure body, immediately before returning.
-    /// The coordinator's pre-spawn cancellation check has
-    /// already passed (the closure is running), and the
-    /// post-spawn check is the next boundary the coordinator
-    /// evaluates.
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_removes_unpublished_client_when_lease_cancelled_after_spawn() {
         let shared = MockShared::new();
@@ -3304,7 +3191,6 @@ mod tests {
 
     // ── Pass 9 — Final race tests ────────────────────────────────
 
-    /// Pass 9 — `manual_timeout_does_not_touch_current_client`.
     /// If an in-flight automatic owner is cancelled and does NOT
     /// signal completion within `MANUAL_SUPERSESSION_OWNER_TIMEOUT`
     /// (3s), the manual restart path must abort with a typed busy
@@ -3524,7 +3410,6 @@ mod tests {
         );
     }
 
-    /// Pass 9 — `old_owner_completion_cannot_release_new_owner`.
     /// Integration analogue of the lib-level
     /// `restart_lease_cleanup_is_owner_safe` test. The
     /// `release_internal` path must only remove the map entry
@@ -3598,7 +3483,6 @@ mod tests {
         );
     }
 
-    /// Pass 9 — `manual_revalidates_generation_after_wait`.
     /// When the in-flight automatic owner bumps the generation
     /// (because the auto restart succeeded) WHILE the manual
     /// restart is waiting on completion, the manual restart
@@ -3741,7 +3625,6 @@ mod tests {
         let _ = first_lease.release().await;
     }
 
-    /// Pass 4 — `post_publication_cancellation_returns_live_outcome`.
     /// When the lease token is cancelled AFTER the replacement
     /// has been published (installed in the live clients map),
     /// the coordinator MUST NOT abort. It must continue to a
@@ -3843,7 +3726,6 @@ mod tests {
         );
     }
 
-    /// Pass 3 — `cancellation_after_publication_finishes_replacement`.
     /// Strong assertion locking down the post-publication
     /// cancellation policy: when the lease token is cancelled
     /// AFTER the replacement has been published AND installed
@@ -3963,7 +3845,6 @@ mod tests {
         );
     }
 
-    /// Pass 3 — `cancellation_before_publication_still_reaps_replacement`.
     /// Strong assertion locking down the pre-publication
     /// cancellation policy (Pass 4 invariant): when the lease
     /// token is cancelled BEFORE the replacement has been
@@ -4174,7 +4055,6 @@ mod tests {
 
     // ── Pass 2 — Manual supersession ownership invariants ────────────
 
-    /// Pass 2 — `cancelled_owner_retains_slot_until_finished`.
     /// Strong ownership invariant assertion: while a waiter is
     /// still pending for a cancelled owner, the ownership entry
     /// MUST remain installed in the per-key map with the same
@@ -4245,7 +4125,6 @@ mod tests {
         let _ = third_lease.release().await;
     }
 
-    /// Pass 4 — `manual_acquires_only_after_finished`. A manual
     /// supersession that cancels an in-flight owner MUST NOT
     /// acquire the slot until the in-flight owner explicitly
     /// signals `Finished` AND removes its own entry. We model
@@ -4369,8 +4248,6 @@ mod tests {
     // ── Pass 11 (Phase 3 final closure) — Adversarial release-ordering
     //    tests ──────────────────────────────────────────────────────
 
-    /// Pass 11 — `finished_is_not_observable_until_slot_is_removed`.
-    ///
     /// The release handshake guarantees that the owner-ID-matched
     /// map entry is removed *before* `Finished` is broadcast. We
     /// exercise this under deliberate map-lock contention: while
@@ -4380,12 +4257,6 @@ mod tests {
     /// completes the remove-then-broadcast sequence, the waiter
     /// observes `Finished`, and a fresh acquisition succeeds
     /// with a new owner id.
-    ///
-    /// This test would fail under a hypothetical
-    /// signal-before-removal implementation: the waiter would
-    /// race the removal, observe `Finished`, and either return
-    /// `Ok` while the slot was still installed (false success) or
-    /// block forever behind the contended lock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn finished_is_not_observable_until_slot_is_removed() {
         use super::super::restart::cancel_restart_ownership;
@@ -4484,8 +4355,6 @@ mod tests {
         let _ = second_lease.release().await;
     }
 
-    /// Pass 11 — `drop_fallback_removes_before_finished`.
-    ///
     /// The `Drop` fallback path MUST preserve the same
     /// remove-before-signal ordering as the explicit
     /// `release().await` path. We exercise Drop by letting the
@@ -4555,8 +4424,6 @@ mod tests {
         let _ = second_lease.release().await;
     }
 
-    /// Pass 11 — `old_owner_release_does_not_signal_for_new_owner`.
-    ///
     /// If a newer owner is installed in the map while the older
     /// owner's lease is still alive, the older owner's release
     /// MUST NOT send `Finished` (because the slot is not theirs
@@ -4650,8 +4517,6 @@ mod tests {
         );
     }
 
-    /// Pass 11 — `completion_channel_close_without_finished_is_error`.
-    ///
     /// Strong invariant: if the completion sender is dropped
     /// without ever sending `Finished`, the waiter must return
     /// `Err(LspError::InitializationCancelled)` — never `Ok`. We
@@ -4702,21 +4567,6 @@ mod tests {
 
     // ── Pass 12 (Phase 3 final cleanup) — Async release cancellation safety
 
-    /// Pass 12 — `cancelled_async_release_falls_back_to_drop_cleanup`.
-    ///
-    /// Strong adversarial test for the async cancellation-safety
-    /// fix in [`RestartLease::release_async`]. The release
-    /// future is spawned into a task that is blocked on the
-    /// ownership-map lock. The task is then **aborted** while
-    /// blocked. Under the old implementation (`released = true`
-    /// set BEFORE the lock await), the abort would leave the
-    /// slot wedged because `Drop` sees `released == true` and
-    /// skips cleanup. Under the new implementation (`released`
-    /// is committed INSIDE the lock block), the abort drops
-    /// the lease with `released == false` and the `Drop`
-    /// fallback cleanup runs the same remove-before-signal
-    /// ordering.
-    ///
     /// Test mechanics:
     /// 1. Acquire lease A (entry installed).
     /// 2. Construct a waiter via `cancel_restart_ownership`.
@@ -4859,12 +4709,6 @@ mod tests {
         let _ = second_lease.release().await;
     }
 
-    /// Pass 12 — `completion_channel_close_error_names_owner`.
-    ///
-    /// The waiter timeout path returns an error string that
-    /// includes the in-flight owner id so the caller can
-    /// correlate the failure with the original coordinator.
-    /// We assert the owner id appears in the error message.
     #[tokio::test(flavor = "current_thread")]
     async fn completion_channel_close_error_names_owner() {
         use super::super::restart::cancel_restart_ownership;
@@ -4908,8 +4752,6 @@ mod tests {
         drop(first_lease);
     }
 
-    /// Pass 12 — `completion_timeout_error_names_owner`.
-    ///
     /// The waiter timeout error string includes the in-flight
     /// owner id and the timeout value so the caller can
     /// correlate the failure and reason about bounded waits.

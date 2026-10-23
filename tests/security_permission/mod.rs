@@ -28,6 +28,9 @@ pub mod approval_reviewer;
 #[path = "doom_loop.inc"]
 pub mod doom_loop;
 
+#[path = "destructive_delete_classification.inc"]
+pub mod destructive_delete_classification;
+
 #[path = "host_admission_manifest.inc"]
 pub mod host_admission_manifest;
 
@@ -51,6 +54,9 @@ pub mod preflight_integration;
 
 #[path = "process_denial_c005.inc"]
 pub mod process_denial_c005;
+
+#[path = "reviewer_broker_boundary.inc"]
+pub mod reviewer_broker_boundary;
 
 #[path = "sandbox_containment.inc"]
 pub mod sandbox_containment;

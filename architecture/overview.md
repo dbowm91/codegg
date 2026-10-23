@@ -400,6 +400,45 @@ modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements
 / 91 tables**, storage layout version **88**, Git operation variants **54**, Git
 risk classes **11**, and workspace member crates **11** (+ root).
 
+Three rows moved once more on **2026-10-23**, when the repository audit
+corrective workstream's C001, C002, C003, C004, C005, C006 and C007
+milestones landed. Each milestone added one thing of each kind, and every value was
+re-measured against its own listed `Source` with
+`python3 scripts/measure_overview_counts.py` rather than incremented by hand:
+**integration test files 327 → 334** (C001's
+`tests/tui_render/nested_runtime_command_dispatch.inc`, C002's
+`tests/security_permission/destructive_delete_classification.inc`, C004's
+`tests/core_daemon/job_state_terminality_c004.inc` and
+`tests/scheduler_jobs/job_status_projection_c004.inc`, C005's
+`tests/security_permission/reviewer_broker_boundary.inc` and
+`tests/tui_render/dialog_dispatch_coverage.inc`, and C006's
+`tests/tui_render/tui_render_cost.inc` — all seven are members of
+**existing** families, so the root package's **test-target** count did not
+move), **guard scripts (all) 80 → 86** (the new
+`scripts/check_no_nested_runtime_block_on.py`,
+`scripts/check_destructive_risk_signal_coverage.py`,
+`scripts/check_command_argument_contract.py`,
+`scripts/check_job_state_terminality_agreement.py` and
+`scripts/check_tui_render_cost.py` and C007's
+`scripts/check_comment_budget.py` — C005 **repaired** the existing
+`scripts/check_tool_broker_boundary.py` in place rather than adding a file, so
+that row did not move for it), and **CI guard scripts 40 → 47** (those same
+six new guards plus the repaired broker guard, each wired into
+`scripts/verify.sh quick` and the hosted CI guard step; a guard's two
+`ci.yml` steps — the guard and its `--self-test` — are one distinct script).
+No row's **measure** changed. The remaining 21 rows were **confirmed
+unchanged** by measurement, not by assumption.
+
+The four milestones were developed on sibling branches from a common base and
+each re-measured these rows in isolation, so each recorded only its own
+increment. Merging them lost one increment per row in `architecture/overview.md`
+— the two edits landed in different hunks, so the file merged without a
+conflict — and the row values above are the canonical measurement of the
+**merged** tree. The `codegg-core` modules row is still **54**: C004's new
+`codegg-core/src/jobs/evidence.rs` is a **sub**module of `jobs`, not a
+top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
+`architecture/count_audit_history.md`.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 92 | `architecture/*.md` |
@@ -424,9 +463,9 @@ risk classes **11**, and workspace member crates **11** (+ root).
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 327 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 80 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 40 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 334 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 86 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 47 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 
@@ -626,7 +665,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (327 files)
+├── tests/                      # Integration tests (334 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -756,6 +795,53 @@ of what it covers. A document that appears in both is listed here once.
 - [Git Phase F Handoff](git_phase_f_handoff.md) — snapshot-time closure record
 - [Git Polish/Verification Handoff](git_polish_verification_handoff.md) — snapshot-time post-closure record
 
+## Comment policy
+
+A comment earns its place by carrying something the code cannot: a rule the
+code cannot enforce, a boundary it will not discover on its own, a failure
+mode that looks impossible until you know the history, or a pointer to the
+document that owns the reasoning.
+
+What a comment does **not** do is restate the code beside it. The
+`architecture/` documents are the canonical home of the rationale; a code
+comment that repeats them is a third copy, and the third copy drifts. The
+policy is therefore:
+
+- **A rule stays.** "The waiter unregisters on every exit path, so age-based
+  eviction is only a leak guard" is a rule the code cannot enforce by
+  itself. It stays at the code.
+- **A restatement goes.** "This module provides the pair table and the
+  depth-counting scanner" says what the next twenty lines say. It goes.
+- **A duplicate becomes a pointer.** If the `architecture/` document already
+  holds the reasoning, the comment names it instead of repeating it.
+- **A history becomes its current-state rule.** "This used to keep only the
+  file name" is replaced by "this resolves the full relative path"; the
+  current rule is what a reader needs.
+- **A known limitation is disclosed.** A comment that names an imprecision,
+  an approximation or a residual stays, because a reader who cannot see the
+  limitation cannot reason about the code.
+
+`scripts/check_comment_budget.py` enforces the parts of this that can be
+checked mechanically, against the budget in `docs/comment-budget.toml`:
+
+| Rule | Fails on |
+|---|---|
+| **R0** unreadable file | the guard could not read a file — a partial scan is never reported as a pass |
+| **R1** stale path reference | a comment names a repository path that does not exist |
+| **R2** unresolvable doc pointer | a comment names an `architecture/` document, or a section inside one, that does not exist |
+| **R3** oversized comment block | a comment block is longer than `max_block_lines` |
+| **R4** comment budget | a file's comment mass exceeds its recorded ceiling, or the corpus exceeds the global ceiling |
+| **R5** orphaned contract | a long block restates a contract without naming the document that owns it |
+| **R6** lost guard landmark | a comment marker that a guard greps for is gone from the tree |
+
+**The budget is a ratchet, not a snapshot.** Every recorded value is a
+ceiling, derived from a measurement of the tree
+(`python3 scripts/check_comment_budget.py --bank` recomputes them). The
+corpus may not grow past the recorded total, and a reduction lowers the
+ceiling. The only way to spend the lines a reduction frees is to edit
+`docs/comment-budget.toml`, which shows up in the same diff as the comment
+that took them — so the corpus cannot re-inflate silently.
+
 ## Static guards
 
 Run these after changing execution surfaces or adding workspace crate dependencies:
@@ -878,3 +964,6 @@ was true of the tree it described and is **not** true of the merged tree. The
 merged tree, and this line's six new members still sit on top of that. Every other
 code-count row was re-checked against its own listed `Source` in the merged tree and is
 unchanged.
+
+*Guard scripts (all)* is **81** (the new `scripts/check_destructive_risk_signal_coverage.py`),
+and *CI guard scripts* is **41** (that one guard's two `ci.yml` steps — the guard and its

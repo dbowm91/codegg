@@ -1,10 +1,5 @@
 //! Narrow external task-trigger capability (Project Work Orders M005).
 //!
-//! A task trigger lets shell scripts, CI glue, cron wrappers, and other
-//! automation satisfy one declared `ExternalTrigger` gate on one
-//! `WorkOrder` occurrence without receiving a general CodeGG principal
-//! token or broader project authority.
-//!
 //! ## Capability shape
 //!
 //! - The bearer has the form `cggtr_<trigger-id>.<secret>` where the
@@ -24,13 +19,6 @@
 //!   projections, logs, audit metadata, or error bodies.
 //!
 //! ## Ownership
-//!
-//! This module owns trigger types, validation, secret
-//! generation/verification, and redaction. Durable rows live in the
-//! `task_trigger` / `task_trigger_receipt` tables owned by
-//! [`super::store::WorkOrderService`]; the single fire transaction
-//! (latch + count + receipt + audit-safe metadata) lives there so the
-//! latch and its accounting commit atomically.
 //!
 //! Long-term references: ADR-0005 §12
 //! (`plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`),

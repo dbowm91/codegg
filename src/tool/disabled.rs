@@ -1,8 +1,5 @@
 //! Stub tools returned when a tool cannot be given real authority.
 //!
-//! [`DisabledTool`] replaces a tool whose *domain* is configured as disabled,
-//! or whose MCP backend is configured but not implemented.
-//!
 //! [`UnrootedTool`] replaces a workspace-scoped tool that was reached with no
 //! resolved workspace root. It is a different condition with a different
 //! remedy: `DisabledTool` says "an operator turned this off", `UnrootedTool`
@@ -13,8 +10,6 @@
 //! gets a clear, actionable error if it attempts to call it, instead of the
 //! call silently routing somewhere else. Use `ToolRegistry::backend_report`
 //! (and `/tool-backends`) to diagnose disabled domains.
-//!
-//! See `plans/native_tool_crates_hardening.md` Phase 4 for context.
 
 use crate::error::ToolError;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};

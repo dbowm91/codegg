@@ -1,10 +1,5 @@
 //! Agent definitions and management.
 //!
-//! This module provides the core Agent struct and built-in agent configurations.
-//! Agents define how the AI assistant behaves, including permissions, model selection,
-//! and system prompts. Codegg supports multiple agent modes: Primary (full access),
-//! Subagent (limited), and All (combines multiple agents).
-//!
 //! Module-root responsibility (M003): this file is the declaration,
 //! re-export, and composition surface only. Agent definition/resolution
 //! lives in [`definition`], file-based loading in [`file_agents`], and the

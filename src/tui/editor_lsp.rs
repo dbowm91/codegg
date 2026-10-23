@@ -835,10 +835,6 @@ mod tests {
     }
 
     /// The candidate is scoped like everything else here.
-    ///
-    /// A candidate is the material the apply path consumes, so offering one
-    /// against the wrong document would be offering a change that belongs to
-    /// another file. A new read invalidates it, and a new scope wipes it.
     #[test]
     fn a_candidate_is_scoped_to_the_read_that_produced_it() {
         use codegg_protocol::lsp::{

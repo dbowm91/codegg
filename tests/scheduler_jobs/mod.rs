@@ -75,6 +75,9 @@ pub mod job_continuation_m003_visibility;
 #[path = "job_notification_m001_contract.inc"]
 pub mod job_notification_m001_contract;
 
+#[path = "job_status_projection_c004.inc"]
+pub mod job_status_projection_c004;
+
 #[path = "managed_process_descendants.inc"]
 pub mod managed_process_descendants;
 

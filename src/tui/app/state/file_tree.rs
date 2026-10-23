@@ -777,12 +777,6 @@ impl FileTreeState {
     }
 
     /// Drop everything that describes the *contents* of the current scope.
-    ///
-    /// Expansions are workspace-relative so they stay valid across a relist,
-    /// but a subtree listing re-walks from a different base and a cursor
-    /// pointing into rows that are about to be replaced would resolve to
-    /// whatever happens to sort first. An empty pane reading `Loading…` beats
-    /// a populated one showing the directory the user just walked out of.
     fn reset_scope(&mut self) {
         self.nodes.clear();
         self.expanded.clear();
@@ -957,10 +951,6 @@ impl FileTreeState {
 }
 
 /// The parent of a workspace-relative path.
-///
-/// `"src/tui"` → `"src"`, `"src"` → `""` (the workspace root). The scope
-/// slides along this relation, and the listing window is what decides when
-/// a slide is needed.
 fn parent_path(path: &str) -> String {
     match path.rfind('/') {
         Some(index) => path[..index].to_string(),
@@ -969,10 +959,6 @@ fn parent_path(path: &str) -> String {
 }
 
 /// Whether `row` survives `needle`, which is already lowercased.
-///
-/// The name and the path are both matched: the name is what the user
-/// remembers, and the path is what disambiguates two rows with the same
-/// name in different directories.
 fn matches_filter(row: &TreeRow, needle: &str) -> bool {
     row.name.to_lowercase().contains(needle) || row.path.to_lowercase().contains(needle)
 }
@@ -1016,10 +1002,6 @@ mod tests {
     }
 
     /// One node of a hand-built listing.
-    ///
-    /// The daemon's window is three levels deep, so a listing carries rows
-    /// at depth 1, 2 and 3 — the depth a row would have *inside* the scope
-    /// it was asked for.
     fn node(
         path: &str,
         depth: usize,
@@ -1045,10 +1027,6 @@ mod tests {
     }
 
     /// A state showing `nodes` for `scope`.
-    ///
-    /// The scope is set *after* the first rebuild, because a rebuild for a
-    /// new root resets the scope chain — the same order the command layer
-    /// uses (`set_root_prefix` then `rebuild`).
     fn scoped_state(
         root: &std::path::Path,
         scope: &str,
@@ -1359,10 +1337,6 @@ mod tests {
     }
 
     /// The scroll offset is a **window** offset, not a row count.
-    ///
-    /// The old clamp was `total - 1`, which is the last row of the listing:
-    /// a page verb that left the cursor there scrolled the whole listing off
-    /// the page and showed one row at the bottom of the pane.
     #[test]
     fn the_scroll_offset_never_leaves_the_measured_window() {
         let root = temp();
@@ -1798,14 +1772,6 @@ mod tests {
         );
     }
 
-    /// The indent is **relative to the scope**.
-    ///
-    /// A walk of a subtree counts depth from the subtree, so a scoped
-    /// listing's top level arrives at the depth the workspace root's own top
-    /// level arrives at. Adding the scope's components back made the
-    /// absolute depth grow with every scope slide, and the clamp flattened
-    /// exactly the deep scopes the peek motion exists to reach. The scope's
-    /// position is carried by the scope path instead.
     #[test]
     fn display_depth_is_relative_to_the_scope() {
         let root = temp();
@@ -1933,11 +1899,6 @@ mod tests {
 
     /// `l` on a directory at the window's edge: its children cannot be
     /// fetched, so the scope slides and the directory is expanded there.
-    ///
-    /// The scope slides to the directory's **grandparent**: the shallowest
-    /// scope in which the directory's children still fit inside the window,
-    /// so the user keeps the widest context — the directory's parent stays
-    /// visible beside the directory's siblings.
     #[test]
     fn peeking_into_a_directory_at_the_window_edge_slides_the_scope() {
         let root = temp();

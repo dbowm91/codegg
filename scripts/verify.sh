@@ -80,6 +80,16 @@ run_guards() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    # The tool-call analogue of the execution-ownership guard: the broker is
+    # the only production path from a subsystem to a tool. It sits here
+    # because it constrains the same question — who may execute what — for
+    # tool dispatch instead of process dispatch.
+    echo "==> python3 scripts/check_tool_broker_boundary.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_broker_boundary.py --self-test)
+
+    echo "==> python3 scripts/check_tool_broker_boundary.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_broker_boundary.py)
+
     echo "==> python3 scripts/check_network_intent_owner_wiring.py"
     (cd "$REPO_ROOT" && python3 scripts/check_network_intent_owner_wiring.py)
 
@@ -107,6 +117,12 @@ run_guards() {
     echo "==> python3 scripts/check_tui_editor_doc_drift.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
 
+    echo "==> python3 scripts/check_comment_budget.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_comment_budget.py --self-test)
+
+    echo "==> python3 scripts/check_comment_budget.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_comment_budget.py)
+
     echo "==> python3 scripts/check_tui_transport_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_transport_authority.py)
 
@@ -119,6 +135,27 @@ run_guards() {
     (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py --self-test)
     echo "==> python3 scripts/check_tui_composer_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py)
+
+    # A command handler may not block on a runtime handle from inside the
+    # runtime: the TUI event loop and the MCP CLI both run with the runtime
+    # context entered, so a nested `Handle::block_on` panics and takes the
+    # process down.
+    echo "==> python3 scripts/check_no_nested_runtime_block_on.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_no_nested_runtime_block_on.py --self-test)
+    echo "==> python3 scripts/check_no_nested_runtime_block_on.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_no_nested_runtime_block_on.py)
+    echo "==> python3 scripts/check_command_argument_contract.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_command_argument_contract.py --self-test)
+    echo "==> python3 scripts/check_command_argument_contract.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_command_argument_contract.py)
+
+    # The render path derives each expensive result once: one producer for
+    # the composer's wrap, one producer for the Markdown parse, and no
+    # whole-buffer clone on the render path.
+    echo "==> python3 scripts/check_tui_render_cost.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_cost.py --self-test)
+    echo "==> python3 scripts/check_tui_render_cost.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_cost.py)
 
     echo "==> python3 scripts/check_daemon_listing_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)
@@ -224,6 +261,12 @@ run_guards() {
     echo "==> python3 scripts/check_shell_policy_test_safety.py"
     (cd "$REPO_ROOT" && python3 scripts/check_shell_policy_test_safety.py)
 
+    echo "==> python3 scripts/check_destructive_risk_signal_coverage.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_destructive_risk_signal_coverage.py)
+
+    echo "==> python3 scripts/check_destructive_risk_signal_coverage.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_destructive_risk_signal_coverage.py --self-test)
+
     echo "==> python3 scripts/test_shell_policy_test_safety.py"
     (cd "$REPO_ROOT" && python3 scripts/test_shell_policy_test_safety.py)
 
@@ -277,6 +320,16 @@ run_guards() {
     (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py)
     echo "==> python3 scripts/check_tool_program_parse_only.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py --self-test)
+
+    # The domain's `JobState::is_terminal()` is the terminality authority.
+    # Every projection of a job state has to agree with it, and a new
+    # variant must not be added while the projections answer for the old
+    # set. The guard replaced a hand-written terminality list in a query
+    # that contradicted the domain.
+    echo "==> python3 scripts/check_job_state_terminality_agreement.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_job_state_terminality_agreement.py)
+    echo "==> python3 scripts/check_job_state_terminality_agreement.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_job_state_terminality_agreement.py --self-test)
 
     # Every registered CI test filter must still name a command the workflow
     # runs, and must select at least one test the source declares. A filter

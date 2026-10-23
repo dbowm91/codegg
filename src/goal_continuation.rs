@@ -17,9 +17,9 @@
 //! and therefore can never produce `VerifiedWait`.
 
 use codegg_core::goal::progress::GoalContinuationEvidence;
-use codegg_core::goal::{GoalExecutionEvidence, HostEvidenceStatus};
+use codegg_core::goal::GoalExecutionEvidence;
 use codegg_core::jobs::store::JobStoreQuery;
-use codegg_core::jobs::{JobKind, JobState, JobStore, SqliteJobStore, GOAL_PROVENANCE_LABEL_KEY};
+use codegg_core::jobs::{JobKind, JobStore, SqliteJobStore, GOAL_PROVENANCE_LABEL_KEY};
 use sqlx::SqlitePool;
 
 const MAX_EVIDENCE_RECORDS: u32 = 128;
@@ -73,7 +73,7 @@ pub async fn assemble_continuation_evidence(
         executions.push(GoalExecutionEvidence {
             id: truncate_bounded(job.job_id.as_str().to_string(), 128),
             source: source.to_string(),
-            status: host_status(job.state),
+            status: codegg_core::jobs::evidence::job_success_evidence(job.state),
         });
         if executions.len() >= MAX_EVIDENCE_RECORDS as usize {
             break;
@@ -108,20 +108,6 @@ pub async fn assemble_continuation_evidence(
         open_questions: goal.open_questions.len().min(1024) as u32,
         executions,
     })
-}
-
-fn host_status(state: JobState) -> HostEvidenceStatus {
-    match state {
-        JobState::Completed => HostEvidenceStatus::Passed,
-        JobState::Failed
-        | JobState::Cancelled
-        | JobState::TimedOut
-        | JobState::Interrupted
-        | JobState::Expired => HostEvidenceStatus::Failed,
-        JobState::Scheduled | JobState::Queued | JobState::Running | JobState::Blocked => {
-            HostEvidenceStatus::InProgress
-        }
-    }
 }
 
 fn truncate_bounded(value: String, max_chars: usize) -> String {

@@ -1,7 +1,4 @@
 //! CodeGG semantic bridge to the pinned `eggpool-wire` sans-I/O kernel.
-//!
-//! Provider transports remain CodeGG-owned; standard provider-family grammar
-//! and streaming decoding are delegated to the pinned shared kernel.
 
 use eggpool_wire::{
     encode_request_for_surface,
@@ -614,13 +611,6 @@ pub fn push_event(
 }
 
 /// Per-SSE-frame byte bound for the shared stream decoder.
-///
-/// The shared default (`eggpool_wire::stream::MAX_SSE_FRAME_BYTES`) is 64 KiB.
-/// That is a fine bound for incremental text deltas, but OpenAI-compatible
-/// Responses streams terminate with a single `response.completed` frame that
-/// embeds the entire response object — including full tool-call arguments and
-/// output — so a perfectly normal turn trips the default limit and the whole
-/// turn fails with "SSE frame exceeded 65536 bytes".
 ///
 /// 8 MiB keeps the decoder's memory bounded (it is a guard, not a budget) while
 /// comfortably covering a large completed response. It is applied here rather
@@ -1559,9 +1549,8 @@ mod tests {
     /// A Chat upstream that omits `index` entirely: the opening fragment
     /// carries only a function name, and continuations carry only arguments.
     ///
-    /// With no index and no id the shared accumulator cannot key the fragments
-    /// at all and answers `tool call has no stable identity`. The pre-kernel
-    /// parser keyed by array position, so a single-tool turn used to decode.
+    /// With no index and no id the shared accumulator cannot key the
+    /// fragments at all and answers `tool call has no stable identity`.
     #[test]
     fn opencode_go_chat_fragments_without_index_or_id_still_resolve() {
         let bytes = concat!(

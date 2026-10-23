@@ -89,7 +89,6 @@ fn acquire_request(scope: WriterPermitScope, key: &str) -> AcquireWriterPermit {
 // Contention
 // ---------------------------------------------------------------------------
 
-/// N=2: two acquirers, one holder.
 #[tokio::test]
 async fn two_acquirers_produce_exactly_one_holder() {
     let pool = isolated_pool().await;

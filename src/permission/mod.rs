@@ -1,8 +1,4 @@
 //! Permission checking and access control.
-//!
-//! This module provides permission enforcement for tools and file paths.
-//! Permissions can be configured per-agent and are checked before tool execution.
-//! The module includes HMAC-based persistence to prevent cache poisoning.
 
 use globset::Glob;
 use hmac::{Hmac, Mac};

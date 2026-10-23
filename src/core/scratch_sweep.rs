@@ -350,9 +350,6 @@ pub async fn sweep_scratch_once_with_budget(
         // reclaimer tries it at delete time, and the sweep is the retry for
         // the tree it had to refuse because work was still running. It does
         // not wait out the retention window — the session is gone.
-        //
-        // A live session's tree is protected by the window: it is idle, not
-        // abandoned, and the operator may still return to it.
         if !session.deleted && now_ms.saturating_sub(session.time_updated) < retention_ms {
             report.skipped_active += 1;
             continue;
@@ -575,13 +572,13 @@ async fn session_tree_is_reclaimable(
     let job_records = jobs
         .list_job_records(JobStoreQuery {
             session_id: Some(session_id.to_string()),
-            states: vec![
-                JobState::Scheduled,
-                JobState::Queued,
-                JobState::Running,
-                JobState::Interrupted,
-                JobState::Blocked,
-            ],
+            // The domain's own complement of terminality
+            // (`JobState::non_terminal_states`). An interrupted job is in
+            // it on purpose: the scheduler's recovery path requeues an
+            // interrupted job through the `Interrupted -> Queued` edge, so
+            // such a job may still run and its session's scratch must not be
+            // reclaimed. This is the conservative reading.
+            states: JobState::non_terminal_states(),
             limit: Some(1),
             ..Default::default()
         })
@@ -590,10 +587,6 @@ async fn session_tree_is_reclaimable(
 }
 
 /// Find the durable session that owns a tree's digest, if any.
-///
-/// The digest is one-way, so the mapping is computed forward: every durable
-/// session id is hashed and the result compared. A tree that matches no
-/// session is an orphan, and an orphan has no lease.
 async fn session_owning_digest(
     pool: &SqlitePool,
     digest_hex: &str,
@@ -788,7 +781,7 @@ mod tests {
     use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId};
     use codegg_core::jobs::{
         IdempotencyClass, InMemoryJobStore, JobKind, JobPriority, JobSource, NewJob,
-        ResourceRequest, RetryPolicy,
+        ResourceRequest, RetryPolicy, SqliteJobStore,
     };
     use codegg_core::session::{CreateSession, SessionStore};
     use codegg_core::workspace::WorkspaceId;
@@ -1116,8 +1109,51 @@ mod tests {
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
-    /// A soft-deleted session's tree is reclaimed by the sweep.
+    /// A session whose only job was interrupted keeps its scratch tree.
     ///
+    /// The domain does not call an interrupted job terminal, and the
+    /// scheduler's recovery path requeues an interrupted job through the
+    /// `Interrupted -> Queued` edge, so such a job may still run. The sweep
+    /// therefore treats the session as holding live work and leaves its
+    /// scratch alone. This is the conservative reading: the reconciliation
+    /// of the session projection's terminality did not widen reclamation.
+    #[tokio::test]
+    async fn the_sweep_refuses_a_session_with_an_interrupted_job() {
+        let _root = scratch_root("the-sweep-refuses-an-int");
+        let pool = sweep_pool().await;
+        let runs = InMemoryAgentRunStore::new();
+        let jobs = SqliteJobStore::new(pool.clone());
+        let session_id = create_session(&pool).await;
+        let root = crate::scratch::session_scratch_dir(&session_id).expect("create the tree");
+        set_activity(&pool, &session_id, 30 * DAY_MS).await;
+        let record = jobs
+            .create_job(active_test_job(&session_id))
+            .await
+            .expect("create a job");
+        sqlx::query("UPDATE job SET state = 'interrupted' WHERE id = ?")
+            .bind(record.job_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("mark the job interrupted");
+
+        let report = sweep_scratch_once(
+            &pool,
+            &runs,
+            &jobs,
+            policy(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
+
+        assert_eq!(report.reclaimed_idle, 0, "report: {report:?}");
+        assert_eq!(report.skipped_leased, 1, "report: {report:?}");
+        assert!(
+            root.exists(),
+            "a tree with an interrupted job is not reclaimed"
+        );
+        let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
+    }
+
     /// The event-driven reclaimer owns that case at delete time. The sweep is
     /// the retry for the tree it had to refuse because work was still running
     /// when the session was deleted, and it does not wait out the retention
@@ -1178,9 +1214,6 @@ mod tests {
 
     /// A session restored before the sweep is live again, so the retention
     /// window protects it.
-    ///
-    /// This is the writer-lock recheck: the sweep read the session set before
-    /// the restore, and the re-read inside the lock is what sees it.
     #[tokio::test]
     async fn the_sweep_leaves_a_restored_session_alone() {
         let _root = scratch_root("the-sweep-leaves-a-resto");
@@ -1383,7 +1416,6 @@ mod tests {
         );
     }
 
-    /// A disabled policy never fires.
     #[tokio::test]
     async fn a_disabled_policy_never_sweeps() {
         let _root = scratch_root("a-disabled-policy-never-");
@@ -1438,7 +1470,6 @@ mod tests {
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
-    /// The operator disposition removes the tree when it is applied.
     #[tokio::test]
     async fn the_operator_reclaim_removes_the_tree_when_applied() {
         let _root = scratch_root("the-operator-reclaim-rem");

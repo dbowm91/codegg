@@ -10,6 +10,8 @@
 //! (plugin effects), and `render` (frame composition). Shared live
 //! state lives in `state/`; message and dialog types in `types.rs`.
 
+#[cfg(test)]
+mod command_argument_tests;
 mod commands;
 mod input;
 mod modal;
@@ -562,7 +564,7 @@ pub struct App {
     /// starts, used to reject late output after navigation changes context.
     pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
     /// Durable command-run store for the projection pipeline
-    /// (Phase 1 of `plans/shell_output_projection_phase_01_command_event_model.md`).
+    /// (`architecture/human_shell.md`, "CommandOutputStore").
     /// Populated alongside `shell_store` so the projection seam has raw
     /// stdout/stderr available without rerunning commands.
     pub command_run_store: crate::shell::CommandOutputStore,
@@ -5598,7 +5600,14 @@ impl App {
                 ));
             }
             crate::tui::command::CommandAction::Builtin(builtin) => {
-                self.dispatch_builtin_command(builtin, raw_input);
+                // The single extraction point: the typed line is resolved to
+                // a registry entry here, and the entry hands back the
+                // argument the user typed. The spelling the user typed is
+                // removed — the entry's canonical name or one of its
+                // aliases — so no handler ever sees the command's name
+                // inside its own argument.
+                let argument = cmd.argument_from_typed_line(raw_input.unwrap_or_default());
+                self.dispatch_builtin_command(builtin, Some(argument));
             }
         }
     }
@@ -5631,15 +5640,24 @@ impl App {
 
     /// Dispatch one built-in slash command.
     ///
+    /// `argument` is the argument the user typed after the command
+    /// spelling. It is extracted **once**, where the typed line is resolved
+    /// to a registry entry (see [`crate::tui::command::Command::
+    /// argument_from_typed_line`]), so an arm never sees the typed line and
+    /// never has to strip the command's name — or one of its aliases — out
+    /// of it a second time.
+    ///
     /// Crate-visible so the reasoning command's own tests can drive the
     /// command the way the dispatcher does, rather than through a
     /// test-only shim that could drift from the real path.
     pub(crate) fn dispatch_builtin_command(
         &mut self,
         action: crate::tui::command::BuiltinSlashAction,
-        raw_input: Option<&str>,
+        argument: Option<&str>,
     ) {
         use crate::tui::command::BuiltinSlashAction as B;
+        // No argument and an empty argument mean the same thing.
+        let argument = argument.unwrap_or_default().trim();
         match action {
             B::ProjectInit => {
                 self.dialog_state.project_init_draft = None;
@@ -5652,7 +5670,7 @@ impl App {
                 crate::tui::commands::queue::open_queue_box(self);
             }
             B::SubagentSend => {
-                crate::tui::commands::subagent_steer::dispatch_addressee_command(self, raw_input);
+                crate::tui::commands::subagent_steer::dispatch_addressee_command(self, argument);
             }
             B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
@@ -5661,15 +5679,7 @@ impl App {
                 self.prompt_state.show_completions = false;
             }
             B::Skills => {
-                let query = raw_input
-                    .unwrap_or_default()
-                    .trim()
-                    .strip_prefix("/skills")
-                    .unwrap_or_default()
-                    .trim()
-                    .chars()
-                    .take(128)
-                    .collect::<String>();
+                let query = argument.chars().take(128).collect::<String>();
                 let report = self.agent_state.snapshot.as_deref().map(|snapshot| {
                     let registry = &snapshot.skills;
                     let skipped = registry
@@ -5754,12 +5764,7 @@ impl App {
                 self.open_tree_dialog();
             }
             B::AgentSelect => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let name = query
-                    .strip_prefix("/agent")
-                    .map(|s| s.trim())
-                    .unwrap_or("")
-                    .to_string();
+                let name = argument.to_string();
                 if name.is_empty() {
                     // No argument: open the agent selection dialog
                     self.ui_state.command_mode = false;
@@ -5790,13 +5795,8 @@ impl App {
                         return;
                     }
                 };
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                // Strip the leading "/agents" to get subcommand args
-                let args = query
-                    .strip_prefix("/agents")
-                    .map(|s| s.trim())
-                    .unwrap_or("")
-                    .to_string();
+                // The argument is everything after the command spelling.
+                let args = argument.to_string();
 
                 if args.is_empty() {
                     // Bare `/agents` opens **agents**, the same surface `/agent`
@@ -5999,12 +5999,7 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let arg = query
-                    .strip_prefix("/approval-mode")
-                    .or_else(|| query.strip_prefix("/approval"))
-                    .map(|s| s.trim())
-                    .unwrap_or("");
+                let arg = argument;
                 if arg.is_empty() {
                     crate::tui::commands::policy::open_policy_selector(
                         self,
@@ -6028,12 +6023,7 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let arg = query
-                    .strip_prefix("/sandbox-profile")
-                    .or_else(|| query.strip_prefix("/sandbox"))
-                    .map(|s| s.trim())
-                    .unwrap_or("");
+                let arg = argument;
                 if arg.is_empty() {
                     crate::tui::commands::policy::open_policy_selector(
                         self,
@@ -6059,8 +6049,7 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let arg = query.strip_prefix("/network").map(str::trim).unwrap_or("");
+                let arg = argument;
                 if arg.is_empty() {
                     crate::tui::commands::policy::start_snapshot_refresh(
                         self,
@@ -6115,7 +6104,7 @@ impl App {
                 self.open_dialog(Dialog::Usage);
             }
             B::Themes => {
-                self.handle_theme_command(raw_input);
+                self.handle_theme_command(argument);
             }
             B::Tui => {
                 self.toggle_fullscreen();
@@ -6135,9 +6124,7 @@ impl App {
                 // on demand when missing or stale. Focus/key follows the
                 // standard info-dialog convention (j/k scroll, Esc close)
                 // and never mutates sessions.
-                let arg = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let arg = argument;
                 if arg.eq_ignore_ascii_case("refresh") {
                     crate::tui::commands::presence::refresh_collaborators(self);
                 } else {
@@ -6153,9 +6140,7 @@ impl App {
                 // summary for the active project; subcommands mutate
                 // membership, principals/tokens (LocalOwner), and chat
                 // overrides. `/collaborators` stays the presence view.
-                let args = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let args = argument;
                 crate::tui::commands::team::dispatch_team_command(self, args);
             }
             B::Control => {
@@ -6168,16 +6153,12 @@ impl App {
                 // take over explicit control. Observer mode stays
                 // hard-blocked via the central `blocks_command` gate
                 // (this arm is unreachable while observing).
-                let args = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let args = argument;
                 crate::tui::commands::control::dispatch_control_command(self, args);
             }
             B::Observe => {
                 self.ui_state.command_mode = false;
-                let session_arg = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let session_arg = argument;
                 if session_arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -6237,10 +6218,7 @@ impl App {
             }
             B::ChatSend => {
                 self.ui_state.command_mode = false;
-                let body = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default()
-                    .to_string();
+                let body = argument.to_string();
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 let Some(project_id) = self.chat_target_project_id() else {
@@ -6253,9 +6231,7 @@ impl App {
             }
             B::ChatReply => {
                 self.ui_state.command_mode = false;
-                let rest = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let rest = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 let Some((target, body)) = rest.split_once(' ') else {
@@ -6330,9 +6306,7 @@ impl App {
             }
             B::ChatEdit => {
                 self.ui_state.command_mode = false;
-                let rest = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let rest = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 let Some((target, body)) = rest.split_once(' ') else {
@@ -6362,9 +6336,7 @@ impl App {
             }
             B::ChatRedact => {
                 self.ui_state.command_mode = false;
-                let rest = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let rest = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 if rest.is_empty() {
@@ -6389,9 +6361,7 @@ impl App {
             }
             B::ChatComposing => {
                 self.ui_state.command_mode = false;
-                let arg = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let arg = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 let composing = match arg.to_lowercase().as_str() {
@@ -6414,9 +6384,7 @@ impl App {
             }
             B::ChatActionTask => {
                 self.ui_state.command_mode = false;
-                let rest = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let rest = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 // Explicit form: <message-id> <workspace-id> <agent> <prompt…>.
@@ -6452,9 +6420,7 @@ impl App {
             }
             B::ChatActionReview => {
                 self.ui_state.command_mode = false;
-                let rest = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let rest = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 let mut parts = rest.splitn(4, ' ');
@@ -6489,9 +6455,7 @@ impl App {
             }
             B::ChatActionList => {
                 self.ui_state.command_mode = false;
-                let rest = raw_input
-                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                    .unwrap_or_default();
+                let rest = argument;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 let message_id = if rest.is_empty() {
@@ -6584,9 +6548,7 @@ impl App {
                 }
             }
             B::Export => {
-                let sub = raw_input
-                    .map(|s| s.trim_start_matches("/export").trim())
-                    .unwrap_or("");
+                let sub = argument;
                 if sub == "handoff" {
                     self.export_handoff();
                 } else if let Some(session) = self.session_state.session.as_ref() {
@@ -6717,13 +6679,15 @@ impl App {
                     let _ = send_tui(tx, TuiCommand::WorktreeList);
                 } else {
                     let git_root = self.active_workspace_root().unwrap_or_default();
-                    let trees = tokio::runtime::Handle::current().block_on(async {
-                        match crate::worktree::find_git_root(&git_root) {
-                            Some(root) => crate::worktree::list_worktrees(&root)
-                                .await
-                                .unwrap_or_default(),
-                            None => Vec::new(),
-                        }
+                    let trees = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            match crate::worktree::find_git_root(&git_root) {
+                                Some(root) => crate::worktree::list_worktrees(&root)
+                                    .await
+                                    .unwrap_or_default(),
+                                None => Vec::new(),
+                            }
+                        })
                     });
                     if trees.is_empty() {
                         self.messages_state.toasts.info("No worktrees found");
@@ -6743,8 +6707,7 @@ impl App {
                 // M006-A: `/open <workspace-relative path>`. With no
                 // argument the composer keeps the key so the user can
                 // type the path after the command.
-                let query = self.dialog_state.command_palette.query.clone();
-                let path = query.trim();
+                let path = argument;
                 if path.is_empty() {
                     self.messages_state
                         .toasts
@@ -6754,8 +6717,9 @@ impl App {
                 }
             }
             B::Loop => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let parts: Vec<&str> = query.splitn(2, ' ').collect();
+                // The argument is `<interval> "<message>"`; the command
+                // spelling was already removed by the extraction point.
+                let parts: Vec<&str> = argument.splitn(2, ' ').collect();
                 if parts.len() < 2 {
                     self.messages_state.toasts.warning(
                         "Usage: /loop <interval> \"<message>\" (e.g. /loop 5m \"check status\")",
@@ -6810,8 +6774,7 @@ impl App {
                 }
             }
             B::TaskDel => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let id = query.trim();
+                let id = argument;
                 if id.is_empty() {
                     self.messages_state
                         .toasts
@@ -6834,7 +6797,7 @@ impl App {
                 }
             }
             B::MemorySearch => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let query = argument.to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemorySearch { query });
                 } else {
@@ -6842,7 +6805,7 @@ impl App {
                 }
             }
             B::MemoryList => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let query = argument.to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemorySummary);
                 } else {
@@ -6850,7 +6813,7 @@ impl App {
                 }
             }
             B::MemoryRemember => {
-                let text = self.dialog_state.command_palette.query.trim().to_string();
+                let text = argument.to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemoryRemember { text });
                 } else {
@@ -6858,7 +6821,7 @@ impl App {
                 }
             }
             B::MemoryForget => {
-                let id = self.dialog_state.command_palette.query.trim().to_string();
+                let id = argument.to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemoryForget { id });
                 } else {
@@ -6869,7 +6832,7 @@ impl App {
                 self.handle_memory_command(Some(("consolidate", "")));
             }
             B::Habits => {
-                let ready_only = self.dialog_state.command_palette.query.trim() == "ready";
+                let ready_only = argument == "ready";
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::HabitList { ready_only });
                 } else {
@@ -6879,7 +6842,7 @@ impl App {
                 }
             }
             B::HabitDismiss => {
-                let id = self.dialog_state.command_palette.query.trim().to_string();
+                let id = argument.to_string();
                 if id.is_empty() {
                     self.messages_state
                         .toasts
@@ -6899,10 +6862,6 @@ impl App {
                         .warning("Still waiting for previous prompt to finish");
                     return;
                 }
-                let argument = raw_input
-                    .and_then(|input| input.trim().strip_prefix("/skill-promote"))
-                    .unwrap_or("")
-                    .trim();
                 let Some(habit_id) = crate::memory::habit::HabitId::parse(argument) else {
                     self.messages_state
                         .toasts
@@ -6996,10 +6955,6 @@ impl App {
                 }
             }
             B::SkillProposal => {
-                let argument = raw_input
-                    .and_then(|input| input.trim().strip_prefix("/skill-proposal"))
-                    .unwrap_or("")
-                    .trim();
                 if let Some(publish_args) = argument.strip_prefix("publish") {
                     let parts = publish_args.split_whitespace().collect::<Vec<_>>();
                     if parts.len() != 2 {
@@ -7168,8 +7123,7 @@ impl App {
                 }
             }
             B::Goal => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let query = query.trim_start_matches("/goal").trim();
+                let query = argument;
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
                 let subcmd = parts.first().copied().unwrap_or("");
                 let args = parts.get(1).copied().unwrap_or("").trim();
@@ -7311,8 +7265,7 @@ impl App {
                 }
             }
             B::Plan => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let query = query.trim_start_matches("/plan").trim();
+                let query = argument;
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
                 let subcmd = parts.first().copied().unwrap_or("");
                 let args = parts.get(1).copied().unwrap_or("").trim();
@@ -7476,7 +7429,7 @@ impl App {
                 );
             }
             B::Search => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let query = argument.to_string();
                 if query.is_empty() {
                     self.messages_state.toasts.warning("Usage: /search <query>");
                 } else {
@@ -7548,12 +7501,7 @@ impl App {
             }
             B::LspPreview => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id = query
-                    .strip_prefix("/lsp-preview ")
-                    .or_else(|| query.strip_prefix("/preview-show "))
-                    .unwrap_or("")
-                    .trim();
+                let id = argument;
                 if id.is_empty() {
                     self.messages_state.toasts.info("Usage: /lsp-preview <id>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
@@ -7570,12 +7518,7 @@ impl App {
             }
             B::LspPreviewClear => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query
-                    .strip_prefix("/lsp-preview-clear ")
-                    .or_else(|| query.strip_prefix("/preview-clear "))
-                    .unwrap_or("")
-                    .trim();
+                let arg = argument;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     if arg == "--all" || arg.is_empty() {
                         let count = lsp_tool.clear_preview(None);
@@ -7600,12 +7543,7 @@ impl App {
             }
             B::LspPreviewRefresh => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id = query
-                    .strip_prefix("/lsp-preview-refresh ")
-                    .or_else(|| query.strip_prefix("/preview-refresh "))
-                    .unwrap_or("")
-                    .trim();
+                let id = argument;
                 if id.is_empty() {
                     self.messages_state
                         .toasts
@@ -7632,22 +7570,12 @@ impl App {
             }
             B::Review => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id = query
-                    .strip_prefix("/review ")
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
+                let id = argument.to_string();
                 crate::tui::commands::change_review::open(self, &id);
             }
             B::LspPreviewApply => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id = query
-                    .strip_prefix("/lsp-preview-apply ")
-                    .or_else(|| query.strip_prefix("/preview-apply "))
-                    .unwrap_or("")
-                    .trim();
+                let id = argument;
                 if id.is_empty() {
                     self.messages_state
                         .toasts
@@ -7732,8 +7660,9 @@ impl App {
             B::LspServers => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let detail = handle.block_on(lsp_tool.lsp_servers_detail());
+                    let detail = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_servers_detail())
+                    });
                     if let Some(text) = detail {
                         self.messages_state.toasts.info(&text);
                     } else {
@@ -7745,18 +7674,16 @@ impl App {
             }
             B::LspCapabilities => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let key = query
-                    .strip_prefix("/lsp-capabilities ")
-                    .unwrap_or("")
-                    .trim();
+                let key = argument;
                 if key.is_empty() {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-capabilities <server-key>\nUse /lsp-servers to see available keys.");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.lsp_capabilities_for_key(key)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.lsp_capabilities_for_key(key))
+                    }) {
                         Some(text) => self.messages_state.toasts.info(&text),
                         None => self
                             .messages_state
@@ -7769,15 +7696,15 @@ impl App {
             }
             B::LspErrors => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let key = query.strip_prefix("/lsp-errors ").unwrap_or("").trim();
+                let key = argument;
                 if key.is_empty() {
                     self.messages_state.toasts.info(
                         "Usage: /lsp-errors <server-key>\nUse /lsp-servers to see available keys.",
                     );
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.lsp_errors_for_key(key)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_errors_for_key(key))
+                    }) {
                         Some(text) => self.messages_state.toasts.info(&text),
                         None => self
                             .messages_state
@@ -7790,8 +7717,7 @@ impl App {
             }
             B::LspRoot => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query.strip_prefix("/lsp-root ").unwrap_or("").trim();
+                let path_arg = argument;
                 if path_arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -7805,15 +7731,15 @@ impl App {
             }
             B::LspDoctor => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query.strip_prefix("/lsp-doctor ").unwrap_or("").trim();
+                let path_arg = argument;
                 if path_arg.is_empty() {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-doctor <file-path>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let text = handle.block_on(lsp_tool.lsp_doctor(path_arg));
+                    let text = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_doctor(path_arg))
+                    });
                     self.messages_state.toasts.info(&text);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -7821,18 +7747,16 @@ impl App {
             }
             B::LspContextDiagnostics => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query
-                    .strip_prefix("/lsp-context-diagnostics ")
-                    .unwrap_or("")
-                    .trim();
+                let path_arg = argument;
                 if path_arg.is_empty() {
                     self.messages_state
                         .toasts
                         .info("Usage: /lsp-context-diagnostics <file-path>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let text = handle.block_on(lsp_tool.lsp_context_diagnostics(path_arg));
+                    let text = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.lsp_context_diagnostics(path_arg))
+                    });
                     self.messages_state.toasts.info(&text);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -7840,11 +7764,7 @@ impl App {
             }
             B::LspRepairLocal => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query
-                    .strip_prefix("/lsp-repair-local ")
-                    .unwrap_or("")
-                    .trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -7858,8 +7778,10 @@ impl App {
                         column: col,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7872,8 +7794,7 @@ impl App {
             }
             B::LspRepairHunk => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-repair-hunk ").unwrap_or("").trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -7886,8 +7807,10 @@ impl App {
                         primary_path: Some(path),
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7900,8 +7823,7 @@ impl App {
             }
             B::LspReviewFile => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-review-file ").unwrap_or("").trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -7912,8 +7834,10 @@ impl App {
                         primary_path: Some(arg.to_string()),
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7931,8 +7855,10 @@ impl App {
                         recipe: LspWorkflowRecipe::ReviewDiff,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7945,11 +7871,7 @@ impl App {
             }
             B::LspSecurityReview => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query
-                    .strip_prefix("/lsp-security-review ")
-                    .unwrap_or("")
-                    .trim();
+                let arg = argument;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     let review_mode = if arg.is_empty() {
                         Some("diff".to_string())
@@ -7961,8 +7883,10 @@ impl App {
                         review_mode,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -7975,8 +7899,7 @@ impl App {
             }
             B::LspImpact => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-impact ").unwrap_or("").trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -7990,8 +7913,10 @@ impl App {
                         column: col,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8004,8 +7929,7 @@ impl App {
             }
             B::LspTestRepair => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-test-repair ").unwrap_or("").trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -8020,8 +7944,10 @@ impl App {
                         failure_text,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8034,8 +7960,7 @@ impl App {
             }
             B::LspInterface => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-interface ").unwrap_or("").trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -8050,8 +7975,10 @@ impl App {
                         symbol,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8064,11 +7991,7 @@ impl App {
             }
             B::LspCrossRepair => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query
-                    .strip_prefix("/lsp-cross-repair ")
-                    .unwrap_or("")
-                    .trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state
                         .toasts
@@ -8084,8 +8007,10 @@ impl App {
                         related_files,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8098,11 +8023,7 @@ impl App {
             }
             B::LspCallNeighbors => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query
-                    .strip_prefix("/lsp-call-neighbors ")
-                    .unwrap_or("")
-                    .trim();
+                let arg = argument;
                 if arg.is_empty() {
                     self.messages_state.toasts.info(
                         "Usage: /lsp-call-neighbors <path:line:col> [incoming|outgoing|both]",
@@ -8124,8 +8045,10 @@ impl App {
                         direction,
                         ..Default::default()
                     };
-                    let handle = tokio::runtime::Handle::current();
-                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.run_lsp_workflow(&invocation))
+                    }) {
                         Ok(display) => {
                             let text = render_workflow_display(&display);
                             self.messages_state.toasts.info(&text);
@@ -8138,15 +8061,15 @@ impl App {
             }
             B::LspRestart => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let key = query.strip_prefix("/lsp-restart ").unwrap_or("").trim();
+                let key = argument;
                 if key.is_empty() {
                     self.messages_state.toasts.info(
                         "Usage: /lsp-restart <server-key>\nUse /lsp-servers to see available keys.",
                     );
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let result = handle.block_on(lsp_tool.lsp_restart_server(key));
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(lsp_tool.lsp_restart_server(key))
+                    });
                     self.messages_state.toasts.info(&result);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -8154,16 +8077,17 @@ impl App {
             }
             B::LspStop => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-stop ").unwrap_or("").trim();
+                let arg = argument;
                 if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
                     let key_opt = if arg.is_empty() || arg == "--all" {
                         None
                     } else {
                         Some(arg)
                     };
-                    let result = handle.block_on(lsp_tool.lsp_stop_server(key_opt));
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(lsp_tool.lsp_stop_server(key_opt))
+                    });
                     self.messages_state.toasts.info(&result);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
@@ -8180,8 +8104,7 @@ impl App {
             }
             B::LspCacheClear => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.strip_prefix("/lsp-cache-clear ").unwrap_or("").trim();
+                let arg = argument;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     if arg.is_empty() || arg == "--all" {
                         let count = lsp_tool.clear_semantic_cache();
@@ -8222,8 +8145,7 @@ impl App {
                 self.messages_state.toasts.info(&rendered);
             }
             B::Diff => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query.trim_start_matches("/diff").trim();
+                let path_arg = argument;
                 self.ui_state.command_mode = false;
                 if path_arg.is_empty() {
                     self.handle_diff_command(None);
@@ -8232,18 +8154,12 @@ impl App {
                 }
             }
             B::Tests => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let subcmd = query.trim_start_matches("/tests").trim();
+                let subcmd = argument;
                 self.ui_state.command_mode = false;
                 self.handle_tests_command(subcmd);
             }
             B::Test => {
-                let query = self.dialog_state.command_palette.query.trim().to_string();
-                let raw_args = query
-                    .strip_prefix("/test")
-                    .map(|s| s.trim())
-                    .unwrap_or("")
-                    .to_string();
+                let raw_args = argument.to_string();
                 let (scope, args) = crate::tui::commands::test::parse_test_slash_args(&raw_args);
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
@@ -8256,8 +8172,7 @@ impl App {
                     .info("Starting supervised test run...");
             }
             B::Revert => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query.trim_start_matches("/revert").trim();
+                let path_arg = argument;
                 self.ui_state.command_mode = false;
                 if path_arg.is_empty() {
                     self.messages_state.toasts.warning("Usage: /revert <path>");
@@ -8266,8 +8181,7 @@ impl App {
                 }
             }
             B::EditUndo => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.trim_start_matches("/edit-undo").trim();
+                let arg = argument;
                 self.ui_state.command_mode = false;
                 let (session_id, workspace_id) = match (
                     self.active_session_id().map(|s| s.to_string()),
@@ -8313,8 +8227,7 @@ impl App {
                 }
             }
             B::EditReapply => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let arg = query.trim_start_matches("/edit-reapply").trim();
+                let arg = argument;
                 self.ui_state.command_mode = false;
                 let (session_id, workspace_id) = match (
                     self.active_session_id().map(|s| s.to_string()),
@@ -8360,12 +8273,7 @@ impl App {
                 }
             }
             B::EditCheckpoints => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let _arg = query
-                    .trim_start_matches("/edit-checkpoints")
-                    .trim_start_matches("/checkpoints")
-                    .trim_start_matches("/history")
-                    .trim();
+                let _arg = argument;
                 self.ui_state.command_mode = false;
                 let (session_id, workspace_id) = match (
                     self.active_session_id().map(|s| s.to_string()),
@@ -8395,8 +8303,7 @@ impl App {
                 }
             }
             B::Research => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.trim_start_matches("/research").trim();
+                let args = argument;
                 self.ui_state.command_mode = false;
                 if args.is_empty() {
                     self.messages_state
@@ -8411,8 +8318,7 @@ impl App {
                 self.handle_research_runs_command();
             }
             B::ResearchOpen => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let run_id = query.trim_start_matches("/research-open").trim();
+                let run_id = argument;
                 self.ui_state.command_mode = false;
                 if run_id.is_empty() {
                     self.messages_state
@@ -8423,8 +8329,7 @@ impl App {
                 }
             }
             B::ResearchShow => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let rest = query.trim_start_matches("/research-show").trim();
+                let rest = argument;
                 self.ui_state.command_mode = false;
                 if rest.is_empty() {
                     self.handle_research_runs_command();
@@ -8463,7 +8368,7 @@ impl App {
             }
             B::SecurityReview => {
                 self.ui_state.command_mode = false;
-                let raw_args = raw_input.unwrap_or("").trim();
+                let raw_args = argument;
                 let parsed_args = crate::security::workflow::parse_security_review_args(raw_args);
 
                 let root = match self.project_execution_context() {
@@ -8552,8 +8457,7 @@ impl App {
             }
             B::ShellInclude => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let args_str = query.strip_prefix("/shell-include").unwrap_or("").trim();
+                let args_str = argument;
                 let args: Vec<&str> = args_str.splitn(3, ' ').collect();
                 let id_str = args.first().copied().unwrap_or("");
                 let flag = args.get(1).copied().unwrap_or("all");
@@ -8597,8 +8501,7 @@ impl App {
             }
             B::ShellRerun => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id_str = query.strip_prefix("/shell-rerun").unwrap_or("").trim();
+                let id_str = argument;
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
@@ -8614,8 +8517,7 @@ impl App {
             }
             B::ShellKill => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id_str = query.strip_prefix("/shell-kill").unwrap_or("").trim();
+                let id_str = argument;
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
@@ -8663,8 +8565,7 @@ impl App {
             }
             B::ShellShow => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id_str = query.strip_prefix("/shell-show").unwrap_or("").trim();
+                let id_str = argument;
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
@@ -8680,8 +8581,7 @@ impl App {
             }
             B::ShellExpand => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let args_str = query.strip_prefix("/shell-expand").unwrap_or("").trim();
+                let args_str = argument;
                 let args: Vec<&str> = args_str.splitn(3, ' ').collect();
                 let id_str = args.first().copied().unwrap_or("");
                 let stream_str = args.get(1).copied().unwrap_or("stdout");
@@ -8710,8 +8610,7 @@ impl App {
                 crate::tui::commands::plugin_management::show_plugins(self);
             }
             B::TerminalCreate => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8728,8 +8627,7 @@ impl App {
                 crate::tui::commands::interactive_terminal::start_terminal_list(self);
             }
             B::TerminalAttach => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8742,8 +8640,7 @@ impl App {
                 }
             }
             B::TerminalShow => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8763,8 +8660,7 @@ impl App {
                 // view is answered with a shell rather than an instruction to
                 // go run a different command — the two-step is exactly what
                 // made this feel like it did not work.
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let explicit = !args.is_empty();
                 let handle = if explicit {
                     Some(args.to_string())
@@ -8793,8 +8689,7 @@ impl App {
                 }
             }
             B::TerminalClear => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 // No argument means "whichever one I am looking at" — the
                 // box if it is open, else the panel, else the active view.
                 let handle = if args.is_empty() {
@@ -8821,8 +8716,7 @@ impl App {
                 }
             }
             B::TerminalFocus => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let handle = if args.is_empty() {
                     None
                 } else {
@@ -8831,8 +8725,7 @@ impl App {
                 crate::tui::commands::interactive_terminal::focus_terminal(self, handle);
             }
             B::TerminalSend => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 match args.split_once(' ') {
                     Some((handle, text)) if !handle.is_empty() && !text.is_empty() => {
                         crate::tui::commands::interactive_terminal::send_terminal_input(
@@ -8849,8 +8742,7 @@ impl App {
                 }
             }
             B::TerminalResize => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let parts: Vec<&str> = args.split_whitespace().collect();
                 match parts.as_slice() {
                     [handle, cols, rows] => match (cols.parse::<u16>(), rows.parse::<u16>()) {
@@ -8876,8 +8768,7 @@ impl App {
                 }
             }
             B::TerminalResume => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let handle = if args.is_empty() {
                     None
                 } else {
@@ -8886,8 +8777,7 @@ impl App {
                 crate::tui::commands::interactive_terminal::start_terminal_resume(self, handle);
             }
             B::TerminalDetach => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let handle = if args.is_empty() {
                     None
                 } else {
@@ -8896,8 +8786,7 @@ impl App {
                 crate::tui::commands::interactive_terminal::start_terminal_detach(self, handle);
             }
             B::TerminalTerminate => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let handle = if args.is_empty() {
                     None
                 } else {
@@ -8906,8 +8795,7 @@ impl App {
                 crate::tui::commands::interactive_terminal::start_terminal_terminate(self, handle);
             }
             B::TerminalRemove => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let handle = if args.is_empty() {
                     None
                 } else {
@@ -8916,8 +8804,7 @@ impl App {
                 crate::tui::commands::interactive_terminal::start_terminal_remove(self, handle);
             }
             B::PluginInfo => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8927,8 +8814,7 @@ impl App {
                 }
             }
             B::PluginEnable => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8938,8 +8824,7 @@ impl App {
                 }
             }
             B::PluginDisable => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8949,14 +8834,12 @@ impl App {
                 }
             }
             B::PluginDoctor => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 let query_opt = if args.is_empty() { None } else { Some(args) };
                 crate::tui::commands::plugin_management::doctor_plugin(self, query_opt);
             }
             B::PluginRemove => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8966,8 +8849,7 @@ impl App {
                 }
             }
             B::PluginInstall => {
-                let query = self.dialog_state.command_palette.query.clone();
-                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let args = argument;
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -8978,8 +8860,7 @@ impl App {
             }
             B::ShellAsk => {
                 self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let args_str = query.strip_prefix("/shell-ask").unwrap_or("").trim();
+                let args_str = argument;
                 let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
                 let id_str = parts.first().copied().unwrap_or("");
                 let question = parts.get(1).copied().unwrap_or("").to_string();
@@ -10950,11 +10831,12 @@ impl App {
     /// themes. `use <name>` applies the named theme and persists the choice.
     /// `reload` rebuilds the registry from disk. `diagnostics` reports any
     /// non-fatal validation warnings.
-    fn handle_theme_command(&mut self, raw_input: Option<&str>) {
+    ///
+    /// `argument` is the argument the user typed after the command
+    /// spelling — the dispatcher already removed `/theme` and its aliases.
+    fn handle_theme_command(&mut self, argument: &str) {
         self.ui_state.command_mode = false;
-        let arg = raw_input
-            .and_then(|s| s.split_once(' ').map(|(_, rest)| rest.trim()))
-            .unwrap_or("");
+        let arg = argument;
 
         if arg.is_empty() {
             self.open_dialog(Dialog::Theme);
@@ -12451,7 +12333,10 @@ impl App {
     }
 
     fn update_completions(&mut self) {
-        let text = self.prompt_state.prompt.get_text();
+        // The composer's text is borrowed: the completion path runs on every
+        // keystroke, and it cloned the whole buffer to look at the text
+        // before the caret.
+        let text = self.prompt_state.prompt.text();
         let cursor = self.prompt_state.prompt.cursor_pos();
         let before_cursor = &text[..cursor];
 
@@ -17057,7 +16942,7 @@ mod theme_integration_tests {
     #[test]
     fn handle_theme_command_list_uses_registry() {
         let mut app = App::new_for_testing("/tmp".to_string());
-        app.handle_theme_command(Some("/theme list"));
+        app.handle_theme_command("list");
         // The list command should not change the theme; we just check it
         // does not crash and that we can still query the registry.
         let names = app.theme_registry.names();
@@ -17067,7 +16952,7 @@ mod theme_integration_tests {
     #[test]
     fn handle_theme_command_use_applies_and_keeps_registry() {
         let mut app = App::new_for_testing("/tmp".to_string());
-        app.handle_theme_command(Some("/theme use catppuccin-latte"));
+        app.handle_theme_command("use catppuccin-latte");
         assert_eq!(app.ui_state.theme.name, "Catppuccin Latte");
     }
 
@@ -17075,7 +16960,7 @@ mod theme_integration_tests {
     fn handle_theme_command_use_unknown_reports_error() {
         let mut app = App::new_for_testing("/tmp".to_string());
         let before = app.ui_state.theme.name.clone();
-        app.handle_theme_command(Some("/theme use nope"));
+        app.handle_theme_command("use nope");
         // Theme should remain the default.
         assert_eq!(app.ui_state.theme.name, before);
     }
@@ -17176,7 +17061,7 @@ mod theme_integration_tests {
         let mut app = App::new_for_testing("/tmp".to_string());
         for id in ["catppuccin-mocha", "nord", "gruvbox", "vesper"] {
             assert!(app.apply_theme(id), "{id} should apply");
-            app.handle_theme_command(Some("/theme reload"));
+            app.handle_theme_command("reload");
             assert_eq!(
                 app.ui_state.theme.id, id,
                 "/theme reload must preserve the active theme"
@@ -17218,7 +17103,7 @@ mod theme_integration_tests {
             .and_then(|p| std::fs::read(p).ok())
             .map(|bytes| config_digest(&bytes));
 
-        app.handle_theme_command(Some("/theme use catppuccin-latte"));
+        app.handle_theme_command("use catppuccin-latte");
 
         // The theme still applies — only the config mirror is suppressed.
         assert_eq!(app.ui_state.theme.id, "catppuccin-latte");
@@ -20090,18 +19975,25 @@ mod policy_selector_route_tests {
     #[test]
     fn bare_approval_opens_the_selector() {
         let mut app = App::new_for_testing("/tmp".into());
-        app.dialog_state.command_palette.query = "/approval".into();
         app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
         assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
         assert!(app.dialog_state.policy_selector.is_some());
     }
 
     /// The alias must land on the same box, not a different one.
+    ///
+    /// The alias is resolved by the registry and the argument is extracted
+    /// from the spelling the user typed, so the handler never sees the
+    /// command name — canonical or alias — inside its own argument.
     #[test]
     fn bare_approval_alias_opens_the_same_selector() {
         let mut app = App::new_for_testing("/tmp".into());
-        app.dialog_state.command_palette.query = "/approval-mode".into();
-        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+        let cmd = app
+            .command_registry
+            .find_by_name_or_alias("approval-mode")
+            .expect("the alias is registered")
+            .clone();
+        app.execute_command(&cmd, Some("/approval-mode"));
         assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
     }
 
@@ -20110,7 +20002,6 @@ mod policy_selector_route_tests {
     #[test]
     fn bare_sandbox_opens_the_sandbox_selector() {
         let mut app = App::new_for_testing("/tmp".into());
-        app.dialog_state.command_palette.query = "/sandbox".into();
         app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Sandbox, None);
         assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
         let selector = app
@@ -20126,8 +20017,10 @@ mod policy_selector_route_tests {
     #[test]
     fn explicit_mode_argument_does_not_open_the_selector() {
         let mut app = App::new_for_testing("/tmp".into());
-        app.dialog_state.command_palette.query = "/approval interactive".into();
-        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+        app.dispatch_builtin_command(
+            crate::tui::command::BuiltinSlashAction::Approval,
+            Some("interactive"),
+        );
         assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
     }
 
@@ -20136,7 +20029,6 @@ mod policy_selector_route_tests {
     #[test]
     fn selecting_yolo_by_digit_tears_down_the_selector() {
         let mut app = App::new_for_testing("/tmp".into());
-        app.dialog_state.command_palette.query = "/approval".into();
         app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
         assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
 
@@ -20156,7 +20048,6 @@ mod policy_selector_route_tests {
     #[test]
     fn esc_leaves_the_selector_without_committing() {
         let mut app = App::new_for_testing("/tmp".into());
-        app.dialog_state.command_palette.query = "/approval".into();
         app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
 
         app.on_key(key(crossterm::event::KeyCode::Esc));

@@ -706,10 +706,6 @@ pub(crate) fn focus_panel_at(app: &mut App, placement: PanelPlacement) {
 }
 
 /// Give the composer back the mode it had before a panel took the keyboard.
-///
-/// Split out because two different routes leave a panel — [`blur_panel`] for
-/// the directional gesture, and `SidePanelHost`'s own `blur()` for the
-/// `Shift+Q` exit — and both owe the composer the same restoration.
 fn restore_composer_mode_if_unfocused(app: &mut App) {
     if app.panel_host.is_focused() {
         return;

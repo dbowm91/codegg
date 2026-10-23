@@ -222,7 +222,9 @@ fn app_streaming() -> App {
     app.messages_state
         .messages
         .add_assistant_text("Once upon a time".into());
-    app.messages_state.messages.streaming_tokens = " in a land far away...".to_string();
+    app.messages_state
+        .messages
+        .set_streaming_tokens(" in a land far away...".to_string());
     app
 }
 
@@ -954,7 +956,7 @@ fn render_streaming_with_sidebar_and_completions() {
 // ===========================================================================
 
 // Note: Direct render_component_fallback tests live in
-// src/tui/app/render_tests.rs (in-module, private access).
+// src/tui/app/mod.rs (in-module, private access).
 // These integration tests verify the public render path handles all states
 // without panic and that diagnostics tracking works.
 

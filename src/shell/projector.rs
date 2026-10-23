@@ -1,8 +1,5 @@
 //! Shell command output projectors.
 //!
-//! Phase 2 of the shell output projection roadmap
-//! (`plans/shell_output_projection_phase_02_projection_trait.md`).
-//!
 //! This module introduces the projection abstraction that converts raw
 //! command artifacts into explicit model-facing and TUI-facing views. The
 //! trait [`CommandOutputProjector`] is independent of any specific
@@ -11,11 +8,6 @@
 //! and do not invoke RTK or command-specific parsers. Later phases will
 //! insert native structured projectors and an RTK-backed projector into
 //! the same selection pipeline.
-//!
-//! The single model-visible seam from earlier code is
-//! [`default_command_projection`], which now delegates to the
-//! [`ProjectionSelector`] so every projection flows through the same
-//! selection logic regardless of which projector is ultimately chosen.
 //!
 //! All types in this module are additive — they do not modify
 //! [`crate::shell::projection::CommandRun`] or

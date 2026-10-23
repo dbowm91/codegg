@@ -17,10 +17,6 @@
 //!
 //! ## The contract
 //!
-//! The mapping is a **bijection between the layout's cells and the bytes the
-//! wrap renders**: every cell holds exactly one rendered character, and every
-//! rendered character is on exactly one cell.
-//!
 //! The bytes the wrap deliberately does **not** render — a line break, and
 //! the whitespace a row break swallowed — are on no cell at all. The wrap's
 //! own contract says as much: the range of a collapsed whitespace run "is what
@@ -34,13 +30,8 @@
 //! the last rendered character sits one column past it.
 //!
 //! ## The trailing row
-//!
-//! A buffer that ends with a line break has one more line than the wrap's
-//! rows: the empty line the caret sits on once the break is typed. The
-//! layout adds that row, so the row count agrees with the buffer's line count
-//! and the caret after the break has a row of its own.
 
-use crate::tui::wrap::{visible_width, WrappedRow};
+use crate::tui::wrap::{escape_sequence_len, visible_width, WrappedRow, ESC};
 use unicode_width::UnicodeWidthChar;
 
 /// One cell of the wrapped layout: a rendered column and the source bytes
@@ -205,32 +196,42 @@ impl VisualLayout {
     }
 
     /// The cell whose first byte is exactly `byte`.
+    ///
+    /// The rows are in source order and their ranges do not overlap, so the
+    /// byte names at most one row; the row is found by position rather than
+    /// by a scan over every cell.
     fn cell_starting_at(&self, byte: usize) -> Option<VisualCell> {
-        for row in &self.cells {
-            for cell in row {
-                if cell.byte_start == byte {
-                    return Some(*cell);
-                }
-                if cell.byte_start > byte {
-                    return None;
-                }
-            }
-        }
-        None
+        let row_index = self
+            .ranges
+            .iter()
+            .position(|(start, end)| *start <= byte && byte < *end)?;
+        self.row_cells(row_index)
+            .iter()
+            .find(|cell| cell.byte_start == byte)
+            .copied()
     }
 
     /// The last cell that starts before `byte`.
+    ///
+    /// The cells are in source order, so the answer is in the last row that
+    /// starts before the byte; an empty row (the row a trailing line break
+    /// opens) holds no cell, so the search falls back to the row before it.
     fn last_cell_before(&self, byte: usize) -> Option<VisualCell> {
-        let mut found = None;
-        for row in &self.cells {
-            for cell in row {
-                if cell.byte_start >= byte {
-                    return found;
-                }
-                found = Some(*cell);
+        let mut row_index = self.ranges.iter().rposition(|(start, _)| *start < byte)?;
+        loop {
+            if let Some(cell) = self
+                .row_cells(row_index)
+                .iter()
+                .rev()
+                .find(|cell| cell.byte_start < byte)
+            {
+                return Some(*cell);
             }
+            if row_index == 0 {
+                return None;
+            }
+            row_index -= 1;
         }
-        found
     }
 
     /// The row that follows the line break at `newline`.
@@ -242,8 +243,6 @@ impl VisualLayout {
     }
 }
 
-/// The cells of one wrapped row.
-///
 /// A slice whose byte length matches its source range is the source text
 /// itself, so its characters are the row's cells one for one. A slice whose
 /// byte length does not match is a collapsed whitespace run: the wrap
@@ -270,24 +269,39 @@ fn row_cells(row: &WrappedRow, row_index: usize) -> Vec<VisualCell> {
         // A slice that carries a terminal control sequence measures zero
         // columns for the sequence itself, so the widths are taken from the
         // sequence-aware measurement rather than from the characters.
+        //
+        // The measurement is made **once**, in a single pass over the slice:
+        // a character's visible width is the difference between the visible
+        // width of the text up to it and the visible width of the text before
+        // it, and taking that difference per character re-measured the whole
+        // prefix every time, which made the cost quadratic in the slice's
+        // length. The single pass computes the same widths, and it skips a
+        // control sequence whole — the sequence stays one atomic token, so an
+        // OSC-8 hyperlink's target is never broken and never counted.
         let measured = text.contains('\u{1b}');
-        let mut previous = 0usize;
-        for (offset, ch) in text.char_indices() {
-            let next = offset + ch.len_utf8();
-            let width = if measured {
-                visible_width(&text[..next]) - visible_width(&text[..previous])
-            } else {
-                UnicodeWidthChar::width(ch).unwrap_or(0)
-            };
-            previous = next;
+        let bytes = text.as_bytes();
+        let mut idx = 0usize;
+        while idx < bytes.len() {
+            if measured && bytes[idx] == ESC {
+                let mut end = idx + escape_sequence_len(&bytes[idx..]);
+                while end < bytes.len() && !text.is_char_boundary(end) {
+                    end += 1;
+                }
+                idx = end;
+                continue;
+            }
+            let ch = text[idx..].chars().next().expect("idx is a char boundary");
+            let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let start = idx;
+            idx += ch.len_utf8();
             if width == 0 {
                 continue;
             }
             cells.push(VisualCell {
                 row: row_index,
                 column,
-                byte_start: slice.source_start + offset,
-                byte_end: slice.source_start + next,
+                byte_start: slice.source_start + start,
+                byte_end: slice.source_start + idx,
                 width,
             });
             column += width;
@@ -309,11 +323,6 @@ mod tests {
     }
 
     /// The texts the mapping is proved over.
-    ///
-    /// The empty buffer, a buffer ending in a line break, content wider than
-    /// the row, a token wider than the row, multi-byte characters, collapsed
-    /// whitespace and trailing whitespace are all here, because each of them
-    /// breaks a different assumption about the mapping.
     const TEXTS: &[&str] = &[
         "",
         "hello",
@@ -452,7 +461,6 @@ mod tests {
         }
     }
 
-    /// A multi-byte character is one cell, not one cell per byte.
     #[test]
     fn a_multi_byte_character_is_one_cell() {
         let layout = layout("é", 10);
@@ -465,7 +473,6 @@ mod tests {
         assert_eq!(layout.cell_of_byte(1), Some(cell));
     }
 
-    /// A collapsed whitespace run is attributed to the one column that
     /// replaced it, which is what the wrap's contract asks a consumer for.
     #[test]
     fn a_collapsed_whitespace_run_is_on_the_space_s_column() {

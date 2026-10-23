@@ -11,10 +11,6 @@
 //! the side. Native containment is the mechanism that prevents it, because a
 //! confined process can write only inside its own roots.
 //!
-//! On Linux that mechanism is Landlock's, and it is qualified by
-//! `tests/linux_native_scratch_containment.rs`. On macOS it is Seatbelt's,
-//! and this file is that qualification.
-//!
 //! This file is a whole-file `cfg(target_os = "macos")` fixture on purpose: a
 //! qualification that cannot run on the target platform must not exist as a
 //! *passing* test on another platform, so on Linux and Windows this binary

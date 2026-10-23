@@ -74,9 +74,6 @@ const HINT_BROWWSING: &str =
     "j/k move · [ ] reorder · a add · e edit · d delete · s send now · r refresh";
 
 /// The verbs while a text step has the keyboard.
-///
-/// Two keys, both of which the box itself answers. This is the one place a
-/// stray `d` does real damage — see [`QueueDialog::is_text_step`].
 const HINT_TEXT: &str = "Enter next · Esc cancel";
 
 /// The verbs while the duration step has the keyboard.
@@ -114,8 +111,6 @@ const MAX_TEXT_CHARS: usize = 512;
 /// refuse rather than a `truncate`.
 const MAX_COMPOSE_BYTES: usize = 256 * 1024;
 
-/// The empty state, verbatim.
-///
 /// It names `a` from M005 onward, because `a` now exists. Before M005 it named
 /// no verb for creating an entry precisely because naming one that does nothing
 /// is worse than saying nothing.
@@ -209,10 +204,6 @@ pub struct QueueDialog {
     /// silently retarget the edit at whichever row the cursor now sits on.
     editing_entry_id: Option<String>,
     /// M007: the duration being typed in [`QueueStep::Scheduling`].
-    ///
-    /// Separate from `compose` because the two are different fields with
-    /// different meanings, and a single buffer holding both would make "go back
-    /// and fix the text" ambiguous.
     schedule: String,
     /// M007: the entry's **existing** due time, captured when the edit step
     /// opened.
@@ -946,10 +937,6 @@ fn format_remaining(remaining_ms: i64) -> String {
 /// - `"@3h"` — scheduled and still waiting.
 /// - `"@·"` — due, i.e. the time has arrived and it is waiting for the next
 ///   turn rather than for the clock.
-///
-/// The last state is the one that matters: "scheduled for 09:00" and "09:00 has
-/// passed and it still has not run" look identical otherwise, and they are very
-/// different states for a user deciding whether to press `s`.
 fn due_marker(run_at_ms: Option<i64>, now_ms: i64) -> String {
     match run_at_ms {
         None => "  ".to_string(),
@@ -1530,10 +1517,6 @@ mod tests {
 
     /// WP-A's acceptance sweep: every action letter, typed into a text step,
     /// must land in the buffer and trigger nothing.
-    ///
-    /// This is the milestone's headline hazard. `d` deleting a prompt because
-    /// the user was typing one, or `e` opening an editor mid-word, is the
-    /// failure the whole `is_text_step` seam exists to prevent.
     #[test]
     fn user_prompt_queue_text_step_swallows_every_action_letter() {
         // Each of these is a verb in the browsing step. If any reaches its

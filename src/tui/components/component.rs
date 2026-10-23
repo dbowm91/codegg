@@ -237,9 +237,6 @@ pub trait Component: Send + Any + AsAny {
     /// keymap is written next to the `handle_key` arms that implement it and
     /// read from the same place, which is what makes "the box, its panel, and
     /// the hint line cannot disagree" true rather than aspirational.
-    ///
-    /// `None` means "the host's generic line is correct for me" — the default,
-    /// so a widget with nothing distinctive to say is unchanged.
     fn keymap_hint(&self) -> Option<String> {
         None
     }

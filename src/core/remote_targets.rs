@@ -6,10 +6,6 @@
 //! that decision — which nodes a client may name, and what execution
 //! posture a targetable node must declare.
 //!
-//! The *principal* half of the decision (does this caller hold the
-//! node-target capability?) lives in the daemon's authorization gate;
-//! see `CoreDaemon::authorize_node_target`.
-//!
 //! Everything here is fail closed. The default policy approves no node
 //! at all, so a daemon that never configures `[eggwork.allowed_target_nodes]`
 //! refuses every remote target at the host boundary while leaving local

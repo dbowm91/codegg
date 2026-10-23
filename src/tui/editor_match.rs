@@ -44,13 +44,10 @@
 //! The plan names the crate helpers `leading_byte` / `next_char_boundary` as
 //! the byte-stepping primitives. Those operate on `DocumentSnapshot`, and
 //! using them here would make this module depend on the editor's document
-//! type — which this work package forbids, because the module has to stay
-//! dependency-free to be unit-testable in isolation and to land in parallel
-//! with the other work packages. This module therefore does its own UTF-8
-//! character-boundary stepping: forward with `str::chars()`, and backward with
-//! the UTF-8 continuation-byte rule (`0b10xxxxxx`). The two agree — both land
-//! on the same character boundaries — so a call site may use either. The
-//! call-site concern is recorded here so it is not rediscovered.
+//! type — which this work package forbids. This module therefore does its own
+//! UTF-8 character-boundary stepping: forward with `str::chars()`, and
+//! backward with the UTF-8 continuation-byte rule (`0b10xxxxxx`). The two
+//! agree, so a call site may use either.
 
 use std::ops::Range;
 
@@ -455,10 +452,6 @@ fn char_at(text: &str, offset: usize) -> Option<(char, usize)> {
 }
 
 /// The start of the character that ends at `offset`.
-///
-/// Walks back over UTF-8 continuation bytes (`0b10xxxxxx`), so it lands on a
-/// character boundary in at most three steps for valid UTF-8. This is the
-/// backward twin of the forward step: **neither ever splits a character**.
 fn prev_char_start(text: &str, offset: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     if offset > bytes.len() {

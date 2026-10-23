@@ -1,13 +1,5 @@
 //! The one frame table and the one cadence every spinner in the TUI uses.
 //!
-//! There used to be two independent animations: a block-progress `SpinnerWidget`
-//! living on `App` as `busy_spinner`, and the braille `ActivityIndicator` that
-//! actually draws the working strip. They disagreed on glyph family *and* on
-//! speed — the widget stepped every 80ms while the indicator stepped once per
-//! whole elapsed second, so the throbber a user actually watches during a turn
-//! took ten seconds to complete one rotation. Two sources of truth for "is
-//! anything happening" is how the faster one stopped being the visible one.
-//!
 //! This module is now the only place a frame is chosen from a duration, so a
 //! fix to the cadence lands everywhere at once.
 

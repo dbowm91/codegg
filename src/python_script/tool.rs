@@ -256,10 +256,6 @@ pub struct PythonScriptTool {
     submission_service: Option<Arc<JobSubmissionService>>,
     /// The session's workspace root: the default script `workdir` and the
     /// containment root for the spawned interpreter.
-    ///
-    /// The parser used to emit `workspace_root: None` unconditionally, so both
-    /// the run directory and the containment check fell back to the process
-    /// cwd — the daemon's launch directory, unrelated to the session.
     workspace_root: Option<std::path::PathBuf>,
 }
 

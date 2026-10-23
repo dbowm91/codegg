@@ -3,7 +3,7 @@
 //! Verifies that long-running operations on the manifest/restore
 //! surface stay within bounded memory, task, and write-frequency
 //! caps. These are lightweight integration tests; the heavier soak
-//! tests live in `tests/tui_manifest_restore.rs`.
+//! tests live in `tests/tui_render/tui_manifest_restore.inc`.
 //!
 //! See `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md`
 //! for the full resource-cap specification.

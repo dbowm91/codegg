@@ -465,6 +465,12 @@ paths = [
   "src/core/process_admission.rs",
   "src/tool/process_admission.rs",
   "src/tool/process_capability.rs",
+  # The destructive-command classification and the human-shell block. The
+  # C002 fixtures in this family pin the classification's verdict in both
+  # directions, so a change to any of these has to select this family too.
+  "src/tool/destructive.rs",
+  "src/tool/bash/policy.rs",
+  "src/shell/policy.rs",
 ]
 targets = ["security_permission"]
 

@@ -244,6 +244,7 @@ class TestFunction:
     attributes: tuple[str, ...]
     body_text: str
     body_digest: str
+    body_code: str
 
     @property
     def location(self) -> str:
@@ -262,7 +263,14 @@ class TestFunction:
 
     @property
     def has_skip_marker(self) -> bool:
-        return _SKIP_MARKER.search(self.body_text) is not None
+        """True when the body carries a skip marker.
+
+        The marker is matched against `body_code`, which has the comments
+        removed. A comment that *quotes* a skip marker — a product note that
+        says what a skip message looks like — is not a skip, and treating it
+        as one would let a comment suppress the finding.
+        """
+        return _SKIP_MARKER.search(self.body_code) is not None
 
     @property
     def has_panic_construct(self) -> bool:
@@ -282,8 +290,12 @@ class TestFunction:
         return match.start() if match else -1
 
     def first_skip_marker(self) -> int:
-        """The offset of the first skip marker, or -1."""
-        match = _SKIP_MARKER.search(self.body_text)
+        """The offset of the first skip marker, or -1.
+
+        `body_code` has the same length and the same newline count as
+        `body_text`, so the offset is valid in both views.
+        """
+        match = _SKIP_MARKER.search(self.body_code)
         return match.start() if match else -1
 
     @property
@@ -688,6 +700,7 @@ def find_test_functions(text: str, path: Path, rel: str, tree: str) -> list[Test
     if not test_attributes:
         return []
 
+    code_text = scan.code()
     functions: list[TestFunction] = []
     for attribute in test_attributes:
         match = _FN_KEYWORD.search(mask, attribute.end)
@@ -733,6 +746,7 @@ def find_test_functions(text: str, path: Path, rel: str, tree: str) -> list[Test
                 attributes=governing,
                 body_text=text[body_start : body_end + 1],
                 body_digest=scan.digest_slice(body_start, body_end + 1),
+                body_code=code_text[body_start : body_end + 1],
             )
         )
     return functions

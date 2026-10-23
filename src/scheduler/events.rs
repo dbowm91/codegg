@@ -70,10 +70,6 @@ pub enum SchedulerEvent {
     /// artifact paths are deliberately absent: this event is published
     /// to group members, so it must never carry anything the group is
     /// not entitled to see.
-    ///
-    /// The job record — not this event — is the authority for the kind
-    /// and the terminal state. A consumer that needs those reads the
-    /// durable job record.
     JobStatus {
         job_id: String,
         attempt_id: AttemptId,

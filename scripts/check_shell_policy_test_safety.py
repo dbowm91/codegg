@@ -12,6 +12,8 @@ What this guard checks (audited locations only):
   - tests/tool_programs/tool_execution.inc (primary shell-policy contract)
   - tests/agent_loop/agent_loop_harness.inc (approval-path marker tests)
   - tests/security_permission/permission.inc (bash permission matrix)
+  - tests/security_permission/destructive_delete_classification.inc (C002
+    destructive-delete classification fixtures)
   - tests/core_daemon/approval_router.inc (approval routing)
   - tests/security_permission/sandbox_containment.inc (sandbox enforcement)
 
@@ -61,6 +63,7 @@ AUDITED_FILES = [
     "tests/tool_programs/tool_execution.inc",
     "tests/agent_loop/agent_loop_harness.inc",
     "tests/security_permission/permission.inc",
+    "tests/security_permission/destructive_delete_classification.inc",
     "tests/core_daemon/approval_router.inc",
     "tests/security_permission/sandbox_containment.inc",
 ]

@@ -1,8 +1,4 @@
 //! Compatibility facade for the pre-M006 routing API.
-//!
-//! Planning now owns the sole production mapping from `ExecutionBackend` to
-//! executor-facing data. Keep this module because integration callers use the
-//! old path, but make it a zero-logic adapter into that canonical mapping.
 
 use crate::command_intent::plan::CommandPlan;
 

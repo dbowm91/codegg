@@ -3,12 +3,6 @@
 //! Renders one pending agent change as a file list plus a diff, with the
 //! accept/reject affordance and the daemon's verdict.
 //!
-//! The diff itself is drawn by the **existing** `DiffViewer` in
-//! `components/diff.rs` — this widget constructs one and replaces its public
-//! `hunks` with the hunks parsed from the candidate's patch. Nothing here
-//! re-implements diff rendering, and the viewer's scrolling and inline /
-//! side-by-side toggle come along for free.
-//!
 //! ## Reads the decision, never makes it
 //!
 //! The daemon owns whether an apply is legal. This widget shows the daemon's

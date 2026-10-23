@@ -1,9 +1,5 @@
 //! Repository operation-state discovery.
 //!
-//! Phase F extends `egggit` with a structured model for in-progress
-//! repository operations (merge, rebase, cherry-pick, revert, bisect,
-//! sequencer-driven operations, and apply-mailbox).
-//!
 //! Each variant carries the origin, current step, target refs, conflicted
 //! paths, and recommended legal actions where safely discoverable from
 //! Git plumbing. When filesystem sentinel files are version-sensitive we
@@ -316,9 +312,6 @@ pub fn detect_repository_operation_state(git_dir: &Path) -> GitReadFact<Reposito
 }
 
 /// The sentinel inspection behind [`detect_repository_operation_state`].
-///
-/// The class is attached by the caller because it is a property of the
-/// *read*, not of the sentinel layout.
 fn detect_operation_state_inner(git_dir: &Path) -> RepositoryOperationState {
     let git_dir = git_dir.to_path_buf();
     // Sequencer sentinel: present whenever cherry-pick or revert is active

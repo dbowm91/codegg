@@ -191,17 +191,18 @@ impl CoreDaemon {
         // live jobs ahead of recent terminals so history cannot hide active
         // work. This bounded indexed query runs only during snapshot/resync,
         // never in a TUI render path.
+        //
+        // "Live" is the domain's own complement of terminality
+        // (`JobState::non_terminal_states`), not a hand-written list: an
+        // interrupted job is not finished, and because an interrupted
+        // attempt may still be requeued it may still run, so it belongs with
+        // the live jobs rather than with the finished ones.
         let live_jobs = self
             .deps
             .job_store
             .list_job_records(codegg_core::jobs::JobStoreQuery {
                 session_id: Some(session_id.to_string()),
-                states: vec![
-                    codegg_core::jobs::JobState::Scheduled,
-                    codegg_core::jobs::JobState::Queued,
-                    codegg_core::jobs::JobState::Running,
-                    codegg_core::jobs::JobState::Blocked,
-                ],
+                states: codegg_core::jobs::JobState::non_terminal_states(),
                 limit: Some((codegg_protocol::projection::MAX_PROJECTION_JOBS + 1) as u32),
                 ..Default::default()
             })
@@ -243,19 +244,17 @@ impl CoreDaemon {
             }
         }
         if jobs_added < codegg_protocol::projection::MAX_PROJECTION_JOBS {
+            // The finished jobs are exactly the states the domain calls
+            // terminal (`JobState::terminal_states`). An interrupted job is
+            // **not** among them: it is not finished, and it is already
+            // projected above with the live jobs, so nothing the inclusive
+            // query used to select is lost by this change.
             let terminal_jobs = self
                 .deps
                 .job_store
                 .list_job_records(codegg_core::jobs::JobStoreQuery {
                     session_id: Some(session_id.to_string()),
-                    states: vec![
-                        codegg_core::jobs::JobState::Completed,
-                        codegg_core::jobs::JobState::Failed,
-                        codegg_core::jobs::JobState::Cancelled,
-                        codegg_core::jobs::JobState::TimedOut,
-                        codegg_core::jobs::JobState::Interrupted,
-                        codegg_core::jobs::JobState::Expired,
-                    ],
+                    states: codegg_core::jobs::JobState::terminal_states(),
                     limit: Some(
                         (codegg_protocol::projection::MAX_PROJECTION_JOBS - jobs_added) as u32,
                     ),

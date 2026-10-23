@@ -312,19 +312,19 @@ fn test_messages_widget_undo_redo() {
 #[test]
 fn test_messages_widget_streaming() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    assert!(widget.streaming_tokens.is_empty());
+    assert!(widget.streaming_tokens().is_empty());
 
     widget.add_streaming_token("Hello");
     widget.add_streaming_token(" ");
     widget.add_streaming_token("World");
-    assert_eq!(widget.streaming_tokens, "Hello World");
+    assert_eq!(widget.streaming_tokens(), "Hello World");
 
     widget.finalize_streaming();
-    assert!(widget.streaming_tokens.is_empty());
+    assert!(widget.streaming_tokens().is_empty());
     assert_eq!(widget.message_count(), 1);
 
     widget.clear_streaming();
-    assert!(widget.streaming_tokens.is_empty());
+    assert!(widget.streaming_tokens().is_empty());
 }
 
 #[test]

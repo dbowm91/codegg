@@ -1,7 +1,4 @@
 //! Frontend-side native protocol client contracts.
-//!
-//! This crate depends on the frontend-neutral protocol plus transport utilities;
-//! it contains no daemon, UI, provider, or authorization implementation.
 
 use codegg_protocol::frames::{ClientCapabilities, ClientKind};
 

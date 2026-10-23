@@ -34,10 +34,6 @@ pub struct Tts {
     speaking: Arc<AtomicBool>,
     /// PID of the `say` child currently speaking, so `stop()` terminates only
     /// our own speech rather than every `say` on the host.
-    ///
-    /// Shared via `Arc` because every call site works through a clone:
-    /// `speak()` runs inside a spawned TUI task and `stop()` runs inside a
-    /// different one, so the child pid has to be visible across handles.
     pid: Arc<Mutex<Option<u32>>>,
 }
 

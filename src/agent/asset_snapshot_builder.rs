@@ -1,10 +1,5 @@
 //! Production builder for [`ProjectAssetSnapshot`].
 //!
-//! [`ProjectAssetSnapshotBuilder`] is the single side-effect-bearing
-//! constructor for runtime assets. It accepts an explicit
-//! [`AssetContext`], runs each subsystem resolver once, computes stable
-//! per-asset and combined digests, and returns an immutable snapshot.
-//!
 //! The builder does not perform publication or generation management.
 //! Milestone 3 will own those concerns. The builder is safe to call
 //! concurrently for different project/workspace contexts and produces

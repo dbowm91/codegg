@@ -6,7 +6,7 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 54 guard scripts, and a workspace check
+                          # checks, 61 guard scripts, and a workspace check
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
@@ -109,9 +109,9 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 54 guard scripts, and a workspace `cargo check`. CI
+checks, 61 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 40 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 45 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
 As measured on 2026-10-23, quick runs **14 guards CI omits**: the client and
@@ -381,6 +381,16 @@ list):
 - `ToolBroker` is the only production tool-call boundary. Heavy work (tests, managed
   processes, subagent dispatch, tool programs) goes `JobSubmissionService` →
   `JobScheduler`, never direct executor calls. See `architecture/tool_broker.md`.
+  `scripts/check_tool_broker_boundary.py` enforces this in `verify.sh quick` and
+  CI: a **registry dispatch** (`ToolRegistry::execute_capture`) is a crossing
+  everywhere outside the registry's own module, and a **tool-instance dispatch**
+  (`Tool::execute`/`Tool::execute_structured`) is intra-tool delegation inside
+  `src/tool/` and a crossing outside it. One **recorded exception** exists — the
+  M006 Automatic approval reviewer's investigation call, which cannot be routed
+  through the broker because the broker requires a verified authority grant the
+  reviewer cannot hold without approving its own investigation. The exception is
+  scoped to one call in one function, is recorded in the guard with its owner,
+  and widening it is a deliberate edit to that guard.
 - `egggit` never mutates; mutations live in `src/git_mutations.rs` (+ network/config
   policy in `src/git_network_policy.rs`). See `architecture/git.md`.
 - Daemon is a user-scoped singleton (`flock` on `daemon.lock`; `CODEGG_DAEMON_HOME`

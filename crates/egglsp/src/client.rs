@@ -6,12 +6,6 @@
 //! - Tracks open files and diagnostics
 //! - Supports concurrent requests with atomic ID counter
 //!
-//! A single background reader task exclusively owns the server's stdout.
-//! All JSON-RPC responses are routed to pending oneshot senders; notifications
-//! (e.g. `textDocument/publishDiagnostics`) are dispatched independently of
-//! request state. When the reader exits, all pending requests fail immediately
-//! via [`fail_all_pending`].
-//!
 //! `diagnostics_may_still_be_warming` returns `true` only when no cache entry
 //! exists for a URI after a recent sync — i.e. the server has not yet sent a
 //! `publishDiagnostics` response. An empty diagnostics vec means the server
@@ -133,10 +127,6 @@ pub(crate) async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
 }
 
 /// Atomically transition the transport to `Failed` and drain all pending requests.
-///
-/// This is idempotent: if the transport is already `Failed`, subsequent calls are no-ops.
-/// The transport lock is released before draining the pending map to avoid holding it
-/// across the (potentially lengthy) iteration.
 async fn fail_transport(
     transport_state: &Arc<Mutex<ClientTransportState>>,
     pending: &PendingMap,
@@ -2355,10 +2345,6 @@ pub fn parse_publish_diagnostics(
 }
 
 /// Maximum allowed Content-Length for a single inbound LSP frame (64 MiB).
-///
-/// Real LSP responses rarely exceed a few hundred KiB. This limit protects
-/// against a malicious or buggy server claiming an absurdly large frame and
-/// causing the client to allocate unbounded memory.
 const MAX_LSP_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 const MAX_LSP_HEADER_BYTES: usize = 16 * 1024;

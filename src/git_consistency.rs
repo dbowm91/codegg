@@ -19,10 +19,6 @@
 //! [`admit_generation_bound`] is the fence. It turns a read fact into a
 //! [`GenerationConsistent`] value, or refuses it with a typed
 //! [`GitConsistencyRefusal`] that the caller cannot mistake for a warning.
-//!
-//! Containment and consistency stay orthogonal: a perfectly contained read
-//! of a concurrently mutable repository is still a `LiveMutable` read, and
-//! no amount of sandboxing turns it into a generation.
 
 use crate::git_service::GitServiceError;
 

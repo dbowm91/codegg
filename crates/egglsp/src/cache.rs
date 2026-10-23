@@ -1,9 +1,4 @@
 //! Bounded in-memory semantic context cache (Phase 12).
-//!
-//! Provides TTL-aware, generation-aware caching of [`LspContextPacket`]
-//! results keyed by workspace, server, operation, request fingerprint,
-//! file content hashes, capability state, and budget. Entries are
-//! evicted by count and byte budget (LRU within constraints).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, VecDeque};

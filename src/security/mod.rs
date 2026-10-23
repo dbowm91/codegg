@@ -21,7 +21,7 @@
 //! The re-exports below preserve the old `crate::security::finding::...`
 //! path for any call site that has not yet been migrated. New code
 //! should prefer direct `eggsentry::...` imports. See
-//! `plans/native_tool_crates_hardening.md` Phase 8.
+//! `architecture/native_crates.md` documents that crate boundary.
 
 pub mod lsp_executor;
 pub mod policy;

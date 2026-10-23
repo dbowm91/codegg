@@ -8,13 +8,6 @@
 //! a minimal read subset with an input schema that cannot express a
 //! mutation.
 //!
-//! Canonical delegation: every read executes through
-//! [`crate::git_service::GitExecutionService`] (the canonical read
-//! executor, itself delegating to `egggit` for structured payloads).
-//! This adapter spawns no subprocess, implements no git parsing, and
-//! shares no code path with the raw-subcommand fallback beyond what
-//! the service already owns.
-//!
 //! Workspace authority: the broker-supplied
 //! [`crate::tool::ToolExecutionContext::cwd`] (program workspace root
 //! installed by `BrokerAdapter::with_cwd`) is the repository root.

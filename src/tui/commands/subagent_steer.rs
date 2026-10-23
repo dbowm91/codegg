@@ -116,15 +116,10 @@ fn adopt(app: &mut App, addressee: SubagentAddressee) {
 /// run's composer claim to address another. An ambiguous name refuses rather
 /// than picking, because silently choosing one of two runs the user cannot tell
 /// apart is the failure this whole milestone exists to avoid.
-pub fn dispatch_addressee_command(app: &mut App, raw_input: Option<&str>) {
-    // `raw_input` is the whole typed line, so the command name is stripped
-    // first — the same shape `/skills` reads its query with.
-    let argument = raw_input
-        .unwrap_or_default()
-        .trim()
-        .strip_prefix("/subagent-send")
-        .unwrap_or_default()
-        .trim();
+pub fn dispatch_addressee_command(app: &mut App, argument: &str) {
+    // `argument` is what the user typed after the command spelling — the
+    // dispatcher already removed `/subagent-send`.
+    let argument = argument.trim();
     let argument = (!argument.is_empty()).then_some(argument);
     match argument {
         Some(value) if value.eq_ignore_ascii_case("off") => {
@@ -435,18 +430,15 @@ mod tests {
         // either — but two codes that leave the user in the same position
         // deserve one sentence.
         //
-        // `session_control_conflict` used to be grouped with
-        // `session_control_not_controller`, on the reading that the two differ
-        // only in *why* a foreign principal holds the turn. Reading
-        // `check_turn_controller` (`src/core/daemon_control.rs`) says otherwise:
-        // conflict is returned when `lease_turn != turn_id`, i.e. the lease
-        // covers a **different turn**, and not-controller when a different
-        // principal holds the lease for the one named. The first is a stale
-        // turn — retrying against the current turn works; the second is not
-        // this user's turn at all. Telling a conflict "another frontend has it"
-        // sends the user looking for a frontend that may not exist. They group
-        // with `turn_id_mismatch`, which is the same fact seen at the runtime
-        // instead of the control plane.
+        // Reading `check_turn_controller` (`src/core/daemon_control.rs`) says
+        // otherwise: conflict is returned when `lease_turn != turn_id`, i.e.
+        // the lease covers a **different turn**, and not-controller when a
+        // different principal holds the lease for the one named. The first is
+        // a stale turn — retrying against the current turn works; the second
+        // is not this user's turn at all. Telling a conflict "another
+        // frontend has it" sends the user looking for a frontend that may not
+        // exist. They group with `turn_id_mismatch`, which is the same fact
+        // seen at the runtime instead of the control plane.
         let groups: &[&[&str]] = &[
             &[STEER_QUEUE_FULL_CODE],
             &[STEER_UNAVAILABLE_CODE],

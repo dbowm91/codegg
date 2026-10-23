@@ -1,9 +1,6 @@
 #![allow(clippy::type_complexity)]
 
 //! Model Context Protocol (MCP) implementation.
-//!
-//! This module provides MCP client functionality for connecting to external MCP servers.
-//! MCP is a protocol for extending AI assistants with custom tools and resources.
 
 pub mod auth;
 pub mod cli;

@@ -1,38 +1,14 @@
 //! C007: production publication of a private Git index.
 //!
-//! This is the C004 production vertical. An authorized `git add` is staged
-//! into a **private** index in daemon-owned scratch and is only then
-//! published into the real repository index.
+//! An authorized `git add` is staged into a **private** index in daemon-owned
+//! scratch and is only then published into the real repository index. A plain
+//! `git add` mutates the repository index in place under Git's `index.lock`,
+//! with no compare-and-swap and no durable record of the intent, so a
+//! concurrent writer can be silently overwritten and a crash between the
+//! intent and the index write leaves no recoverable evidence.
 //!
-//! # Why the publication is not a plain `git add`
-//!
-//! A plain `git add` mutates the repository index in place, under Git's
-//! `index.lock`, with no compare-and-swap and no durable record of what was
-//! intended. Two things go wrong with that:
-//!
-//! * a **concurrent writer** can have its index silently overwritten, because
-//!   the lock only excludes *cooperating* writers and the publisher cannot
-//!   fence an external `git`;
-//! * a **crash** between "the intent existed" and "the index was replaced"
-//!   leaves no evidence of what was intended, so the outcome cannot be
-//!   recovered — only guessed at.
-//!
-//! The publisher fixes both: it stages privately, records a durable intent,
-//! then publishes under Git's own lock with a compare-and-swap against the
-//! index generation the staging observed.
-//!
-//! # What this vertical publishes
-//!
-//! Exactly one resource: the repository **index**. Refs are not published and
-//! the worktree is not modified. Multi-resource atomicity across index, refs,
-//! and the worktree is a separate and larger problem; a receipt that implied
-//! otherwise would repeat the failure mode this corrective exists to avoid.
-//! See [`PublishedResourceScope`].
-//!
-//! # What this vertical does not do
-//!
-//! Merge, rebase, checkout, reset, clean, fetch, push, and pull are all out
-//! of scope. A single `Add` is the whole surface.
+//! Exactly one resource is published: the repository **index**. Refs are not
+//! published and the worktree is not modified. See [`PublishedResourceScope`].
 //!
 //! # The staging child
 //!
@@ -40,41 +16,28 @@
 //! [`crate::managed_process::ManagedProcessService`] with the M004
 //! process/IPC tier and the M005 offline-network candidate. The repository
 //! therefore cannot influence what the child executes, and the real index and
-//! the real object database are read-only to it (the mount view protects the
-//! repository's Git metadata under the writable workspace root).
+//! the real object database are read-only to it.
 //!
-//! The child writes into a private gitdir in daemon-owned scratch:
-//!
-//! * a **private index**, seeded byte-for-byte from the real index so the
-//!   staged result is based on the *current* index generation rather than on
-//!   `HEAD` (an already-staged change must not be lost by staging);
-//! * a **private object database**, whose `objects/info/alternates` points at
-//!   the real object database so existing objects resolve read-only while new
-//!   blobs stay private.
+//! The child writes into a private gitdir in daemon-owned scratch: a
+//! **private index**, seeded byte-for-byte from the real index so an
+//! already-staged change is not lost, and a **private object database** whose
+//! `objects/info/alternates` points at the real one.
 //!
 //! `GIT_INDEX_FILE` is deliberately **not** used: `EnvironmentPolicy` denies
 //! that variable by design (`codegg_git::ALWAYS_STRIPPED_ENV_VARS`), and
 //! reintroducing it would weaken a deliberate deny rule to obtain a property
-//! the private gitdir already provides — the child's index is in scratch and
-//! the real index is unreachable.
+//! the private gitdir already provides.
 //!
 //! # The object import
 //!
-//! A staged blob lives in the private object database, so it has to reach the
-//! real one before the index that references it is published. The import is
-//! performed by the **daemon**, not by a child: the M004/M005 mount view
-//! makes the repository's Git metadata read-only to children *by design*, so
-//! a child cannot perform it, and a containment profile that could would
-//! contradict that invariant.
+//! The import is performed by the **daemon**, not by a child: the M004/M005
+//! mount view makes the repository's Git metadata read-only to children *by
+//! design*, so a child cannot perform it. The import is content-addressed and
+//! therefore idempotent: a loose object is copied under its own content hash,
+//! an object that is already present is left alone, and the copy is verified
+//! byte-for-byte against its source.
 //!
-//! The import is content-addressed and therefore idempotent: a loose object
-//! is copied under its own content hash, an object that is already present is
-//! left alone, and the copy is verified byte-for-byte against its source. It
-//! cannot corrupt an existing object, because an existing object with the
-//! same name has the same content.
-//!
-//! The import runs **under the index lock and after the compare-and-swap
-//! succeeds**, so a conflicting publication writes nothing at all.
+//! See `architecture/git.md` for the full contract.
 
 pub mod publisher;
 pub mod reconciler;

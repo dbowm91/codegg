@@ -1,8 +1,4 @@
 //! Shared serialized writer for LSP JSON-RPC messages.
-//!
-//! Wraps an `AsyncWrite` behind an `Arc<Mutex<...>>` so that multiple
-//! concurrent callers (client requests, notifications, future server-request
-//! responses) can write framed messages without interleaving bytes.
 
 use std::sync::Arc;
 

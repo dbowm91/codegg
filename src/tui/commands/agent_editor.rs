@@ -28,12 +28,6 @@
 //! the row badge are not decoration — a user who `:wq`s a global agent has
 //! just changed what every project does, and the UI has to say so before and
 //! after.
-//!
-//! Built-in agents (`build`, `explore`, …) are compiled into
-//! `src/agent/builtins/generated.rs` and have **no file of their own**. They
-//! are "edited" the way the registry already supports: by writing an override.
-//! That is what makes *restore* exact — removing the override falls back to
-//! the compiled definition with no saved copy to go stale.
 
 use crate::agent::asset_context::{AssetContext, AssetContextBuilder, ProjectId};
 use crate::agent::registry::{AgentRegistry, AgentSourceKind};

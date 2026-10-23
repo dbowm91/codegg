@@ -308,3 +308,186 @@ when the measure is narrower than the claim.
 Both the `architecture/overview.md` catalog table and `docs/tools.md`'s family
 table now name all 75, and the two sets are identical with no name in one and
 absent from the other.
+
+### Third amendment — 2026-10-23, repository audit corrective C001
+
+Three rows moved because the milestone added one thing of each kind. No row's
+**measure** changed, so no method decision is needed; the values were
+re-measured with `scripts/measure_overview_counts.py` and compared to the
+table row by row.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 327 | 328 | `tests/tui_render/nested_runtime_command_dispatch.inc`, a new `.inc` member of the existing `tui_render` family. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; the family already existed, so no new family directory and no `tests/*.rs` was added. |
+| Guard scripts (all) | 80 | 81 | `scripts/check_no_nested_runtime_block_on.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 40 | 41 | The same guard, wired into the hosted CI guard step. The measure (the distinct `scripts/check_*` names named in `.github/workflows/ci.yml`) is unchanged. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root).
+
+### Fourth amendment — 2026-10-23, repository audit corrective C002 + merge reconciliation
+
+Three rows moved because C002 added one thing of each kind, and the merge of
+C001 and C002 needed reconciling. No row's **measure** changed, so no method
+decision is needed; the values were re-measured with
+`scripts/measure_overview_counts.py` and compared to the table row by row.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 327 | 329 | C001's `tests/tui_render/nested_runtime_command_dispatch.inc` and C002's `tests/security_permission/destructive_delete_classification.inc` — a new `.inc` member of each of two existing families. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; neither family directory nor any `tests/*.rs` was added. |
+| Guard scripts (all) | 80 | 82 | `scripts/check_no_nested_runtime_block_on.py` (C001) and `scripts/check_destructive_risk_signal_coverage.py` (C002). The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 40 | 42 | The same two guards, each wired into the hosted CI guard step. The measure (the distinct `scripts/check_*` names named in `.github/workflows/ci.yml`) is unchanged. |
+
+**Merge reconciliation.** C001 and C002 were developed on sibling branches from
+the same base and each re-measured these three rows in isolation, so each
+recorded its own single increment. `architecture/overview.md` merged without a
+conflict — the two edits landed in different hunks — and the merged table
+carried **one** increment where two were owed. The row values above are the
+canonical measurement of the merged tree (`329` / `82` / `42`); the count rows
+are the only place the merge lost information, and no other file's content was
+affected.
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root).
+
+### Fifth amendment — 2026-10-23, repository audit corrective C004 + merge reconciliation
+
+Three rows moved because C004 added one thing of each kind, and the merge of
+C004 needed reconciling. No row's **measure** changed, so no method decision is
+needed; the values were re-measured with `scripts/measure_overview_counts.py`
+and compared to the table row by row.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 329 | 331 | `tests/core_daemon/job_state_terminality_c004.inc` and `tests/scheduler_jobs/job_status_projection_c004.inc` — a new `.inc` member of each of two existing families. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; neither family directory nor any `tests/*.rs` was added, so the root package's **test-target** count did not move. |
+| Guard scripts (all) | 82 | 83 | `scripts/check_job_state_terminality_agreement.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 42 | 43 | The same guard, wired into `scripts/verify.sh quick` and `.github/workflows/ci.yml`; a guard's two `ci.yml` steps — the guard and its `--self-test` — are one distinct script. The measure is unchanged. |
+
+**Merge reconciliation.** C004 was developed on a sibling branch from the same
+base and re-measured these three rows in isolation, so it recorded its own
+single increment against the pre-merge base. `architecture/overview.md`
+conflicted on the two guard rows and on the tree comment; the rows were
+re-measured on the merged tree and the tree comment was corrected to the
+canonical **331**. The paragraph that summarises the count movement was
+merged into one statement covering C001, C002 and C004 rather than left as
+three competing versions.
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root). In particular the
+`codegg-core` modules row is still **54**: C004's new
+`codegg-core/src/jobs/evidence.rs` is a **sub**module of `jobs`, not a
+top-level `pub mod` in the crate's `lib.rs`.
+### Sixth amendment — 2026-10-23, repository audit corrective C005 + merge reconciliation
+
+Two rows moved, and both moved because this milestone **added** something
+rather than because a measure was wrong.
+
+| Row | Before | After | Why |
+|-----|--------|-------|-----|
+| CI guard scripts | 40 | **41** | `scripts/check_tool_broker_boundary.py` was repaired and wired into the CI guard step. The guard file already existed, so the *Guard scripts (all)* row (80) is unchanged — the row counts files, and this milestone changed a file's contents rather than adding one. |
+| Integration test files | 327 | **329** | Two new root integration family members: `tests/security_permission/reviewer_broker_boundary.inc` and `tests/tui_render/dialog_dispatch_coverage.inc`. The `tests/common/` helper tree is still excluded, and neither member adds a standalone target. |
+
+Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
+against this tree, each against its own listed `Source`; the measurement
+agrees with the published values.
+
+No other row moved: this milestone changed no schema, no tool registration,
+no module, and no storage layout. `Storage layout version` stays **88**, and
+the "quick runs 14 guards CI does not" note in the `CI guard scripts` row is
+unchanged — the broker-boundary guard is now in **both** `quick` and CI, so it
+adds one guard to each and does not change the size of the quick-only set.
+
+The measurement was taken on the C005 branch, before the sibling corrective
+milestones (C001, C002) are merged. Those two branches re-measured the same
+table on their own trees, so this row set is expected to conflict at merge
+time; the reconciliation is the union of each side's contribution, re-measured
+in the merged tree rather than carried over from either side.
+
+**Merge reconciliation.** C005 was developed on a sibling branch from the same
+base and re-measured these rows in isolation, so it recorded its own increments
+against the pre-merge base. Its amendment is appended here as the **sixth**,
+after the C001, C002 and C004 amendments, and its row values were re-measured
+in the **merged** tree. C005 added **two** `.inc` members of existing families
+(`tests/security_permission/reviewer_broker_boundary.inc` and
+`tests/tui_render/dialog_dispatch_coverage.inc`) and repaired the existing
+`scripts/check_tool_broker_boundary.py` in place — the row counts files, so
+the *Guard scripts (all)* row did not move, while the *CI guard scripts* row
+did, because the repaired guard is now wired into the CI guard step for the
+first time.
+
+## 2026-10-23 — C006, the TUI render path's cost
+
+C006 added one test member and one guard, so three rows of the
+`architecture/overview.md` count table moved. Every row was re-measured with
+`python3 scripts/measure_overview_counts.py` against its own listed
+`Source`, not incremented by hand.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 331 | 332 | `tests/tui_render/tui_render_cost.inc` — a new `.inc` member of an **existing** family, so the root package's **test-target** count did not move. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged. |
+| Guard scripts (all) | 84 | 85 | `scripts/check_tui_render_cost.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 44 | 45 | The same guard, wired into `scripts/verify.sh quick` and `.github/workflows/ci.yml`; a guard's two `ci.yml` steps — the guard and its `--self-test` — are one distinct script. The measure is unchanged. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root).
+
+**Merge reconciliation.** C006 was developed on a sibling branch from the same
+base as C001–C004 and re-measured these three rows in isolation, so it
+recorded its own single increment against the pre-merge base. The merged tree
+carries C005 as well, which adds its own guard and its own test member, so the
+merged values are one higher on two of the three rows than the values this
+record lists: integration test files **334**, guard scripts (all) **85** and
+CI guard scripts **46**. (The *guard scripts* row is one higher, not two: C005
+**repaired** the existing `scripts/check_tool_broker_boundary.py` in place
+rather than adding a file, so that row counts files and C005 did not move it.) The rows are re-measured on the merged tree when it
+is cut, rather than carried over from either side.
+## C007 — comment corpus reduction and drift guard (2026-10-23)
+
+| Row | Before | After | Why it moved |
+|---|---|---|---|
+| Guard scripts (all) | 84 | **85** | `scripts/check_comment_budget.py` is a new guard. It is wired into `scripts/verify.sh quick` and into the CI guard step. |
+| CI guard scripts | 45 | **46** | The new guard's two CI steps (the `--self-test` and the guard itself) are one guard script, so the *CI guard scripts* row counts the script once, not the steps. |
+
+Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
+against this tree, each against its own listed `Source`. No other row moved:
+C007 changed no schema, no tool registration, no module, no storage layout,
+and it added no integration test file (the guard's `--self-test` is the
+coverage, by the milestone plan's own placement decision).
+
+The *quick runs 14 guards CI does not* note in the `CI guard scripts` row is
+unchanged: the new guard is in **both** `quick` and CI, so it adds one guard
+to each and does not change the size of the quick-only set.
+
+The measurement was taken on the C007 branch, before the sibling corrective
+milestones (C001–C006) are merged. Those branches re-measured the same table
+on their own trees, so this row set is expected to conflict at merge time; the
+reconciliation is the union of each side's contribution, re-measured in the
+merged tree rather than carried over from either side.

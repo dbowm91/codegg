@@ -140,9 +140,6 @@ impl OpenCodeGoProvider {
     }
 
     /// Resolve the single executable surface for this request, or fail locally.
-    ///
-    /// An unresolved model is a zero-network failure by construction: no
-    /// request is built, no socket is opened, and nothing is defaulted to Chat.
     fn resolve(&self, request: &ChatRequest) -> Result<SurfaceRoute, ProviderError> {
         let route =
             provider_profile::resolve_route(&self.id, &request.model).map_err(profile_error)?;

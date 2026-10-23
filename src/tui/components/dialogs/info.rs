@@ -196,14 +196,6 @@ impl InfoDialog {
     /// - `scroll_to_end` therefore stores a `usize::MAX` sentinel instead of an
     ///   offset, for the same reason.
     ///
-    /// Both hand the clamp to this pass. Two clamps — one derived from the
-    /// modal rect and one from a column inset by a different amount — reach a
-    /// different last wrapped row, and nothing anywhere reports it: the panel
-    /// simply stops scrolling early, with no error and nothing to see in a
-    /// screenshot. Deriving `visible_lines` and the wrap width from one
-    /// `text_area` means the number the clamp uses and the number the
-    /// paragraph paints into are the same value by construction.
-    ///
     /// The clamp is applied to the start index, never written back to
     /// `self.scroll`: the sentinel has to outlive this call, because
     /// `set_styled_content_preserving_scroll` restores it on every refresh.

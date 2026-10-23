@@ -2,10 +2,8 @@
 //!
 //! The pre-C004 `rebuild` aborted the outer Tokio waiter with
 //! `cancel_kind(FileTree)` and immediately spawned a new waiter plus a new
-//! `spawn_blocking` scan. Aborting the waiter does **not** stop the blocking
-//! closure: the old scan keeps running until its next cancellation checkpoint
-//! (or until a slow `read_dir` syscall returns). Repeated rebuilds could
-//! therefore pile up concurrent blocking scans while
+//! `spawn_blocking` scan. Repeated rebuilds could therefore pile up
+//! concurrent blocking scans while
 //! `a_hundred_rapid_rebuilds_keep_one_live_task` still reported one registry
 //! task. The registry counts waiters, not workers.
 //!

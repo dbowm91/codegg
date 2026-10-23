@@ -1,11 +1,5 @@
 //! Bounded, deterministic project-instruction resolution.
 //!
-//! The instructions module is the canonical resolver for the `AGENTS.md`
-//! family of project instruction files. It runs as part of the unified
-//! [`crate::agent::asset_snapshot::ProjectAssetSnapshot`] build and is the
-//! single source of truth for what instruction fragments are loaded for
-//! a given explicit project/workspace context.
-//!
 //! Runtime Assets Milestone 2 established this resolver as the only
 //! instruction-discovery path for production prompt construction. The resolver:
 //!

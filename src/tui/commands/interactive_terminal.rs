@@ -3484,11 +3484,6 @@ mod tests {
     }
 
     // --- C003: one derived answer for the mode the user is in ------------
-    //
-    // `ui_state.input_mode` is the *composer's* mode and `focus_panel` forces
-    // it to `Normal` whenever a panel takes the keyboard, so the badge and the
-    // hint line both read the wrong field while the user was typing into a
-    // shell. One accessor now resolves it for both.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_badge_names_insert_while_the_terminal_box_takes_keystrokes() {
@@ -3537,11 +3532,6 @@ mod tests {
     }
 
     /// The reported symptom, pinned at its source.
-    ///
-    /// `focus_panel` forces `Normal` on panel focus, so a docked terminal in
-    /// Insert leaves `ui_state.input_mode` reading `Normal` while the user types
-    /// into a shell. The badge rendered that field, and the terminal panel's own
-    /// Insert hint branch — which branches on the same field — was unreachable.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_docked_terminal_in_insert_is_reported_as_insert() {
         let dir = tempfile::tempdir().expect("workspace");
@@ -3694,11 +3684,6 @@ mod tests {
 
     /// A real shell that paints a prompt and repaints it after every line it
     /// reads.
-    ///
-    /// The marker matters more than the shell: what these tests assert is that
-    /// a line the *process* printed reaches the screen. A fixture that echoed
-    /// the clear back would pass with a local wipe and no process interaction
-    /// at all, which is the exact fabrication the milestone forbids.
     fn prompt_shell() -> Vec<String> {
         vec![
             "sh".to_string(),
@@ -3737,11 +3722,6 @@ mod tests {
 
     /// The reported defect: `C` blanked the screen and left it blank, because
     /// the wipe was entirely local and the shell had no reason to redraw.
-    ///
-    /// The assertion is on *where the prompt came from*: the shell is a real
-    /// `sh` reading a real PTY, and the prompt it prints after the clear is
-    /// what lands on screen. A synthesised line would satisfy a weaker test and
-    /// would also be a lie for any non-default `PS1`.
     #[tokio::test(flavor = "current_thread")]
     async fn a_cleared_terminal_is_replaced_by_a_prompt_the_process_printed() {
         let dir = tempfile::tempdir().expect("workspace");

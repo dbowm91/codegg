@@ -902,6 +902,17 @@ which enforces a 10-step policy pipeline. Each tool has a `ToolContract`
 describing caller policy, effect class, idempotency, retry/cache, and
 projection policy. See [tool_broker.md](tool_broker.md).
 
+**Static guard**: `scripts/check_tool_broker_boundary.py` enforces that
+boundary in `scripts/verify.sh quick` and in CI. It distinguishes a registry
+dispatch (`ToolRegistry::execute_capture`) — always a crossing outside the
+registry's own module — from a tool-instance dispatch
+(`Tool::execute`/`Tool::execute_structured`), which is intra-tool delegation
+inside `src/tool/` and a crossing outside it. One recorded exception exists,
+the M006 Automatic approval reviewer's investigation call, scoped to one
+call in one function with a named owner; see
+[tool_broker.md](tool_broker.md) §"The broker boundary guard" and
+`architecture/approval_reviewer.md`.
+
 ## Security Considerations
 
 ### Repository retrieval workspace authority
@@ -924,6 +935,59 @@ workspace path policy must authorize the selected root as a whole.
 7. **Subprocess PATH**: Uses `std::env::var_os("PATH")` (not hardcoded)
 8. **Environment filtering**: TerminalTool retains its compatibility-specific filtering of LD_PRELOAD, DYLD_*
 9. **Allowlist support**: Bash policy evaluates allowlists for Bash and terminal's effective `sh -c` payload
+
+### Destructive-command classification (advisory)
+
+`src/tool/destructive.rs` owns the built-in destructive-command
+classification. It is an **advisory risk signal**: it annotates a command so
+the approval path can escalate it, and it never grants authority, never
+guarantees that the effect is impossible, and never rejects an invocation on
+its own. Command syntax is advisory under
+[ADR-0045](../plans/adrs/ADR-0045-command-syntax-and-execution-authority.md);
+the authority to run a command comes from the daemon-authorized principal, the
+workspace, the approval mode, the requested ceilings and the obtained
+executor capabilities.
+
+The filesystem-root delete is classified by
+`destructive::classify_root_delete`, the **single owner** of that
+classification. The tool-side classifier (`destructive_match`), the bash
+policy seam (`src/tool/bash/policy.rs::find_risk_pattern`) and the
+human-shell block (`src/shell/policy.rs`) all route through it, so they
+cannot disagree about the same spelling.
+
+The recogniser matches the **intent** — a recursive force removal whose
+target resolves to the filesystem root — by looking at the *target* position
+rather than the flag position. That is what makes the effective spellings
+visible:
+
+| Spelling | Verdict |
+|---|---|
+| `rm -rf /` | root target (the form coreutils refuses) |
+| `rm -rf --no-preserve-root /` | root target (the form coreutils executes) |
+| `rm -rf / --no-preserve-root` | root target (option after the target) |
+| `rm -fr /` | root target (flag order variant) |
+| `rm -rf /*` | root target (root glob) |
+| `rm -rf ~`, `rm -rf $HOME` | root target (home) |
+| `rm -rf /tmp/build`, `rm -rf ./build`, `rm -rf /home/user/project/cache` | not a root delete (scoped target) |
+| `rm -rf "$TARGET"` | not recognised (a variable target cannot be resolved) |
+
+Three properties are load-bearing:
+
+- **It is not a shell parser.** It recognises one command's option and target
+  positions and does not evaluate expansions, redirections or control flow.
+  A quoted word that is data rather than a command (`echo "rm -rf /"`) is not
+  classified at all.
+- **It never pretends to resolve a variable.** A variable or substitution
+  target is reported as *not recognised*, which is neither "root" nor
+  "proven safe".
+- **A scoped absolute path is not a root delete.** The human-shell block
+  refuses a filesystem-root removal and nothing wider; it no longer
+  hard-blocks `rm -rf /tmp/build`.
+
+The classifier's fixtures are
+`tests/security_permission/destructive_delete_classification.inc`, and
+`scripts/check_destructive_risk_signal_coverage.py` keeps the coverage and
+the recogniser's shape from regressing.
 
 ## Testing
 

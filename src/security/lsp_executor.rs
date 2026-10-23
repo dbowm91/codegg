@@ -9,11 +9,6 @@
 //!   tool internals (e.g. `ToolError`, `LspInput` deserialization).
 //! - Keeping it in the security module makes the dependency direction
 //!   clear: security depends on tool, not the other way around.
-//!
-//! The adapter wraps [`crate::tool::lsp::LspTool`] and implements
-//! [`SecurityContextExecutor`](super::workflow::context::SecurityContextExecutor),
-//! bridging the gap between the security workflow's JSON-in/JSON-out
-//! trait and the tool's `execute()` method which returns a `String`.
 
 use std::sync::Arc;
 

@@ -221,6 +221,48 @@ stale-generation protection.
 See `src/tui/async_cmd.rs` for `spawn_tui_task` and
 `spawn_registered_tui_task`.
 
+### Blocking on a runtime handle
+
+A command handler may not block on a runtime handle from inside the runtime.
+
+The event loop is awaited inside `#[tokio::main(flavor = "multi_thread")]`
+(`src/main.rs`), so the loop's future is polled with the runtime context
+**entered**. `tokio::runtime::Handle::block_on` enters the runtime again, and
+a nested entry panics with *"Cannot start a runtime from within a runtime"*.
+`App::on_key` is synchronous and the event loop's only `catch_unwind` wraps
+rendering rather than key handling, so that panic took the whole process
+down. The `/lsp-*` command arms and the `/worktree` arm in
+`src/tui/app/mod.rs` all waited this way, and so did the `McpCommand::Debug`
+arm in `src/mcp/cli.rs` — the MCP CLI is reached from the same `main`.
+
+The wait therefore goes through `tokio::task::block_in_place`, which leaves
+the runtime context before the inner `block_on` re-enters it:
+
+```rust
+let text = tokio::task::block_in_place(|| {
+    tokio::runtime::Handle::current().block_on(lsp_tool.lsp_doctor(path_arg))
+});
+```
+
+`block_in_place` requires a multi-threaded runtime, and `src/main.rs`
+declares one. The command's visible result is unchanged: the same string, on
+the same surface.
+
+**Why the existing unit test could not catch it.** The `lsp_doctor` tests in
+`src/tui/app/mod.rs` entered the runtime with `Runtime::new()` plus
+`rt.enter()`. `Runtime::enter` sets the current *handle* and the enter depth,
+but it does **not** set the entered flag — only `context::enter_runtime` sets
+that, and only a real `Runtime::block_on` calls it. The nested `block_on`
+therefore found no entered context in the test and succeeded, while the same
+call in production panicked. A regression test has to enter the runtime the
+way production does: the driving future must be polled by a real
+`Runtime::block_on`. `tests/tui_render/nested_runtime_command_dispatch.inc`
+does that, driving the command through `App::on_key`.
+
+`scripts/check_no_nested_runtime_block_on.py` fails the build when a
+`Handle::block_on` appears outside a `block_in_place` in the production Rust
+trees. It runs in `scripts/verify.sh quick` and in the hosted CI guard step.
+
 ### AsyncUiRequestState
 
 `AsyncUiRequestState` (`src/tui/app/state/async_request.rs:20`) is a
@@ -3018,6 +3060,99 @@ contains five `.await` points, all of the same shape:
 await an in-process `CoreClient` round trip and return a completion
 `TuiCommand`. Every other arm is non-async; handlers needing latency use
 spawn-and-complete or fire-and-forget instead.
+
+### The slash-command argument contract
+
+A slash command's argument is extracted **once**, where the typed line is
+resolved to a registry entry: `Command::argument_from_typed_line`
+(`src/tui/command.rs:421`), called from `App::execute_command`
+(`src/tui/app/mod.rs:5489`) on the built-in action.
+
+The extraction removes the spelling the **user typed** — the entry's
+canonical name *or one of its aliases*. An alias is a spelling of the same
+command, so `/agent` and `/agents` each lose their own token; stripping only
+the canonical name would leave the alias in the argument, which is the same
+defect one step later.
+
+After the extraction the argument is the only thing a handler receives. An
+arm of the built-in dispatcher (`App::dispatch_builtin_command`,
+`src/tui/app/mod.rs:5653`) never sees the typed line and never reads
+`command_palette.query`: the palette's query is the *whole* typed line, and
+a handler that read it re-derived the argument by hand — which is how
+`/search` searched for the literal `"/search foo"` and `/task-del` deleted
+the task `"/task-del 5"`. `scripts/check_command_argument_contract.py`
+fails when an arm reads the palette's query, and when a `Dialog` variant is
+missing from `Dialog::is_open` (`src/tui/app/types.rs:100`), which answers
+"is a dialog on screen?" and must cover every variant that can be.
+
+Both entry points into the dispatcher resolve the line to a registry entry
+first — the command palette (`App::handle_command_key`) and direct typed
+input (`App::handle_slash_command`) — so both hand the dispatcher the same
+argument.
+
+### The render path's caches (C006)
+
+The frame's *cadence* is not a cache's business: the dirty flag, the 16 ms
+streaming interval, the single frame source, the one `ActivityPhase` and the
+render's `catch_unwind` are contracts, and they live in **Invariants &
+Gotchas**. What this section records is what a frame **computes** — the
+results derived from content, and therefore cacheable.
+
+The rule is the same everywhere: **a cache is keyed on what its value
+depends on, and on nothing else.** A cache keyed on something coarser (a
+revision that moves for an edit on another line, a width that moved for a
+window that did not) throws away work it could have kept; a cache keyed on
+something finer keeps work it must not.
+
+| What is derived | Keyed on | Dropped by |
+|---|---|---|
+| The composer's wrapped layout | the buffer's revision and the wrap width | a change to the text or to the width |
+| A message part's Markdown | the message, the part, the part's length and the width | a transcript change that is not an append |
+| The streaming tail's Markdown | the tail's blocks, the text's epoch and the width | a replacement of the text, a width change, a theme change |
+| The editor's syntax highlight | the path, the theme and the **content** of each scanned line | a change to the content, the language or the palette |
+
+Three things the caches must not change:
+
+- **The rendered output.** Every cache here memoizes a pure function of its
+  key, so the cached rows are the rows the uncached computation produced.
+  `scripts/check_tui_render_cost.py` pins the *shape* — one producer for the
+  composer's wrap, one producer for the Markdown parse, no whole-buffer clone
+  on the render path — and the `tui_render` family proves the equality over
+  a fixture set that includes the escape sequences and the OSC-8 hyperlink.
+- **The wrap primitives.** The caches reuse the shared wrap; they do not
+  re-derive it. The `tui-main-buffer-text-rendering` and
+  `tui-composer-text-layout` lines own those primitives, and their
+  conditionally-closed conditions stand: C006 changes what is *cached*, not
+  how anything is wrapped, and the recorded search defects and the
+  escape-atomicity invariant are untouched.
+- **The row count.** The transcript's rows come from one producer — the
+  layout cache — and the scrollbar's row count and the drawn rows are the
+  same rows. A cache that changed which rows exist would move the scroll
+  range away from the content, which is the defect the disclosure work
+  removed.
+
+The counters that make the cost measurable live in
+`src/tui/render_cost.rs`: they count the wraps, the Markdown parses, the
+highlight scans and the task rows the overlay copies, so a test can assert
+on *how many* of them a frame did rather than on how long it took.
+
+#### The transcript's retention
+
+The primary transcript is **unbounded**: every message the session received
+stays in memory, in display order, and the user can scroll back to all of
+it. The sibling chat surface (`src/tui/app/state/chat.rs`) caps its
+per-channel window at 100 messages, but that cap belongs to a *different*
+surface — a chat channel's window, whose daemon-side page size is 1000 — and
+it does not transfer to the transcript, whose durable copy is the session
+store and whose in-memory copy is the live view the user is reading.
+
+The cost of that choice is stated rather than hidden: a long session's
+memory grows with the session, and the layout cache holds a second rendered
+copy of it. The layout cache's rows are the **row index** — the one producer
+of the row count and of the scroll range — so they cannot be dropped without
+introducing a second producer of the row count. A bound that removed a
+message the user could previously reach would be a user-visible change, and
+a user-visible change is a different milestone than a cost one.
 
 ## Key Types & APIs
 
@@ -7023,6 +7158,25 @@ Confirmed accurate, no change needed:
   composer, `Esc` as the mode switch, the composer naming exactly one
   destination, the single directional dispatcher, and the one-time docking
   gesture interception gated on `Component::docks_as_viewer()`.
+
+Verified 2026-10-23 (repository audit corrective C001) against
+`src/tui/app/mod.rs`, `src/mcp/cli.rs`, `src/main.rs`,
+`tests/tui_render/nested_runtime_command_dispatch.inc`, and the vendored
+`tokio` 1.52.3 sources (`runtime/context/runtime.rs`,
+`runtime/context/runtime_mt.rs`, `runtime/scheduler/multi_thread/mod.rs`,
+`runtime/handle.rs`). Confirmed: `src/main.rs` declares
+`#[tokio::main(flavor = "multi_thread")]`, and that is the runtime the TUI
+event loop and `codegg mcp debug` both run on; `context::enter_runtime` is the
+only thing that sets `EnterRuntime::Entered`, and `Runtime::enter()` does not
+call it — which is why the existing `lsp_doctor` unit tests could not
+reproduce the nested-entry panic; `Handle::block_on` and `Runtime::block_on`
+both call `enter_runtime` and both panic when the context is already entered;
+and `block_in_place` clears the entered flag (`exit_runtime`) around the
+closure, so the inner `block_on` re-enters rather than nests. The 21 call
+sites are now `tokio::task::block_in_place` waits, and
+`scripts/check_no_nested_runtime_block_on.py` fails the build on any
+`Handle::block_on` outside one.
+
 ### Editor LSP presentation (M006-C)
 
 The editor consumes the daemon-owned `LspDiagnosticsGet` and `LspReadGet`

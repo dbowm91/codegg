@@ -1,12 +1,5 @@
 //! Multi-Project TUI event-routing identities and registry (Milestone 3).
 //!
-//! This module introduces a typed frontend [`UiRouteToken`] that captures
-//! the canonical project / workspace / session identity plus the active
-//! view epoch, reconnect epoch, and per-request generation. Every async
-//! command pair started for a project tab captures a `UiRouteToken`
-//! before its work begins; the completion is rejected if any populated
-//! field no longer matches the live routing registry.
-//!
 //! [`RoutingRegistry`] is the central derived-state container that
 //! tracks:
 //!
@@ -29,21 +22,16 @@
 //!
 //! Invariants enforced here:
 //!
-//! - `ProjectTabId` is never serialized into daemon protocol identity
-//!   fields. It is frontend-local only and is the only key on which
-//!   we route within the TUI.
-//! - A `UiRouteToken` with a non-matching `tab_id`, `project_id`,
-//!   `workspace_id`, `session_id`, `active_view_epoch`, or
-//!   `reconnect_epoch` cannot be used to mutate heavy UI state.
-//! - The active heavy view and inactive summaries are mutually
-//!   exclusive in their data: heavy view remains the legacy
-//!   compatibility surface; inactive summaries hold only bounded
-//!   indicators. Duplicate message bodies, file bodies, diffs, logs,
-//!   LSP state, and exclusive workspace-service leases are never
-//!   copied into an inactive summary.
-//! - `last_accepted_sequence` is monotonically increasing per
-//!   reconnect epoch so stale replays are dropped or trigger a
-//!   bounded resync request.
+//! - `ProjectTabId` is never serialized into daemon protocol identity fields.
+//!   It is frontend-local only and is the only key on which we route within the
+//!   TUI.
+//! - The active heavy view and inactive summaries are mutually exclusive in
+//!   their data: heavy view remains the legacy compatibility surface;
+//!   inactive summaries hold only bounded indicators. Duplicate message bodies,
+//!   file bodies, diffs, logs, LSP state, and exclusive workspace-service
+//!   leases are never copied into an inactive summary.
+//! - `last_accepted_sequence` is monotonically increasing per reconnect epoch
+//!   so stale replays are dropped or trigger a bounded resync request.
 
 use std::collections::HashMap;
 

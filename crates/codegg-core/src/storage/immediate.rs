@@ -14,11 +14,6 @@
 //! Measured on the user prompt queue before the change: **204 of 256**
 //! concurrent claim rounds returned that error to at least one caller.
 //!
-//! `BEGIN IMMEDIATE` takes the write lock **before** any read, and that
-//! acquisition *does* honour `busy_timeout`. A second writer waits for the
-//! first to commit and then proceeds — which is the behaviour every
-//! read-then-write path already assumed.
-//!
 //! Holding the write lock for the whole transaction is the point, not a cost.
 //! Each path reads a row, decides from what it read, and writes a decision
 //! that must not be invalidated in between; the read-to-write window is
@@ -32,13 +27,6 @@
 //! the read-then-write paths need this.
 //!
 //! # Reuse
-//!
-//! This module is the shared home of the pattern. The user prompt queue
-//! store established it and `scripts/check_queue_write_transaction_shape.py`
-//! pins the shape there; the daemon's scratch retention sweep uses the same
-//! helper, because it reads a session's activity and liveness before it
-//! writes its reclaim decision. A second copy of this transaction shape is
-//! how the deadlock comes back.
 
 use sqlx::{SqlitePool, TransactionManager};
 

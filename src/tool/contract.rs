@@ -1,10 +1,5 @@
 //! Structured tool contracts and typed invocation context.
 //!
-//! This module defines the metadata that describes *how* a tool may be
-//! called, what effects it has, and what it returns. The `ToolBroker`
-//! uses these contracts to enforce caller policy, validate inputs,
-//! select execution routes, and validate outputs.
-//!
 //! # Design principles
 //!
 //! - **Additive and backward-compatible**: legacy tools that do not

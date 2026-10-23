@@ -1,12 +1,5 @@
 //! Bash-owned command policy and classification glue.
 //!
-//! This module owns the model-shell policy seam and decision-making helpers
-//! local to the `bash` tool: advisory risk-pattern scanning,
-//! `blocked_commands` / `allowlist` enforcement, isolated child-workspace
-//! validation, kill-switch evaluation, and thin adapters over the canonical
-//! command-intent owners. The retained `terminal` compatibility adapter calls
-//! the shared shell-safety seam here.
-//!
 //! Canonical behavior lives elsewhere and is invoked here, never copied:
 //!
 //! - destructive classification: `crate::tool::destructive`
@@ -26,8 +19,6 @@
 //!   -> command-intent classify/plan (observe vs active route)
 //!   -> spawn (raw shell) or scheduler submission (active route)
 //! ```
-//!
-//! No function in this module spawns a process or submits a scheduler job.
 
 use std::path::Path;
 
@@ -64,7 +55,7 @@ pub(crate) struct RoutingMetric {
     pub(crate) fallback: bool,
 }
 
-/// Compatibility helper for older tests/callers. The canonical family
+/// Compatibility helper for older test callers. The canonical family
 /// mapping is owned by `command_intent::plan`.
 #[cfg(test)]
 pub(crate) fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {
@@ -110,10 +101,10 @@ static RISK_SIGNAL_PATTERNS: &[(&str, &str)] = &[
         r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf",
     ),
     ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
-    (
-        "rm -rf /",
-        r"rm\s+(-[a-zA-Z]*[rR][fF]|-rf|-fr)\s+(?:/\s*$|/\*|\s+/(?:\s|[);|&]|$)|~|\$HOME)",
-    ),
+    // The filesystem-root delete has no entry here: it is owned by the
+    // canonical recogniser in `crate::tool::destructive`, which matches the
+    // *target* position rather than the flag position and therefore sees the
+    // effective spellings (`--no-preserve-root` before or after the target).
     ("mkfs on a block device", r"\bmkfs(\.\w+)?\b"),
     (
         "dd writing to a raw block device",
@@ -275,36 +266,14 @@ pub(crate) fn find_risk_pattern(command: &str) -> Option<&'static str> {
     None
 }
 
+/// Whether the command removes a root target recursively and forcibly.
+///
+/// The classification is owned by [`crate::tool::destructive::classify_root_delete`],
+/// the single recogniser shared with the tool-side classifier and the
+/// human-shell block. This seam keeps the shell-policy call site on that one
+/// recogniser instead of growing a second, differently-bypassed matcher.
 fn contains_catastrophic_delete(command: &str) -> bool {
-    for prefix in ["rm -rf /", "rm -fr /", "rm -rf ~", "rm -rf $HOME"] {
-        let Some((_, suffix)) = command.split_once(prefix) else {
-            continue;
-        };
-        let suffix = suffix.trim_start();
-        if suffix.is_empty()
-            || suffix
-                .chars()
-                .next()
-                .is_some_and(|ch| matches!(ch, '*' | ')' | '`' | ';' | '|' | '&'))
-        {
-            return true;
-        }
-        if ["home", "root", "var", "etc", "usr", "boot", "dev"]
-            .iter()
-            .any(|root| {
-                suffix.strip_prefix(root).is_some_and(|tail| {
-                    tail.is_empty()
-                        || tail
-                            .chars()
-                            .next()
-                            .is_some_and(|ch| matches!(ch, '/' | ' ' | ')' | '`' | ';' | '|' | '&'))
-                })
-            })
-        {
-            return true;
-        }
-    }
-    false
+    crate::tool::destructive::classify_root_delete(command).is_root_target()
 }
 
 /// Returns the name of the first matching *escalation* pattern, or None.

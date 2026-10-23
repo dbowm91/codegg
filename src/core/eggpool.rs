@@ -1821,8 +1821,6 @@ impl ProviderConnectionProvisioner {
     /// the wire, and only when a binding exists — the plaintext itself is
     /// dropped immediately and is never logged.
     ///
-    /// Remove the credential record a rotation or replacement just superseded.
-    ///
     /// Scoping, deliberately narrow:
     ///
     /// - Only the *previous* binding of the connection being rotated or
@@ -4083,14 +4081,6 @@ mod tests {
         ));
     }
 
-    /// Exactly one active connection is the authority for its provider.
-    ///
-    /// This is the rule that lets `codegg exec`, `codegg models`, and `/models`
-    /// find a provider at all. They have no session and no turn, so without a
-    /// connection they fall back to counting credential-store records — and a
-    /// rotation leaves the live record beside the orphan it replaced, the count
-    /// reaches two, and the provider disappears with `Provider not found` while
-    /// a healthy `active` connection holds its working key.
     #[tokio::test(flavor = "current_thread")]
     async fn one_active_connection_is_the_authority_for_its_provider() {
         let _master = MasterKeyGuard::new("eggpool-connection-authority-master");
@@ -4181,10 +4171,8 @@ mod tests {
 
     /// A catalog stranded behind a revision bump must be rebuildable.
     ///
-    /// Both the rotate copy-shortcut and the refresh no-op branch used to trust
-    /// a matching upstream digest as proof that this connection already held its
-    /// models. When the rows are absent at the current revision that assumption
-    /// is false and both branches do nothing, so the catalog stays empty through
+    /// When the rows are absent at the current revision that assumption is
+    /// false and both branches do nothing, so the catalog stays empty through
     /// any number of rotations and refreshes and `/connections` reports zero
     /// models forever. Observed live: revision 16, rows stranded at 1-3, a
     /// rotate that reported success.

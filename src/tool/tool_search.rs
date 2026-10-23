@@ -1,8 +1,5 @@
 //! Tool search for on-demand tool discovery.
 //!
-//! This tool allows the LLM to search for tools by name or description,
-//! enabling on-demand tool discovery without loading all tools at once.
-//!
 //! Discovery is monotonic: results are restricted to the already-allowed
 //! policy set (`available_tools` installed by the agent loop after
 //! deny/plan/disable/backend/ceiling filtering). Discovery never turns a

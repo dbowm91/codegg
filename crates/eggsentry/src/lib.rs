@@ -1,12 +1,5 @@
 //! Deterministic security scanning primitives.
 //!
-//! The crate exposes a small, self-contained API for classifying shell
-//! commands, scanning text/files for secret and unsafe-code patterns,
-//! classifying dependency files, and producing structured findings. All
-//! scanners are deterministic library primitives: the same input bytes
-//! produce the same findings and stable finding IDs, with no network,
-//! clock, or host-service dependency.
-//!
 //! ## Stable identifiers
 //!
 //! Downstream consumers must match on the typed values, not on human
@@ -32,10 +25,6 @@
 //! identifier, or changing the meaning of an existing risk mapping, is a
 //! major change. Rule-pattern refinements that keep the same identifiers
 //! are patch-level.
-//!
-//! Host orchestration (tools, gates, approvals, daemon wiring) lives
-//! outside this crate. One consumer wires these primitives behind a
-//! `security` tool and gate policy.
 
 pub mod command;
 pub mod dependency;

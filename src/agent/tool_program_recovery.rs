@@ -14,10 +14,9 @@
 //! - Crash after `mark_injected` but before `acknowledge`. The loop
 //!   observes `injected_event_id` is set and just acknowledges.
 //!
-//! M017: recovery no longer relies on `has_event` for semantic
-//! confirmation. An existing event is loaded and semantically
-//! confirmed before any state transition. Query failures are
-//! propagated as typed errors rather than converted to absence.
+//! An existing event is loaded and semantically confirmed before any state
+//! transition. Query failures are propagated as typed errors rather than
+//! converted to absence.
 
 use codegg_core::session::events::{EventMeta, ToolProgramNotificationEvent};
 use codegg_core::session::EventStore;

@@ -2869,9 +2869,6 @@ async fn migrate_v69(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// `UNIQUE constraint failed: cached_models.id`, and because the writer
 /// clears the table first, the cache was left permanently empty — every
 /// discovery refresh then re-hit the network.
-///
-/// Rebuild the table with the composite key `(id, provider)`, which is
-/// the real identity of a discovered model.
 async fn migrate_v70(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
@@ -3654,10 +3651,6 @@ async fn migrate_v86(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 ///
 /// `stage` is a closed enum. `needs_attention` is terminal until an
 /// operator resolves it; a launch never silently re-enters a stage.
-///
-/// This migration was **v85** on the writer-containment branch and is **v87**
-/// in the merged tree, for the same reason as the writer permit above: `main`
-/// had already published v84 and v85, so the branch's numbers move above them.
 async fn migrate_v87(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
@@ -3695,15 +3688,6 @@ async fn migrate_v87(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 
 /// Provider reasoning control M002: the daemon-owned, principal-scoped
 /// extended-thinking selection.
-///
-/// One additive nullable column on `runtime_preferences`. Plain
-/// `ADD COLUMN` keeps every existing row untouched — approval, sandbox,
-/// session model and Task-composer preferences are all preserved — and
-/// the new column defaults to `NULL` ("no explicit selection"). The
-/// stored value is the protocol's own serialized selection shape, so the
-/// durable column carries no second vocabulary; the label inside it is an
-/// open, provider-scoped string. Bounds are enforced in Rust, not by the
-/// schema, on a migrated database.
 ///
 /// This migration was **v84** on the provider-reasoning-control branch and is
 /// **v88** in the merged tree. `main` had already published v84 (the additive
@@ -3914,14 +3898,6 @@ async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 ///
 /// Additive only — one table and one index. No existing table is altered and
 /// no stored data is rewritten.
-///
-/// The table records one row per publication intent, carrying the gitdir
-/// identity the publication is bound to, the fingerprint of the real index the
-/// staging observed (the compare-and-swap operand), the fingerprint of the
-/// index that was staged, and the path of the private staged index. That is
-/// the evidence a recovery pass needs to decide — after a crash — whether the
-/// publication committed, aborted, or is ambiguous, without re-running the
-/// operation.
 async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"

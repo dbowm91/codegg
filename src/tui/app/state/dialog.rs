@@ -1,10 +1,6 @@
 //! Dialog state module.
 //!
 //! Contains non-visual dialog domain state.
-//!
-//! Live dialog components are owned exclusively by `FocusManager`. This
-//! state holds request metadata, pending authorization, and the small amount
-//! of presentation-independent state needed by dialog workflows.
 
 pub struct DialogState {
     pub job_detail_request: crate::tui::app::state::async_request::AsyncUiRequestState,

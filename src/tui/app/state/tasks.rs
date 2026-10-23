@@ -1,11 +1,5 @@
 //! Rows for the unified tasks overlay (`Ctrl+T`).
 //!
-//! The overlay answers one question — *what is this session waiting on?* —
-//! across three kinds of work that used to need three different places to
-//! look: the todo strip, the main buffer's subagent strip, and the job list
-//! that previously had no surface at all. Grouping them behind one key is the
-//! whole point; splitting them again per group would defeat it.
-//!
 //! # Two rules shape this module
 //!
 //! - **Projection-derived, never synthesized.** Subagents come from
@@ -21,12 +15,11 @@
 //! # Why subagent and job groups are filtered but todos are not
 //!
 //! Todos persist for the life of a session: a completed item is still part of
-//! the plan, and hiding it would make the progress count lie. Subagents and
-//! jobs are *waited on*, and a finished one is no longer being waited on —
-//! listing them would fill the overlay with history the user did not ask for.
-//! So those two groups filter to live states only. See [`is_live_state`].
+//! the plan, and hiding it would make the progress count lie. So those two
+//! groups filter to live states only. See [`is_live_state`].
 
 use crate::tui::app::state::subagents::SubagentRow;
+use crate::tui::render_cost;
 
 /// Rows a *single* group may contribute to the overlay.
 ///
@@ -323,12 +316,17 @@ pub struct JobLike {
 ///
 /// [`MAX_TASKS_STRIP_ROWS`] remains a per-group ceiling, so one busy kind
 /// cannot dominate even when it is the only group with work left.
-pub fn bounded(rows: Vec<TaskRow>) -> Vec<TaskRow> {
+///
+/// The rows are **borrowed**: the overlay draws at most
+/// [`MAX_TASKS_TOTAL_ROWS`] of them, and taking the whole list by value
+/// meant copying every row to keep a dozen.
+pub fn bounded<R: AsRef<[TaskRow]>>(rows: R) -> Vec<TaskRow> {
     // Partition into (header, body) pairs, preserving display order.
-    let mut groups: Vec<(TaskRow, Vec<TaskRow>)> = Vec::new();
+    let rows = rows.as_ref();
+    let mut groups: Vec<(TaskRow, Vec<&TaskRow>)> = Vec::new();
     for row in rows {
         match row {
-            TaskRow::Header { .. } => groups.push((row, Vec::new())),
+            TaskRow::Header { .. } => groups.push((row.clone(), Vec::new())),
             body => {
                 // A body row with no preceding header is a builder bug, not a
                 // runtime condition. Dropping it keeps the output well-formed
@@ -373,7 +371,10 @@ pub fn bounded(rows: Vec<TaskRow>) -> Vec<TaskRow> {
     let mut out: Vec<TaskRow> = Vec::with_capacity(MAX_TASKS_TOTAL_ROWS);
     for ((header, body), take) in groups.into_iter().zip(allowance) {
         out.push(header);
-        out.extend(body.into_iter().take(take));
+        for row in body.into_iter().take(take) {
+            render_cost::count_task_row_build(1);
+            out.push(row.clone());
+        }
     }
     out
 }
@@ -719,11 +720,7 @@ mod tests {
             &[subagent("explore", "running")],
             &[job("test", "queued")],
         );
-        assert_eq!(
-            bounded(rows.clone()),
-            rows,
-            "a short overlay is not truncated"
-        );
+        assert_eq!(bounded(&rows), rows, "a short overlay is not truncated");
     }
 
     #[test]

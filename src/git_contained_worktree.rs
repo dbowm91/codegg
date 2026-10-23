@@ -416,11 +416,6 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
         // Step two: attach the daemon's branch. The branch was created by the
         // daemon before the child ran, and the child never writes a ref — the
         // attach only repoints the new worktree's own `HEAD` at that branch.
-        //
-        // It runs **after** the checkout, so a hostile filter that tried to
-        // point the worktree somewhere else is overwritten by the daemon's
-        // fixed target. The registration check in `codegg-core` then reads
-        // the result back through Git itself.
         let attach = run_worktree_child_step(
             &paths,
             WorktreeChildStep::AttachBranch,
@@ -466,8 +461,6 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
     }
 }
 
-/// Run one step of the contained worktree child.
-///
 /// The child is launched through the canonical managed-process owner, with the
 /// sandbox description as a **required** sandbox: there is no uncontained
 /// route to fall back to.

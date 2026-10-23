@@ -1,15 +1,10 @@
 //! Storage invariant for `cached_models`.
 //!
-//! `cached_models` is a **cross-provider** discovery cache: the same
-//! model id is legitimately advertised by several providers at once
-//! (`gpt-*` on OpenAI/Azure/OpenRouter, `claude-*` on Anthropic/
-//! Bedrock, `gemini-*` on Google/Vertex). The table originally declared
-//! `id TEXT PRIMARY KEY`, so a whole-batch insert aborted with
-//! `UNIQUE constraint failed: cached_models.id`. The writer clears the
-//! table before inserting, so the cache was left permanently empty and
-//! every discovery refresh re-hit the network.
-//!
-//! The real identity of a discovered model is `(id, provider)`.
+//! `cached_models` is a **cross-provider** discovery cache: the same model id
+//! is legitimately advertised by several providers at once (`gpt-*` on
+//! OpenAI/Azure/OpenRouter, `claude-*` on Anthropic/ Bedrock, `gemini-*` on
+//! Google/Vertex). The writer clears the table before inserting, so the cache
+//! was left permanently empty and every discovery refresh re-hit the network.
 
 use codegg_core::session::schema;
 use codegg_core::storage::STORAGE_LAYOUT_VERSION;

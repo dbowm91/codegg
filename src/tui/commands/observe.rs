@@ -1,14 +1,5 @@
 //! Authorized read-only session observation (Presence M003).
 //!
-//! The TUI owns no observation truth. Every observe/resume/stop performs an
-//! explicit projection round-trip through the daemon-owned `CoreClient`
-//! (`ProjectionCapabilities` negotiation, then `ProjectionSubscribe` with
-//! session scope, `ProjectionResume` for reconnect/resync, and
-//! `ProjectionUnsubscribe` on stop). Results land back on the event loop as
-//! `TuiCommand::ObserveSubscribed` / `ObserveResumed` completions guarded by
-//! per-observation request id + reconnect epoch, so stale completions (after
-//! a tab switch, stop, or reconnect) are dropped at apply time.
-//!
 //! Concurrency: `start_*` bumps the reducer generation via
 //! `ObserverState::begin_observe` / `begin_resume` and `apply_*` drops stale
 //! completions. Observer disconnect tears down only the observer-owned

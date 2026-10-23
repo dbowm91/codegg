@@ -1,9 +1,5 @@
 //! Explicit runtime-owned search/MCP service context (M005).
 //!
-//! `SearchRuntimeContext` replaces the historical mutable process-global
-//! installation pattern (`state::install_mcp_service` /
-//! `state::install_search_config`) for production tool execution.
-//!
 //! Ownership contract:
 //!
 //! - `config` is an owned immutable snapshot resolved from `Config` at

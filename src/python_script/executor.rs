@@ -687,7 +687,6 @@ fn resolve_executable_path(interpreter: &str) -> Option<PathBuf> {
     })
 }
 
-/// Find the Python interpreter to use.
 /// Priority: VIRTUAL_ENV > python3 > python
 fn find_python_interpreter() -> String {
     // Check VIRTUAL_ENV

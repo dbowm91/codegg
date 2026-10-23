@@ -73,11 +73,6 @@ pub fn normalize_set<P: SelectionPoint>(
 /// left-to-right), because a selection's start is `min(anchor, head)`.
 pub trait SelectionPoint: Copy + Ord {
     /// Identity of the line/row this point belongs to.
-    ///
-    /// Separated from the point itself because whole-line selection needs to
-    /// answer "which lines does this span" without knowing how wide a line is.
-    /// A surface with variable line length resolves the bounds when it acts on
-    /// the range, not here.
     type Line: Copy + Ord;
 
     /// The line this point sits on.
@@ -292,9 +287,6 @@ impl<P: SelectionPoint> SelectionState<P> {
     }
 
     /// Re-sort the set and carry the primary member along with it.
-    ///
-    /// Delegating to [`normalize_set`] is what keeps a surface that restores a
-    /// set from storage on the same ordering the rules enforce here.
     fn normalize(&mut self) {
         let (selections, primary) = normalize_set(mem::take(&mut self.selections), self.primary);
         self.selections = selections;
@@ -564,10 +556,6 @@ impl<P: SelectionPoint> SelectionState<P> {
     // is what lets the caller tell "this did nothing" from "this worked", so a
     // no-op is reported once instead of submitted as an edit that undoes
     // nothing. The M004 `case_range` rule, applied to the set.
-    //
-    // None of these reads text or resolves a motion, so none needs to know
-    // what a point is — that is what keeps this module free of coordinates
-    // and usable from the terminal panel as well as the editor.
 
     /// The head of member `index`.
     ///
@@ -864,9 +852,6 @@ mod tests {
     use crate::tui::composer_text::ComposerPoint;
 
     /// The width of one line in the composer's test buffer.
-    ///
-    /// The rules ask about columns like 999 and 200, so the buffer has to be
-    /// wide enough for the questions to mean something.
     const LINE_WIDTH: usize = 1000;
 
     /// The stride between two lines' starts: the line's bytes and its newline.
@@ -906,10 +891,6 @@ mod tests {
 
     /// The rules, written once and checked against every surface that uses
     /// them.
-    ///
-    /// Each rule takes the surface's two functions: how to build a point at a
-    /// line and column, and how to move a point down some rows. Everything
-    /// else — the points, the state, the modes — is the shared machine's.
     mod rules {
         use super::{SelectionMode, SelectionPoint, SelectionState};
 
@@ -1208,7 +1189,6 @@ mod tests {
         }
     }
 
-    /// The viewport cell, as a surface.
     struct CellSurface;
 
     impl rules::Surface for CellSurface {
@@ -1224,7 +1204,6 @@ mod tests {
         }
     }
 
-    /// The composer's point, as a surface.
     struct ComposerSurface;
 
     impl rules::Surface for ComposerSurface {
@@ -1241,11 +1220,6 @@ mod tests {
     }
 
     /// Check every rule against every surface.
-    ///
-    /// The rules are the shared machine's contract. A surface that claims to
-    /// use the machine has to satisfy them, and the cheapest way to prove that
-    /// is to run the same rules against it — not to write a second set of
-    /// tests that says the same thing in different words.
     macro_rules! shared_rule_tests {
         ($module:ident, $surface:expr, $($name:ident),* $(,)?) => {
             mod $module {
@@ -1539,10 +1513,6 @@ mod tests {
     // ── Set algebra ──────────────────────────────────────────────────────
 
     /// A three-member set of single points, primary in the middle.
-    ///
-    /// Single points because the verbs below are set algebra and the set is
-    /// the thing under test; a selection's *span* is `editor`'s job and is
-    /// exercised there.
     fn three_members() -> SelectionState<Cell> {
         SelectionState::restore_set(
             cell(5, 0),

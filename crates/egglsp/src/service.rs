@@ -154,11 +154,6 @@ impl OwnedRestartOptions {
 ///   [`RuntimeInstallResult::Rejected { ... }`]. The requested
 ///   runtime MUST be terminated and reaped by the caller; it
 ///   cannot be installed and must not survive untracked.
-///
-/// Pass 3 — The previous `Option<RuntimeEntry>` return type
-/// could not distinguish `Replaced` from `Rejected`. Callers
-/// silently ignored the distinction and could leak a rejected
-/// runtime. The new enum forces exhaustive matching.
 async fn install_runtime(
     runtime_map: &RuntimeMap,
     key: String,
@@ -327,10 +322,6 @@ struct RuntimeTerminationOutcome {
 ///    under the absolute deadline.
 /// 6. Remove the runtime from the map (only when the stored
 ///    generation still matches).
-///
-/// The `graceful_deadline` is the upper bound for the graceful
-/// shutdown. The `absolute_deadline` is the upper bound for the
-/// force-kill re-await. `reason` is logged at the start.
 async fn terminate_runtime(
     runtime_map: &RuntimeMap,
     key: &str,
@@ -870,6 +861,8 @@ const MANUAL_SUPERSESSION_OWNER_TIMEOUT: Duration = Duration::from_secs(3);
 /// subscribes, re-checks the state, and awaits state transitions
 /// until `Stopped` is reached. This eliminates the lost-wakeup window
 /// of the previous `Notify`-based coordination.
+///
+/// See `architecture/lsp.md` for the full contract.
 pub struct LspService {
     clients: ClientMap,
     /// Tracks in-progress initializations for single-flight semantics.
@@ -1841,13 +1834,6 @@ impl LspService {
         // concurrently under one shared deadline. Each per-client
         // timeout is capped by the global deadline so the total
         // shutdown duration is independent of client count.
-        //
-        // The `terminate_runtime` helper sets the runtime intent to
-        // graceful BEFORE sending the protocol shutdown request,
-        // waits on the runtime's exit under the graceful deadline,
-        // and force-kills on timeout. Clients without a live
-        // runtime (e.g. a unit-test stub) are still sent the
-        // protocol shutdown so the LSP handshake is closed cleanly.
         let clients_to_shutdown: Vec<(String, Arc<LspClient>)> = {
             let mut clients = self.clients.write().await;
             clients.drain().collect()
@@ -3364,10 +3350,6 @@ impl LspService {
     /// client is NOT shut down here — the coordinator removes it
     /// from the map before calling the reinit closure.
     ///
-    /// The closure captures every LspService field it needs as an
-    /// `Arc`, so the resulting closure is `'static + Send` and
-    /// can be owned by the coordinator across awaits.
-    ///
     /// The replacement generation is passed in by the
     /// coordinator (Pass 3 — Single Generation Owner). The
     /// closure does NOT calculate generation independently; the
@@ -3523,9 +3505,6 @@ impl LspService {
     /// previous helper was called AFTER the wait and almost
     /// always read the same value as the post-wait check, so
     /// the comparison was effectively a no-op.
-    ///
-    /// Fields default to the "no prior owner" sentinel (`0`,
-    /// `String::new()`) when no live client exists for `key`.
     async fn capture_manual_supersession_snapshot(
         &self,
         key: &str,
@@ -3677,9 +3656,6 @@ impl RestartShared for LspService {
 /// Process monitor task (formerly `LspServiceClone::restart_client`).
 /// See `LspService::restart_client` for the live restart path.
 // ── Process monitor ─────────────────────────────────────────────────
-///
-/// Monitor task that observes child process exit and forwards the
-/// event to the exit channel.
 ///
 /// This is a thin wrapper around
 /// [`crate::runtime::spawn_process_runtime`]: the authoritative
@@ -4061,12 +4037,6 @@ async fn resolve_launch_spec(
 /// owns the `InitTaskControl` (with its `abort_handle`) so it can
 /// forcibly abort and re-await.
 ///
-/// The receiver in each `InitTaskControl` is the authoritative
-/// terminal signal for the wrapper task: it resolves when the
-/// wrapper sends its `InitTaskExit` (normal or panic path) or when
-/// the sender is dropped (forced abort path, where the abort drops
-/// the future and thus the sender).
-///
 /// Implementation note: each control's future borrows the
 /// completion receiver via `&mut` inside a `tokio::select!`. When
 /// the deadline fires first, the `select!` drops the deadline
@@ -4304,9 +4274,6 @@ async fn run_init_task_wrapper(
 }
 
 /// Runs the full LSP initialization in the body of the wrapper task.
-///
-/// The initialization task is authoritative for publishing results to all
-/// callers. Leader and waiters both consume the same completion channel.
 #[allow(clippy::too_many_arguments)]
 async fn run_initialization_attempt(
     attempt_id: u64,
@@ -4433,14 +4400,6 @@ async fn run_initialization_attempt(
         // launch spec. The coordinator reads this on restart
         // to seed a new client without re-detecting language
         // or project root.
-        //
-        // Pass 8 — Thread the validated user restart policy
-        // override (if any) through `from_resolved`. The base
-        // profile defaults come from
-        // `compatibility::profile_for_server`; the user
-        // `[lsp.<server>.restart]` TOML block wins when
-        // present and validates via
-        // `LspRestartPolicyConfig::try_to_domain`.
         let user_restart_config: Option<LspRestartPolicyConfig> = match &config {
             LspConfig::Rules(rules) => match rules.get(server.id) {
                 Some(LspRule::Active { restart: Some(r), .. }) => Some(r.clone()),
@@ -4690,22 +4649,6 @@ async fn run_initialization_attempt(
                     });
 
                     // Initialize operational state for this server.
-                    //
-                    // On first publish (no existing entry), insert a
-                    // new entry with `generation: 1` and record the
-                    // generation in the authoritative generation map.
-                    // On subsequent publishes (a restart completing
-                    // publication), increment the generation in both
-                    // the entry and the map so stale process-exit
-                    // events for the prior generation are ignored.
-                    //
-                    // The starting state is taken from the readiness
-                    // decision computed in the inner block: a
-                    // `Ready` decision sets `Ready` and
-                    // `last_healthy_at = now`; a `Degraded` decision
-                    // sets `Degraded { reason }` and leaves
-                    // `last_healthy_at` untouched so callers can see
-                    // the prior healthy instant.
                     {
                         let mut states = operational_state.write().await;
                         let entry =
@@ -4893,9 +4836,6 @@ mod tests {
     /// cancellation tests. On cancellation, the factory returns
     /// `LspError::InitializationCancelled` (the inner init task then
     /// reports it to waiters).
-    ///
-    /// A `FutureExitProbe` is installed at the top of the factory body
-    /// to prove the future is dropped on every terminal path.
     fn blocking_factory(
         state: std::sync::Arc<BlockingFactoryState>,
     ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static {
@@ -5420,7 +5360,6 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    /// Test: cooperative cancellation drops the factory future.
     /// The factory uses `release.notified().await` which IS
     /// cancellation-safe (dropping the future unsubscribes from
     /// the notification), so this exercises the cooperative path.
@@ -7015,18 +6954,10 @@ mod tests {
 
     // ── Pass 4: Manual Restart API ───────────────────────────────
 
-    /// `manual_restart_client` terminates the old runtime
     /// before invoking the coordinator. The runtime_map entry
     /// for the old generation is removed before any
     /// reinit is attempted, so the manual path cannot leave
     /// two live processes.
-    ///
-    /// The test seeds a real (sleep 60) runtime, then calls
-    /// `manual_restart_client` with a key for which there is
-    /// no descriptor. The reinit step fails (no descriptor
-    /// → LaunchFailed), so the call returns an error — but
-    /// we can still verify that the old runtime was drained
-    /// from `runtime_map` BEFORE the error.
     #[tokio::test(flavor = "current_thread")]
     async fn manual_restart_terminates_old_runtime_before_new_start() {
         use std::time::Duration;
@@ -7061,7 +6992,6 @@ mod tests {
         );
     }
 
-    /// `manual_restart_client` bypasses the
     /// `LspRestartMode::Disabled` policy. The descriptor
     /// associated with `key` may have a disabled restart
     /// policy; the manual path runs regardless. We assert
@@ -7142,7 +7072,6 @@ mod tests {
 
     // ── Pass 2 — Manual supersession generation timing ─────────────
 
-    /// Pass 2 — `manual_detects_generation_advance_during_wait`.
     /// The manual supersession path captures the pre-wait
     /// generation BEFORE cancelling any in-flight owner. If the
     /// in-flight owner advances the generation during the wait
@@ -7254,15 +7183,11 @@ mod tests {
         );
     }
 
-    /// Pass 2 — `manual_same_generation_proceeds_after_wait`.
     /// When the in-flight owner does NOT advance the
     /// generation (the wait completes with the same
     /// generation as pre-wait), the manual flow MUST proceed
     /// past the generation check. We assert this by observing
     /// the manual call does NOT return `ServerRestarted`.
-    ///
-    /// This is the "no generation advance" baseline that
-    /// makes the advance-detection test above non-vacuous.
     #[tokio::test(flavor = "current_thread")]
     async fn manual_same_generation_proceeds_after_wait() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
@@ -7317,7 +7242,6 @@ mod tests {
         }
     }
 
-    /// Pass 2 — `manual_timeout_preserves_original_generation`.
     /// When the in-flight automatic owner does NOT signal
     /// completion within `MANUAL_SUPERSESSION_OWNER_TIMEOUT`
     /// (3s), the manual restart path must abort with a typed
@@ -7325,12 +7249,6 @@ mod tests {
     /// the original generation must remain unchanged. The
     /// manual teardown MUST NOT have touched the live client
     /// or runtime.
-    ///
-    /// This test is the timeout baseline for
-    /// `manual_detects_generation_advance_during_wait` and
-    /// `manual_same_generation_proceeds_after_wait` — the
-    /// owner-timeout path is the third branch of the manual
-    /// supersession state machine.
     ///
     /// Test mechanics:
     /// 1. Seed `generation_for_key` with `1`.
@@ -7465,7 +7383,6 @@ mod tests {
         );
     }
 
-    /// Pass 4 — `manual_generation_advance_returns_server_restarted`.
     /// Strong assertion: the manual path must return exactly
     /// `LspError::ServerRestarted` (not `Ok`, not `LaunchFailed`,
     /// not `InitializationCancelled`) when the generation
@@ -7534,7 +7451,6 @@ mod tests {
         assert_eq!(entry.unwrap().generation, 2);
     }
 
-    /// Pass 4 — `one_runtime_and_one_client_after_supersession`.
     /// After a successful manual supersession (the in-flight
     /// automatic restart completes and the manual restart
     /// proceeds), exactly one runtime entry and exactly one
@@ -7648,7 +7564,6 @@ mod tests {
         assert!(reset.is_some(), "healthy interval elapsed: reset must fire");
     }
 
-    /// `restart_attempts` increments across restart
     /// invocations. The shared counter is the cross-
     /// invocation bound, so a rapid crash cycle drains the
     /// budget across cycles rather than per-invocation.

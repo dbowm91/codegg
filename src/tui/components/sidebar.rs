@@ -47,11 +47,6 @@ pub enum SidebarFocusTarget {
     /// address one subject rather than two lookalikes.
     Subagent(String),
     /// The job's durable id, not its position in the list.
-    ///
-    /// Index-based targets are used elsewhere in this widget for rows the
-    /// projection appends to, but jobs are *upserted*: a finished job is
-    /// filtered out, so indices shift under the cursor and a focused index
-    /// would silently move to a different job. The id is stable.
     Job(String),
     McpServer(usize),
     FileChange(usize),
@@ -2369,8 +2364,6 @@ mod tests {
         );
     }
 
-    /// The walk goes **Todos header** → subagent rows → job rows.
-    ///
     /// The old order put a todo row between the Todos header and the
     /// Subagents header, and the todo row had no action behind it: Enter on it
     /// resolved to `SidebarActivation::None`, so the selection highlight was
@@ -2457,7 +2450,6 @@ mod tests {
         }
     }
 
-    /// The Todos header is focusable, and Enter on it folds the section.
     #[test]
     fn the_todos_header_is_focusable_and_folds_the_section() {
         let mut sidebar = SidebarWidget::default();
@@ -2544,7 +2536,6 @@ mod tests {
         );
     }
 
-    /// With no todos the focus list for the other sections is unchanged.
     #[test]
     fn with_no_todos_the_other_sections_focus_list_is_unchanged() {
         let mut sidebar = SidebarWidget::default();
@@ -2587,8 +2578,6 @@ mod tests {
         );
     }
 
-    /// Click and `Enter` must resolve to the same activation.
-    ///
     /// They arrive by different routes — the mouse through `focus_hovered`,
     /// the keyboard through an already-focused row — so they are only
     /// guaranteed to agree if both end at the same `SidebarFocusTarget`.
@@ -2619,10 +2608,6 @@ mod tests {
     }
 
     /// The panel never renders a row absent from the snapshot.
-    ///
-    /// An empty section contributes no header and no rows at all, so a
-    /// session with no delegated work shows no empty "Subagents (0)" block
-    /// that would cost a row and read as a failure to populate.
     #[test]
     fn empty_sections_contribute_no_header_and_no_rows() {
         let sidebar = SidebarWidget::default();
@@ -2696,11 +2681,6 @@ mod tests {
     }
 
     /// Job focus is keyed on the job id, not the job's position.
-    ///
-    /// Jobs are upserted and filtered: the one before the focused row
-    /// finishing removes it and shifts every later index down by one. An
-    /// index-keyed target would silently move focus onto a *different* job
-    /// and then activate it.
     #[test]
     fn a_finished_job_does_not_rebind_focus_to_another_job() {
         let mut sidebar = SidebarWidget::default();

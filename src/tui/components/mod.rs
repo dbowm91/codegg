@@ -1,31 +1,9 @@
 //! # TUI Components
 //!
-//! Reusable widget components for building the terminal UI.
-//!
 //! ## Architecture
 //!
-//! Components are organized by their role:
-//!
-//! ### Core Components (always visible)
-//!
-//! - [`messages`]: Message display widget with streaming, search, and tool call rendering
-//! - [`prompt`]: Input prompt widget with cursor management and history
-//! - [`sidebar`]: Side panel showing session info, agents, and MCP servers
-//! - [`status_bar`]: Bottom status bar with status, transient indicators, and token usage
-//!
-//! ### Overlay Components (conditionally visible)
-//!
-//! - [`completion_overlay`]: Slash (`/`) and file (`@`) completion popups
-//! - [`toast`]: Toast notification manager
-//! - [`spinner`]: Loading spinner widget
-//!
-//! ### Dialog Components (modal)
-//!
-//! - [`dialogs`]: Various dialog boxes (session, model, theme picker, etc.)
-//!
-//! ### Tool Output
-//!
-//! - [`tool_output`]: Tool call result display with expandable sections
+//! The component map — what is always visible, what is an overlay, what is a
+//! dialog, and what renders tool output — is in `architecture/tui.md`.
 //!
 //! ## Widget Implementation Pattern
 //!
