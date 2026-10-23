@@ -280,6 +280,64 @@ consolidation still exists and is still executed: 15,572 of 15,580 pass, and
 every failure is either proved pre-existing or fixed. The milestone's
 no-regression claim now rests on a measurement, not on a file-by-file diff.
 
+### 8.2 A factual correction, 2026-10-23: both medium findings above were discharged by M005's closure
+
+The two **medium** rows in the table above still read "unmeasured", and each
+names a required action. Both were **discharged**, after this record was
+written, by M005 — the hosted verification and measurement closure milestone
+(`plans/implementation/ci-test-throughput-recovery/005-hosted-verification-and-measurement-closure.md`).
+This subsection records that, because a reader of §8 who took the table at its
+word would otherwise go looking for work that is already done.
+
+**The hosted wall-clock effect (the first medium row).** Measured on the hosted
+runner, `ubuntu-24.04`, `mold` present, **every run warm-cache on both
+sides**, with the two phases recovered from the run log rather than from a
+new step — because adding a build step would change the job being measured:
+
+| | before median (n = 4) | after median (n = 3) | ratio | threshold | verdict |
+|---|---:|---:|---:|---|---|
+| build phase (T2) | 683.000 s | 359.000 s | **52.6 %** | ≤ 60 % | **PASS** |
+| execution phase (T3) | 487.818 s | 377.692 s | **77.4 %** | ≥ 90 % | **FAIL** |
+
+The raw values for both sides, and their sources, are published in
+`architecture/testing.md` §"The hosted two-phase wall-clock (M005)". The
+wall-clock is reported **with its dispersion** and is not quoted as a precise
+effect size, and **T3 does not hold** — the execution phase did not stay
+within 90 % of the baseline's median — which is reported with its reason
+rather than rounded away.
+
+**The family-level link cost (the second medium row).** Measured locally, on
+the same machine, in the same session, with the same command
+(`CARGO_TARGET_DIR="$(mktemp -d)" cargo test --workspace --locked --no-run --timings`,
+parsed from the emitted `const UNIT_DATA = [...]` with `re.S` — the
+`--timings=json` form is unstable on cargo 1.89):
+
+| | before (`2c1953347`) | after (`3dfeb6e2f`) | change |
+|---|---:|---:|---:|
+| Root integration-test executables linked | 275 | 17 | **−93.8 %** |
+| Aggregate unit-seconds, whole workspace | 4,300.8 | 2,618.9 | **−39.1 %** |
+| Aggregate unit-seconds, root integration bucket | 2,123.6 | 423.0 | **−80.1 %** |
+
+**§5's ~41 % projection reproduces within 1.9 percentage points** (−39.1 %
+measured), which is the answer to §5's own statement that "the model
+understates the saving and should not be read as a measurement". The
+per-family table, the parse command and the raw unit data are in
+`plans/validation/ci-test-throughput-recovery/measurement-record.md` §3, and
+the published summary is `architecture/testing.md` §"The measured link cost
+(M005)".
+
+**What §5 still is not.** The measurement also records what it does **not**
+show: this record's §5 baseline model (271 targets, 4,040.1 of 9,155.6
+unit-seconds) does **not** reproduce on the measuring machine, and the
+aggregate carries a contention-mediated component. §5's projection therefore
+stands as a **projection from the plan's baseline**, and the measured numbers
+are the ones above — not §5's, and not this record's.
+
+So §8's two medium rows are **closed by this subsection**: the required action
+for each was carried out — by M005 — and the numbers are carried here, with
+their sources in M005's closure record and in `architecture/testing.md`. This
+record stays immutable apart from this factual correction.
+
 ## 9. Registry updates
 
 - `plans/registry.md`: the M004 row `ready → active (implemented; locally verified; hosted evidence outstanding)`, with the partition count and the reason for the departure from the ~15 target.

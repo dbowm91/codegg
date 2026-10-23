@@ -620,6 +620,31 @@ reported where they happen.
   still rejects the failure class it exists to reject.
 - `bash scripts/verify.sh quick`: see §7.
 
+#### The second landing's lanes, 2026-10-23
+
+This record's own landing was PR #164 (`49d68dab4`). Two further changes
+landed after it, both by this line: PR #170 (`3e43d4144`), which pauses the
+hosted Desktop E2E qualification **by decision**, and PR #171 (`31564eaf8`),
+which absorbs two interactive families into one and repairs two guards. The
+lanes below are theirs, and they are the second landing's own verification.
+
+| Lane | Run | Tree | Result |
+|---|---|---|---|
+| `CI` | `39893477810` | `1cf43b708` (PR #170) | **success** |
+| `CI` | `39893074200` | `c721875fc` (PR #171) | **success** |
+| `Windows process launcher` | `39893074128` | `c721875fc` | **success** |
+| `Windows native probe contract` | `39892846339`, `39893074116` | `c721875fc` | **success**, twice |
+| `Shared checkout macOS qualification` | `39893074277` | `c721875fc` | **success** |
+| `Linux M004 process and IPC qualification` | `39898581643` | `a3b6116e8` (both landings **plus** PR #173) | **success** |
+
+**No `Desktop E2E` lane ran on either PR, or on `main`'s pushes.** That is
+the pause working, and it is the observable difference between the two
+landings: the table above carries a red `Desktop E2E` row, and this one
+carries none at all.
+
+`main`'s own post-merge lanes for the second landing are recorded in **§7**,
+where each red lane is attributed to the line that owns it.
+
 ## 6. What this record does not claim
 
 - **It does not re-measure M005.** The hosted before/after evidence in
@@ -667,6 +692,16 @@ reported where they happen.
   runs that target — the Linux M004 lane does — so it is recorded rather
   than repaired, and `architecture/testing.md`'s known-macOS-failures table
   does not yet list it.
+
+  **Since 2026-10-23 the table does list it.** The failure was reproduced on
+  `origin/main` at `12999178a` — `3 passed; 1 failed`, with the panic reading
+  `the contained worktree grant: Git("the worktree child could not be
+  contained: permission denied: protected mount view is available only on
+  Linux")` — and `architecture/testing.md` §"Known macOS-local failures" now
+  carries it as a seventh row. The **six** in this record's §8 row of
+  `004-status.md` are the baseline probe's six, measured at `2c1953347`;
+  this seventh arrived on `main` after that probe, which is why it is proved
+  against `origin/main`'s own copy instead.
 - **The Desktop E2E lane is red on the branch, and it is red on `main` with the
   identical assertion.** The branch's run `39860226104` fails in
   `apps/desktop/e2e/specs/m004-session.e2e.ts` with
@@ -747,11 +782,144 @@ reported where they happen.
   belong to `main`, they are invisible to Linux CI, and fixing them means
   changing `main`'s platform gating — out of this line's scope. Recorded, not
   silently inherited.
+
+  **A factual correction, 2026-10-23: the count is ten, not eight.** The
+  figure was re-measured on `origin/main` at `12999178a` with the gate's own
+  command, `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  — the command `scripts/verify.sh full` runs — and the affected files are
+  **byte-identical** to the ones this record names (`git diff c721875fc
+  origin/main -- src/interactive_process.rs src/managed_process.rs
+  src/lsp/m004.rs src/security/sandbox.rs src/bin/codegg-sandbox-helper.rs`
+  is empty), so the findings are `main`'s.
+
+  The gate reports **nine** distinct findings across two targets — the **lib**
+  (7) and the **lib test** (2: `new` and `new_with_network_intent` at
+  `src/lsp/m004.rs:106`, and `spec_with` at `src/managed_process.rs:2715`) —
+  because the lib's failure stops the build before the **bin** is reached. A
+  run **without** `-D warnings` reaches the bin and reports a **tenth**:
+  `unused import: Seek` at `src/bin/codegg-sandbox-helper.rs:30`, whose only
+  use is the `file.seek(…)` at line 594 inside a
+  `#[cfg(target_os = "linux")]` function.
+
+  The disposition above is unchanged — these belong to `main`, Linux CI
+  cannot see them, and fixing them means changing `main`'s platform gating.
+  What changes is the size of the job, and it is one finding larger than
+  this record said. The consequence worth stating plainly is that
+  **`scripts/verify.sh full` is red on macOS** on `origin/main` today, for
+  this reason and no other; `verify.sh quick` is green there.
 - **The deferred rebase (roadmap §10 D9) is discharged by the merge.** The
   branch was reconciled with `origin/main` rather than rebased, which is the
   cheaper and safer of the two for a ten-commit branch and a 150-commit
   divergence, and it keeps the merge commit as the single place the two
   histories meet.
+- **The four lanes that were red on `main` after this branch merged are
+  attributed to their own lines, and none of the four is this landing's.**
+  Each is recorded here with the evidence that attributes it, because a lane
+  that is red for an unattributed reason is a lane nobody can read.
+
+  **1. The `CI` lane — run `39896149593` attempt 1, at `3e43d4144`.** The
+  `verify` job's "Workspace tests" step failed at
+  `tool_program_m015_daemon_failpoints::recursive_descendants_and_capacity_converge_after_cancel_crash`
+  (`tests/tool_programs/tool_program_m015_daemon_failpoints.inc:560:5`), whose
+  assertion is `all descendants must be terminal after restart` and whose
+  payload shows two jobs still `running`. The line immediately above it in the
+  same log is the cause:
+  `codegg::core::daemon_bootstrap: job recovery failed; attempts from a prior
+  daemon generation may not be recovered error=job store error: storage
+  failure: database error: ... (code: 5) database is locked`.
+
+  The mechanism is visible in the test's own source, and it is a **race the
+  test does not close**. Line 552 does `first.kill()`, which waits for the
+  daemon's own exit but **not** for the daemon's descendants — and the
+  descendants are the subject of the assertion. Line 554 then opens the
+  **same** SQLite job store with `CoreClient::start_recovery(…)` while those
+  descendants still hold the file open. When the lock has not yet been
+  released, recovery produces **no report**, so nothing reconciles the two
+  `running` jobs to a terminal state and the assertion fails. The family is
+  untouched by this work, the tree's **test sources** are identical to this
+  branch's head `c721875fc` — PR #170 changed a workflow file and documents,
+  no test source — and that head's `verify` job **passed**. The owning line
+  is the tool-programs line.
+
+  **2. The `CI` lane — run `39898581729` attempt 1, at `a3b6116e8`.** The same
+  step failed at
+  `eggwork_remote_execution_live::live_blob_upload_and_workspace_materialization`
+  (`tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc:571:21`):
+  `helper must become ready (helper=…/codegg-eggwork-test-node elapsed=60.001268704s
+  alive=true status=None last_phase="server-starting" last_stdout="PHASE
+  server-starting" stderr_tail="")`. The live sidecar never left its
+  `server-starting` phase inside the test's 60-second wait.
+
+  The attribution is **the same test on the same surface, hours apart**. The
+  green `main` run at `f1b83a7a7` (run `39889187744`) executed this exact
+  test and **passed in 0.156 s**, and the whole Eggwork surface —
+  `tests/eggwork_remote_execution_live/`, `crates/eggwork-test-node/`, and
+  both fixture scripts — is **byte-identical** between the green run and the
+  red one (`git diff f1b83a7a7 a3b6116e8 -- tests/eggwork_remote_execution_live/
+  crates/eggwork-test-node/ scripts/prebuild-eggwork-fixtures.sh
+  scripts/detect-live-eggwork-changes.sh` is empty). The lane is included
+  because the CI job runs the **whole** suite on a `main` push, so the live
+  target is not merely present but is the one that failed. The owning line is
+  the Eggwork live-fixture line.
+
+  **3. The `Windows process launcher` lane — run `39895908305` attempt 1, at
+  `31564eaf8`.** Its "Journaled Windows ACL lease and recovery tests" step
+  failed at
+  `windows_restricted_managed_process::restricted_service_cancellation_terminates_job_owned_descendants`
+  (`tests/windows_sandbox_test_support/windows_restricted_managed_process.inc:90:25`),
+  with `restricted Job Object left descendant process 8024 alive` after a
+  five-second wait.
+
+  The attribution is **inside the run**. The step immediately before it,
+  "Test-only restricted managed process integration", runs the **identical**
+  command —
+  `cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_test_support -- --nocapture --test-threads=1` —
+  against the **identical tree**, and it **passed**: that step ran from
+  `03:52:49Z` to `03:56:42Z`, and the failing one ran from `03:56:42Z` to
+  `03:56:49Z`. The same command, seconds apart, on the same tree, one
+  outcome. The lane also **passed** on this branch's own head, `c721875fc`
+  (run `39893074128`), and on `main` at both `f1b83a7a7` and `49d68dab4`.
+  **The re-run settles it**: run `39895908305` attempt 2, on the **identical**
+  tree `31564eaf8`, is **success** — the same tree, the same command, the
+  same lane, green. The owning line is the Windows native sandbox line, and
+  the item is **not** carried forward here, because the lane is green on the
+  tree that lands.
+
+  **4. The `Linux M004 process and IPC qualification` lane — run `39889187962`,
+  at `f1b83a7a7`.** This one is **not** a flake, and it is **not** this
+  landing's either: it is a **compile error** in the `linux_git_test_support`
+  test target — `no field 'exit_status' on type 'GitReadFact<ManagedProcessResult>'`
+  and four more — introduced when the C003 line changed `egggit`'s read API to
+  carry a consistency class. Both of the lane's jobs failed at the compile
+  step, so the qualification produced **no evidence at all**. It was fixed
+  upstream of this line by PR #173 (`a3b6116e8`), which re-pointed the two
+  affected call sites. The lane had been **red on `main` since `f1b83a7a7`**,
+  which is *before* this branch merged; the change that broke it,
+  `f00d10e0d`, is **not** an ancestor of `49d68dab4`, where the same lane was
+  **green**.
+
+  **The lane is green again, and that run also qualifies this landing.** Run
+  `39898581643` at `a3b6116e8` — the tree that carries **both** of this
+  line's landings plus PR #173's call-site repair — is **success**, with
+  `restricted-userns-fails-closed` **success** and `process-ipc` **success**.
+  Its `process-ipc` job includes the step **"M004 daemon-authorized PTY
+  routing and descendant cleanup"**, which runs
+  `cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant` —
+  so the **absorbed family** is exercised by the hosted Linux qualification,
+  and it is green there.
+
+  So the claim this record can make is narrow and checkable: **this landing
+  did not turn a green lane red.** It inherited one red lane — the C003
+  compile error, fixed upstream — and the three lanes that did go red on
+  `main` are a test race in the tool-programs family, a live sidecar that did
+  not start in time, and a five-second Job-Object wait in the Windows native
+  sandbox family. None is in a family this work touches, and all three are
+  re-runnable without a change.
+
+  **What this does mean for the line.** The lanes are **flaky**, not broken by
+  this landing, and the cost of that is the line's own: a red lane on `main`
+  is a lane whose signal nobody can read, so each of these is carried to its
+  owning line rather than closed here.
 
 ## 8. Recommendation
 
