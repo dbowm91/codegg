@@ -1,8 +1,4 @@
 //! TUI-facing summary model for LSP context packets.
-//!
-//! Builds compact, structured summaries from [`LspContextPacket`] and
-//! [`PreviewArtifactRegistry`] for display in the terminal UI status
-//! bar and detail panels.
 
 use crate::context::{
     LspContextItemKind, LspContextPacket, LspContextPacketMode, LspEvidenceFreshness,

@@ -351,12 +351,6 @@ impl Component for FilesDialog {
     }
 
     /// The listing alone: no border, no title, no footer.
-    ///
-    /// The host has already painted a border and a ` ● Files ` title into this
-    /// same rect. Painting a second set of chrome over them did not stack, it
-    /// overwrote — focus dot included, so a focused hosted panel and an
-    /// unfocused one rendered identically and there was nothing on screen to
-    /// say which had the keyboard.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let inner = area.inner(Margin::new(1, 1));
         if inner.height == 0 || inner.width == 0 {
@@ -854,9 +848,6 @@ mod tests {
     }
 
     /// Drop the box's own left border, leaving the row as the widget drew it.
-    ///
-    /// By character, not by byte: `│` is three bytes, so `&line[1..]` would
-    /// land inside it.
     fn inner_of(line: &str) -> &str {
         match line.char_indices().nth(1) {
             Some((index, _)) => line[index..].trim_end(),

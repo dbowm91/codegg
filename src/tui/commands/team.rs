@@ -10,9 +10,6 @@
 //! completions (after a tab switch, a newer request, or a reconnect) are
 //! dropped at apply time.
 //!
-//! `/collaborators` remains the ephemeral presence/observe chooser; this
-//! module owns the durable administration surface (`/team`).
-//!
 //! Secrecy: the one-time `cggt_...` plaintext is rendered exactly once in
 //! the secret-safe [`DeviceSecretDialog`](crate::tui::components::dialogs::device_secret::DeviceSecretDialog)
 //! and never enters prompt/transcript/notification/audit/event/chat

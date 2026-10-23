@@ -1,8 +1,4 @@
 //! M002: `turns` request family for `CoreDaemon`.
-//!
-//! Turn submit/cancel/steer, agent/model selection writes, permission/question responses, and transport lifecycle.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use std::sync::Arc;
 

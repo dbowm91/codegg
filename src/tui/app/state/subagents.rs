@@ -18,9 +18,6 @@ use crate::tui::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, Sub
 use crate::tui::wrap::ellipsize_to_width;
 
 /// Hard-truncate to `width` chars, with no ellipsis.
-///
-/// Used where the budget can legitimately be 0: `ellipsize_to_width`
-/// returns its input unchanged in that case, which would defeat the bound.
 fn take_chars(s: &str, width: usize) -> String {
     s.chars().take(width).collect()
 }

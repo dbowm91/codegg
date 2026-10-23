@@ -21,12 +21,6 @@
 //!
 //! # Sequential side-channel contract (Pass 3 Phase 5)
 //!
-//! The per-call provenance slot (`last_provenance`) is a **single
-//! shared `Option<LspEvidenceProvenance>` behind a `Mutex`**. It is
-//! NOT thread-safe under concurrent calls on the same adapter
-//! instance — the second concurrent call would clobber the first
-//! caller's provenance before that caller could observe it.
-//!
 //! Therefore the adapter requires a **sequential call contract**:
 //!
 //! 1. Each `LspEvidenceProvider` trait method invocation must

@@ -1,7 +1,4 @@
 //! Deterministic tool risk classifier and output summarizer.
-//!
-//! Classifies tool calls by risk level based on tool name and input arguments.
-//! Provides deterministic output summarization without LLM calls.
 
 use crate::session::events::ToolRisk;
 use crate::util::truncate_prefix;

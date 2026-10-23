@@ -13,10 +13,6 @@
 //!   must never be reported as contention: the user reads the code to decide
 //!   between "wait for the turn" and "check the connection".
 //!
-//! Classification happens once, at the single point where the daemon response
-//! or transport error is interpreted, and the resulting value travels to the
-//! completion arm as data. The completion arm no longer parses strings.
-//!
 //! ## Why an unknown code is a rejection, not "unexpected"
 //!
 //! [`classify`] is total: every possible result maps to exactly one variant.

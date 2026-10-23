@@ -36,10 +36,6 @@
 //! authority it had, which is why
 //! [`ProcessAdmissionService::preflight_reservation`] refuses a reservation
 //! over a checkout that still has a live persistent process.
-//!
-//! Ownership: this crate owns the typed state machine. The root crate's
-//! daemon adapter supplies the scope and decides what a refusal means for the
-//! caller.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

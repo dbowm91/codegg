@@ -777,12 +777,6 @@ impl FileTreeState {
     }
 
     /// Drop everything that describes the *contents* of the current scope.
-    ///
-    /// Expansions are workspace-relative so they stay valid across a relist,
-    /// but a subtree listing re-walks from a different base and a cursor
-    /// pointing into rows that are about to be replaced would resolve to
-    /// whatever happens to sort first. An empty pane reading `Loading…` beats
-    /// a populated one showing the directory the user just walked out of.
     fn reset_scope(&mut self) {
         self.nodes.clear();
         self.expanded.clear();
@@ -957,10 +951,6 @@ impl FileTreeState {
 }
 
 /// The parent of a workspace-relative path.
-///
-/// `"src/tui"` → `"src"`, `"src"` → `""` (the workspace root). The scope
-/// slides along this relation, and the listing window is what decides when
-/// a slide is needed.
 fn parent_path(path: &str) -> String {
     match path.rfind('/') {
         Some(index) => path[..index].to_string(),

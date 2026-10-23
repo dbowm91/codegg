@@ -171,9 +171,6 @@ pub enum LspContextRequest {
         risk_mode: LspRiskMode,
     },
     /// Collect impact analysis evidence for a symbol change.
-    ///
-    /// Gathers definition, capped cross-file references, diagnostics
-    /// in affected files, and document highlights near changed hunks.
     ImpactAnalysis {
         /// Target symbol to analyze.
         symbol: SymbolTarget,
@@ -199,9 +196,6 @@ pub enum LspContextRequest {
         related_files: Vec<PathBuf>,
     },
     /// Collect evidence for reviewing API/interface boundaries.
-    ///
-    /// Gathers document symbols (public/exported), definitions for
-    /// boundary symbols, implementations, and capped external references.
     InterfaceBoundary {
         /// File containing the boundary symbols.
         file: PathBuf,

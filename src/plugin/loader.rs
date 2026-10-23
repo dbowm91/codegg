@@ -1,9 +1,4 @@
 //! Plugin loader and WASM compatibility shim.
-//!
-//! The canonical WASM execution path is now `runtime::wasm::WasmRuntime`.
-//! This module retains `load_plugin`, `LoadedPlugin`, and the legacy
-//! `execute_wasm_hook` entry point as a thin compatibility wrapper that
-//! delegates to the new runtime.
 
 use std::path::{Path, PathBuf};
 

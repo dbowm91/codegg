@@ -91,10 +91,6 @@ impl PanelHotkeys {
 }
 
 /// Stable config spelling for a panel type.
-///
-/// A label (`"Chat"`) would drift the moment the title bar is reworded, so
-/// the persisted form is the enum name in snake_case — the same vocabulary
-/// `SidePanelId` already uses.
 fn panel_key(panel: SidePanelId) -> String {
     // Derived from the registry so a new panel is persisted without touching
     // this file; `SidePanelId::config_key` owns the stable spelling.

@@ -1,8 +1,5 @@
 //! Git network execution policy.
 //!
-//! Defines the env-policy, redaction, and permission classification
-//! shared by fetch, pull, push, and remote-config mutations.
-//!
 //! Network operations are distinguished from local mutations by:
 //!
 //! * Hard-pinned `GIT_TERMINAL_PROMPT=0` so credential helpers cannot

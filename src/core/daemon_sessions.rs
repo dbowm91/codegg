@@ -1,8 +1,4 @@
 //! M002: `sessions` request family for `CoreDaemon`.
-//!
-//! Session CRUD, selection reads, message reads, and import/export over daemon-owned session stores.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};

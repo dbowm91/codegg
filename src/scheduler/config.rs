@@ -1,13 +1,4 @@
 //! Scheduler configuration: validated, resolved, and default.
-//!
-//! Defaults are conservative: the scheduler is enabled and mandatory for
-//! daemon-owned work. Standalone harnesses may inject their own scheduler
-//! configuration explicitly.
-//!
-//! The on-disk [`SchedulerConfig`] type is owned by `codegg-config` so
-//! there is a single source of truth for the user's settings file;
-//! this module re-exports it for ergonomic access and adds the
-//! resolved/validated layers above it.
 
 pub use codegg_config::{
     SchedulerConfig, SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig,

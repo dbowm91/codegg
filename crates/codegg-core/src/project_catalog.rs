@@ -1,10 +1,5 @@
 //! Daemon-owned project catalog service on top of `ProjectStorage`.
 //!
-//! This module delivers the durable catalog of logical projects and
-//! repositories with archive/restore, lifecycle/health/locator placeholders,
-//! explicit local registration from existing workspace/repository,
-//! conservative legacy association, and restart hydration.
-//!
 //! It does NOT perform filesystem scanning, remote execution, or
 //! expensive service activation. The catalog is read/list/manage from
 //! internal/diagnostic surfaces only.

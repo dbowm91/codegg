@@ -3026,11 +3026,6 @@ mod tests {
 
     /// A controller whose live screen holds `lines`, one per row.
     ///
-    /// Lines are joined CRLF with **no trailing newline**, so the cursor comes to
-    /// rest on the last line and the visible rows are exactly `lines` in order —
-    /// row index `n` is `lines[n]`. Callers that want history pass more lines than
-    /// the screen has rows; the extra ones become retained scrollback.
-    ///
     /// Tests below index rows against this rather than counting CRLFs, because a
     /// trailing newline would scroll the screen by one and silently shift every
     /// row index by one.

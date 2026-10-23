@@ -1,9 +1,5 @@
 //! Backend-aware tool execution contract.
 //!
-//! This module introduces a small additive abstraction so the agent
-//! loop (and downstream tools/wrappers) can record which backend
-//! actually produced a result, with provenance and a trust framing.
-//!
 //! Existing tools continue to implement only the legacy `execute()`
 //! method on the `Tool` trait. New wrappers can opt into structured
 //! execution by overriding `execute_structured()` (which has a default

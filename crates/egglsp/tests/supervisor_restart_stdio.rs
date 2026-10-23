@@ -6,13 +6,6 @@
 //!
 //! ## Restart design notes
 //!
-//! The fake server reads its scenario JSON file exactly once at
-//! startup. To switch behavior between restart attempts the test
-//! overwrites the scenario file between process spawns. The
-//! service uses the SAME scenario file path for each restart (via
-//! the launch-spec env var); the fake server reads the latest
-//! content each time a new process is spawned.
-//!
 //! Process start counts are derived from the start-counter file
 //! the fake server appends to on startup. (The transcript file is
 //! truncated on each start, so it cannot be used to count
@@ -307,13 +300,6 @@ fn path_to_uri(path: &Path) -> String {
 }
 
 /// Return the service-computed key for `root` + `server_id`.
-///
-/// The service's `find_project_root` canonicalizes the path
-/// before deriving the key. On macOS, `tempfile::tempdir()`
-/// returns paths under `/var/folders/...` that canonicalize to
-/// `/private/var/folders/...`, so a test key built directly from
-/// `tempdir.path()` will not match. This helper does the same
-/// canonicalization the service performs.
 fn canonical_root_key(root: &Path, server_id: &str) -> String {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     format!("{}:{}", canonical.display(), server_id)

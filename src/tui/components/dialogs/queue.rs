@@ -206,10 +206,6 @@ pub struct QueueDialog {
     /// silently retarget the edit at whichever row the cursor now sits on.
     editing_entry_id: Option<String>,
     /// M007: the duration being typed in [`QueueStep::Scheduling`].
-    ///
-    /// Separate from `compose` because the two are different fields with
-    /// different meanings, and a single buffer holding both would make "go back
-    /// and fix the text" ambiguous.
     schedule: String,
     /// M007: the entry's **existing** due time, captured when the edit step
     /// opened.

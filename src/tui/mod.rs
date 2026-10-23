@@ -25,31 +25,6 @@
 //!
 //! ### State Flow
 //!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────┐
-//! │                      App                                │
-//! │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
-//! │  │ UiState  │ │ Session  │ │ Prompt   │ │ Dialog    │  │
-//! │  │ - theme  │ │ - session│ │ - prompt │ │ - dialogs │  │
-//! │  │ - layout │ │ - store  │ │ - compl. │ │ - state   │  │
-//! │  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
-//! └─────────────────────────────────────────────────────────┘
-//!                         │
-//!                         ▼
-//!              ┌─────────────────────┐
-//!              │  Event Handling     │
-//!              │  on_key()           │
-//!              │  on_mouse()         │
-//!              └─────────────────────┘
-//!                         │
-//!                         ▼
-//!              ┌─────────────────────┐
-//!              │      Render         │
-//!              │  render()          │
-//!              │  render_dialog()    │
-//!              └─────────────────────┘
-//! ```
-//!
 //! ## Rendering
 //!
 //! Rendering uses ratatui's widget model. The main render loop in
@@ -2158,12 +2133,6 @@ mod async_cmd_tests {
     // one. `send_prompt` branched on the mode alone and pushed every prompt
     // into the absent channel: a silent no-op that pinned the session on
     // `Working` forever, for every model and provider.
-    //
-    // Follow-up regression: the fix for that excluded ALL of `AppMode::RemoteCore`
-    // from session creation, but the socket path owns a `core_client` and can
-    // create a session exactly like the embedded path. Opening codegg in a new
-    // repo therefore had no session AND no way to make one, so every prompt
-    // died on "No session bound to the daemon connection".
 
     /// Build a socket-daemon app with an open project tab, so a prompt with no
     /// session has somewhere to create one.

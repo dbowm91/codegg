@@ -3,14 +3,6 @@
 //! The command-event substrate of the shell output projection pipeline; see
 //! `architecture/human_shell.md` for the pipeline's contract.
 //!
-//! This module introduces a structured command event that is the foundation
-//! for the projection pipeline. Every shell command run produces a
-//! [`CommandRun`] domain object that captures the command's identity, exit
-//! state, captured output handles, and metadata. Raw stdout/stderr are
-//! retained out-of-band in [`CommandOutputStore`] so that projection,
-//! expansion, redaction, and TUI code can reference them by stable handles
-//! without rerunning the command.
-//!
 //! This module is **additive** — it does not modify the existing
 //! human-shell runtime or its ephemeral transcript in
 //! [`crate::shell::store`]. The two systems run side by side: the legacy

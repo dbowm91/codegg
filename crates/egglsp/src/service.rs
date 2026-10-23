@@ -4398,14 +4398,6 @@ async fn run_initialization_attempt(
         // launch spec. The coordinator reads this on restart
         // to seed a new client without re-detecting language
         // or project root.
-        //
-        // Pass 8 — Thread the validated user restart policy
-        // override (if any) through `from_resolved`. The base
-        // profile defaults come from
-        // `compatibility::profile_for_server`; the user
-        // `[lsp.<server>.restart]` TOML block wins when
-        // present and validates via
-        // `LspRestartPolicyConfig::try_to_domain`.
         let user_restart_config: Option<LspRestartPolicyConfig> = match &config {
             LspConfig::Rules(rules) => match rules.get(server.id) {
                 Some(LspRule::Active { restart: Some(r), .. }) => Some(r.clone()),

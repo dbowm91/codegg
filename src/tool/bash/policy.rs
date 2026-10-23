@@ -1,12 +1,5 @@
 //! Bash-owned command policy and classification glue.
 //!
-//! This module owns the model-shell policy seam and decision-making helpers
-//! local to the `bash` tool: advisory risk-pattern scanning,
-//! `blocked_commands` / `allowlist` enforcement, isolated child-workspace
-//! validation, kill-switch evaluation, and thin adapters over the canonical
-//! command-intent owners. The retained `terminal` compatibility adapter calls
-//! the shared shell-safety seam here.
-//!
 //! Canonical behavior lives elsewhere and is invoked here, never copied:
 //!
 //! - destructive classification: `crate::tool::destructive`

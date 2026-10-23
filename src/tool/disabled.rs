@@ -10,8 +10,6 @@
 //! gets a clear, actionable error if it attempts to call it, instead of the
 //! call silently routing somewhere else. Use `ToolRegistry::backend_report`
 //! (and `/tool-backends`) to diagnose disabled domains.
-//!
-//! See `architecture/tool.md` for the registry's contract.
 
 use crate::error::ToolError;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};

@@ -382,9 +382,6 @@ impl Component for SecurityReviewDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    ///
-    /// Short of the retired footer's `Esc close` and `H copy hunk`, both of
-    /// which the host answers before this widget is consulted — see [`HINT`].
     fn keymap_hint(&self) -> Option<String> {
         Some(HINT.to_string())
     }

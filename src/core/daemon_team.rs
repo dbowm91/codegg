@@ -1,12 +1,5 @@
 //! Team Collaboration Corrective M003: `team` request family for `CoreDaemon`.
 //!
-//! Canonical membership management and LocalOwner principal/device-token
-//! provisioning over the existing [`codegg_core::team::TeamStore`] and
-//! [`codegg_core::transport_auth::PersonalTokenStore`]. Introduces no new
-//! identity store, no password/OIDC flow, and no remote secret-delivery
-//! protocol: `TeamTokenCreate` is secret-bearing (denied on the remote
-//! WebSocket transport) so issuance stays on the secret-safe local surface.
-//!
 //! Authorization (gate) runs before this handler:
 //! membership operations are `DirectProject + member.manage` (a project
 //! Owner manages only their own project); principal/token operations are

@@ -1,8 +1,4 @@
 //! TUI effect requests and asynchronous completions.
-//!
-//! TuiCommand is the app/runtime boundary: component and user input enters
-//! through TuiMsg, while this enum carries effect requests to the runtime and
-//! typed completions back to the synchronous App state owner.
 
 use super::types::{ConnectionLifecycleAction, TodoEntry};
 use crate::config::schema::SessionTemplate;
@@ -146,9 +142,6 @@ pub enum TuiCommand {
         state: codegg_client::DocumentState,
     },
     /// Completion of a daemon-owned workspace file delete.
-    ///
-    /// Carries the path so the completion can decide whether the delete
-    /// belonged to an agent config and therefore needs an asset refresh.
     DocumentDeleted {
         path: String,
         /// Authority root the delete ran under, so the completion knows which

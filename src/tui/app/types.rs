@@ -201,20 +201,8 @@ pub enum TuiMsg {
     ProjectInitApprove,
     ToggleSidebar,
     /// A directional pane gesture, resolved contextually.
-    ///
-    /// Emitted by a box's own Normal-mode handler, because a modal
-    /// short-circuits key routing before the binding map is consulted — the
-    /// box has to recognise the gesture itself. Routed into the same
-    /// dispatcher the main buffer's `InputAction` arms reach, so both halves
-    /// of a box/panel pair resolve it identically.
     MoveDirection(crate::tui::panels::PanelDirection),
     /// Put the keyboard on the panel docked at `placement`.
-    ///
-    /// The pointer answer to `Shift+H/J/K/L`. Kept as its own message rather
-    /// than folded into [`MoveDirection`](Self::MoveDirection) because those
-    /// resolve the keyboard position *between* edges, while a click names an
-    /// edge outright — and because focus has to go through the app to
-    /// park/restore the composer mode that `focus_panel` owns.
     FocusPanelAt {
         placement: crate::tui::panels::PanelPlacement,
     },

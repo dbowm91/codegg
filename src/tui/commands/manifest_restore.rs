@@ -273,11 +273,6 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
     }
 
     // Materialize lightweight tabs.
-    //
-    // Captured *before* the plan runs: `apply_restore_plan` calls
-    // `clear_for_restore`, so the launch binding this process established is
-    // gone by the time it returns. `preserve_launch_binding` puts it back if
-    // the restore left the session pointing at a different directory.
     let launch_binding = LaunchBinding::capture(&app.project_tabs);
 
     let heavy_target = apply_restore_plan(&mut app.project_tabs, &plan);

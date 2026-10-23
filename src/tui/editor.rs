@@ -107,10 +107,6 @@ pub enum EditorPrefix {
     /// Helix `T` — waiting for the character to find.
     FindTillPrevious,
     /// Helix `r` — waiting for the character to replace with.
-    ///
-    /// The second capture grammar, and it is here for exactly the reason the
-    /// four find prefixes are: `r` has no single-key spelling, and the key it
-    /// takes next is **data**. See [`Self::is_capture`] and [`Self::leaves`].
     ReplaceChar,
     /// Helix `m` — the match-mode prefix. Leaves: [`MATCH_LEAVES`].
     ///
@@ -141,9 +137,6 @@ pub enum MatchArg {
     /// `m d` — remove the captured character's pair around the selection.
     SurroundDelete,
     /// `m r` — waiting for the **first** character of the replacement pair.
-    ///
-    /// On capture it arms [`Self::SurroundReplaceTo`], which takes the
-    /// second.
     SurroundReplaceFrom,
     /// `m r` — the first character is captured; waiting for the second.
     SurroundReplaceTo(char),
@@ -1901,10 +1894,6 @@ pub enum EditorCommand {
     /// where it is.
     ViewScroll(isize),
     /// Helix `gt` — the cursor to the **top** of the screen.
-    ///
-    /// The other way round from [`Self::ViewAlign`]: the screen moves to the
-    /// cursor there, and here the cursor moves to the screen. It needs the
-    /// real viewport, which the renderer measures and publishes.
     ScreenTop,
     /// Helix `gc` — the cursor to the **middle** of the screen.
     ScreenCenter,
@@ -3089,14 +3078,6 @@ pub fn apply_helix_verb(
             match_record = Some(probe.match_note);
         }
         // ── Set verbs ────────────────────────────────────────────────────
-        //
-        // All of them are answered against `state`, so each runs through the
-        // same restore/write-back pair this function already does and none of
-        // them can leave the presentation holding a set the rules would not
-        // have produced. The mutating three return before the write-back: an
-        // edit invalidates every stored offset, so writing the set back and
-        // then replacing the text would leave members pointing at a document
-        // that no longer has those bytes. `submit_edit` clears them instead.
         HelixVerb::CollapseSelection => {
             if !state.collapse_to_primary() {
                 return SetVerbOutcome::NothingToDo("nothing selected".to_string()).into();
@@ -3891,10 +3872,6 @@ fn bounded_regex_window(
 }
 
 /// Byte offset of the last character that ends at `end`.
-///
-/// A character selection's range runs to `char_end(head)`, so a member built
-/// to cover `start..end` has to name the **last character's** start as its
-/// head — pointing it at `end` would cover one character too many.
 fn last_char_start(snapshot: &DocumentSnapshot, end: usize) -> Option<usize> {
     let end = clamp_offset(snapshot, end);
     if end == 0 {
@@ -4375,11 +4352,6 @@ enum CaseMode {
 /// a case. Half-converting it would also mean `~ ~` never returns to the
 /// original text, so `~` would stop being a toggle. Reporting "nothing to
 /// flip" is the answer that stays true.
-///
-/// Either way the inserted text may be longer than the range it replaces,
-/// which is safe because `EditorEdit` carries an arbitrary transaction/inverse
-/// pair and the caller's cursor clamp runs against the **post**-edit
-/// snapshot.
 ///
 /// An identity mapping — text that is already lower case under `` ` ``, or
 /// already upper case under `Alt-` `, or unmappable under any of them — is
@@ -4961,10 +4933,6 @@ pub fn move_cursor_to(
 /// Resolve an editing command into a local transaction plus the cursor and
 /// mode the editor should adopt if the controller accepts it.
 ///
-/// Pure: reads the snapshot, mutates nothing. Returns `None` when the
-/// command is a no-op at the current position, or when the request needs a
-/// pending prefix the caller has not supplied.
-///
 /// **Scope: document-only verbs.** A command whose entire input is the
 /// snapshot plus the cursor belongs here. `r`, `R`, `~`, `p`, and `P` do
 /// not: they take their target from the held *selection* and their payload
@@ -5471,11 +5439,6 @@ pub fn discard_insert_session(presentation: &mut TuiDocumentPresentation) {
 }
 
 /// Evict the oldest entries until the history is inside **one** cap.
-///
-/// **One cap, not one per stack.** The two-stack model enforced the depth
-/// and byte bounds twice — once per stack — so the worst case was twice the
-/// bound `architecture/tui.md` documents. A single history restores the
-/// documented reading and *tightens* the bound.
 fn trim_history(presentation: &mut TuiDocumentPresentation) {
     while presentation.history.len() > MAX_EDITOR_UNDO_DEPTH
         || presentation.history_bytes > MAX_EDITOR_UNDO_BYTES
@@ -6403,10 +6366,6 @@ fn surround_delete(
 
 /// `m r` — replace a character's pair around the held selection with another
 /// character's pair.
-///
-/// The **outermost** enclosing pair of `from` is the one replaced, so the
-/// replaced text keeps its inner pairs intact: `(a(b))` with `m r ([` becomes
-/// `[a(b)]`, not `[a(b])`.
 fn surround_replace(
     snapshot: &DocumentSnapshot,
     state: &SelectionState<EditorPoint>,

@@ -139,11 +139,6 @@ pub enum InputAction {
     NewSession,
     /// Stop the running turn, or resume a stopped one (`x`, Normal mode
     /// only).
-    ///
-    /// One key for both directions because the state already says which one
-    /// applies: a stopped agent resumes, a working one stops. Stopping is the
-    /// destructive direction, so it takes a confirmed second press inside a
-    /// short window — see `turn_control::toggle_stop_or_resume`.
     ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
@@ -711,14 +706,6 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
 /// side column. That is the same gesture a stacked layout would use to move
 /// between rows, so the key is now earning its place instead of advertising
 /// something the UI cannot do.
-///
-/// Each letter is bound twice. Terminals disagree about how to encode a
-/// shifted letter: many report `Char('H') + SHIFT`, others a bare `Char('H')`
-/// with no modifier at all. Binding both is safe because uppercase `H`/`J`/
-/// `K`/`L` are otherwise unbound in Normal mode, and `is_normal_only` keeps
-/// Insert mode treating them as text. This is the same legacy-encoding hazard
-/// that made every `Ctrl+Shift+X` chord undecodable — see
-/// `tests/tui_render/modifier_chords.inc`.
 fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
     for (key_code, action) in [
         (KeyCode::Left, InputAction::DirectionLeft),
@@ -1213,12 +1200,6 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     // and delete-selection (ADR-0042). The actions moved to chords that are
     // not letters, and the chords are bound in **both** maps so the
     // capability is reachable whichever map is active.
-    //
-    // `Ctrl+Alt+I` would be the mnemonic spelling, but the terminal delivers
-    // it as `ESC` + `0x09`, which crossterm reports as `Tab` with ALT — the
-    // verb would be unreachable on every terminal. `Ctrl+Alt+E` is the
-    // deliverable alternative (`ESC` + `0x05` arrives as `Char('e')` with
-    // CONTROL|ALT), and "E" reads as "e\nter" the command palette.
     map.insert(
         (
             KeyModifiers::CONTROL | KeyModifiers::ALT,

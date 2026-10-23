@@ -73,11 +73,6 @@ pub fn normalize_set<P: SelectionPoint>(
 /// left-to-right), because a selection's start is `min(anchor, head)`.
 pub trait SelectionPoint: Copy + Ord {
     /// Identity of the line/row this point belongs to.
-    ///
-    /// Separated from the point itself because whole-line selection needs to
-    /// answer "which lines does this span" without knowing how wide a line is.
-    /// A surface with variable line length resolves the bounds when it acts on
-    /// the range, not here.
     type Line: Copy + Ord;
 
     /// The line this point sits on.
@@ -292,9 +287,6 @@ impl<P: SelectionPoint> SelectionState<P> {
     }
 
     /// Re-sort the set and carry the primary member along with it.
-    ///
-    /// Delegating to [`normalize_set`] is what keeps a surface that restores a
-    /// set from storage on the same ordering the rules enforce here.
     fn normalize(&mut self) {
         let (selections, primary) = normalize_set(mem::take(&mut self.selections), self.primary);
         self.selections = selections;

@@ -1,8 +1,4 @@
 //! Projection artifact registry (M3, WP D).
-//!
-//! Provides an in-memory metadata store backed by [`RunStore`] for
-//! artifact content. The daemon holds an `Arc<dyn ProjectionArtifactRegistry>`
-//! to authorize and serve artifact reads through the projection seam.
 
 use std::sync::Arc;
 

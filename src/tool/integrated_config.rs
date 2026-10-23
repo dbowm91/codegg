@@ -1,11 +1,4 @@
 //! Centralized runtime config resolution for integrated tool backends.
-//!
-//! This module bridges the config-time schema types (`SearchConfig`,
-//! `DeterministicToolsConfig`, `PreflightConfig`) to runtime structs
-//! consumed by `ToolRegistry::with_options()`. It fills defaults,
-//! validates values, and emits warnings for suspicious configurations.
-//!
-//! See `architecture/native_crates.md` for the backend-selection policy.
 
 use crate::config::schema::Config;
 

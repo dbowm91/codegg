@@ -1,7 +1,5 @@
 //! # TUI Components
 //!
-//! Reusable widget components for building the terminal UI.
-//!
 //! ## Architecture
 //!
 //! Components are organized by their role:

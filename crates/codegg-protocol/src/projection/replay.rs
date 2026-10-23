@@ -1,10 +1,5 @@
 //! Replay transport types for session projection subscriptions and
 //! durable replay.
-//!
-//! This module defines the additive protocol surface consumed by
-//! frontends that subscribe to a canonical session or project
-//! projection stream and receive ordered, committed projection events
-//! backed by durable replay storage.
 
 use serde::{Deserialize, Serialize};
 

@@ -242,9 +242,6 @@ pub enum GitMutationError {
     StateMismatch { expected: String, actual: String },
     /// C007: the private index publication was refused because the
     /// repository changed under it.
-    ///
-    /// A conflict is a typed, retryable result. Nothing was published, and
-    /// the concurrent writer's index was not overwritten.
     #[error("git index publication conflict: {0}")]
     PublicationConflict(crate::git_publication::GitIndexPublicationConflict),
     /// C007: the private index publication was refused before it was

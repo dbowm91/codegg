@@ -1,13 +1,6 @@
 //! Phase 4 of the single-daemon multi-project orchestration roadmap:
 //! durable jobs, attempts, and schedules.
 //!
-//! This module is the authoritative source of truth for the daemon's
-//! queue and lifecycle control plane. A [`JobRecord`] is created before
-//! any execution begins and persists through retries, cancellation,
-//! daemon restarts, and manual interventions. Execution attempts are
-//! modelled separately from the logical job so history, retries, and
-//! restart recovery can be reasoned about independently.
-//!
 //! Three boundaries are enforced here:
 //!
 //! 1. **Identity.** Every persisted record uses an opaque typed newtype

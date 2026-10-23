@@ -1,8 +1,4 @@
 //! Async command helpers for spawning TUI background tasks.
-//!
-//! Provides [`spawn_tui_task`] for moving high-latency core-backed work
-//! off the event loop while keeping all UI state mutation on the event loop
-//! through typed completion commands.
 
 use super::app::TuiCommand;
 use super::task_lifecycle::{TuiTaskKind, TuiTaskRegistry};

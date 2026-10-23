@@ -1,8 +1,4 @@
 //! M002: `ops` request family for `CoreDaemon`.
-//!
-//! Audit query/export, memory, and notification routing over daemon-owned stores.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};

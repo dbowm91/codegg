@@ -1,10 +1,5 @@
 //! Snapshot helpers for the persistence service.
 //!
-//! Bridges between [`crate::tui::app::state::project_tabs::ProjectTabs`]
-//! and the persisted [`TuiWorkspaceManifest`] format. The TUI
-//! produces snapshots on state changes; the persistence service
-//! debounces and writes them to disk.
-//!
 //! Snapshots are intentionally read-only projections: nothing in the
 //! `ProjectTabs` collection is mutated by snapshotting.
 

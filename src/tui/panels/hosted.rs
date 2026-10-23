@@ -2,12 +2,6 @@
 //!
 //! ## Why this exists
 //!
-//! The panel host originally shipped four panels: `Session` and `Chat` are
-//! bespoke (they own live projections), while `Terminal` and `Help` host an
-//! existing widget. Extending that to the rest of the dockable boxes one
-//! bespoke `SidePanel` impl at a time would mean 28 copies of the same four
-//! methods — and 28 chances to drift from the box they claim to represent.
-//!
 //! So this module adds one adapter instead. [`HostPanel`] holds a
 //! `Box<dyn Component>` — the *same* component the modal stack mounted — and
 //! paints it into the side column. Docking therefore does not "make a similar

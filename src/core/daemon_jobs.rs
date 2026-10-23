@@ -1,8 +1,4 @@
 //! M002: `jobs` request family for `CoreDaemon`.
-//!
-//! Durable jobs, schedules, run records, tool-program inspection, and legacy task shims over the scheduler/job stores.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};

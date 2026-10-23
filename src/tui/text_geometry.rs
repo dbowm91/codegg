@@ -71,9 +71,6 @@ pub trait TextSource {
     }
 
     /// Byte offset of the end of `line`'s content, excluding its terminator.
-    ///
-    /// The terminator, if any, is `\n`, `\r`, or `\r\n` at the very end of the
-    /// line.
     fn line_content_end(&self, line: usize) -> Option<usize> {
         let start = self.line_start(line)?;
         let end = self.line_end(line)?;
@@ -253,12 +250,6 @@ fn category_run_at<S: TextSource + ?Sized>(source: &S, offset: usize) -> WordRun
         start = previous;
     }
     // Expand right over the same class, remembering the last character's start.
-    //
-    // `end` is the start of the first character **after** the run, so the
-    // character that starts there is the one to test next. Advancing `end` to
-    // the *end* of the last matching character instead would step over the
-    // character that ends the run — on `日本語 text` that swallowed the space
-    // and merged the two words into one run.
     let mut last = offset;
     let mut end = next_char_boundary(source, offset).unwrap_or(len);
     while end < len {

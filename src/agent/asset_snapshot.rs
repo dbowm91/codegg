@@ -1,11 +1,5 @@
 //! Unified project/workspace-scoped asset snapshot.
 //!
-//! Runtime Assets Milestone 2 produces one immutable
-//! [`ProjectAssetSnapshot`] per workspace. The snapshot bundles the
-//! resolved effective agents, the source-aware skills
-//! [`AssetRegistry`], the resolved project instructions, their
-//! per-asset digests, and a combined fingerprint.
-//!
 //! The snapshot is the only object that daemon/runtime consumers of
 //! agents, skills, and instructions should hold. Building a snapshot is
 //! the single disk-touching operation; everything downstream consumes

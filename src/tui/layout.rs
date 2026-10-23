@@ -21,16 +21,6 @@
 //! the left column or a full-width row under the main buffer, which is the
 //! same split on the other axis:
 //!
-//! ```text
-//! ┌───────────────┬──────────────────────────────────────────┐
-//! │     Panel     │                Header                   │
-//! ├───────────────┼──────────────────────────────────────────┤
-//! │               │                 Viewport                 │
-//! │               ├──────────────────────────────────────────┤
-//! │               │            Prompt / Footer               │
-//! └───────────────┴──────────────────────────────────────────┘
-//! ```
-//!
 //! ## Layout Constraints
 //!
 //! - A column panel only appears when terminal width >

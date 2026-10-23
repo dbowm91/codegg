@@ -30,10 +30,6 @@
 //! inversion the C003 closure record warned about: a non-broker writer that
 //! already holds a document revision lease or the repository lock asks this
 //! service a question, it never waits on the writer permit.
-//!
-//! Ownership: this crate owns the typed state machine. The root crate's
-//! daemon adapter supplies the principal and decides what a refusal means
-//! for the caller.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;

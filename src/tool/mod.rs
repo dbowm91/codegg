@@ -1,9 +1,4 @@
 //! Tool registry and built-in tools.
-//!
-//! This module provides the Tool trait and ToolRegistry for managing available tools.
-//! Tools are the primary way Codegg interacts with the filesystem, terminal, and external
-//! services. Each tool implements the Tool trait with name, description, parameters,
-//! and execution logic.
 
 pub mod apply_patch;
 pub mod authorization;

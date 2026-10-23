@@ -1,9 +1,5 @@
 //! Restart coordination for LSP clients.
 //!
-//! Consolidates the retry, backoff, exhaustion, cancellation,
-//! document replay, and ownership-restoration flow into a single
-//! coordinator driven by [`restart_client_coordinator`].
-//!
 //! ## Design
 //!
 //! The coordinator never reconstructs a hard-coded `src/lib.rs`
@@ -80,10 +76,6 @@
 //!   out.
 //! - [`LspError::LaunchFailed`] — the restart budget was
 //!   exhausted without a successful reinit.
-//!
-//! Resetting `restart_attempts` on healthy operation is the
-//! caller's responsibility (handled lazily when handling the
-//! next unexpected exit).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -958,10 +950,6 @@ pub trait RestartShared {
     /// the previous generation (current - 1) and `post_restart =
     /// false`, so the freshness classifier returns `Stale` until
     /// the new server emits its own first push.
-    ///
-    /// Called by the coordinator immediately BEFORE the document
-    /// replay step, on a client that is about to be replaced. No-op
-    /// when no client is currently published for `key`.
     async fn mark_diagnostics_stale_for_key(&self, key: &str);
 
     /// Execute the configured readiness policy against the
@@ -4666,19 +4654,6 @@ mod tests {
     // ── Pass 12 (Phase 3 final cleanup) — Async release cancellation safety
 
     /// Pass 12 — `cancelled_async_release_falls_back_to_drop_cleanup`.
-    ///
-    /// Strong adversarial test for the async cancellation-safety
-    /// fix in [`RestartLease::release_async`]. The release
-    /// future is spawned into a task that is blocked on the
-    /// ownership-map lock. The task is then **aborted** while
-    /// blocked. Under the old implementation (`released = true`
-    /// set BEFORE the lock await), the abort would leave the
-    /// slot wedged because `Drop` sees `released == true` and
-    /// skips cleanup. Under the new implementation (`released`
-    /// is committed INSIDE the lock block), the abort drops
-    /// the lease with `released == false` and the `Drop`
-    /// fallback cleanup runs the same remove-before-signal
-    /// ordering.
     ///
     /// Test mechanics:
     /// 1. Acquire lease A (entry installed).

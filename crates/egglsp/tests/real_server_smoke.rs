@@ -6231,14 +6231,6 @@ async fn run_generalized_operation_checks(
     }
 
     // Rename preview
-    //
-    // Pass 2 — gate the check on the typed
-    // `rename_expectation` (or the legacy
-    // `expected_capabilities.rename` flag for fixtures that
-    // opt in via the boolean). The legacy
-    // `mutation_targets.rename_preview_requested` field
-    // has been removed; `rename_expectation` is the
-    // canonical opt-in.
     if fixture.rename_expectation.is_some() || fixture.expected_capabilities.rename {
         run_rename_preview_check(
             client,
@@ -6792,11 +6784,6 @@ fn update_matrix_manifest(
 // long-running process where the full LSP stack is not needed).
 
 /// Test 1: The harness captures real stderr output.
-///
-/// Spawns a process that writes to stderr, wires it through the
-/// `RealServerHarness`, and verifies that `shutdown_and_collect`
-/// produces a `HarnessShutdownResult` whose `stderr_tail` contains
-/// the expected output.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_captures_stderr() {
     // Use a simple shell command that writes to stderr and exits.
@@ -6880,11 +6867,6 @@ async fn smoke_harness_captures_stderr() {
 }
 
 /// Test 2: The harness force-kills hung servers.
-///
-/// Spawns a process that sleeps for a long time, wires it through
-/// the `RealServerHarness`, and verifies that `shutdown_and_collect`
-/// with a short graceful deadline produces a `ForceKilled` or
-/// `TimeoutExpired` result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_force_kills_hung_server() {
     // Use `sleep` to create a hung process.

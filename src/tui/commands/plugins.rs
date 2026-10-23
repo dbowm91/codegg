@@ -1,8 +1,5 @@
 //! Plugin command handlers.
 //!
-//! Provides the TUI-side plumbing for running plugin-backed commands and
-//! applying plugin UI responses without blocking the render loop.
-//!
 //! Process-backed commands (`runtime: process`) are executed through
 //! `ProcessRuntime`, which handles child process spawning, timeout,
 //! output capping, and response parsing.

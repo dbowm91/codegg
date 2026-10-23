@@ -20,13 +20,6 @@
 //!
 //! ## Ownership
 //!
-//! This module owns trigger types, validation, secret
-//! generation/verification, and redaction. Durable rows live in the
-//! `task_trigger` / `task_trigger_receipt` tables owned by
-//! [`super::store::WorkOrderService`]; the single fire transaction
-//! (latch + count + receipt + audit-safe metadata) lives there so the
-//! latch and its accounting commit atomically.
-//!
 //! Long-term references: ADR-0005 §12
 //! (`plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`),
 //! `plans/subsystems/project-work-orders-task-view-roadmap.md` M005.

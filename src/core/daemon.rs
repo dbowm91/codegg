@@ -946,10 +946,6 @@ impl CoreDaemon {
     /// `worktree.create`; the checkout it names is already owned by the
     /// project, and the service refuses a checkout belonging to another
     /// project.
-    ///
-    /// Returns `Ok(None)` when the request allocates no checkout, so the
-    /// caller can tell "no second check applies" from "the second check
-    /// passed" (`Ok(Some(decision))`).
     async fn authorize_launch_checkout(
         &self,
         authority: &codegg_core::transport_auth::RequestAuthorityContext,

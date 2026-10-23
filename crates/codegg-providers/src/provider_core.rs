@@ -981,12 +981,6 @@ fn register_credential_provider<F>(
 }
 
 /// Register a provider that only accepts a static API-key secret.
-///
-/// Resolves a credential through [`resolve_provider_credential`], then
-/// collapses it to a `String` for the factory. Bearer-style credentials
-/// produce a warning and the provider is skipped, since callers of this
-/// helper genuinely need a static API key (e.g. they use a non-Bearer
-/// auth header like `x-api-key`).
 fn register_api_key_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,
@@ -1038,11 +1032,6 @@ fn register_api_key_provider<F>(
 /// (possibly absent) `base_url` through to the factory. Uses the
 /// [`register_api_key_provider`] path because all current callers
 /// (Anthropic, OpenAI native, Google, OpenRouter) use static API keys.
-///
-/// All credential lookups flow through
-/// [`resolve_provider_credential`]; the resolver itself is responsible
-/// for honoring `ctx.legacy_api_key`. This helper does **not** read
-/// `cfg.api_key` directly so there is a single resolution path.
 fn register_config_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,

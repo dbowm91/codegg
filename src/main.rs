@@ -723,10 +723,6 @@ enum DaemonCommand {
         refresh: bool,
     },
     /// Dispose of one daemon-owned scratch tree (M007)
-    ///
-    /// Names the tree by its opaque digest, as reported by
-    /// `codegg daemon scratch-usage`. A dry run is the default: the command
-    /// reports what it would remove and removes nothing.
     ScratchReclaim {
         /// The opaque digest of the tree
         #[arg(long)]

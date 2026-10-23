@@ -630,10 +630,6 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
 }
 
 /// Parse JSON input, resolving `workdir` against `workspace_root`.
-///
-/// An omitted `workdir` defaults to the workspace root, and a relative
-/// `workdir` resolves against it. Neither falls back to the process working
-/// directory, which in a daemon is unrelated to the session.
 fn parse_test_request_in(
     input: &serde_json::Value,
     workspace_root: Option<&std::path::Path>,

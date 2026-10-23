@@ -1523,12 +1523,6 @@ impl SidePanelHost {
         // it. `Esc` used to be that answer and it no longer is — it is the
         // mode switch — so a reader who presses it to get out stays put, and a
         // row that does not say otherwise is a trap.
-        //
-        // The terminal is the exception: in INS the panel is a live PTY and
-        // `Shift+Q` is program input that reaches the shell, so advertising
-        // it as the exit there would be a lie. That row keeps saying `Esc
-        // read` instead, and the exit is offered again once the reader is
-        // back in NOR.
         let terminal_reading =
             self.active() == SidePanelId::Terminal && input_mode == InputMode::Insert;
         if !self.is_focused() || terminal_reading {

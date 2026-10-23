@@ -1,10 +1,4 @@
 //! Plugin management command handlers for the TUI.
-//!
-//! Provides list/info/enable/disable/install/remove/doctor operations
-//! for installed plugins. Uses the canonical [`PluginManager`] (wrapping
-//! [`PluginService`]/[`PluginRegistry`] with builtins) as the source of
-//! truth. Enable/disable state is persisted in the daemon-owned activation
-//! store; the live registry remains an installation/capability index.
 
 use crate::plugin::management::PluginDoctorReport;
 use crate::plugin::management_ui::{

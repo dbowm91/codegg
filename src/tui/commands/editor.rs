@@ -2708,10 +2708,6 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
             // `:new` creates an *agent* config, which is the file shape the
             // editor is currently useful for; a bare unnamed document would
             // need a separate template path.
-            //
-            // The scope comes from the argument (`global foo` / `project
-            // foo`); `resolve_new_agent` owns the split so the same rule
-            // applies to the panel and to this command.
             crate::tui::commands::agent_editor::create_agent_draft(
                 app,
                 argument.unwrap_or_default().as_str(),
@@ -4192,9 +4188,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // preserve byte for byte. Two spellings of one verb that behaved
         // differently would be a worse surprise than either behaviour alone,
         // so bare `y` matches its sibling rather than Helix.
-        //
-        // Claimed even with nothing selected, for the same reason `d` is: an
-        // unclaimed `y` reads as a dead key.
         (m, KeyCode::Char('y')) if m == none => {
             let ranges = yank_ranges(session);
             if ranges.is_empty() {
@@ -7882,10 +7875,6 @@ mod tests {
     }
 
     /// Hold two single-character members at `start` and `other`, primary first.
-    ///
-    /// Single characters, because a Helix character selection is inclusive of
-    /// both endpoints: `start..start+1` would cover two characters and the
-    /// assertions below would be about the wrong spans.
     fn hold_two_members(
         state: &mut EditorState,
         snapshot: &codegg_document::DocumentSnapshot,
@@ -10661,10 +10650,6 @@ mod tests {
 
     /// Hold one member over `start..end`, the way a verb that grew a
     /// selection would.
-    ///
-    /// The head is the **last character's start**, because a character
-    /// selection's range runs to `char_end(head)` — a head at `end` would
-    /// cover one character too many.
     fn hold_range(state: &mut EditorState, start: usize, end: usize) {
         let snapshot = snapshot_of(state);
         let point = |byte: usize| EditorPoint {

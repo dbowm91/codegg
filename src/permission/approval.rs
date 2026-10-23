@@ -17,10 +17,6 @@
 //! `Automatic` escalation to Allow/Deny/DeferUser with strict schema,
 //! read-only investigation bounds, stale-policy invalidation, and
 //! fail-closed (Defer/deny, never Allow) semantics.
-//!
-//! `ApprovalMode`, `SandboxProfile`, and `ExecutionPolicySnapshot` are the
-//! canonical domain types from `codegg-core::approval`; this module adds the
-//! normalized request/decision shapes and the single human-wait owner.
 
 use std::time::Duration;
 

@@ -1,11 +1,5 @@
 //! Rows for the unified tasks overlay (`Ctrl+T`).
 //!
-//! The overlay answers one question — *what is this session waiting on?* —
-//! across three kinds of work that used to need three different places to
-//! look: the todo strip, the main buffer's subagent strip, and the job list
-//! that previously had no surface at all. Grouping them behind one key is the
-//! whole point; splitting them again per group would defeat it.
-//!
 //! # Two rules shape this module
 //!
 //! - **Projection-derived, never synthesized.** Subagents come from

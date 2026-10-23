@@ -5,11 +5,6 @@
 //! opaque wrapper with redacted `Debug`) and is rendered here exactly
 //! once. Closing the dialog drops the secret; metadata remains listable
 //! but the bearer is never re-readable (rotation is revoke + create).
-//!
-//! Secret-safety: no `Serialize` on secret state, no bearer in prompt/
-//! transcript/notifications/audit/events/WorkOrder summaries/dashboard
-//! rows/model context, no SQLite persistence, and the dialog clears on
-//! project/tab switch, reconnect, logout/authority loss, and shutdown.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{

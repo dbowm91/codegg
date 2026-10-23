@@ -455,10 +455,6 @@ fn char_at(text: &str, offset: usize) -> Option<(char, usize)> {
 }
 
 /// The start of the character that ends at `offset`.
-///
-/// Walks back over UTF-8 continuation bytes (`0b10xxxxxx`), so it lands on a
-/// character boundary in at most three steps for valid UTF-8. This is the
-/// backward twin of the forward step: **neither ever splits a character**.
 fn prev_char_start(text: &str, offset: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     if offset > bytes.len() {

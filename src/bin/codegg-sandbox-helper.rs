@@ -6,11 +6,6 @@
 //! normal process context, reports setup state through the private pipe, and
 //! then replaces itself with the target executable.
 //!
-//! Containment is **backend-neutral**: the policy is a list of paths, and
-//! the registry in [`codegg::security::sandbox::backend`] decides which OS
-//! facility enforces it (Landlock on Linux, Seatbelt on macOS). Adding a
-//! backend changes this file not at all.
-//!
 //! This is the only place in the sandbox that uses `unsafe`, and only for
 //! two reasons: the status-pipe descriptor plumbing, and the `sandbox_init`
 //! FFI that the root library cannot make itself (`#![deny(unsafe_code)]`).
