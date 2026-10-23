@@ -149,6 +149,33 @@ coexistence, explicit-path autostart, and daemon survival
 (`apps/desktop/e2e/specs/`, entry point `apps/desktop/e2e/run-e2e.sh`,
 hosted in `.github/workflows/desktop-e2e.yml` on Linux/WebKitGTK/xvfb).
 
+### The hosted qualification is paused (2026-10-23)
+
+Development on the desktop foundation line is paused, so the hosted
+qualification **no longer runs on push or on pull requests**:
+`.github/workflows/desktop-e2e.yml` is **manual dispatch only** until that
+line resumes, and its name carries the "(paused)" marker so the state is
+visible in the Actions list rather than inferred.
+
+The pause is not a claim that the trajectory passes. It had already been red
+on `main`: `main`'s own most recent run (`39679968444` at `53d9fc9fd`) fails
+with `element ("[data-testid="permission-list"]") still not existing after
+120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5` — the same
+file, the same line and the same timeout — and the nine runs behind it are
+consecutive failures. The defect is the desktop line's own, so a hosted run
+on every desktop-tree change bought no signal.
+
+Everything else on this page is unchanged. The trajectory, the spec files,
+the `desktop-e2e` Cargo feature and its authority boundary, and the
+`check-desktop-boundary.sh` guard all stand; what is paused is the *hosted
+qualification*, not the capability and not its boundary. The workflow's path
+filters are preserved in its own header so that restoring the triggers is a
+copy-paste.
+
+Until the lane resumes, the desktop foundation's hosted evidence is the
+`CI / verify` lane plus the local `apps/desktop` host and renderer checks —
+which the root workspace's gate does not compile, so they are run by hand.
+
 Test instrumentation never widens production authority:
 
 - the embedded WebDriver server (`tauri-plugin-wdio-webdriver` 1.x) is an

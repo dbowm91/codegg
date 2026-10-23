@@ -1022,6 +1022,11 @@ The one place that needs the unstripped binary is the desktop bundle, which
 ships the root daemon: `.github/workflows/desktop-e2e.yml` builds it with
 `--config 'profile.dev.strip="none"'` so crash symbolication is preserved.
 That workflow runs no test suite, so it has no double compile to reclaim.
+**That workflow is manual dispatch only since 2026-10-23** — the desktop
+foundation's development is paused, so the hosted visible-window qualification
+no longer runs on push or on pull requests. See `desktop.md` §"The hosted
+qualification is paused (2026-10-23)" for the evidence and for what restoring
+it costs.
 
 Release artifacts are unaffected: `[profile.release]` already had
 `strip = true`, and it is a separate profile.
