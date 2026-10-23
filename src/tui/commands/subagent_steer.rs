@@ -116,15 +116,10 @@ fn adopt(app: &mut App, addressee: SubagentAddressee) {
 /// run's composer claim to address another. An ambiguous name refuses rather
 /// than picking, because silently choosing one of two runs the user cannot tell
 /// apart is the failure this whole milestone exists to avoid.
-pub fn dispatch_addressee_command(app: &mut App, raw_input: Option<&str>) {
-    // `raw_input` is the whole typed line, so the command name is stripped
-    // first — the same shape `/skills` reads its query with.
-    let argument = raw_input
-        .unwrap_or_default()
-        .trim()
-        .strip_prefix("/subagent-send")
-        .unwrap_or_default()
-        .trim();
+pub fn dispatch_addressee_command(app: &mut App, argument: &str) {
+    // `argument` is what the user typed after the command spelling — the
+    // dispatcher already removed `/subagent-send`.
+    let argument = argument.trim();
     let argument = (!argument.is_empty()).then_some(argument);
     match argument {
         Some(value) if value.eq_ignore_ascii_case("off") => {

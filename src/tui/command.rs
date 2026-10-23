@@ -401,6 +401,42 @@ impl Command {
         names
     }
 
+    /// The argument the user typed after the command spelling.
+    ///
+    /// This is the **single extraction point** for a slash command's
+    /// argument: the typed line is resolved to a registry entry first, and
+    /// the entry takes the argument out of the line here. A handler
+    /// receives the argument and nothing else — never the typed line, never
+    /// a line that still starts with the command's name.
+    ///
+    /// The spelling that is removed is the one the **user typed**, resolved
+    /// against this entry's canonical name *and* its aliases. An alias is a
+    /// spelling of the same command, so `/agent` and `/agents` each have to
+    /// lose their own token; stripping only the canonical name would leave
+    /// the alias in the argument, which is the same defect one step later.
+    ///
+    /// A token that names no entry of this command is not an error: the
+    /// command palette executes the highlighted row, which is not always the
+    /// token the user typed. The token is still where the argument starts.
+    pub fn argument_from_typed_line<'a>(&self, typed_line: &'a str) -> &'a str {
+        let trimmed = typed_line.trim();
+        // The spelling the user typed is resolved against this entry's
+        // canonical name **and its aliases**: an alias is a spelling of the
+        // same command, so `/agent` and `/agents` each have to lose their
+        // own token. Stripping only the canonical name would leave the
+        // alias in the argument, which is the same defect one step later.
+        for name in self.all_names() {
+            if let Some(rest) = strip_named_token(trimmed, name) {
+                return rest;
+            }
+        }
+        // No spelling of this entry names the line's first token. The
+        // command palette executes the highlighted row, which is not always
+        // the token the user typed; the token is still where the argument
+        // starts.
+        split_first_token(trimmed).1.trim()
+    }
+
     /// Returns true if this is a process-backed command.
     pub fn is_process(&self) -> bool {
         self.process.is_some()
@@ -408,6 +444,30 @@ impl Command {
 
     pub fn source_label(&self) -> String {
         self.source_kind.to_string()
+    }
+}
+
+/// The first whitespace-delimited token of `text`, and the text after it.
+///
+/// The token is the command spelling the user typed; the rest is the
+/// argument. A line with no whitespace is one token and no argument.
+fn split_first_token(text: &str) -> (&str, &str) {
+    match text.find(char::is_whitespace) {
+        Some(index) => (&text[..index], &text[index..]),
+        None => (text, ""),
+    }
+}
+
+/// The text after `name`, when `name` is the first token of `text`.
+///
+/// The comparison is the registry's own: a leading slash and the case are
+/// not significant, so `/theme` and `theme` are the same spelling.
+fn strip_named_token<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let (token, rest) = split_first_token(text);
+    if CommandRegistry::normalize_name(token) == CommandRegistry::normalize_name(name) {
+        Some(rest.trim())
+    } else {
+        None
     }
 }
 
@@ -2140,5 +2200,48 @@ mod tests {
             CommandSource::BuiltIn
         );
         registry.validate().expect("scoped catalog is valid");
+    }
+
+    /// The argument is everything after the command spelling, and the
+    /// spelling that is removed is the one the user typed.
+    #[test]
+    fn argument_from_typed_line_removes_the_canonical_name() {
+        let registry = CommandRegistry::new_for_workspace_root(std::path::Path::new("/tmp"));
+        let command = registry
+            .find_by_name_or_alias("/themes")
+            .expect("/themes is registered")
+            .clone();
+        assert_eq!(command.argument_from_typed_line("/themes dark"), "dark");
+        assert_eq!(command.argument_from_typed_line("/themes"), "");
+    }
+
+    /// An alias is a spelling of the same command, so it has to lose its own
+    /// token too. Stripping only the canonical name would leave the alias in
+    /// the argument — the same defect one step later.
+    #[test]
+    fn argument_from_typed_line_removes_the_alias() {
+        let registry = CommandRegistry::new_for_workspace_root(std::path::Path::new("/tmp"));
+        let command = registry
+            .find_by_name_or_alias("/theme")
+            .expect("/theme is an alias of /themes")
+            .clone();
+        assert_eq!(command.name, "/themes");
+        assert_eq!(command.argument_from_typed_line("/theme dark"), "dark");
+        assert_eq!(command.argument_from_typed_line("/theme"), "");
+    }
+
+    /// The argument of a command whose flags are parsed by a helper is the
+    /// flags, without the command name in front of them.
+    #[test]
+    fn argument_from_typed_line_removes_the_name_from_flag_arguments() {
+        let registry = CommandRegistry::new_for_workspace_root(std::path::Path::new("/tmp"));
+        let command = registry
+            .find_by_name_or_alias("/security-review")
+            .expect("/security-review is registered")
+            .clone();
+        assert_eq!(
+            command.argument_from_typed_line("/security-review --json --base main"),
+            "--json --base main"
+        );
     }
 }

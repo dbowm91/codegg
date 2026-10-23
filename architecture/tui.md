@@ -3019,6 +3019,35 @@ await an in-process `CoreClient` round trip and return a completion
 `TuiCommand`. Every other arm is non-async; handlers needing latency use
 spawn-and-complete or fire-and-forget instead.
 
+### The slash-command argument contract
+
+A slash command's argument is extracted **once**, where the typed line is
+resolved to a registry entry: `Command::argument_from_typed_line`
+(`src/tui/command.rs:421`), called from `App::execute_command`
+(`src/tui/app/mod.rs:5489`) on the built-in action.
+
+The extraction removes the spelling the **user typed** — the entry's
+canonical name *or one of its aliases*. An alias is a spelling of the same
+command, so `/agent` and `/agents` each lose their own token; stripping only
+the canonical name would leave the alias in the argument, which is the same
+defect one step later.
+
+After the extraction the argument is the only thing a handler receives. An
+arm of the built-in dispatcher (`App::dispatch_builtin_command`,
+`src/tui/app/mod.rs:5653`) never sees the typed line and never reads
+`command_palette.query`: the palette's query is the *whole* typed line, and
+a handler that read it re-derived the argument by hand — which is how
+`/search` searched for the literal `"/search foo"` and `/task-del` deleted
+the task `"/task-del 5"`. `scripts/check_command_argument_contract.py`
+fails when an arm reads the palette's query, and when a `Dialog` variant is
+missing from `Dialog::is_open` (`src/tui/app/types.rs:100`), which answers
+"is a dialog on screen?" and must cover every variant that can be.
+
+Both entry points into the dispatcher resolve the line to a registry entry
+first — the command palette (`App::handle_command_key`) and direct typed
+input (`App::handle_slash_command`) — so both hand the dispatcher the same
+argument.
+
 ## Key Types & APIs
 
 ### App (`src/tui/app/mod.rs:328`)

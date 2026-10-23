@@ -150,6 +150,12 @@ jobs:
       - name: Composer key-ownership guard
         run: python3 scripts/check_tui_composer_key_authority.py
 
+      - name: Command argument contract self-test
+        run: python3 scripts/check_command_argument_contract.py --self-test
+
+      - name: Command argument contract guard
+        run: python3 scripts/check_command_argument_contract.py
+
       - name: HTTP route disposition guard
         run: python3 scripts/check_http_route_disposition.py
 

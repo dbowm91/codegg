@@ -90,6 +90,13 @@ pub enum Dialog {
 }
 
 impl Dialog {
+    /// True when a dialog of any variant is on screen.
+    ///
+    /// The predicate covers **every** variant of the enum. An earlier
+    /// version matched 50 of 53 and omitted `PanelManager` and `Control`,
+    /// so a caller asking "is a dialog open?" was told "no" while the
+    /// panel manager was on screen. `scripts/check_command_argument_contract.py`
+    /// fails when a variant is missing from this list.
     pub fn is_open(&self) -> bool {
         matches!(
             self,
@@ -102,6 +109,7 @@ impl Dialog {
                 | Self::Theme
                 | Self::Question
                 | Self::Permission
+                | Self::PanelManager
                 | Self::Mcp
                 | Self::Keybind
                 | Self::Share
@@ -136,6 +144,7 @@ impl Dialog {
                 | Self::Collaborators
                 | Self::ProjectChat
                 | Self::Team
+                | Self::Control
                 | Self::TeamTokenSecret
                 | Self::TaskSchedule
                 | Self::TaskView
