@@ -132,10 +132,9 @@ fn the_session_projection_queries_agree_with_the_domain_terminality() {
         "the projection's live-jobs query must select exactly the states the \
          domain does not call terminal"
     );
-}
 
-#[test]
-fn the_domain_does_not_call_an_interrupted_job_terminal() {
+    // The premise of both assertions above: the domain does not call an
+    // interrupted job terminal, so it belongs with the live jobs.
     assert!(
         !JobState::Interrupted.is_terminal(),
         "the domain does not call an interrupted job terminal"
