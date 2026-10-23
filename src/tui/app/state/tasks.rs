@@ -380,7 +380,7 @@ pub fn bounded<R: AsRef<[TaskRow]>>(rows: R) -> Vec<TaskRow> {
     for ((header, body), take) in groups.into_iter().zip(allowance) {
         out.push(header);
         for row in body.into_iter().take(take) {
-            render_cost::count_task_row_build();
+            render_cost::count_task_row_build(1);
             out.push(row.clone());
         }
     }

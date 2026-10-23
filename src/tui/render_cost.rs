@@ -86,7 +86,7 @@ pub(crate) fn count_highlight_scan() {
     HIGHLIGHT_SCANS.with(|count| count.set(count.get() + 1));
 }
 
-/// Count one task row copied.
-pub(crate) fn count_task_row_build() {
-    TASK_ROW_BUILDS.with(|count| count.set(count.get() + 1));
+/// Count the task rows copied for the tasks overlay.
+pub(crate) fn count_task_row_build(rows: u64) {
+    TASK_ROW_BUILDS.with(|count| count.set(count.get() + rows));
 }

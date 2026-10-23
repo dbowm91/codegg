@@ -171,6 +171,22 @@ def check_render_path_does_not_clone_the_composer(root: Path) -> list[Violation]
     return []
 
 
+def check_render_path_does_not_clone_the_task_list(root: Path) -> list[Violation]:
+    """The render path does not copy the whole task list before truncating."""
+    text = _read(root, RENDER_RS)
+    sites = _call_sites(text, "all_rows.clone()")
+    if sites:
+        return [
+            Violation(
+                "tasks-whole-list-clone",
+                RENDER_RS,
+                f"the render path clones the whole task list on line(s) {sites} "
+                f"before the overlay truncates it to a dozen rows",
+            )
+        ]
+    return []
+
+
 def check_frame_cadence_is_unchanged(root: Path) -> list[Violation]:
     """The render keeps its `catch_unwind` and its streaming interval."""
     text = _read(root, EVENT_LOOP_RS)
@@ -200,6 +216,7 @@ CHECKS = (
     check_markdown_has_one_parse_producer,
     check_streaming_tail_is_cached,
     check_render_path_does_not_clone_the_composer,
+    check_render_path_does_not_clone_the_task_list,
     check_frame_cadence_is_unchanged,
 )
 
@@ -259,6 +276,13 @@ INJECTIONS = (
         "        let prompt_text = self.prompt_state.prompt.get_text();\n",
     ),
     (
+        "tasks-whole-list-clone",
+        "a render path that clones the whole task list",
+        RENDER_RS,
+        "let rows = bounded_task_rows(&all_rows);",
+        "let rows = bounded_task_rows(all_rows.clone());",
+    ),
+    (
         "frame-cadence",
         "a render without its catch_unwind",
         EVENT_LOOP_RS,
@@ -268,12 +292,27 @@ INJECTIONS = (
 )
 
 
+def _copy_tree(destination: Path) -> None:
+    """Copy the tree under test, without the build output.
+
+    The build directory is the largest thing in a checkout and none of the
+    checks read it, so copying it would make the self-test slow enough that
+    people stop running it.
+    """
+    shutil.copytree(
+        REPO_ROOT,
+        destination,
+        symlinks=True,
+        ignore=shutil.ignore_patterns("target", ".git", "node_modules"),
+    )
+
+
 def _self_test() -> int:
     failures: list[str] = []
     for expected_check, description, relative, find, replacement in INJECTIONS:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "tree"
-            shutil.copytree(REPO_ROOT, root, symlinks=True)
+            _copy_tree(root)
             target = root / relative
             original = target.read_text(encoding="utf-8")
             if find is None:

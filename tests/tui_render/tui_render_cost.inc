@@ -234,11 +234,15 @@ fn a_message_parts_markdown_is_parsed_once() {
     let theme = Arc::new(Theme::dark());
     let mut widget = MessagesWidget::new(theme);
     widget.set_width(40);
-    for index in 0..10 {
-        widget.add_assistant_text(format!("paragraph {index}\n\n"));
-    }
+    // Five parts: three paragraphs and two reasoning blocks. The thinking
+    // tags are what split the body into parts.
+    widget.add_assistant_text(
+        "first paragraph\n\n<thinking>first thought</thinking>\n\nsecond paragraph\n\n\
+         <thinking>second thought</thinking>\n\nthird paragraph\n\n"
+            .to_string(),
+    );
     widget.add_streaming_token("x");
-    // The first draw parses the ten parts and the tail.
+    // The first draw parses the message's parts and the tail.
     let _rows = messages_buffer(&widget);
 
     let cost = cost_of(|| {
@@ -248,7 +252,7 @@ fn a_message_parts_markdown_is_parsed_once() {
 
     assert_eq!(
         cost.markdown_parses, 1,
-        "only the streaming tail is parsed again, not the ten parts of the \
+        "only the streaming tail is parsed again, not the parts of the \
          message it is streamed into"
     );
 }
