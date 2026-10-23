@@ -328,6 +328,13 @@ impl From<GitServiceError> for GitMutationError {
                 }
             }
             GitServiceError::Repository(s) => Self::Repository(s),
+            // A read that is inadmissible for a generation-bound consumer.
+            // The refusal is typed and carries the class that was refused, so
+            // the reason is not flattened into prose.
+            GitServiceError::Consistency(refusal) => Self::Execution {
+                message: format!("git read was not admissible: {refusal}"),
+                context: ExecutionContext::new("git"),
+            },
             GitServiceError::Timeout(s) => {
                 let secs = s
                     .split("timed out after")
@@ -926,11 +933,12 @@ fn publication_receipt_summary(
     };
     format!(
         "staged {} path(s) into the repository index (published resource: {}; \
-         imported objects: {}; network boundary: {})",
+         imported objects: {}; network boundary: {}; index consistency: {})",
         receipt.staged_paths.len(),
         receipt.scope.as_str(),
         receipt.imported_objects.len(),
-        boundary
+        boundary,
+        receipt.consistency.as_str(),
     )
 }
 

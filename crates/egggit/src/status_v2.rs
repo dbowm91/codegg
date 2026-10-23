@@ -2,6 +2,8 @@ use crate::conflict::{
     classify_conflict_code, default_actions_for, ConflictEntry, ConflictObjectId, ConflictReport,
     ConflictShape,
 };
+use crate::consistency::GitReadFact;
+use crate::process::GitCommandOutput;
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -351,7 +353,9 @@ pub fn parse_status_v2(output: &str, root: &str) -> RichRepoStatus {
 
     let operation_state = detect_operation_state(Path::new(root));
     let repository_operation_state =
-        crate::operation_state::detect_operation_state_for_root(Path::new(root)).ok();
+        crate::operation_state::detect_operation_state_for_root(Path::new(root))
+            .ok()
+            .map(GitReadFact::into_value);
     let available_actions = repository_operation_state
         .as_ref()
         .map(|s| s.available_actions())
@@ -436,12 +440,19 @@ fn build_conflict_entries(entries: &[StatusEntry]) -> Vec<ConflictEntry> {
 async fn run_git_async(
     root: std::path::PathBuf,
     args: Vec<String>,
-) -> Result<std::process::Output, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     crate::process::run(&args, &root).await
 }
 
 /// Fetch rich structured status from a repository.
-pub async fn rich_repo_status(root: &Path) -> Result<RichRepoStatus, crate::EgggitError> {
+///
+/// The result carries the consistency class of the read. The status itself
+/// comes from a single Git spawn, so the class is that spawn's class; the
+/// embedded operation state is read from `.git/` sentinels on the
+/// filesystem and therefore observes no object generation of its own.
+pub async fn rich_repo_status(
+    root: &Path,
+) -> Result<GitReadFact<RichRepoStatus>, crate::EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
@@ -466,8 +477,12 @@ pub async fn rich_repo_status(root: &Path) -> Result<RichRepoStatus, crate::Eggg
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let root_str = root.to_string_lossy().to_string();
+    let consistency = output.consistency;
 
-    Ok(parse_status_v2(&stdout, &root_str))
+    Ok(GitReadFact::new(
+        parse_status_v2(&stdout, &root_str),
+        consistency,
+    ))
 }
 
 #[cfg(test)]
@@ -664,7 +679,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         commit_all(dir.path(), "init");
 
-        let status = rich_repo_status(dir.path()).await.unwrap();
+        let status = rich_repo_status(dir.path()).await.unwrap().into_value();
         assert!(status.is_clean);
         assert_eq!(status.branch, Some("main".to_string()));
         assert!(status.head.is_some());
@@ -692,7 +707,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let status = rich_repo_status(dir.path()).await.unwrap();
+        let status = rich_repo_status(dir.path()).await.unwrap().into_value();
         assert!(!status.is_clean);
         assert!(status.staged.iter().any(|e| e.path == "c.txt"));
         assert!(status.unstaged.iter().any(|e| e.path == "a.txt"));
@@ -726,7 +741,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let status = rich_repo_status(dir.path()).await.unwrap();
+        let status = rich_repo_status(dir.path()).await.unwrap().into_value();
         assert!(status.branch.is_none());
         assert_eq!(status.head.as_deref(), Some(head_sha.as_str()));
     }
@@ -736,6 +751,25 @@ mod tests {
         let fake = std::path::PathBuf::from("/this/path/does/not/exist/xyz");
         let result = rich_repo_status(&fake).await;
         assert!(result.is_err());
+    }
+
+    /// The rich status comes from a single `git status` spawn, which
+    /// consults the object store, so the carried class is
+    /// generation-consistent.
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_status_carries_a_generation_consistent_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        commit_all(dir.path(), "init");
+
+        let fact = rich_repo_status(dir.path()).await.unwrap();
+        assert!(
+            fact.class().is_generation_consistent(),
+            "a rich status read must report a generation-consistent class, got {}",
+            fact.class()
+        );
+        assert!(fact.value().is_clean);
     }
 
     #[test]

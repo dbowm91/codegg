@@ -134,7 +134,8 @@ pub async fn discover_targets_from_diff(
 > {
     let summary = egggit::diff_summary(root, base)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .into_value();
 
     let mut all_hunks = Vec::new();
     let mut file_level_paths: Vec<(PathBuf, Option<String>)> = Vec::new();
@@ -155,7 +156,8 @@ pub async fn discover_targets_from_diff(
 
         let file_diff = egggit::file_diff(root, &path, base)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .into_value();
 
         let patch_text = file_diff.patch.clone();
         let hunks = parse_changed_hunks_for_file(&file_diff.patch, &path);

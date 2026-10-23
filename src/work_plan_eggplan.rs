@@ -501,7 +501,8 @@ async fn capture_current_subject(
                 "current_subject_capture_failed",
                 format!("current subject capture failed: {other:?}"),
             ),
-        })?;
+        })?
+        .into_value();
     let store = Arc::new(SqliteWorkspaceStore::new(pool.clone()));
     let registry = WorkspaceRegistry::load(store).await.map_err(|error| {
         AssessmentAdapterError::new(
@@ -558,7 +559,8 @@ pub async fn current_subject_matches(
                 "completion_revalidation_failed",
                 format!("S2 capture failed: {error:?}"),
             )
-        })?;
+        })?
+        .into_value();
     let state_matches = matches!(
         (&expected.state, &subject.dirty_digest),
         (SubjectState::Clean, None) | (SubjectState::Dirty, Some(_))

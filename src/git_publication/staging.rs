@@ -21,6 +21,7 @@
 //! code in both cases.
 
 use async_trait::async_trait;
+use egggit::GitReadConsistency;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -75,6 +76,24 @@ pub trait GitIndexStaging: Send + Sync {
         &self,
         request: &GitIndexStagingRequest,
     ) -> Result<crate::git_publication::ObtainedNetworkBoundary, String>;
+
+    /// The consistency class of the repository state this staging observed.
+    ///
+    /// The default is the class of a staging step that reads the repository's
+    /// **captured** index — the private gitdir's index was seeded byte for
+    /// byte from the repository's own index, so the generation the staging
+    /// worked from was immutable when it was taken and may now be stale. The
+    /// publisher's compare-and-swap is what makes a captured generation safe
+    /// to publish.
+    ///
+    /// A staging step that reads the repository's index **live**, from a
+    /// concurrently mutable repository, must override this with
+    /// [`GitReadConsistency::LiveMutable`]. The publisher refuses a live-class
+    /// preparation: a live read may be torn, and a torn generation has no
+    /// fingerprint to compare and swap against.
+    fn observed_consistency(&self) -> GitReadConsistency {
+        GitReadConsistency::CapturedNotCurrent
+    }
 }
 
 /// The production staging step.

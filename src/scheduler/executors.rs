@@ -1675,7 +1675,11 @@ async fn collect_agent_run_result(
         .map(|record| record.path.as_path())
         .or(workspace_root);
     let facts = match root {
-        Some(root) => egggit::status_v2::rich_repo_status(root).await.ok(),
+        // Run-result summary only: not a generation-bound consumer, so the class is dropped.
+        Some(root) => egggit::status_v2::rich_repo_status(root)
+            .await
+            .ok()
+            .map(|fact| fact.into_value()),
         None => None,
     };
     let repository_state = facts

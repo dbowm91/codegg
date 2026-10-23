@@ -3,6 +3,7 @@
 //! The persisted result contains only HEAD and a digest. Paths and content are
 //! transient inputs to the digest and are never returned to callers.
 
+use crate::consistency::GitReadFact;
 use crate::process;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -33,7 +34,7 @@ impl std::fmt::Display for SubjectCaptureError {
 }
 impl std::error::Error for SubjectCaptureError {}
 
-async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, SubjectCaptureError> {
+async fn git(root: &Path, args: &[&str]) -> Result<GitReadFact<Vec<u8>>, SubjectCaptureError> {
     let args = args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     let out = process::run_bounded(&args, root, MAX_HASHED_BYTES)
         .await
@@ -55,14 +56,17 @@ async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, SubjectCaptureError>
             SubjectCaptureError::Failed("git subject capture failed".into())
         });
     }
-    Ok(out.stdout)
+    Ok(GitReadFact::new(out.stdout, out.consistency))
 }
 
 /// Capture exact HEAD and a bounded digest of all dirty source state. Any
 /// non-Unicode/unsafe path, submodule state, or bound overflow fails closed.
+///
+/// The result carries the consistency class of the read: the composite
+/// class of every contributing Git spawn, i.e. the weakest of them.
 pub async fn capture_git_source_subject(
     root: &Path,
-) -> Result<GitSourceSubject, SubjectCaptureError> {
+) -> Result<GitReadFact<GitSourceSubject>, SubjectCaptureError> {
     capture_inner(root, 0, &[]).await
 }
 
@@ -80,10 +84,13 @@ pub async fn capture_git_source_subject(
 /// [`capture_git_source_subject`] for the same worktree once the excluded
 /// path has no dirty state, so previously persisted provenance keeps
 /// comparing equal.
+///
+/// The result carries the consistency class of the read: the composite
+/// class of every contributing Git spawn, i.e. the weakest of them.
 pub async fn capture_git_source_subject_excluding(
     root: &Path,
     excluded_relative_path: &Path,
-) -> Result<GitSourceSubject, SubjectCaptureError> {
+) -> Result<GitReadFact<GitSourceSubject>, SubjectCaptureError> {
     if excluded_relative_path.as_os_str().is_empty()
         || excluded_relative_path
             .components()
@@ -98,12 +105,17 @@ async fn capture_inner(
     root: &Path,
     submodule_depth: usize,
     excluded: &[PathBuf],
-) -> Result<GitSourceSubject, SubjectCaptureError> {
+) -> Result<GitReadFact<GitSourceSubject>, SubjectCaptureError> {
     const MAX_SUBMODULE_DEPTH: usize = 4;
     if submodule_depth > MAX_SUBMODULE_DEPTH {
         return Err(SubjectCaptureError::BoundsExceeded);
     }
     let head = git(root, &["rev-parse", "--verify", "HEAD"]).await?;
+    // The composite class is the weakest class among the contributing
+    // spawns: a read assembled from several spawns is only as strong as its
+    // weakest part.
+    let mut composite = head.class();
+    let head = head.into_value();
     let revision = String::from_utf8(head)
         .map_err(|_| SubjectCaptureError::Failed("invalid git object id".into()))?
         .trim()
@@ -124,6 +136,8 @@ async fn capture_inner(
         ],
     )
     .await?;
+    composite = composite.weaker(diff.class());
+    let diff = diff.into_value();
     if diff.len() > MAX_HASHED_BYTES {
         return Err(SubjectCaptureError::BoundsExceeded);
     }
@@ -139,11 +153,16 @@ async fn capture_inner(
         ],
     )
     .await?;
+    composite = composite.weaker(status.class());
+    let status = status.into_value();
     if status.is_empty() {
-        return Ok(GitSourceSubject {
-            revision,
-            dirty_digest: None,
-        });
+        return Ok(GitReadFact::new(
+            GitSourceSubject {
+                revision,
+                dirty_digest: None,
+            },
+            composite,
+        ));
     }
     let mut records = Vec::<(Vec<u8>, Vec<u8>)>::new();
     let mut parts = status.split(|b| *b == 0);
@@ -190,10 +209,13 @@ async fn capture_inner(
         records.push((path.to_vec(), flags));
     }
     if records.is_empty() {
-        return Ok(GitSourceSubject {
-            revision,
-            dirty_digest: None,
-        });
+        return Ok(GitReadFact::new(
+            GitSourceSubject {
+                revision,
+                dirty_digest: None,
+            },
+            composite,
+        ));
     }
     records.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut hasher = Sha256::new();
@@ -243,6 +265,10 @@ async fn capture_inner(
                     }
                     let nested =
                         Box::pin(capture_inner(&absolute, submodule_depth + 1, excluded)).await?;
+                    // The nested capture contributes its own class to the
+                    // composite.
+                    composite = composite.weaker(nested.class());
+                    let nested = nested.into_value();
                     hasher.update(b"submodule\0");
                     hasher.update(nested.revision.as_bytes());
                     if let Some(digest) = nested.dirty_digest {
@@ -261,15 +287,19 @@ async fn capture_inner(
             Err(e) => return Err(SubjectCaptureError::Failed(e.to_string())),
         }
     }
-    Ok(GitSourceSubject {
-        revision,
-        dirty_digest: Some(format!("{:x}", hasher.finalize())),
-    })
+    Ok(GitReadFact::new(
+        GitSourceSubject {
+            revision,
+            dirty_digest: Some(format!("{:x}", hasher.finalize())),
+        },
+        composite,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consistency::GitReadConsistency;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -302,11 +332,20 @@ mod tests {
     #[tokio::test]
     async fn clean_and_dirty_subjects_are_deterministic() {
         let dir = repository();
-        let clean = capture_git_source_subject(dir.path()).await.unwrap();
+        let clean = capture_git_source_subject(dir.path())
+            .await
+            .unwrap()
+            .into_value();
         assert!(clean.dirty_digest.is_none());
         std::fs::write(dir.path().join("untracked.txt"), "contents").unwrap();
-        let first = capture_git_source_subject(dir.path()).await.unwrap();
-        let second = capture_git_source_subject(dir.path()).await.unwrap();
+        let first = capture_git_source_subject(dir.path())
+            .await
+            .unwrap()
+            .into_value();
+        let second = capture_git_source_subject(dir.path())
+            .await
+            .unwrap()
+            .into_value();
         assert_eq!(first, second);
         assert!(first.dirty_digest.is_some());
     }
@@ -316,12 +355,21 @@ mod tests {
         let dir = repository();
         std::fs::write(dir.path().join("tracked.txt"), "staged").unwrap();
         git(dir.path(), &["add", "tracked.txt"]);
-        let staged = capture_git_source_subject(dir.path()).await.unwrap();
+        let staged = capture_git_source_subject(dir.path())
+            .await
+            .unwrap()
+            .into_value();
         std::fs::write(dir.path().join("tracked.txt"), "staged plus unstaged").unwrap();
-        let unstaged = capture_git_source_subject(dir.path()).await.unwrap();
+        let unstaged = capture_git_source_subject(dir.path())
+            .await
+            .unwrap()
+            .into_value();
         assert_ne!(staged.dirty_digest, unstaged.dirty_digest);
         std::fs::remove_file(dir.path().join("tracked.txt")).unwrap();
-        let deleted = capture_git_source_subject(dir.path()).await.unwrap();
+        let deleted = capture_git_source_subject(dir.path())
+            .await
+            .unwrap()
+            .into_value();
         assert_ne!(unstaged.dirty_digest, deleted.dirty_digest);
     }
 
@@ -343,13 +391,39 @@ mod tests {
         );
         git(parent.path(), &["commit", "-am", "add submodule"]);
         std::fs::write(parent.path().join("nested/tracked.txt"), "submodule dirty").unwrap();
-        let first = capture_git_source_subject(parent.path()).await.unwrap();
+        let first = capture_git_source_subject(parent.path())
+            .await
+            .unwrap()
+            .into_value();
         std::fs::write(
             parent.path().join("nested/tracked.txt"),
             "different dirty state",
         )
         .unwrap();
-        let second = capture_git_source_subject(parent.path()).await.unwrap();
+        let second = capture_git_source_subject(parent.path())
+            .await
+            .unwrap()
+            .into_value();
         assert_ne!(first.dirty_digest, second.dirty_digest);
+    }
+
+    /// The subject capture is assembled from three Git spawns, so the
+    /// carried class is the composite of the three.
+    #[tokio::test]
+    async fn subject_capture_carries_a_generation_consistent_class() {
+        let dir = repository();
+        std::fs::write(dir.path().join("tracked.txt"), "changed").unwrap();
+
+        let fact = capture_git_source_subject(dir.path()).await.unwrap();
+        assert_ne!(
+            fact.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "a subject capture consults the object store"
+        );
+        assert!(
+            fact.class().is_generation_consistent(),
+            "a subject capture must report a generation-consistent class, got {}",
+            fact.class()
+        );
     }
 }

@@ -571,7 +571,7 @@ workspace member crates **11 (+ root)**.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 319 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 321 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | CI guard scripts | 76 | `scripts/check_*` |
 
 ## Feature gates
@@ -841,7 +841,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (319 files)
+├── tests/                      # Integration tests (321 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -902,6 +902,8 @@ The same merge also produced a tree that **did not compile**, and no merge tool 
 
 CI guard scripts are now **76** (`ls scripts/check_*`): `main`'s advance added
 no guard, and this line's two guards are the ones it did — `check_test_self_reexec_paths.py` and `check_test_common_binding.py`. Every code-count row was re-checked against its own listed `Source` and is unchanged.
+
+One row moved on **2026-10-23** when the Linux sandbox admission follow-up corrective opened C003 (typed Git live-read consistency and hostile-metadata review): integration test files are **321** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved by two, C003's new `tests/command_git/git_read_consistency.inc` and `tests/command_git/git_hostile_metadata.inc`). Both new members live inside the consolidated `command_git` family, so the root package's **test-target** count did not move: it is still **25** (21 families + 4) and the workspace's **53**. Only the integration-test *file* count moved, and only because two files were added.
 
 No row moved again on **2026-10-22** when the same line reconciled with `main` a **seventh** time, at `726f3c645` (PR #167, the Linux trusted-Git C008 contained worktree). That advance is **documentation only** — four records (`architecture/blackboard_contract_matrix.md`, `plans/closure/agent-workstream-blackboard/011-status.md`, `plans/registry.md`, `plans/subsystems/agent-workstream-blackboard-roadmap.md`) and no code — so the counts stand unchanged: integration test files **319**, CI guard scripts **76**, root package test targets **25** (21 families + 4), workspace test targets **53**. Both sides edited `plans/registry.md`, so the merge was checked rather than assumed: the row the branch owns is byte-identical to its pre-merge copy, the row `main` owns is byte-identical to `origin/main`'s, and the file both sides edited differs from **both** parents.
 

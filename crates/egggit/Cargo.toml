@@ -10,9 +10,18 @@ description = "Read-only git and worktree facts extracted from Codegg."
 readme = "README.md"
 keywords = ["git", "vcs", "worktree"]
 categories = ["development-tools", "filesystem"]
-# Default features are minimal by construction: this crate defines no
-# optional features, so downstream consumers get the full read-only
-# contract without feature unification risk.
+# Default features are minimal by construction: the only optional feature is
+# `git-live-read-test-support`, which exists solely to compile the
+# `LiveReadCapability` constructor used by the separately reviewed contained
+# live-read route. It is off by default, so downstream consumers get the full
+# read-only contract without feature unification risk and a production build
+# has no way to obtain that capability.
+
+[features]
+# Test-only support for the contained live-read route. Off by default and
+# absent from the shipped binary; enabling it is a reviewed decision, not a
+# build convenience.
+git-live-read-test-support = []
 
 [dependencies]
 serde.workspace = true
