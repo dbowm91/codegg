@@ -5849,25 +5849,6 @@ mod tests {
         assert!(result.text.contains("+2/-0"));
     }
 
-    #[test]
-    fn git_diff_empty_output() {
-        let mut store = CommandOutputStore::new();
-        let run = make_run_with_cmd(
-            &mut store,
-            "git diff",
-            Some(vec!["git".into(), "diff".into()]),
-            b"".to_vec(),
-            Vec::new(),
-            CommandExit::Code(0),
-            Duration::ZERO,
-        );
-        let policy = ProjectionPolicy::conservative();
-        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
-        let result = GitDiffProjector.project(request, &store).unwrap();
-        assert_eq!(result.kind, ProjectionKind::Structured);
-        assert!(result.text.contains("(no diff output)"));
-    }
-
     // --- GitLogProjector: author/date, merge, decorations, oneline ------
 
     #[test]

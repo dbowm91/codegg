@@ -441,22 +441,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_empty_project_id_with_no_other_identity() {
-        let mut m = TuiWorkspaceManifest::default();
-        m.ordered_tabs.push(PersistedProjectTab {
-            project_id: None,
-            workspace_id: None,
-            session_id: None,
-            label_hint: Some("orphan".into()),
-            selected_model_id: None,
-            selected_agent: None,
-            order_key: None,
-        });
-        validate_manifest(&mut m).unwrap();
-        assert!(m.ordered_tabs.is_empty());
-    }
-
-    #[test]
     fn validate_rejects_unsupported_major_version() {
         let mut m = TuiWorkspaceManifest {
             schema_version: MANIFEST_SCHEMA_VERSION + 1,
@@ -464,24 +448,6 @@ mod tests {
         };
         let err = validate_manifest(&mut m).unwrap_err();
         assert!(matches!(err, ManifestDiagnostic::UnsupportedMajor { .. }));
-    }
-
-    #[test]
-    fn validate_caps_persisted_tabs() {
-        let mut m = TuiWorkspaceManifest::default();
-        for i in 0..(MAX_PERSISTED_TABS + 5) {
-            m.ordered_tabs.push(PersistedProjectTab {
-                project_id: Some(format!("proj-{i}")),
-                workspace_id: None,
-                session_id: None,
-                label_hint: None,
-                selected_model_id: None,
-                selected_agent: None,
-                order_key: None,
-            });
-        }
-        validate_manifest(&mut m).unwrap();
-        assert_eq!(m.ordered_tabs.len(), MAX_PERSISTED_TABS);
     }
 
     #[test]
@@ -502,35 +468,6 @@ mod tests {
         let m: TuiWorkspaceManifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.schema_version, 1);
         assert!(m.ordered_tabs.is_empty());
-    }
-
-    #[test]
-    fn manifest_preferences_round_trip() {
-        let mut m = TuiWorkspaceManifest::default();
-        m.preferences.sidebar_visible = Some(true);
-        let json = serde_json::to_string(&m).unwrap();
-        let back: TuiWorkspaceManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.preferences.sidebar_visible, Some(true));
-    }
-
-    #[test]
-    fn manifest_diagnostic_short_messages_are_bounded() {
-        for diag in [
-            ManifestDiagnostic::Oversized { bytes: 100 },
-            ManifestDiagnostic::Unreadable {
-                reason: "perm denied".into(),
-            },
-            ManifestDiagnostic::UnsupportedMajor { on_disk: 99 },
-            ManifestDiagnostic::InvalidJson {
-                reason: "bad".into(),
-            },
-            ManifestDiagnostic::InvalidFields { reason: "x".into() },
-            ManifestDiagnostic::ForbiddenIdentity { reason: "y".into() },
-        ] {
-            let msg = diag.short_message();
-            assert!(msg.len() < 200, "diagnostic message too long: {msg}");
-            assert!(!msg.is_empty());
-        }
     }
 
     #[test]

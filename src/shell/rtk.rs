@@ -1656,44 +1656,6 @@ mod tests {
     }
 
     #[test]
-    fn rtk_projector_returns_unavailable_when_mode_disabled() {
-        let config = ShellOutputRtkConfig {
-            enabled: Some(true),
-            path: None,
-            eligible_only: Some(true),
-            timeout_ms: Some(1000),
-            allow_side_effecting_commands: None,
-        };
-        let mut discovery = RtkDiscovery::new(config);
-        discovery.availability = Some(RtkAvailability {
-            state: RtkState::Available,
-            path: Some(PathBuf::from("/fake/rtk")),
-            version: Some("0.1.0".to_string()),
-            diagnostics: vec![],
-        });
-        let projector = RtkProjector { discovery };
-
-        let run = make_test_run("git status");
-        let policy = crate::shell::projector::ProjectionPolicy {
-            allow_external_backend: true,
-            allow_lossy: true,
-            redact_model_visible: true,
-        };
-        let request = ProjectionRequest::for_target(
-            &run,
-            crate::shell::projector::ProjectionTarget::ModelContext,
-            &policy,
-        );
-        let store = CommandOutputStore::new();
-
-        let err = projector.project(request, &store).unwrap_err();
-        assert!(matches!(
-            err,
-            ProjectionError::BackendUnavailable { backend: "rtk", .. }
-        ));
-    }
-
-    #[test]
     fn rtk_projector_post_process_invokes_rtk_binary() {
         // Use /bin/echo as a fake RTK binary for post-process mode test.
         let config = ShellOutputRtkConfig {
@@ -1850,31 +1812,6 @@ mod tests {
 
         // /bin/echo accepts args and echoes them → wrapper = Yes.
         assert_eq!(caps.supports_wrapper_mode, CapabilityState::Yes);
-    }
-
-    #[test]
-    fn rtk_probe_rejects_post_process_when_output_looks_like_help() {
-        // Simulate the behavior of real RTK CLI (v0.43.0) which prints
-        // help text instead of compressing stdin input.
-        // We verify the probe diagnostic captures this correctly.
-        let config = ShellOutputRtkConfig {
-            enabled: Some(true),
-            path: Some("/bin/echo".to_string()),
-            eligible_only: Some(true),
-            timeout_ms: Some(5000),
-            allow_side_effecting_commands: None,
-        };
-        let mut discovery = RtkDiscovery::new(config);
-        discovery.probe();
-        let caps = discovery.probe_capabilities();
-
-        // /bin/echo doesn't read stdin, so post-process = No.
-        // The diagnostic should explain why.
-        assert_eq!(caps.supports_post_process, CapabilityState::No);
-        assert_eq!(
-            caps.diagnostics.post_process_probe.outcome,
-            ProbeOutcome::Denied
-        );
     }
 
     #[test]
@@ -2077,26 +2014,6 @@ mod tests {
             ..RtkCapabilities::all_unknown()
         };
         assert_eq!(caps.invocation_mode(), RtkInvocationMode::PostProcess);
-    }
-
-    #[test]
-    fn rtk_invocation_mode_wrapper_only() {
-        let caps = RtkCapabilities {
-            supports_post_process: CapabilityState::No,
-            supports_wrapper_mode: CapabilityState::Yes,
-            ..RtkCapabilities::all_unknown()
-        };
-        assert_eq!(caps.invocation_mode(), RtkInvocationMode::Wrapper);
-    }
-
-    #[test]
-    fn rtk_invocation_mode_neither_supported() {
-        let caps = RtkCapabilities {
-            supports_post_process: CapabilityState::No,
-            supports_wrapper_mode: CapabilityState::No,
-            ..RtkCapabilities::all_unknown()
-        };
-        assert_eq!(caps.invocation_mode(), RtkInvocationMode::Disabled);
     }
 
     // --- WS3: parse_simple_wrapper_command tests ---

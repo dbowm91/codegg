@@ -233,10 +233,10 @@ All runs are on the merged tree at `87fb57f7`, in the branch's own worktree.
 | `scripts/check_adr_integrity.py` | pass — "active ADR IDs are unique and local paths resolve" |
 | `scripts/check_writer_disposition.py` | pass — "49 declared roots, 17 writer tools, 30 writer modules" |
 | `scripts/check_writer_disposition.py --self-test` | pass |
-| `tests/writer_fence_c003.rs` | 10/10 pass |
-| `tests/writer_permit_service.rs` | 12/12 pass |
+| `tests/core_daemon/writer_fence_c003.inc` | 10/10 pass |
+| `tests/core_daemon/writer_permit_service.inc` | 12/12 pass |
 | `tests/tool_broker_integration.rs` | 25/25 pass |
-| `tests/writer_disposition_guards.rs` | 5/5 pass |
+| `tests/tool_programs/writer_disposition_guards.inc` | 5/5 pass |
 | `crates/codegg-core/tests/writer_permit.rs` | 21/21 pass |
 | `cargo test -p codegg --lib tool::` (the fenced tools) | **711 passed, 0 failed** |
 | `cargo nextest run --profile ci -p codegg --test agent_loop_harness` | **69 passed, 1 skipped** |
@@ -609,7 +609,7 @@ filled with `sandbox_profile: None` and
 payload decodes to when the fields are absent — the same spelling `main`'s own
 tests use: the two M007 build-class binding tests in
 `src/scheduler/submission.rs` and the C005 suite's shell job in
-`tests/process_denial_c005.rs`. The remaining `JobPayload` constructions in
+`tests/security_permission/process_denial_c005.inc`. The remaining `JobPayload` constructions in
 the tree are match patterns, not constructions, and needed no change.
 
 **The reviewed read-only palette no longer matched the live catalog.** The

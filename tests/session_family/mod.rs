@@ -18,15 +18,15 @@
 //! pure storage or pure projection logic.
 
 #[path = "../common/mod.rs"]
-mod common;
+pub mod common;
 
 #[path = "control_m004_controller_lease.inc"]
-mod control_m004_controller_lease;
+pub mod control_m004_controller_lease;
 #[path = "crud.inc"]
-mod crud;
+pub mod crud;
 #[path = "projection_consumer.inc"]
-mod projection_consumer;
+pub mod projection_consumer;
 #[path = "projection_m4_controller.inc"]
-mod projection_m4_controller;
+pub mod projection_m4_controller;
 #[path = "selection.inc"]
-mod selection;
+pub mod selection;

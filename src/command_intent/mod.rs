@@ -1762,17 +1762,6 @@ mod tests {
     }
 
     #[test]
-    fn rg_is_search_read_only() {
-        let intent = classify_command("rg 'fn main' src/");
-        assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Low);
-        assert!(!intent
-            .risk
-            .capabilities
-            .contains(&ExecutionCapability::Subprocess));
-    }
-
-    #[test]
     fn ls_is_search_read_only() {
         let intent = classify_command("ls -la");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
@@ -1833,13 +1822,6 @@ mod tests {
             .risk
             .capabilities
             .contains(&ExecutionCapability::Subprocess));
-    }
-
-    #[test]
-    fn find_delete_flag_not_confused_with_exec() {
-        // -delete should be caught even though it doesn't start with -exec
-        let intent = classify_command("find . -delete");
-        assert_eq!(intent.kind, CommandIntentKind::RawShell);
     }
 
     #[test]

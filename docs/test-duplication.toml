@@ -1,0 +1,2420 @@
+# Test duplication decision table
+#
+# This table is the record of milestone M007: every group of test
+# functions with an identical body, the survivor chosen for it, the
+# reason the survivor keeps the stronger property, and the members
+# removed. It is consumed by `scripts/check_test_duplication.py`.
+#
+# The line numbers are the ones the members had **before** the
+# removal; the guard matches members by `file` and `name`, because a
+# removal shifts the lines of everything after it.
+#
+# ---------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------
+#
+# schema-version = 1
+#     The manifest's schema version. A consumer MUST refuse a version it
+#     does not understand rather than guess.
+#
+# [[groups]]
+#     One entry per duplicate group.
+#
+#   boundary
+#     cross-crate         — the members are in different crates; every
+#                          member is kept.
+#     unit-integration    — one member is a unit test and one is an
+#                          integration test, in the same crate.
+#     integration         — both members are integration tests.
+#     unit                — both members are unit tests.
+#
+#   survivor
+#     The `file:name` of the member that was kept. Empty for a
+#     cross-crate group, where every member is kept.
+#
+#   reason
+#     Why the survivor keeps the stronger property.
+#
+#   members
+#     Every member of the group, with the file and line it had before
+#     the removal, and whether it survived.
+#
+#   removed
+#     The members the removal took out.
+
+schema-version = 1
+
+[[groups]]
+id = "group-001"
+boundary = "integration"
+survivor = "tests/agent_loop/compaction.inc:test_compaction_trigger_over_threshold"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "tests/agent_loop/compaction.inc"
+line = 24
+name = "test_compaction_trigger_over_threshold"
+kept = true
+
+[[groups.members]]
+file = "tests/agent_loop/compaction.inc"
+line = 190
+name = "test_context_tracker_needs_compaction"
+kept = false
+
+[[groups.removed]]
+file = "tests/agent_loop/compaction.inc"
+line = 190
+name = "test_context_tracker_needs_compaction"
+
+
+[[groups]]
+id = "group-002"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/codegg-core/src/memory/mod.rs"
+line = 748
+name = "test_memory_new"
+kept = true
+
+[[groups.members]]
+file = "tests/agent_loop/memory.inc"
+line = 8
+name = "test_memory_new"
+kept = true
+
+
+[[groups]]
+id = "group-003"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/codegg-core/src/memory/mod.rs"
+line = 759
+name = "test_memory_with_title"
+kept = true
+
+[[groups.members]]
+file = "tests/agent_loop/memory.inc"
+line = 20
+name = "test_memory_with_title"
+kept = true
+
+
+[[groups]]
+id = "group-004"
+boundary = "unit-integration"
+survivor = "tests/command_git/command_routing_adversarial.inc:empty_command_is_rejected"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tool/bash/policy.rs"
+line = 1141
+name = "classify_empty_is_rejected"
+kept = false
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 522
+name = "empty_command_is_rejected"
+kept = true
+
+[[groups.removed]]
+file = "src/tool/bash/policy.rs"
+line = 1141
+name = "classify_empty_is_rejected"
+
+
+[[groups]]
+id = "group-005"
+boundary = "integration"
+survivor = "tests/command_git/command_routing_adversarial.inc:family_override_takes_precedence_over_mode"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1213
+name = "family_override_takes_precedence_over_mode"
+kept = true
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1909
+name = "family_level_override_takes_precedence"
+kept = false
+
+[[groups.removed]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1909
+name = "family_level_override_takes_precedence"
+
+
+[[groups]]
+id = "group-006"
+boundary = "integration"
+survivor = "tests/command_git/command_routing_adversarial.inc:off_level_blocks_all_families"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1255
+name = "off_level_blocks_all_families"
+kept = true
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1502
+name = "off_level_blocks_metadata_annotation"
+kept = false
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1850
+name = "master_toggle_on_per_family_off_disables"
+kept = false
+
+[[groups.removed]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1502
+name = "off_level_blocks_metadata_annotation"
+
+[[groups.removed]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1850
+name = "master_toggle_on_per_family_off_disables"
+
+
+[[groups]]
+id = "group-007"
+boundary = "unit-integration"
+survivor = "tests/command_git/command_routing_adversarial.inc:validation_fail_multiple_conditions_compound"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/command_intent/plan.rs"
+line = 1452
+name = "complex_shell_fails_active_routing_validation"
+kept = false
+
+[[groups.members]]
+file = "tests/command_git/command_routing_adversarial.inc"
+line = 1664
+name = "validation_fail_multiple_conditions_compound"
+kept = true
+
+[[groups.removed]]
+file = "src/command_intent/plan.rs"
+line = 1452
+name = "complex_shell_fails_active_routing_validation"
+
+
+[[groups]]
+id = "group-008"
+boundary = "unit-integration"
+survivor = "tests/command_git/git_recovery_integration.inc:available_actions_all_three_for_rebase"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/git_recovery.rs"
+line = 372
+name = "rebase_supports_all_three"
+kept = false
+
+[[groups.members]]
+file = "tests/command_git/git_recovery_integration.inc"
+line = 296
+name = "available_actions_all_three_for_rebase"
+kept = true
+
+[[groups.removed]]
+file = "src/git_recovery.rs"
+line = 372
+name = "rebase_supports_all_three"
+
+
+[[groups]]
+id = "group-009"
+boundary = "unit-integration"
+survivor = "tests/command_git/policy_surface_m007.inc:cargo_allow_does_not_authorize_unrelated_destructive_shell"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/permission/mod.rs"
+line = 3457
+name = "scoped_decision_narrows_without_widening"
+kept = false
+
+[[groups.members]]
+file = "tests/command_git/policy_surface_m007.inc"
+line = 327
+name = "cargo_allow_does_not_authorize_unrelated_destructive_shell"
+kept = true
+
+[[groups.removed]]
+file = "src/permission/mod.rs"
+line = 3457
+name = "scoped_decision_narrows_without_widening"
+
+
+[[groups]]
+id = "group-010"
+boundary = "unit-integration"
+survivor = "tests/config_provider/mcp.inc:test_mcp_ipv4_multicast"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/security/ssrf.rs"
+line = 233
+name = "test_is_internal_ip_multicast"
+kept = false
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 17
+name = "test_mcp_ipv4_multicast"
+kept = true
+
+[[groups.removed]]
+file = "src/security/ssrf.rs"
+line = 233
+name = "test_is_internal_ip_multicast"
+
+
+[[groups]]
+id = "group-011"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_loopback"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 51
+name = "test_mcp_ipv4_loopback"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 8
+name = "test_ipv4_loopback"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 51
+name = "test_mcp_ipv4_loopback"
+
+
+[[groups]]
+id = "group-012"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_zero"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 59
+name = "test_mcp_ipv4_zero"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 16
+name = "test_ipv4_zero"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 59
+name = "test_mcp_ipv4_zero"
+
+
+[[groups]]
+id = "group-013"
+boundary = "unit-integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_10_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "src/security/ssrf.rs"
+line = 199
+name = "test_is_internal_ip_private_class_a"
+kept = false
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 64
+name = "test_mcp_ipv4_10_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 21
+name = "test_ipv4_10_range"
+kept = true
+
+[[groups.removed]]
+file = "src/security/ssrf.rs"
+line = 199
+name = "test_is_internal_ip_private_class_a"
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 64
+name = "test_mcp_ipv4_10_range"
+
+
+[[groups]]
+id = "group-014"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_172_16_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 72
+name = "test_mcp_ipv4_172_16_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 29
+name = "test_ipv4_172_16_range"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 72
+name = "test_mcp_ipv4_172_16_range"
+
+
+[[groups]]
+id = "group-015"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_172_not_16_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 80
+name = "test_mcp_ipv4_172_not_16_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 37
+name = "test_ipv4_172_not_16_range"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 80
+name = "test_mcp_ipv4_172_not_16_range"
+
+
+[[groups]]
+id = "group-016"
+boundary = "unit-integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_192_168_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "src/security/ssrf.rs"
+line = 216
+name = "test_is_internal_ip_private_class_c"
+kept = false
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 88
+name = "test_mcp_ipv4_192_168_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 45
+name = "test_ipv4_192_168_range"
+kept = true
+
+[[groups.removed]]
+file = "src/security/ssrf.rs"
+line = 216
+name = "test_is_internal_ip_private_class_c"
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 88
+name = "test_mcp_ipv4_192_168_range"
+
+
+[[groups]]
+id = "group-017"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_169_254_link_local"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 96
+name = "test_mcp_ipv4_169_254_link_local"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 53
+name = "test_ipv4_169_254_link_local"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 96
+name = "test_mcp_ipv4_169_254_link_local"
+
+
+[[groups]]
+id = "group-018"
+boundary = "unit-integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_100_cgnat_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "src/security/ssrf.rs"
+line = 241
+name = "test_is_internal_ip_cgnat"
+kept = false
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 104
+name = "test_mcp_ipv4_100_cgnat_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 61
+name = "test_ipv4_100_cgnat_range"
+kept = true
+
+[[groups.removed]]
+file = "src/security/ssrf.rs"
+line = 241
+name = "test_is_internal_ip_cgnat"
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 104
+name = "test_mcp_ipv4_100_cgnat_range"
+
+
+[[groups]]
+id = "group-019"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_100_not_cgnat_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 112
+name = "test_mcp_ipv4_100_not_cgnat_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 69
+name = "test_ipv4_100_not_cgnat_range"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 112
+name = "test_mcp_ipv4_100_not_cgnat_range"
+
+
+[[groups]]
+id = "group-020"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_198_benchmark_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 120
+name = "test_mcp_ipv4_198_benchmark_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 77
+name = "test_ipv4_198_benchmark_range"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 120
+name = "test_mcp_ipv4_198_benchmark_range"
+
+
+[[groups]]
+id = "group-021"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_198_not_benchmark_range"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 128
+name = "test_mcp_ipv4_198_not_benchmark_range"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 85
+name = "test_ipv4_198_not_benchmark_range"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 128
+name = "test_mcp_ipv4_198_not_benchmark_range"
+
+
+[[groups]]
+id = "group-022"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv4_external"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 136
+name = "test_mcp_ipv4_external"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 103
+name = "test_ipv4_external"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 136
+name = "test_mcp_ipv4_external"
+
+
+[[groups]]
+id = "group-023"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv6_loopback"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 145
+name = "test_mcp_ipv6_loopback"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 112
+name = "test_ipv6_loopback"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 145
+name = "test_mcp_ipv6_loopback"
+
+
+[[groups]]
+id = "group-024"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv6_unspecified"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 152
+name = "test_mcp_ipv6_unspecified"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 119
+name = "test_ipv6_unspecified"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 152
+name = "test_mcp_ipv6_unspecified"
+
+
+[[groups]]
+id = "group-025"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv6_external"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 191
+name = "test_mcp_ipv6_external"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 181
+name = "test_ipv6_external"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 191
+name = "test_mcp_ipv6_external"
+
+
+[[groups]]
+id = "group-026"
+boundary = "integration"
+survivor = "tests/security_permission/ssrf.inc:test_ipv6_mapped_ipv4_loopback"
+reason = """
+The SSRF classification cluster: M006 re-pointed every copy at production's `codegg::security::ssrf::is_internal_ip`, so all copies now assert the same thing against the same function. `tests/security_permission/ssrf.inc` is the topical home; the copies in `src/security/ssrf.rs` and `tests/config_provider/mcp.inc` were pastes of it.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 201
+name = "test_mcp_ipv6_mapped_ipv4_loopback"
+kept = false
+
+[[groups.members]]
+file = "tests/security_permission/ssrf.inc"
+line = 191
+name = "test_ipv6_mapped_ipv4_loopback"
+kept = true
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 201
+name = "test_mcp_ipv6_mapped_ipv4_loopback"
+
+
+[[groups]]
+id = "group-027"
+boundary = "integration"
+survivor = "tests/config_provider/mcp.inc:test_mcp_service_tool_listing"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 215
+name = "test_mcp_service_tool_listing"
+kept = true
+
+[[groups.members]]
+file = "tests/config_provider/mcp.inc"
+line = 244
+name = "test_mcp_service_list_tools_empty"
+kept = false
+
+[[groups.removed]]
+file = "tests/config_provider/mcp.inc"
+line = 244
+name = "test_mcp_service_list_tools_empty"
+
+
+[[groups]]
+id = "group-028"
+boundary = "integration"
+survivor = "tests/ide_protocols/lsp.inc:lsp_tool_category_is_read_only"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 215
+name = "lsp_tool_category_is_read_only"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 221
+name = "lsp_tool_remains_read_only"
+kept = false
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 228
+name = "renamePreview_is_read_only_tool_category"
+kept = false
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 1251
+name = "semanticCheckPreview_is_read_only"
+kept = false
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 1315
+name = "semanticContext_is_read_only"
+kept = false
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 1493
+name = "semantic_context_source_actions_is_read_only"
+kept = false
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 2011
+name = "security_context_is_read_only"
+kept = false
+
+[[groups.removed]]
+file = "tests/ide_protocols/lsp.inc"
+line = 221
+name = "lsp_tool_remains_read_only"
+
+[[groups.removed]]
+file = "tests/ide_protocols/lsp.inc"
+line = 228
+name = "renamePreview_is_read_only_tool_category"
+
+[[groups.removed]]
+file = "tests/ide_protocols/lsp.inc"
+line = 1251
+name = "semanticCheckPreview_is_read_only"
+
+[[groups.removed]]
+file = "tests/ide_protocols/lsp.inc"
+line = 1315
+name = "semanticContext_is_read_only"
+
+[[groups.removed]]
+file = "tests/ide_protocols/lsp.inc"
+line = 1493
+name = "semantic_context_source_actions_is_read_only"
+
+[[groups.removed]]
+file = "tests/ide_protocols/lsp.inc"
+line = 2011
+name = "security_context_is_read_only"
+
+
+[[groups]]
+id = "group-029"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/client.rs"
+line = 2600
+name = "parse_publish_diagnostics_valid"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 509
+name = "parse_publish_diagnostics_valid_json"
+kept = true
+
+
+[[groups]]
+id = "group-030"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/client.rs"
+line = 2627
+name = "parse_publish_diagnostics_unknown_notification"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 536
+name = "parse_publish_diagnostics_unknown_notification"
+kept = true
+
+
+[[groups]]
+id = "group-031"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/client.rs"
+line = 2642
+name = "parse_publish_diagnostics_empty_diagnostics"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/lsp.inc"
+line = 556
+name = "parse_publish_diagnostics_empty_diagnostics_array"
+kept = true
+
+
+[[groups]]
+id = "group-032"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/degradation_policy.rs"
+line = 123
+name = "test_opportunistic_partial_when_unavailable"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/phase5_context_integration.inc"
+line = 544
+name = "phase5_degraded_lsp_opportunistic_context"
+kept = true
+
+
+[[groups]]
+id = "group-033"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/degradation_policy.rs"
+line = 141
+name = "test_required_fails_when_unavailable"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/phase5_context_integration.inc"
+line = 557
+name = "phase5_required_lsp_failure"
+kept = true
+
+
+[[groups]]
+id = "group-034"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/degradation_policy.rs"
+line = 163
+name = "test_opportunistic_partial_when_unsupported"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/phase5_context_integration.inc"
+line = 911
+name = "phase5_opportunistic_partial_on_unsupported_capability"
+kept = true
+
+
+[[groups]]
+id = "group-035"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/egglsp/src/degradation_policy.rs"
+line = 152
+name = "test_required_fails_when_unsupported"
+kept = true
+
+[[groups.members]]
+file = "tests/ide_protocols/phase5_context_integration.inc"
+line = 923
+name = "phase5_required_fail_on_unsupported_capability"
+kept = true
+
+
+[[groups]]
+id = "group-036"
+boundary = "integration"
+survivor = "tests/scheduler_jobs/scheduler_protocol_consistency.inc:invalid_submission_key_is_rejected"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "tests/scheduler_jobs/scheduler_protocol_consistency.inc"
+line = 636
+name = "invalid_submission_key_is_rejected"
+kept = true
+
+[[groups.members]]
+file = "tests/scheduler_jobs/scheduler_submission_idempotency.inc"
+line = 137
+name = "empty_submission_key_is_invalid"
+kept = false
+
+[[groups.removed]]
+file = "tests/scheduler_jobs/scheduler_submission_idempotency.inc"
+line = 137
+name = "empty_submission_key_is_invalid"
+
+
+[[groups]]
+id = "group-037"
+boundary = "unit-integration"
+survivor = "tests/tool_programs/eggsact_adapter.inc:truncate_utf8_safe_over_limit_truncated"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/eggsact/adapter.rs"
+line = 375
+name = "truncate_utf8_safe_over_limit_truncated"
+kept = false
+
+[[groups.members]]
+file = "tests/tool_programs/eggsact_adapter.inc"
+line = 175
+name = "truncate_utf8_safe_over_limit_truncated"
+kept = true
+
+[[groups.removed]]
+file = "src/eggsact/adapter.rs"
+line = 375
+name = "truncate_utf8_safe_over_limit_truncated"
+
+
+[[groups]]
+id = "group-038"
+boundary = "integration"
+survivor = "tests/tool_programs/hosted_tool_program_adapter.inc:validate_arguments_rejects_invalid_json"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "tests/tool_programs/hosted_tool_program_adapter.inc"
+line = 651
+name = "validate_arguments_rejects_invalid_json"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/hosted_tool_program_security.inc"
+line = 94
+name = "non_json_arguments_rejected"
+kept = false
+
+[[groups.removed]]
+file = "tests/tool_programs/hosted_tool_program_security.inc"
+line = 94
+name = "non_json_arguments_rejected"
+
+
+[[groups]]
+id = "group-039"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/codegg-providers/src/responses_api.rs"
+line = 1937
+name = "validate_result_size_accepts_small"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/hosted_tool_program_adapter.inc"
+line = 667
+name = "validate_result_size_accepts_small"
+kept = true
+
+
+[[groups]]
+id = "group-040"
+boundary = "integration"
+survivor = "tests/tool_programs/hosted_tool_program_adapter.inc:validate_result_size_rejects_oversized"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "tests/tool_programs/hosted_tool_program_adapter.inc"
+line = 675
+name = "validate_result_size_rejects_oversized"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/hosted_tool_program_security.inc"
+line = 176
+name = "oversized_result_rejected"
+kept = false
+
+[[groups.removed]]
+file = "tests/tool_programs/hosted_tool_program_security.inc"
+line = 176
+name = "oversized_result_rejected"
+
+
+[[groups]]
+id = "group-041"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/codegg-providers/src/responses_api.rs"
+line = 1975
+name = "redact_for_log_handles_empty"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/hosted_tool_program_security.inc"
+line = 354
+name = "empty_key_redacted"
+kept = true
+
+
+[[groups]]
+id = "group-042"
+boundary = "integration"
+survivor = "tests/tool_programs/tool_contract_guards.inc:unknown_tool_rejected"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "tests/tool_programs/tool_contract_guards.inc"
+line = 206
+name = "unknown_tool_rejected"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_read_palette.inc"
+line = 516
+name = "manifest_rejects_unknown_tool"
+kept = false
+
+[[groups.removed]]
+file = "tests/tool_programs/tool_program_read_palette.inc"
+line = 516
+name = "manifest_rejects_unknown_tool"
+
+
+[[groups]]
+id = "group-043"
+boundary = "integration"
+survivor = "tests/tool_programs/tool_program_cache.inc:cache_miss_for_different_path"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_cache.inc"
+line = 172
+name = "cache_miss_for_different_path"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_read_palette.inc"
+line = 560
+name = "cache_miss_for_different_args"
+kept = false
+
+[[groups.removed]]
+file = "tests/tool_programs/tool_program_read_palette.inc"
+line = 560
+name = "cache_miss_for_different_args"
+
+
+[[groups]]
+id = "group-044"
+boundary = "unit-integration"
+survivor = "tests/tool_programs/tool_program_lifecycle.inc:replay_does_not_duplicate_notification"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/scheduler/tool_program_notifications.rs"
+line = 1333
+name = "recover_from_terminal_jobs_is_idempotent"
+kept = false
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_lifecycle.inc"
+line = 194
+name = "replay_does_not_duplicate_notification"
+kept = true
+
+[[groups.removed]]
+file = "src/scheduler/tool_program_notifications.rs"
+line = 1333
+name = "recover_from_terminal_jobs_is_idempotent"
+
+
+[[groups]]
+id = "group-045"
+boundary = "integration"
+survivor = "tests/tool_programs/tool_program_m012_authority.inc:c06_success_status_maps_to_completed"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_m012_authority.inc"
+line = 189
+name = "c06_success_status_maps_to_completed"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_m012_broker_failures.inc"
+line = 54
+name = "c06_success_can_become_completed"
+kept = false
+
+[[groups.removed]]
+file = "tests/tool_programs/tool_program_m012_broker_failures.inc"
+line = 54
+name = "c06_success_can_become_completed"
+
+
+[[groups]]
+id = "group-046"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_composer_claims.inc:the_composer_claims_neither_space_nor_y"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/composer_claims.rs"
+line = 585
+name = "the_table_does_not_claim_space_or_y"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_composer_claims.inc"
+line = 109
+name = "the_composer_claims_neither_space_nor_y"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/composer_claims.rs"
+line = 585
+name = "the_table_does_not_claim_space_or_y"
+
+
+[[groups]]
+id = "group-047"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_composer_claims.inc:the_composer_claims_neither_g_h_nor_l"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/composer_claims.rs"
+line = 597
+name = "the_table_does_not_claim_g_h_or_l"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_composer_claims.inc"
+line = 121
+name = "the_composer_claims_neither_g_h_nor_l"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/composer_claims.rs"
+line = 597
+name = "the_table_does_not_claim_g_h_or_l"
+
+
+[[groups]]
+id = "group-048"
+boundary = "integration"
+survivor = "tests/tui_render/tui_composer_selection.inc:p_is_the_composers_own_verb"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "tests/tui_render/tui_composer_selection.inc"
+line = 251
+name = "p_is_the_composers_own_verb"
+kept = true
+
+[[groups.members]]
+file = "tests/tui_render/tui_composer_selection.inc"
+line = 273
+name = "the_paste_always_reports_what_it_did"
+kept = false
+
+[[groups.removed]]
+file = "tests/tui_render/tui_composer_selection.inc"
+line = 273
+name = "the_paste_always_reports_what_it_did"
+
+
+[[groups]]
+id = "group-049"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_manifest_restore.inc:manifest_validate_caps_persisted_tabs"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/app/state/manifest.rs"
+line = 470
+name = "validate_caps_persisted_tabs"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_manifest_restore.inc"
+line = 476
+name = "manifest_validate_caps_persisted_tabs"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/app/state/manifest.rs"
+line = 470
+name = "validate_caps_persisted_tabs"
+
+
+[[groups]]
+id = "group-050"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_manifest_restore.inc:manifest_validate_rejects_empty_entries"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/app/state/manifest.rs"
+line = 444
+name = "validate_rejects_empty_project_id_with_no_other_identity"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_manifest_restore.inc"
+line = 497
+name = "manifest_validate_rejects_empty_entries"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/app/state/manifest.rs"
+line = 444
+name = "validate_rejects_empty_project_id_with_no_other_identity"
+
+
+[[groups]]
+id = "group-051"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_manifest_restore.inc:manifest_persistence_pending_is_due_respects_force_flag"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/app/state/persistence.rs"
+line = 663
+name = "pending_is_due_respects_force"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_manifest_restore.inc"
+line = 619
+name = "manifest_persistence_pending_is_due_respects_force_flag"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/app/state/persistence.rs"
+line = 663
+name = "pending_is_due_respects_force"
+
+
+[[groups]]
+id = "group-052"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_manifest_restore.inc:manifest_diagnostic_short_messages_are_bounded"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/app/state/manifest.rs"
+line = 517
+name = "manifest_diagnostic_short_messages_are_bounded"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_manifest_restore.inc"
+line = 696
+name = "manifest_diagnostic_short_messages_are_bounded"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/app/state/manifest.rs"
+line = 517
+name = "manifest_diagnostic_short_messages_are_bounded"
+
+
+[[groups]]
+id = "group-053"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_manifest_restore.inc:manifest_preferences_round_trip"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/app/state/manifest.rs"
+line = 508
+name = "manifest_preferences_round_trip"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_manifest_restore.inc"
+line = 719
+name = "manifest_preferences_round_trip"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/app/state/manifest.rs"
+line = 508
+name = "manifest_preferences_round_trip"
+
+
+[[groups]]
+id = "group-054"
+boundary = "unit-integration"
+survivor = "tests/tui_render/tui_project_routing.inc:view_switch_begin_loading_rejects_stale_epoch"
+reason = """
+A unit copy and an integration copy in the same crate. The integration copy survives because it proves the public path; the unit copy is redundant.
+"""
+
+[[groups.members]]
+file = "src/tui/app/state/view_switch.rs"
+line = 421
+name = "begin_loading_rejects_stale_epoch"
+kept = false
+
+[[groups.members]]
+file = "tests/tui_render/tui_project_routing.inc"
+line = 280
+name = "view_switch_begin_loading_rejects_stale_epoch"
+kept = true
+
+[[groups.removed]]
+file = "src/tui/app/state/view_switch.rs"
+line = 421
+name = "begin_loading_rejects_stale_epoch"
+
+
+[[groups]]
+id = "group-055"
+boundary = "unit"
+survivor = "src/agent/definition.rs:test_builtin_agents_contains_build"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/agent/definition.rs"
+line = 759
+name = "test_builtin_agents_contains_build"
+kept = true
+
+[[groups.members]]
+file = "src/agent/definition.rs"
+line = 1114
+name = "test_builtin_build_is_visible_primary"
+kept = false
+
+[[groups.removed]]
+file = "src/agent/definition.rs"
+line = 1114
+name = "test_builtin_build_is_visible_primary"
+
+
+[[groups]]
+id = "group-056"
+boundary = "unit"
+survivor = "src/agent/definition.rs:test_builtin_compaction_agent_denies_all"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/agent/definition.rs"
+line = 776
+name = "test_builtin_compaction_agent_denies_all"
+kept = true
+
+[[groups.members]]
+file = "src/agent/definition.rs"
+line = 1163
+name = "test_builtin_compaction_denies_all"
+kept = false
+
+[[groups.removed]]
+file = "src/agent/definition.rs"
+line = 1163
+name = "test_builtin_compaction_denies_all"
+
+
+[[groups]]
+id = "group-057"
+boundary = "unit"
+survivor = "src/command_intent/mod.rs:rg_is_search"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/command_intent/mod.rs"
+line = 1012
+name = "rg_is_search"
+kept = true
+
+[[groups.members]]
+file = "src/command_intent/mod.rs"
+line = 1765
+name = "rg_is_search_read_only"
+kept = false
+
+[[groups.removed]]
+file = "src/command_intent/mod.rs"
+line = 1765
+name = "rg_is_search_read_only"
+
+
+[[groups]]
+id = "group-058"
+boundary = "unit"
+survivor = "src/command_intent/mod.rs:find_delete_is_not_safe"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/command_intent/mod.rs"
+line = 1730
+name = "find_delete_is_not_safe"
+kept = true
+
+[[groups.members]]
+file = "src/command_intent/mod.rs"
+line = 1839
+name = "find_delete_flag_not_confused_with_exec"
+kept = false
+
+[[groups.removed]]
+file = "src/command_intent/mod.rs"
+line = 1839
+name = "find_delete_flag_not_confused_with_exec"
+
+
+[[groups]]
+id = "group-059"
+boundary = "unit"
+survivor = "src/context/artifact.rs:test_build_handle_checked_valid"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/context/artifact.rs"
+line = 260
+name = "test_build_handle_checked_valid"
+kept = true
+
+[[groups.members]]
+file = "src/context/handle.rs"
+line = 443
+name = "test_build_tool_valid"
+kept = false
+
+[[groups.removed]]
+file = "src/context/handle.rs"
+line = 443
+name = "test_build_tool_valid"
+
+
+[[groups]]
+id = "group-060"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/eggcontext/src/lib.rs"
+line = 323
+name = "estimate_empty_text"
+kept = true
+
+[[groups.members]]
+file = "src/context/artifact.rs"
+line = 296
+name = "test_estimate_tokens_empty"
+kept = true
+
+
+[[groups]]
+id = "group-061"
+boundary = "unit"
+survivor = "src/context/mod.rs:test_projection_config_defaults"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/context/mod.rs"
+line = 383
+name = "test_projection_config_defaults"
+kept = true
+
+[[groups.members]]
+file = "src/context/projection.rs"
+line = 719
+name = "test_projection_config_defaults"
+kept = false
+
+[[groups.removed]]
+file = "src/context/projection.rs"
+line = 719
+name = "test_projection_config_defaults"
+
+
+[[groups]]
+id = "group-062"
+boundary = "unit"
+survivor = "src/eggsact/adapter.rs:format_response_truncates_long_output"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/eggsact/adapter.rs"
+line = 266
+name = "format_response_truncates_long_output"
+kept = true
+
+[[groups.members]]
+file = "src/eggsact/adapter.rs"
+line = 488
+name = "formatted_response_truncation_metadata_correct"
+kept = false
+
+[[groups.removed]]
+file = "src/eggsact/adapter.rs"
+line = 488
+name = "formatted_response_truncation_metadata_correct"
+
+
+[[groups]]
+id = "group-063"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/codegg-providers/src/provider_core.rs"
+line = 1604
+name = "read_http_request_tolerates_transient_wouldblock"
+kept = true
+
+[[groups.members]]
+file = "src/http_client.rs"
+line = 137
+name = "read_http_request_tolerates_transient_wouldblock"
+kept = true
+
+
+[[groups]]
+id = "group-064"
+boundary = "unit"
+survivor = "src/lsp/hunk_nav_parser.rs:valid_hunk_header_with_context_still_parses"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/lsp/hunk_nav_parser.rs"
+line = 385
+name = "valid_hunk_header_with_context_still_parses"
+kept = true
+
+[[groups.members]]
+file = "src/lsp/hunk_nav_parser.rs"
+line = 425
+name = "hunk_header_with_context_text"
+kept = false
+
+[[groups.removed]]
+file = "src/lsp/hunk_nav_parser.rs"
+line = 425
+name = "hunk_header_with_context_text"
+
+
+[[groups]]
+id = "group-065"
+boundary = "unit"
+survivor = "src/python_script/analyze.rs:shutil_rmtree_returns_high"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 538
+name = "shutil_rmtree_returns_high"
+kept = true
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 686
+name = "ast_shutil_rmtree_detected"
+kept = false
+
+[[groups.removed]]
+file = "src/python_script/analyze.rs"
+line = 686
+name = "ast_shutil_rmtree_detected"
+
+
+[[groups]]
+id = "group-066"
+boundary = "unit"
+survivor = "src/python_script/analyze.rs:ast_from_import_subprocess_detected"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 601
+name = "ast_from_import_subprocess_detected"
+kept = true
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 708
+name = "ast_from_import_run_detected"
+kept = false
+
+[[groups.removed]]
+file = "src/python_script/analyze.rs"
+line = 708
+name = "ast_from_import_run_detected"
+
+
+[[groups]]
+id = "group-067"
+boundary = "unit"
+survivor = "src/python_script/analyze.rs:ast_os_alias_remove_detected"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 626
+name = "ast_os_alias_remove_detected"
+kept = true
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 724
+name = "ast_import_os_alias_remove_detected"
+kept = false
+
+[[groups.removed]]
+file = "src/python_script/analyze.rs"
+line = 724
+name = "ast_import_os_alias_remove_detected"
+
+
+[[groups]]
+id = "group-068"
+boundary = "unit"
+survivor = "src/python_script/analyze.rs:ast_syntax_error_produces_assessment"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 650
+name = "ast_syntax_error_produces_assessment"
+kept = true
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 788
+name = "ast_syntax_error_fallback"
+kept = false
+
+[[groups.removed]]
+file = "src/python_script/analyze.rs"
+line = 788
+name = "ast_syntax_error_fallback"
+
+
+[[groups]]
+id = "group-069"
+boundary = "unit"
+survivor = "src/python_script/analyze.rs:ast_socket_detected"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 665
+name = "ast_socket_detected"
+kept = true
+
+[[groups.members]]
+file = "src/python_script/mod.rs"
+line = 372
+name = "socket_returns_medium"
+kept = false
+
+[[groups.removed]]
+file = "src/python_script/mod.rs"
+line = 372
+name = "socket_returns_medium"
+
+
+[[groups]]
+id = "group-070"
+boundary = "unit"
+survivor = "src/python_script/analyze.rs:ast_compile_detected"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/python_script/analyze.rs"
+line = 679
+name = "ast_compile_detected"
+kept = true
+
+[[groups.members]]
+file = "src/python_script/mod.rs"
+line = 406
+name = "compile_returns_low"
+kept = false
+
+[[groups.removed]]
+file = "src/python_script/mod.rs"
+line = 406
+name = "compile_returns_low"
+
+
+[[groups]]
+id = "group-071"
+boundary = "unit"
+survivor = "src/search_backend/context.rs:server_name_defaults_to_eggsearch"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/search_backend/context.rs"
+line = 229
+name = "server_name_defaults_to_eggsearch"
+kept = true
+
+[[groups.members]]
+file = "src/search_backend/mod.rs"
+line = 917
+name = "server_name_uses_default_when_unset"
+kept = false
+
+[[groups.removed]]
+file = "src/search_backend/mod.rs"
+line = 917
+name = "server_name_uses_default_when_unset"
+
+
+[[groups]]
+id = "group-072"
+boundary = "unit"
+survivor = "src/shell/projector.rs:git_diff_projector_empty_output"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/shell/projector.rs"
+line = 5574
+name = "git_diff_projector_empty_output"
+kept = true
+
+[[groups.members]]
+file = "src/shell/projector.rs"
+line = 5853
+name = "git_diff_empty_output"
+kept = false
+
+[[groups.removed]]
+file = "src/shell/projector.rs"
+line = 5853
+name = "git_diff_empty_output"
+
+
+[[groups]]
+id = "group-073"
+boundary = "unit"
+survivor = "src/shell/rtk.rs:rtk_projector_returns_unavailable_when_invocation_disabled"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 1378
+name = "rtk_projector_returns_unavailable_when_invocation_disabled"
+kept = true
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 1659
+name = "rtk_projector_returns_unavailable_when_mode_disabled"
+kept = false
+
+[[groups.removed]]
+file = "src/shell/rtk.rs"
+line = 1659
+name = "rtk_projector_returns_unavailable_when_mode_disabled"
+
+
+[[groups]]
+id = "group-074"
+boundary = "unit"
+survivor = "src/shell/rtk.rs:rtk_invocation_mode_disabled_when_no_postprocess_no_wrapper"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 1629
+name = "rtk_invocation_mode_disabled_when_no_postprocess_no_wrapper"
+kept = true
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 2093
+name = "rtk_invocation_mode_neither_supported"
+kept = false
+
+[[groups.removed]]
+file = "src/shell/rtk.rs"
+line = 2093
+name = "rtk_invocation_mode_neither_supported"
+
+
+[[groups]]
+id = "group-075"
+boundary = "unit"
+survivor = "src/shell/rtk.rs:rtk_invocation_mode_falls_back_to_wrapper"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 1649
+name = "rtk_invocation_mode_falls_back_to_wrapper"
+kept = true
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 2083
+name = "rtk_invocation_mode_wrapper_only"
+kept = false
+
+[[groups.removed]]
+file = "src/shell/rtk.rs"
+line = 2083
+name = "rtk_invocation_mode_wrapper_only"
+
+
+[[groups]]
+id = "group-076"
+boundary = "unit"
+survivor = "src/shell/rtk.rs:rtk_probe_sets_post_process_yes_only_when_cli_contract_works"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 1809
+name = "rtk_probe_sets_post_process_yes_only_when_cli_contract_works"
+kept = true
+
+[[groups.members]]
+file = "src/shell/rtk.rs"
+line = 1856
+name = "rtk_probe_rejects_post_process_when_output_looks_like_help"
+kept = false
+
+[[groups.removed]]
+file = "src/shell/rtk.rs"
+line = 1856
+name = "rtk_probe_rejects_post_process_when_output_looks_like_help"
+
+
+[[groups]]
+id = "group-077"
+boundary = "unit"
+survivor = "src/test_runner/parse.rs:rust_extracts_panic_file_line"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/test_runner/parse.rs"
+line = 474
+name = "rust_extracts_panic_file_line"
+kept = true
+
+[[groups.members]]
+file = "src/test_runner/parse.rs"
+line = 616
+name = "rust_parser_detects_panic_file_line_legacy"
+kept = false
+
+[[groups.removed]]
+file = "src/test_runner/parse.rs"
+line = 616
+name = "rust_parser_detects_panic_file_line_legacy"
+
+
+[[groups]]
+id = "group-078"
+boundary = "unit"
+survivor = "src/test_runner/parse.rs:pytest_extracts_assertion_message"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/test_runner/parse.rs"
+line = 564
+name = "pytest_extracts_assertion_message"
+kept = true
+
+[[groups.members]]
+file = "src/test_runner/parse.rs"
+line = 656
+name = "pytest_parser_extracts_assertion_message_legacy"
+kept = false
+
+[[groups.removed]]
+file = "src/test_runner/parse.rs"
+line = 656
+name = "pytest_parser_extracts_assertion_message_legacy"
+
+
+[[groups]]
+id = "group-079"
+boundary = "cross-crate"
+survivor = ""
+reason = """
+The pair straddles a crate boundary: the unit copy reaches `pub(crate)` items and the integration copy reaches the public path. Keeping one side loses the boundary check, so both are kept.
+"""
+
+[[groups.members]]
+file = "crates/codegg-protocol/src/tui.rs"
+line = 494
+name = "remote_tui_protocol_version_is_five"
+kept = true
+
+[[groups.members]]
+file = "src/tui/app/mod.rs"
+line = 18391
+name = "protocol_version_constant_is_five"
+kept = true
+
+
+[[groups]]
+id = "group-080"
+boundary = "unit"
+survivor = "src/tui/components/dialogs/agent.rs:vim_keys_extend_an_active_filter"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/tui/components/dialogs/agent.rs"
+line = 313
+name = "vim_keys_extend_an_active_filter"
+kept = true
+
+[[groups.members]]
+file = "src/tui/components/dialogs/session.rs"
+line = 1266
+name = "vim_keys_extend_an_active_filter"
+kept = false
+
+[[groups.removed]]
+file = "src/tui/components/dialogs/session.rs"
+line = 1266
+name = "vim_keys_extend_an_active_filter"
+
+
+[[groups]]
+id = "group-081"
+boundary = "unit"
+survivor = "src/tui/components/dialogs/agent.rs:vim_keys_do_not_type_while_the_filter_is_empty"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/tui/components/dialogs/agent.rs"
+line = 325
+name = "vim_keys_do_not_type_while_the_filter_is_empty"
+kept = true
+
+[[groups.members]]
+file = "src/tui/components/dialogs/session.rs"
+line = 1280
+name = "vim_keys_do_not_type_while_the_filter_is_empty"
+kept = false
+
+[[groups.removed]]
+file = "src/tui/components/dialogs/session.rs"
+line = 1280
+name = "vim_keys_do_not_type_while_the_filter_is_empty"
+
+
+[[groups]]
+id = "group-082"
+boundary = "unit"
+survivor = "src/tui/components/dialogs/diff.rs:a_column_with_no_interior_paints_nothing_and_does_not_panic"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/tui/components/dialogs/diff.rs"
+line = 689
+name = "a_column_with_no_interior_paints_nothing_and_does_not_panic"
+kept = true
+
+[[groups.members]]
+file = "src/tui/components/dialogs/plan.rs"
+line = 541
+name = "a_column_with_no_interior_paints_nothing_and_does_not_panic"
+kept = false
+
+[[groups.removed]]
+file = "src/tui/components/dialogs/plan.rs"
+line = 541
+name = "a_column_with_no_interior_paints_nothing_and_does_not_panic"
+
+
+[[groups]]
+id = "group-083"
+boundary = "unit"
+survivor = "src/tui/components/dialogs/queue.rs:user_prompt_queue_esc_closes"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/tui/components/dialogs/queue.rs"
+line = 1509
+name = "user_prompt_queue_esc_closes"
+kept = true
+
+[[groups.members]]
+file = "src/tui/components/dialogs/queue.rs"
+line = 1941
+name = "user_prompt_queue_escape_while_browsing_still_closes"
+kept = false
+
+[[groups.removed]]
+file = "src/tui/components/dialogs/queue.rs"
+line = 1941
+name = "user_prompt_queue_escape_while_browsing_still_closes"
+
+
+[[groups]]
+id = "group-084"
+boundary = "unit"
+survivor = "src/tui/components/messages.rs:wrap_count_short_lines"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "src/tui/components/messages.rs"
+line = 3598
+name = "wrap_count_short_lines"
+kept = true
+
+[[groups.members]]
+file = "src/tui/wrap.rs"
+line = 187
+name = "short_line_is_one_row"
+kept = false
+
+[[groups.removed]]
+file = "src/tui/wrap.rs"
+line = 187
+name = "short_line_is_one_row"
+
+
+[[groups]]
+id = "group-085"
+boundary = "unit"
+survivor = "src/tui/input.rs:test_ctrl_combo_still_works_in_insert_mode"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "src/tui/input.rs"
+line = 2823
+name = "test_ctrl_combo_still_works_in_insert_mode"
+kept = true
+
+[[groups.members]]
+file = "src/tui/input.rs"
+line = 2853
+name = "test_ctrl_l_returns_select_model_in_insert_mode"
+kept = false
+
+[[groups.removed]]
+file = "src/tui/input.rs"
+line = 2853
+name = "test_ctrl_l_returns_select_model_in_insert_mode"
+
+
+[[groups]]
+id = "group-086"
+boundary = "unit"
+survivor = "crates/codegg-core/src/goal/verification.rs:failed_host_test_overrides_model_claim"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "crates/codegg-core/src/goal/verification.rs"
+line = 319
+name = "failed_host_test_overrides_model_claim"
+kept = true
+
+[[groups.members]]
+file = "crates/codegg-core/src/goal/verification.rs"
+line = 333
+name = "semantic_evidence_cannot_override_failed_host_test"
+kept = false
+
+[[groups.removed]]
+file = "crates/codegg-core/src/goal/verification.rs"
+line = 333
+name = "semantic_evidence_cannot_override_failed_host_test"
+
+
+[[groups]]
+id = "group-087"
+boundary = "unit"
+survivor = "crates/codegg-core/src/work_plan/checkpoint.rs:unused_new_types_stay_importable"
+reason = """
+Two copies of the same body in the same crate. The first by path survivors; the later copy asserts exactly what the survivor asserts.
+"""
+
+[[groups.members]]
+file = "crates/codegg-core/src/work_plan/checkpoint.rs"
+line = 446
+name = "unused_new_types_stay_importable"
+kept = true
+
+[[groups.members]]
+file = "crates/codegg-core/src/work_plan/projection.rs"
+line = 393
+name = "unused_new_types_stay_importable_for_docs"
+kept = false
+
+[[groups.removed]]
+file = "crates/codegg-core/src/work_plan/projection.rs"
+line = 393
+name = "unused_new_types_stay_importable_for_docs"
+
+
+[[groups]]
+id = "group-088"
+boundary = "unit"
+survivor = "crates/codegg-git/src/parser.rs:branch_delete_force_risk"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "crates/codegg-git/src/parser.rs"
+line = 2055
+name = "branch_delete_force_risk"
+kept = true
+
+[[groups.members]]
+file = "crates/codegg-git/src/parser.rs"
+line = 3440
+name = "branch_delete_force_independent_of_order"
+kept = false
+
+[[groups.removed]]
+file = "crates/codegg-git/src/parser.rs"
+line = 3440
+name = "branch_delete_force_independent_of_order"
+
+
+[[groups]]
+id = "group-089"
+boundary = "unit"
+survivor = "crates/codegg-git/src/parser.rs:clean_force"
+reason = """
+Two copies of the same body in one file. The first by line survives; the later copy asserts exactly what the survivor asserts, under a second name.
+"""
+
+[[groups.members]]
+file = "crates/codegg-git/src/parser.rs"
+line = 2757
+name = "clean_force"
+kept = true
+
+[[groups.members]]
+file = "crates/codegg-git/src/parser.rs"
+line = 3522
+name = "clean_no_paths"
+kept = false
+
+[[groups.removed]]
+file = "crates/codegg-git/src/parser.rs"
+line = 3522
+name = "clean_no_paths"
+
+[[groups]]
+id = "group-090"
+boundary = "integration"
+survivor = "tests/tool_programs/tool_program_m012_authority.inc:c05_infrastructure_error_maps_to_programmatic_outcome"
+reason = """
+Two copies of the same body in the same crate. The first by path
+survivors; the later copy asserts exactly what the survivor asserts.
+
+This group surfaced during M007's repair of a tooling fault: the copy in
+`tool_program_m012_broker_failures.inc` had lost its `#[test]` attribute
+before the decision table was generated, so the detector could not see the
+pair. Restoring the attribute restored the duplicate, and the same
+decision rule applies to it as to every other group.
+"""
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_m012_authority.inc"
+line = 174
+name = "c05_infrastructure_error_maps_to_programmatic_outcome"
+kept = true
+
+[[groups.members]]
+file = "tests/tool_programs/tool_program_m012_broker_failures.inc"
+line = 40
+name = "c05_infrastructure_error_cannot_become_completed"
+kept = false
+
+[[groups.removed]]
+file = "tests/tool_programs/tool_program_m012_broker_failures.inc"
+line = 40
+name = "c05_infrastructure_error_cannot_become_completed"
+

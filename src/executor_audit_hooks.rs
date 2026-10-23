@@ -2,7 +2,7 @@
 //!
 //! Declarative owner table consumed by the coverage guard
 //! (`scripts/check_audit_coverage.py`) and the M004 qualification matrix
-//! (`tests/identity_live_execution_audit.rs`). Each row names one live
+//! (`tests/core_daemon/identity_live_execution_audit.inc`). Each row names one live
 //! executor hook by audit action, canonical owner file, and emit symbol.
 //!
 //! The guard parses this table (not ad-hoc call text) and fails closed if

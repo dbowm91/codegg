@@ -119,7 +119,7 @@ Each scenario has:
 ## Resource Convergence
 
 Measured per scenario by `ResourceSnapshot`
-(`tests/tool_program_resource_convergence.rs:19`):
+(`tests/tool_programs/tool_program_resource_convergence.inc:19`):
 
 - `tasks_spawned` — no leaked tasks
 - `calls_completed` — should equal expected call count
@@ -150,20 +150,20 @@ When running for closure evidence:
 
 | File | Purpose |
 |------|---------|
-| `tests/tool_program_scenarios.rs` | Scenario schema, runner, and 13 unit tests |
-| `tests/tool_program_chaos.rs` | Deterministic fault injection, 13 tests |
-| `tests/tool_program_resource_convergence.rs` | Resource baseline/final probes, 10 tests |
-| `tests/tool_program_model_behavior.rs` | Scripted model behavior and direct/programmatic metric validation, 14 tests |
-| `tests/tool_program_m015_daemon_failpoints.rs` | Real-process production suite run by `--mode native` |
+| `tests/tool_programs/tool_program_scenarios.inc` | Scenario schema, runner, and 13 unit tests |
+| `tests/tool_programs/tool_program_chaos.inc` | Deterministic fault injection, 13 tests |
+| `tests/tool_programs/tool_program_resource_convergence.inc` | Resource baseline/final probes, 10 tests |
+| `tests/tool_programs/tool_program_model_behavior.inc` | Scripted model behavior and direct/programmatic metric validation, 14 tests |
+| `tests/tool_programs/tool_program_m015_daemon_failpoints.inc` | Real-process production suite run by `--mode native` |
 | `scripts/e2e/tool_program_harness.py` | External harness runner (scripted/native/eggpool/acp) |
 
 ## Source verification
 
 Verified 2026-10-06 against `scripts/e2e/tool_program_harness.py`,
-`tests/tool_program_scenarios.rs`, `tests/tool_program_chaos.rs`,
-`tests/tool_program_resource_convergence.rs`,
-`tests/tool_program_model_behavior.rs`,
-`tests/tool_program_m015_daemon_failpoints.rs`,
+`tests/tool_programs/tool_program_scenarios.inc`, `tests/tool_programs/tool_program_chaos.inc`,
+`tests/tool_programs/tool_program_resource_convergence.inc`,
+`tests/tool_programs/tool_program_model_behavior.inc`,
+`tests/tool_programs/tool_program_m015_daemon_failpoints.inc`,
 `src/tool/tool_program_source.rs`, `src/tool/tool_program_ledger.rs`,
 `crates/codegg-protocol/src/projection/dto.rs`, and
 `architecture/tool_programs.md`. Confirmed correct as written: the four

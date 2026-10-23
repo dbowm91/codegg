@@ -5891,10 +5891,80 @@ diff --git a/src/lib.rs b/src/lib.rs
     /// must be the repo rather than the process cwd they used to inherit
     /// implicitly through `LspTool::default()`.
     fn live_security_tool() -> LspTool {
+        live_security_tool_at(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    }
+
+    /// The same tool, bound to an explicit allowed root.
+    fn live_security_tool_at(root: std::path::PathBuf) -> LspTool {
         LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         ))
-        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .with_allowed_root(root)
+    }
+
+    /// A temporary Rust project owned by exactly one test.
+    ///
+    /// The language server's project root is found by walking up from the
+    /// requested file to the nearest `Cargo.toml`. A fixture with no manifest
+    /// of its own therefore resolves to the repository root, and rust-analyzer
+    /// is asked to index the whole checkout — including `target/` — once per
+    /// test. Three servers indexing the same tree at the same time is the
+    /// contention the characterization measures, and it is also what puts the
+    /// tests near the harness's kill threshold.
+    ///
+    /// A per-test project gives each server a small tree of its own. The
+    /// `TempDir` is returned alongside the path so it stays alive for the
+    /// whole test and is removed afterwards.
+    #[cfg(feature = "lsp-real-server-tests")]
+    fn live_security_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("create temp workspace");
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).expect("create src dir");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"lsp_security_fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        )
+        .expect("write fixture manifest");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            concat!(
+                "/// A fixture symbol for the security-context probes.\n",
+                "pub fn fixture_symbol() -> &'static str {\n",
+                "    \"fixture\"\n",
+                "}\n",
+                "\n",
+                "/// A fixture caller, so the server has a real call graph to index.\n",
+                "pub fn fixture_caller() -> &'static str {\n",
+                "    fixture_symbol()\n",
+                "}\n",
+                "\n",
+                "/// A deliberate type error, so the server publishes a diagnostic.\n",
+                "///\n",
+                "/// The server's readiness wait looks for a published diagnostic. A\n",
+                "/// fixture whose opened file produces none never publishes one, so the\n",
+                "/// wait runs out its whole thirty-second budget and the cold call\n",
+                "/// costs thirty seconds instead of three. This file publishes one,\n",
+                "/// so the readiness path is exercised for real rather than expiring.\n",
+                "pub fn fixture_diagnostic() -> u32 {\n",
+                "    \"not a number\"\n",
+                "}\n",
+            ),
+        )
+        .expect("write fixture source");
+        (dir, root)
+    }
+
+    /// The elapsed time of one `execute` call.
+    ///
+    /// Printed rather than asserted, so the characterization can see the cold
+    /// call — which pays the server start — apart from the warm calls that
+    /// reuse it. The assertion set of the test is unchanged.
+    #[cfg(feature = "lsp-real-server-tests")]
+    fn lsp_phase(label: &str, started: std::time::Instant) {
+        eprintln!(
+            "lsp-phase: {label} took {} ms",
+            started.elapsed().as_millis()
+        );
     }
 
     // Resource class: real-lsp. This test queries a live language server,
@@ -5906,30 +5976,35 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[cfg(feature = "lsp-real-server-tests")]
     #[tokio::test(flavor = "current_thread")]
     async fn security_context_preset_scenarios_share_one_service() {
-        let tool = live_security_tool();
+        let (_workspace, root) = live_security_workspace();
+        let tool = live_security_tool_at(root);
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(v["results"]["preset"].is_null());
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "security_preset": "rust_cli"
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(v["results"]["preset"], "rust_cli");
         let notes = v["results"]["notes"].as_array().unwrap();
@@ -5937,10 +6012,11 @@ diff --git a/src/lib.rs b/src/lib.rs
             .iter()
             .any(|n| n.as_str().unwrap().contains("rust_cli")));
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "security_preset": "rust_server",
@@ -5948,6 +6024,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         let markers = v["results"]["risk_markers"].as_array().unwrap();
         for marker in markers {
@@ -5958,16 +6035,18 @@ diff --git a/src/lib.rs b/src/lib.rs
             );
         }
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "security_preset": "unsafe_review"
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(v["results"]["preset"], "unsafe_review");
     }
@@ -6369,18 +6448,21 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[cfg(feature = "lsp-real-server-tests")]
     #[tokio::test(flavor = "current_thread")]
     async fn security_context_call_expansion_scenarios_share_one_service() {
-        let tool = live_security_tool();
+        let (_workspace, root) = live_security_workspace();
+        let tool = live_security_tool_at(root);
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "security_preset": "dependency_review"
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(v["results"]["preset"], "dependency_review");
         assert!(
@@ -6388,32 +6470,36 @@ diff --git a/src/lib.rs b/src/lib.rs
             "dependency_review should omit call_hierarchy by default"
         );
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "call_depth": 0
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(
             v["results"]["call_expansion"].is_null(),
             "call_depth=0 should omit call_expansion"
         );
 
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "call_depth": 1
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(
             !v["results"]["call_expansion"].is_null(),
@@ -6727,17 +6813,20 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[cfg(feature = "lsp-real-server-tests")]
     #[tokio::test]
     async fn security_context_call_expansion_truncated_limit_field_present() {
-        let tool = live_security_tool();
+        let (_workspace, root) = live_security_workspace();
+        let tool = live_security_tool_at(root);
+        let started = std::time::Instant::now();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
+                "file_path": "src/lib.rs",
                 "line": 1,
                 "column": 1,
                 "call_depth": 0
             }))
             .await
             .unwrap();
+        lsp_phase("execute", started);
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(
             v["results"]["limits"]

@@ -500,7 +500,7 @@ the job. The in-memory twin validates at `:746`.
 
 This diverges from the documented invariant *"Stale workers may not overwrite a
 terminal state"* (`architecture/jobs.md:353`) and from the conformance claim at
-`store.rs:5`. `tests/durable_jobs_phase4.rs:927` exercises only the happy path.
+`store.rs:5`. `tests/scheduler_jobs/durable_jobs_phase4.inc:927` exercises only the happy path.
 
 Reported as a latent enforcement hole: I could not construct a reachable production
 state with the job terminal while the attempt is `Created`/`Admitted`/`Running`
@@ -814,7 +814,7 @@ two separate `projection.lock().await` acquisitions, while the sibling
 the comment *"so the ownership check and artifact-read claim are evaluated
 atomically"*. Bounded in practice: the daemon independently re-authorizes
 (`crates/codegg-core/src/authorization/policy.rs:690-694`) and
-`tests/presence_m003_observation.rs:676-692` confirms an outsider is denied. A
+`tests/core_daemon/presence_m003_observation.inc:676-692` confirms an outsider is denied. A
 defense-in-depth inconsistency, not an exploitable disclosure.
 
 ## 37. `check_tool_broker_boundary.py` flags trait self-dispatch and is permanently red

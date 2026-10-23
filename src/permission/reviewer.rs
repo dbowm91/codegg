@@ -11,7 +11,7 @@
 //! broaden the current sandbox or authorization ceiling.
 //!
 //! Isolation contract (enforced by `scripts/check_approval_reviewer.py` and
-//! the tests in `tests/approval_reviewer.rs`):
+//! the tests in `tests/security_permission/approval_reviewer.inc`):
 //!
 //! - sees only non-deterministically-resolved requests, never re-decides a
 //!   deterministic hard `Deny`;

@@ -268,10 +268,10 @@ def check_backend_registry() -> list[str]:
         errors.append(err)
 
     # End-to-end mechanism test must exist and be platform-neutral.
-    containment = ROOT / "tests/sandbox_containment.rs"
+    containment = ROOT / "tests/security_permission/sandbox_containment.inc"
     if not containment.exists():
         errors.append(
-            "tests/sandbox_containment.rs: missing end-to-end containment test; "
+            "tests/security_permission/sandbox_containment.inc: missing end-to-end containment test; "
             "a new backend must inherit the enforcement matrix"
         )
     return errors

@@ -73,7 +73,7 @@ The delegated-grant containment of that model — the run-private root and the
 explicitly granted shared roots writable, and every other scratch root, the
 scratch parent, unrelated host temporary directories, and cross-boundary
 links refused — is now qualified on a native Linux host with Landlock
-ABI >= 3 by `tests/linux_native_scratch_containment.rs`. The fixture drives
+ABI >= 3 by `tests/security_permission/linux_native_scratch_containment.inc`. The fixture drives
 the real admission, scheduler and managed-process path and asserts the
 obtained backend status; see
 `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
@@ -153,7 +153,7 @@ also preserves drive-current-directory entries and sets the requested cwd's
 drive entry to that cwd. This is process supervision only: Windows
 filesystem-constrained requests still fail before launch, and Job Objects do
 not provide filesystem or network containment. Native behavior is exercised
-by `tests/windows_process_launcher.rs` and the focused Windows workflow.
+by `tests/security_permission/windows_process_launcher.inc` and the focused Windows workflow.
 The debug-only `windows-sandbox-test-support` feature also routes an explicit
 `Required` request through this same service using an owned `CreateProcessW`
 child, a three-handle stdio allowlist, token SID and Job verification before

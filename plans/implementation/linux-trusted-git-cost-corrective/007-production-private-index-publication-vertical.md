@@ -79,7 +79,7 @@ anywhere, so the publisher's receipt has to say so rather than imply it.
 | `DestructiveRepositoryChange` | `crates/codegg-core/src/approval.rs` | present; `Add` is not destructive and must not require it |
 | `GitExecutionService` | `src/git_service.rs` | has `execute_private_git_add_staging_test_only`, feature-gated and test-only |
 | `GitEnvPolicy` / `prepare_private_object_view` | `crates/egggit/src/process.rs` | the immutable object view; strips `GIT_INDEX_FILE` and `GIT_ALTERNATE_OBJECT_DIRECTORIES`, denies `--git-dir`/`--work-tree` |
-| The publisher | `tests/linux_m004_process_ipc.rs` | **entirely test-local** — the logic this vertical must productionise |
+| The publisher | `tests/linux_git_test_support/linux_m004_process_ipc.inc` | **entirely test-local** — the logic this vertical must productionise |
 | Durable journal | — | **none exists**; `STORAGE_LAYOUT_VERSION` is 83, so the next migration is 84 |
 | Restart reconciler | — | **none exists** |
 | External-writer exclusion | — | **none exists**; `WorkspaceLockTable` is daemon-owned and cannot fence an external `git` process |

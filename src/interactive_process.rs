@@ -1960,6 +1960,9 @@ mod tests {
         if std::env::var_os("CODEGG_RUN_C006_BWRAP_NATIVE").as_deref()
             != Some(std::ffi::OsStr::new("1"))
         {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C006_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
             return;
         }
 
@@ -2059,6 +2062,9 @@ mod tests {
         if std::env::var_os("CODEGG_RUN_M004_PTY_NATIVE").as_deref()
             != Some(std::ffi::OsStr::new("1"))
         {
+            eprintln!(
+                "skipped: set CODEGG_RUN_M004_PTY_NATIVE=1 to run the native M004 child probe"
+            );
             return;
         }
         if let Err(reason) = crate::security::sandbox::landlock::probe_process_scopes() {

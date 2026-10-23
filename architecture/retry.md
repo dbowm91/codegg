@@ -98,7 +98,7 @@ breaking protocol compat.
 ## Qualification (M008)
 
 Integrated fault-injection qualification lives in
-`tests/reliability_qualification_m008.rs`: transient/permanent/conditional
+`tests/agent_loop/reliability_qualification_m008.inc`: transient/permanent/conditional
 taxonomy, bounded `Retry-After`, nested-budget exhaustion, cancellation
 during backoff, idempotent recovery vs exactly-once uncertain surfacing,
 and secret-safe diagnostics. No production change; the suite proves the
@@ -115,7 +115,7 @@ approval/sandbox or provider-failover change.
 Verified 2026-10-06 against `crates/codegg-providers/src/retry.rs`,
 `src/tool/{retry,broker,contract}.rs`, `src/scheduler/submission.rs`,
 `src/agent/{provider_turn,loop,follow_up}.rs`, and
-`tests/reliability_qualification_m008.rs`. No corrections were required —
+`tests/agent_loop/reliability_qualification_m008.inc`. No corrections were required —
 every enum listing, constant, and function path in this doc matches source.
 Confirmed explicitly: `MAX_CHAIN_ATTEMPTS = 8` (`retry.rs:17`),
 `MAX_CHAIN_DURATION = 300s` (`:20`), `MAX_UNCERTAIN_DETAIL_CHARS = 500`
@@ -134,4 +134,4 @@ and `execute_with_retry` (`:715`); `ProgrammaticOutcome::UncertainSideEffect`
 `JobSubmissionService::submit` (`submission.rs:155`) and
 `reconcile_by_key` (`:342`); the one `for_operation()` chain per turn
 (`loop.rs:1325`, `follow_up.rs:108`); and
-`tests/reliability_qualification_m008.rs`.
+`tests/agent_loop/reliability_qualification_m008.inc`.

@@ -6,7 +6,7 @@ job creation must be declared in
 [`docs/execution-ownership.toml`](./execution-ownership.toml) with an
 explicit owner classification. The manifest is consumed by
 `scripts/check_execution_ownership.py`, a static guard. Its runtime
-counterpart is `tests/scheduler_authority_matrix.rs`, which does not read
+counterpart is `tests/scheduler_jobs/scheduler_authority_matrix.inc`, which does not read
 the manifest: it asserts that one job produces exactly one attempt and one
 executor entry.
 

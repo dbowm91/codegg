@@ -66,7 +66,7 @@ upgrade automatically; this path runs only when the user invokes
 - `src/upgrade/managed.rs` — CodeGG-specific target/archive policy, Eggfetch
   adapter, checksum parser, strict extraction, candidate checks, and ownership
 - `src/main.rs` — `cmd_upgrade()`
-- `tests/upgrade.rs` and `src/upgrade/managed.rs` — deterministic policy and
+- `tests/config_provider/upgrade.inc` and `src/upgrade/managed.rs` — deterministic policy and
   archive fixtures
 
 The Eggup dependencies — `eggup-core` and `eggup-acquisition` — are both
@@ -77,7 +77,7 @@ CodeGG retains its current Eggfetch/Rustls/WebPKI trust and redirect policy.
 ## Source verification
 
 Verified 2026-10-06 against `src/upgrade/{mod,managed}.rs`, `src/main.rs`,
-`tests/upgrade.rs`, `Cargo.toml`, and
+`tests/config_provider/upgrade.inc`, `Cargo.toml`, and
 `crates/codegg-config/src/schema.rs`. No stale refs remained from the prior
 pass; the corrections here are additive precision. Confirmed correct as
 written: the Eggup pin `66813b3b94de3a9b2f270e0000dc339ef6f0b478` for both
@@ -87,7 +87,7 @@ Linux/macOS x86_64/aarch64 mapping (`managed.rs:31`), the pinned eggsearch
 version (`PINNED_EGGSEARCH_VERSION`, `managed.rs:24`), `cmd_upgrade()` in
 `src/main.rs`, `upgrade()` (`mod.rs:101`), the manual fresh-install guidance
 path pointing at `install.sh` on raw.githubusercontent.com (`mod.rs:32,124`),
-and the presence of `tests/upgrade.rs` (10 tests).
+and the presence of `tests/config_provider/upgrade.inc` (10 tests).
 Re-verified the dead-config claim: it is still true and is now stated
 precisely — `Config.autoupdate` (`schema.rs:231`) and its `AutoupdateConfig`
 enum (`schema.rs:205`) are the only occurrences of the symbol in any `.rs`
@@ -104,7 +104,7 @@ deserialized and destructured but read by no production path, and
 `codegg upgrade` still runs only on explicit invocation.
 
 Verified 2026-10-06 (third pass) against `src/upgrade/{mod,managed}.rs`,
-`tests/upgrade.rs`, and `Cargo.toml`.
+`tests/config_provider/upgrade.inc`, and `Cargo.toml`.
 - Corrected "The Eggup dependency" to name both `eggup-core` and
   `eggup-acquisition`, which share the single pinned revision
   (`Cargo.toml:116-117`).
@@ -116,7 +116,7 @@ Verified 2026-10-06 (third pass) against `src/upgrade/{mod,managed}.rs`,
   (`managed.rs:156`, `:176`), exact-404-only asset absence
   (`managed.rs:552`, `:621`), the three required runfiles plus optional
   `THIRD-PARTY-NOTICES.txt` (`managed.rs:263`-`:264`, `:305`), and the
-  10 tests in `tests/upgrade.rs`.
+  10 tests in `tests/config_provider/upgrade.inc`.
 - No stale claims remain; the CodeGG/Eggup/Eggpack ownership split and the
   "keep Eggfetch, do not adopt `eggup-eggfetch`" constraint are unchanged
   and still match source.

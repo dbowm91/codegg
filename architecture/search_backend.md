@@ -58,7 +58,7 @@ shared daemon-owned `McpService` handle (`Option<Arc<RwLock<McpService>>>`):
 The `dispatch_*`/`provenance_for_*` methods on the context are the
 single canonical execution path. Two independently constructed contexts
 with different configs coexist in one process without cross-talk
-(proven by `tests/search_runtime_isolation.rs`).
+(proven by `tests/config_provider/search_runtime_isolation.inc`).
 
 Ownership split: the `SearchConfig` snapshot is per-runtime (each turn
 may resolve its own), while the MCP transport remains the one
@@ -461,7 +461,7 @@ CODEGG_EGGSEARCH_BIN=/path/to/eggsearch \
 `fake_eggsearch_mcp` exercises the full dispatch path using an in-
 process mock `McpService` via `register_mock_server`, with each test
 owning an explicit `SearchRuntimeContext` (no globals, no locks).
-`tests/search_runtime_isolation.rs` proves two differently configured
+`tests/config_provider/search_runtime_isolation.inc` proves two differently configured
 contexts/registries coexist concurrently without cross-talk, disabled
 stays disabled, and reconstruction leaks no stale config. The
 cross-process flock in `test_support.rs` is retained only for the

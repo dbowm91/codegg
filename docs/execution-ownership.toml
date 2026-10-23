@@ -7,7 +7,7 @@
 # workspace locks MUST be declared in this manifest.
 #
 # This manifest is consumed by `scripts/check_execution_ownership.py`
-# (a static guard) and `tests/scheduler_authority_matrix.rs`
+# (a static guard) and `tests/scheduler_jobs/scheduler_authority_matrix.inc`
 # (a runtime assertion that one job produces one attempt and one
 # executor entry).
 #

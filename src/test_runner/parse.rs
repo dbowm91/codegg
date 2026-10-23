@@ -613,19 +613,6 @@ mod tests {
     }
 
     #[test]
-    fn rust_parser_detects_panic_file_line_legacy() {
-        let mut state = TestParseState::default();
-        ingest_stdout_line(
-            &mut state,
-            "thread 'main' panicked at 'assertion failed', src/foo.rs:42",
-        );
-        assert_eq!(state.failures.len(), 1);
-        assert_eq!(state.failures[0].failure_class, FailureClass::RustPanic);
-        assert_eq!(state.failures[0].file.as_deref(), Some("src/foo.rs"));
-        assert_eq!(state.failures[0].line, Some(42));
-    }
-
-    #[test]
     fn rust_parser_detects_compile_error_legacy() {
         let mut state = TestParseState::default();
         ingest_stdout_line(&mut state, "error[E0432]: unresolved import `foo`");
@@ -650,14 +637,6 @@ mod tests {
             state.failures[0].name.as_deref(),
             Some("tests/test_bar.py::test_alpha")
         );
-    }
-
-    #[test]
-    fn pytest_parser_extracts_assertion_message_legacy() {
-        let mut state = TestParseState::default();
-        ingest_stdout_line(&mut state, "FAILED tests/test_x.py::test_y");
-        ingest_stderr_line(&mut state, "E   AssertionError: expected 1, got 2");
-        assert!(state.failures[0].message.contains("expected 1, got 2"));
     }
 
     #[test]
