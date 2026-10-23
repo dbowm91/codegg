@@ -251,10 +251,6 @@ pub fn buffer_content_end<S: TextSource + ?Sized>(source: &S) -> usize {
 }
 
 /// The run of one class that contains `offset`.
-///
-/// The run is expanded on both sides, so the answer is the same for every
-/// offset inside it — which is what lets a word motion ask "which word am I
-/// in" without also asking "where exactly am I".
 fn category_run_at<S: TextSource + ?Sized>(source: &S, offset: usize) -> WordRun {
     let offset = clamp_offset(source, offset);
     let len = source.len_bytes();

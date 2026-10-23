@@ -2188,9 +2188,6 @@ mod tests {
     ///   and then immediately `SubagentFailed`, after `active_turn` is `None`;
     /// - `specialized_runtime.rs` wraps `send_and_wait` in `MAX_CHILD_TIMEOUT`,
     ///   so expiry drops the awaiting future while the worker keeps running.
-    ///
-    /// Session-owned identity lets this lifecycle survive its parent turn;
-    /// this test pins the reducer behavior when the event arrives late.
     #[test]
     fn a_subagent_started_without_an_active_turn_is_session_owned() {
         use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};

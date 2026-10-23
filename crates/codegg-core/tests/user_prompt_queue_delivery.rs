@@ -758,12 +758,11 @@ async fn user_prompt_queue_reconcile_sweep_is_bounded() {
 /// A claim returns **the entry it claimed**, even when a lower-ordinal row is
 /// already stranded in `delivering`.
 ///
-/// This is a regression test for a real defect. The claim originally selected the
-/// next due id and then re-read "the lowest `delivering` row" to get its record.
-/// With a stranded row at a lower ordinal, that second read returned the
-/// *stranded* entry: the caller would submit the stranded entry's text while
-/// marking the entry it actually claimed as delivered — running one prompt and
-/// recording it against another.
+/// This is a regression test for a real defect. With a stranded row at a
+/// lower ordinal, that second read returned the *stranded* entry: the caller
+/// would submit the stranded entry's text while marking the entry it actually
+/// claimed as delivered — running one prompt and recording it against
+/// another.
 #[tokio::test]
 async fn user_prompt_queue_claim_returns_its_own_entry_not_a_stranded_one() {
     let pool = isolated_pool().await;

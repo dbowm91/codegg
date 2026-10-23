@@ -30,9 +30,6 @@
 //!   prevent interactive editor prompts on push commit-message edits.
 //! * `GIT_PAGER`, `PAGER` — no paginated output for non-interactive
 //!   execution.
-//!
-//! All env var names are stored as `&'static str` so the policy
-//! itself has no allocations.
 
 use std::time::Duration;
 

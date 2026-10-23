@@ -2580,10 +2580,6 @@ mod tests {
     }
 
     /// Typing must not be affected by any prior escape.
-    ///
-    /// The old classifier cleared a latch on every printable key; the whole
-    /// point of removing it is that ordinary input no longer has to be checked
-    /// against a remembered flag at all.
     #[test]
     fn typing_between_escapes_is_unaffected() {
         let mut controller = live_attached();

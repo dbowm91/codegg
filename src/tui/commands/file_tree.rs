@@ -1091,11 +1091,6 @@ mod tests {
     }
 
     /// The daemon's answer for the `src` scope: `tui` and its children.
-    ///
-    /// This is the scope the slide lands in, so it has to carry the target's
-    /// own children — the window is three levels deep and `src/tui/app` is
-    /// the third, so `src/tui/app/mod.rs` is the fourth and is exactly what
-    /// the slide exists to bring back into view.
     fn worked_example_src_scope() -> WorkspaceDirectoryListResultDto {
         WorkspaceDirectoryListResultDto {
             prefix: "src".to_string(),

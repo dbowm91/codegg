@@ -945,10 +945,6 @@ fn ensure_api_key_credential(name: &str, resolved: &ResolvedAuth) -> Option<Cred
 }
 
 /// Register a provider that accepts a full [`Credential`] envelope.
-///
-/// This is the preferred path for OpenAI-compatible providers. It
-/// preserves `CredentialKind` (api key vs. bearer token) and any
-/// `expires_at` metadata at construction time.
 fn register_credential_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,

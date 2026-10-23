@@ -635,9 +635,6 @@ mod tests {
 
     /// The branch listing is assembled from three spawns, and the
     /// composite class is the weakest of them.
-    ///
-    /// `git branch --show-current` consults no object store, so the
-    /// composite read observed no object generation.
     #[tokio::test(flavor = "current_thread")]
     async fn list_branches_carries_the_weakest_contributing_class() {
         let dir = TempDir::new().unwrap();

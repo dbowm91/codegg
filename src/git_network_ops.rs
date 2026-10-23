@@ -1,13 +1,5 @@
 //! Typed network and destructive Git operations.
 //!
-//! These functions wrap [`GitMutationExecutor::execute`] with
-//! operation-specific validation for fetch, pull, push, remote
-//! management, config, reset, and clean operations.
-//!
-//! Network operations use [`NetworkEnvPolicy`] which extends the base
-//! [`GitEnvPolicy`] with credential-helper and proxy env vars needed
-//! for remote access.
-//!
 //! Phase D invariants:
 //!
 //! * argv is rendered without a shell.

@@ -1559,9 +1559,8 @@ mod tests {
     /// A Chat upstream that omits `index` entirely: the opening fragment
     /// carries only a function name, and continuations carry only arguments.
     ///
-    /// With no index and no id the shared accumulator cannot key the fragments
-    /// at all and answers `tool call has no stable identity`. The pre-kernel
-    /// parser keyed by array position, so a single-tool turn used to decode.
+    /// With no index and no id the shared accumulator cannot key the
+    /// fragments at all and answers `tool call has no stable identity`.
     #[test]
     fn opencode_go_chat_fragments_without_index_or_id_still_resolve() {
         let bytes = concat!(

@@ -798,10 +798,6 @@ impl SessionDialog {
 }
 
 /// A row's identity, for matching a cursor across a row-space change.
-///
-/// Sessions are matched by id and not by their `usize`, because re-sorting or
-/// re-filtering moves a session to a different index without changing what it
-/// is.
 fn row_identity(row: &SessionDialogRow, sorted: &[&Session]) -> Option<RowIdentity> {
     match row {
         SessionDialogRow::Session(index) => sorted

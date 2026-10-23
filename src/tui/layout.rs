@@ -1,8 +1,5 @@
 //! Layout management for the TUI.
 //!
-//! This module provides the [`TuiLayout`] struct which handles splitting the terminal
-//! into distinct areas for different UI components.
-//!
 //! ## Layout Structure
 //!
 //! ```text

@@ -127,9 +127,6 @@ fn parse_args() -> Result<(PathBuf, RawFd), String> {
 /// this speculatively. `SANDBOX_NAMED` is passed as `0` deliberately: with
 /// flags set, `profile` names a built-in Apple constant rather than being
 /// parsed as SBPL.
-///
-/// The profile is generated in the library (pure, testable) and applied
-/// here, so this function does no policy work of its own.
 #[cfg(target_os = "macos")]
 fn apply_seatbelt(
     spec: &SandboxLaunchSpec,

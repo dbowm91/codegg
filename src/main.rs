@@ -2828,11 +2828,6 @@ fn find_on_path(name: &str, path_var: Option<&str>) -> Option<PathBuf> {
 /// `$EDITOR` per the usual Unix convention (git, sudo, crontab) because
 /// `$VISUAL` marks the full-screen editor the user prefers for interactive
 /// editing, while `$EDITOR` is often set to a line-oriented default.
-///
-/// A value taken from the environment is returned even when no such binary
-/// exists: silently substituting a different editor than the one the user
-/// asked for would edit the file behind their back. The caller surfaces the
-/// spawn failure instead.
 fn resolve_editor(
     explicit: Option<&str>,
     visual: Option<&str>,

@@ -1645,10 +1645,6 @@ enum OverlayCandidate {
 }
 
 /// Merge a newly seen contract into the candidates for one model id.
-///
-/// The merge is order-independent: one contract wins whether it was seen
-/// first or last, and two different contracts leave the id without an
-/// overlay.
 fn merge_overlay_candidate(
     existing: OverlayCandidate,
     incoming: Option<EggpoolThinkingOverlay>,

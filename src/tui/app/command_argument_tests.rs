@@ -19,10 +19,6 @@ use std::sync::Arc;
 /// The registry resolves the spelling the user typed, and the command
 /// receives the line as typed. Everything after the spelling is the
 /// command's argument, and the argument is what the handler must see.
-///
-/// The palette's query holds the whole typed line in production, so the
-/// helper mirrors that: a handler that reads the palette's query sees the
-/// line, exactly as it would on the composer path.
 fn dispatch_typed(app: &mut App, line: &str) {
     let name = line
         .split_whitespace()

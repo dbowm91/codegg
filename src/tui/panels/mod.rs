@@ -2307,10 +2307,9 @@ mod tests {
     /// `label`/`hint` are what the manager row reads. A variant that forgets
     /// them is reachable but cannot be bound or identified.
     ///
-    /// This used to also pin a `load_command` per panel, back when the placeholder
-    /// named that command. It does not any more: a panel describes its *state*,
-    /// and the only consumer of a per-panel command string was the copy that told
-    /// the user to go and run it.
+    /// It does not any more: a panel describes its *state*, and the only
+    /// consumer of a per-panel command string was the copy that told the user
+    /// to go and run it.
     #[test]
     fn every_panel_names_its_config_spelling_and_itself() {
         for panel in SidePanelId::ALL.iter().copied() {

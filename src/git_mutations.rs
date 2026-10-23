@@ -912,10 +912,6 @@ impl GitMutationExecutor {
 }
 
 /// A short, human-readable summary of a C007 publication receipt.
-///
-/// The receipt names the single resource the publication published, so the
-/// summary says so too. A summary that implied the refs were published as
-/// well would be a false claim about the repository's state.
 fn publication_receipt_summary(
     receipt: &crate::git_publication::GitIndexPublicationReceipt,
 ) -> String {

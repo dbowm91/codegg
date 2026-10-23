@@ -316,9 +316,6 @@ pub fn detect_repository_operation_state(git_dir: &Path) -> GitReadFact<Reposito
 }
 
 /// The sentinel inspection behind [`detect_repository_operation_state`].
-///
-/// The class is attached by the caller because it is a property of the
-/// *read*, not of the sentinel layout.
 fn detect_operation_state_inner(git_dir: &Path) -> RepositoryOperationState {
     let git_dir = git_dir.to_path_buf();
     // Sequencer sentinel: present whenever cherry-pick or revert is active

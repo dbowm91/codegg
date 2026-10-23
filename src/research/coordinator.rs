@@ -528,11 +528,6 @@ impl ResearchCoordinator {
                     // stored it on the record (`snippet=`, or the title as a
                     // fallback). Re-fetching here would repeat the network
                     // round trip for content we already hold.
-                    //
-                    // These used to be dropped outright as an "MVP
-                    // limitation", which meant a run that successfully
-                    // collected web sources still produced zero evidence
-                    // and an empty answer.
                     match source.retrieved_text() {
                         Some(text) if !text.trim().is_empty() => text,
                         _ => {

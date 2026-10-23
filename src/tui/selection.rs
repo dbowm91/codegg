@@ -1,11 +1,5 @@
 //! Terminal text selection for rendered TUI output.
 //!
-//! The TUI takes over the terminal's own text selection: mouse reporting is
-//! enabled (`src/tui/terminal.rs`) so the app can implement click-to-focus,
-//! wheel scrolling and scrollbar dragging, and once a terminal is reporting
-//! mouse events it stops offering its native drag-select. That makes output
-//! such as a `cat` result or a stack trace impossible to select and copy.
-//!
 //! This module provides the missing half: it reconstructs a rectangular
 //! selection over the *rendered* frame buffer. The buffer is the exact set
 //! of cells the user can see, including styles and wrapping, so the extracted

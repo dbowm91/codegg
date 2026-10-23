@@ -1,10 +1,5 @@
 //! Narrow external task-trigger capability (Project Work Orders M005).
 //!
-//! A task trigger lets shell scripts, CI glue, cron wrappers, and other
-//! automation satisfy one declared `ExternalTrigger` gate on one
-//! `WorkOrder` occurrence without receiving a general CodeGG principal
-//! token or broader project authority.
-//!
 //! ## Capability shape
 //!
 //! - The bearer has the form `cggtr_<trigger-id>.<secret>` where the

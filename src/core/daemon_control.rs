@@ -726,9 +726,8 @@ impl CoreDaemon {
                 // released and `active_turn` is cleared — which is why delivery
                 // happens here and not on the terminal event itself.
                 //
-                // A `Weak` that no longer upgrades means the daemon is shutting
-                // down. The entry stays `pending` and the restart twin delivers
-                // it; forcing a delivery through a live strong reference here
+                // The entry stays `pending` and the restart twin delivers it;
+                // forcing a delivery through a live strong reference here
                 // would only extend the shutdown to wait for a turn.
                 if let Some(daemon) = wake_cell.get().and_then(|weak| weak.upgrade()) {
                     let wake_session = session_id.clone();

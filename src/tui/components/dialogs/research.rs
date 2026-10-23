@@ -38,10 +38,6 @@ enum Chrome {
 const RUNS_LIST_HINT: &str = "j/k move · enter open · r refresh";
 
 /// The verbs `ResearchBrowserMode::RunDetail` delivers.
-///
-/// No `Esc`: this mode's `Esc` steps back to the run list, and in a column it
-/// is the host's exit instead — so a docked detail box has no way back but
-/// `Shift+←`, which the host says so itself.
 const RUN_DETAIL_HINT: &str = "j/k move · enter section";
 
 /// The verbs `ResearchBrowserMode::ReportView` delivers.

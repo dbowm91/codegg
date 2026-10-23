@@ -17,12 +17,6 @@
 //! human-shell store keeps its bounded head/tail transcript for the TUI;
 //! the new command event store keeps the durable raw bytes used by
 //! projection, expansion, and future native projectors.
-//!
-//! Phase 2 adds the projector trait, built-in projectors, and the
-//! centralised selector in [`crate::shell::projector`]. The
-//! [`default_command_projection`] entry point continues to exist; it now
-//! delegates to the selector so every model-visible projection flows
-//! through the same selection logic.
 
 use std::collections::HashMap;
 use std::ops::Range;

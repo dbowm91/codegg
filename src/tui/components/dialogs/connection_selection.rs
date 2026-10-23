@@ -208,11 +208,6 @@ fn column_title(
 /// tail when one is bound, and the current state — so the user can always say
 /// which key they are about to replace.
 ///
-/// They come *before* the descriptive tail on purpose. The connections pane is
-/// half a narrow terminal, and a discriminator pushed behind the provider kind
-/// and model count is exactly the part that gets truncated away at 120 columns
-/// — reintroducing the ambiguity this row exists to remove.
-///
 /// The hint is exactly the four trailing characters the daemon computed; the
 /// dialog never sees, derives, or widens it. Connections with no binding simply
 /// omit it and fall back to the short id.

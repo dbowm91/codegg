@@ -17,10 +17,6 @@
 //!   leaves no evidence of what was intended, so the outcome cannot be
 //!   recovered — only guessed at.
 //!
-//! The publisher fixes both: it stages privately, records a durable intent,
-//! then publishes under Git's own lock with a compare-and-swap against the
-//! index generation the staging observed.
-//!
 //! # What this vertical publishes
 //!
 //! Exactly one resource: the repository **index**. Refs are not published and
@@ -30,9 +26,6 @@
 //! See [`PublishedResourceScope`].
 //!
 //! # What this vertical does not do
-//!
-//! Merge, rebase, checkout, reset, clean, fetch, push, and pull are all out
-//! of scope. A single `Add` is the whole surface.
 //!
 //! # The staging child
 //!
@@ -72,9 +65,6 @@
 //! left alone, and the copy is verified byte-for-byte against its source. It
 //! cannot corrupt an existing object, because an existing object with the
 //! same name has the same content.
-//!
-//! The import runs **under the index lock and after the compare-and-swap
-//! succeeds**, so a conflicting publication writes nothing at all.
 
 pub mod publisher;
 pub mod reconciler;

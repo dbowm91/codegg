@@ -3737,11 +3737,6 @@ mod tests {
 
     /// The reported defect: `C` blanked the screen and left it blank, because
     /// the wipe was entirely local and the shell had no reason to redraw.
-    ///
-    /// The assertion is on *where the prompt came from*: the shell is a real
-    /// `sh` reading a real PTY, and the prompt it prints after the clear is
-    /// what lands on screen. A synthesised line would satisfy a weaker test and
-    /// would also be a lie for any non-default `PS1`.
     #[tokio::test(flavor = "current_thread")]
     async fn a_cleared_terminal_is_replaced_by_a_prompt_the_process_printed() {
         let dir = tempfile::tempdir().expect("workspace");

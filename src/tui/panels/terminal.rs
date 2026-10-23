@@ -405,14 +405,6 @@ impl SidePanel for TerminalPanel {
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
         // Unfocused: `None`.
         //
-        // This used to answer `"TERM · focus to scroll, select and type"`,
-        // keeping the row alive above a composer that had the keyboard. The
-        // row exists to name whoever holds the keyboard, and every verb in it
-        // — including the gesture that would reclaim them — needs the keyboard
-        // it had just given up. So the line sat under the LLM buffer describing
-        // a terminal nobody was in, and the `Shift+←/→` gesture that would have
-        // brought it back was itself the thing the line was advertising.
-        //
         // Nothing is lost. The panel's own chrome still says a terminal is
         // docked and which one, the `[TERM]` badge names the destination, and
         // the row comes back the moment the panel takes the keyboard again.

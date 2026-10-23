@@ -1,8 +1,5 @@
 //! Stub tools returned when a tool cannot be given real authority.
 //!
-//! [`DisabledTool`] replaces a tool whose *domain* is configured as disabled,
-//! or whose MCP backend is configured but not implemented.
-//!
 //! [`UnrootedTool`] replaces a workspace-scoped tool that was reached with no
 //! resolved workspace root. It is a different condition with a different
 //! remedy: `DisabledTool` says "an operator turned this off", `UnrootedTool`

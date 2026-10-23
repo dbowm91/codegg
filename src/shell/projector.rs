@@ -12,11 +12,6 @@
 //! insert native structured projectors and an RTK-backed projector into
 //! the same selection pipeline.
 //!
-//! The single model-visible seam from earlier code is
-//! [`default_command_projection`], which now delegates to the
-//! [`ProjectionSelector`] so every projection flows through the same
-//! selection logic regardless of which projector is ultimately chosen.
-//!
 //! All types in this module are additive — they do not modify
 //! [`crate::shell::projection::CommandRun`] or
 //! [`crate::shell::projection::CommandOutputStore`]. The placeholder

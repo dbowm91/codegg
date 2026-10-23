@@ -1383,11 +1383,6 @@ impl RuntimePreferenceStore {
     /// revision was no longer `observed_revision` when the statement
     /// landed, so the statement's `DO UPDATE` was skipped and **nothing
     /// was written**.
-    ///
-    /// The revision predicate lives inside the statement on purpose. A
-    /// revision check performed before the write is a check another writer
-    /// can invalidate between the check and the write, which is how a
-    /// read-then-write gate turns into a silent last-write-wins.
     async fn upsert_reasoning_selection(
         &self,
         write: &RuntimePreferenceWrite,

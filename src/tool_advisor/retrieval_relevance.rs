@@ -1118,12 +1118,6 @@ mod tests {
     /// `cargo test -- --ignored` must not rewrite it. The write path is
     /// gated on an explicit opt-in:
     ///
-    /// ```text
-    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
-    ///     tool_advisor::retrieval_relevance::tests::generate_derived_asset \
-    ///     --ignored --nocapture
-    /// ```
-    ///
     /// Without the opt-in the test asserts that the checked-in asset is
     /// still present and writes nothing. The sibling test
     /// `committed_asset_matches_classifier` proves that the committed

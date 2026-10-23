@@ -5,12 +5,6 @@
 //! [`PluginService`]/[`PluginRegistry`] with builtins) as the source of
 //! truth. Enable/disable state is persisted in the daemon-owned activation
 //! store; the live registry remains an installation/capability index.
-//!
-//! All handlers are `pub(crate) fn` (non-async) and spawn background
-//! tasks via [`spawn_registered_tui_task`] (tracked by the
-//! [`TuiTaskRegistry`](crate::tui::task_lifecycle::TuiTaskRegistry) so
-//! shutdown can cancel them) for any I/O, posting a typed
-//! [`TuiCommand`] completion variant back through the command channel.
 
 use crate::plugin::management::PluginDoctorReport;
 use crate::plugin::management_ui::{

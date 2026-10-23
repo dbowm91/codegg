@@ -389,10 +389,6 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // Completion-arm behaviour.
-    //
-    // The classification tests above prove the mapping. These prove what the
-    // event loop does with it, which is where the state corruption lived.
-    // ---------------------------------------------------------------------
 
     use crate::tui::app::state::AppMode;
     use crate::tui::app::types::SessionStatus;

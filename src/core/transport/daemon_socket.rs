@@ -1505,11 +1505,6 @@ mod tests {
     /// if it were complete. A consumer that pairs a tool call with its
     /// completion is then left with an unpaired start and no way to tell the
     /// difference from "the tool is still running".
-    ///
-    /// This test drives the bus past its capacity with a subscriber that does
-    /// not read, and asserts that the client is told how many events it is
-    /// missing. It fails against the unfixed code, because the unfixed code
-    /// writes no such frame.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_lagged_forwarder_reports_the_gap_to_the_client() {
         use tokio::io::{AsyncBufReadExt, BufReader};

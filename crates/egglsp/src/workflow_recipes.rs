@@ -12,10 +12,6 @@
 //! collect evidence, and produce a rendered outcome. Each recipe
 //! follows the pattern:
 //!
-//! ```text
-//! inputs → evidence requests → budget → fallback → render policy
-//! ```
-//!
 //! # Recipe taxonomy
 //!
 //! | Recipe | Purpose |

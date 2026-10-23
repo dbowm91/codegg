@@ -63,14 +63,11 @@ const MAX_EXCERPT_SIDE_CHARS: usize = 1000;
 const TITLE_TIMEOUT_SECS: u64 = 30;
 /// Output budget for the title call.
 ///
-/// A 60-char title costs ~15-20 tokens, so the old 64-token cap left almost
-/// no headroom — and on a reasoning model the reasoning tokens are billed
-/// against the *same* output budget as the visible text. A model that thinks
-/// for 64 tokens never emits a text delta at all, the sanitizer rejects the
-/// empty string, and the session stays `"Untitled"` forever. 256 leaves ~4x
-/// the title's own cost as headroom for preamble the sanitizer strips while
-/// keeping the call bounded, one-shot, and far below a normal turn budget
-/// (the sanitizer truncates to 60 chars whatever arrives).
+/// A model that thinks for 64 tokens never emits a text delta at all, the
+/// sanitizer rejects the empty string, and the session stays `"Untitled"`
+/// forever. 256 leaves ~4x the title's own cost as headroom for preamble the
+/// sanitizer strips while keeping the call bounded, one-shot, and far below a
+/// normal turn budget (the sanitizer truncates to 60 chars whatever arrives).
 const TITLE_MAX_TOKENS: usize = 256;
 const TITLE_TEMPERATURE: f64 = 0.7;
 

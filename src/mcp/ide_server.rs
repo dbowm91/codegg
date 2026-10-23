@@ -1,7 +1,4 @@
 //! IDE MCP Server - provides IDE integration tools via MCP protocol.
-//!
-//! This server exposes IDE diff viewing capabilities as MCP tools, supporting
-//! both stdio transport (for IDE extensions) and unix socket mode.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;

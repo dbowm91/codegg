@@ -1200,9 +1200,6 @@ fn code_action_patches(
 }
 
 /// Whether the apply path would refuse this material for its size.
-///
-/// The bounds are the candidate's own, so a candidate this accepts is one
-/// the daemon can at least shape into a request.
 fn code_action_exceeds_candidate_bounds(patches: &[(String, String, String)]) -> bool {
     if patches.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCHES {
         return true;

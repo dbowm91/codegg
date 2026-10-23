@@ -204,10 +204,6 @@ pub fn enforcement() -> BackendEnforcement {
 }
 
 /// Paths a generated profile must never contain empty.
-///
-/// A `(subpath "")` rule compiles but matches nothing, and would silently
-/// turn a real allowance into a no-op — the failure mode that looks like
-/// "the sandbox is working" while granting nothing.
 #[cfg(test)]
 fn malformed_subpaths(profile: &str) -> Vec<String> {
     profile

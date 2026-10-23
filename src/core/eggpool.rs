@@ -4181,10 +4181,8 @@ mod tests {
 
     /// A catalog stranded behind a revision bump must be rebuildable.
     ///
-    /// Both the rotate copy-shortcut and the refresh no-op branch used to trust
-    /// a matching upstream digest as proof that this connection already held its
-    /// models. When the rows are absent at the current revision that assumption
-    /// is false and both branches do nothing, so the catalog stays empty through
+    /// When the rows are absent at the current revision that assumption is
+    /// false and both branches do nothing, so the catalog stays empty through
     /// any number of rotations and refreshes and `/connections` reports zero
     /// models forever. Observed live: revision 16, rows stranded at 1-3, a
     /// rotate that reported success.

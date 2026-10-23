@@ -2325,12 +2325,10 @@ mod async_cmd_tests {
     /// Regression: a permission answer from the socket-daemon frontend must
     /// reach the daemon through `core_client`.
     ///
-    /// `SubmitPermission` used to branch on `AppMode::RemoteCore` alone, which
-    /// the socket path also sets. That routed the answer into
-    /// `send_remote_message`, whose `None` arm dropped it after only a
-    /// `tracing::warn!`. The dialog was torn down, the daemon-side waiter
-    /// stayed parked on an unbounded human wait, and the turn hung forever
-    /// with no visible error — approving did nothing.
+    /// That routed the answer into `send_remote_message`, whose `None` arm
+    /// dropped it after only a `tracing::warn!`. The dialog was torn down,
+    /// the daemon-side waiter stayed parked on an unbounded human wait, and
+    /// the turn hung forever with no visible error — approving did nothing.
     ///
     /// The local path is observable: with no core client it reports a visible
     /// delivery failure instead of silently discarding the answer. Reaching

@@ -1263,11 +1263,6 @@ impl GitExecutionService {
 
     /// Run a git command and capture stdout/stderr as raw strings, together
     /// with the consistency class the read was obtained under.
-    ///
-    /// The class comes from the command itself: `egggit` prepares the
-    /// private object view before the child is spawned and reports the class
-    /// of the bytes that view serves, so the class describes this read rather
-    /// than the caller's guess about it.
     async fn run_git_raw(
         &self,
         argv: &[String],

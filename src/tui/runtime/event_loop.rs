@@ -32,12 +32,6 @@ const CORE_EVENT_DRAIN_LIMIT: usize = 64;
 
 /// Time left until the render throttle allows another frame, if throttled.
 ///
-/// The subtraction sits behind `then`, not `then_some`, and that distinction
-/// is the whole bug this function exists to prevent. `then_some` takes its
-/// value **eagerly**, so `cond.then_some(a - b)` evaluates `a - b` even when
-/// `cond` is false — and `Duration`'s `Sub` impl panics on underflow rather
-/// than wrapping.
-///
 /// It fired on the first message of a new session. `elapsed` is read twice per
 /// iteration: once for `should_render`, once here. Between those reads the loop
 /// can start a turn or dispatch a submit, so the second read is routinely the

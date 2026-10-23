@@ -21,10 +21,8 @@
 //! # Why subagent and job groups are filtered but todos are not
 //!
 //! Todos persist for the life of a session: a completed item is still part of
-//! the plan, and hiding it would make the progress count lie. Subagents and
-//! jobs are *waited on*, and a finished one is no longer being waited on —
-//! listing them would fill the overlay with history the user did not ask for.
-//! So those two groups filter to live states only. See [`is_live_state`].
+//! the plan, and hiding it would make the progress count lie. So those two
+//! groups filter to live states only. See [`is_live_state`].
 
 use crate::tui::app::state::subagents::SubagentRow;
 

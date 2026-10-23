@@ -409,10 +409,6 @@ mod tests {
     }
 
     /// Every curated entry's descriptor must fit the projection's named cap.
-    ///
-    /// Without this, someone could author a longer profile and the projection
-    /// would silently truncate it in production — a descriptor that reads as a
-    /// sentence ending mid-word on some machines and not others.
     #[test]
     fn no_curated_descriptor_exceeds_the_projection_cap() {
         use codegg_protocol::projection::limits::MAX_PROJECTION_DESCRIPTOR_BYTES;

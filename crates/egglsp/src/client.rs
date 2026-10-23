@@ -2355,10 +2355,6 @@ pub fn parse_publish_diagnostics(
 }
 
 /// Maximum allowed Content-Length for a single inbound LSP frame (64 MiB).
-///
-/// Real LSP responses rarely exceed a few hundred KiB. This limit protects
-/// against a malicious or buggy server claiming an absurdly large frame and
-/// causing the client to allocate unbounded memory.
 const MAX_LSP_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 const MAX_LSP_HEADER_BYTES: usize = 16 * 1024;

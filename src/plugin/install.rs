@@ -127,10 +127,8 @@ pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
 /// control over the install root.
 /// Per-plugin-name install lock to close the check-then-act window.
 ///
-/// Concurrent installs of the same name previously both passed
-/// `dest.exists()` then collided in `copy_dir_all`/`rename`. The lock
-/// file is created atomically (`O_CREAT|O_EXCL`); the second installer
-/// fails fast with `AlreadyInstalled`. Held for the duration of the
+/// The lock file is created atomically (`O_CREAT|O_EXCL`); the second
+/// installer fails fast with `AlreadyInstalled`. Held for the duration of the
 /// install and removed on drop.
 struct InstallLock {
     path: PathBuf,

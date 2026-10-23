@@ -1539,10 +1539,6 @@ mod tests {
     // ── Set algebra ──────────────────────────────────────────────────────
 
     /// A three-member set of single points, primary in the middle.
-    ///
-    /// Single points because the verbs below are set algebra and the set is
-    /// the thing under test; a selection's *span* is `editor`'s job and is
-    /// exercised there.
     fn three_members() -> SelectionState<Cell> {
         SelectionState::restore_set(
             cell(5, 0),

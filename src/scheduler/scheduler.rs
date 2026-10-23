@@ -159,11 +159,6 @@ impl CompletionCache {
 /// single permit and `notify_one` wakes one arbitrary waiter, so with several
 /// jobs in flight the waiter whose job actually finished could be the one left
 /// asleep for the whole bound.
-///
-/// A `watch` receiver also replays the "value changed" fact to a receiver that
-/// subscribes later, which is what makes the ordering in `wait_for_completion`
-/// safe: the receiver is created *before* the first completion-cache read, so a
-/// publish that lands between that read and the park is still delivered.
 struct CompletionSignals {
     entries: HashMap<JobId, watch::Sender<u64>>,
     /// Insertion order for oldest-first eviction, mirroring `CompletionCache`.

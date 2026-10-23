@@ -309,11 +309,6 @@ mod tests {
     }
 
     /// The texts the mapping is proved over.
-    ///
-    /// The empty buffer, a buffer ending in a line break, content wider than
-    /// the row, a token wider than the row, multi-byte characters, collapsed
-    /// whitespace and trailing whitespace are all here, because each of them
-    /// breaks a different assumption about the mapping.
     const TEXTS: &[&str] = &[
         "",
         "hello",

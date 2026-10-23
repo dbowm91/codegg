@@ -1,11 +1,6 @@
 //! Unified LSP context packet types, budgeting, dedup/ranking, and
 //! the evidence collector API.
 //!
-//! This module provides a single abstraction for gathering structured
-//! LSP evidence (diagnostics, definitions, references, symbols,
-//! semantic tokens, etc.) into an [`LspContextPacket`] that callers
-//! can budget, dedup, rank, and serialize.
-//!
 //! # Design
 //!
 //! - [`LspContextRequest`] describes *what* evidence to collect.

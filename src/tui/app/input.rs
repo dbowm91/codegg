@@ -479,10 +479,6 @@ impl App {
                 }
             }
             // M006: launch a session into an isolated checkout.
-            //
-            // The dialog stays open: the launch runs in the background
-            // and reports itself when it lands, and closing the dialog
-            // would cancel the very task that reports it.
             TuiMsg::LaunchSession {
                 parent_session_id,
                 worktree_id,

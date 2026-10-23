@@ -399,12 +399,6 @@ impl Component for SecurityReviewDialog {
     }
 
     /// The panes alone, inside the frame the host already drew.
-    ///
-    /// `Component::render` drew four bordered blocks — a header, the item
-    /// list, the detail pane and a footer — over the host's border, its title
-    /// and the `●` focus marker. All three of the host's are overwritten, not
-    /// layered, which is why a focused column and an unfocused one rendered
-    /// identically. What is left is the *same* routine the modal path uses.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let inner = area.inner(Margin::new(1, 1));
         if inner.height == 0 || inner.width == 0 {

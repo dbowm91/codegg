@@ -1223,9 +1223,6 @@ mod tests {
 
     /// A session restored before the sweep is live again, so the retention
     /// window protects it.
-    ///
-    /// This is the writer-lock recheck: the sweep read the session set before
-    /// the restore, and the re-read inside the lock is what sees it.
     #[tokio::test]
     async fn the_sweep_leaves_a_restored_session_alone() {
         let _root = scratch_root("the-sweep-leaves-a-resto");

@@ -17,9 +17,6 @@
 //!   the widget;
 //! - a **bounded undo history**, so `u` and `U` can mean something.
 //!
-//! This module is that model. The widget keeps its rendering and its public
-//! API; the buffer, the caret, the selection and the history live here.
-//!
 //! ## What is deliberately not here
 //!
 //! No key handling and no rendering. The verbs that will use this model —

@@ -1,7 +1,4 @@
 //! Validation diagnostics for [`SemanticTheme`](crate::theme::schema::SemanticTheme).
-//!
-//! Diagnostics are non-fatal. They are reported by the registry and may be
-//! surfaced through logs or a `/theme diagnostics` command.
 
 use crate::theme::color::Rgb;
 use crate::theme::schema::SemanticTheme;

@@ -553,12 +553,6 @@ pub enum TuiMsg {
     /// served. Surfaced as a hint rather than a silent no-op.
     ChatPagingUnsupported,
     /// A chat surface asked the shared composer to open an editor for it.
-    ///
-    /// The `/chat` window owns a composer of its own, so `i`/`r`/`e` are
-    /// handled inside the dialog. The side panel holds no text buffer — there
-    /// is one input surface, at the bottom — so it resolves those verbs to
-    /// this seed instead. `App::process_msg` puts the text in the prompt and
-    /// records the context; nothing here is a daemon request.
     ChatComposerSeed(crate::tui::chat_browser::ChatComposeSeed),
     /// The chat panel's `Esc`: drop the armed reply/edit context and keep the
     /// text.

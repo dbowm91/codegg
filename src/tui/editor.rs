@@ -8656,17 +8656,15 @@ mod tests {
     /// key, and merging them while picking one answer would have changed a
     /// gesture.
     ///
-    /// The leaf column is a **set** where it used to be a single `Option<char>`:
-    /// M005 gave goto mode seven leaves, and a one-glyph accessor would have
-    /// meant a special case per prefix. M013 grew four of those seven rows and
-    /// two bracket rows into LSP gestures, which is the point of this table: a
-    /// new leaf is an edit to a row here, not a new branch in the dispatcher.
-    /// Every other column is unchanged, and
-    /// the facts M002 asserted about `gg` and `space y` — `Goto` accepts `g`,
-    /// `Space` accepts `y`, and the four find prefixes accept no leaf at all —
-    /// are still asserted here, against the new shape. The four find prefixes
-    /// accept nothing on purpose: their next key is a target *character*, not a
-    /// leaf, so there is no glyph that could complete them.
+    /// M013 grew four of those seven rows and two bracket rows into LSP
+    /// gestures, which is the point of this table: a new leaf is an edit to a
+    /// row here, not a new branch in the dispatcher. Every other column is
+    /// unchanged, and the facts M002 asserted about `gg` and `space y` —
+    /// `Goto` accepts `g`, `Space` accepts `y`, and the four find prefixes
+    /// accept no leaf at all — are still asserted here, against the new
+    /// shape. The four find prefixes accept nothing on purpose: their next
+    /// key is a target *character*, not a leaf, so there is no glyph that
+    /// could complete them.
     #[test]
     fn each_prefix_declares_its_leaf_and_its_unmatched_key_policy() {
         // Named because the tuple is otherwise unreadable inline, and

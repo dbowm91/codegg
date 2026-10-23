@@ -3267,10 +3267,6 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Phase 9 / 12 write-side: write_preview_apply_plan_atomically_enough
-    //
-    // These tests prove the write-side handler correctly handles partial
-    // failures, race conditions, and normal success paths.
-    // -----------------------------------------------------------------------
 
     fn make_write_plan(files: Vec<PreviewApplyFilePlan>) -> PreviewApplyPlan {
         PreviewApplyPlan {

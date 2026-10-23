@@ -207,10 +207,6 @@ fn landlock_process_scopes_state() -> Capability {
 }
 
 /// Derive the request capabilities from the discovered facts.
-///
-/// Every rule is stated explicitly so that a reviewer can see why a
-/// dimension is `available`, and so that a missing capability produces a
-/// `notes` entry naming what is still unqualified.
 fn derive_can_launch(discovered: &DiscoveredHost) -> CanLaunch {
     let state_of = |dimension: &str| {
         discovered

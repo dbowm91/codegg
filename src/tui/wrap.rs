@@ -831,10 +831,6 @@ mod tests {
 
     /// The complete escape sequences in `text`, and the printable text
     /// between them.
-    ///
-    /// A sequence that was cut in half still starts with ESC, so it shows up
-    /// here as a *different* sequence than the one that was written — which
-    /// is exactly what the integrity test looks for.
     fn scan_escapes(text: &str) -> (Vec<String>, String) {
         let mut sequences = Vec::new();
         let mut visible = String::new();

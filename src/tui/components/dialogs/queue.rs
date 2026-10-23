@@ -1530,10 +1530,6 @@ mod tests {
 
     /// WP-A's acceptance sweep: every action letter, typed into a text step,
     /// must land in the buffer and trigger nothing.
-    ///
-    /// This is the milestone's headline hazard. `d` deleting a prompt because
-    /// the user was typing one, or `e` opening an editor mid-word, is the
-    /// failure the whole `is_text_step` seam exists to prevent.
     #[test]
     fn user_prompt_queue_text_step_swallows_every_action_letter() {
         // Each of these is a verb in the browsing step. If any reaches its

@@ -1478,10 +1478,6 @@ mod tests {
         // is neither. That blind spot is not hypothetical — the document
         // historical prose carried 149 and later 156–158 counts without a
         // source-backed variant assertion; the current total is 160.
-        //
-        // The source of truth is `all_builtin_variants`, which
-        // `every_builtin_action_is_referenced_by_a_canonical_command` already
-        // proves exhaustive and equal to the registry's distinct variants.
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let doc = manifest.join("architecture/command.md");
         let text = std::fs::read_to_string(&doc).expect("architecture/command.md must be readable");

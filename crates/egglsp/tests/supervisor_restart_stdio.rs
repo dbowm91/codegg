@@ -2290,9 +2290,6 @@ edition = "2021"
     // successful) and publish gen 2. The manual flow must
     // wait for the auto to complete, then detect the
     // generation advance and return ServerRestarted.
-    //
-    // We give the auto restart a moment to begin by sleeping
-    // before issuing the manual call.
     tokio::time::sleep(Duration::from_millis(150)).await;
     let manual_result = service.manual_restart_client(&key).await;
 

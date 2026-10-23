@@ -4191,11 +4191,6 @@ mod tests {
     }
 
     /// A preview that became a candidate is not "not applied" any more.
-    ///
-    /// The chords stopped showing what *would* change and started doing it,
-    /// so the panel's disposition line has to say so. A panel still claiming
-    /// "not applied" for a candidate would be a status row lying about the
-    /// last keystroke.
     #[test]
     fn a_preview_with_a_candidate_says_it_is_ready_to_apply() {
         use codegg_protocol::lsp::{

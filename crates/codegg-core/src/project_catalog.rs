@@ -586,15 +586,12 @@ impl ProjectCatalog {
         // Probe lineage before deciding anything, but DO NOT create the
         // `repository` row yet.
         //
-        // Registration used to record `status = 'resolved'` with a NULL
-        // repository and never probe Git at all, so the `repository` table
-        // stayed empty for every TUI-launched project. Because the
-        // existing-binding branch returned early, and
+        // Because the existing-binding branch returned early, and
         // `ProjectStorage::reconcile_workspace_once` treats a `resolved`
         // binding as authoritative and never re-probes, that empty identity
-        // was permanent: a delegated run needing managed isolation then failed
-        // with `isolation_unavailable` in a repository with perfectly good
-        // lineage evidence.
+        // was permanent: a delegated run needing managed isolation then
+        // failed with `isolation_unavailable` in a repository with perfectly
+        // good lineage evidence.
         let lineage = Self::probe_repository_lineage(std::path::Path::new(&canonical_root));
 
         // Check if workspace is already bound to a project

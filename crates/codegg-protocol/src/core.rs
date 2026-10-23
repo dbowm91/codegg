@@ -5046,11 +5046,6 @@ mod tests {
 
     /// The summary is derived from the facts it describes, so it can never
     /// contradict the field it summarises.
-    ///
-    /// The defect this guards against is a snapshot whose summary said
-    /// "network unrestricted" while its network field said the boundary was
-    /// not established at the snapshot — a reader could not tell which was
-    /// the fact.
     #[test]
     fn the_enforcement_summary_never_contradicts_its_fields() {
         let enforced = SandboxEnforcementDto::for_profile_on_host(

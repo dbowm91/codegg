@@ -3908,10 +3908,6 @@ mod tests {
     /// **queued-prompt delivery**, the second of the three paths that used
     /// to drop it on the floor.
     ///
-    /// The queue entry itself carries no selection: the selection is
-    /// resolved at **delivery** time, because the model chosen at delivery
-    /// may differ from the one at enqueue.
-    ///
     /// The ordering is the proof. The entry is enqueued while **no**
     /// selection is persisted at all, and the selection is written only
     /// afterwards, before the delivery. An implementation that captured the

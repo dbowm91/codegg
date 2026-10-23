@@ -1092,12 +1092,11 @@ mod tests {
     /// An explicit absolute `workdir` is honored when it is inside the
     /// workspace.
     ///
-    /// This test previously accepted `/some/dir` — a path outside any
-    /// workspace — because the tool had no containment at all. It is now
-    /// refused, which is the intended change: `bash` already rejects a
-    /// `workdir` outside `allowed_paths`, and the job's `workspace_id` is
-    /// derived from this very directory, so an out-of-workspace test run would
-    /// register a workspace the session does not own.
+    /// It is now refused, which is the intended change: `bash` already
+    /// rejects a `workdir` outside `allowed_paths`, and the job's
+    /// `workspace_id` is derived from this very directory, so an
+    /// out-of-workspace test run would register a workspace the session does
+    /// not own.
     #[test]
     fn an_explicit_workdir_inside_the_workspace_is_honored() {
         let root = tempfile::tempdir().expect("workspace fixture");

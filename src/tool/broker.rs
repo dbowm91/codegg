@@ -823,14 +823,6 @@ impl ToolBroker {
         // recorded. What the refusal adds is a *profile* fact: this
         // checkout is shared by a live agent-run group, and a shared
         // checkout admits no unqualified process.
-        //
-        // The policy is resolved from the invocation context first and
-        // from the registry second, so a caller that carried the policy
-        // and a caller that inherited it from the registry's scope are
-        // both covered. The resolved policy is written back onto the
-        // context so the per-attempt execution context carries the same
-        // authority the tool's own pre-spawn check will consult.
-        // c005-denial: broker-final-dispatch
         let resolved_process_admission = ctx
             .process_admission
             .clone()

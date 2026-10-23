@@ -2500,18 +2500,13 @@ pub(crate) fn handle_key_with_bindings(
             // default configuration — `Shift+F` had been waved through as
             // safe by a rule that never ran.
             //
-            // "Built-in" means the binding ships in either of the two maps the app
-            // can be configured with — it is checked by comparing the action
-            // against both, not by map identity, which keeps the
+            // "Built-in" means the binding ships in either of the two maps
+            // the app can be configured with — it is checked by comparing the
+            // action against both, not by map identity, which keeps the
             // neighbouring arm's promise intact: an *explicit user binding*
-            // still wins over text. `VIM_BINDINGS` matters as much as
-            // `DEFAULT_BINDINGS` here: `Shift+G` exists only in the vim map,
-            // and the regression test that used to cover it passed
-            // `bindings: None`, so it exercised the one path where the old
-            // gate fired and stayed green while the real path was broken.
-            // The lowercase letters stay on `is_normal_only`, which is the
-            // right tool for `x`/`ToggleAgentRun` because that one binds no
-            // modifier at all.
+            // still wins over text. The lowercase letters stay on
+            // `is_normal_only`, which is the right tool for
+            // `x`/`ToggleAgentRun` because that one binds no modifier at all.
             let is_builtin_text_key = is_text_key
                 && (map.get(&key_tuple) == DEFAULT_BINDINGS.get(&key_tuple)
                     || map.get(&key_tuple) == VIM_BINDINGS.get(&key_tuple));

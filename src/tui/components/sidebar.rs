@@ -2696,11 +2696,6 @@ mod tests {
     }
 
     /// Job focus is keyed on the job id, not the job's position.
-    ///
-    /// Jobs are upserted and filtered: the one before the focused row
-    /// finishing removes it and shifts every later index down by one. An
-    /// index-keyed target would silently move focus onto a *different* job
-    /// and then activate it.
     #[test]
     fn a_finished_job_does_not_rebind_focus_to_another_job() {
         let mut sidebar = SidebarWidget::default();

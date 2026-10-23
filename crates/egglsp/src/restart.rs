@@ -4860,11 +4860,6 @@ mod tests {
     }
 
     /// Pass 12 — `completion_channel_close_error_names_owner`.
-    ///
-    /// The waiter timeout path returns an error string that
-    /// includes the in-flight owner id so the caller can
-    /// correlate the failure with the original coordinator.
-    /// We assert the owner id appears in the error message.
     #[tokio::test(flavor = "current_thread")]
     async fn completion_channel_close_error_names_owner() {
         use super::super::restart::cancel_restart_ownership;

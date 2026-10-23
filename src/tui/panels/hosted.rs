@@ -225,9 +225,6 @@ impl Placeholder {
     }
 
     /// Headline plus explanation, in that order.
-    ///
-    /// Both lines describe the panel's state; neither one tells the user to go
-    /// somewhere and come back.
     fn lines(&self) -> Vec<ratatui::text::Line<'static>> {
         let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
         match self.state {

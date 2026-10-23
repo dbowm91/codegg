@@ -12108,10 +12108,6 @@ mod tests {
     }
 
     /// A successful apply reloads the file it wrote.
-    ///
-    /// The apply writes to disk behind the editor's buffer, so the buffer is
-    /// stale the moment it lands. A clean buffer is reloaded; otherwise the
-    /// editor would show text that is no longer on disk.
     #[tokio::test]
     async fn a_successful_apply_reloads_the_file_it_wrote() {
         let (state, _daemon) = opened_writer("hello").await;

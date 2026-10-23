@@ -599,12 +599,6 @@ mod tests {
     }
 
     /// The carried path's one-apply-path invariant.
-    ///
-    /// The candidate the editor carries is the material the daemon minted.
-    /// The review displays a parse of its patch text and the request carries
-    /// that same patch text, so what the user reviewed is what would be
-    /// written — and the digest on the request is the daemon's, so the
-    /// daemon's own recomputation still binds it to this exact candidate.
     #[test]
     fn a_carried_candidate_builds_the_request_the_review_displayed() {
         use codegg_protocol::lsp::LspPreviewPatchDto;

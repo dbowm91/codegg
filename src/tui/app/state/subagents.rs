@@ -1,10 +1,9 @@
 //! Active-subagent state for the main buffer's working strip.
 //!
-//! The main buffer previously advertised delegated work only through a
-//! `[...3]` badge in the header. That states *how many* subagents exist and
-//! nothing about *who* they are or what they are doing, so a turn that fans
-//! out to several agents reads as one opaque spinner. This module owns the
-//! rows that make that work legible, plus the tab set opened by selecting one.
+//! That states *how many* subagents exist and nothing about *who* they are or
+//! what they are doing, so a turn that fans out to several agents reads as
+//! one opaque spinner. This module owns the rows that make that work legible,
+//! plus the tab set opened by selecting one.
 //!
 //! Two rules shape the design:
 //!

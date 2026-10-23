@@ -244,10 +244,6 @@ impl ChatDialog {
     }
 
     /// Open the composer for `seed`.
-    ///
-    /// The seed comes from the shared browser, so `r` and `e` behave
-    /// identically here and in the side panel: same author prefill, same
-    /// reply target, same captured revision.
     fn open_seed(&mut self, seed: ChatComposeSeed) {
         if seed.edit_target.is_some() {
             self.mode = ChatMode::Edit;

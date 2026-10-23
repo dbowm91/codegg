@@ -93,9 +93,6 @@ pub struct PermissionRegistry {
     /// `None` (the default) means entries never expire on age alone. The
     /// waiter unregisters on every exit path, so age-based eviction is only a
     /// leak guard for a waiter that was dropped mid-await (a cancelled turn).
-    /// A fixed 310s TTL was previously the *only* expiry, which silently
-    /// denied any approval the user simply had not answered yet — including
-    /// with the router configured to wait indefinitely.
     ///
     /// When the caller sets a real approval timeout it must also raise this
     /// above that timeout, so the router's own timeout wins and unregisters

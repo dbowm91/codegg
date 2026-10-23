@@ -898,9 +898,6 @@ fn parse_key_value(line: &str) -> Result<(String, String), ()> {
 }
 
 /// Parse a configuration value.
-///
-/// A quoted value keeps its content verbatim; an unquoted value ends at the
-/// first `#` or `;`, which Git treats as the start of an inline comment.
 fn parse_value(text: &str) -> Result<String, ()> {
     let trimmed = text.trim_start();
     if let Some(tail) = trimmed.strip_prefix('"') {

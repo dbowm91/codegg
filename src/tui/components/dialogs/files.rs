@@ -366,12 +366,6 @@ impl Component for FilesDialog {
     /// overwrote — focus dot included, so a focused hosted panel and an
     /// unfocused one rendered identically and there was nothing on screen to
     /// say which had the keyboard.
-    ///
-    /// The in-box footer goes too, for the reason the requirement states: in a
-    /// narrow side column it wrapped onto several rows and pushed the listing
-    /// out of the panel, and it duplicated the status line above the composer
-    /// that now carries the same text. `area` is the host's full rect, so
-    /// inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let inner = area.inner(Margin::new(1, 1));
         if inner.height == 0 || inner.width == 0 {

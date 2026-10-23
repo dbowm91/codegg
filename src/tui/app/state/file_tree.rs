@@ -1933,11 +1933,6 @@ mod tests {
 
     /// `l` on a directory at the window's edge: its children cannot be
     /// fetched, so the scope slides and the directory is expanded there.
-    ///
-    /// The scope slides to the directory's **grandparent**: the shallowest
-    /// scope in which the directory's children still fit inside the window,
-    /// so the user keeps the widest context — the directory's parent stays
-    /// visible beside the directory's siblings.
     #[test]
     fn peeking_into_a_directory_at_the_window_edge_slides_the_scope() {
         let root = temp();

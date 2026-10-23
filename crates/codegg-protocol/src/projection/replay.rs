@@ -5,11 +5,6 @@
 //! frontends that subscribe to a canonical session or project
 //! projection stream and receive ordered, committed projection events
 //! backed by durable replay storage.
-//!
-//! The types are wrappers around the existing M1
-//! [`crate::projection::event::ProjectionEnvelope`] and
-//! [`crate::projection::snapshot::SessionProjectionSnapshot`] contracts.
-//! No M1 semantic fields are modified.
 
 use serde::{Deserialize, Serialize};
 

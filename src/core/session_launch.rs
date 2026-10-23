@@ -536,9 +536,6 @@ impl SessionLaunchService {
     /// synthetic owner would fence that run out — `acquire_lease` refuses
     /// a checkout that already has an owner — and nothing would ever
     /// release it, because a synthetic owner has no lifetime.
-    ///
-    /// The checkout therefore stays `ready` and unleased, and the run that
-    /// works in it takes the lease when it needs one.
     async fn reserve_checkout(
         &self,
         record: &SessionLaunchRecord,

@@ -1,10 +1,5 @@
 //! Scheduler configuration: validated, resolved, and default.
 //!
-//! The schema mirrors the proposed `[scheduler]` section from
-//! the Phase 5 plan. The config struct is deserialized from the
-//! `Config` root, validated, and frozen into `ResolvedSchedulerConfig`
-//! that the scheduler, queue, and admission controller consume.
-//!
 //! Defaults are conservative: the scheduler is enabled and mandatory for
 //! daemon-owned work. Standalone harnesses may inject their own scheduler
 //! configuration explicitly.

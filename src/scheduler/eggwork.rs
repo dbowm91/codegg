@@ -1147,11 +1147,6 @@ impl EggworkExecutor {
 
     /// Probe the node, waiting out transient contention on the *same* node.
     ///
-    /// A busy or unreachable node is contention: the attempt waits and
-    /// tries the same node again. A draining node, a missing capability,
-    /// or an identity mismatch is a policy outcome and returns
-    /// immediately — waiting would change nothing.
-    ///
     /// The wait is bounded in every dimension: a wait count, a per-wait
     /// ceiling, and a total deadline. It never re-targets another node
     /// and never falls back to local execution, so an explicitly targeted

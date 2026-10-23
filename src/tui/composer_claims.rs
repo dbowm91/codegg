@@ -472,11 +472,6 @@ pub const COMPOSER_CLAIMS: &[ComposerClaim] = &[
         // ADR-0042 part 4 lists `a` among the letters the composer owns, but
         // its conflict table does not mention it — a gap in an accepted ADR,
         // recorded in the roadmap rather than papered over by editing it.
-        //
-        // The measured facts settled it: `FocusSidebar` already answers to
-        // `Ctrl+Alt+S` in **both** maps, so the bare `a` was a second spelling
-        // of an action that already had one. Deleting that spelling loses no
-        // capability, and the letter joins the composer's fixed set.
         status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,

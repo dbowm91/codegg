@@ -7326,12 +7326,6 @@ mod tests {
     /// manual teardown MUST NOT have touched the live client
     /// or runtime.
     ///
-    /// This test is the timeout baseline for
-    /// `manual_detects_generation_advance_during_wait` and
-    /// `manual_same_generation_proceeds_after_wait` — the
-    /// owner-timeout path is the third branch of the manual
-    /// supersession state machine.
-    ///
     /// Test mechanics:
     /// 1. Seed `generation_for_key` with `1`.
     /// 2. Install a gen-1 runtime entry and a gen-1 client

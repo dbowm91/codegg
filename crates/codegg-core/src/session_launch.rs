@@ -31,10 +31,6 @@
 //! launch that dies half-way leaves a row at a known stage, and
 //! [`SqliteSessionLaunchStore::reconcile`] can tell an operator exactly
 //! which stage it reached and what it still owes.
-//!
-//! The module is UI-, server-, plugin- and auth-free: it is the lowest
-//! level at which the daemon reasons about a launch. Authorization lives
-//! in the root crate's adapter.
 
 use std::collections::HashMap;
 

@@ -3914,14 +3914,6 @@ async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 ///
 /// Additive only — one table and one index. No existing table is altered and
 /// no stored data is rewritten.
-///
-/// The table records one row per publication intent, carrying the gitdir
-/// identity the publication is bound to, the fingerprint of the real index the
-/// staging observed (the compare-and-swap operand), the fingerprint of the
-/// index that was staged, and the path of the private staged index. That is
-/// the evidence a recovery pass needs to decide — after a crash — whether the
-/// publication committed, aborted, or is ambiguous, without re-running the
-/// operation.
 async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"

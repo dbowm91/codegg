@@ -32,10 +32,6 @@
 //! identifier, or changing the meaning of an existing risk mapping, is a
 //! major change. Rule-pattern refinements that keep the same identifiers
 //! are patch-level.
-//!
-//! Host orchestration (tools, gates, approvals, daemon wiring) lives
-//! outside this crate. One consumer wires these primitives behind a
-//! `security` tool and gate policy.
 
 pub mod command;
 pub mod dependency;

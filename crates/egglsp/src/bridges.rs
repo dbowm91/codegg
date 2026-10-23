@@ -271,9 +271,6 @@ pub fn semantic_context_to_lsp_items(response: &SemanticContextResponse) -> Vec<
 }
 
 /// Map a `FileDiagnostic`'s severity to a priority score.
-///
-/// Exposed as a small helper so future bridge points can stay
-/// aligned with the existing tool-facing bridge.
 fn semantic_severity_priority(severity_lower: &str) -> u32 {
     if severity_lower.eq_ignore_ascii_case("error") || severity_lower == "1" {
         10

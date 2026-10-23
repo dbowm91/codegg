@@ -3,9 +3,6 @@
 //! Provides [`spawn_tui_task`] for moving high-latency core-backed work
 //! off the event loop while keeping all UI state mutation on the event loop
 //! through typed completion commands.
-//!
-//! [`spawn_registered_tui_task`] extends this with task lifecycle tracking
-//! via [`TuiTaskRegistry`](super::task_lifecycle::TuiTaskRegistry).
 
 use super::app::TuiCommand;
 use super::task_lifecycle::{TuiTaskKind, TuiTaskRegistry};

@@ -1517,11 +1517,6 @@ pub enum TuiCommand {
     },
     /// Provider reasoning control M004: completion of a
     /// `ReasoningPreferenceSet` round-trip.
-    ///
-    /// `previous` is the selection the frontend displayed before the write,
-    /// so a refusal can put the daemon's last known value back. The daemon's
-    /// response wins over the local display; `preference` carries the
-    /// daemon-owned selection.
     ReasoningPreferenceUpdated {
         request_id: u64,
         preference: Option<crate::protocol::core::RuntimePreferenceDto>,

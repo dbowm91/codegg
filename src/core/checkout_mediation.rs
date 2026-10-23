@@ -21,10 +21,6 @@
 //! touches the checkout, it takes no lock, and it holds no permit, so it
 //! cannot invert the lock order between the document revision lease, the
 //! repository lock and the writer permit.
-//!
-//! Ownership: [`codegg_core::checkout_reservation`] owns the durable state
-//! machine; this module is the root crate's adapter and decides what a
-//! refusal means for the caller.
 
 use std::path::Path;
 use std::sync::Arc;

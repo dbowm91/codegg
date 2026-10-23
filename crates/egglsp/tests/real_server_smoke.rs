@@ -2943,13 +2943,6 @@ impl RealServerFixture {
 /// Tier 2 matrix. Future daemon-mode launches (e.g. clangd
 /// with `--background-index`) will set `OperationMode::Daemon`
 /// without changing the trace shape.
-///
-/// Pass 3 — every step recorded by
-/// `RealServerHarness::shutdown_and_collect` is mapped to a
-/// field on `LspShutdownTrace`. The trace is no longer
-/// reconstructed from a single boolean pair; the
-/// `LspClient::request_protocol_shutdown_traced` per-step
-/// protocol trace flows through unchanged.
 fn build_shutdown_trace(
     shutdown_result: &HarnessShutdownResult,
     shutdown_ms: u64,

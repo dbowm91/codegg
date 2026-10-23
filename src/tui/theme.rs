@@ -1,8 +1,5 @@
 //! Theming system for the TUI.
 //!
-//! This module provides the [`Theme`] struct containing all color definitions for the UI.
-//! Themes are defined as static data and converted to runtime themes at startup.
-//!
 //! ## Available Themes
 //!
 //! The module includes 31 built-in themes:

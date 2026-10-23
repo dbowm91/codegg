@@ -62,13 +62,6 @@ pub enum LspContextError {
 /// invoke provider methods **sequentially** (every `.await` is on a
 /// single trait method, never combined with `join!` / `tokio::spawn`).
 ///
-/// This contract matters for provenance-aware adapters like
-/// [`crate::evidence_adapter::ServiceLspEvidenceProvider`], which
-/// record per-call provenance in a shared side-channel slot. If two
-/// trait methods are invoked concurrently on the same adapter
-/// instance, the second call would clobber the first caller's
-/// provenance before that caller could read it.
-///
 /// Mock providers (used in tests) are free to ignore this contract
 /// — they have no side-channel — but production wiring must enforce
 /// it. See

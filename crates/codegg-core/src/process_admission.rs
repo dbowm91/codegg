@@ -27,11 +27,6 @@
 //! 2. The checkout's worktree record names the **lease owner run**.
 //! 3. The owner run belongs to a **live** (non-terminal) agent-run group.
 //!
-//! A checkout with a live group behind it is *reserved*: it is a shared
-//! checkout, and the restricted profile forbids every unqualified process
-//! surface there. A checkout with no live group behind it is ordinary: shells
-//! keep working exactly as they did before this milestone.
-//!
 //! # What this module is not
 //!
 //! It is **not** a process supervisor, a sandbox, or a promise that a

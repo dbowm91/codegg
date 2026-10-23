@@ -26,8 +26,6 @@
 //!   -> command-intent classify/plan (observe vs active route)
 //!   -> spawn (raw shell) or scheduler submission (active route)
 //! ```
-//!
-//! No function in this module spawns a process or submits a scheduler job.
 
 use std::path::Path;
 

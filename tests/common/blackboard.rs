@@ -9,12 +9,6 @@
 //! durable claim store over that database. This module is that fixture, so
 //! the two suites measure and assert against the **same** state — a
 //! comparison whose arms used different fixtures would not be a comparison.
-//!
-//! The fixture models the real group hierarchy, because the group service
-//! enforces it: the owner is the parent, every member is a child of the
-//! owner one level deeper, and the whole group is rooted at the owner. A
-//! top-level delegated run has depth 1, so the owner has depth 1 and its
-//! members have depth 2.
 
 use std::path::Path;
 use std::process::Command;

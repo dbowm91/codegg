@@ -763,9 +763,6 @@ impl CoreDaemon {
 
 /// The effective-default preference projection for a principal that has no
 /// stored row yet.
-///
-/// No explicit selection: the turn inherits the agent / model-profile
-/// default.
 fn default_preference_dto(principal_id: String) -> crate::protocol::core::RuntimePreferenceDto {
     crate::protocol::core::RuntimePreferenceDto {
         principal_id,
