@@ -180,7 +180,21 @@ C006 therefore did not reopen them:
   would break it at an arbitrary character. `row_cells` still skips the
   sequence whole, and the fixture set in
   `tui_render_cost::the_cached_composer_draws_the_same_rows_as_a_fresh_one`
-  carries an OSC-8 hyperlink.
+  carries an OSC-8 hyperlink. The change to `row_cells` is a **cost** change:
+  the per-character widths are now measured in one pass instead of by
+  re-measuring the prefix for every character, and the escape sequence is
+  skipped as one atomic token in both — the sequence's bytes are on no cell
+  in either.
+* **Confirmed unchanged:** the **one producer** of the transcript's row
+  count. `build_message_rows` is still the only producer of the rows, the
+  layout cache is still their index, and the scrollbar's row count and the
+  drawn rows are still the same rows. The caches added here memoize rows
+  that the producer already emitted; none of them emits a row.
+* **Confirmed unchanged:** the two recorded defects of those lines — the
+  transcript's **search-highlight** and **search-scroll** defects, and the
+  plain `wrap_to_strings` engine's lack of escape-atomicity on the
+  tool-output path. Neither the search path nor the plain engine was
+  touched, so neither defect was fixed nor moved.
 
 ## 6. Requirement-to-evidence matrix
 
