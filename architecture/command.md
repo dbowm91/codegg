@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 168 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 169 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,10 +20,9 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 168 hardcoded commands (highest priority)
+1. **Built-in commands**: 169 hardcoded commands (highest priority)
 2. **Config commands**: From the `commands` section of the config file
-   (`codegg.jsonc` / `codegg.json` / `config.json`)
-3. **Project commands**: From `command/` or `commands/` directories under the
+   (`codegg.jsonc` / `codegg.json` / `config.json`)3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
 
 Built-in commands take precedence — duplicates from config/files are
@@ -167,7 +166,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (160 variants, `src/tui/command.rs:112`).
+built-in executable operation (161 variants, `src/tui/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -254,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (168 total)
+### Built-in Commands (169 total)
 
 Representative built-ins:
 
@@ -294,6 +293,7 @@ Representative built-ins:
 | `/import` | | Import session |
 | `/timestamps` | `toggle-timestamps` | Toggle timestamps |
 | `/thinking` | `toggle-thinking` | Toggle thinking display |
+| `/expand-all` | `expand-disclosures`, `collapse-all` | Expand or collapse every tool-call and reasoning disclosure in the transcript; the same gesture as the `Ctrl+Alt+O` chord |
 | `/reasoning` | `reasoning-effort`, `thinking-budget` | Cycle extended thinking: default / effort / off |
 | `/models` | `/model` | Switch model |
 | `/models-refresh` | `refresh-models` | Refresh model list |
@@ -395,7 +395,7 @@ supports: `description`, `agent`, `model`, `template`, `runtime`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 168**: Guarded by
+- **Built-in count is 169**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -429,12 +429,11 @@ cargo test -p codegg -- every_builtin_entry_has_coherent_action
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-168 count stays in sync with this documentation. The two
+169 count stays in sync with this documentation. The two
 `command_docs_*` tests parse **this file** and fail on drift, so a count
 bump means updating this document and the registry pin together. The
 `command_docs_*` pair also guards the `BuiltinSlashAction` variant count
 that the registry-length guard cannot see.
-
 ## Related Docs
 
 - [tui.md](tui.md) — TUI command input handling and dispatch
@@ -480,10 +479,10 @@ Changes made in this pass:
   two registry/action coherence guards individually instead of repeating
   the same `cargo test -p codegg -- command` line twice.
 
-Verified accurate and left unchanged: the count claims — 168 built-in
-commands and 160 `BuiltinSlashAction` variants — both re-measured against
-source (`CommandRegistry::built_in_commands()` yields 168 entries and the
-enum has 160 variants); `CommandDomain` (11, `command.rs:22`),
+Verified accurate and left unchanged: the count claims — 169 built-in
+commands and 161 `BuiltinSlashAction` variants — both re-measured against
+source (`CommandRegistry::built_in_commands()` yields 169 entries and the
+enum has 161 variants); `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction` (5,
 `command.rs:313`), the TUI `Command` struct fields (`command.rs:322`), core
@@ -507,12 +506,13 @@ drifts.
 
 Verified 2026-10-13 against `src/tui/command.rs` and `src/command/mod.rs`,
 re-verified 2026-10-19 after C007 added `/subagent-send`, and re-verified
-2026-10-20 after Eggwork M002 added `/nodes`:
+2026-10-20 after Eggwork M002 added `/nodes`, and re-verified
+2026-10-23 after the TUI text-rendering line added `/expand-all`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1217`) asserts 168, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 168.
-Also verified the 168 built-in registry length, `BuiltinSlashAction`
-(160 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
+(`command.rs:1217`) asserts 169, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 169.
+Also verified the 169 built-in registry length, `BuiltinSlashAction`
+(161 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:313`), the TUI `Command` struct fields
@@ -582,3 +582,21 @@ ownership migration and M006 closure"), which added 30 lines near the top of
 `crates/codegg-config/src/schema.rs:1381`->`:1416` in both the section heading
 and the note below it, re-checked to land on the struct declaration. No
 `src/command/` reference in this document was affected.
+
+One row moved on **2026-10-23** when the TUI text-rendering line added its
+expand-all gesture: the built-in command count is **169** and the
+`BuiltinSlashAction` variant count is **161**. The new command is
+`/expand-all` (aliases `expand-disclosures`, `collapse-all`), which expands or
+collapses every tool-call and reasoning disclosure in the transcript; it is the
+same gesture as the `Ctrl+Alt+O` chord and dispatches to the same handler, so
+the toast is identical. The count pins live in two files and move together:
+`built_in_command_count_matches_release_docs` in `src/tui/command.rs` (the
+registry length) and `command_docs_count_matches_registry` (this document's
+counts, which the test parses and fails on drift). The variant total has its
+own source-backed assertion,
+`command_docs_builtin_slash_action_variant_count_matches_source`, which reads
+the `(N variants` claims here against the enum. The two `N variants` claims in
+this document were corrected to 161 against the enum, and the four
+built-in-total claims to 169 against the registry; the **2026-10-21** paragraph
+above is left as it was written, because it is a dated historical record of
+that merge rather than a live claim.

@@ -203,6 +203,16 @@ pub enum InputAction {
     CycleModelForward,
     CycleModelBackward,
     ToggleReasoning,
+    /// Expand every tool call and every reasoning block in the transcript,
+    /// or collapse every one of them.
+    ///
+    /// The disclosure state is per part, so the per-message toggles reach one
+    /// message at a time. This is the gesture that opens the whole transcript
+    /// for reading — and closes it again on the next press.
+    ///
+    /// Model prose is not a disclosure and is not touched: it is never
+    /// collapsed, so there is nothing to expand.
+    ExpandAllDisclosures,
     Quit,
     /// Explicit, unconditional exit (Ctrl+C).
     ///
@@ -312,6 +322,9 @@ pub enum ActionKey {
     CycleModelForward,
     CycleModelBackward,
     ToggleReasoning,
+    /// Expand every tool call and every reasoning block in the transcript, or
+    /// collapse every one of them.
+    ExpandAllDisclosures,
     Quit,
     ForceQuit,
     ExternalEditor,
@@ -382,6 +395,7 @@ impl ActionKey {
             Self::CycleModelForward,
             Self::CycleModelBackward,
             Self::ToggleReasoning,
+            Self::ExpandAllDisclosures,
             Self::Quit,
             Self::ForceQuit,
             Self::ExternalEditor,
@@ -447,6 +461,7 @@ impl ActionKey {
             Self::CycleModelForward => InputAction::CycleModelForward,
             Self::CycleModelBackward => InputAction::CycleModelBackward,
             Self::ToggleReasoning => InputAction::ToggleReasoning,
+            Self::ExpandAllDisclosures => InputAction::ExpandAllDisclosures,
             Self::Quit => InputAction::Quit,
             Self::ForceQuit => InputAction::ForceQuit,
             Self::ExternalEditor => InputAction::ExternalEditor,
@@ -525,6 +540,7 @@ impl ActionKey {
             InputAction::CycleModelForward => Self::CycleModelForward,
             InputAction::CycleModelBackward => Self::CycleModelBackward,
             InputAction::ToggleReasoning => Self::ToggleReasoning,
+            InputAction::ExpandAllDisclosures => Self::ExpandAllDisclosures,
             InputAction::Quit => Self::Quit,
             InputAction::ForceQuit => Self::ForceQuit,
             InputAction::ExternalEditor => Self::ExternalEditor,
@@ -590,6 +606,7 @@ impl ActionKey {
             Self::CycleModelForward => "Cycle model forward",
             Self::CycleModelBackward => "Cycle model backward",
             Self::ToggleReasoning => "Toggle reasoning",
+            Self::ExpandAllDisclosures => "Expand or collapse every detail (Ctrl+Alt+O)",
             Self::Quit => "Quit",
             Self::ForceQuit => "Force quit",
             Self::ExternalEditor => "External editor",
@@ -1167,6 +1184,23 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('o')),
         InputAction::OpenWorkspaceDashboard,
     );
+    // Ctrl+Alt+O expands every tool call and every reasoning block in the
+    // transcript, and collapses every one of them on the next press.
+    //
+    // The chord is `Ctrl+Alt` and not `Ctrl+Shift`, because the app never
+    // pushes keyboard-enhancement flags (`src/tui/terminal.rs`): in legacy
+    // xterm encoding `Ctrl+Shift+O` is the same byte as `Ctrl+O`, so a
+    // `Ctrl+Shift+O` binding would be unreachable and the key would fall
+    // through to the workspace dashboard this map keeps. `Ctrl+Alt+O`
+    // arrives as ESC plus one control byte, which crossterm reports as
+    // CONTROL|ALT — unambiguous against both `Ctrl+O` and bare `Alt+O`.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('o'),
+        ),
+        InputAction::ExpandAllDisclosures,
+    );
     map
 }
 
@@ -1409,6 +1443,18 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::CONTROL, KeyCode::Char('o')),
         InputAction::OpenWorkspaceDashboard,
     );
+    // Ctrl+Alt+O expands every tool call and every reasoning block in the
+    // transcript, and collapses every one of them on the next press. The
+    // same chord as insert mode: a capability is not a keymap flavour, and
+    // the chord is `Ctrl+Alt` because `Ctrl+Shift+O` cannot be decoded in
+    // legacy xterm encoding.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('o'),
+        ),
+        InputAction::ExpandAllDisclosures,
+    );
 
     map
 }
@@ -1619,6 +1665,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
+            key: "Ctrl+Alt+O",
+            action: "Expand or collapse every detail (Ctrl+Alt+O)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
             key: "PgUp/PgDn",
             action: "Scroll viewport",
             condition: None,
@@ -1646,10 +1698,10 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "j/k",
             action: "Navigate up/down",
-            // The composer claims `j` and `k` when its buffer has more than
-            // one line (ADR-0042), so transcript scroll is what is left of
-            // the pair on a single-line buffer.
-            condition: Some("single-line composer buffer"),
+            // The composer claims `j` and `k` when its **content does not fit
+            // its box** (ADR-0042's amendment), so transcript scroll is what
+            // is left of the pair on a composer whose content fits.
+            condition: Some("composer content fits its box"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1786,6 +1838,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "Ctrl+O",
             action: "Open Workspace view (selected-project chat)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+Alt+O",
+            action: "Expand or collapse every detail (Ctrl+Alt+O)",
             condition: None,
         },
         HelpEntry {
@@ -3521,5 +3579,70 @@ mod tests {
 
         let dialog_entries = help_entries_for_mode(HelpMode::Dialog);
         assert!(dialog_entries.iter().all(|e| e.mode == HelpMode::Dialog));
+    }
+
+    /// The expand-all chord is bound in **both** maps, to the same action.
+    ///
+    /// A capability that exists in one keymap only is a capability the user
+    /// has or does not have depending on which keymap they picked, which is
+    /// the defect the two-map rule exists to prevent.
+    #[test]
+    fn the_expand_all_chord_is_bound_in_both_maps() {
+        let chord = (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('o'),
+        );
+        for (name, map) in [
+            ("default", build_bindings(None, false)),
+            ("vim", build_bindings(None, true)),
+        ] {
+            assert_eq!(
+                map.get(&chord),
+                Some(&InputAction::ExpandAllDisclosures),
+                "the expand-all chord must reach the expand-all action in the {name} map"
+            );
+        }
+    }
+
+    /// The chord is `Ctrl+Alt`, never `Ctrl+Shift`.
+    ///
+    /// The app never pushes keyboard-enhancement flags, so the terminal is in
+    /// legacy xterm encoding where `Ctrl+Shift+O` is the same byte as
+    /// `Ctrl+O` — a `Ctrl+Shift+O` binding would be unreachable and the key
+    /// would fall through to the workspace dashboard. A `Ctrl+Alt+O` chord
+    /// arrives as ESC plus one control byte, which is unambiguous against
+    /// both `Ctrl+O` and bare `Alt+O`.
+    #[test]
+    fn no_map_binds_a_control_shift_chord() {
+        for (name, map) in [
+            ("default", build_bindings(None, false)),
+            ("vim", build_bindings(None, true)),
+        ] {
+            for (modifiers, code) in map.keys() {
+                assert!(
+                    !(modifiers.contains(KeyModifiers::CONTROL)
+                        && modifiers.contains(KeyModifiers::SHIFT)),
+                    "the {name} map binds {code:?} with CONTROL|SHIFT, which legacy \
+                     xterm encoding cannot deliver — use CONTROL|ALT instead"
+                );
+            }
+        }
+    }
+
+    /// `Ctrl+O` still opens the workspace dashboard in both maps. The new
+    /// chord is additive: it does not take the dashboard's key.
+    #[test]
+    fn the_workspace_dashboard_keeps_ctrl_o_in_both_maps() {
+        let dashboard = (KeyModifiers::CONTROL, KeyCode::Char('o'));
+        for (name, map) in [
+            ("default", build_bindings(None, false)),
+            ("vim", build_bindings(None, true)),
+        ] {
+            assert_eq!(
+                map.get(&dashboard),
+                Some(&InputAction::OpenWorkspaceDashboard),
+                "the workspace dashboard must keep Ctrl+O in the {name} map"
+            );
+        }
     }
 }

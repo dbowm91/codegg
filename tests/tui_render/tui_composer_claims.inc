@@ -35,6 +35,8 @@ use codegg::tui::composer_claims::{self, COMPOSER_CLAIMS};
 use codegg::tui::input::{build_bindings, InputAction, InputMode};
 use codegg::tui::route::Route;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -578,63 +580,144 @@ fn the_vim_maps_i_no_longer_opens_the_command_palette() {
 // The conditional pair
 // ---------------------------------------------------------------------------
 
-/// `k` still scrolls the transcript when the composer buffer is a single
-/// line: the claim is conditional, and the condition does not hold.
+/// Lay the composer out, so the claim has a measurement.
+///
+/// The `j`/`k` claim is a **layout** fact: the composer claims them when its
+/// content does not fit its box, and the box only exists once the app has
+/// rendered. A test that presses a key without rendering first is testing
+/// the *unmeasured* case, where the key falls through.
+fn render_app(app: &mut App, width: u16, height: u16) {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("render the app");
+}
+
+/// A prompt whose content overflows the composer's box.
+///
+/// The box grows to fit its content up to the pane's budget, so "overflows"
+/// means "more rows than the box can show" — which takes a text long enough
+/// to wrap onto more rows than the box has.
+fn overflowing_prompt() -> String {
+    (0..200).map(|index| format!("w{index:03} ")).collect()
+}
+
+/// A transcript with enough lines to scroll in both directions.
+///
+/// The scroll assertions below are only meaningful when the transcript can
+/// actually move: a transcript with nothing in it cannot scroll down, so a
+/// "the transcript did not scroll" assertion would hold for the wrong reason.
+///
+/// The test app has no session, so the transcript is never laid out by the
+/// render: the widget's width and viewport are set here, or its line count
+/// is zero and it cannot scroll at all.
+fn scrollable_transcript(app: &mut App) {
+    for index in 0..40 {
+        app.messages_state
+            .messages
+            .add_user_message(format!("transcript line {index}"), None);
+    }
+    app.messages_state.messages.set_width(80);
+    app.messages_state.messages.set_visible_height(10);
+}
+
+/// `k` still scrolls the transcript when the composer's content **fits** its
+/// box: the claim is conditional, and the condition does not hold.
 #[test]
-fn k_still_scrolls_the_transcript_on_a_single_line_composer() {
+fn k_still_scrolls_the_transcript_when_the_composers_content_fits() {
     let mut app = test_app();
+    scrollable_transcript(&mut app);
     app.prompt_state.prompt.set_text("one line".to_string());
-    app.messages_state.messages.scroll = 5;
     normal_mode(&mut app);
+    render_app(&mut app, 80, 24);
+    assert!(
+        !app.prompt_state.prompt.content_overflows(),
+        "precondition: the composer's content fits its box"
+    );
+    app.messages_state.messages.scroll = 5;
 
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
 
     assert_eq!(
         app.messages_state.messages.scroll, 4,
-        "`k` must still scroll the transcript on a single-line composer buffer"
+        "`k` must still scroll the transcript when the composer's content fits"
     );
 }
 
-/// `k` is the composer's when the buffer has more than one line, so the
+/// `k` is the composer's when its content **overflows** the box, so the
 /// transcript does not scroll.
 #[test]
-fn k_is_claimed_on_a_multi_line_composer() {
+fn k_is_claimed_when_the_composers_content_overflows_its_box() {
     let mut app = test_app();
-    app.prompt_state.prompt.set_text("one\ntwo".to_string());
-    app.messages_state.messages.scroll = 5;
+    scrollable_transcript(&mut app);
+    app.prompt_state.prompt.set_text(overflowing_prompt());
     normal_mode(&mut app);
+    render_app(&mut app, 80, 24);
+    assert!(
+        app.prompt_state.prompt.content_overflows(),
+        "precondition: the composer's content overflows its box"
+    );
+    app.messages_state.messages.scroll = 5;
 
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
 
     assert_eq!(
         app.messages_state.messages.scroll, 5,
-        "`k` must be the composer's on a multi-line composer buffer"
+        "`k` must be the composer's when the content overflows the box"
     );
 }
 
 /// `j` behaves the same way as `k`: the pair is one conditional claim.
 #[test]
 fn j_follows_the_same_conditional_claim_as_k() {
+    // A composer whose content fits: the transcript scrolls.
     let mut app = test_app();
+    scrollable_transcript(&mut app);
     app.prompt_state.prompt.set_text("one line".to_string());
-    app.messages_state.messages.scroll = 5;
     normal_mode(&mut app);
+    render_app(&mut app, 80, 24);
+    app.messages_state.messages.scroll = 5;
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
-        app.messages_state.messages.scroll, 5,
-        "`j` must not scroll the transcript on a single-line composer buffer"
+        app.messages_state.messages.scroll, 6,
+        "`j` must scroll the transcript when the composer's content fits"
     );
 
+    // A composer whose content overflows: the composer takes the key.
     let mut app = test_app();
-    app.prompt_state.prompt.set_text("one\ntwo".to_string());
-    app.messages_state.messages.scroll = 5;
+    scrollable_transcript(&mut app);
+    app.prompt_state.prompt.set_text(overflowing_prompt());
     normal_mode(&mut app);
+    render_app(&mut app, 80, 24);
+    app.messages_state.messages.scroll = 5;
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         app.messages_state.messages.scroll, 5,
-        "`j` must be the composer's on a multi-line composer buffer"
+        "`j` must be the composer's when the content overflows the box"
+    );
+}
+
+/// The claim is not live before the composer has been laid out.
+///
+/// The condition is a layout fact, and a composer that has never been drawn
+/// has no measurement at all. The key falls through to the transcript rather
+/// than being swallowed in a state the user cannot see.
+#[test]
+fn the_claim_is_not_live_before_the_composer_has_been_laid_out() {
+    let mut app = test_app();
+    app.prompt_state.prompt.set_text("one\ntwo".to_string());
+    normal_mode(&mut app);
+    app.messages_state.messages.scroll = 5;
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+
+    assert_eq!(
+        app.messages_state.messages.scroll, 4,
+        "an unlaid-out composer must not claim the key: the transcript's scroll is \
+         the visible action"
     );
 }
 

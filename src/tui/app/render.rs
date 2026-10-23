@@ -249,7 +249,10 @@ impl App {
         let prompt_height = self
             .prompt_state
             .prompt
-            .needed_height(max_prompt_height)
+            // The pane's width, not the prompt chunk's: the chunk's width is
+            // what this height is asking for, so using it would be circular.
+            // The pane's width is the width the composer wraps at.
+            .needed_height(max_prompt_height, pane_area.width)
             .saturating_add(todo_rows)
             .saturating_add(tasks_rows)
             .saturating_add(hint_rows);
@@ -1982,10 +1985,15 @@ impl App {
             "Ask anything…".to_string()
         };
         self.prompt_state.prompt.set_placeholder(placeholder);
-        let visible_lines = area.height.saturating_sub(2) as usize;
+        // The composer wraps at the pane's width, which is the width this
+        // chunk has: the layout splits the pane vertically, so the chunk's
+        // width is the pane's width and the height the box asked for was
+        // computed against it.
+        self.prompt_state.prompt.set_wrap_width(area.width);
+        let visible_rows = self.prompt_state.prompt.visible_text_rows(area.height);
         self.prompt_state
             .prompt
-            .ensure_cursor_visible_with_width(visible_lines, area.width as usize);
+            .ensure_cursor_visible_with_width(visible_rows, area.width);
 
         // The cursor rules and the badge read the same two facts: the resolved
         // mode and the derived keyboard ownership. A caret that disagrees with

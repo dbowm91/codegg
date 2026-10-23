@@ -1510,6 +1510,63 @@ numbers are its own gutter and the wrap budget is `width - gutter`. A path that
 skips the wrap is not merely clipped, it is *unreachable*: there is no
 horizontal scrollbar and `scroll_left`/`scroll_right` are no-ops.
 
+#### The styled, word-aware wrap
+
+`src/tui/wrap.rs` owns a second engine, for text that carries a style:
+`wrap_styled_spans_by_word_rows(spans: &[Span<'static>], width: u16) ->
+Vec<WrappedRow>` and `wrap_styled_spans_by_word(spans: &[Span<'static>],
+width: u16) -> Vec<Line<'static>>`. The main buffer and the composer share
+it. Its contract:
+
+- **It breaks at whitespace.** Words are placed greedily, separated by a single
+  space, and trailing whitespace is dropped. A token that alone is wider than
+  the row is hard-broken at character boundaries — exactly as `wrap_to_strings`
+  does, so the two engines agree.
+- **It preserves each word's style.** A span is split at word boundaries
+  rather than flattened, so a style that spans a boundary survives on both
+  sides of it.
+- **It preserves byte offsets.** `WrappedRow { slices, source_start,
+  source_end, width }` and `StyledSlice { text, style, source_start,
+  source_end }` report the byte range of the source behind them:
+  `source_start` is inclusive, `source_end` is exclusive, and both are offsets
+  into the concatenation of the input spans' contents.
+- **A terminal control sequence is one atomic, zero-width token.** It never
+  ends a word, never consumes row width, and is never split across two rows.
+  The OSC-8 hyperlink form therefore keeps its opener and its closer whole
+  across a wrap, and the URL duplicated in the sequence's parameters consumes
+  **no** row width — a hyperlink's target is a parameter of the sequence, not
+  text.
+
+A `width` of zero returns the source as one unwrapped row, and an empty source
+returns one empty row, so the row count is never zero for a non-empty buffer.
+
+**Which paths use it.** The model-authored text — the assistant prose, the
+reasoning body and the streaming tail — reaches the renderer through the
+markdown path (`wrap_markdown_spans` → `wrap_styled_spans_by_word`), and every
+markdown text node goes with it: paragraphs, headings, block quotes and list
+items. **Fenced code blocks and the `read` tool's output stay character-aware**
+(`wrap_code_spans`): a code block broken mid-word is normal and expected, and
+code must not be re-flowed at word boundaries.
+
+The **fallback style is applied at the call site**: `wrap_markdown_spans`
+re-styles a span whose style is `Style::default()` before wrapping it, because
+the primitive has no fallback-style parameter and a default-styled span would
+otherwise be wrapped unstyled.
+
+**The measured effect.** The character-aware wrapper emitted one span per
+character, so the per-layout allocation grew with the length of the answer. On
+a 291-character paragraph at width 60 the allocation fell from **290 spans to
+82 slices** (3.5×); on a 411-character paragraph, from **409 spans to 118
+slices** (3.5×). The **row count goes up by one per paragraph** (5 → 6 and
+7 → 8): the word-aware wrap leaves slack at each row end where the
+character-aware wrap filled every row to the exact column, so a paragraph can
+now occupy one more row than it did. The transcript's scroll range is derived
+from the rows that are drawn, so that extra row is part of the contract rather
+than a rounding difference.
+
+The plain string engine is unchanged and still exists: `wrap_to_strings`,
+`wrap_count`, `ellipsize_to_width` and `visible_width`.
+
 ### Chat viewport scrolling
 
 The row index (`src/tui/components/messages/layout.rs`) is the contract between
@@ -1557,6 +1614,180 @@ all read that one index, so they cannot disagree. `MessageLayoutCache::new` and
 `find_visible_range` no longer exist — the render slices rows directly instead
 of rebuilding a window of neighbouring messages and converting a cache offset
 into a position inside it.
+
+### The detail view: the payload, not the banner
+
+An expanded tool call shows what the call was and what it returned, in a form a
+person can read. The formatting is a **display-side** projection and lives in
+`src/tui/components/messages.rs`:
+
+- `extract_trust_frame_payload_for_display(output: &str) -> &str` pulls the
+  payload out of the external-content trust frame. The frame header is
+  recognised **only in the output's first line** and only within a bounded byte
+  budget (`TRUST_FRAME_HEADER_MAX_BYTES`); it has to name a known marker
+  (`TRUST_FRAME_MARKERS`) *and* carry the frame's trust attribute, so a
+  bracketed word that is not a frame is not mistaken for one. The closing
+  marker is found with one reverse search over the body. An **unframed output
+  is returned unchanged**, and a frame whose **closing marker is missing**
+  yields the payload after the banner.
+- `format_payload_for_display(payload: &str) -> String` pretty-prints JSON
+  (`serde_json::to_string_pretty`) and falls back to the **raw text** otherwise.
+  An empty payload formats to nothing without failing.
+- The structured tools — `websearch`, `research`, `webfetch` — render the
+  **outline** (`render_structured_output_outline`): an indented result set that
+  prints every leaf scalar, which *is* the readable form of the payload rather
+  than a second copy of the document beside it. Every other output renders
+  pretty-printed JSON when it parses and the raw text otherwise. The tool
+  **input** gets the same treatment, so a JSON argument is shown pretty-printed
+  instead of as one dense line.
+
+The **trust banner is not shown**. The extraction removes it, and the header's
+expand affordance and the "(+N more lines)" count come from the **drawn
+body** — the count has to describe the rows that are actually drawn. (`read`
+is the one exception: it renders its own numbered code, so its count still
+comes from the raw output.)
+
+The frame itself is a prompt-injection defence and it is **not** weakened by
+this: `src/search_backend/framing.rs` is unchanged, and the model path still
+receives the frame byte for byte. The TUI only *reads* it, and it duplicates
+the marker names (`TRUST_FRAME_MARKERS`) because the framing module is the
+model path's contract and is not the TUI's to change. See
+`architecture/search_backend.md#trust-framing-framingrs`.
+
+### The disclosure model: collapsed by default
+
+The transcript's disclosures are **collapsed by default**. A tool call is one
+row and a reasoning block is one row, so a screen of tool calls can be skimmed
+rather than scrolled. The state is per **part** — `MsgPart::ToolCall {
+expanded }` and `MsgPart::Reasoning { collapsed }` — not per message, and
+model prose is not a disclosure at all.
+
+**The collapsed tool call is one row.** The tool-call arm renders no preview
+row and no `"(+N more lines)"` hint while the call is collapsed. The
+transcript's one remaining `"(+N more lines, click or toggle to expand)"`
+hint belongs to the separate `MsgPart::ShellCell` part, which keeps its own
+preview rows.
+
+**The header is one row, and the ellipsis lands on the target alone.** The row
+is `"  " + icon + " " + name`, then the **target**, then the summary, then the
+hidden-output counter, then the affordance (`expand` / `collapse`). The
+target's budget is `header_width − (name + summary + counter + toggle) − 1`,
+where `header_width` is the widget's width less `TOOL_HEADER_INDENT`. The
+icon, the name and the affordance are never **ellipsized**; only the target
+is. The old 400-column target ceiling (`TOOL_TARGET_MAX_WIDTH`) is **gone**
+from the tree — the row's remaining width is the only ceiling.
+
+**The hidden-output count moves into the header.** A collapsed call shows
+` (+N lines)` between the summary and the affordance, and the **expanded**
+header drops it: with the content visible, the count of hidden lines is noise.
+The count comes from the **drawn body** — the same `output_line_count` the
+rows are built from — so it describes the content that *would* be drawn rather
+than the raw output. (`read` is the one exception: it renders its own
+numbered code, so its count comes from the raw output.) While the call is
+collapsed the daemon-side summary's own `output_lines` entry is suppressed, so
+a row never shows two line counts.
+
+**Reasoning blocks default to collapsed.** Every construction site of a
+reasoning part sets `collapsed: true` — four in
+`src/tui/components/messages.rs`, one in `src/tui/commands/sessions.rs`. The
+collapsed header reads `Thinking`, or `Thought for <duration>` once the block
+has run. The global `show_thinking` switch hides the reasoning **body** but
+still draws that one-line header.
+
+**Model prose is never collapsed.** The assistant's prose is always drawn in
+full, and the expand-all gesture does not touch it.
+
+Two exceptions to the one-row header, and both are deliberate:
+
+- **A pending or running call with no output yet draws a second row.** The
+  row below the header reads `queued — waiting on your approval · Enter to
+  review`, `queued — not started yet (waiting on admission or approval)`, or
+  `running — waiting for command/tool output...`. It is the **backup way back
+  into a dismissed approval**, so it is kept: the one-row promise holds for a
+  call *with* output.
+- **The summary yields at narrow widths.** When the fixed parts do not fit,
+  the summary (duration, exit code) is dropped so the name, the counter and
+  the affordance survive. The affordance is never clipped.
+
+### A row resolves to its part, not to its message
+
+`src/tui/components/messages/layout.rs` records the **part boundaries**
+alongside the rows:
+
+```rust
+pub enum RowPart {
+    ToolCall { part_idx: usize },
+    Reasoning { part_idx: usize },
+}
+pub struct PartSpan { pub part: RowPart, pub start: usize, pub count: usize }
+```
+
+`MessageLayoutCache` gains `part_offsets: Vec<(usize, RowPart, usize, usize)>`
+— `(msg_idx, part, first row index, row count)` per expandable part, in row
+order. The **one** row producer records the runs: `build_message_rows` returns
+them, and its assistant branch `build_assistant_parts_lines` pushes a
+`PartSpan` at the end of the reasoning arm and at the end of the tool-call
+arm. `push_message` then translates the spans through the blank-collapse, so a
+part's recorded range is the range of what is **drawn**, not of what was
+emitted. `find_part_at_line` binary-searches `part_offsets` exactly as
+`find_message_at_line` does `message_offsets`, and the message-level
+resolution is untouched.
+
+The resolution path is `MessagesWidget::part_at_viewport_line(line)` →
+`cache.find_part_at_line(scroll_position() + line)` →
+`Option<(msg_idx, RowPart)>`.
+
+The **click handler** (`App::dispatch_click` → `on_click`, the viewport arm)
+resolves the **part** and toggles **that** part:
+
+- a row that belongs to a tool call toggles the tool call
+  (`toggle_tool_call_part`);
+- a row that belongs to a reasoning block toggles the reasoning block
+  (`toggle_reasoning_part`);
+- a row that belongs to **neither** toggles **nothing** — an explicit no-op,
+  not a fallback to the message-level toggle.
+
+The old ordering asked "does this message have reasoning?" before "does it
+have tool output?", so in a message carrying both the reasoning arm won every
+time and the tool call could never be reached by clicking. The reasoning block
+is now reachable only by clicking a reasoning row. A pending call's **status
+row** resolves to the tool call.
+
+### The expand-all gesture
+
+One gesture opens the whole transcript. The action is
+`InputAction::ExpandAllDisclosures`, and the matching `ActionKey` is
+`ActionKey::ExpandAllDisclosures`, so it is user-rebindable and appears in the
+keybind editor.
+
+- The chord is **`Ctrl+Alt+O`** —
+  `(KeyModifiers::CONTROL | KeyModifiers::ALT, KeyCode::Char('o'))` — and it
+  is bound in **both** maps. It is **`Ctrl+Alt` and not `Ctrl+Shift`** because
+  the app never pushes keyboard-enhancement flags: in legacy xterm encoding a
+  `Ctrl+Shift+O` keystroke arrives indistinguishable from `Ctrl+O` and fires
+  the workspace dashboard. That is the app's **chord contract** (below), and
+  `tests/tui_render/modifier_chords.inc::no_binding_map_contains_a_control_shift_entry`
+  fails if either map binds `CONTROL|SHIFT`.
+- `Ctrl+O` still opens the workspace dashboard in **both** maps. The new chord
+  is additive; it does not take the dashboard's key.
+- The palette command is **`/expand-all`** (aliases `expand-disclosures` and
+  `collapse-all`), dispatched to the same handler, so the toast is identical.
+- The toast reads **"all details expanded"** or **"all details collapsed"**.
+
+Expansion covers every tool call and every reasoning block. Model prose is
+untouched — it is never collapsed, so there is nothing to expand.
+
+**The key-authority guards were repaired, not extended.**
+`scripts/check_tui_composer_key_authority.py` now models **five** chords (the
+new one included) and polices the new chord-only action with its **existing**
+rules: bound in both maps, reachable by a chord and never by the bare claimed
+letter (`o` is the composer's), and documented under its modifier chord. Its
+brace matcher was repaired to be comment- and literal-aware — it previously
+stopped at a `}` inside a comment and so had never seen the second half of the
+vim map. `scripts/check_tui_editor_key_authority.py` had two **stale counts in
+prose** (66 → 72 Normal-mode chords; "three" → "two" guard-block chords),
+corrected against the guard's own summary line. **No new static guard was
+added.**
 
 ### Long Output → Info Dialog
 
@@ -1911,12 +2142,25 @@ disagree about a caret motion: a caret motion is a Helix-parity capability,
 not a keymap flavour.
 
 `j` and `k` are the table's one **conditional** pair, and the condition is
-written on the entry rather than inferred. They are claimed only when the
-composer buffer has more than one line; on a single-line buffer they fall
-through to transcript scroll unchanged, which is why their app-level binding
-survives. A condition that is not written down is how a leak reappears: a
-claim that quietly stops applying looks exactly like a claim that was never
-made.
+written on the entry rather than inferred. The condition is
+`ClaimCondition::ContentOverflowsBox`: the composer claims them when its
+**content does not fit its box** — the wrapped row count exceeds the visible
+row count. On a composer that fits, they fall through to transcript scroll
+unchanged, which is why their app-level binding survives. A condition that is
+not written down is how a leak reappears: a claim that quietly stops applying
+looks exactly like a claim that was never made.
+
+The measure is **rows, not lines**, and it is measured once. The layout pass
+caches it on the widget as `ComposerFit::Unknown` or
+`ComposerFit::Measured { row_count, visible_rows }`, and the claim gate reads
+that cached value, so the gate and the layout cannot disagree. Before the
+composer has been laid out the fit is `Unknown`, the condition does not hold,
+and the keys fall through rather than being swallowed in a state the user
+cannot see. **The exact-fit case is load-bearing**: a composer whose text wraps
+to exactly the box's height *fits* — three rows in a three-row box — and `j`/`k`
+fall through to the transcript; one row more and the composer takes the keys
+and moves the caret one **visual row**, which is the row the caret's byte is
+drawn on, not a newline-separated line of the buffer.
 
 The claim step is consulted **before** the global binding map, in the
 composer branch of the key chain, so it inherits the chain's priority: a
@@ -1982,10 +2226,10 @@ Two consequences of the move are recorded rather than hidden. `ToggleAgentRun`
 left `is_normal_only`, because its only spelling is now a chord, and a chord
 cannot be composed as text; the entry used to exist for the bare `x`. And the
 guard's rule for a re-spelled action is "not a **claimed** key" rather than "not
-a bare character": the three old letters — `x`, `d` and `i` — are all claimed,
-so the claim rule already forbids their bare spellings, while a bare spelling
-of a letter the composer does not claim is exactly what the invariant above
-requires to keep working.
+a bare character": the four old letters — `x`, `d`, `i` and `a` — are all
+claimed, so the claim rule already forbids their bare spellings, while a bare
+spelling of a letter the composer does not claim is exactly what the invariant
+above requires to keep working.
 
 `scripts/check_tui_composer_key_authority.py` polices the table. It reads the
 claim table and the two binding maps, and fails when a letter is claimed
@@ -1993,7 +2237,12 @@ twice, when a claimed letter can still reach an app-level action, when a
 re-spelled chord is missing from a map, when a re-spelled action has no chord
 to reach it by or still answers to a claimed key, when a capital claim misses
 an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only`
-entry. It carries a `--self-test` that injects each
+entry. The same rules now cover the actions that were **born** as a chord: the
+expand-all gesture has no bare spelling at all, so its chord is its only route
+to the user, and it answers to the same three rules — bound in both maps,
+reachable by a chord that is not a claimed key (`o` is the composer's), and
+documented under that chord. It carries a `--self-test`
+that injects each
 violation class, and it is wired into `scripts/verify.sh quick` and CI.
 
 The composer, the editor and the terminal panel now have three separate key
@@ -2395,6 +2644,51 @@ matches the global orientation — `Ctrl+u` toward older output, `Ctrl+d` toward
 newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
 and `y` as separate events, so `prefix_pending` remembers the first key and any
 second key other than `y` disarms it and is then handled normally.
+
+#### The composer's box: wrapped rows, a visual-row scroll, a pinned mode row
+
+The composer paints **wrapped rows**, the scroll is a **visual-row** offset,
+and the caret's drawn cell is the cell of the caret's **byte**.
+`src/tui/composer_geometry.rs` is the geometry module:
+`VisualLayout::new(source, rows)`, `row_count()`, `row_cells(row)`,
+`row_width(row)`, `row_source_start(row)`, `cell_of_byte(byte)`,
+`byte_at(row, column)` and `caret_position(byte)`. The cells and the rendered
+bytes are the same set seen from two sides — every cell holds exactly one
+rendered character and every rendered character is on exactly one cell — so
+"where is the caret" has one answer whether it is asked in bytes or in
+columns.
+
+**The height formula** is `1 (mode row) + min(wrapped_rows, 10 - 1 -
+marker_rows) + marker_rows`, clamped to the **40 % budget**
+(`area.height * 40 / 100`, floor 3) with a minimum of 3 rows. Two bounds, and
+they are not the same bound:
+
+- The **10-row cap is a cap on the box's total rows** — the mode row, the text
+  rows and the marker rows together. It is **not** a limit on how much may be
+  typed: text past the cap stays in the buffer and is reachable by scrolling.
+- The **40 % budget wins** over the cap: on a 15-row screen the budget is 6
+  rows and the box takes 6.
+
+The height is computed against the **pane's** width, not the prompt chunk's.
+The chunk does not exist yet when the height is computed, and the session
+layout splits the pane vertically, so the chunk's width *is* the pane's width;
+using the not-yet-existing chunk's width would be circular.
+
+The **mode row is fixed at the top** of the box and the **marker rows are
+pinned at the bottom**; the text window scrolls between them. This is a
+behaviour change: the mode row used to be the paragraph's first line and the
+markers its last lines, and the scroll offset was applied to the whole
+paragraph — so both scrolled away with the text.
+
+The **horizontal scroll** survives, but it is non-zero only when a row is
+wider than the box — a single character wider than the whole row. With
+wrapping it is zero in every ordinary case.
+
+**`Ctrl+u` and `Ctrl+d` page the composer when it overflows and the transcript
+when it does not**, in the same branch shape the workspace dashboard already
+uses. The page size is the transcript's own rule: the visible height minus
+two, with a floor of one. The page is **not mode-gated** — the same branch
+handles both modes.
 
 #### The selection-manipulation verbs (M008)
 

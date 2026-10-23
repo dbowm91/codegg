@@ -284,15 +284,17 @@ fn the_caret_cell_follows_the_horizontal_scroll() {
     assert_eq!(widget.caret_cell(area), Some((14, 11)));
 }
 
-/// A caret whose line has scrolled off the top is not on screen, so it has
+/// A caret whose row has scrolled off the top is not on screen, so it has
 /// no cell. Returning a cell anyway would put the terminal cursor on a row
 /// that shows something else.
 #[test]
 fn the_caret_cell_is_none_when_the_caret_line_is_scrolled_off() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
-    widget.set_text("one\ntwo\nthree".to_string());
+    widget.set_text("one\ntwo\nthree\nfour".to_string());
     widget.set_cursor(2);
-    widget.scroll = 2;
+    // Four rows of text in a box that shows three: the first row has
+    // scrolled off the top.
+    widget.scroll = 1;
 
     let area = Rect::new(4, 10, 40, 5);
     assert_eq!(widget.caret_cell(area), None);

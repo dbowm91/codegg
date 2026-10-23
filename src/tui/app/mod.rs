@@ -90,7 +90,7 @@ use super::components::dialogs::permission::PermissionDialog;
 use super::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use super::components::dialogs::session::SessionDialog;
 use super::components::dialogs::tree::TreeDialog;
-use super::components::messages::{MessageRole, MessagesWidget, MsgPart};
+use super::components::messages::{MessageRole, MessagesWidget, MsgPart, RowPart};
 use super::components::prompt::PromptWidget;
 use super::components::sidebar::{clean_inline_text, SidebarWidget};
 use super::components::status_bar::{StatusBarWidget, TuiStatusSummary};
@@ -4165,9 +4165,17 @@ impl App {
             && self.composer_holds_keyboard()
             && self.composer_input_mode() == InputMode::Normal
         {
-            let line_count = self.prompt_state.prompt.num_lines();
+            // The fit is the **cached** measurement the layout pass took: the
+            // wrapped row count against the visible row count. It is read, not
+            // recomputed — a second computation of the same fact is a second
+            // answer to it, and the gate and the box must not be able to
+            // disagree. A composer that has never been laid out has no
+            // measurement, and an unmeasured fit holds no conditional claim:
+            // the key falls through rather than being swallowed in a state the
+            // user cannot see.
+            let fit = self.prompt_state.prompt.content_fit();
             if let Some(claim) = crate::tui::composer_claims::claim_for(key.modifiers, key.code) {
-                if claim.condition.holds(line_count) {
+                if claim.condition.holds(fit) {
                     // The claim is consumed here. A reserved verb does
                     // nothing, and that is the point: the letter is the
                     // composer's, so the app's action for it is not
@@ -4347,6 +4355,7 @@ impl App {
             Some(InputAction::CycleModelForward) => self.process_msg(TuiMsg::CycleModelForward),
             Some(InputAction::CycleModelBackward) => self.process_msg(TuiMsg::CycleModelBackward),
             Some(InputAction::ToggleReasoning) => self.process_msg(TuiMsg::ToggleReasoning),
+            Some(InputAction::ExpandAllDisclosures) => self.expand_all_disclosures(),
             Some(InputAction::ToggleTts) => self.process_msg(TuiMsg::ToggleTts),
             Some(InputAction::StopTts) => self.stop_tts(),
             Some(InputAction::ToggleFullscreen) => self.process_msg(TuiMsg::ToggleFullscreen),
@@ -4407,6 +4416,11 @@ impl App {
             Some(InputAction::PageUp) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, -10);
+                } else if self.prompt_state.prompt.content_overflows() {
+                    // The innermost surface first: the composer overflows its
+                    // box, so the page is the composer's. The transcript's
+                    // page is unchanged when the composer fits.
+                    self.prompt_state.prompt.page_up();
                 } else {
                     self.scroll_page_up()
                 }
@@ -4414,6 +4428,8 @@ impl App {
             Some(InputAction::PageDown) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, 10);
+                } else if self.prompt_state.prompt.content_overflows() {
+                    self.prompt_state.prompt.page_down();
                 } else {
                     self.scroll_page_down()
                 }
@@ -6607,6 +6623,11 @@ impl App {
                     "thinking hidden"
                 };
                 self.messages_state.toasts.info(msg);
+            }
+            B::ExpandAllDisclosures => {
+                // The palette twin of the `Ctrl+Alt+O` chord: the same
+                // gesture, the same toast.
+                self.expand_all_disclosures();
             }
             B::Reasoning => {
                 // The option set is the **model's**, not a static ladder:
@@ -9334,6 +9355,12 @@ impl App {
             ClickTarget::Viewport => {
                 if let Some(viewport) = self.viewport_area {
                     let row = y.saturating_sub(viewport.y) as usize;
+                    // The row's owner, not the message, is the unit of
+                    // disclosure. Resolving the message first made the
+                    // reasoning arm win every time: in a message carrying
+                    // both a reasoning block and a tool call, the tool call
+                    // could never be reached by clicking.
+                    let owner = self.messages_state.messages.part_at_viewport_line(row);
                     if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
                         // A row waiting on an approval is an action, not a
                         // disclosure. Answering is otherwise only reachable
@@ -9341,15 +9368,23 @@ impl App {
                         if self.open_pending_permission_for_message(idx) {
                             return;
                         }
-                        // Clicking a message expands whichever detail the
-                        // message actually carries. Reasoning is checked
-                        // first: its collapsed header is the one-line
-                        // "Thought for 3.2s" line, and clicking that is how
-                        // the user opens the thinking text.
-                        if self.messages_state.messages.message_has_reasoning(idx) {
-                            self.messages_state.messages.toggle_reasoning(idx);
-                        } else if self.messages_state.messages.message_has_tool_output(idx) {
-                            self.messages_state.messages.toggle_tool_output(idx);
+                        match owner {
+                            Some((_, RowPart::ToolCall { part_idx })) => {
+                                self.messages_state
+                                    .messages
+                                    .toggle_tool_call_part(idx, part_idx);
+                            }
+                            Some((_, RowPart::Reasoning { part_idx })) => {
+                                self.messages_state
+                                    .messages
+                                    .toggle_reasoning_part(idx, part_idx);
+                            }
+                            // A row that holds nothing expandable changes
+                            // nothing. This is an explicit no-op: falling
+                            // back to the message-level toggle would
+                            // reintroduce exactly the defect this path
+                            // exists to fix.
+                            None => {}
                         }
                     } else {
                         self.messages_state.messages.sel_msg = None;
@@ -11029,6 +11064,29 @@ impl App {
                 self.messages_state.messages.toggle_reasoning(idx);
             }
         }
+    }
+
+    /// Expand every tool call and every reasoning block in the transcript,
+    /// or collapse every one of them.
+    ///
+    /// The disclosure state is per part, so this is the only gesture that can
+    /// open the whole transcript at once. Model prose is not a disclosure and
+    /// is not touched: it is never collapsed, so there is nothing to expand.
+    ///
+    /// The outcome is reported in the same toast surface the `/thinking`
+    /// command uses, because the gesture changes what the buffer shows and
+    /// the user needs to know which way it went.
+    fn expand_all_disclosures(&mut self) {
+        let expand = self.messages_state.messages.any_disclosure_collapsed();
+        self.messages_state
+            .messages
+            .set_all_disclosures_expanded(expand);
+        let msg = if expand {
+            "all details expanded"
+        } else {
+            "all details collapsed"
+        };
+        self.messages_state.toasts.info(msg);
     }
 
     fn toggle_tts(&mut self) {
@@ -13136,12 +13194,17 @@ impl App {
                         debug_log!("composer claim: word end");
                     }
                     ComposerVerb::LineDown => {
-                        self.prompt_state.prompt.cursor_line_down();
-                        debug_log!("composer claim: line down");
+                        // The composer's vertical motion is a **visual-row**
+                        // motion: the row the caret's byte is drawn on, not a
+                        // newline-separated line of the buffer. The claim
+                        // holds only when the content overflows the box, so
+                        // the row below is a row the user can see.
+                        self.prompt_state.prompt.cursor_visual_row_down();
+                        debug_log!("composer claim: visual row down");
                     }
                     ComposerVerb::LineUp => {
-                        self.prompt_state.prompt.cursor_line_up();
-                        debug_log!("composer claim: line up");
+                        self.prompt_state.prompt.cursor_visual_row_up();
+                        debug_log!("composer claim: visual row up");
                     }
                     ComposerVerb::SelectChars => {
                         self.prompt_state.prompt.toggle_select_chars();
@@ -20479,6 +20542,242 @@ mod user_prompt_queue_projection_tests {
                 .map(|entry| entry.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["entry-0", "entry-1", "entry-2"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod row_precise_disclosure_tests {
+    use super::*;
+    use crate::tui::components::messages::UIMessage;
+
+    /// The viewport the click handler resolves a click against.
+    const VIEWPORT: Rect = Rect::new(0, 0, 80, 40);
+
+    /// An assistant message carrying **both** a reasoning block and a tool
+    /// call — the shape that made the tool call unreachable by clicking.
+    ///
+    /// The reasoning block comes first so the old handler's reasoning arm
+    /// would win: it asked "does this message have reasoning?" before it
+    /// asked anything else.
+    fn mixed_message() -> UIMessage {
+        UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![
+                MsgPart::Reasoning {
+                    content: "The comparison has to run before it means anything.".to_string(),
+                    collapsed: true,
+                },
+                MsgPart::ToolCall {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: "{\"command\":\"cargo test\"}".to_string(),
+                    output: "running 3 tests\ntest result: ok".to_string(),
+                    status: ToolStatus::Completed,
+                    duration_ms: Some(7),
+                    exit_code: Some(0),
+                    output_lines: Some(2),
+                    expanded: false,
+                },
+                MsgPart::Text {
+                    content: "The comparison is done.".to_string(),
+                },
+            ],
+            timestamp: None,
+            is_plan_mode: None,
+        }
+    }
+
+    /// An app holding the mixed message, with a viewport to click in.
+    fn app_with_mixed_message() -> App {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.messages_state.messages.set_width(80);
+        app.messages_state.messages.set_visible_height(40);
+        app.messages_state.messages.messages.push(mixed_message());
+        app.messages_state.messages.invalidate_rows();
+        app.messages_state.messages.scroll_to_top();
+        app.viewport_area = Some(VIEWPORT);
+        app
+    }
+
+    /// The rows the transcript draws, read back out of a rendered buffer.
+    fn drawn_rows(app: &App) -> Vec<String> {
+        let area = Rect::new(0, 0, VIEWPORT.width, VIEWPORT.height);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&app.messages_state.messages, area, &mut buffer);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The viewport row the transcript draws the given text on.
+    fn row_of(app: &App, needle: &str) -> u16 {
+        let rows = drawn_rows(app);
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("the transcript must draw a row containing {needle:?}"))
+            as u16
+    }
+
+    /// The disclosure state of the message's parts.
+    fn disclosure_state(app: &App) -> (bool, bool) {
+        let msg = &app.messages_state.messages.messages[0];
+        let tool_expanded = msg.parts.iter().find_map(|part| match part {
+            MsgPart::ToolCall { expanded, .. } => Some(*expanded),
+            _ => None,
+        });
+        let reasoning_collapsed = msg.parts.iter().find_map(|part| match part {
+            MsgPart::Reasoning { collapsed, .. } => Some(*collapsed),
+            _ => None,
+        });
+        (
+            tool_expanded.expect("the message carries a tool call"),
+            reasoning_collapsed.expect("the message carries a reasoning block"),
+        )
+    }
+
+    /// The toast the last gesture left behind.
+    fn last_toast(app: &App) -> String {
+        app.messages_state
+            .toasts
+            .iter()
+            .last()
+            .map(|toast| toast.message.clone())
+            .unwrap_or_default()
+    }
+
+    /// Clicking a tool call's header expands **that tool call**, in a message
+    /// that also carries a reasoning block.
+    ///
+    /// The click used to be answered by the message, and the reasoning arm
+    /// won: click one expanded the reasoning, click two collapsed it again,
+    /// and the tool call was never reachable by clicking at all.
+    #[test]
+    fn clicking_a_tool_call_row_expands_the_tool_call_and_not_the_reasoning() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "bash");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(
+            tool_expanded,
+            "the clicked tool call must be the thing that expanded"
+        );
+        assert!(
+            reasoning_collapsed,
+            "the reasoning block must not have moved when the tool call was clicked"
+        );
+    }
+
+    /// Clicking a reasoning block's header expands **that reasoning block**.
+    #[test]
+    fn clicking_a_reasoning_row_expands_the_reasoning_block() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "Thinking");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(
+            !reasoning_collapsed,
+            "the clicked reasoning block must be the thing that expanded"
+        );
+        assert!(
+            !tool_expanded,
+            "the tool call must not have moved when the reasoning block was clicked"
+        );
+    }
+
+    /// A row that holds nothing expandable changes nothing. It must not
+    /// fall back to the message-level toggle: that fallback is the defect
+    /// this path exists to fix.
+    #[test]
+    fn clicking_a_prose_row_toggles_nothing() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "The comparison is done.");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(!tool_expanded, "a prose row must not expand the tool call");
+        assert!(
+            reasoning_collapsed,
+            "a prose row must not expand the reasoning block"
+        );
+    }
+
+    /// The expand-all gesture opens every tool call and every reasoning
+    /// block, and the next press closes every one of them again.
+    #[test]
+    fn the_expand_all_gesture_opens_everything_and_the_next_press_closes_it() {
+        let mut app = app_with_mixed_message();
+
+        app.expand_all_disclosures();
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(tool_expanded, "the tool call must be open");
+        assert!(!reasoning_collapsed, "the reasoning block must be open");
+        assert!(
+            last_toast(&app).contains("expanded"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+
+        app.expand_all_disclosures();
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(!tool_expanded, "the tool call must be closed again");
+        assert!(
+            reasoning_collapsed,
+            "the reasoning block must be closed again"
+        );
+        assert!(
+            last_toast(&app).contains("collapsed"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+    }
+
+    /// The palette command is the same gesture with the same outcome.
+    #[test]
+    fn the_palette_command_expands_everything_too() {
+        let mut app = app_with_mixed_message();
+
+        app.dispatch_builtin_command(
+            crate::tui::command::BuiltinSlashAction::ExpandAllDisclosures,
+            None,
+        );
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(tool_expanded, "the tool call must be open");
+        assert!(!reasoning_collapsed, "the reasoning block must be open");
+        assert!(
+            last_toast(&app).contains("expanded"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+    }
+
+    /// The palette command is registered under a name the user can find.
+    #[test]
+    fn the_palette_carries_the_expand_all_command() {
+        let registry = crate::tui::command::CommandRegistry::new_for_workspace_root(
+            std::path::Path::new("/tmp"),
+        );
+        let command = registry
+            .find_by_name_or_alias("/expand-all")
+            .expect("the palette must carry the expand-all command");
+        assert!(
+            matches!(
+                command.action,
+                crate::tui::command::CommandAction::Builtin(
+                    crate::tui::command::BuiltinSlashAction::ExpandAllDisclosures
+                )
+            ),
+            "the palette command must run the expand-all gesture"
         );
     }
 }

@@ -341,9 +341,11 @@ fn test_messages_widget_get_selected_content() {
 fn test_messages_widget_toggle_reasoning() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
     widget.add_reasoning("thinking...".to_string());
+    // A reasoning block is collapsed by default (M003): one line until the
+    // user asks for its body.
     assert!(widget.messages[0].parts.iter().any(|p| {
         if let MsgPart::Reasoning { collapsed, .. } = p {
-            !*collapsed
+            *collapsed
         } else {
             false
         }
@@ -352,7 +354,7 @@ fn test_messages_widget_toggle_reasoning() {
     widget.toggle_reasoning(0);
     assert!(widget.messages[0].parts.iter().any(|p| {
         if let MsgPart::Reasoning { collapsed, .. } = p {
-            *collapsed
+            !*collapsed
         } else {
             false
         }
@@ -584,28 +586,47 @@ fn test_prompt_widget_cursor_line() {
     assert_eq!(widget.cursor_line(), 2);
 }
 
+/// The box's height is the mode row, the **wrapped** text rows and the
+/// marker rows — counted in visual rows, not in lines of the buffer.
 #[test]
 fn test_prompt_widget_needed_height() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
-    assert_eq!(widget.needed_height(20), 3);
+    // The box never drops below three rows: the mode row, a row of text and
+    // the row the caret's on.
+    assert_eq!(widget.needed_height(20, 80), 3);
 
     widget.set_text("Short text".to_string());
-    assert_eq!(widget.needed_height(20), 3);
+    assert_eq!(widget.needed_height(20, 80), 3);
 
+    // Five lines of the buffer are five rows of the box, under the mode row,
+    // and the multiline marker is a row of the box too.
     let long_text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string();
     widget.set_text(long_text);
-    assert_eq!(widget.needed_height(20), 7);
+    assert_eq!(widget.needed_height(20, 80), 7);
 
+    // The box grows with the **wrapped** rows: one long line at a narrow
+    // width is several rows of the box.
+    widget.set_text("x".repeat(30));
+    assert_eq!(widget.needed_height(20, 10), 4);
+
+    // The marker rows are inside the box: the character count and the
+    // multiline marker each take a row of it.
+    widget.set_text("a\nb".to_string());
     widget.set_char_count(Some(1000));
-    assert_eq!(widget.needed_height(20), 8);
+    assert_eq!(widget.needed_height(20, 80), 5);
 }
 
+/// The box stops at ten rows in total, counting the mode row and the marker
+/// rows, and the pane's budget still wins over the cap.
 #[test]
 fn test_prompt_widget_needed_height_max() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
-    let very_long_text = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12".to_string();
+    let very_long_text = (0..40).map(|i| format!("Line {i}\n")).collect::<String>();
     widget.set_text(very_long_text);
-    assert_eq!(widget.needed_height(10), 10);
+    // The cap is on the box's total rows.
+    assert_eq!(widget.needed_height(20, 80), 10);
+    // The budget wins over the cap: a pane that allows six rows gets six.
+    assert_eq!(widget.needed_height(6, 80), 6);
 }
 
 #[test]
@@ -626,34 +647,37 @@ fn test_prompt_widget_scroll_up_down() {
     assert_eq!(widget.scroll, 1);
 }
 
+/// The composer scrolls so the caret's **visual row** is on screen.
 #[test]
 fn test_prompt_widget_ensure_cursor_visible() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
     widget.set_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string());
 
     widget.cursor_home();
-    widget.ensure_cursor_visible(3);
+    widget.ensure_cursor_visible_with_width(3, 80);
     assert_eq!(widget.scroll, 0);
 
-    // Move cursor to line 4 (past visible area when visible_lines=3)
+    // Move the caret past the visible window: the composer scrolls to it.
     for _ in 0..25 {
         widget.cursor_right();
     }
-    widget.ensure_cursor_visible(3);
+    widget.ensure_cursor_visible_with_width(3, 80);
     assert!(widget.scroll > 0);
 }
 
+/// The horizontal scroll has one case left: a row wider than the box. The
+/// wrap hard-breaks a token wider than the row, so a wrapped row never needs
+/// one, and the caret's row is reached by scrolling instead.
 #[test]
 fn test_prompt_widget_horizontal_cursor_visibility() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
     widget.set_text("1234567890".to_string());
 
-    widget.ensure_cursor_visible_with_width(3, 5);
-    assert_eq!(widget.horizontal_scroll, 6);
-
-    widget.cursor_home();
-    widget.ensure_cursor_visible_with_width(3, 5);
+    // The text wraps into two rows of five columns, so no row is wider than
+    // the box and the horizontal scroll stays at zero.
+    widget.ensure_cursor_visible_with_width(1, 5);
     assert_eq!(widget.horizontal_scroll, 0);
+    assert_eq!(widget.scroll, 1, "the caret's wrapped row is on screen");
 }
 
 #[test]

@@ -415,7 +415,7 @@ risk classes **11**, and workspace member crates **11** (+ root).
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
 | Authorized operations | 260 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 260 arms carrying 260 distinct operation names, covering all 266 `CoreRequest` variants; the `representative_requests()` list holds 250 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 168 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
@@ -424,7 +424,7 @@ risk classes **11**, and workspace member crates **11** (+ root).
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 321 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 327 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 80 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 40 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
@@ -626,7 +626,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (321 files)
+├── tests/                      # Integration tests (327 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -862,3 +862,19 @@ in `quick`), integration test files **321**, storage layout version **88**, and
 than incremented**: *tool source files* read 83, but the tree carries 84 `.rs` files
 under `src/tool/` — `main`'s count excludes `src/tool/bash/tests/git_fixture.rs`, and its
 own listed `Source` (`src/tool/**.rs`, incl. `bash/`) does not exclude it.
+One row moved on **2026-10-23** when the TUI text-rendering line added its first two milestones: the integration test files row is **327** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved by six, the new `tests/tui_render/tui_main_buffer_row_accounting.inc`, `tests/tui_render/tui_main_buffer_word_wrap.inc`, `tests/tui_render/tui_composer_wrap.inc`, `tests/tui_render/tui_formatted_json_detail_view.inc` and `tests/tui_render/tui_main_buffer_collapsed_layout.inc` and `tests/tui_render/tui_main_buffer_row_precise_disclosure.inc`). All six new members live inside the existing `tui_render` family, so the root package's **test-target** count did **not** move: it is still **23** (19 families + 4) and the workspace's **51**. Only the integration-test *file* count moved, and only because six files were added. Every other code-count row was re-checked against its own listed `Source` and is unchanged.
+
+One row moved again on **2026-10-23**, when this line was reconciled with `main` a
+**second** time, at `e3215a06f` (PR #172, the provider-reasoning-control line). That
+merge landed **four** new guards — `check_model_profile_capability_mirror.py`,
+`check_reasoning_intent_fidelity.py`, `check_reasoning_vocabulary_open.py` and
+`check_tui_reasoning_surface.py` — and four new `ci.yml` guard steps, so the *Guard
+scripts (all)* row is **80** and the *CI guard scripts* row is **40**. **Neither row
+moved because of this line**; both are recorded here because this line's own paragraph
+above was written against the earlier `main` at `ff82c68da`, where they read 76 and 36,
+and that paragraph's closing sentence — "every other code-count row ... is unchanged" —
+was true of the tree it described and is **not** true of the merged tree. The
+*Integration test files* row is **327**: PR #172's reconciliation read **321** in its
+merged tree, and this line's six new members still sit on top of that. Every other
+code-count row was re-checked against its own listed `Source` in the merged tree and is
+unchanged.

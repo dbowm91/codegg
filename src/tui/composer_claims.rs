@@ -50,6 +50,22 @@
 //! `App::composer_input_mode`) — never when the raw `UiState::input_mode`
 //! field says Normal.
 //!
+//! # The one conditional claim
+//!
+//! `j` and `k` are claimed only when the composer's **content does not fit
+//! its box**. The measure is the **fitted** content — the wrapped row count
+//! against the visible row count — and not the buffer's newline count: a
+//! composer whose text wraps to three rows in a three-row box *fits*, and a
+//! composer whose text wraps to four rows in a three-row box does not.
+//!
+//! The fit is a **cached layout fact**. The gate runs at key dispatch, before
+//! the render pass, so the numbers come from the last layout pass rather than
+//! from a second computation at dispatch time — two computations of one fact
+//! are two answers to it, and the gate and the box must not be able to
+//! disagree. A composer that has never been laid out has no measurement, and
+//! an unmeasured fit does not hold the claim: the key falls through rather
+//! than being swallowed in a state the user cannot see.
+//!
 //! # The static guard
 //!
 //! `scripts/check_tui_composer_key_authority.py` reads this file and the
@@ -174,11 +190,55 @@ impl ClaimEncodings {
     }
 }
 
+/// The composer's fit, as the layout pass measured it.
+///
+/// The condition is a **layout** fact: it compares the rows the content
+/// occupies with the rows the box shows. Both numbers come from the *same*
+/// layout pass, so the claim gate and the box cannot disagree about whether
+/// the content fits.
+///
+/// The **unknown** state is not a formality. The gate runs at key dispatch,
+/// before the render pass, so a composer that has never been laid out has no
+/// measurement at all — and a claim that fires on a measurement nobody can
+/// see is a claim that fires in a state the user cannot see. An unknown fit
+/// therefore does **not** hold a conditional claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerFit {
+    /// No layout pass has measured the composer yet.
+    Unknown,
+    /// The layout pass measured the content and the box.
+    Measured {
+        /// The number of visual rows the content occupies.
+        row_count: usize,
+        /// The number of text rows the box shows.
+        visible_rows: usize,
+    },
+}
+
+impl ComposerFit {
+    /// Whether the content does not fit the box.
+    ///
+    /// The wrapped row count against the visible row count: **three rows in a
+    /// three-row box fits**, four rows in a three-row box does not. The
+    /// measure is rows, never the buffer's newline count — a single logical
+    /// line that wraps onto four rows overflows a three-row box, and a
+    /// three-line buffer that fits on one row does not.
+    pub fn overflows(self) -> bool {
+        match self {
+            Self::Unknown => false,
+            Self::Measured {
+                row_count,
+                visible_rows,
+            } => row_count > visible_rows,
+        }
+    }
+}
+
 /// When a claim is live.
 ///
 /// A claim is usually live unconditionally. The one conditional claim is
-/// `j`/`k`, which the composer owns only when the composer buffer has more
-/// than one line; on a single-line buffer they fall through to transcript
+/// `j`/`k`, which the composer owns only when its **content does not fit its
+/// box**; on a composer whose content fits, they fall through to transcript
 /// scroll unchanged.
 ///
 /// The condition is **explicit** on purpose. An implicit conditional is how a
@@ -188,9 +248,9 @@ impl ClaimEncodings {
 pub enum ClaimCondition {
     /// The claim is always live.
     Always,
-    /// The claim is live only when the composer buffer has more than one
-    /// line.
-    MultiLineBuffer,
+    /// The claim is live only when the composer's content does not fit its
+    /// box — the wrapped row count exceeds the visible row count.
+    ContentOverflowsBox,
 }
 
 impl ComposerVerb {
@@ -227,7 +287,7 @@ impl ClaimCondition {
     pub fn label(self) -> Option<&'static str> {
         match self {
             Self::Always => None,
-            Self::MultiLineBuffer => Some("multi-line composer buffer"),
+            Self::ContentOverflowsBox => Some("composer content overflows the box"),
         }
     }
 }
@@ -304,12 +364,20 @@ pub fn composer_verb_entries() -> Vec<ComposerVerbEntry> {
 }
 
 impl ClaimCondition {
-    /// Whether the condition holds for a composer buffer of `line_count`
-    /// lines.
-    pub fn holds(self, line_count: usize) -> bool {
+    /// Whether the condition holds for a composer whose fit is `fit`.
+    ///
+    /// The fit is the **cached** measurement the layout pass took, not a
+    /// measurement taken here: a second computation of the same fact is a
+    /// second answer to it, and the gate and the box must not be able to
+    /// disagree.
+    pub fn holds(self, fit: ComposerFit) -> bool {
         match self {
             Self::Always => true,
-            Self::MultiLineBuffer => line_count > 1,
+            // An unknown fit does not hold. The composer has not been laid
+            // out, so there is nothing to measure against, and a claim that
+            // fired on an unknown fit would swallow the key in a state the
+            // user cannot see.
+            Self::ContentOverflowsBox => fit.overflows(),
         }
     }
 }
@@ -376,7 +444,8 @@ impl ComposerClaim {
 /// maps ever disagree about a caret motion again.
 ///
 /// `j` and `k` are the one conditional pair. They are claimed only when the
-/// composer buffer has more than one line; on a single-line buffer they fall
+/// composer's **content does not fit its box** — the wrapped row count
+/// exceeds the visible row count. On a composer whose content fits they fall
 /// through to transcript scroll, which is why their app-level binding
 /// survives.
 ///
@@ -460,14 +529,14 @@ pub const COMPOSER_CLAIMS: &[ComposerClaim] = &[
         verb: ComposerVerb::LineDown,
         status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
-        condition: ClaimCondition::MultiLineBuffer,
+        condition: ClaimCondition::ContentOverflowsBox,
     },
     ComposerClaim {
         key: 'k',
         verb: ComposerVerb::LineUp,
         status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
-        condition: ClaimCondition::MultiLineBuffer,
+        condition: ClaimCondition::ContentOverflowsBox,
     },
     ComposerClaim {
         key: 'o',
@@ -534,15 +603,14 @@ pub fn claim_for(modifiers: KeyModifiers, code: KeyCode) -> Option<&'static Comp
         .find(|claim| claim.key == c && claim.encodings.matches(modifiers))
 }
 
-/// Whether the composer would claim this key event, given the composer
-/// buffer's line count.
+/// Whether the composer would claim this key event, given the composer's fit.
 ///
 /// The caller owns the *surface* decision — whether the composer holds the
 /// keyboard at all, and whether the resolved mode is Normal. This function
 /// answers the narrower question: given that the composer is the target, does
 /// this key belong to the composer?
-pub fn claims_key(modifiers: KeyModifiers, code: KeyCode, line_count: usize) -> bool {
-    claim_for(modifiers, code).is_some_and(|claim| claim.condition.holds(line_count))
+pub fn claims_key(modifiers: KeyModifiers, code: KeyCode, fit: ComposerFit) -> bool {
+    claim_for(modifiers, code).is_some_and(|claim| claim.condition.holds(fit))
 }
 
 #[cfg(test)]
@@ -694,8 +762,8 @@ mod tests {
         assert_eq!(
             conditional,
             vec![
-                ('j', ClaimCondition::MultiLineBuffer),
-                ('k', ClaimCondition::MultiLineBuffer)
+                ('j', ClaimCondition::ContentOverflowsBox),
+                ('k', ClaimCondition::ContentOverflowsBox)
             ],
             "only the line motions are conditional; the rest are available whenever \
              the composer holds the keyboard"
@@ -713,24 +781,81 @@ mod tests {
         }
     }
 
+    /// The condition is the **fitted** content, not the buffer's line count.
+    ///
+    /// Three rows in a three-row box **fits**, and the key falls through; four
+    /// rows in a three-row box does not fit, and the composer takes the key.
+    /// The exact-fit case is the one that is easy to get backwards, so it is
+    /// stated on its own.
     #[test]
-    fn the_multi_line_condition_gates_j_and_k_only() {
+    fn the_fitted_content_condition_gates_j_and_k_only() {
+        let fits = ComposerFit::Measured {
+            row_count: 3,
+            visible_rows: 3,
+        };
+        let overflows = ComposerFit::Measured {
+            row_count: 4,
+            visible_rows: 3,
+        };
         for claim in COMPOSER_CLAIMS {
-            let holds = claim.condition.holds(1);
-            if claim.condition == ClaimCondition::MultiLineBuffer {
+            let holds = claim.condition.holds(fits);
+            if claim.condition == ClaimCondition::ContentOverflowsBox {
                 assert!(
                     !holds,
-                    "{:?} must not be live on a single-line buffer",
+                    "{:?} must not be live when the content fits its box",
                     claim.key
                 );
-                assert!(claim.condition.holds(2));
+                assert!(
+                    claim.condition.holds(overflows),
+                    "{:?} must be live when the content overflows its box",
+                    claim.key
+                );
             } else {
                 assert!(
                     holds,
-                    "{:?} must be live on a single-line buffer",
+                    "{:?} must be live whatever the content's fit",
                     claim.key
                 );
             }
         }
+    }
+
+    /// An unmeasured fit holds nothing.
+    ///
+    /// The gate runs before the render pass, so a composer that has never been
+    /// laid out has no measurement. A claim that fired on an unknown fit would
+    /// swallow the key in a state the user cannot see — the fall-through is
+    /// the safe answer, because the transcript's scroll is a visible action and
+    /// a swallowed key is not.
+    #[test]
+    fn an_unknown_fit_does_not_hold_the_condition() {
+        assert!(
+            !ClaimCondition::ContentOverflowsBox.holds(ComposerFit::Unknown),
+            "an unmeasured composer must not claim the key"
+        );
+        assert!(
+            ClaimCondition::Always.holds(ComposerFit::Unknown),
+            "an unconditional claim does not depend on the fit"
+        );
+    }
+
+    /// The condition's label says what the condition is.
+    ///
+    /// The label is what the help overlay and the hint row show, so it has to
+    /// state the condition truthfully: the composer claims `j`/`k` when its
+    /// content does not fit its box, not when its buffer has more than one
+    /// line.
+    #[test]
+    fn the_conditions_label_states_the_fitted_content_condition() {
+        assert_eq!(
+            ClaimCondition::ContentOverflowsBox.label(),
+            Some("composer content overflows the box"),
+            "the label is the user-facing statement of the condition"
+        );
+        assert_eq!(
+            ClaimCondition::Always.label(),
+            None,
+            "an unconditional claim has no condition to state"
+        );
     }
 }

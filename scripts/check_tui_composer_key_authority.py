@@ -37,8 +37,8 @@ It fails when:
   violation);
 * a claimed letter that *is* bound in the app maps is not a conditional
   claim, so the condition that saves it is not written down;
-* a re-spelled app-level chord is missing from either binding map;
-* a re-spelled app-level action has no chord to reach it by, or still answers
+* a chord-bound app-level action is missing from either binding map;
+* a chord-bound app-level action has no chord to reach it by, or still answers
   to a key the composer can claim — which is how the old letter keeps reaching
   it, since all four old letters are claimed;
 * a claimed capital letter is not reachable under both the shifted and the
@@ -59,7 +59,7 @@ It fails when:
   carries its condition;
 * **the help advertises a reserved claim**, which would teach a gesture that
   does nothing;
-* **a re-spelled action is not documented under a modifier chord**, or is
+* **a chord-bound action is not documented under a modifier chord**, or is
   documented under its old bare letter.
 
 The two help rules are separate on purpose. One asks "does the help describe
@@ -108,6 +108,29 @@ RESPELLED_ACTIONS = {
     "FocusSidebar": "a",
 }
 
+# The actions that are reachable **only** by a chord.
+#
+# `RESPELLED_ACTIONS` names the actions that *moved* off a bare letter the
+# composer now claims. These are the actions that were *born* as a chord: the
+# expand-all gesture has no bare spelling at all, so its chord is its only
+# route to the user. They answer to the same three rules — bound in both maps,
+# reachable by a chord that is not a claimed key, and documented under that
+# chord — because a capability that exists in one keymap only, or a gesture
+# nobody can find, is the same defect whichever list the action sits on.
+#
+# The value is the bare letter the composer claims, which the action must
+# never answer to. The composer claims `o` (open line below), so the
+# expand-all action may not grow a bare `o` spelling.
+CHORD_ONLY_ACTIONS = {
+    "ExpandAllDisclosures": "o",
+}
+
+# Every action the chord rules police: the ones that moved off a claimed
+# letter, and the ones that were born as a chord. The rules iterate this, so
+# a chord-only action cannot slip past the "bound in both maps" and "documented
+# under its chord" checks just because it was never re-spelled.
+CHORD_BOUND_ACTIONS = {**RESPELLED_ACTIONS, **CHORD_ONLY_ACTIONS}
+
 # The actions that move the composer caret.
 #
 # A caret motion is a **Helix-parity capability, not a keymap flavour**: `h`
@@ -135,8 +158,16 @@ BARE = ("NONE",)
 BARE_PLUS_SHIFT = ("NONE", "SHIFT")
 
 # The conditions a claim may carry. `Always` is the ordinary case;
-# `MultiLineBuffer` is the one conditional ADR-0042 defines, for `j`/`k`.
-KNOWN_CONDITIONS = {"Always", "MultiLineBuffer"}
+# `ContentOverflowsBox` is the one conditional ADR-0042's amendment defines,
+# for `j`/`k`: the composer claims them when its **content does not fit its
+# box** — the wrapped row count exceeds the visible row count.
+#
+# The set mirrors the claim table's `ClaimCondition` variants, so a condition
+# the table cannot carry is not a condition the guard knows. That is what makes
+# G3 meaningful in both directions: an unknown condition is rejected, and a
+# condition the table dropped cannot linger here as knowledge of a name no
+# claim can carry.
+KNOWN_CONDITIONS = {"Always", "ContentOverflowsBox"}
 
 
 @dataclass(frozen=True)
@@ -251,15 +282,60 @@ def _line_of(text: str, index: int) -> int:
 
 
 def _matching_brace(text: str, open_index: int) -> int:
-    """Index of the `}` matching the `{` at `open_index`."""
+    """Index of the `}` matching the `{` at `open_index`.
+
+    Braces inside comments and literals are text, not structure. The naive
+    count read a `// } next project tab` comment as a closing brace and
+    stopped the vim map's body a third of the way through, so the guard was
+    reading only the first half of the map — a guard that skips input it does
+    not understand passes by not looking, which is the failure this guard
+    exists to prevent.
+    """
     depth = 0
-    for i in range(open_index, len(text)):
-        if text[i] == "{":
+    i = open_index
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            # A line comment runs to the end of its line.
+            newline = text.find("\n", i)
+            i = n if newline < 0 else newline
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        if ch == '"':
+            # A string literal, with backslash escapes.
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "'":
+            # A character literal, or a lifetime — which is not a literal.
+            nxt = text[i + 1] if i + 1 < n else ""
+            if nxt == "\\":
+                end = text.find("'", i + 2)
+                i = n if end < 0 else end + 1
+                continue
+            if i + 2 < n and text[i + 2] == "'":
+                i += 3
+                continue
+            i += 1
+            continue
+        if ch == "{":
             depth += 1
-        elif text[i] == "}":
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 return i
+        i += 1
     return -1
 
 
@@ -810,12 +886,12 @@ def check(parsed: Parsed) -> list[str]:
                 f"reappears"
             )
 
-    # G4 — a re-spelled action is bound in both maps.
-    for action in RESPELLED_ACTIONS:
+    # G4 — a chord-bound action is bound in both maps.
+    for action in CHORD_BOUND_ACTIONS:
         for map_name, bindings in maps.items():
             if not [b for b in bindings if b.action == action]:
                 findings.append(
-                    f"the re-spelled action {action} is missing from the "
+                    f"the chord-bound action {action} is missing from the "
                     f"{map_name} map; the capability must stay reachable in both maps"
                 )
 
@@ -831,7 +907,7 @@ def check(parsed: Parsed) -> list[str]:
     # requires it to keep working. The default map's `/` for focus-prompt is
     # the live example: it is the gesture that enters command mode, and
     # command mode is what makes the rest of a typed slash command land.
-    for action, old_letter in RESPELLED_ACTIONS.items():
+    for action, old_letter in CHORD_BOUND_ACTIONS.items():
         for map_name, bindings in maps.items():
             for binding in [b for b in bindings if b.action == action]:
                 if (binding.modifiers, binding.char or "") in claimed_key_set:
@@ -845,7 +921,7 @@ def check(parsed: Parsed) -> list[str]:
             # letter alone would not be a re-spelling.
             if not [b for b in bindings if b.action == action and not b.is_bare_char]:
                 findings.append(
-                    f"the re-spelled action {action} has no non-bare spelling in "
+                    f"the chord-bound action {action} has no non-bare spelling in "
                     f"the {map_name} map; the capability must be reachable by a "
                     f"chord that is not a bare letter"
                 )
@@ -1015,9 +1091,9 @@ def check_help(parsed: Parsed) -> list[str]:
     # something else and are not the composer's to own.
     #
     # The one documented exception is a *conditional* claim's fall-through
-    # row: the `j`/`k` row says what the pair does on a single-line composer
-    # buffer, where the composer does not have them. Such a row carries the
-    # condition, and the condition is what makes it honest rather than
+    # row: the `j`/`k` row says what the pair does on a composer whose content
+    # fits its box, where the composer does not have them. Such a row carries
+    # the condition, and the condition is what makes it honest rather than
     # contradictory.
     #
     # The `a` → "Focus sidebar" row is the class this catches: the key was
@@ -1070,7 +1146,7 @@ def check_help(parsed: Parsed) -> list[str]:
     # G11.2: none of them may be documented under its **old bare letter**.
     # That is the pre-M002 spelling, and it is a gesture that no longer
     # reaches the action.
-    for action, old_letter in RESPELLED_ACTIONS.items():
+    for action, old_letter in CHORD_BOUND_ACTIONS.items():
         chords = {
             chord_label(binding)
             for binding in parsed.default_map + parsed.vim_map
@@ -1083,7 +1159,7 @@ def check_help(parsed: Parsed) -> list[str]:
         }
         if not documented:
             findings.append(
-                f"the re-spelled action {action} is not documented under a modifier "
+                f"the chord-bound action {action} is not documented under a modifier "
                 f"chord in the help; the chords it is bound to are "
                 f"{sorted(chords) or ['none']}"
             )
@@ -1121,18 +1197,23 @@ def _binding(
 
 
 def _chords() -> list[Binding]:
-    """The chord spelling every re-spelled action must have.
+    """The chord spelling every chord-bound action must have.
 
     Each re-spelled action is reachable by a `Ctrl+Alt+<letter>` chord in both
-    maps. The letters themselves are the ones the composer claims, so a
-    synthetic tree that bound them bare would be violating the rule it is
-    meant to test.
+    maps, and so is every action that was born as a chord. The letters
+    themselves are the ones the composer claims, so a synthetic tree that
+    bound them bare would be violating the rule it is meant to test.
+
+    The list is the guard's model of the binding maps' chord set, so its
+    length is a recorded count: a chord-bound action that is not in it is a
+    chord-bound action the guard does not police.
     """
     return [
         _binding(("CONTROL", "ALT"), "x", "ToggleAgentRun"),
         _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
         _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
         _binding(("CONTROL", "ALT"), "s", "FocusSidebar"),
+        _binding(("CONTROL", "ALT"), "o", "ExpandAllDisclosures"),
     ]
 
 
@@ -1255,7 +1336,9 @@ def self_test() -> int:
     expect_clean(
         "a conditional claim's fall-through row",
         _baseline(
-            claims=[_claim("j", verb="LineDown", status="Live", condition="MultiLineBuffer")],
+            claims=[
+                _claim("j", verb="LineDown", status="Live", condition="ContentOverflowsBox")
+            ],
             verb_labels={"LineDown": "line down"},
             help_entries=_chord_rows()
             + [
@@ -1263,7 +1346,7 @@ def self_test() -> int:
                     mode="Normal",
                     key="j/k",
                     action="Navigate up/down",
-                    condition="single-line composer buffer",
+                    condition="composer content fits its box",
                     line_no=1,
                 )
             ],
@@ -1316,6 +1399,37 @@ def self_test() -> int:
         "a help that omits a re-spelled action's chord",
         _baseline(help_entries=[]),
         "is not documented under a modifier chord",
+    )
+
+    # G4/G11 — a **chord-only** action: one that was never re-spelled off a
+    # bare letter, because a chord is its only spelling. It answers to the
+    # same rules as a re-spelled action, so the cases below prove the rule
+    # reaches it and is not vacuous for that class.
+    expect(
+        "a chord-only action missing from the vim map",
+        _baseline(
+            vim_map=[b for b in _chords() if b.action != "ExpandAllDisclosures"],
+        ),
+        "the chord-bound action ExpandAllDisclosures is missing from the vim map",
+    )
+    expect(
+        "a chord-only action not documented under its chord",
+        _baseline(
+            help_entries=[
+                row
+                for row in _chord_rows()
+                if row.action != "the ExpandAllDisclosures action"
+            ],
+        ),
+        "the chord-bound action ExpandAllDisclosures is not documented under a "
+        "modifier chord",
+    )
+    expect(
+        "a chord-only action that grew a bare claimed letter",
+        _baseline(
+            default_map=_chords() + [_binding(("NONE",), "o", "ExpandAllDisclosures")],
+        ),
+        "the old letter 'o' still reaches ExpandAllDisclosures",
     )
 
     # G1 — a letter claimed twice.

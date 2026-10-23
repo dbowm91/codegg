@@ -76,6 +76,12 @@ pub mod tui_composer_selection;
 #[path = "tui_composer_undo.inc"]
 pub mod tui_composer_undo;
 
+#[path = "tui_composer_wrap.inc"]
+pub mod tui_composer_wrap;
+
+#[path = "tui_formatted_json_detail_view.inc"]
+pub mod tui_formatted_json_detail_view;
+
 #[path = "tui_info_dialog_panel_chrome.inc"]
 pub mod tui_info_dialog_panel_chrome;
 
@@ -84,6 +90,18 @@ pub mod tui_logs_window;
 
 #[path = "tui_main_buffer.inc"]
 pub mod tui_main_buffer;
+
+#[path = "tui_main_buffer_collapsed_layout.inc"]
+pub mod tui_main_buffer_collapsed_layout;
+
+#[path = "tui_main_buffer_row_accounting.inc"]
+pub mod tui_main_buffer_row_accounting;
+
+#[path = "tui_main_buffer_row_precise_disclosure.inc"]
+pub mod tui_main_buffer_row_precise_disclosure;
+
+#[path = "tui_main_buffer_word_wrap.inc"]
+pub mod tui_main_buffer_word_wrap;
 
 #[path = "tui_manifest_resource_caps.inc"]
 pub mod tui_manifest_resource_caps;
