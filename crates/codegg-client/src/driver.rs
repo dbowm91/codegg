@@ -455,6 +455,21 @@ impl DriverCore {
                             break;
                         }
                     }
+                    Some(ClientEvent::Gap { dropped }) => {
+                        // The daemon dropped events from the stream it sends
+                        // this driver. That is the same fact as a local lag
+                        // seen from the other end, and it is answered the same
+                        // way: the projection is re-read from its authoritative
+                        // cursor rather than continued from a hole.
+                        tracing::warn!(
+                            dropped,
+                            session_id = %self.session_id,
+                            "projection driver observed a daemon event-stream gap; forcing authoritative resync"
+                        );
+                        if !self.resync().await {
+                            break;
+                        }
+                    }
                     Some(ClientEvent::Closed) | None => {
                         self.consumer.disconnect();
                         self.publish(DriverState::Disconnected);

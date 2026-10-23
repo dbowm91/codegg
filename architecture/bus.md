@@ -288,6 +288,29 @@ own.
    also matches against `session_id = "default"`. New call sites
    MUST use the `*_with_session` / `*_scoped` variants.
 
+7. **A dropped event is reported, never absorbed**: the event log's
+   broadcast is **bounded**. A subscriber that falls behind it loses
+   events, and the loss used to be a bare log line — the consumer's
+   stream simply continued as if it were complete, so a dropped tool
+   completion was indistinguishable from a tool that never finished.
+   The socket forwarder now reports the loss to the client with the
+   namespaced `event_stream_gap` code (`crates/codegg-protocol`'s
+   `EVENT_STREAM_GAP_CODE`), and the ACP adapter surfaces it to the
+   consumer as the optional `codegg_event_gap` session update. A
+   consumer that cannot see the gap cannot mark the affected span
+   unmeasured, so **a stream with a hole must never be reported as
+   complete**.
+
+8. **The ring buffer cannot repair a broadcast lag**: the event log's
+   ring buffer and the bounded broadcast have the **same capacity** and
+   evict the **same** window. The events a lagged subscriber missed are
+   exactly the ones the ring has already evicted, so a re-delivery from
+   the ring would re-send what the broadcast still holds and **not** the
+   events that were lost. `EventLog::ring_floor_seq` reports the
+   boundary directly; `EventLog::replay_ring_from_any` serves the
+   cases it actually serves (a reconnect resuming from a cursor) and is
+   not a repair path.
+
 ## Event Flow
 
 ### Permission Flow

@@ -110,7 +110,6 @@ impl Provider for AnthropicProvider {
         Ok(crate::wire::shared_stream(
             stream,
             eggpool_wire::codec::StreamAdapterKind::AnthropicMessagesSse,
-            None,
             req.context.wire_policy.clone(),
         ))
     }

@@ -313,6 +313,15 @@ pub struct GoalUsageUpdate {
 - `read_checkpoint_tail()` / `checkpoint_tail_of()` (M002) — bounded latest tail of the append-only journal with UTF-8-safe char slicing
 - `append_checkpoint_update()` — append progress updates
 
+`append_checkpoint_update()` flushes before it returns, so an appended update
+is readable by the next reader of the journal. `tokio::fs::File` buffers
+writes and hands them to the operating system on flush, not on write: without
+the explicit flush the bytes are still in flight when the handle is dropped,
+and a reader that runs immediately after the append — the model-facing
+`goal_update_progress` path, the daemon goal path, or the turn-start tail
+read — observes a truncated journal and silently loses the newest update. The
+sibling index append in `run_store.rs` flushes for the same reason.
+
 The Markdown journal is a user-facing historical journal, not canonical
 current-state authority. Typed `Goal` fields (objective, phase,
 progress, next action, open questions, revision) provide current state;

@@ -8,8 +8,6 @@ use async_trait::async_trait;
 use http::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
-use std::time::Duration;
-
 #[derive(Debug, Clone)]
 pub enum ToolChoice {
     Auto,
@@ -599,11 +597,11 @@ impl Provider for OpenAiCompatibleProvider {
                 .clone()
                 .unwrap_or_else(|| std::sync::Arc::new(crate::ProviderWirePolicy::default())),
         );
-        Ok(crate::wire::openai_chat_stream(
-            stream,
-            wire_policy,
-            Some(Duration::from_secs(30)),
-        ))
+        // No per-chunk deadline is imposed here. Stream liveness is owned by
+        // the agent layer, which already bounds a long stream: a
+        // provider-level deadline below the agent's own idle timeout fires
+        // first and reports a slow but valid stream as a provider error.
+        Ok(crate::wire::openai_chat_stream(stream, wire_policy))
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {

@@ -18,8 +18,8 @@ state and execution live in the daemon.
 
 | Artifact | Path |
 |----------|------|
-| Adapter | `src/acp.rs` (single file, 1354 lines) |
-| Entry point | `pub async fn run(policy: Option<CliPolicyOverride>)` at line 85 |
+| Adapter | `src/acp.rs` (single file, 1695 lines) |
+| Entry point | `pub async fn run(policy: Option<CliPolicyOverride>)` at line 112 |
 | CLI | `codegg acp` subcommand |
 
 ## How It Works
@@ -84,29 +84,29 @@ Unsupported methods return JSON-RPC error code -32601.
 
 The adapter supports one active prompt per connection. Before submitting a
 turn it drains the event queue and records the highest observed native event
-sequence as `submission_event_floor` (`drain_event_floor()`, line 413). After
+sequence as `submission_event_floor` (`drain_event_floor()`, line 480). After
 the daemon acknowledges the submission, only events strictly after that floor
 and for the exact requested session are eligible to bind the prompt.
 
 The turn identity is established either by the daemon's admission receipt
 (`CoreResponse::TurnAdmissionReceipt` with `status == "accepted"`, which
 carries the turn id directly) or by the first eligible `TurnStarted` event
-via `ActivePrompt::bind_turn()` (line 64). Projection updates and terminal
+via `ActivePrompt::bind_turn()` (line 91). Projection updates and terminal
 events must carry that same turn identity. A pre-floor, neighboring-session,
 stale-turn, or replayed event is ignored. The projection stream is matched
 separately and more strictly than the native event stream:
-`projection_event_matches()` (line 810) requires the exact subscription id,
+`projection_event_matches()` (line 911) requires the exact subscription id,
 the exact session id, an event sequence above the subscription's projection
 floor, and a turn id that is either unbound or equal to the bound turn.
 
 `session/cancel`, `$/cancel_request`, and `session/close` share one
-idempotent pending-cancellation path (`cancel_if_ready()`, line 421). If
+idempotent pending-cancellation path (`cancel_if_ready()`, line 490). If
 cancellation arrives before `TurnStarted`, the intent is deferred until the
 matching turn is identified.
 
 ### Event Mapping
 
-`handle_event()` (line 746) maps native projection events to ACP
+`handle_event()` (line 847) maps native projection events to ACP
 notifications:
 
 | Native Event | ACP Notification |
@@ -120,36 +120,65 @@ notifications:
 
 Reasoning, private, and unknown projection events are omitted. The
 `sessionUpdate` values are emitted with the `update` key nested under
-`sessionId` (`update()` at line 937).
+`sessionId` (`update()` at line 1106).
 
 For harness accounting, `tool_call` adds the optional `codeggArgumentsSha256`
 field when the bounded argument projection is available
-(`tool_arguments_sha256()`, line 917). It hashes the projection and does not
+(`tool_arguments_sha256()`, line 1086). It hashes the projection and does not
 expose tool arguments; a handle-only argument projection yields no digest.
 A successful `session/prompt` result adds `codeggUsage`
-(`terminal_usage()`, line 865) with the native turn ID and provider-reported
+(`terminal_usage()`, line 966) with the native turn ID and provider-reported
 input, output, cached and reasoning token counts plus context limit; each
 metric stays null if the provider omitted it. `codeggUsage` does not include
 a price or estimated cost. These additive fields are CodeGG extensions; ACP
 clients may ignore them.
 
+### Failed-turn evidence
+
+A native turn failure is the JSON-RPC error `-32010` whose `data` payload
+carries the redacted failure class and the usage provenance:
+
+| Field | Meaning |
+|---|---|
+| `kind` | Always `turn_failed`. |
+| `sessionId`, `turnId` | The session and turn correlation, unchanged. |
+| `codeggFailureCategory` | One allowlisted `TurnFailureCategory` value. `native_failure_unspecified` when the native side projected no category. |
+| `codeggUsage` | The token counts observed before the failure, or `null` when no count was available. |
+| `codeggUsageReason` | Why the counts are present or absent: `reported`, `not_observed`, `not_provided`, `lost_at_projection`, or `unspecified`. |
+
+The three provenance states are distinct facts and must stay distinct: a turn
+that ended before any provider response is `not_observed`; a provider response
+that carried no token counts is `not_provided`; a turn that reported token
+counts is `reported`. `codeggUsage` is `null` whenever no count is available,
+so a missing measurement is never read as zero usage.
+
+The failure payload **never** carries `CoreEvent::TurnFailed.message`. That
+message embeds upstream provider text and can carry credentials; it stays in
+the local transcript. The category is derived from the typed native error, and
+the usage aggregate covers every provider response in the failed run — a turn
+that made two metered calls and then failed spent both.
+
+`codeggFailureCategory` and `codeggUsageReason` are CodeGG extensions on an
+existing error code. The ACP protocol version, method names, error codes, and
+the successful result shape are unchanged.
+
 ### Terminal Detection
 
-`event_is_terminal()` (line 783) checks for `TurnCompleted` or `TurnFailed` on
+`event_is_terminal()` (line 884) checks for `TurnCompleted` or `TurnFailed` on
 both `CoreEvent` and `ProjectionEvent` variants, matching the bound turn
 identity. Only confirmed completion maps to `end_turn`; a client-requested
 cancellation maps a completed terminal event to `cancelled`. The stop reason
-is mapped by `map_acp_stop_reason()` (line 927): `cancelled`/`canceled`,
+is mapped by `map_acp_stop_reason()` (line 1096): `cancelled`/`canceled`,
 `max_tokens`, `max_turn_requests`, and `refusal` pass through; anything else
 becomes `end_turn`. Native failure maps to a standard JSON-RPC error and
 never fabricates cancellation or success.
 An unanswered native `PermissionPending` during a headless turn is cancelled
 and returned as JSON-RPC error `-32011` with bounded session/turn correlation
-(`event_is_permission_pending()`, line 833).
+(`event_is_permission_pending()`, line 934).
 
 ### Snapshot Replay
 
-`replay_snapshot()` (line 704) replays a `session/load` snapshot. It
+`replay_snapshot()` (line 775) replays a `session/load` snapshot. It
 iterates `recent_turns` and `active_turn`, sorted by `started_at`, and
 emits `session/update` notifications for `Public`-visibility `User` and
 `Assistant` messages. `Tool`, `System`, and `Reasoning` messages are
@@ -157,7 +186,7 @@ skipped.
 
 ### Cleanup on Exit
 
-The `run()` function (line 85) ensures on exit that:
+The `run()` function (line 112) ensures on exit that:
 - Any active prompt is cancelled.
 - All projection subscriptions are unsubscribed.
 
@@ -165,35 +194,37 @@ The `run()` function (line 85) ensures on exit that:
 
 | Type / Function | Location | Purpose |
 |----------------|----------|---------|
-| `RpcRequest` | `src/acp.rs:29` | Deserialized JSON-RPC frame |
-| `ActivePrompt` | `src/acp.rs:40` | Tracks the in-flight prompt: request ID, session, submission/projection event floors, subscription id, turn binding, cancel state |
-| `SessionBinding` | `src/acp.rs:79` | Maps session ID to subscription ID, cursor, and optional root path |
-| `run()` | `src/acp.rs:85` | Main async entry point; runs the select loop |
-| `drain_event_floor()` | `src/acp.rs:413` | Drains the native event queue and returns the highest observed `event_seq` |
-| `cancel_if_ready()` | `src/acp.rs:421` | Sends `TurnCancel` once turn is bound and cancel is requested |
-| `ensure_client()` | `src/acp.rs:441` | Lazy daemon connection via `connect_or_start_daemon()`; applies and verifies the explicit policy override |
-| `acquire_policy_lease()` | `src/acp.rs:475` | Takes the OS advisory lease under `CODEGG_DAEMON_HOME` |
-| `apply_and_verify_policy()` | `src/acp.rs:505` | `RuntimePolicySet` then `ExecutionPolicyGet` read-back; fails closed on narrowing |
-| `absolute_cwd()` | `src/acp.rs:596` | Validates and canonicalizes the `cwd` parameter |
-| `prompt_text()` | `src/acp.rs:622` | Extracts and concatenates text prompt blocks (1 MiB limit) |
-| `native_agents()` | `src/acp.rs:647` | Resolves agents via `load_config_or_default()` and `resolve_agents_with_context()` |
-| `subscribe()` | `src/acp.rs:663` | Subscribes to the session-scoped projection stream |
-| `replay_snapshot()` | `src/acp.rs:704` | Replays snapshot as ACP notifications |
-| `handle_event()` | `src/acp.rs:746` | Maps projection events to ACP session/update notifications |
-| `event_is_terminal()` | `src/acp.rs:783` | Checks if an event terminates the active prompt |
-| `projection_event_matches()` | `src/acp.rs:810` | Strict projection-stream correlation (subscription, session, floor, turn) |
-| `event_is_permission_pending()` | `src/acp.rs:833` | Detects an unanswered permission for the bound session/turn |
-| `terminal_stop_reason()` | `src/acp.rs:850` | Extracts the native stop reason from a terminal event |
-| `terminal_usage()` | `src/acp.rs:865` | Builds the `codeggUsage` extension from a terminal event |
-| `tool_arguments_sha256()` | `src/acp.rs:917` | Hashes the bounded argument projection (never the raw arguments) |
-| `map_acp_stop_reason()` | `src/acp.rs:927` | Maps a native stop reason to the ACP stop-reason set |
+| `RpcRequest` | `src/acp.rs:49` | Deserialized JSON-RPC frame |
+| `ActivePrompt` | `src/acp.rs:60` | Tracks the in-flight prompt: request ID, session, submission/projection event floors, subscription id, turn binding, cancel state |
+| `SessionBinding` | `src/acp.rs:106` | Maps session ID to subscription ID, cursor, and optional root path |
+| `run()` | `src/acp.rs:112` | Main async entry point; runs the select loop |
+| `drain_event_floor()` | `src/acp.rs:480` | Drains the native event queue and returns the highest observed `event_seq` |
+| `cancel_if_ready()` | `src/acp.rs:490` | Sends `TurnCancel` once turn is bound and cancel is requested |
+| `ensure_client()` | `src/acp.rs:510` | Lazy daemon connection via `connect_or_start_daemon()`; applies and verifies the explicit policy override |
+| `acquire_policy_lease()` | `src/acp.rs:546` | Takes the OS advisory lease under `CODEGG_DAEMON_HOME` |
+| `apply_and_verify_policy()` | `src/acp.rs:576` | `RuntimePolicySet` then `ExecutionPolicyGet` read-back; fails closed on narrowing |
+| `absolute_cwd()` | `src/acp.rs:667` | Validates and canonicalizes the `cwd` parameter |
+| `prompt_text()` | `src/acp.rs:693` | Extracts and concatenates text prompt blocks (1 MiB limit) |
+| `native_agents()` | `src/acp.rs:718` | Resolves agents via `load_config_or_default()` and `resolve_agents_with_context()` |
+| `subscribe()` | `src/acp.rs:734` | Subscribes to the session-scoped projection stream |
+| `replay_snapshot()` | `src/acp.rs:775` | Replays snapshot as ACP notifications |
+| `handle_event()` | `src/acp.rs:847` | Maps projection events to ACP session/update notifications |
+| `event_is_terminal()` | `src/acp.rs:884` | Checks if an event terminates the active prompt |
+| `projection_event_matches()` | `src/acp.rs:911` | Strict projection-stream correlation (subscription, session, floor, turn) |
+| `event_is_permission_pending()` | `src/acp.rs:934` | Detects an unanswered permission for the bound session/turn |
+| `terminal_stop_reason()` | `src/acp.rs:951` | Extracts the native stop reason from a terminal event |
+| `terminal_usage()` | `src/acp.rs:966` | Builds the `codeggUsage` extension from a terminal event |
+| `terminal_failure_data()` | `src/acp.rs:1034` | Builds the `-32010` `data` payload: failure category, usage, and usage reason together |
+| `tool_arguments_sha256()` | `src/acp.rs:1086` | Hashes the bounded argument projection (never the raw arguments) |
+| `map_acp_stop_reason()` | `src/acp.rs:1096` | Maps a native stop reason to the ACP stop-reason set |
 
 ## Configuration Surface
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `ACP_PROTOCOL_VERSION` | `1` | `src/acp.rs:25` |
-| `MAX_FRAME_BYTES` | `1 MiB` | `src/acp.rs:26` |
+| `ACP_PROTOCOL_VERSION` | `1` | `src/acp.rs:26` |
+| `MAX_FRAME_BYTES` | `1 MiB` | `src/acp.rs:27` |
+| `ACP_TURN_FAILED_CODE` | `-32010` | `src/acp.rs:34` |
 
 The adapter reads the resolved config for agent selection. No ACP-specific
 config keys exist. The `model` parameter in `session/prompt` defaults to
@@ -232,6 +263,47 @@ unchanged.
   when another ACP policy trial already holds the lock under the same
   `CODEGG_DAEMON_HOME`, so two trials cannot silently fight over one
   daemon's policy.
+- **An incomplete observation is not a completed one**: the daemon's event
+  log is a bounded broadcast, so a connection that falls behind it loses
+  events. The daemon reports that loss, the adapter surfaces it, and the
+  consumer is told. The adapter subscribes **loss-aware**: a dropped event
+  arrives as a typed condition, never as silence. See "Reporting a hole in
+  the event stream" below.
+
+## Reporting a hole in the event stream
+
+A consumer that pairs a tool call with its completion must be able to tell
+"the tool never finished" from "the completion notification was dropped".
+The adapter therefore reports a gap in the daemon's event stream on an
+**optional**, namespaced session-update kind:
+
+```json
+{"sessionUpdate": "codegg_event_gap", "dropped": 12, "source": "daemon_event_stream_gap"}
+```
+
+and, when the gap happened during a turn, the turn's own result carries the
+count:
+
+```json
+{"stopReason": "end_turn", "codeggUsage": {...}, "codeggEventGap": {"dropped": 12}}
+```
+
+Both are **additive and optional**:
+
+- no ACP v1 field became **required**;
+- a consumer that does not know the `codegg_event_gap` kind ignores it;
+- a consumer that does not read `codeggEventGap` sees the same result it saw
+  before.
+
+The rule a consumer must follow: **a trial whose observation had a hole in it
+is unmeasured.** It is never scored as a completed trial and never scored as a
+failure of the subject — it is re-run, under a bounded number of re-runs.
+The harness implements that rule in `dev/harness_lab/`.
+
+The two gap sources are different facts and both are carried: a **daemon**
+gap is the daemon telling the consumer it dropped events from the stream it
+sends, and a **client broadcast** lag is the consumer itself falling behind
+the shared broadcast.
 
 ## Testing
 
@@ -242,8 +314,8 @@ cargo test -p codegg --lib acp::helper_tests     # cwd / prompt-block / frame-li
 python3 -m unittest discover -s dev/harness_lab/tests -v
 ```
 
-Test coverage (inline, `src/acp.rs:1004-1354`, split across two modules —
-`mod tests` at `:1005` and `mod helper_tests` at `:1332`):
+Test coverage (inline, `src/acp.rs:1178-1695`, split across two modules —
+`mod tests` at `:1178` and `mod helper_tests` at `:1674`):
 - `projection_stream_uses_nested_session_turn_subscription_and_cursor` —
   projection subscription shape and cursor
 - `acp_harness_extensions_expose_turn_usage_and_argument_fingerprint` —
@@ -270,6 +342,38 @@ Test coverage (inline, `src/acp.rs:1004-1354`, split across two modules —
 - [protocol.md](protocol.md) — `CoreRequest`, `CoreResponse`, `CoreEvent`
 
 ## Source verification
+
+Re-verified 2026-10-23 against the merged `src/acp.rs` (**1695 lines**),
+after `main`'s ACP audit (2026-10-23, against 1354 lines) and the corrective
+line's failed-turn-evidence and event-gap changes were combined. Every
+`file.rs:line` reference was re-derived from the merged source rather than
+carried over: `ACP_PROTOCOL_VERSION` `:26`, `MAX_FRAME_BYTES` `:27`,
+`ACP_TURN_FAILED_CODE` `:34`, `RpcRequest` `:49`, `ActivePrompt` `:60`,
+`SessionBinding` `:106`, `run()` `:112`, `bind_turn()` `:91`,
+`drain_event_floor()` `:480`, `cancel_if_ready()` `:490`,
+`ensure_client()` `:510`, `acquire_policy_lease()` `:546`,
+`apply_and_verify_policy()` `:576`, `absolute_cwd()` `:667`,
+`prompt_text()` `:693`, `native_agents()` `:718`, `subscribe()` `:734`,
+`replay_snapshot()` `:775`, `handle_event()` `:847`,
+`event_is_terminal()` `:884`, `projection_event_matches()` `:911`,
+`event_is_permission_pending()` `:934`, `terminal_stop_reason()` `:951`,
+`terminal_usage()` `:966`, `terminal_failure_data()` `:1034`,
+`tool_arguments_sha256()` `:1086`, `map_acp_stop_reason()` `:1096`,
+`update()` `:1106`, `write_error_with_data()` `:1134`, `error_frame()` `:1148`,
+and the inline test range `:1178-1695` (`mod tests` at `:1178`,
+`mod helper_tests` at `:1674`).
+
+The audit's **content** was not re-litigated: the JSON-RPC error-code table,
+the policy lease, the turn-admission binding path, the strict projection
+correlation rule, and the corrected "presentation only" invariant all still
+describe the merged source. Two sections the audit could not cover are
+restored from the corrective line, because `main`'s audit was performed
+against a `src/acp.rs` that did not carry them: **Failed-turn evidence** (the
+`-32010` data payload) and **Reporting a hole in the event stream** (the
+`codegg_event_gap` update and the `codeggEventGap` result field).
+`terminal_failure_data()` is the single place that builds the `-32010` `data`
+payload, so the category, the usage, and the usage reason are produced
+together and cannot drift apart.
 
 Verified 2026-10-23 against `src/acp.rs` (1354 lines) and
 `src/main.rs`'s `codegg acp` subcommand.

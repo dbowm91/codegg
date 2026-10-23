@@ -1004,6 +1004,19 @@ references, connection lifecycle, HTTP transport, cancellation, deadlines, and
 retry/error ownership. `eggpool-wire` remains the request-grammar and stream
 authority. The profile carries no secrets and never owns a credential.
 
+**Stream liveness.** The provider imposes **no per-chunk deadline** on any of
+its three surfaces, and that is a policy statement rather than an omission.
+Long-stream liveness is owned by the agent layer (`STREAM_SETUP_TIMEOUT` of
+120 s for the first event, `STREAM_IDLE_TIMEOUT` of 90 s between events,
+plus cancellation and the retry-chain budget). A provider-level chunk
+deadline *below* the agent's own idle timeout fires first and reports a slow
+but valid stream as a provider error, so the agent's bound never applies.
+That is how nine of the twelve `worklog` trials failed in the harness's
+sustained scenario. Every sibling streaming surface — `openai`, `anthropic`,
+`google` — passes no chunk deadline either, so OpenCode Go does not invent
+one: the deadline is surface-independent precisely because it is not applied
+at the provider level.
+
 **Dependency pinning.** `eggpool-provider-profile` declares `eggpool-wire` as a
 *path* dependency, and Cargo resolves a git dependency's path dependencies
 against the **parent's** revision. Both pins must therefore name the same rev;
@@ -1158,7 +1171,9 @@ routes native OpenAI, Azure OpenAI, OpenRouter, CodeGG Zen, and the shared
 OpenAI-compatible transport through `encode_openai_chat` and
 `openai_chat_stream`. Compatible presets and wrappers use the same transport
 core. Provider modules still own endpoint construction, credentials, headers,
-discovery, HTTP status handling, chunk-idle deadlines, and cancellation.
+discovery, HTTP status handling, and cancellation. They do **not** own stream
+liveness: no provider surface imposes a per-chunk deadline, and the agent layer
+bounds a long stream instead (see Stream liveness above).
 OpenAI Chat's current `max_tokens` field is preserved by a closed CodeGG
 bridge transform because the shared canonical codec emits
 `max_completion_tokens` by default. `scripts/check_provider_wire_cutover.py`
@@ -1613,7 +1628,7 @@ key). Factory methods: `simple()` (wraps key in `Credential::api_key`),
 `simple_with_credential()` (preserves `CredentialKind` and `expires_at`).
 Configured `extra_headers` are validated and emitted on chat requests, but may
 not collide with transport-owned authentication, content-type, or session
-affinity headers. 30-second chunk timeout. Dynamic model discovery via
+affinity headers. Dynamic model discovery via
 `/models`. OpenCode Go explicitly enables a required `x-opencode-session`
 affinity policy; it reads only `ChatRequest.context.session_id`, so missing or
 invalid context fails before network I/O. Other OpenAI-compatible providers do

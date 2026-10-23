@@ -1,0 +1,190 @@
+{
+  "agent": "build",
+  "codegg_binary_sha256": "102e9582794a207950c9421adf2d96963c8aeb1fd6ec5dca495ef705be54d508",
+  "codegg_source_commit": "5dda961ce9961fff0b327f39eb4d618d860996d8",
+  "pilot_method": "Native CodeGG ACP over the frozen fixture; one private lane per run; no automatic correction between subjects.",
+  "policy_receipt": {
+    "effective": {
+      "approvalMode": "yolo",
+      "revision": "1",
+      "sandbox": "workspace_write"
+    },
+    "requested": {
+      "approvalMode": "yolo",
+      "sandbox": "workspace_write"
+    }
+  },
+  "profile": "workspace-write",
+  "recorded_date_utc": "2026-10-22",
+  "runs": [
+    {
+      "budget": {
+        "cost_usd": null,
+        "exhausted_cap": null,
+        "input_tokens": 21711,
+        "output_tokens": 298,
+        "provider_requests": 1,
+        "total_tokens": 22009
+      },
+      "changed_task_files": [
+        "ranges.py"
+      ],
+      "cost_usd": null,
+      "duration_ms": 35274,
+      "model": "opencode_go/muse-spark-1.3-contributor",
+      "ok": true,
+      "protected_files_changed": [],
+      "provider_usage": {
+        "cached_tokens": null,
+        "input_tokens": 21711,
+        "output_tokens": 298,
+        "reasoning_tokens": null,
+        "turn_id": "turn-cf5125d4-f243-4d3e-8701-3bbd9560f7b1"
+      },
+      "route": "muse-spark-1.3-contributor",
+      "stop_reason": "end_turn",
+      "terminal": "completed",
+      "terminal_failure": null,
+      "tool_call_count": 9,
+      "tool_sequence": [
+        "list",
+        "read",
+        "read",
+        "read",
+        "read",
+        "test",
+        "terminal",
+        "write",
+        "terminal"
+      ],
+      "usage_note": "Provider-reported token counts for the turn.",
+      "usage_unavailable_reason": null,
+      "verification_command": [
+        "python3",
+        "-m",
+        "unittest",
+        "-v"
+      ],
+      "verification_exit_code": 0,
+      "verification_failure_summary": null
+    },
+    {
+      "budget": {
+        "cost_usd": null,
+        "exhausted_cap": null,
+        "input_tokens": 23798,
+        "output_tokens": 215,
+        "provider_requests": 1,
+        "total_tokens": 24013
+      },
+      "changed_task_files": [
+        "ranges.py"
+      ],
+      "cost_usd": null,
+      "duration_ms": 101965,
+      "model": "opencode_go/mimo-v2.6-flash",
+      "ok": true,
+      "protected_files_changed": [],
+      "provider_usage": {
+        "cached_tokens": 23232,
+        "input_tokens": 23798,
+        "output_tokens": 215,
+        "reasoning_tokens": 155,
+        "turn_id": "turn-7382b156-d0f0-4230-b911-7c65b3e8c420"
+      },
+      "route": "mimo-v2.6-flash",
+      "stop_reason": "end_turn",
+      "terminal": "completed",
+      "terminal_failure": null,
+      "tool_call_count": 10,
+      "tool_sequence": [
+        "list",
+        "read",
+        "read",
+        "read",
+        "read",
+        "terminal",
+        "context_read",
+        "write",
+        "test",
+        "terminal"
+      ],
+      "usage_note": "Provider-reported token counts for the turn.",
+      "usage_unavailable_reason": null,
+      "verification_command": [
+        "python3",
+        "-m",
+        "unittest",
+        "-v"
+      ],
+      "verification_exit_code": 0,
+      "verification_failure_summary": null
+    },
+    {
+      "budget": {
+        "cost_usd": null,
+        "exhausted_cap": null,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "provider_requests": 1,
+        "total_tokens": 0
+      },
+      "changed_task_files": [
+        "ranges.py"
+      ],
+      "cost_usd": null,
+      "duration_ms": 71766,
+      "model": "opencode_go/deepseek-v4.1-flash",
+      "ok": true,
+      "protected_files_changed": [],
+      "provider_usage": {
+        "cached_tokens": null,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": null,
+        "turn_id": "turn-df99c96a-4a6e-474e-b91f-5049f57218ab"
+      },
+      "route": "deepseek-v4.1-flash",
+      "stop_reason": "end_turn",
+      "terminal": "completed",
+      "terminal_failure": null,
+      "tool_call_count": 20,
+      "tool_sequence": [
+        "bash",
+        "glob",
+        "list",
+        "read",
+        "read",
+        "read",
+        "read",
+        "test",
+        "terminal",
+        "write",
+        "terminal",
+        "terminal",
+        "git_query",
+        "python_script",
+        "write",
+        "terminal",
+        "terminal",
+        "terminal",
+        "terminal",
+        "terminal"
+      ],
+      "usage_note": "The provider reported a turn with zero input and output token counts. The counts are the provider's own report; the observed total is zero because the route reported nothing usable, not because the route used no tokens.",
+      "usage_unavailable_reason": null,
+      "verification_command": [
+        "python3",
+        "-m",
+        "unittest",
+        "-v"
+      ],
+      "verification_exit_code": 0,
+      "verification_failure_summary": null
+    }
+  ],
+  "schema_version": 1,
+  "task_baseline_sha256": "89075ca1e92c7e1b829d5f6db99320d5c7bb437830cd2c6d1840b4b7a1ad0d53",
+  "task_id": "ranges",
+  "usage_note": "Token counts are the provider's own report for the turn, copied without adjustment. A route that reported no usable counts is recorded as the provider reported it \u2014 the observed total is then zero because nothing was observed, which is not a claim that the route used no tokens. Cost is null on every route: no provider cost field reached the harness, and no estimate is substituted."
+}

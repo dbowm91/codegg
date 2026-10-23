@@ -6,10 +6,56 @@ import os
 from pathlib import Path
 import sys
 import time
+from typing import Optional
 
-from .supervisor import HarnessError, run_smoke, run_tool_trial
+from .supervisor import HarnessError, lane_root as supervisor_lane_root, run_exec_trial, run_smoke, run_tool_trial
+from . import autonomy as autonomy_module
+from . import autonomy_run as autonomy_run_module
+from . import budget
 from . import ledger
 from . import improve
+from . import pilot as pilot_module
+from . import scoring
+from . import sustained as sustained_module
+
+
+def _sustained_plans(trials: int) -> list:
+    """Build the trial plan for a sustained scenario.
+
+    The sequence alternates the two frozen tasks and injects the two
+    interruption kinds at fixed positions, so the scenario always covers a
+    normal trial, a cancelled trial, and an abruptly dropped ACP connection.
+    """
+    tasks = list(pilot_module.FROZEN_TASKS)
+    plans = []
+    for index in range(trials):
+        task = tasks[index % len(tasks)]
+        fault = None
+        if index == 3:
+            fault = "cancel"
+        elif index == 7:
+            fault = "abrupt_acp_drop"
+        elif index == 11:
+            fault = "cancel"
+        elif index == 15:
+            fault = "abrupt_acp_drop"
+        plans.append(sustained_module.TrialPlan(
+            trial_id=f"trial-{index:02d}-{task}-{fault or 'clean'}",
+            task=task, fault=fault))
+    return plans
+
+
+def _add_budget_arguments(parser: argparse.ArgumentParser) -> None:
+    """Attach the budget admission gate to a command that can reach a provider.
+
+    The gate is fail-closed: a live trial must present a budget policy whose
+    enforceable cap the controller verified, and the trial is refused before
+    anything is spawned when it cannot.
+    """
+    parser.add_argument("--budget", type=Path,
+                        help="JSON budget policy document for the trial's enforceable caps")
+    parser.add_argument("--live-provider", action="store_true",
+                        help="declare that this trial reaches a live provider; requires --budget and a verified cap")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,6 +74,7 @@ def _parser() -> argparse.ArgumentParser:
     tool.add_argument("--profile", choices=("workspace-write", "full-host"), required=True)
     tool.add_argument("--timeout", type=float, default=45.0)
     tool.add_argument("--deny-bash", action="store_true", help="prove explicit bash deny remains effective")
+    _add_budget_arguments(tool)
     evaluate = commands.add_parser("evaluate", help="run and independently verify the deterministic native tool fixture")
     evaluate.add_argument("--binary", type=Path, default=os.environ.get("CODEGG_HARNESS_BINARY"))
     evaluate.add_argument("--ledger", type=Path, required=True)
@@ -38,10 +85,13 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--suite", type=Path, help="versioned JSONL case manifest (one task per line)")
     evaluate.add_argument("--timeout", type=float, default=60.0)
     evaluate.add_argument("--max-wallclock", type=float, default=600.0)
+    evaluate.add_argument("--max-measurement-retries", type=int, default=2,
+                          help="how many times one pair may be re-run after a "
+                               "measurement failure, across every resume")
     evaluate.add_argument("--max-trials", type=int, default=100)
     evaluate.add_argument("--deny-bash", action="store_true")
-    evaluate.add_argument("--resume-candidate", action="store_true",
-                          help="resume missing task/repeat pairs for an interrupted candidate")
+    evaluate.add_argument("--resume-candidate", action="store_true",                          help="resume missing task/repeat pairs for an interrupted candidate")
+    _add_budget_arguments(evaluate)
     report = commands.add_parser("report", help="summarize a frozen ledger without provider calls")
     report.add_argument("--ledger", type=Path, required=True)
     replay = commands.add_parser("replay", help="re-run a deterministic verifier from captured artifacts")
@@ -61,6 +111,9 @@ def _parser() -> argparse.ArgumentParser:
     improve_cmd.add_argument("--prompt")
     improve_cmd.add_argument("--allow-prefix", action="append", default=[])
     improve_cmd.add_argument("--timeout", type=float, default=300.0)
+    improve_cmd.add_argument("--model", default=None,
+                             help="pin the OpenCode proposer to one approved provider/model route")
+    _add_budget_arguments(improve_cmd)
     optimize = commands.add_parser("optimize", help="run a bounded multi-iteration assess/correct/retest controller")
     optimize.add_argument("--repository", type=Path, default=Path.cwd())
     optimize.add_argument("--suite", type=Path, required=True)
@@ -76,6 +129,9 @@ def _parser() -> argparse.ArgumentParser:
     optimize.add_argument("--max-wallclock", type=float, default=3600.0)
     optimize.add_argument("--timeout", type=float, default=900.0)
     optimize.add_argument("--resume", action="store_true")
+    optimize.add_argument("--model", default=None,
+                          help="pin the OpenCode proposer to one approved provider/model route")
+    _add_budget_arguments(optimize)
     qualify = commands.add_parser("qualify", help="build, test, and paired-ACP-evaluate a scoped candidate")
     qualify.add_argument("--worktree", type=Path, required=True)
     qualify.add_argument("--suite", type=Path, required=True)
@@ -92,17 +148,109 @@ def _parser() -> argparse.ArgumentParser:
     qualify.add_argument("--resume", action="store_true")
     qualify.add_argument("--max-candidate-retries", type=int, default=0,
                          help="bounded OpenCode compile-correction retries; zero disables retries")
+    qualify.add_argument("--model", default=None,
+                         help="pin the OpenCode proposer to one approved provider/model route")
+    _add_budget_arguments(qualify)
+    budget_check = commands.add_parser(
+        "budget-check",
+        help="report the budget admission decision for a trial policy; provider-free")
+    budget_check.add_argument("--budget", type=Path, required=True,
+                              help="JSON budget policy document for the trial's enforceable caps")
     candidate_tree = commands.add_parser("candidate-worktree", help="create a new isolated local candidate branch/worktree")
     candidate_tree.add_argument("--repository", type=Path, default=Path.cwd())
     candidate_tree.add_argument("--branch", required=True)
     candidate_tree.add_argument("--destination", type=Path, required=True)
     candidate_tree.add_argument("--base-revision", required=True)
+    pilot = commands.add_parser(
+        "pilot",
+        help="run one frozen task fixture against a live approved route and record a receipt")
+    pilot.add_argument("--task", required=True, choices=list(pilot_module.FROZEN_TASKS),
+                       help="frozen pilot task id")
+    pilot.add_argument("--model", required=True,
+                       help="provider/model composite, for example opencode_go/muse-spark-1.3-contributor")
+    pilot.add_argument("--binary", type=Path, default=None,
+                       help="CodeGG binary under test; defaults to the debug build")
+    pilot.add_argument("--profile", default="workspace-write",
+                       choices=["workspace-write", "full-host"])
+    pilot.add_argument("--timeout", type=float, default=pilot_module.DEFAULT_TIMEOUT_SECONDS)
+    pilot.add_argument("--output", type=Path, default=None,
+                       help="where to write the receipt JSON; stdout when absent")
+    pilot.add_argument("--lane-root", type=Path, default=None,
+                       help="private lane directory; a temporary lane when absent")
+    _add_budget_arguments(pilot)
+    sustained = commands.add_parser(
+        "sustained",
+        help="run an unattended sequence of live trials with bounded resource limits")
+    sustained.add_argument("--model", required=True,
+                           help="provider/model composite for every trial in the scenario")
+    sustained.add_argument("--binary", type=Path, default=None)
+    sustained.add_argument("--profile", default="workspace-write",
+                           choices=["workspace-write", "full-host"])
+    sustained.add_argument("--trials", type=int, default=24,
+                           help="number of live trials in the scenario")
+    sustained.add_argument("--per-trial-wallclock", type=float, default=600.0)
+    sustained.add_argument("--scenario-wallclock", type=float, default=None,
+                           help="the cumulative wallclock the whole scenario may "
+                                "consume; the scenario stops before it crosses it")
+    sustained.add_argument("--max-provider-requests", type=int, default=None,
+                           help="scenario-level provider-request ceiling, independent of the policy")
+    sustained.add_argument("--output", type=Path, default=None)
+    sustained.add_argument("--lane-root", type=Path, default=None)
+    _add_budget_arguments(sustained)
+    autonomy = commands.add_parser(
+        "autonomy",
+        help="run autonomy taxonomy cases against a live approved route and record a receipt")
+    autonomy.add_argument("--model", required=True,
+                           help="provider/model composite, for example opencode_go/muse-spark-1.3-contributor")
+    autonomy.add_argument("--case", action="append", default=None,
+                           help="case id to run; repeatable. Defaults to every supported case")
+    autonomy.add_argument("--binary", type=Path, default=None,
+                           help="CodeGG binary under test; defaults to the debug build")
+    autonomy.add_argument("--profile", default="workspace-write",
+                           choices=["workspace-write", "full-host"])
+    autonomy.add_argument("--timeout", type=float, default=900.0)
+    autonomy.add_argument("--output", type=Path, default=None,
+                           help="where to write the receipt JSON; stdout when absent")
+    autonomy.add_argument("--lane-root", type=Path, default=None,
+                           help="private lane directory; a temporary lane when absent")
+    _add_budget_arguments(autonomy)
+    autonomy_compare = commands.add_parser(
+        "autonomy-compare",
+        help="run the taxonomy on a baseline binary and a candidate binary and score the pair")
+    autonomy_compare.add_argument("--model", required=True)
+    autonomy_compare.add_argument("--baseline-binary", type=Path, required=True,
+                                  help="the baseline CodeGG binary")
+    autonomy_compare.add_argument("--candidate-binary", type=Path, required=True,
+                                  help="the candidate CodeGG binary")
+    autonomy_compare.add_argument("--case", action="append", default=None,
+                                  help="case id to compare; repeatable. Defaults to every supported case")
+    autonomy_compare.add_argument("--profile", default="workspace-write",
+                                  choices=["workspace-write", "full-host"])
+    autonomy_compare.add_argument("--timeout", type=float, default=900.0)
+    autonomy_compare.add_argument("--output", type=Path, default=None,
+                                  help="where to write the comparison JSON; stdout when absent")
+    autonomy_compare.add_argument("--lane-root", type=Path, default=None)
+    _add_budget_arguments(autonomy_compare)
+    autonomy_rescore = commands.add_parser(
+        "autonomy-rescore",
+        help="re-score two recorded autonomy sides with the current score contract")
+    autonomy_rescore.add_argument("--baseline-runs", type=Path, required=True,
+                                  help="the recorded baseline side: a comparison JSON, or a suite JSON")
+    autonomy_rescore.add_argument("--candidate-runs", type=Path, required=True,
+                                  help="the recorded candidate side: a comparison JSON, or a suite JSON")
+    autonomy_rescore.add_argument("--output", type=Path, default=None,
+                                  help="where to write the re-scored comparison JSON; stdout when absent")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        # The budget admission gate runs before anything else so a live trial
+        # that cannot prove an enforceable cap never reaches a provider, a
+        # daemon, or a subprocess.
+        admitted_budget = _require_budget_admission(args)
+        spend_guard = None if admitted_budget is None else budget.SpendGuard(admitted_budget)
         if args.command == "doctor":
             binary = _binary(args.binary)
             print(json.dumps({"ok": True, "binary": str(binary), "sha256": _sha256(binary)}, sort_keys=True))
@@ -120,11 +268,146 @@ def main(argv: list[str] | None = None) -> int:
             if args.proposer == "manual" and args.dry_run:
                 result = improve.manual_dry_run(args.checkpoint, args.max_iterations, args.max_candidate_retries)
             elif args.proposer == "opencode" and args.worktree and args.prompt and args.allow_prefix:
-                result = improve.opencode_propose(args.worktree, args.prompt, tuple(args.allow_prefix), args.timeout)
+                result = improve.opencode_propose(args.worktree, args.prompt, tuple(args.allow_prefix),
+                                                 args.timeout, model=args.model)
             else:
                 raise HarnessError("manual mode requires --dry-run; OpenCode mode requires --worktree, --prompt, and at least one --allow-prefix")
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") != "BLOCKED" else 2
+        if args.command == "sustained":
+            if not getattr(args, "live_provider", False):
+                raise HarnessError(
+                    "the sustained command always reaches a live provider; pass --live-provider "
+                    "together with an admitted --budget policy")
+            policy = _budget_policy(getattr(args, "budget", None))
+            plans = _sustained_plans(args.trials)
+            receipt = sustained_module.run_sustained_scenario(
+                _binary(args.binary), args.model, budget_policy=policy, plans=plans,
+                profile=args.profile, root=args.lane_root,
+                per_trial_wallclock=args.per_trial_wallclock,
+                scenario_wallclock=args.scenario_wallclock,
+                max_provider_requests=args.max_provider_requests)
+            rendered = json.dumps(receipt, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"attempted": receipt["attempted_trials"],
+                                  "unattempted": receipt["unattempted_trials"],
+                                  "solved": receipt["solved_trials"],
+                                  "stopped": receipt["stopped_trials"],
+                                  "elapsed_ms": receipt["elapsed_ms"],
+                                  "stopped_reason": receipt["stopped_reason"],
+                                  "output": str(args.output)}, sort_keys=True))
+            else:
+                print(rendered)
+            return 0 if receipt["unattempted_trials"] == 0 else 2
+        if args.command == "budget-check":
+            admission = _budget_admission(args.budget)
+            print(json.dumps(admission.as_dict(), sort_keys=True))
+            return 0 if admission.status == budget.STATUS_ADMITTED else 2
+        if args.command == "pilot":
+            # The pilot always reaches a live provider, so the declaration is
+            # not optional: a run that did not name a live provider and an
+            # admitted budget never starts.
+            if not getattr(args, "live_provider", False):
+                raise HarnessError(
+                    "the pilot command always reaches a live provider; pass --live-provider "
+                    "together with an admitted --budget policy")
+            policy = _budget_policy(getattr(args, "budget", None))
+            receipt = pilot_module.run_live_task(
+                _binary(args.binary), args.task, args.model, budget_policy=policy,
+                profile=args.profile, root=args.lane_root, timeout=args.timeout)
+            rendered = json.dumps(receipt, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"ok": receipt["ok"], "output": str(args.output),
+                                  "task_id": receipt["task_id"], "model": receipt["model"],
+                                  "terminal": receipt["terminal"]}, sort_keys=True))
+            else:
+                print(rendered)
+            return 0 if receipt["ok"] else 2
+        if args.command == "autonomy":
+            # An autonomy case always reaches a live provider, so the
+            # declaration is not optional: a run that did not name a live
+            # provider and an admitted budget never starts.
+            if not getattr(args, "live_provider", False):
+                raise HarnessError(
+                    "the autonomy command always reaches a live provider; pass --live-provider "
+                    "together with an admitted --budget policy")
+            policy = _budget_policy(getattr(args, "budget", None))
+            suite = autonomy_module.load_autonomy_suite()
+            lane = args.lane_root or supervisor_lane_root("autonomy")
+            receipt = autonomy_run_module.run_suite(
+                _binary(args.binary), suite, args.model, budget_policy=policy,
+                lane_root=lane, profile=args.profile, timeout=args.timeout,
+                case_ids=list(args.case) if args.case else None)
+            rendered = json.dumps(receipt, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"ok": receipt["solved_cases"] == len(receipt["runs"]),
+                                  "output": str(args.output),
+                                  "solved_cases": receipt["solved_cases"],
+                                  "case_count": len(receipt["runs"]),
+                                  "model": receipt["model"]}, sort_keys=True))
+            else:
+                print(rendered)
+            return 0 if receipt["solved_cases"] == len(receipt["runs"]) else 2
+        if args.command == "autonomy-compare":
+            if not getattr(args, "live_provider", False):
+                raise HarnessError(
+                    "the autonomy-compare command always reaches a live provider; pass "
+                    "--live-provider together with an admitted --budget policy")
+            policy = _budget_policy(getattr(args, "budget", None))
+            suite = autonomy_module.load_autonomy_suite()
+            case_ids = list(args.case) if args.case else None
+            # The lane root decides the daemon control socket's path, and the
+            # platform's sun_path limit is short. Two short lane roots, one
+            # per side, keep both sockets bindable; a nested layout would
+            # push them past the limit.
+            baseline_lane = args.lane_root or supervisor_lane_root("ab")
+            candidate_lane = args.lane_root or supervisor_lane_root("ac")
+            baseline = autonomy_run_module.run_suite(
+                _binary(args.baseline_binary), suite, args.model, budget_policy=policy,
+                lane_root=baseline_lane, profile=args.profile, timeout=args.timeout,
+                case_ids=case_ids)
+            candidate = autonomy_run_module.run_suite(
+                _binary(args.candidate_binary), suite, args.model, budget_policy=policy,
+                lane_root=candidate_lane, profile=args.profile, timeout=args.timeout,
+                case_ids=case_ids)
+            comparison = autonomy_run_module.compare_runs(
+                scoring.default_contract(), baseline["runs"], candidate["runs"])
+            payload = {"schema_version": 1, "model": args.model,
+                       "baseline_binary_sha256": baseline.get("binary_sha256"),
+                       "candidate_binary_sha256": candidate.get("binary_sha256"),
+                       "baseline": baseline, "candidate": candidate,
+                       "comparison": comparison}
+            rendered = json.dumps(payload, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"ok": True, "output": str(args.output),
+                                  "decision": comparison["outcome"]["decision"],
+                                  "objective": comparison["outcome"]["objective"]},
+                                 sort_keys=True))
+            else:
+                print(rendered)
+            return 0
+        if args.command == "autonomy-rescore":
+            comparison = autonomy_run_module.rescore_recorded_runs(
+                _recorded_runs(args.baseline_runs), _recorded_runs(args.candidate_runs))
+            rendered = json.dumps(comparison, indent=2, sort_keys=True)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(rendered, encoding="utf-8")
+                print(json.dumps({"ok": True, "output": str(args.output),
+                                  "decision": comparison["outcome"]["decision"],
+                                  "objective": comparison["outcome"]["objective"]},
+                                 sort_keys=True))
+            else:
+                print(rendered)
+            return 0
         if args.command == "optimize":
             result = improve.run_optimizer(
                 args.repository, args.suite, args.ledger,
@@ -134,7 +417,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations=args.max_iterations,
                 max_candidate_retries=args.max_candidate_retries,
                 max_wallclock=args.max_wallclock, timeout=args.timeout,
-                resume=args.resume)
+                resume=args.resume, model=args.model,
+                budget_policy=_budget_policy(getattr(args, "budget", None)))
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") == "ACCEPTED" else 2
         if args.command == "qualify":
@@ -163,7 +447,8 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.proposer == "opencode":
                     if not args.prompt or len(args.prompt.encode()) > 8192:
                         raise HarnessError("OpenCode qualification requires a non-empty prompt of at most 8 KiB")
-                    proposal = improve.opencode_propose(worktree, args.prompt, tuple(args.allow_prefix), args.timeout)
+                    proposal = improve.opencode_propose(worktree, args.prompt, tuple(args.allow_prefix),
+                                                       args.timeout, model=args.model)
                     paths = proposal["changed_paths"]
                     patch_digest = proposal["patch_sha256"]
                 else:
@@ -178,7 +463,8 @@ def main(argv: list[str] | None = None) -> int:
                     allowed_prefixes=tuple(args.allow_prefix), timeout=args.timeout,
                     max_wallclock=args.max_wallclock, checkpoint=checkpoint, resume=args.resume,
                     proposer=args.proposer, correction_prompt=args.prompt or "",
-                    max_candidate_retries=args.max_candidate_retries)
+                    max_candidate_retries=args.max_candidate_retries, model=args.model,
+                    budget_policy=_budget_policy(getattr(args, "budget", None)))
             except (ValueError, RuntimeError, TimeoutError, OSError) as error:
                 if checkpoint.state not in improve.TERMINAL and "REJECTED" in improve.ALLOWED[checkpoint.state]:
                     checkpoint.transition("REJECTED", {"failure_class": type(error).__name__})
@@ -242,6 +528,8 @@ def main(argv: list[str] | None = None) -> int:
                     expanded_files_by_task[case["task_id"]] = expanded_initial_files
                     if not isinstance(case.get("expected_file", "tool-receipt.txt"), str):
                         raise HarnessError("suite expected_file must be a relative path")
+                    if case.get("transport", "acp") not in {"acp", "exec"}:
+                        raise HarnessError("suite case transport must be acp or exec")
                     if not isinstance(case.get("expected_exists", not case.get("deny_bash", args.deny_bash)), bool):
                         raise HarnessError("suite expected_exists must be boolean")
                     if not isinstance(case.get("cancel", False), bool):
@@ -269,10 +557,46 @@ def main(argv: list[str] | None = None) -> int:
                 started = time.monotonic()
                 exhausted = False
                 existing = {}
+                # The measurement-failure re-run bound.
+                #
+                # A measurement failure carries no information about the
+                # candidate, so the pair is re-run. That is correct, and it is
+                # also a way to spend the admitted budget without the operator
+                # seeing it, so the number of re-runs is capped per pair,
+                # across every resume. The count comes from the ledger's own
+                # rows — the recorded evidence — and not from a value the
+                # caller asserts. The cap is also enforced against the
+                # provider-request budget: every attempt is admitted through
+                # the spend guard, which refuses before the ceiling is
+                # crossed, so a re-run can never spend past it.
+                #
+                # A pair that exhausts the cap is recorded as **unmeasured and
+                # unresolved**: never as a pass, never as a zero, and never as
+                # a silently dropped trial.
+                try:
+                    ledger_root = args.ledger.expanduser().resolve(strict=True)
+                    measurement_failures = ledger.measurement_failures_by_pair(
+                        ledger_root, args.candidate)
+                    prior_attempts = ledger.attempts_by_pair(ledger_root, args.candidate)
+                except (OSError, ValueError):
+                    measurement_failures = {}
+                    prior_attempts = {}
                 if args.resume_candidate:
                     existing = ledger.validate_candidate_resume_rows(
                         args.ledger.expanduser().resolve(strict=True), args.candidate,
                         cases, suite_sha256, args.group_id)
+                    # The wallclock budget is **cumulative**: a resumed
+                    # evaluation continues with the budget that was really
+                    # left, not with a fresh full-length one. The consumed
+                    # figure is derived from the ledger's own trial rows —
+                    # the recorded evidence of the trials that already ran —
+                    # and never from a value the caller asserts. A trial whose
+                    # duration was not measured contributes nothing: an
+                    # unmeasured duration is unknown, not zero.
+                    resumed = ledger.resumed_candidate_elapsed_seconds(
+                        args.ledger.expanduser().resolve(strict=True), args.candidate)
+                    started = time.monotonic() - resumed
+                    result["restored_elapsed_seconds"] = round(resumed, 6)
                     for case in cases:
                         for repeat in range(case.get("repeats", 1)):
                             row = existing.get((case["task_id"], repeat))
@@ -280,9 +604,14 @@ def main(argv: list[str] | None = None) -> int:
                                 continue
                             expected_terminal = case.get("expected_terminal", "passed")
                             matched = row["terminal"] == expected_terminal
+                            pair = (case["task_id"], repeat)
                             result["trials"].append({"task_id": case["task_id"], "repeat": repeat,
                                                      "ledger_manifest": row,
                                                      "expected_terminal_matched": matched,
+                                                     "measured_terminal": row["terminal"],
+                                                     "attempts": prior_attempts.get(pair, 0),
+                                                     "measurement_failures":
+                                                         measurement_failures.get(pair, 0),
                                                      "resumed": True})
                             if not matched or row["terminal"] != "passed":
                                 result["ok"] = False
@@ -290,6 +619,17 @@ def main(argv: list[str] | None = None) -> int:
                     case_sha256 = ledger.canonical_digest(case)
                     for repeat in range(case.get("repeats", 1)):
                         if (case["task_id"], repeat) in existing:
+                            continue
+                        pair = (case["task_id"], repeat)
+                        failures = measurement_failures.get(pair, 0)
+                        if failures >= args.max_measurement_retries:
+                            result.setdefault("unresolved", []).append({
+                                "task_id": case["task_id"], "repeat": repeat,
+                                "measurement_failures": failures,
+                                "attempts": prior_attempts.get(pair, 0),
+                                "reason": "the measurement retry cap is exhausted; the "
+                                          "pair is unmeasured and unresolved"})
+                            result["ok"] = False
                             continue
                         remaining = args.max_wallclock - (time.monotonic() - started)
                         if remaining <= 0:
@@ -300,23 +640,66 @@ def main(argv: list[str] | None = None) -> int:
                             result["ok"] = False
                             exhausted = True
                             break
+                        if spend_guard is not None:
+                            # The provider-request cap is enforced BEFORE the
+                            # trial starts, so a run never crosses the ceiling
+                            # and stops afterwards.
+                            try:
+                                spend_guard.admit()
+                            except budget.BudgetExhausted as error:
+                                result["unattempted_task_ids"] = sorted({item["task_id"] for item in cases
+                                                                           if item["task_id"] not in
+                                                                           {trial.get("task_id") for trial in result["trials"]}})
+                                result["budget_exhausted"] = "max_provider_requests"
+                                result["budget_error"] = str(error)
+                                result["budget"] = spend_guard.as_dict()
+                                result["ok"] = False
+                                exhausted = True
+                                break
                         try:
-                            trial = run_tool_trial(binary, case.get("profile", args.profile), min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
-                                                   bool(case.get("deny_bash", args.deny_bash)), args.ledger,
-                                                   args.candidate, case["task_id"], case.get("group_id", args.group_id),
-                                                   repeat, suite_sha256, case_sha256,
-                                                   case.get("content", "harness-lab-tool-ok"),
-                                                   case.get("expected_text", "harness-lab-tool-ok"),
-                                                   case.get("tool_sequence"), expanded_files_by_task[case["task_id"]],
-                                                   case.get("expected_file", "tool-receipt.txt"),
-                                                   case.get("expected_exists"), case.get("cancel", False),
-                                                   case.get("expected_terminal", "passed"), case.get("timeout_task", False),
-                                                   case.get("context_text"),
-                                                   case.get("expected_tool_failures", 1 if case.get("deny_bash", args.deny_bash) else 0))
+                            if case.get("transport", "acp") == "exec":
+                                trial = run_exec_trial(binary, case.get("profile", args.profile),
+                                                      min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
+                                                      ledger_root=args.ledger, candidate=args.candidate,
+                                                      task_id=case["task_id"], group_id=case.get("group_id", args.group_id),
+                                                      repeat=repeat, suite_sha256=suite_sha256,
+                                                      case_sha256=case_sha256,
+                                                      content=case.get("content", "harness-lab-tool-ok"),
+                                                      expected_text=case.get("expected_text", "harness-lab-tool-ok"),
+                                                      expected_file=case.get("expected_file", "tool-receipt.txt"),
+                                                      expected_exists=case.get("expected_exists"),
+                                                      expected_terminal=case.get("expected_terminal", "passed"),
+                                                      expected_tool_failures=case.get("expected_tool_failures", 0),
+                                                      tool_sequence=case.get("tool_sequence"),
+                                                      initial_files=expanded_files_by_task[case["task_id"]])
+                            else:
+                                trial = run_tool_trial(binary, case.get("profile", args.profile), min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
+                                                       bool(case.get("deny_bash", args.deny_bash)), args.ledger,
+                                                       args.candidate, case["task_id"], case.get("group_id", args.group_id),
+                                                       repeat, suite_sha256, case_sha256,
+                                                       case.get("content", "harness-lab-tool-ok"),
+                                                       case.get("expected_text", "harness-lab-tool-ok"),
+                                                       case.get("tool_sequence"), expanded_files_by_task[case["task_id"]],
+                                                       case.get("expected_file", "tool-receipt.txt"),
+                                                       case.get("expected_exists"), case.get("cancel", False),
+                                                       case.get("expected_terminal", "passed"), case.get("timeout_task", False),
+                                                       case.get("context_text"),
+                                                       case.get("expected_tool_failures", 1 if case.get("deny_bash", args.deny_bash) else 0),
+                                                       agent_steps=case.get("agent_steps"))
                         except HarnessError as error:
                             trial = {"ok": False, "task_id": case["task_id"], "repeat": repeat,
                                      "failure_type": type(error).__name__}
+                        trial["attempts"] = prior_attempts.get(pair, 0) + 1
+                        trial["measurement_failures_before"] = failures
+                        trial["measured_terminal"] = trial.get("terminal")
                         result["trials"].append(trial)
+                        if spend_guard is not None:
+                            usage = trial.get("codegg_usage") or {}
+                            spend_guard.observe(
+                                provider_requests=int(trial.get("provider_calls") or 0),
+                                input_tokens=int(usage.get("input_tokens") or 0),
+                                output_tokens=int(usage.get("output_tokens") or 0))
+                            result["budget"] = spend_guard.as_dict()
                         terminal = trial.get("ledger_manifest", {}).get("terminal")
                         expected_terminal = case.get("expected_terminal", "passed")
                         trial["expected_terminal_matched"] = terminal == expected_terminal
@@ -343,6 +726,63 @@ def _binary(value: Path | None) -> Path:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise HarnessError(f"candidate binary is not executable: {binary}")
     return binary
+
+
+def _recorded_runs(path: Path) -> list[dict]:
+    """Return the recorded run list from a comparison JSON or a suite JSON.
+
+    A recorded side is evidence, and it is read back rather than re-derived:
+    the re-score decides from the trials that were actually observed.
+    """
+    payload = json.loads(path.expanduser().resolve(strict=True).read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return payload
+    if "runs" in payload:
+        return list(payload["runs"])
+    for key in ("baseline", "candidate"):
+        side = payload.get(key)
+        if isinstance(side, dict) and "runs" in side:
+            return list(side["runs"])
+    raise HarnessError(f"{path} does not carry a recorded run list")
+
+
+def _budget_policy(path: Path | None) -> budget.BudgetPolicy:
+    """Load and strictly validate a budget policy document."""
+    if path is None:
+        raise HarnessError(
+            "a live trial requires --budget pointing at a budget policy document "
+            "with at least one enforceable hard cap")
+    try:
+        raw = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"budget policy is unreadable: {error}") from error
+    if not isinstance(raw, dict):
+        raise HarnessError("budget policy must be a JSON object")
+    try:
+        return budget.budget_policy_from_mapping(raw)
+    except ValueError as error:
+        raise HarnessError(f"budget policy is invalid: {error}") from error
+
+
+def _budget_admission(path: Path | None) -> budget.BudgetAdmission:
+    return budget.admit_budget(_budget_policy(path))
+
+
+def _require_budget_admission(args: argparse.Namespace) -> Optional[budget.BudgetPolicy]:
+    """Fail closed before a live trial starts.
+
+    Runs before any provider request, daemon spawn, or subprocess launch, so a
+    trial that cannot prove an enforceable cap never reaches the provider.
+    Returns the admitted policy so the caller can enforce it during the run.
+    """
+    if not getattr(args, "live_provider", False):
+        return None
+    admission = _budget_admission(getattr(args, "budget", None))
+    if admission.status != budget.STATUS_ADMITTED:
+        raise HarnessError(
+            "budget admission refused before the trial started: "
+            + json.dumps(admission.as_dict(), sort_keys=True))
+    return _budget_policy(getattr(args, "budget", None))
 
 
 def _sha256(path: Path) -> str:

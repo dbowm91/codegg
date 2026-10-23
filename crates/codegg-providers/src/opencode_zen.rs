@@ -93,10 +93,13 @@ impl Provider for OpencodeZenProvider {
         }
 
         let stream = resp.bytes_stream().map_err(ProviderError::from)?;
+        // No per-chunk deadline is imposed here. Stream liveness is owned by
+        // the agent layer, which already bounds a long stream: a
+        // provider-level deadline below the agent's own idle timeout fires
+        // first and reports a slow but valid stream as a provider error.
         Ok(crate::wire::openai_chat_stream(
             stream,
             req.context.wire_policy.clone(),
-            Some(std::time::Duration::from_secs(30)),
         ))
     }
 

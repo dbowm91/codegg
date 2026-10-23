@@ -408,6 +408,7 @@ async fn handle_client(
     let connection_cancel = shutdown.child_token();
 
     let event_rx = daemon.event_log.subscribe();
+    let event_log_for_replay = Arc::clone(&daemon.event_log);
     let writer_for_forwarder = Arc::clone(&writer);
     let filters_for_forwarder = Arc::clone(&filters);
     let raw_cancellation = connection_cancel.clone();
@@ -421,6 +422,7 @@ async fn handle_client(
             raw_cancellation.clone(),
             raw_socket_write_observer,
             &raw_client_id,
+            Some(event_log_for_replay),
         )
         .await;
         // A writer failure (or a closed event log) must wake the reader loop
@@ -1192,6 +1194,55 @@ async fn projection_forwarder(
     }
 }
 
+/// The code carried by the frame that tells a client its event stream has a
+/// hole in it.
+///
+/// The frame is an ordinary [`CoreFrame::Error`] with no request id, so no
+/// consumer's wire shape changes: a consumer that ignores error frames keeps
+/// working, and one that reads this code knows the events it is missing
+/// rather than assuming its stream was complete. The code is namespaced so
+/// it cannot collide with another error the daemon may raise.
+pub use crate::protocol::frames::EVENT_STREAM_GAP_CODE;
+
+/// Report a dropped-event span to the client.
+///
+/// The forwarder cannot repair the hole: the event log's ring buffer and the
+/// bounded broadcast retain the same window, so the events a lagged
+/// subscriber missed are the ones the ring has already evicted. What the
+/// forwarder *can* do is stop pretending the stream is complete — the
+/// consumer is told how many events it is missing, and can mark the affected
+/// span unmeasured instead of pairing a tool call with a completion it never
+/// saw.
+async fn report_event_stream_gap(
+    writer: &CoreSocketWriter,
+    cancellation: &CancellationToken,
+    dropped: u64,
+    last_delivered_seq: u64,
+    oldest_retained_seq: u64,
+    observer: Option<&SocketWriteObserver>,
+    connection_id: &str,
+) {
+    let frame = CoreFrame::Error {
+        request_id: None,
+        code: EVENT_STREAM_GAP_CODE.to_string(),
+        message: crate::protocol::frames::event_stream_gap_message(
+            dropped,
+            last_delivered_seq,
+            oldest_retained_seq,
+        ),
+    };
+    let _ = tokio::select! {
+        _ = cancellation.cancelled() => return,
+        result = send_frame_observed(
+            writer,
+            &frame,
+            observer,
+            connection_id,
+            "event_stream_gap",
+        ) => result,
+    };
+}
+
 #[allow(dead_code)]
 async fn forward_events(
     event_rx: broadcast::Receiver<EventEnvelope<CoreEvent>>,
@@ -1199,7 +1250,16 @@ async fn forward_events(
     filters: Arc<RwLock<Vec<EventFilter>>>,
     cancellation: CancellationToken,
 ) {
-    forward_events_with_observer(event_rx, writer, filters, cancellation, None, "unobserved").await;
+    forward_events_with_observer(
+        event_rx,
+        writer,
+        filters,
+        cancellation,
+        None,
+        "unobserved",
+        None,
+    )
+    .await;
 }
 
 async fn forward_events_with_observer(
@@ -1209,7 +1269,11 @@ async fn forward_events_with_observer(
     cancellation: CancellationToken,
     observer: Option<SocketWriteObserver>,
     connection_id: &str,
+    replay: Option<Arc<crate::core::event_log::EventLog>>,
 ) {
+    // The last sequence this connection actually delivered. It is recorded so
+    // the report can name the span the consumer is missing.
+    let mut last_delivered_seq: u64 = 0;
     loop {
         let receive = tokio::select! {
             _ = cancellation.cancelled() => break,
@@ -1237,7 +1301,7 @@ async fn forward_events_with_observer(
                 if !matches {
                     continue;
                 }
-                let frame = CoreFrame::Event(event);
+                let frame = CoreFrame::Event(event.clone());
                 let send_result = tokio::select! {
                     _ = cancellation.cancelled() => break,
                     result = send_frame_observed(
@@ -1251,9 +1315,31 @@ async fn forward_events_with_observer(
                 if send_result.is_err() {
                     break;
                 }
+                last_delivered_seq = event.event_seq;
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!("Event forwarder lagged, {} events dropped", n);
+                // The bounded broadcast dropped events for this subscriber.
+                // Dropping them silently is what made the hole invisible, so
+                // the consumer is told how many events it is missing.
+                tracing::warn!(
+                    dropped = n,
+                    last_delivered_seq,
+                    "event forwarder lagged; reporting the gap to the client"
+                );
+                let oldest_retained_seq = match replay.as_ref() {
+                    Some(log) => log.ring_floor_seq().await,
+                    None => 0,
+                };
+                report_event_stream_gap(
+                    &writer,
+                    &cancellation,
+                    n,
+                    last_delivered_seq,
+                    oldest_retained_seq,
+                    observer.as_ref(),
+                    connection_id,
+                )
+                .await;
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
@@ -1410,6 +1496,152 @@ mod tests {
                 message: "m".into(),
             },
         }
+    }
+
+    /// C006: a bounded-broadcast lag must reach the consumer as a fact.
+    ///
+    /// Before the change the forwarder's lag arm was a bare `tracing::warn!`:
+    /// the events were dropped and the consumer's stream simply continued as
+    /// if it were complete. A consumer that pairs a tool call with its
+    /// completion is then left with an unpaired start and no way to tell the
+    /// difference from "the tool is still running".
+    ///
+    /// This test drives the bus past its capacity with a subscriber that does
+    /// not read, and asserts that the client is told how many events it is
+    /// missing. It fails against the unfixed code, because the unfixed code
+    /// writes no such frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lagged_forwarder_reports_the_gap_to_the_client() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let (event_tx, event_rx) = broadcast::channel(2);
+        let (writer_stream, peer_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (_, writer_half) = tokio::io::split(Box::new(writer_stream) as BoxCoreSocketIo);
+        let writer = Arc::new(Mutex::new(writer_half));
+        let filters = Arc::new(RwLock::new(vec![EventFilter {
+            session_id: None,
+            client_id: None,
+            include_global: true,
+        }]));
+        let cancellation = CancellationToken::new();
+
+        // Publish past the channel's capacity before the forwarder reads, so
+        // the subscriber's first receive reports the lag.
+        for seq in 1..=4u64 {
+            event_tx.send(envelope(seq, None)).expect("send");
+        }
+
+        let handle = tokio::spawn(forward_events(
+            event_rx,
+            Arc::clone(&writer),
+            Arc::clone(&filters),
+            cancellation.clone(),
+        ));
+
+        let mut reader = BufReader::new(peer_stream);
+        let mut line = String::new();
+        let mut gap: Option<(u64, String)> = None;
+        for _ in 0..8 {
+            line.clear();
+            let read =
+                tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await;
+            let Ok(Ok(_)) = read else { break };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(CoreFrame::Error {
+                request_id,
+                code,
+                message,
+            }) = serde_json::from_str::<CoreFrame>(trimmed)
+            {
+                if code == EVENT_STREAM_GAP_CODE {
+                    gap = Some((
+                        request_id.map_or(0, |id| id.parse::<u64>().unwrap_or(0)),
+                        message,
+                    ));
+                }
+            }
+        }
+        cancellation.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        let (request_id, message) = gap.expect(
+            "a lagged forwarder must report the gap to the client; before the \
+             change the events were dropped silently",
+        );
+        assert!(
+            request_id == 0,
+            "the gap frame carries no request id: it is a stream fact, not a \
+             response to a request"
+        );
+        let dropped = crate::protocol::frames::event_stream_gap_dropped(&message)
+            .expect("the gap message carries the dropped count");
+        assert!(
+            dropped > 0,
+            "the gap message must name a positive number of dropped events"
+        );
+    }
+
+    /// The gap report and the events around it keep the stream's ordering
+    /// guarantee: the delivered events are still in sequence order, and the
+    /// gap is reported rather than papered over.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_delivered_events_stay_ordered_across_a_gap() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let (event_tx, event_rx) = broadcast::channel(2);
+        let (writer_stream, peer_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (_, writer_half) = tokio::io::split(Box::new(writer_stream) as BoxCoreSocketIo);
+        let writer = Arc::new(Mutex::new(writer_half));
+        let filters = Arc::new(RwLock::new(vec![EventFilter {
+            session_id: None,
+            client_id: None,
+            include_global: true,
+        }]));
+        let cancellation = CancellationToken::new();
+
+        for seq in 1..=4u64 {
+            event_tx.send(envelope(seq, None)).expect("send");
+        }
+
+        let handle = tokio::spawn(forward_events(
+            event_rx,
+            Arc::clone(&writer),
+            Arc::clone(&filters),
+            cancellation.clone(),
+        ));
+
+        let mut reader = BufReader::new(peer_stream);
+        let mut line = String::new();
+        let mut delivered: Vec<u64> = Vec::new();
+        let mut saw_gap = false;
+        for _ in 0..8 {
+            line.clear();
+            let read =
+                tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await;
+            let Ok(Ok(_)) = read else { break };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<CoreFrame>(trimmed) {
+                Ok(CoreFrame::Event(event)) => delivered.push(event.event_seq),
+                Ok(CoreFrame::Error { code, .. }) if code == EVENT_STREAM_GAP_CODE => {
+                    saw_gap = true;
+                }
+                _ => {}
+            }
+        }
+        cancellation.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        assert!(saw_gap, "the forwarder must report the lag it observed");
+        assert!(
+            delivered.windows(2).all(|pair| pair[0] < pair[1]),
+            "the delivered events must stay in order: {delivered:?}"
+        );
     }
 
     #[test]

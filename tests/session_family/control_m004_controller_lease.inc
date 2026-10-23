@@ -1040,6 +1040,8 @@ async fn reaper_releases_on_turn_failed_event() {
                 session_id: fixture.session_id.clone(),
                 turn_id: Some(fixture.turn_id.clone()),
                 message: "failed".to_string(),
+                category: None,
+                usage: None,
             },
         )
         .await;

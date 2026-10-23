@@ -208,6 +208,21 @@ pub enum ProjectionEvent {
         turn_id: String,
         message: String,
         failed_at: i64,
+        /// Stable, secret-safe classification of the failure.
+        ///
+        /// Mirrors [`crate::core::CoreEvent::TurnFailed`]'s `category` so a
+        /// projection consumer can branch on the class of failure without
+        /// parsing the message. Absent when the native producer could not
+        /// classify the failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<crate::core::TurnFailureCategory>,
+        /// Provider usage observed before the failure, with explicit
+        /// provenance.
+        ///
+        /// Absent when the native layer had no usage observation to
+        /// project; that is distinct from "the provider reported zero".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::core::TurnUsage>,
     },
     /// A subagent started.
     SubagentStarted { node: AgentTreeNodeProjection },

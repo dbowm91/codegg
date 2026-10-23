@@ -554,9 +554,7 @@ pub fn encrypt_provider_keys(_config: &mut Config) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use std::sync::MutexGuard;
 
     struct EnvGuard {
         prev: Vec<(&'static str, Option<String>)>,
@@ -565,7 +563,7 @@ mod tests {
 
     impl EnvGuard {
         fn clean() -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let names = [
                 "CODEGG_MASTER_KEY",
                 "CODEGG_ENCRYPTION_KEY",

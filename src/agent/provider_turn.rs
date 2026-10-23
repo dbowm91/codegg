@@ -383,7 +383,7 @@ fn is_cancelled(loop_: &AgentLoop) -> bool {
 }
 
 fn cancelled_error() -> AppError {
-    AppError::Other(anyhow::anyhow!("provider turn cancelled"))
+    AppError::Cancelled
 }
 
 fn provider_disposition(error: &AppError) -> RetryDisposition {
@@ -631,6 +631,39 @@ async fn stream_once(
                             .state
                             .unaccounted_output_tokens
                             .saturating_add(usage.output_tokens as i64);
+                        // Run-scoped usage accumulator: the AGGREGATE over
+                        // every provider response this run saw. The failure
+                        // path reports it, because the last response's usage
+                        // is unreadable once the run's events are dropped.
+                        // The success path keeps reporting the LAST
+                        // response's usage (unchanged v1 semantics); the
+                        // difference is deliberate.
+                        loop_.state.run_provider_responses =
+                            loop_.state.run_provider_responses.saturating_add(1);
+                        loop_.state.run_input_tokens = loop_
+                            .state
+                            .run_input_tokens
+                            .saturating_add(usage.input_tokens);
+                        loop_.state.run_output_tokens = loop_
+                            .state
+                            .run_output_tokens
+                            .saturating_add(usage.output_tokens);
+                        if let Some(cached) = usage.cached_tokens {
+                            loop_.state.run_cached_tokens = Some(
+                                loop_
+                                    .state
+                                    .run_cached_tokens
+                                    .unwrap_or(0)
+                                    .saturating_add(cached),
+                            );
+                        }
+                        loop_.state.run_reasoning_tokens = Some(
+                            loop_
+                                .state
+                                .run_reasoning_tokens
+                                .unwrap_or(0)
+                                .saturating_add(usage.reasoning_tokens),
+                        );
                         // Context cache stats are now recorded once per
                         // provider response via the main loop's call to
                         // record_context_cache_stats_from_processor().

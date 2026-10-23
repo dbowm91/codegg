@@ -1267,4 +1267,59 @@ mod tests {
                 .enabled
         );
     }
+
+    /// C007: a config file written before `ProviderConfig.chunk_timeout` was
+    /// retired must keep working. The key becomes inert, not an error: the
+    /// file still parses, and it produces the same effective configuration as
+    /// a file that never carried the key.
+    #[test]
+    fn retired_chunk_timeout_key_is_inert_when_loaded() {
+        const WITH_KEY: &str = r#"{
+            "provider": {
+                "retirement_demo": {
+                    "base_url": "https://example.invalid/v1",
+                    "chunk_timeout": 30
+                }
+            }
+        }"#;
+        const WITHOUT_KEY: &str = r#"{
+            "provider": {
+                "retirement_demo": {
+                    "base_url": "https://example.invalid/v1"
+                }
+            }
+        }"#;
+
+        let dir = tempfile::tempdir().expect("temp config dir");
+        let with_key = dir.path().join("with-key.jsonc");
+        let without_key = dir.path().join("without-key.jsonc");
+        std::fs::write(&with_key, WITH_KEY).expect("write key-bearing config");
+        std::fs::write(&without_key, WITHOUT_KEY).expect("write key-free config");
+
+        // The retired key must not be an error: the file still parses.
+        let layer_with = load_config(&with_key).expect("key-bearing config file still parses");
+        let layer_without = load_config(&without_key).expect("key-free config file still parses");
+
+        // ...and it must not change anything: the effective configuration is
+        // the one the file would have produced without the key.
+        let effective_with = merge_configs(&[layer_with]);
+        let effective_without = merge_configs(&[layer_without]);
+        assert_eq!(
+            effective_with, effective_without,
+            "the retired `chunk_timeout` key must be ignored, not carried into the schema"
+        );
+
+        // The rest of the file must still load, so the equality above is a
+        // real comparison and not two empty configurations.
+        let provider = effective_with
+            .provider
+            .as_ref()
+            .and_then(|providers| providers.get("retirement_demo"))
+            .expect("the provider section must survive the load");
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("https://example.invalid/v1"),
+            "the rest of the provider config must still load"
+        );
+    }
 }

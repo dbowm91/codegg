@@ -1,0 +1,14 @@
+Daily usage report — 2026-10-19
+
+sessions: 412
+tool_calls: 18807
+tokens_in: 9214403
+tokens_out: 511882
+cost_usd: 18.42
+
+Notes:
+- The nightly export step writes this file next to the workspace root.
+- The export step did not run in this environment: there is no scheduler here
+  and no `scripts/` directory in the tree, so the report is not checked in.
+- The file appears only once the export step has run. Until then, reading it
+  fails.

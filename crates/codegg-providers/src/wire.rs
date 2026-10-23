@@ -18,7 +18,6 @@ use serde_json::{Map, Value};
 use std::{
     collections::{BTreeSet, VecDeque},
     fmt::Display,
-    time::Duration,
 };
 
 use crate::openai_compatible::ToolChoice;
@@ -324,11 +323,13 @@ pub fn encode_openai_responses(
 }
 
 /// Adapt a direct stateless Responses SSE byte stream through the shared
-/// kernel. Cancellation and chunk-deadline policy remain CodeGG transport
-/// concerns and are supplied by the caller.
+/// kernel. Cancellation policy remains a CodeGG transport concern and is
+/// supplied by the caller.
+///
+/// No per-chunk deadline is imposed here: stream liveness is owned by the
+/// agent layer, which already bounds a long stream.
 pub fn openai_responses_stream<S, B, E>(
     stream: S,
-    chunk_timeout: Option<Duration>,
     policy: Option<std::sync::Arc<crate::ProviderWirePolicy>>,
 ) -> crate::EventStream
 where
@@ -339,7 +340,6 @@ where
     shared_stream(
         stream,
         eggpool_wire::codec::StreamAdapterKind::OpenaiResponsesSse,
-        chunk_timeout,
         policy,
     )
 }
@@ -384,12 +384,13 @@ pub fn omit_openai_fields(body: &mut Value, fields: &[&str]) {
     }
 }
 
-/// Adapt an OpenAI Chat byte stream through the shared SSE decoder. Optional
-/// chunk timeout remains transport policy and is supplied by the wrapper.
+/// Adapt an OpenAI Chat byte stream through the shared SSE decoder.
+///
+/// No per-chunk deadline is imposed here: stream liveness is owned by the
+/// agent layer, which already bounds a long stream.
 pub fn openai_chat_stream<S, B, E>(
     stream: S,
     policy: Option<std::sync::Arc<crate::ProviderWirePolicy>>,
-    chunk_timeout: Option<Duration>,
 ) -> crate::EventStream
 where
     S: Stream<Item = Result<B, E>> + Send + Unpin + 'static,
@@ -399,7 +400,6 @@ where
     shared_stream(
         stream,
         eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse,
-        chunk_timeout,
         policy,
     )
 }
@@ -408,7 +408,6 @@ where
 pub fn shared_stream<S, B, E>(
     stream: S,
     adapter: eggpool_wire::codec::StreamAdapterKind,
-    chunk_timeout: Option<Duration>,
     policy: Option<std::sync::Arc<crate::ProviderWirePolicy>>,
 ) -> crate::EventStream
 where
@@ -438,19 +437,7 @@ where
                     if finished {
                         return None;
                     }
-                    let next = if let Some(timeout) = chunk_timeout {
-                        match tokio::time::timeout(timeout, stream.next()).await {
-                            Ok(next) => next,
-                            Err(_) => {
-                                return Some((
-                                    Err(ProviderError::Stream("stream chunk timeout".into())),
-                                    (stream, decoder, pending, true),
-                                ));
-                            }
-                        }
-                    } else {
-                        stream.next().await
-                    };
+                    let next = stream.next().await;
                     match next {
                         Some(Ok(bytes)) => match decoder.push(bytes.as_ref()) {
                             Ok(events) => pending.extend(events.into_iter().map(Ok)),
@@ -1823,7 +1810,7 @@ mod tests {
             .find(|vector| vector.name == "chat_success")
             .expect("upstream OpenAI success vector");
         let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(vector.bytes)]);
-        let output: Vec<_> = openai_chat_stream(stream, None, None).collect().await;
+        let output: Vec<_> = openai_chat_stream(stream, None).collect().await;
         assert!(output.iter().all(Result::is_ok));
         assert!(matches!(output.last(), Some(Ok(ChatEvent::Finish { .. }))));
     }
@@ -2276,7 +2263,7 @@ mod responses_surface_tests {
         let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
             RESPONSES_TEXT_STREAM.as_bytes().to_vec(),
         )]);
-        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        let output: Vec<_> = openai_responses_stream(stream, None).collect().await;
         assert!(output.iter().all(Result::is_ok), "{output:?}");
 
         let text: String = output
@@ -2317,7 +2304,7 @@ mod responses_surface_tests {
         let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
             RESPONSES_TOOL_STREAM.as_bytes().to_vec(),
         )]);
-        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        let output: Vec<_> = openai_responses_stream(stream, None).collect().await;
         assert!(output.iter().all(Result::is_ok), "{output:?}");
 
         let completed = output.iter().find_map(|event| match event {
@@ -2340,10 +2327,9 @@ mod responses_surface_tests {
                 Ok::<_, std::io::Error>(bytes[..split].to_vec()),
                 Ok(bytes[split..].to_vec()),
             ];
-            let output: Vec<_> =
-                openai_responses_stream(futures_util::stream::iter(chunks), None, None)
-                    .collect()
-                    .await;
+            let output: Vec<_> = openai_responses_stream(futures_util::stream::iter(chunks), None)
+                .collect()
+                .await;
             assert!(
                 output.iter().all(Result::is_ok),
                 "split {split}: {output:?}"
@@ -2367,7 +2353,7 @@ mod responses_surface_tests {
                           data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
         let stream =
             futures_util::stream::iter([Ok::<_, std::io::Error>(truncated.as_bytes().to_vec())]);
-        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        let output: Vec<_> = openai_responses_stream(stream, None).collect().await;
         assert!(
             output.iter().any(Result::is_err),
             "unterminated Responses stream must fail, got {output:?}"
@@ -2382,7 +2368,7 @@ mod responses_surface_tests {
         );
         let stream =
             futures_util::stream::iter([Ok::<_, std::io::Error>(failed.as_bytes().to_vec())]);
-        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        let output: Vec<_> = openai_responses_stream(stream, None).collect().await;
         assert!(
             output.iter().any(Result::is_err),
             "Responses error event must surface, got {output:?}"

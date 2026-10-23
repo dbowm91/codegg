@@ -230,4 +230,100 @@ mod tests {
         let watcher = ConfigWatcher::new();
         assert!(watcher.watched_paths.is_empty());
     }
+
+    /// C007: the configuration watcher must reload a file that still carries
+    /// the retired `chunk_timeout` key without error, and the key's presence
+    /// must not change the effective configuration. The key is inert, not
+    /// merely ignored on the first load.
+    #[test]
+    fn retired_chunk_timeout_key_is_inert_on_watcher_reload() {
+        const WITH_KEY: &str = r#"{
+            "provider": {
+                "retirement_demo": {
+                    "base_url": "https://example.invalid/v1",
+                    "chunk_timeout": 30
+                }
+            }
+        }"#;
+        const WITHOUT_KEY: &str = r#"{
+            "provider": {
+                "retirement_demo": {
+                    "base_url": "https://example.invalid/v1"
+                }
+            }
+        }"#;
+
+        let dir = tempfile::tempdir().expect("temp config dir");
+        let with_key = dir.path().join("with-key.jsonc");
+        let without_key = dir.path().join("without-key.jsonc");
+        std::fs::write(&with_key, WITH_KEY).expect("write key-bearing config");
+        std::fs::write(&without_key, WITHOUT_KEY).expect("write key-free config");
+
+        let _env = ConfigEnvGuard::new();
+        let watcher = ConfigWatcher::new();
+        _env.point_at(&with_key);
+        let reloaded_with = watcher
+            .reload_now()
+            .expect("watcher reloads a key-bearing config file");
+        _env.point_at(&without_key);
+        let reloaded_without = watcher
+            .reload_now()
+            .expect("watcher reloads a key-free config file");
+
+        // `assert!` rather than `assert_eq!`: the reloaded configuration also
+        // carries whatever other config layers the host resolves, and a failed
+        // comparison must not print them.
+        assert!(
+            reloaded_with == reloaded_without,
+            "the retired `chunk_timeout` key must not change the effective configuration on reload"
+        );
+
+        let provider_with = reloaded_with
+            .provider
+            .as_ref()
+            .and_then(|providers| providers.get("retirement_demo"))
+            .expect("the key-bearing reload must keep the provider section");
+        let provider_without = reloaded_without
+            .provider
+            .as_ref()
+            .and_then(|providers| providers.get("retirement_demo"))
+            .expect("the key-free reload must keep the provider section");
+        assert_eq!(
+            provider_with, provider_without,
+            "the retired `chunk_timeout` key must be inert on reload, not carried into the schema"
+        );
+    }
+
+    /// The environment is process-global, so the tests that point
+    /// `CODEGG_TUI_CONFIG` at a temporary file must not overlap -- not even
+    /// with the other env-mutating tests in this crate, which take the same
+    /// crate-wide lock.
+    struct ConfigEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<String>,
+    }
+
+    impl ConfigEnvGuard {
+        fn new() -> Self {
+            let lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let previous = std::env::var("CODEGG_TUI_CONFIG").ok();
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+
+        fn point_at(&self, path: &Path) {
+            std::env::set_var("CODEGG_TUI_CONFIG", path);
+        }
+    }
+
+    impl Drop for ConfigEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("CODEGG_TUI_CONFIG", value),
+                None => std::env::remove_var("CODEGG_TUI_CONFIG"),
+            }
+        }
+    }
 }

@@ -43,6 +43,15 @@ pub enum AppError {
     #[error("general error: {0}")]
     Other(#[from] anyhow::Error),
 
+    /// The turn was cancelled before it completed.
+    ///
+    /// A distinct variant rather than an `Other` payload so a consumer can
+    /// tell "the user cancelled this turn" from "something else went wrong"
+    /// without matching on free text. The display string is the historical
+    /// one, so anything that recognises the message keeps working.
+    #[error("provider turn cancelled")]
+    Cancelled,
+
     #[error("worktree error: {0}")]
     Worktree(String),
 

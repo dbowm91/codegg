@@ -172,12 +172,16 @@ pub fn projection_events_from_core(
             session_id,
             turn_id,
             message,
+            category,
+            usage,
             ..
         } => {
             let event = ProjectionEvent::TurnFailed {
                 turn_id: turn_id.clone().unwrap_or_default(),
                 message: message.clone(),
                 failed_at: envelope.timestamp_ms,
+                category: *category,
+                usage: *usage,
             };
             Some((session_id.clone(), turn_id.clone(), event))
         }

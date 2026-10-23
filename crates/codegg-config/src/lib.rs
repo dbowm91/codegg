@@ -27,3 +27,12 @@ pub use schema::{
     VIRTUAL_MODEL_PREFIX,
 };
 pub use watcher::ConfigWatcher;
+
+/// Process-wide lock for the tests that mutate the environment.
+///
+/// The environment is process-global, so two tests that set or remove a
+/// variable must not overlap — not even when they set different variables,
+/// because the environment block is shared. Every env-mutating test in this
+/// crate takes this lock.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
