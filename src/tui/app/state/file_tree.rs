@@ -91,8 +91,8 @@ pub enum FileTreeStatus {
 /// renders from, and nothing a surface may write. It is a distinct type on
 /// purpose — a widget holding one cannot hold a field it might mutate.
 ///
-/// The rows are the **unfiltered** listing: the expansion set decides which
-/// rows exist, and each surface narrows them with its own filter.
+/// The rows are the **unfiltered** listing; each surface narrows them with
+/// its own filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileTreeStructure {
     /// Every row the listing holds, ignoring any surface's filter.
@@ -201,15 +201,13 @@ pub enum PeekUp {
 /// this value's surface: `filter`, `panel_mode`, `scroll` and `viewport_rows`.
 ///
 /// Every other surface owns its own: the `/files` box keeps its **box-local**
-/// filter, insert mode and scroll offset, and pages against its **own**
-/// measured viewport height.
+/// filter, insert mode, scroll offset and viewport height.
 #[derive(Debug, Clone, Default)]
 pub struct FileTreeState {
     /// Bumped by every mutation that changes what a surface would render.
     ///
-    /// The refresh into every mounted `/files` surface is gated on this, so
-    /// the counter is what makes that refresh cheap (no copy on an unchanged
-    /// frame) and total (a mutation cannot be forgotten).
+    /// The refresh into every mounted `/files` surface is gated on this, so it
+    /// costs no copy on an unchanged frame and cannot be forgotten.
     pub revision: u64,
     /// Whether the pane is rendered. `Default` is hidden so every pre-existing
     /// TUI test and the whole M006-A surface are unaffected until the user

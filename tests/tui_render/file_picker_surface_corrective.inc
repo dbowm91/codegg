@@ -329,6 +329,59 @@ fn the_two_surfaces_show_the_same_cursor_and_the_same_rows() {
     }
 }
 
+/// The filter is the one thing the two surfaces do not share.
+#[test]
+fn the_box_filter_is_box_local_and_the_pane_filter_stays_in_the_authority() {
+    let root = workspace();
+    let mut app = app_with_listing(root.path());
+    app.open_dialog(Dialog::Files);
+
+    press(&mut app, plain('i'));
+    for character in "top".chars() {
+        press(&mut app, plain(character));
+    }
+    let narrowed = frame_text(&mut app);
+    assert!(
+        narrowed.contains("top.txt"),
+        "the box's filter keeps the matching row: {narrowed:?}"
+    );
+    assert!(
+        !narrowed.contains("dir"),
+        "the box's filter narrows the box's rows: {narrowed:?}"
+    );
+    assert!(
+        app.file_tree_state.filter.is_empty(),
+        "the box's filter is not the authority's filter: {:?}",
+        app.file_tree_state.filter
+    );
+
+    // Clear the box's filter: the backspace is the filter's own, in the
+    // filter's own insert mode.
+    for _ in 0..3 {
+        press(&mut app, key(KeyCode::Backspace));
+    }
+    let cleared = frame_text(&mut app);
+    assert!(
+        cleared.contains("dir") && cleared.contains("top.txt"),
+        "the box shows every row again: {cleared:?}"
+    );
+
+    // The Ctrl+T pane's filter lives in the authority, and it does not
+    // narrow the box.
+    for character in "top".chars() {
+        app.file_tree_state.filter_push(character);
+    }
+    let after = frame_text(&mut app);
+    assert_eq!(
+        app.file_tree_state.filter, "top",
+        "the authority holds the tree pane's filter"
+    );
+    assert!(
+        after.contains("dir") && after.contains("top.txt"),
+        "the authority's filter does not reach the box: {after:?}"
+    );
+}
+
 /// A completion that answers a walk nobody is waiting for must not paint.
 #[test]
 fn a_stale_listing_completion_does_not_refresh_a_surface() {

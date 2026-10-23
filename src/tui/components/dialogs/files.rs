@@ -9,20 +9,19 @@
 //!
 //! The navigator's tree **structure** belongs to exactly one value: the app's
 //! `file_tree_state`. This box holds a [`FileTreeStructure`] — a read-only
-//! projection of that structure, and a *distinct type*, so the box cannot
-//! hold an authoritative field it might mutate. The projection is refreshed
-//! from the authority once per frame, before this surface is drawn.
+//! projection of it, and a *distinct type*, so the box cannot hold an
+//! authoritative field it might mutate. It is refreshed once per frame.
 //!
-//! Every verb is an intent that names a **path**: the box knows which row it
-//! is on, and the command layer resolves the motion against the authority.
+//! Every verb is an intent naming a **path**: the command layer resolves the
+//! motion against the authority.
 //!
 //! ## What the box owns
 //!
 //! The genuinely per-surface state: the **filter text**, the **insert mode**
 //! and the **scroll offset**. The filter stays box-local by a closed
-//! decision, so the two surfaces may show different rows: the accepted
-//! contract rather than a defect. The box measures its own viewport, so
-//! `Ctrl+d` pages against the height of *this* box.
+//! decision, so the two surfaces may show different rows — the accepted
+//! contract, not a defect. The box measures its own viewport, so `Ctrl+d`
+//! pages against the height of *this* box.
 
 use std::sync::Arc;
 
@@ -103,10 +102,8 @@ impl FilesDialog {
 
     /// Adopt the authority's current structure.
     ///
-    /// The copy happens only when the authority's revision has moved: an
-    /// unchanged frame costs nothing. The box's own filter, insert mode and
-    /// scroll are untouched — a listing landing must not wipe what the user
-    /// is typing.
+    /// The copy happens only when the revision has moved: an unchanged frame
+    /// costs nothing, and the box's own filter, mode and scroll are untouched.
     pub fn adopt_structure(&mut self, revision: u64, build: &dyn Fn() -> FileTreeStructure) {
         if self.view_revision == revision {
             return;
