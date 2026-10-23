@@ -956,6 +956,8 @@ pub trait RestartShared {
 /// a `runtime_installed` flag so the coordinator's cleanup
 /// paths can decide whether to call the runtime-termination
 /// helper or simply remove the unpublished client.
+///
+/// See `architecture/lsp.md` for the full contract.
 pub struct UnpublishedReplacement {
     /// The newly-built client (not yet published to the live
     /// clients map from the coordinator's perspective). The

@@ -92,6 +92,17 @@ DOC_POINTER_RE = re.compile(r"architecture/([a-z0-9_\-]+\.md)")
 SECTION_RE = re.compile(r"§\s*\"([^\"]+)\"")
 # A numbered section marker, e.g. `§6.1`, names a numbered heading.
 NUMBERED_SECTION_RE = re.compile(r"§\s*(\d+(?:\.\d+)*)")
+# Contract language: a rule the code cannot enforce on its own.
+CONTRACT_RE = re.compile(
+    r"\b(?:must(?: not)?|never|always|only|invariant|refuse[sd]?|forbidden|"
+    r"prohibited|guarantee[sd]?|shall)\b",
+    re.IGNORECASE,
+)
+# An owning document: the place the contract is already written down.
+OWNER_RE = re.compile(
+    r"architecture/[A-Za-z0-9_\-./]+\.md|plans/[A-Za-z0-9_\-./]+\.md|"
+    r"ADR-\d{4}|\b[MC]\d{3,4}\b"
+)
 
 
 @dataclass
@@ -212,8 +223,12 @@ def check_tree(root: Path) -> list[str]:
     # --- R1 / R2 / R3: per-file comment inspection ------------------------
     for path in rust_files(root):
         rel = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8")
-        scan, spans = comment_spans(rts, text)
+        try:
+            text = path.read_text(encoding="utf-8")
+            scan, spans = comment_spans(rts, text)
+        except (OSError, UnicodeDecodeError) as error:
+            violations.append(f"R0 {rel}: the file could not be read: {error}")
+            continue
         lines = text.splitlines()
         for start, end, com in spans:
             body = scan.text[com.start : com.end]
@@ -268,13 +283,27 @@ def check_tree(root: Path) -> list[str]:
             else:
                 if block_start is not None:
                     _check_block(
-                        violations, rel, block_start, block_end, max_block_lines, oversized
+                        violations,
+                        rel,
+                        block_start,
+                        block_end,
+                        max_block_lines,
+                        oversized,
+                        "\n".join(lines[block_start : block_end + 1]),
                     )
                 block_start = start
                 block_end = end
             previous_end = end
         if block_start is not None:
-            _check_block(violations, rel, block_start, block_end, max_block_lines, oversized)
+            _check_block(
+                violations,
+                rel,
+                block_start,
+                block_end,
+                max_block_lines,
+                oversized,
+                "\n".join(lines[block_start : block_end + 1]),
+            )
 
     # --- R4: the budget ---------------------------------------------------
     facts = [measure(rts, path, root) for path in rust_files(root)]
@@ -334,16 +363,22 @@ def _check_block(
     end: int,
     max_block_lines: int,
     oversized: dict,
+    body: str = "",
 ) -> None:
     length = end - start + 1
+    key = f"{rel}:{start + 1}"
     if length <= max_block_lines:
         return
-    key = f"{rel}:{start + 1}"
-    if key in oversized:
-        return
-    violations.append(
-        f"R3 {key}: the comment block is {length} lines, over the {max_block_lines}-line maximum"
-    )
+    if key not in oversized:
+        violations.append(
+            f"R3 {key}: the comment block is {length} lines, over the "
+            f"{max_block_lines}-line maximum"
+        )
+    if CONTRACT_RE.search(body) and not OWNER_RE.search(body):
+        violations.append(
+            f"R5 {key}: the comment block restates a contract over {max_block_lines} lines "
+            f"without naming the document that owns it"
+        )
 
 
 def _ceil_ratio(value: float) -> float:
@@ -516,7 +551,23 @@ def _self_test() -> int:
             else:
                 print(f"  rejected an oversized comment block: {violations[0]}")
 
-        # 5. The known illustrative paths must stay acceptable.
+        # 5. An orphaned contract: a long block that states a rule and names
+        #    no owning document.
+        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
+            case_copy = scratch / "case-orphan"
+            shutil.copytree(copy, case_copy)
+            target = case_copy / "src/tui/app/render.rs"
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "\n" + "// the render must never draw a half widget.\n" * 60
+                )
+            violations = check_tree(case_copy)
+            if not any(v.startswith("R5") for v in violations):
+                failures.append("the guard did not reject an orphaned contract block")
+            else:
+                print(f"  rejected an orphaned contract block: {violations[0]}")
+
+        # 6. The known illustrative paths must stay acceptable.
         with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
             case_copy = scratch / "case-example"
             shutil.copytree(copy, case_copy)

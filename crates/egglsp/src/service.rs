@@ -861,6 +861,8 @@ const MANUAL_SUPERSESSION_OWNER_TIMEOUT: Duration = Duration::from_secs(3);
 /// subscribes, re-checks the state, and awaits state transitions
 /// until `Stopped` is reached. This eliminates the lost-wakeup window
 /// of the previous `Notify`-based coordination.
+///
+/// See `architecture/lsp.md` for the full contract.
 pub struct LspService {
     clients: ClientMap,
     /// Tracks in-progress initializations for single-flight semantics.

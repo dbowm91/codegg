@@ -106,6 +106,8 @@ use super::common::scripted_provider::ScriptedProvider;
 //    a Tool result with an error message (contains "not found" or "Error").
 //
 // =============================================================================
+//
+// See `architecture/agent.md` for the harness's place in the agent loop.
 
 /// Helper to collect events from the GlobalEventBus during tests.
 /// Optionally filters events by session_id to avoid cross-test contamination.
