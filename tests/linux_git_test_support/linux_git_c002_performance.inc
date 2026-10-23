@@ -607,7 +607,7 @@ async fn benchmark_fixture(
     // Prime process and cache state outside the measured warm set.
     let expected = native_git(git, &repository, &argv).stdout;
     assert_eq!(
-        immutable_snapshot(&typed_service, &op, &repository)
+        immutable_snapshot(&typed_service, op, &repository)
             .await
             .stdout
             .as_bytes(),
@@ -615,7 +615,7 @@ async fn benchmark_fixture(
     );
     assert_eq!(
         output_bytes(
-            &contained_live_git(&typed_service, &op, git, &repository, "warm-prime")
+            &contained_live_git(&typed_service, op, git, &repository, "warm-prime")
                 .await
                 .stdout,
         ),
@@ -633,14 +633,14 @@ async fn benchmark_fixture(
         assert_eq!(native.stdout.as_slice(), expected.as_slice());
 
         let started = Instant::now();
-        let snapshot = immutable_snapshot(&typed_service, &op, &repository).await;
+        let snapshot = immutable_snapshot(&typed_service, op, &repository).await;
         snapshot_warm.push(elapsed_us(started));
         assert_eq!(snapshot.stdout.as_bytes(), expected.as_slice());
 
         let started = Instant::now();
         let live = contained_live_git(
             &typed_service,
-            &op,
+            op,
             git,
             &repository,
             &format!("warm-{index}"),
@@ -667,7 +667,7 @@ async fn benchmark_fixture(
             snapshot.extend(
                 concurrent_snapshot_batch(
                     Arc::clone(&typed_service),
-                    &op,
+                    op,
                     &repository,
                     &expected,
                     concurrent_calls,
