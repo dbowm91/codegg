@@ -889,6 +889,38 @@ fallback_to_native = true  # only for mcp backend
    DACL for the current user and LocalSystem, rejects remote clients, and
    fails closed if descriptor construction fails. Live Windows access-control
    and lifecycle qualification is tracked in the desktop foundation plan.
+10. **A trusted Git read may not execute repository configuration.** The
+    trusted route pins the configuration **keys** it can name with `-c`
+    overrides and refuses the operations that consult filters and merge
+    drivers, but a pinned key only beats a key it *names*. Two executable
+    surfaces are named by the *repository* rather than by the route:
+    `filter.<name>.clean` / `.smudge` / `.process` and `diff.<name>.command`.
+    `git status` and `git diff` are on the trusted read route and both
+    compare the working tree against the index **through the clean filter**,
+    so a repository that declares a filter and ships an attribute that
+    selects it gets that command executed by an ordinary read. This was
+    reproduced on this host before it was fixed.
+    `crates/egggit/src/config_surface.rs` therefore inspects the repository's
+    configuration surface before the trusted route spawns: it parses the
+    configuration itself (never `git config`, which would honour includes and
+    could run helpers), follows `include.path` and `includeIf.<condition>.path`,
+    and is bounded on include depth, file count, per-file size and total
+    bytes. The report carries dangerous **surfaces** and never a
+    configuration **value**, so a credential helper whose value embeds a
+    password cannot leak through it. The route refuses a filter command, a
+    repository-chosen diff driver, and any inspection that was truncated —
+    "we could not check" is not "we checked and found nothing".
+    Two limits are recorded rather than papered over: the inspection is a
+    pre-flight and cannot close the check-then-spawn window, and it follows
+    `includeIf` conditions unconditionally because they cannot be evaluated
+    faithfully at inspection time, so it **over-reports** — the safe
+    direction. See `architecture/git.md` "Read path" and "Read consistency".
+11. **A live Git read is not admissible to a generation-bound consumer
+    without an authority.** Containment and consistency are orthogonal: a
+    perfectly contained read of a concurrently mutable repository is still a
+    `LiveMutable` read. The class travels with the read result, and the
+    capability that authorises using a live-class read is compiled out of a
+    production build, so the fence cannot be relaxed by accident.
 
 ## Testing
 
