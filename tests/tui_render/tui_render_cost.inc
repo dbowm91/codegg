@@ -214,7 +214,8 @@ fn the_streaming_parse_count_does_not_grow_with_the_response() {
         "a streamed response is parsed at least once"
     );
     assert_eq!(
-        short_parses, long_parses,
+        short_parses,
+        long_parses,
         "the parse count is bounded by the number of changes, not by the \
          response's length: a {}-byte response cost {short_parses} and a \
          {}-byte response cost {long_parses}",
@@ -309,7 +310,7 @@ fn a_local_edit_keeps_the_highlights_of_the_lines_above_it() {
 #[test]
 fn the_tasks_overlay_copies_only_the_rows_it_draws() {
     use codegg::tui::app::state::tasks::{
-        build_task_rows, bounded, TodoLike, MAX_TASKS_STRIP_ROWS, MAX_TASKS_TOTAL_ROWS,
+        bounded, build_task_rows, TodoLike, MAX_TASKS_STRIP_ROWS, MAX_TASKS_TOTAL_ROWS,
     };
 
     let todos: Vec<TodoLike> = (0..200)

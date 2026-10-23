@@ -421,6 +421,16 @@ and the hosted CI guard step; a guard's two `ci.yml` steps — the guard and its
 remaining 21 rows were **confirmed unchanged** by measurement, not by
 assumption.
 
+The **C006** milestone (the TUI render path's cost) moved three rows and
+was re-measured the same way: **integration test files 331 → 332**
+(`tests/tui_render/tui_render_cost.inc`, a member of an **existing**
+family, so the root package's **test-target** count did not move),
+**guard scripts (all) 84 → 85**
+(`scripts/check_tui_render_cost.py`), and **CI guard scripts 44 → 45** (that
+same guard, wired into `scripts/verify.sh quick` and the hosted CI guard
+step; a guard's two `ci.yml` steps — the guard and its `--self-test` — are
+one distinct script). No row's **measure** changed.
+
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
 increment. Merging them lost one increment per row in `architecture/overview.md`
@@ -455,9 +465,9 @@ top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 331 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 84 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 44 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 332 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 85 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 45 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 

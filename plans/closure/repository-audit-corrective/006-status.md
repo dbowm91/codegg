@@ -51,9 +51,11 @@ What shipped:
 
 A **static guard** (`scripts/check_tui_render_cost.py`) pins the shape of the
 render path — one producer for the composer's wrap, one producer for the
-Markdown parse, no whole-buffer clone on the render path, the frame's
-`catch_unwind` and its 16 ms streaming interval still in place. It is wired
-into `scripts/verify.sh quick` and into CI, and it self-tests.
+Markdown parse, a cached composer layout, a cached streaming tail, no
+whole-buffer clone on the render path, no whole-task-list clone on the render
+path, and the frame's `catch_unwind` and its 16 ms streaming interval still
+in place. It is wired into `scripts/verify.sh quick` and into CI, and its
+`--self-test` injects seven violations and proves each is rejected.
 
 ## 2. The cost sites, before and after
 
@@ -62,17 +64,56 @@ the count the milestone's tests assert. The counts are deterministic
 operation counts, not wall-clock claims: no benchmark harness was added,
 because §5 of the plan puts one out of scope.
 
+The "before" column is the number the **baseline** produced, captured by
+reverting the production files to `626a1abbb`, re-adding only the counter
+calls (the instrument) and running the same tests. The baseline failures are
+quoted in §2.1.
+
 | Site | Before | After | Measured by |
 |---|---|---|---|
-| The composer's wrap, per frame | 4 | 1 | `tui_render_cost::the_composer_is_wrapped_once_per_frame_and_shared_by_its_consumers` |
-| The composer's wrap, per unchanged frame | 4 | 0 | `tui_render_cost::an_unchanged_composer_is_not_wrapped_again` |
+| The composer's wrap, per frame | **4** | **1** | `tui_render_cost::the_composer_is_wrapped_once_per_frame_and_shared_by_its_consumers` |
+| The composer's wrap, per unchanged frame | **4** | **0** | `tui_render_cost::an_unchanged_composer_is_not_wrapped_again` |
 | The whole composer buffer cloned, per frame | 1 | 0 | `scripts/check_tui_render_cost.py` (no `get_text()` on the render path) |
 | The whole composer buffer cloned, per keystroke | 1 | 0 | `scripts/check_tui_render_cost.py` and `src/tui/app/mod.rs`'s borrowed `text()` |
-| The streaming tail's Markdown parses, per streamed response | one per token, each over the whole response | one per token, each over the changed tail | `tui_render_cost::the_streaming_parse_count_does_not_grow_with_the_response` |
-| A message part's Markdown parses, per streamed token | every part of the streamed message, every token | only the part that is new | `src/tui/components/messages.rs`'s per-part cache |
+| A streamed message's Markdown parses, per token | **2** (the message's part and the tail) | **1** (the tail) | `tui_render_cost::a_message_parts_markdown_is_parsed_once` |
+| The streaming tail's Markdown parses, per change | one per change, over the whole tail | one per change, over the changed tail | `tui_render_cost::the_streaming_parse_count_does_not_grow_with_the_response` |
 | The editor's highlight scans, per frame after an edit | the file, once per visible row | the file once, then one scan per row | `tui_render_cost::a_local_edit_keeps_the_highlights_of_the_lines_above_it` |
-| The tasks overlay's rows copied, per frame | the whole task list, twice | the rows it draws | `tui_render_cost::the_tasks_overlay_copies_only_the_rows_it_draws` |
+| The tasks overlay's rows copied, per frame | the whole task list | the rows it draws | `tui_render_cost::the_tasks_overlay_copies_only_the_rows_it_draws` and `scripts/check_tui_render_cost.py` |
 | `row_cells`, with an escape sequence | quadratic in the slice's length | linear | `src/tui/composer_geometry.rs` |
+
+### 2.1 The captured baseline failures
+
+The baseline capture reverted the production files to `626a1abbb` (the
+milestone's base), re-added **only** the counter calls — the instrument, not
+the fix — and ran the same test member. Three of the eight tests failed, and
+each failure carries the "before" number:
+
+```
+---- tui_render_cost::the_composer_is_wrapped_once_per_frame_and_shared_by_its_consumers ----
+assertion `left == right` failed: the four consumers of the layout share one wrap, not four
+  left: 4
+ right: 1
+
+---- tui_render_cost::an_unchanged_composer_is_not_wrapped_again ----
+assertion `left == right` failed: a frame that changed neither the text nor the width does no wrap
+  left: 4
+ right: 0
+
+---- tui_render_cost::a_message_parts_markdown_is_parsed_once ----
+assertion `left == right` failed: only the streaming tail is parsed again, not the parts of the message it is streamed into
+  left: 2
+ right: 1
+```
+
+The five that passed on the baseline are the **equivalence** tests: they
+assert that the cached path renders what the uncached path rendered, and the
+uncached path is the baseline's own behaviour. They are not supposed to fail
+on the baseline — a render-comparison test that failed on the baseline would
+be comparing against the wrong thing.
+
+The baseline capture is reproducible: the production files were reverted with
+`git checkout 626a1abbb -- <files>`, the instrument was re-applied, the
+member was run, and the tree was restored with `git checkout HEAD -- <files>`.
 
 ## 3. The equivalence argument, per change
 
@@ -149,30 +190,43 @@ C006 therefore did not reopen them:
 | 2. An unchanged composer is wrapped once, not four times | **yes** | `the_composer_is_wrapped_once_per_frame_and_shared_by_its_consumers` (1) and `an_unchanged_composer_is_not_wrapped_again` (0). |
 | 3. No keystroke clones the whole composer buffer | **partly** | The render path's clone and the completion path's clone are gone (the guard fails if either returns). The **wrap's own** input copy remains: `wrap_styled_spans_by_word_rows` takes `&[Span<'static>]`, so the text is copied once per wrap. It now happens once per **content change** rather than once per frame, and removing it entirely would change the wrap primitive's signature — the `tui-composer-text-layout` line's contract, which §5 puts out of scope. |
 | 4. A local edit no longer discards the editor's highlight cache | **yes** | `a_local_edit_keeps_the_highlights_of_the_lines_above_it` — the cache is keyed on the content of each scanned line, and the scan continues from the first changed line. |
-| 5. The tasks overlay's construction cost is proportional to the rows it draws | **partly** | The overlay no longer deep-copies the list before truncating (`the_tasks_overlay_copies_only_the_rows_it_draws` — six rows copied out of 201), and `bounded` borrows. The **construction** of the full list is still proportional to the total task count, because the "N more" count on each group header needs the group's total. |
+| 5. The tasks overlay's construction cost is proportional to the rows it draws | **partly** | The overlay no longer deep-copies the list before truncating: `bounded` borrows the rows and copies only the ones it keeps (`the_tasks_overlay_copies_only_the_rows_it_draws` — six rows copied out of 201), and `scripts/check_tui_render_cost.py` fails if the render path clones the list again. The **construction** of the full list is still proportional to the total task count, because the "N more" count on each group header needs the group's total. |
 | 6. The transcript's retention is stated and recorded, and the layout cache does not hold a second full copy | **partly** | The retention is stated and recorded (§4 and `architecture/tui.md`). The layout cache **does** still hold a second rendered copy: its rows are the row index, the one producer of the row count, and dropping them would reintroduce the second producer the disclosure work removed. |
 | 7. The rendered output is identical to the baseline for every state in the fixture set | **yes** | The fixture set is in `tests/tui_render/tui_render_cost.inc` and covers the composer (empty, plain, wrapped, multi-byte, CSI, OSC-8) and the streaming tail (paragraphs, bold, a list). |
 | 8. The frame cadence, the spinner and the render's `catch_unwind` are unchanged | **yes** | `scripts/check_tui_render_cost.py` fails if the `catch_unwind` or the 16 ms streaming interval moves. |
 
 ## 7. Verification executed
 
-See §7 of this record's sibling reports for the shared commands. The
-milestone's own:
-
 ```bash
 # The new guard, and the proof that it bites.
-python3 scripts/check_tui_render_cost.py
-python3 scripts/check_tui_render_cost.py --self-test
+$ python3 scripts/check_tui_render_cost.py
+check_tui_render_cost: the render path derives each result once
+$ python3 scripts/check_tui_render_cost.py --self-test
+  rejected: a second wrap producer in the composer
+  rejected: a composer with no layout cache
+  rejected: a second Markdown parse producer
+  rejected: a streaming tail with no cache
+  rejected: a render path that clones the whole composer buffer
+  rejected: a render path that clones the whole task list
+  rejected: a render without its catch_unwind
+self-test: 7 injections, all rejected
 
-# The affected family.
-CARGO_BUILD_JOBS=3 cargo test --test tui_render -- tui_render_cost
+# The affected family and the new member.
+$ CARGO_BUILD_JOBS=3 cargo test --test tui_render
+running 1064 tests
+test result: ok. 1064 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 # The ground-truth Rust test inventory.
-python3 scripts/rust_test_scan.py --validate
+$ python3 scripts/rust_test_scan.py --validate
 
-# The routine subset.
-scripts/verify.sh quick
+# The routine subset: rustfmt, the generated-asset checks, the guard
+# scripts, and a workspace check.
+$ scripts/verify.sh quick
 ```
+
+The baseline capture of §2.1 is itself a verification command, and it is
+reproducible from the commit: `git checkout 626a1abbb -- <production files>`,
+re-apply the instrument, run the member, and restore.
 
 ## 8. Invariant review
 

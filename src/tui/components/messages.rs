@@ -2244,8 +2244,7 @@ impl MessagesWidget {
         for (part_idx, part) in msg.parts.iter().enumerate() {
             match part {
                 MsgPart::Text { content } => {
-                    let rendered =
-                        self.markdown_part_rows(msg_idx, part_idx, content, self.width);
+                    let rendered = self.markdown_part_rows(msg_idx, part_idx, content, self.width);
                     if let Some(m) = current_match {
                         if m.part_idx == part_idx {
                             lines.extend(highlight_match_in_rendered(
@@ -3009,14 +3008,8 @@ impl StreamingTailCache {
         // The whole tail: a fresh parse of everything.
         self.epoch = epoch;
         self.set_line_offsets(text);
-        self.blocks = parse_markdown_blocks(
-            text,
-            &self.line_offsets,
-            0,
-            theme,
-            default_color,
-            width,
-        );
+        self.blocks =
+            parse_markdown_blocks(text, &self.line_offsets, 0, theme, default_color, width);
         self.assemble()
     }
 
@@ -3038,7 +3031,11 @@ impl StreamingTailCache {
     /// link reference: a definition that arrives later resolves the
     /// reference and changes how the block renders.
     fn reparse_start_line(&self) -> usize {
-        let last = self.blocks.last().map(|block| block.start_line).unwrap_or(1);
+        let last = self
+            .blocks
+            .last()
+            .map(|block| block.start_line)
+            .unwrap_or(1);
         self.blocks
             .iter()
             .find(|block| block.has_reference)

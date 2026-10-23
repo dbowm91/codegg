@@ -39,8 +39,8 @@ use std::fmt;
 use std::hash::Hasher;
 use std::ops::Range;
 
-use codegg_document::DocumentSnapshot;
 use crate::tui::render_cost;
+use codegg_document::DocumentSnapshot;
 use once_cell::sync::Lazy;
 use ratatui::style::Color;
 use std::collections::hash_map::DefaultHasher;
@@ -198,13 +198,7 @@ impl EditorHighlight {
     /// their spans; the machine is replayed to the change, because the
     /// parser is forward-only and the lines after the change have to be
     /// coloured from the context they would have been coloured from.
-    fn rebase(
-        &mut self,
-        snapshot: &DocumentSnapshot,
-        path: &str,
-        code_theme: &str,
-        revision: u64,
-    ) {
+    fn rebase(&mut self, snapshot: &DocumentSnapshot, path: &str, code_theme: &str, revision: u64) {
         self.scanned_revision = revision;
         let Some(changed) = self.first_changed_line(snapshot) else {
             // The scanned lines are unchanged: the edit is below them, and
@@ -242,7 +236,13 @@ impl EditorHighlight {
     ///
     /// The spans of the lines before `line` are already cached and are not
     /// rewritten: the machine is being rebuilt, not the colours.
-    fn replay_to(&mut self, snapshot: &DocumentSnapshot, path: &str, code_theme: &str, line: usize) {
+    fn replay_to(
+        &mut self,
+        snapshot: &DocumentSnapshot,
+        path: &str,
+        code_theme: &str,
+        line: usize,
+    ) {
         let Some(syntax) = syntax_for(path) else {
             self.state = None;
             self.cache.clear();

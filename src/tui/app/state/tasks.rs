@@ -728,11 +728,7 @@ mod tests {
             &[subagent("explore", "running")],
             &[job("test", "queued")],
         );
-        assert_eq!(
-            bounded(&rows),
-            rows,
-            "a short overlay is not truncated"
-        );
+        assert_eq!(bounded(&rows), rows, "a short overlay is not truncated");
     }
 
     #[test]
