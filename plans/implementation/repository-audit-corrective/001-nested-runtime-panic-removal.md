@@ -1,8 +1,8 @@
 # Repository Audit Corrective Milestone C001 — Nested-Runtime Panic Removal in the TUI and MCP CLI
 
-Status: ready for handoff
+Status: closed — closure record at `plans/closure/repository-audit-corrective/001-status.md`
 
-Repository baseline: `d5be7acd05dc999888430b7ad23420d554359fec` (`origin/main`)
+Repository baseline: `3b29c5b88` (`origin/main`)
 Audit evidence was gathered at `04536eeeb`; every file this workstream cites is
 byte-identical at that commit and at the baseline above, so the findings carry
 forward unchanged.

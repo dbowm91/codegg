@@ -1,6 +1,6 @@
 # Repository Audit Corrective Milestone C003 — Slash-Command Argument Contract
 
-Status: implemented — closure record at `plans/closure/repository-audit-corrective/003-status.md`
+Status: closed — closure record at `plans/closure/repository-audit-corrective/003-status.md`
 
 > **Scope re-derivation (2026-10-23, implementation).** WP1 re-derived the
 > affected set from the code over all 161 dispatcher arms and found **twelve**
@@ -17,7 +17,7 @@ Status: implemented — closure record at `plans/closure/repository-audit-correc
 > as the *message* and the command name as the *duration*.
 
 
-Repository baseline: `d5be7acd05dc999888430b7ad23420d554359fec` (`origin/main`)
+Repository baseline: `3b29c5b88` (`origin/main`)
 Audit evidence was gathered at `04536eeeb`; every file this workstream cites is
 byte-identical at that commit and at the baseline above, so the findings carry
 forward unchanged.
