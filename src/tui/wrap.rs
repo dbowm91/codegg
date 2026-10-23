@@ -129,7 +129,11 @@ pub fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
 }
 
 /// The ASCII escape that introduces a terminal control sequence.
-const ESC: u8 = 0x1b;
+///
+/// `pub(crate)` because the visual-row geometry measures the same sequences
+/// when it lays out the composer's cells, and it must skip them the same way
+/// this module does — one atomic token, never a printable byte.
+pub(crate) const ESC: u8 = 0x1b;
 /// The ASCII bell that terminates an OSC control sequence.
 const BEL: u8 = 0x07;
 
@@ -215,7 +219,11 @@ pub fn visible_width(s: &str) -> usize {
 /// sequence runs to the end of the input, so a truncated sequence is still
 /// treated as one atomic token rather than leaking printable bytes into the
 /// width measurement.
-fn escape_sequence_len(bytes: &[u8]) -> usize {
+///
+/// `pub(crate)` because the visual-row geometry skips the same sequences when
+/// it measures a composer's cells, and a second parser there would be a
+/// second answer to "how wide is this sequence".
+pub(crate) fn escape_sequence_len(bytes: &[u8]) -> usize {
     let Some(&second) = bytes.get(1) else {
         return 1;
     };

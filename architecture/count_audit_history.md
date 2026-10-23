@@ -435,3 +435,35 @@ in the **merged** tree. C005 added **two** `.inc` members of existing families
 the *Guard scripts (all)* row did not move, while the *CI guard scripts* row
 did, because the repaired guard is now wired into the CI guard step for the
 first time.
+
+## 2026-10-23 — C006, the TUI render path's cost
+
+C006 added one test member and one guard, so three rows of the
+`architecture/overview.md` count table moved. Every row was re-measured with
+`python3 scripts/measure_overview_counts.py` against its own listed
+`Source`, not incremented by hand.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 331 | 332 | `tests/tui_render/tui_render_cost.inc` — a new `.inc` member of an **existing** family, so the root package's **test-target** count did not move. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged. |
+| Guard scripts (all) | 84 | 85 | `scripts/check_tui_render_cost.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 44 | 45 | The same guard, wired into `scripts/verify.sh quick` and `.github/workflows/ci.yml`; a guard's two `ci.yml` steps — the guard and its `--self-test` — are one distinct script. The measure is unchanged. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root).
+
+**Merge reconciliation.** C006 was developed on a sibling branch from the same
+base as C001–C004 and re-measured these three rows in isolation, so it
+recorded its own single increment against the pre-merge base. The merged tree
+carries C005 as well, which adds its own guard and its own test member, so the
+merged values are one higher on each of the three rows than the values this
+record lists: integration test files **334**, guard scripts (all) **86** and
+CI guard scripts **46**. The rows are re-measured on the merged tree when it
+is cut, rather than carried over from either side.

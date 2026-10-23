@@ -2,10 +2,12 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
+use std::cell::{Ref, RefCell};
 use std::sync::Arc;
 
 use super::super::composer_claims::ComposerFit;
 use super::super::composer_geometry::VisualLayout;
+use super::super::render_cost;
 use super::super::theme::Theme;
 use super::super::wrap::{wrap_styled_spans_by_word_rows, WrappedRow};
 
@@ -81,6 +83,33 @@ pub struct PromptWidget {
     pub command_mode: bool,
     pub waiting: bool,
     pub char_count: Option<usize>,
+    /// The composer's wrapped layout, cached against the buffer's revision
+    /// and the width it was wrapped at.
+    ///
+    /// The layout is the **one** answer to "what rows does this text make",
+    /// and it is expensive: the wrap measures every character of the buffer.
+    /// Four consumers want it in a frame — the height budget, the caret's
+    /// visibility, the draw, and the caret's cell — and they used to each
+    /// rebuild it, so a frame paid for the wrap four times over.
+    ///
+    /// The cache is keyed on the buffer's **revision** and the **width**,
+    /// which are the two things the layout depends on and the two things that
+    /// change it: a caret that moves does not move the revision, so a frame
+    /// that only moves the caret reuses the layout, and a frame that changed
+    /// the text rebuilds it exactly once.
+    layout_cache: RefCell<Option<ComposerLayoutCache>>,
+}
+
+/// The composer's wrapped layout, and the key it was built for.
+struct ComposerLayoutCache {
+    /// The buffer revision the rows were wrapped from.
+    revision: u64,
+    /// The width the rows were wrapped at.
+    width: u16,
+    /// The wrapped rows.
+    rows: Vec<WrappedRow>,
+    /// The visual layout the rows describe.
+    layout: VisualLayout,
 }
 
 impl PromptWidget {
@@ -99,6 +128,7 @@ impl PromptWidget {
             command_mode: false,
             waiting: false,
             char_count: None,
+            layout_cache: RefCell::new(None),
         }
     }
 
@@ -154,6 +184,17 @@ impl PromptWidget {
         self.buffer.text().to_string()
     }
 
+    /// The composer's text, borrowed.
+    ///
+    /// The borrowed answer to "what is in the composer".
+    /// [`Self::get_text`] clones it, which is right for a caller that has to
+    /// keep the text and wrong for a caller that only reads it — a caller on
+    /// the render path clones the whole buffer once per frame for a question
+    /// that a prefix test answers without one.
+    pub fn text(&self) -> &str {
+        self.buffer.text()
+    }
+
     pub fn set_text(&mut self, text: String) {
         self.buffer.set_text(text);
         self.horizontal_scroll = 0;
@@ -180,18 +221,20 @@ impl PromptWidget {
             self.set_cursor_at_logical_column(row, column);
             return;
         }
-        let layout = self.layout_at(self.wrap_width);
-        let cells = layout.row_cells(row);
-        let byte = match cells.iter().find(|cell| cell.column == column) {
-            Some(cell) => cell.byte_start,
-            // Past the row's last cell: the insertion point at the row's end.
-            None => match cells.last() {
-                Some(cell) => cell.byte_end,
-                // An empty row — a blank line — starts at its own offset.
-                None => layout
-                    .row_source_start(row)
-                    .unwrap_or_else(|| self.buffer.text().len()),
-            },
+        let byte = {
+            let layout = self.layout_at(self.wrap_width);
+            let cells = layout.row_cells(row);
+            match cells.iter().find(|cell| cell.column == column) {
+                Some(cell) => cell.byte_start,
+                // Past the row's last cell: the insertion point at the row's end.
+                None => match cells.last() {
+                    Some(cell) => cell.byte_end,
+                    // An empty row — a blank line — starts at its own offset.
+                    None => layout
+                        .row_source_start(row)
+                        .unwrap_or_else(|| self.buffer.text().len()),
+                },
+            }
         };
         self.buffer.set_caret(byte);
     }
@@ -462,8 +505,7 @@ impl PromptWidget {
 
     /// Clamp the scroll to the content the window can show.
     pub fn clamp_scroll(&mut self, visible_rows: usize, width: u16) {
-        let layout = self.layout_at(width);
-        let total = layout.row_count();
+        let total = self.layout_at(width).row_count();
         if total <= visible_rows {
             self.scroll = 0;
         } else {
@@ -498,8 +540,17 @@ impl PromptWidget {
     /// layout pass measured, so the motions cannot act on a different layout
     /// than the one the fit was measured against.
     pub fn ensure_cursor_visible_with_width(&mut self, visible_rows: usize, width: u16) {
-        let layout = self.layout_at(width);
-        let total = layout.row_count();
+        // The layout is read in one scope and the composer is adjusted in
+        // another. The layout is borrowed from the widget, and a widget that
+        // is being adjusted cannot also be borrowed.
+        let (total, caret, caret_row, caret_row_width) = {
+            let layout = self.layout_at(width);
+            let total = layout.row_count();
+            let caret = layout.caret_position(self.buffer.caret());
+            let caret_row = caret.map(|position| position.row).unwrap_or(0);
+            let caret_row_width = layout.row_width(caret_row);
+            (total, caret, caret_row, caret_row_width)
+        };
         self.wrap_width = width;
         // The fit, measured once: the wrapped row count against the number of
         // text rows the box shows. Three rows in a three-row box fits; four
@@ -508,8 +559,6 @@ impl PromptWidget {
             row_count: total,
             visible_rows,
         };
-        let caret = layout.caret_position(self.buffer.caret());
-        let caret_row = caret.map(|position| position.row).unwrap_or(0);
         if total <= visible_rows {
             self.scroll = 0;
         } else {
@@ -527,7 +576,7 @@ impl PromptWidget {
         // the case of a single character wider than the whole row.
         let visible_width = width as usize;
         let column = caret.map(|position| position.column).unwrap_or(0);
-        if visible_width > 0 && layout.row_width(caret_row) > visible_width {
+        if visible_width > 0 && caret_row_width > visible_width {
             if column < self.horizontal_scroll {
                 self.horizontal_scroll = column;
             } else if column >= self.horizontal_scroll.saturating_add(visible_width) {
@@ -600,15 +649,59 @@ impl PromptWidget {
     }
 
     /// The wrapped rows of the composer's text at `width`.
+    ///
+    /// The **one** producer of the composer's rows. Every consumer reads the
+    /// cached layout instead of calling this, so a frame wraps the buffer
+    /// once rather than once per consumer.
     fn wrapped_rows(&self, width: u16) -> Vec<WrappedRow> {
+        render_cost::count_composer_wrap();
         wrap_styled_spans_by_word_rows(&[Span::raw(self.buffer.text().to_string())], width)
     }
 
     /// The visual layout of the composer's text at `width`.
-    fn layout_at(&self, width: u16) -> VisualLayout {
-        let text = self.buffer.text();
-        let rows = self.wrapped_rows(width);
-        VisualLayout::new(text, &rows)
+    ///
+    /// Cached against the buffer's revision and the width, so a frame that
+    /// changed neither reuses the layout and a frame that changed one
+    /// rebuilds it once.
+    fn layout_at(&self, width: u16) -> Ref<'_, VisualLayout> {
+        let revision = self.buffer.revision();
+        let stale = match self.layout_cache.borrow().as_ref() {
+            Some(cache) => cache.revision != revision || cache.width != width,
+            None => true,
+        };
+        if stale {
+            let text = self.buffer.text().to_string();
+            let rows = self.wrapped_rows(width);
+            let layout = VisualLayout::new(&text, &rows);
+            *self.layout_cache.borrow_mut() = Some(ComposerLayoutCache {
+                revision,
+                width,
+                rows,
+                layout,
+            });
+        }
+        Ref::map(self.layout_cache.borrow(), |cache| {
+            &cache
+                .as_ref()
+                .expect("the layout cache is filled before it is read")
+                .layout
+        })
+    }
+
+    /// The wrapped rows of the composer's text at `width`.
+    ///
+    /// The rows and the layout are one cache entry, so a frame that draws
+    /// the rows and asks for the caret's cell reads the same wrap.
+    fn rows_at(&self, width: u16) -> Ref<'_, Vec<WrappedRow>> {
+        // The layout is filled first, so the rows it names are the rows in
+        // the cache entry this borrows.
+        let _ = self.layout_at(width);
+        Ref::map(self.layout_cache.borrow(), |cache| {
+            &cache
+                .as_ref()
+                .expect("the layout cache is filled before it is read")
+                .rows
+        })
     }
 
     /// Move the caret by `delta` visual rows.
@@ -633,22 +726,24 @@ impl PromptWidget {
             }
             return;
         }
-        let layout = self.layout_at(self.wrap_width);
-        let Some(position) = layout.caret_position(self.buffer.caret()) else {
-            return;
+        let byte = {
+            let layout = self.layout_at(self.wrap_width);
+            let Some(position) = layout.caret_position(self.buffer.caret()) else {
+                return;
+            };
+            let last_row = layout.row_count().saturating_sub(1);
+            let target = if delta.is_negative() {
+                position.row.saturating_sub(delta.unsigned_abs())
+            } else {
+                position.row.saturating_add(delta as usize).min(last_row)
+            };
+            if target == position.row {
+                // Clamped at the first or the last visual row: there is nowhere
+                // to go, and the caret stays on the byte it names.
+                return;
+            }
+            byte_at_visual(&layout, target, position.column)
         };
-        let last_row = layout.row_count().saturating_sub(1);
-        let target = if delta.is_negative() {
-            position.row.saturating_sub(delta.unsigned_abs())
-        } else {
-            position.row.saturating_add(delta as usize).min(last_row)
-        };
-        if target == position.row {
-            // Clamped at the first or the last visual row: there is nowhere to
-            // go, and the caret stays on the byte it names.
-            return;
-        }
-        let byte = byte_at_visual(&layout, target, position.column);
         self.buffer.set_caret(byte);
     }
 
@@ -832,8 +927,11 @@ impl Widget for &PromptWidget {
         // The layout is built once and used for the rows and for the caret's
         // cell: the wrap is the expensive part of the redraw path, and the
         // cell has to agree with the rows that were drawn.
-        let rows = self.wrapped_rows(area.width);
-        let layout = VisualLayout::new(self.buffer.text(), &rows);
+        //
+        // The rows come from the **cache**, so a frame that changed neither
+        // the text nor the width draws the rows it already wrapped.
+        let layout = self.layout_at(area.width);
+        let rows = self.rows_at(area.width);
         if text_height > 0 {
             let scroll = self.effective_scroll(&layout, text_height as usize);
             // The selection is a range in the **buffer**, so it means nothing
@@ -1232,7 +1330,7 @@ mod tests {
     fn the_visual_row_motion_moves_the_caret_down_one_visual_row() {
         let mut widget = composer("alpha beta gamma delta epsilon zeta");
         widget.set_wrap_width(10);
-        let layout = widget.layout_at(10);
+        let layout = widget.layout_at(10).clone();
         assert!(
             layout.row_count() > 1,
             "the text must wrap onto more than one row"
@@ -1281,7 +1379,7 @@ mod tests {
     fn the_visual_row_motion_clamps_at_the_last_visual_row() {
         let mut widget = composer("alpha beta gamma delta");
         widget.set_wrap_width(10);
-        let layout = widget.layout_at(10);
+        let layout = widget.layout_at(10).clone();
         let last_row = layout.row_count() - 1;
         widget.set_cursor(
             layout
@@ -1327,7 +1425,7 @@ mod tests {
         for width in [8u16, 11, 20] {
             let mut widget = composer(text);
             widget.set_wrap_width(width);
-            let layout = widget.layout_at(width);
+            let layout = widget.layout_at(width).clone();
             assert!(
                 layout.row_count() > 1,
                 "the text must wrap onto more than one row at width {width}"
@@ -1393,7 +1491,8 @@ mod tests {
             widget.content_overflows(),
             "{rows} rows of content do not fit in a {visible_rows}-row box"
         );
-        widget.set_cursor(widget.layout_at(10).byte_at(0, 0).expect("a first cell"));
+        let first_cell = widget.layout_at(10).byte_at(0, 0).expect("a first cell");
+        widget.set_cursor(first_cell);
         // The layout pass scrolls the window to the caret, so the window
         // starts at the first row.
         widget.ensure_cursor_visible_with_width(visible_rows, 10);

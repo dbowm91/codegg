@@ -143,6 +143,14 @@ run_guards() {
     echo "==> python3 scripts/check_command_argument_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_command_argument_contract.py)
 
+    # The render path derives each expensive result once: one producer for
+    # the composer's wrap, one producer for the Markdown parse, and no
+    # whole-buffer clone on the render path.
+    echo "==> python3 scripts/check_tui_render_cost.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_cost.py --self-test)
+    echo "==> python3 scripts/check_tui_render_cost.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_cost.py)
+
     echo "==> python3 scripts/check_daemon_listing_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)
 

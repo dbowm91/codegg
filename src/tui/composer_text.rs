@@ -256,6 +256,20 @@ pub struct ComposerText {
     text: String,
     state: SelectionState<ComposerPoint>,
     undo: UndoHistory,
+    /// Byte offsets of the text's line breaks, in order.
+    ///
+    /// The index is what makes "which line is this byte on" a lookup rather
+    /// than a scan: the answer used to be counted from byte zero on every
+    /// caret change, so a buffer of *n* bytes cost *n* work per keystroke
+    /// for a question the index answers in a comparison.
+    newlines: Vec<usize>,
+    /// Bumped by every change to the text.
+    ///
+    /// The render path caches the composer's wrapped layout, and a cache
+    /// needs a key that changes exactly when the cached value does. The
+    /// revision is that key: it moves when the text moves, and not when the
+    /// caret does — a caret that moves does not change the layout.
+    revision: u64,
 }
 
 impl Default for ComposerText {
@@ -264,6 +278,8 @@ impl Default for ComposerText {
             text: String::new(),
             state: SelectionState::new(ComposerPoint::new(0, 0)),
             undo: UndoHistory::default(),
+            newlines: Vec::new(),
+            revision: 0,
         }
     }
 }
@@ -277,6 +293,15 @@ impl ComposerText {
     /// The buffer's text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// A counter that changes exactly when the text changes.
+    ///
+    /// The render path caches the composer's wrapped layout against this
+    /// revision, so a frame that only moves the caret reuses the layout and a
+    /// frame that changed the text rebuilds it.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The buffer's length in bytes.
@@ -325,6 +350,8 @@ impl ComposerText {
     /// at the end of what they had.
     pub fn set_text(&mut self, text: String) {
         self.text = text;
+        self.reindex_newlines();
+        self.revision = self.revision.wrapping_add(1);
         self.undo.clear();
         let caret = self.text.len();
         self.state = SelectionState::new(self.point_at(caret));
@@ -333,6 +360,8 @@ impl ComposerText {
     /// Empty the buffer and drop the history.
     pub fn clear(&mut self) {
         self.text.clear();
+        self.newlines.clear();
+        self.revision = self.revision.wrapping_add(1);
         self.undo.clear();
         self.state = SelectionState::new(self.point_at(0));
     }
@@ -342,7 +371,9 @@ impl ComposerText {
     /// The count is what the line motions' condition is written against: a
     /// single-line buffer leaves `j` and `k` to the transcript.
     pub fn line_count(&self) -> usize {
-        self.text.split('\n').count()
+        // A buffer always has at least one line, and every line break opens
+        // one more — the same count the indexed breaks give.
+        self.newlines.len() + 1
     }
 
     /// Put the caret at `offset`, clamped onto a character boundary.
@@ -681,6 +712,8 @@ impl ComposerText {
         };
         let end = edit.start + edit.inserted.len();
         self.text.replace_range(edit.start..end, &edit.removed);
+        self.splice_newlines(edit.start, end, &edit.removed);
+        self.revision = self.revision.wrapping_add(1);
         // The undo changes the buffer's length, so the held selection — whose
         // byte offsets name positions in the text that was just replaced — is
         // dropped. Carrying it across would point at different characters,
@@ -697,6 +730,8 @@ impl ComposerText {
         };
         let end = edit.start + edit.removed.len();
         self.text.replace_range(edit.start..end, &edit.inserted);
+        self.splice_newlines(edit.start, end, &edit.inserted);
+        self.revision = self.revision.wrapping_add(1);
         // The same rule as [`Self::undo`]: the buffer's length changes, so the
         // held selection does not survive it.
         self.state.deactivate();
@@ -724,8 +759,43 @@ impl ComposerText {
             caret_after: caret,
         };
         self.text.replace_range(start..end, replacement);
+        self.splice_newlines(start, end, replacement);
+        self.revision = self.revision.wrapping_add(1);
         self.undo.push(edit);
         self.set_caret(caret);
+    }
+
+    /// Rebuild the line-break index from the text.
+    fn reindex_newlines(&mut self) {
+        self.newlines.clear();
+        self.newlines.extend(
+            self.text
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .map(|(offset, _)| offset),
+        );
+    }
+
+    /// Update the line-break index for a replacement of `start..end`.
+    ///
+    /// The index is spliced rather than rebuilt, so an edit costs the size of
+    /// the edit and not the size of the buffer.
+    fn splice_newlines(&mut self, start: usize, end: usize, replacement: &str) {
+        let first = self.newlines.partition_point(|&offset| offset < start);
+        let last = self.newlines.partition_point(|&offset| offset < end);
+        self.newlines.drain(first..last);
+        let delta = replacement.len() as isize - (end - start) as isize;
+        if delta != 0 {
+            for offset in self.newlines[first..].iter_mut() {
+                *offset = (*offset as isize + delta) as usize;
+            }
+        }
+        let inserted: Vec<usize> = replacement
+            .match_indices('\n')
+            .map(|(index, _)| start + index)
+            .collect();
+        self.newlines.splice(first..first, inserted);
     }
 
     /// Clamp `offset` into the buffer and onto a character boundary.
@@ -744,9 +814,8 @@ impl ComposerText {
 
     /// The point at `offset`, with the line it sits on.
     fn point_at(&self, offset: usize) -> ComposerPoint {
-        let offset = offset.min(self.text.len());
-        let line = text_geometry::cursor_line(self.text.as_str(), offset);
-        ComposerPoint::new(offset, line)
+        let offset = self.aligned(offset);
+        ComposerPoint::new(offset, self.line_of(offset))
     }
 }
 
@@ -776,7 +845,10 @@ impl TextSource for ComposerText {
     }
 
     fn line_of(&self, offset: usize) -> usize {
-        text_geometry::cursor_line(self.text.as_str(), offset)
+        // The line breaks are indexed, so the line is a count of the breaks
+        // before the byte rather than a walk over the buffer.
+        let offset = offset.min(self.text.len());
+        self.newlines.partition_point(|&newline| newline < offset)
     }
 
     fn byte_at(&self, offset: usize) -> Option<u8> {

@@ -424,6 +424,16 @@ and the hosted CI guard step; a guard's two `ci.yml` steps — the guard and its
 remaining 21 rows were **confirmed unchanged** by measurement, not by
 assumption.
 
+The **C006** milestone (the TUI render path's cost) moved three rows and
+was re-measured the same way: **integration test files 331 → 332**
+(`tests/tui_render/tui_render_cost.inc`, a member of an **existing**
+family, so the root package's **test-target** count did not move),
+**guard scripts (all) 84 → 85**
+(`scripts/check_tui_render_cost.py`), and **CI guard scripts 44 → 45** (that
+same guard, wired into `scripts/verify.sh quick` and the hosted CI guard
+step; a guard's two `ci.yml` steps — the guard and its `--self-test` — are
+one distinct script). No row's **measure** changed.
+
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
 increment. Merging them lost one increment per row in `architecture/overview.md`

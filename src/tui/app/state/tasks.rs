@@ -27,6 +27,7 @@
 //! So those two groups filter to live states only. See [`is_live_state`].
 
 use crate::tui::app::state::subagents::SubagentRow;
+use crate::tui::render_cost;
 
 /// Rows a *single* group may contribute to the overlay.
 ///
@@ -323,12 +324,17 @@ pub struct JobLike {
 ///
 /// [`MAX_TASKS_STRIP_ROWS`] remains a per-group ceiling, so one busy kind
 /// cannot dominate even when it is the only group with work left.
-pub fn bounded(rows: Vec<TaskRow>) -> Vec<TaskRow> {
+///
+/// The rows are **borrowed**: the overlay draws at most
+/// [`MAX_TASKS_TOTAL_ROWS`] of them, and taking the whole list by value
+/// meant copying every row to keep a dozen.
+pub fn bounded<R: AsRef<[TaskRow]>>(rows: R) -> Vec<TaskRow> {
     // Partition into (header, body) pairs, preserving display order.
-    let mut groups: Vec<(TaskRow, Vec<TaskRow>)> = Vec::new();
+    let rows = rows.as_ref();
+    let mut groups: Vec<(TaskRow, Vec<&TaskRow>)> = Vec::new();
     for row in rows {
         match row {
-            TaskRow::Header { .. } => groups.push((row, Vec::new())),
+            TaskRow::Header { .. } => groups.push((row.clone(), Vec::new())),
             body => {
                 // A body row with no preceding header is a builder bug, not a
                 // runtime condition. Dropping it keeps the output well-formed
@@ -373,7 +379,10 @@ pub fn bounded(rows: Vec<TaskRow>) -> Vec<TaskRow> {
     let mut out: Vec<TaskRow> = Vec::with_capacity(MAX_TASKS_TOTAL_ROWS);
     for ((header, body), take) in groups.into_iter().zip(allowance) {
         out.push(header);
-        out.extend(body.into_iter().take(take));
+        for row in body.into_iter().take(take) {
+            render_cost::count_task_row_build(1);
+            out.push(row.clone());
+        }
     }
     out
 }
@@ -669,7 +678,7 @@ mod tests {
             .collect();
         let jobs: Vec<JobLike> = (0..40).map(|i| job(&format!("j{i}"), "running")).collect();
 
-        let rows = bounded(build_task_rows(&todos, &subagents, &jobs));
+        let rows = bounded(&build_task_rows(&todos, &subagents, &jobs));
         assert!(
             rows.len() <= MAX_TASKS_TOTAL_ROWS,
             "overlay grew to {} rows, budget is {MAX_TASKS_TOTAL_ROWS}",
@@ -694,7 +703,7 @@ mod tests {
             .collect();
         let jobs: Vec<JobLike> = (0..2).map(|i| job(&format!("j{i}"), "running")).collect();
 
-        let rows = bounded(build_task_rows(&todos, &subagents, &jobs));
+        let rows = bounded(&build_task_rows(&todos, &subagents, &jobs));
         let kept = |pred: fn(&TaskRow) -> bool| rows.iter().filter(|r| pred(r)).count();
         assert!(
             kept(|r| matches!(r, TaskRow::Todo { .. })) <= MAX_TASKS_STRIP_ROWS,
@@ -719,16 +728,12 @@ mod tests {
             &[subagent("explore", "running")],
             &[job("test", "queued")],
         );
-        assert_eq!(
-            bounded(rows.clone()),
-            rows,
-            "a short overlay is not truncated"
-        );
+        assert_eq!(bounded(&rows), rows, "a short overlay is not truncated");
     }
 
     #[test]
     fn bounding_keeps_every_header() {
-        let rows = bounded(build_task_rows(
+        let rows = bounded(&build_task_rows(
             &[todo("a")],
             &[subagent("explore", "running")],
             &[job("test", "queued")],
