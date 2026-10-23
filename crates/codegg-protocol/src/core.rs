@@ -2679,10 +2679,6 @@ pub enum CoreRequest {
         entry_id: String,
         text: String,
         /// M007 (ADR-0039): replace the due time in the same transaction.
-        ///
-        /// `None` clears the schedule and returns the entry to
-        /// immediate-eligible, which is a distinct state from "due now" and not
-        /// merely a due time in the past.
         #[serde(default)]
         run_at_ms: Option<i64>,
     },
@@ -3283,10 +3279,6 @@ pub enum CoreRequest {
     },
     /// M006-B: fetch the authoritative current diagnostics for a project
     /// (`direct_project` + `file.read`).
-    ///
-    /// The push stream is a latency optimization; this is the correctness
-    /// authority a client reconciles against after a detected sequence gap,
-    /// a reconnect, or a resync requirement.
     LspDiagnosticsGet {
         request: crate::lsp::LspDiagnosticsGetRequestDto,
     },
@@ -4272,9 +4264,6 @@ pub enum CoreEvent {
     /// channel, so a client learns its queued prompt started running only if the
     /// daemon pushes — otherwise the entry sits displayed as `pending` while its
     /// turn runs.
-    ///
-    /// Additive and defaulted, so an older client ignores it and a newer daemon's
-    /// event still deserializes against an older reader.
     UserPromptQueue {
         session_id: String,
         #[serde(default)]
@@ -5046,11 +5035,6 @@ mod tests {
 
     /// The summary is derived from the facts it describes, so it can never
     /// contradict the field it summarises.
-    ///
-    /// The defect this guards against is a snapshot whose summary said
-    /// "network unrestricted" while its network field said the boundary was
-    /// not established at the snapshot — a reader could not tell which was
-    /// the fact.
     #[test]
     fn the_enforcement_summary_never_contradicts_its_fields() {
         let enforced = SandboxEnforcementDto::for_profile_on_host(

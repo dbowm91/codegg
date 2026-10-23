@@ -367,12 +367,10 @@ impl Component for PlanDialog {
     ///
     /// The host has already painted a border, a ` ● Plan ` title and the `●`
     /// focus marker into this same rect, and `render_in_panel` is handed the
-    /// full rect rather than the interior, so this box's three bordered chunks
-    /// did not stack inside that frame — they overwrote it, focus dot included.
-    /// The options heading survives as plain text (` Options `) because it names
-    /// the block; the keymap that used to share that title is gone from the
-    /// drawing and lives in `keymap_hint`, where the host reads it once. `area`
-    /// is the host's full rect, so inset by its border first.
+    /// full rect rather than the interior, so this box's three bordered
+    /// chunks did not stack inside that frame — they overwrote it, focus dot
+    /// included. `area` is the host's full rect, so inset by its border
+    /// first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let inner = area.inner(Margin::new(1, 1));
         if inner.height == 0 || inner.width == 0 {

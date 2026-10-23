@@ -39,11 +39,8 @@
 //!
 //! Two widgets read `self.theme` heavily and still pass: `mcp` (46 cache
 //! reads) and `research` (47). Both re-assign `self.theme = Arc::clone(theme)`
-//! *inside their own render body* — `McpDialog::render`/`render_in_panel` and
-//! `ResearchBrowserDialog::render_body` — so the cache is overwritten on the
-//! frame that reads it and never goes stale. They are correct by accident of a
-//! line that looks like the defect it is meant to be, which is why the counts
-//! below are not the verdicts.
+//! *inside their own render body*, so the cache is overwritten on the frame
+//! that reads it and never goes stale.
 //!
 //! `keybind`, `tree`, `plan` and the theme picker read the seam's theme already.
 //! The picker's column legitimately paints each *candidate* theme's palette as
@@ -447,7 +444,7 @@ fn the_theme_picker_shows_each_candidate_palette_rather_than_the_active_one() {
 /// The sibling defect — a colour that belongs to *no* theme, which is what the
 /// hardcoded `Color::White` literals were — is deliberately **not** checked
 /// here: those colours are in neither palette, so this check is blind to them
-/// by construction. `tests/theme_selection_tokens.rs` and
+/// by construction. `tests/tui_render/theme_selection_tokens.inc` and
 /// `scripts/check_no_hardcoded_selection_colours.py` cover that one.
 #[test]
 fn this_check_can_detect_a_widget_that_reads_a_stale_theme() {

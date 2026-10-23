@@ -1,7 +1,4 @@
 //! Agent context renderer.
-//!
-//! Renders [`LspContextPacket`] into concise, readable text blocks
-//! suitable for agent prompts. No raw JSON is ever dumped.
 
 use crate::context::{
     AgentContextSource, LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact,

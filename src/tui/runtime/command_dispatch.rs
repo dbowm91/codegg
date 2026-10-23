@@ -2196,9 +2196,6 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             // started, so `turn_already_active` nulled the identity and elapsed
             // age of a turn that was still running and reported an error state
             // for a session that was actively working.
-            //
-            // The typed outcome now decides which of those is true, and a
-            // superseded or cancelled completion changes nothing at all.
             app.apply_turn_submission_finished(&request_id, generation, outcome);
         }
         TuiCommand::TurnCancelRequested {

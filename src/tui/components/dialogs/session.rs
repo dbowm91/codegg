@@ -234,10 +234,6 @@ pub struct SessionDialog {
     /// Live jobs shown under the subagents.
     jobs: Vec<JobListRow>,
     /// M006: the managed checkouts, keyed by the checkout's path.
-    ///
-    /// A session's `directory` is the join key: the launch binds the
-    /// session's directory to the checkout's path, so the checkout a
-    /// session runs in is the one whose path matches.
     checkouts: HashMap<String, CheckoutInfo>,
     visible_height: usize,
     sorted_cache: RefCell<SortedCache>,
@@ -798,10 +794,6 @@ impl SessionDialog {
 }
 
 /// A row's identity, for matching a cursor across a row-space change.
-///
-/// Sessions are matched by id and not by their `usize`, because re-sorting or
-/// re-filtering moves a session to a different index without changing what it
-/// is.
 fn row_identity(row: &SessionDialogRow, sorted: &[&Session]) -> Option<RowIdentity> {
     match row {
         SessionDialogRow::Session(index) => sorted

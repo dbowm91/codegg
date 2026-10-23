@@ -1,15 +1,6 @@
 //! Bridge between the existing human-shell event stream and the
 //! Phase 1 [`crate::shell::CommandOutputStore`].
 //!
-//! The human-shell runtime streams raw bytes via
-//! [`crate::shell::ShellEvent`] values that are already consumed by the
-//! TUI command handler in
-//! `src/tui/commands/shell.rs::handle_shell_event`. This module provides
-//! a small accumulator that mirrors those events into the durable
-//! command event store so that projection, expansion, and redaction
-//! code can resolve `cmd://<id>/stdout` and `cmd://<id>/stderr` handles
-//! without rerunning the command.
-//!
 //! The bridge is intentionally additive: it does NOT modify the
 //! existing human-shell `ShellOutputStore`, the `ShellEvent` enum, or
 //! the runtime. It is a sidecar that watches events and finalizes a
@@ -46,7 +37,6 @@ fn append_capped(buf: &mut Vec<u8>, dropped: &mut usize, bytes: &[u8]) {
     *dropped += bytes.len() - take;
 }
 
-/// In-flight accumulator for one command.
 #[derive(Debug, Default)]
 struct InFlightCommand {
     command: String,

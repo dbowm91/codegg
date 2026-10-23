@@ -46,11 +46,6 @@ enum Chrome {
 ///   the keystroke first and the arm is unreachable from a column — dead code
 ///   that reads exactly like a working key. That is the reason this hint is
 ///   written next to the arms rather than next to the footer.
-///
-/// Everything else below is dispatched: `j/k` move, `^d`/`^u` page the detail,
-/// `f` cycles the filter, `n` and `p` pin it to notes and prompts, `enter`
-/// previews, `h` jumps to the hunk, and `]`/`[` step between hunk-backed
-/// items.
 const HINT: &str = "j/k move · ^d/^u page · f filter · n notes · p prompts · enter preview · h jump hunk · ]/[ hunk nav";
 
 /// Which section of the detail pane is currently focused.
@@ -387,9 +382,6 @@ impl Component for SecurityReviewDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    ///
-    /// Short of the retired footer's `Esc close` and `H copy hunk`, both of
-    /// which the host answers before this widget is consulted — see [`HINT`].
     fn keymap_hint(&self) -> Option<String> {
         Some(HINT.to_string())
     }
@@ -399,12 +391,6 @@ impl Component for SecurityReviewDialog {
     }
 
     /// The panes alone, inside the frame the host already drew.
-    ///
-    /// `Component::render` drew four bordered blocks — a header, the item
-    /// list, the detail pane and a footer — over the host's border, its title
-    /// and the `●` focus marker. All three of the host's are overwritten, not
-    /// layered, which is why a focused column and an unfocused one rendered
-    /// identically. What is left is the *same* routine the modal path uses.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let inner = area.inner(Margin::new(1, 1));
         if inner.height == 0 || inner.width == 0 {

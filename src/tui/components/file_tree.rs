@@ -240,10 +240,6 @@ impl<'a> FileTreeView<'a> {
     }
 
     /// The pane's title names the directory it is listing.
-    ///
-    /// A pane scoped with `l` shows a subtree, and a title that still read
-    /// the workspace name would misdescribe every row under it — so the scope
-    /// leads and the workspace it hangs off is the quieter half.
     fn root_label(&self) -> String {
         let workspace = self
             .state

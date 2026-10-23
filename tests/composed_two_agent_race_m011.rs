@@ -770,8 +770,6 @@ async fn two_live_agents_racing_on_one_shared_checkout_never_overlap() {
     );
 }
 
-/// A run outside the group may not write the shared checkout.
-///
 /// The outsider holds a checkout of its own, so its fence resolves against a
 /// lease it does not hold. The scope it was handed names the shared checkout,
 /// and the run's own durable record wins over that scope — a caller cannot
@@ -815,12 +813,6 @@ async fn a_run_outside_the_group_may_not_write_the_shared_checkout() {
     );
 }
 
-/// The shared checkout is a **real** linked worktree.
-///
-/// The claim under test is that two agents share one checkout that Git
-/// itself recognises. A directory that merely looks like a checkout would
-/// satisfy the fence and fail this assertion, which is exactly why the
-/// allocation goes through the real service path.
 #[tokio::test(flavor = "current_thread")]
 async fn the_shared_checkout_is_a_real_linked_worktree() {
     let race = Race::new("linked").await;

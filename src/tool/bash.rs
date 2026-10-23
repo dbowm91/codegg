@@ -840,7 +840,7 @@ impl BashTool {
                     // A missing RunId means persistence was unavailable, not
                     // that execution failed. The delegated backend has already
                     // run the command; retrying through the shell here would
-                    // execute tests/scripts twice and could repeat mutations.
+                    // execute the test script twice and could repeat mutations.
                     let is_delegated_intent = matches!(
                         &outcome.executor,
                         ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }

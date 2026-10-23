@@ -1,13 +1,6 @@
 //! Keyboard input handling and keybindings.
 //!
-//! This module maps terminal key events to application [`InputAction`]s.
-//!
 //! ## Keybinding Architecture
-//!
-//! ```text
-//! KeyEvent ──► parse_key() ──► build_bindings() ──► HashMap
-//!                                                   (KeyModifiers, KeyCode) -> InputAction
-//! ```
 //!
 //! ## Default Bindings
 //!
@@ -146,11 +139,6 @@ pub enum InputAction {
     NewSession,
     /// Stop the running turn, or resume a stopped one (`x`, Normal mode
     /// only).
-    ///
-    /// One key for both directions because the state already says which one
-    /// applies: a stopped agent resumes, a working one stops. Stopping is the
-    /// destructive direction, so it takes a confirmed second press inside a
-    /// short window — see `turn_control::toggle_stop_or_resume`.
     ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
@@ -177,11 +165,6 @@ pub enum InputAction {
     /// * no box is open → the direction **selects a pane**: `Right` takes
     ///   the keyboard into the side panel, `Left` returns it to the main
     ///   buffer, and `Up`/`Down` cycle which panel type is loaded.
-    ///
-    /// One gesture family with two meanings is the multiplexer contract: the
-    /// key says *which way*, the surface underneath says *what is there*.
-    /// Resolving it in one place is what keeps a box and its panel from
-    /// disagreeing about what `L` does.
     DirectionLeft,
     DirectionRight,
     DirectionUp,
@@ -205,10 +188,6 @@ pub enum InputAction {
     ToggleReasoning,
     /// Expand every tool call and every reasoning block in the transcript,
     /// or collapse every one of them.
-    ///
-    /// The disclosure state is per part, so the per-message toggles reach one
-    /// message at a time. This is the gesture that opens the whole transcript
-    /// for reading — and closes it again on the next press.
     ///
     /// Model prose is not a disclosure and is not touched: it is never
     /// collapsed, so there is nothing to expand.
@@ -289,10 +268,6 @@ pub enum ActionKey {
     NewSession,
     /// Stop the running turn, or resume a stopped one (`x`, Normal mode
     /// only).
-    ///
-    /// One key for both directions because the state already says which one
-    /// applies: a stopped agent resumes, a working one stops. Stopping is the
-    /// destructive direction, so it takes a confirmed second press.
     ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
@@ -725,26 +700,12 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
 
 /// `Shift`-qualified pane directions: `←/→/↑/↓` and the vim `H/J/K/L` twins.
 ///
-/// Shift-qualified on purpose. The bare arrows already scroll the transcript
-/// (`Up`/`Down`) and move the caret (`Left`/`Right`), and the bare letters
-/// `j`/`k` are bound to the same navigation; claiming any of them would take
-/// away an existing verb. Shift narrows the gesture to "I am moving between
-/// surfaces", which is a different intent from "I am moving within one".
-///
 /// The vertical pair used to be deliberately left unbound, reserved for a
 /// future stacked-pane layout. It is bound now because it is no longer inert:
 /// with a two-pane layout, `↑`/`↓` cycle which panel type is loaded in the
 /// side column. That is the same gesture a stacked layout would use to move
 /// between rows, so the key is now earning its place instead of advertising
 /// something the UI cannot do.
-///
-/// Each letter is bound twice. Terminals disagree about how to encode a
-/// shifted letter: many report `Char('H') + SHIFT`, others a bare `Char('H')`
-/// with no modifier at all. Binding both is safe because uppercase `H`/`J`/
-/// `K`/`L` are otherwise unbound in Normal mode, and `is_normal_only` keeps
-/// Insert mode treating them as text. This is the same legacy-encoding hazard
-/// that made every `Ctrl+Shift+X` chord undecodable — see
-/// `tests/modifier_chords.rs`.
 fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
     for (key_code, action) in [
         (KeyCode::Left, InputAction::DirectionLeft),
@@ -977,14 +938,6 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // unreachable — worse, the key silently falls through to whichever action
     // owns the bare-Ctrl twin. That is how the panel switcher ended up firing
     // `CloseSession`.
-    //
-    // `Ctrl+Alt+<letter>` has no such collision: legacy encoding sends `ESC`
-    // followed by the single control byte, so crossterm reports CONTROL|ALT
-    // and the pair is unambiguous against both bare `Ctrl+W` and bare
-    // `Alt+W`. `tests/modifier_chords.rs` asserts the whole set stays
-    // disjoint from their unshifted twins.
-    //
-    // Sidebar focus keeps a reachable chord now that space is help.
     map.insert(
         (
             KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -1021,7 +974,7 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // typed slash command land as text. Removing it took away "type
     // `/panels` from Normal mode and press Enter" — the only way back into
     // the panel manager from a focused panel, which owns every key by
-    // contract (`tests/tui_side_panels.rs`).
+    // contract (`tests/tui_render/tui_side_panels.inc`).
     //
     // The focus-prompt **capability** moved to `Ctrl+Alt+E` in both maps, and
     // the vim map's `i` spelling is gone, which is the spelling the ADR
@@ -1247,12 +1200,6 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     // and delete-selection (ADR-0042). The actions moved to chords that are
     // not letters, and the chords are bound in **both** maps so the
     // capability is reachable whichever map is active.
-    //
-    // `Ctrl+Alt+I` would be the mnemonic spelling, but the terminal delivers
-    // it as `ESC` + `0x09`, which crossterm reports as `Tab` with ALT — the
-    // verb would be unreachable on every terminal. `Ctrl+Alt+E` is the
-    // deliverable alternative (`ESC` + `0x05` arrives as `Char('e')` with
-    // CONTROL|ALT), and "E" reads as "e\nter" the command palette.
     map.insert(
         (
             KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -2500,18 +2447,13 @@ pub(crate) fn handle_key_with_bindings(
             // default configuration — `Shift+F` had been waved through as
             // safe by a rule that never ran.
             //
-            // "Built-in" means the binding ships in either of the two maps the app
-            // can be configured with — it is checked by comparing the action
-            // against both, not by map identity, which keeps the
+            // "Built-in" means the binding ships in either of the two maps
+            // the app can be configured with — it is checked by comparing the
+            // action against both, not by map identity, which keeps the
             // neighbouring arm's promise intact: an *explicit user binding*
-            // still wins over text. `VIM_BINDINGS` matters as much as
-            // `DEFAULT_BINDINGS` here: `Shift+G` exists only in the vim map,
-            // and the regression test that used to cover it passed
-            // `bindings: None`, so it exercised the one path where the old
-            // gate fired and stayed green while the real path was broken.
-            // The lowercase letters stay on `is_normal_only`, which is the
-            // right tool for `x`/`ToggleAgentRun` because that one binds no
-            // modifier at all.
+            // still wins over text. The lowercase letters stay on
+            // `is_normal_only`, which is the right tool for
+            // `x`/`ToggleAgentRun` because that one binds no modifier at all.
             let is_builtin_text_key = is_text_key
                 && (map.get(&key_tuple) == DEFAULT_BINDINGS.get(&key_tuple)
                     || map.get(&key_tuple) == VIM_BINDINGS.get(&key_tuple));
@@ -3298,8 +3240,6 @@ mod tests {
         );
     }
 
-    /// Whether the composer claims this key.
-    ///
     /// The claim table is the authority: a letter it owns belongs to the
     /// composer, and the app's binding map is consulted only for the letters
     /// it does not own.
@@ -3327,8 +3267,6 @@ mod tests {
         }
     }
 
-    /// The help does not advertise bare `a` as the sidebar's gesture.
-    ///
     /// `a` is the composer's insert-after key (ADR-0042). The old row taught
     /// `a` as "Focus sidebar (agent tree)" in vim mode, which was true of the
     /// old binding and false of the new one — a help row that lies about a

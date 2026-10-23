@@ -219,15 +219,6 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
     // Opening a file lands in **Normal**, matching `/terminal`'s viewing mode
     // and every other reader surface: the Helix verbs own the keyboard and
     // the bottom input box still takes typing.
-    //
-    // It used to enter Insert. That put the keyboard in the document before
-    // anyone had read a word of it, and the two costs were concrete. The
-    // first keystroke of a mistaken open became an edit to the file. The
-    // second was that the reader arrived on a surface that looks like a
-    // reader and answers `j` by inserting a newline, so every navigation
-    // key became an edit key until `Esc` — a chord nothing on screen named.
-    // Nothing is lost by starting in Normal: `i` is one keystroke away and
-    // is what a user who wants to type reaches for.
     enter_editor_normal(app);
     if !matches!(
         app.ui_state.routes.current(),
@@ -1881,9 +1872,6 @@ fn run_clipboard_verb(app: &mut App, verb: ClipboardVerb) {
 /// - a **clipboard read failure** (`None`) — the system refused, which is not
 ///   the same as an empty clipboard;
 /// - an **empty clipboard** (`Some("")`) — a successful read of nothing.
-///
-/// The last one is the case that matters most: without its own toast, "you
-/// copied nothing" and "the verb did not work" look identical.
 fn apply_clipboard_text(app: &mut App, verb: ClipboardVerb, read: Option<String>) {
     if !editable(&app.editor_state) {
         app.editor_state
@@ -1906,10 +1894,6 @@ fn apply_clipboard_text(app: &mut App, verb: ClipboardVerb, read: Option<String>
 }
 
 /// Which way through the history a traversal moves.
-///
-/// The history is one ordered list and the cursor names a position in it, so
-/// "back" and "forward" are the same movement in opposite directions rather
-/// than two different operations. Helix calls them `earlier` and `later`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HistoryStep {
     /// One entry back — Helix's `earlier`.
@@ -2556,11 +2540,6 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
 ///
 /// `None` when there is no member to copy, which is the same "nothing to
 /// yank" answer `space y` gives for an empty selection.
-///
-/// Split out from [`yank_primary_selection`] so the *choice* of member is
-/// testable without the clipboard: the copy itself belongs to the App layer
-/// and to the system clipboard, and a test that wrote to it would take the
-/// reader's real clipboard with it.
 fn primary_yank_range(session: &TuiDocumentSession) -> Option<std::ops::Range<usize>> {
     let snapshot = session.try_snapshot()?;
     editor::selection_range(session.presentation(), &snapshot)
@@ -2603,10 +2582,6 @@ fn yank_primary_selection(app: &mut App) {
 /// walks its own filesystem. So the picker needs that binding, and says so
 /// when there is none — a browser that opens empty is a key that appears to
 /// do nothing, which is the M002 failure mode in a new costume.
-///
-/// The check is **before** the box opens. `rebuild` already reports a missing
-/// binding, but it reports it from inside the dialog, by which time the
-/// reader is looking at an empty browser with no explanation in it.
 fn open_editor_file_picker(app: &mut App) {
     let context = match app.project_execution_context() {
         Ok(context) => context,
@@ -2626,8 +2601,6 @@ fn open_editor_file_picker(app: &mut App) {
     app.open_file_picker();
 }
 
-/// Open the editor's own `:` command palette.
-///
 /// The palette is the editor's catalogue — the rows are
 /// [`EditorCommandName::ALL`], filtered as you type — and it is deliberately
 /// **not** the global `?` help dialog. Bare `?` still opens the help; `space
@@ -2733,10 +2706,6 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
             // `:new` creates an *agent* config, which is the file shape the
             // editor is currently useful for; a bare unnamed document would
             // need a separate template path.
-            //
-            // The scope comes from the argument (`global foo` / `project
-            // foo`); `resolve_new_agent` owns the split so the same rule
-            // applies to the panel and to this command.
             crate::tui::commands::agent_editor::create_agent_draft(
                 app,
                 argument.unwrap_or_default().as_str(),
@@ -3138,10 +3107,6 @@ enum BufferKey {
     RequestResync,
     /// `d` asked for these ranges to be deleted. The App layer submits the
     /// edit, because only it reaches the controller.
-    ///
-    /// A **set**, already merged and ascending. One transaction covers the
-    /// whole list: a partially applied multi-cursor delete would leave members
-    /// pointing at text that is already gone.
     DeleteRanges(Vec<std::ops::Range<usize>>),
     /// `space y` asked for these ranges to reach the system clipboard. The App
     /// layer performs the copy, because the clipboard is not editor state.
@@ -3521,11 +3486,6 @@ fn leaf_lookup_char(key: KeyEvent) -> Option<char> {
 /// `SHIFT`. The find and replace captures take a character as data and have
 /// no case to reconcile; the object arguments do, and a capital that arrived
 /// as a lowercase `w` would name the *word* object instead of the *WORD* one.
-///
-/// The `:` and `/` refusal is the one [`capture_char`] makes, for the same
-/// reason: they open modal lines that own the keyboard outright, and a
-/// capture that swallowed them would eat a key the reader can see doing
-/// something.
 fn match_arg_char(key: KeyEvent) -> Option<char> {
     match (key.modifiers, key.code) {
         (KeyModifiers::NONE, KeyCode::Char(':')) | (KeyModifiers::NONE, KeyCode::Char('/')) => None,
@@ -3982,10 +3942,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // being a distinction worth having once a line contains punctuation or
         // CJK. `W`/`B`/`E` classify by whitespace instead, so `foo.bar` is one
         // WORD for them and two words for `w`.
-        //
-        // Each accepts `NONE` and `SHIFT` because terminals disagree about how
-        // a capital is encoded — the same rule `G`, `U`, `D`, `I` and the
-        // insert entries already follow.
         (m, KeyCode::Char('W')) if m == none || m == shift => {
             helix_motion(state, EditorCommand::LongWordForward, visible_lines);
             BufferKey::Consumed
@@ -4003,10 +3959,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // `resolve_pending_prefix`. They arm rather than move because there
         // is no one-key spelling: the target arrives on the following
         // keystroke, which in a legacy xterm is a separate event entirely.
-        //
-        // `F`/`T` accept `SHIFT` as well as `NONE` because terminals disagree
-        // on how a capital letter is encoded — the same rule `G`, `U`, `D`
-        // and the insert entries already follow.
         (m, KeyCode::Char('f')) if m == none => {
             session
                 .presentation_mut()
@@ -4187,11 +4139,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // switch — they open the `:` command line **already filled in**. The
         // line the reader sees is the one they could have typed by hand, the
         // pattern has somewhere to live, and `:` already knows how to abort.
-        //
-        // The pattern is therefore typed and submitted through the existing
-        // command surface, which is why the verb itself carries no prompt
-        // state and why `scripts/check_tui_editor_prefix_state.py` still sees
-        // exactly the one prefix field it saw before this milestone.
         (m, KeyCode::Char('S')) if m == none || m == shift => {
             session.presentation_mut().open_command_line(&format!(
                 "{} ",
@@ -4239,9 +4186,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // preserve byte for byte. Two spellings of one verb that behaved
         // differently would be a worse surprise than either behaviour alone,
         // so bare `y` matches its sibling rather than Helix.
-        //
-        // Claimed even with nothing selected, for the same reason `d` is: an
-        // unclaimed `y` reads as a dead key.
         (m, KeyCode::Char('y')) if m == none => {
             let ranges = yank_ranges(session);
             if ranges.is_empty() {
@@ -4343,10 +4287,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // so a Normal-mode redo arm on `Ctrl+r` was never the Helix chord
         // either — it was a chord the guard block above already owned.
         //
-        // It accepts both `NONE` and `SHIFT` because terminals disagree on
-        // how a capital letter is encoded, and both spellings have to work
-        // — the same rule `I`/`A`/`O` and `D` already follow.
-        //
         // Claimed even with nothing to redo, for the same reason `d` is:
         // an unclaimed `U` would escape to the composer and read as the
         // start of a word rather than "redo".
@@ -4366,9 +4306,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // `(ALT|SHIFT, Char('u'))`. `Alt-u` is `(ALT, Char('u'))` — and it
         // must not be confused with the third arm, which is the same glyph
         // under a different modifier and means the *other* direction.
-        //
-        // Every modifier here is an exact bitmask, so `ALT` and `ALT|SHIFT`
-        // are disjoint claims and the guard reads them as such.
         (m, KeyCode::Char('u')) if m == alt => {
             editor_history_earlier(state);
             BufferKey::Consumed
@@ -4484,11 +4421,6 @@ fn unimpaired_repeat(state: &EditorState) -> Option<EditorCommand> {
 }
 
 /// Record a repeatable selection motion, clearing the find slot.
-///
-/// Clearing the find slot is the point: Helix keeps **one** repeat slot, so a
-/// `C` pressed between a find and its `Alt-.` is exactly what makes the repeat
-/// disarmed. Two slots with different lifetimes would quietly let `Alt-.`
-/// repeat across a motion the reader expected to have cleared it.
 fn note_selection_motion(state: &mut EditorState, motion: editor::SelectionMotion) {
     if let Some(session) = state.session.as_mut() {
         let presentation = session.presentation_mut();
@@ -4697,10 +4629,6 @@ fn yank_ranges(session: &mut TuiDocumentSession) -> Vec<std::ops::Range<usize>> 
 
 /// Copy every range to the system clipboard in one write.
 ///
-/// Members are concatenated in document order, which is what makes the result
-/// read the way the screen does: two selections on lines 3 and 9 arrive
-/// top-down, not in the order the cursors happened to be created.
-///
 /// A failed copy is reported rather than swallowed: the selection has already
 /// been dropped by the time this runs, so a silent failure would look exactly
 /// like `space y` doing nothing at all.
@@ -4750,9 +4678,6 @@ fn yank_editor_ranges(app: &mut App, ranges: Vec<std::ops::Range<usize>>) {
 /// so the refusal is reported rather than swallowed: the status row reads
 /// "read-only", and the key stays unclaimed so a reader who meant to type
 /// `i` into the agent's box still gets to.
-///
-/// The writing counterpart is [`editor_open_line`], which claims the key and
-/// reports the refusal as a notice, because it writes.
 fn enter_insert(state: &mut EditorState, command: EditorCommand) -> BufferKey {
     if !editable(state) {
         return BufferKey::Unhandled;
@@ -4932,11 +4857,6 @@ mod tests {
     // ── Scripted document.v1 daemon ──────────────────────────────────────
 
     /// Minimal in-memory daemon for `document.v1`.
-    ///
-    /// Enough to qualify the editor's lifecycle end to end: it serves
-    /// snapshots, applies transactions, and can be told to conflict, to go
-    /// offline, to report the document gone, or to block a reload so a
-    /// destructive phase can be observed while it is in flight.
     struct FakeDaemon {
         text: std::sync::Mutex<String>,
         revision: AtomicU64,
@@ -5242,10 +5162,6 @@ mod tests {
     }
 
     /// How many history entries are applied — the undo depth.
-    ///
-    /// The history is one ordered list and the cursor names a position in it,
-    /// so the undo depth *is* the cursor and the redo depth is whatever is
-    /// left after it.
     fn undo_depth(state: &EditorState) -> usize {
         state
             .session
@@ -6071,10 +5987,6 @@ mod tests {
     /// directly, never a key, which is why the suite stayed green through the
     /// whole defect. A binding nobody pressed is a binding nobody proved
     /// reachable.
-    ///
-    /// Each entry therefore asserts both the reported effect *and* the state
-    /// change, so a shadowed arm fails on the state change even when the
-    /// reported effect happens to look plausible.
     #[tokio::test]
     async fn every_normal_mode_motion_is_reachable_through_dispatch() {
         let (mut state, _daemon) = opened_writer(&numbered_lines(60)).await;
@@ -6766,11 +6678,6 @@ mod tests {
 
     /// Arming `[`/`]` and then pressing a key with no leaf must disarm *and*
     /// resolve that key normally.
-    ///
-    /// This is the direction that silently breaks the composer: swallowing here
-    /// means `[` followed by a letter drops the letter on the floor, so a user
-    /// can no longer start a message with `[`. Both halves are asserted — the
-    /// indicator clears, and the verb still ran.
     #[tokio::test]
     async fn the_unimpaired_prefixes_disarm_without_swallowing_the_next_key() {
         for (arming, label) in [(KeyCode::Char('['), "`[`"), (KeyCode::Char(']'), "`]`")] {
@@ -7374,10 +7281,6 @@ mod tests {
     }
 
     /// With nothing recorded, `Alt-.` claims nothing.
-    ///
-    /// The same reason `n` is gated on an existing search: a binding that
-    /// consumes the key and then does nothing is indistinguishable from a
-    /// hung editor, and it steals the keystroke from the composer.
     #[tokio::test]
     async fn alt_period_with_no_record_is_not_claimed() {
         let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
@@ -7962,10 +7865,6 @@ mod tests {
     }
 
     /// Hold two single-character members at `start` and `other`, primary first.
-    ///
-    /// Single characters, because a Helix character selection is inclusive of
-    /// both endpoints: `start..start+1` would cover two characters and the
-    /// assertions below would be about the wrong spans.
     fn hold_two_members(
         state: &mut EditorState,
         snapshot: &codegg_document::DocumentSnapshot,
@@ -9366,11 +9265,6 @@ mod tests {
 
     /// A document with three blank-line-separated paragraphs of known offsets.
     ///
-    /// ```text
-    /// "alpha\n\n  beta\n\ngamma\n"
-    ///  012345 6 7890123 4 5678901 2
-    /// ```
-    ///
     /// Offsets are asserted numerically rather than found with the scanner
     /// under test — a test that computed its own expectation could not fail.
     fn three_paragraphs() -> String {
@@ -9684,8 +9578,6 @@ mod tests {
         assert_eq!(state.mode(), EditorMode::Insert);
     }
 
-    /// `O` opens a line **above** the cursor's line.
-    ///
     /// The two verbs are one implementation with two arguments, so the test
     /// that only covers one of them covers half the contract.
     #[tokio::test]
@@ -9709,10 +9601,6 @@ mod tests {
     }
 
     /// A read-only attachment refuses `o`, and says so.
-    ///
-    /// The key is **claimed**: `o` writes, so it behaves like every other
-    /// writing verb, and an unclaimed key would drop the `o` into the composer
-    /// — which reads as the editor ignoring a verb it owns.
     #[tokio::test]
     async fn o_on_a_read_only_attachment_is_refused_visibly() {
         let (mut state, _daemon) = opened_reader("one\ntwo\n").await;
@@ -10513,8 +10401,6 @@ mod tests {
         submit_edit(state, edit);
     }
 
-    /// `Alt-u` moves the history cursor back, and the document follows.
-    ///
     /// Driven through the **real dispatch path**, because the roadmap's §9
     /// records why: a helper called directly proves the helper works, not
     /// that the chord reaches it.
@@ -10750,10 +10636,6 @@ mod tests {
 
     /// Hold one member over `start..end`, the way a verb that grew a
     /// selection would.
-    ///
-    /// The head is the **last character's start**, because a character
-    /// selection's range runs to `char_end(head)` — a head at `end` would
-    /// cover one character too many.
     fn hold_range(state: &mut EditorState, start: usize, end: usize) {
         let snapshot = snapshot_of(state);
         let point = |byte: usize| EditorPoint {
@@ -10903,10 +10785,6 @@ mod tests {
         // The WORD object is the one that has a capital in it, so the
         // disagreement has to be reconciled or `W` would name the *word*
         // object on half the terminals.
-        //
-        // The text is chosen so the two objects differ: a word is
-        // alphanumerics and `_`, a WORD is everything up to whitespace, so
-        // `a.b` is one WORD and two words.
         let (mut state, _daemon) = opened_writer("a.b cd").await;
         park(&mut state, 0);
         assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
@@ -11053,11 +10931,6 @@ mod tests {
     }
 
     // ── M010: the space-mode family ───────────────────────────────────
-    //
-    // Every leaf is driven as two real keystrokes through the dispatch path,
-    // and every App-level effect through `handle_editor_key`, so a leaf that
-    // is in the table but unreachable from the keyboard fails here rather
-    // than passing on the table's own evidence.
 
     /// The reason a statement leaf rendered, if any.
     fn notice_on_app(app: &App) -> Option<String> {
@@ -11093,7 +10966,6 @@ mod tests {
         tab.workspace_id = Some("workspace-m010".to_string());
     }
 
-    /// The reclaim: `space f` opens the browser, and the browser names the
     /// root it is browsing.
     #[tokio::test]
     async fn space_f_opens_the_file_browser_and_it_names_the_root_it_is_browsing() {
@@ -11199,7 +11071,6 @@ mod tests {
         );
     }
 
-    /// The clipboard family: each space chord names its own verb.
     #[tokio::test]
     async fn the_space_clipboard_family_names_the_verb_each_chord_runs() {
         for (glyph, expected) in [
@@ -11327,14 +11198,8 @@ mod tests {
         }
     }
 
-    /// `space ?` opens the editor's own **keymap box** — the catalogue of
     /// its keys, in its bottom-right corner — and not the global help dialog.
     /// Bare `?` still opens the help.
-    ///
-    /// It used to open the `:` command palette, but the `:` line is the
-    /// command matcher and the palette was a second way to reach the same
-    /// commands: the key that was supposed to answer "what can I press
-    /// here?" answered a different question.
     #[tokio::test]
     async fn space_question_mark_opens_the_editors_keymap_box() {
         let (state, _daemon) = opened_writer("hello").await;
@@ -11547,7 +11412,6 @@ mod tests {
             .collect()
     }
 
-    /// `=` asks for the format preview and changes nothing.
     #[tokio::test]
     async fn the_format_preview_is_requested_and_changes_nothing() {
         let (state, _daemon) = opened_writer("hello").await;
@@ -11750,7 +11614,6 @@ mod tests {
         );
     }
 
-    /// The rename preview's result reaches the panel, with the files it
     /// would change.
     #[tokio::test]
     async fn the_rename_preview_reaches_the_panel_with_the_files_it_would_change() {
@@ -11817,11 +11680,6 @@ mod tests {
 
     /// The bridge's editor half: a preview that carries a candidate opens the
     /// review on it.
-    ///
-    /// The chords stopped showing what *would* change and started doing it.
-    /// The review is where the user decides, so a candidate has to arrive
-    /// there — otherwise the editor would hold material the apply path could
-    /// consume and nothing would ever consume it.
     #[tokio::test]
     async fn a_preview_with_a_candidate_opens_the_review_on_it() {
         use codegg_protocol::lsp::{
@@ -11888,8 +11746,6 @@ mod tests {
         );
     }
 
-    /// A preview with no candidate stays a preview.
-    ///
     /// A truncated preview, or one with nothing to change, carries no
     /// candidate — and a review that offered to apply it would be offering an
     /// apply the daemon would refuse.
@@ -11939,7 +11795,6 @@ mod tests {
         );
     }
 
-    /// A code action with a candidate opens the review on **that** action's
     /// candidate.
     ///
     /// A code action is a *choice*, so the review does not open by itself:
@@ -12018,8 +11873,6 @@ mod tests {
         );
     }
 
-    /// A command-only action cannot be applied, and says why.
-    ///
     /// The surface never runs commands, and the LSP specification applies an
     /// action's edit *and then* its command — so an action that carries a
     /// command is never applied here. The reader is told that in the place
@@ -12107,11 +11960,6 @@ mod tests {
         app
     }
 
-    /// A successful apply reloads the file it wrote.
-    ///
-    /// The apply writes to disk behind the editor's buffer, so the buffer is
-    /// stale the moment it lands. A clean buffer is reloaded; otherwise the
-    /// editor would show text that is no longer on disk.
     #[tokio::test]
     async fn a_successful_apply_reloads_the_file_it_wrote() {
         let (state, _daemon) = opened_writer("hello").await;

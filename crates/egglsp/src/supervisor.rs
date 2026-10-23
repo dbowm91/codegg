@@ -1,8 +1,4 @@
 //! Process exit observation and supervisor for LSP servers.
-//!
-//! The supervisor observes child process exit, stdout EOF, transport
-//! failure, and explicit shutdown. It owns the single authoritative
-//! process monitor to avoid double-waiting on child handles.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

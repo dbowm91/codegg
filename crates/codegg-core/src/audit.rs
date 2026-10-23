@@ -21,9 +21,8 @@
 //! - The caller cannot rewrite actor/decision. [`AuditEventBuilder`] takes
 //!   the transport-bound [`AuthenticatedPrincipal`] plus an
 //!   [`AuditDecisionProvenance`] copied from the gate-enforced M003
-//!   decision (see `codegg_core::authorization::audit_provenance`); there
-//!   are no setters for actor, decision, policy, or sequence fields.
-//!   Request DTOs supply locators but never authority.
+//!   decision; there are no setters for actor, decision, policy, or sequence
+//!   fields. Request DTOs supply locators but never authority.
 //! - Secrets never enter metadata. Metadata keys must match a narrow
 //!   structural charset and must not contain secret-bearing substrings;
 //!   values are scanned for secret-bearing substrings and oversized or
@@ -32,14 +31,11 @@
 //!   builder still rejects bodies that scan as credential text so a
 //!   misclassified secret cannot hide behind the body seam.
 //! - Duplicate event IDs are idempotent. `event_id` is `UNIQUE`; an append
-//!   with a known ID returns the stored event unchanged and never assigns
-//!   a second sequence number.
+//!   with a known ID returns the stored event unchanged.
 //! - Audit reads are authorized at the daemon boundary. `audit_query` and
 //!   `audit_export` are `DirectProject` + `audit.read` operations in the
-//!   M003 operation matrix, so the gate enforces the grant before the
-//!   store is touched (LocalOwner broad policy observes everything; team
-//!   principals must hold the grant on the queried project). Unknown
-//!   action/principal filters degrade to empty pages.
+//!   M003 operation matrix, so the gate enforces the grant before the store
+//!   is touched. Unknown action/principal filters degrade to empty pages.
 //! - Writes never block forever. [`AuditWriter`] bounds in-flight appends
 //!   with a semaphore and a write timeout; exhaustion surfaces typed
 //!   [`AuditError::Backpressure`] and observable counters instead of an

@@ -1,8 +1,4 @@
 //! M002: `projection` request family for `CoreDaemon`.
-//!
-//! Projection replay subscribe/resume/ack/snapshot/artifacts plus ephemeral presence leases.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};

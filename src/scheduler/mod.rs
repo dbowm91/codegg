@@ -1,11 +1,6 @@
 //! Phase 5 of the single-daemon multi-project orchestration roadmap:
 //! the global admission control scheduler.
 //!
-//! This module owns the queue and admission layer that sits between the
-//! durable [`JobStore`] and the typed [`JobExecutor`](super::executor) registry.
-//! It is the daemon's authoritative answer to "may this work begin now?"
-//! and "which work goes next?"
-//!
 //! Three boundaries are enforced here:
 //!
 //! 1. **Queue identity.** The in-memory queue is rebuilt from

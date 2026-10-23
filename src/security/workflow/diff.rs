@@ -413,7 +413,6 @@ pub fn is_high_risk_reason(reason: &SecurityTargetReason) -> bool {
 // Build security review targets
 // ---------------------------------------------------------------------------
 
-/// Deduplication key for security review targets.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct SecurityReviewTargetKey {
     file_path: PathBuf,

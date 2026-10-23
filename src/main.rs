@@ -70,9 +70,6 @@ impl ExecutionPolicyArgs {
 
 /// Canonical `--format text|json` output selection shared by root one-shot
 /// mode and `exec`.
-///
-/// The pre-existing `--output-format` (root) and `--json-output`/`-j`
-/// (`exec`) spellings remain as compatibility aliases.
 fn resolve_output_format(format: OutputFormat, json_output: bool) -> OutputFormat {
     if json_output || matches!(format, OutputFormat::Json) {
         OutputFormat::Json
@@ -723,10 +720,6 @@ enum DaemonCommand {
         refresh: bool,
     },
     /// Dispose of one daemon-owned scratch tree (M007)
-    ///
-    /// Names the tree by its opaque digest, as reported by
-    /// `codegg daemon scratch-usage`. A dry run is the default: the command
-    /// reports what it would remove and removes nothing.
     ScratchReclaim {
         /// The opaque digest of the tree
         #[arg(long)]
@@ -890,7 +883,6 @@ fn scratch_refusal_name(
     }
 }
 
-/// Print the daemon's scratch usage report.
 fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageReportDto) {
     println!(
         "Scratch usage (measured {})",
@@ -992,9 +984,6 @@ fn format_epoch_millis(millis: i64) -> String {
 }
 
 /// Attach the TUI to a running daemon over the local Unix socket.
-///
-/// Shared by `codegg daemon attach` (canonical) and the hidden
-/// top-level `attach-daemon` compatibility alias.
 async fn cmd_daemon_attach(
     endpoint: Option<String>,
     session: Option<String>,
@@ -2828,11 +2817,6 @@ fn find_on_path(name: &str, path_var: Option<&str>) -> Option<PathBuf> {
 /// `$EDITOR` per the usual Unix convention (git, sudo, crontab) because
 /// `$VISUAL` marks the full-screen editor the user prefers for interactive
 /// editing, while `$EDITOR` is often set to a line-oriented default.
-///
-/// A value taken from the environment is returned even when no such binary
-/// exists: silently substituting a different editor than the one the user
-/// asked for would edit the file behind their back. The caller surfaces the
-/// spawn failure instead.
 fn resolve_editor(
     explicit: Option<&str>,
     visual: Option<&str>,
@@ -3124,10 +3108,6 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
 }
 
 /// Read-only provider listing for `doctor providers`.
-///
-/// Reuses the same config-aware registration as `codegg providers` and
-/// the TUI. No network probes: model inventory stays behind
-/// `codegg models`, which may contact providers.
 fn print_providers_report(config: &Config) {
     let mut registry = ProviderRegistry::new();
     provider::register_builtin_with_config(&mut registry, config);

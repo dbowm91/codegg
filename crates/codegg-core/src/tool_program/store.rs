@@ -1,8 +1,5 @@
 //! Program store integration for Tool Programs.
 //!
-//! Provides content-addressed IR storage, source verification,
-//! compile diagnostics persistence, and IR reuse logic.
-//!
 //! # Invariants
 //!
 //! - Source and IR are immutable and content-addressed (SHA-256).

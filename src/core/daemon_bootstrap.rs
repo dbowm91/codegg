@@ -21,10 +21,6 @@
 //! reorder startup merely because extraction makes it possible; desirable
 //! behavior changes belong in separate correctness plans.
 //! ```
-//!
-//! Recovery failures retain current typed behavior: missing pools return
-//! early, missing tables log and skip, and job recovery returns `None` on
-//! error without admitting queued work.
 
 use std::sync::Arc;
 

@@ -1,17 +1,7 @@
 //! Shell command output projection model.
 //!
-//! Phase 1 of the shell output projection roadmap
-//! (`plans/shell_output_projection_phase_01_command_event_model.md`)
-//! and the substrate for Phase 2
-//! (`plans/shell_output_projection_phase_02_projection_trait.md`).
-//!
-//! This module introduces a structured command event that is the foundation
-//! for the projection pipeline. Every shell command run produces a
-//! [`CommandRun`] domain object that captures the command's identity, exit
-//! state, captured output handles, and metadata. Raw stdout/stderr are
-//! retained out-of-band in [`CommandOutputStore`] so that projection,
-//! expansion, redaction, and TUI code can reference them by stable handles
-//! without rerunning the command.
+//! The command-event substrate of the shell output projection pipeline; see
+//! `architecture/human_shell.md` for the pipeline's contract.
 //!
 //! This module is **additive** — it does not modify the existing
 //! human-shell runtime or its ephemeral transcript in
@@ -19,12 +9,6 @@
 //! human-shell store keeps its bounded head/tail transcript for the TUI;
 //! the new command event store keeps the durable raw bytes used by
 //! projection, expansion, and future native projectors.
-//!
-//! Phase 2 adds the projector trait, built-in projectors, and the
-//! centralised selector in [`crate::shell::projector`]. The
-//! [`default_command_projection`] entry point continues to exist; it now
-//! delegates to the selector so every model-visible projection flows
-//! through the same selection logic.
 
 use std::collections::HashMap;
 use std::ops::Range;

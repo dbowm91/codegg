@@ -1,8 +1,5 @@
 //! Git network execution policy.
 //!
-//! Defines the env-policy, redaction, and permission classification
-//! shared by fetch, pull, push, and remote-config mutations.
-//!
 //! Network operations are distinguished from local mutations by:
 //!
 //! * Hard-pinned `GIT_TERMINAL_PROMPT=0` so credential helpers cannot
@@ -30,9 +27,6 @@
 //!   prevent interactive editor prompts on push commit-message edits.
 //! * `GIT_PAGER`, `PAGER` — no paginated output for non-interactive
 //!   execution.
-//!
-//! All env var names are stored as `&'static str` so the policy
-//! itself has no allocations.
 
 use std::time::Duration;
 

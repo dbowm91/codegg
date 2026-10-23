@@ -187,11 +187,6 @@ pub struct ChatBrowser {
     show_help: bool,
     /// Whether the cursor tracks the newest message as it arrives.
     ///
-    /// This is the rule that makes a chat read like a chat: opening a
-    /// populated channel lands on the newest message, and keeping `j`
-    /// pressed stays pinned to it. Scrolling up with `k` unpins, so history
-    /// stops moving under the user. `G` re-pins.
-    ///
     /// Without it the cursor started at index 0 and the viewport showed the
     /// *oldest* messages — a live channel looked empty because the only rows
     /// on screen were from before the user arrived.
@@ -583,19 +578,10 @@ fn unread_boundary(view: &ChatView<'_>) -> Option<usize> {
     )
 }
 
-/// Style for a message row.
-///
-/// The selected row used to be painted with `fg(theme.selection)`. That
-/// field is a *background* — every other selected surface in the TUI pairs
-/// it with a foreground (`bg(selection).fg(primary)`). Used alone it made the
-/// author's name a dark slate on a dark slate: technically styled, entirely
-/// unreadable. Selection is a background, so it is used as one.
-///
-/// The unselected body is `foreground`, not `muted`. It used to be `muted`
-/// whenever nothing was unread, which meant the *only* time the conversation
-/// was fully legible was while something was unread. Unread-ness is already
-/// conveyed by the separator row; dimming the whole transcript because
-/// everything has been read makes the common case the unreadable one.
+/// That field is a *background* — every other selected surface in the TUI
+/// pairs it with a foreground (`bg(selection).fg(primary)`). Used alone it
+/// made the author's name a dark slate on a dark slate: technically styled,
+/// entirely unreadable. Selection is a background, so it is used as one.
 fn row_style(selected: bool, theme: &Theme) -> Style {
     if selected {
         Style::default()

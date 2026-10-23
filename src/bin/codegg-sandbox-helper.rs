@@ -6,11 +6,6 @@
 //! normal process context, reports setup state through the private pipe, and
 //! then replaces itself with the target executable.
 //!
-//! Containment is **backend-neutral**: the policy is a list of paths, and
-//! the registry in [`codegg::security::sandbox::backend`] decides which OS
-//! facility enforces it (Landlock on Linux, Seatbelt on macOS). Adding a
-//! backend changes this file not at all.
-//!
 //! This is the only place in the sandbox that uses `unsafe`, and only for
 //! two reasons: the status-pipe descriptor plumbing, and the `sandbox_init`
 //! FFI that the root library cannot make itself (`#![deny(unsafe_code)]`).
@@ -127,9 +122,6 @@ fn parse_args() -> Result<(PathBuf, RawFd), String> {
 /// this speculatively. `SANDBOX_NAMED` is passed as `0` deliberately: with
 /// flags set, `profile` names a built-in Apple constant rather than being
 /// parsed as SBPL.
-///
-/// The profile is generated in the library (pure, testable) and applied
-/// here, so this function does no policy work of its own.
 #[cfg(target_os = "macos")]
 fn apply_seatbelt(
     spec: &SandboxLaunchSpec,

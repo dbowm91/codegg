@@ -241,8 +241,6 @@ impl RedactRule for EmbeddedCredentialUrlRule {
     }
 }
 
-/// Cookies and session material.
-///
 /// Matches:
 /// - `Cookie: <value>` headers
 /// - `Set-Cookie: <value>` headers

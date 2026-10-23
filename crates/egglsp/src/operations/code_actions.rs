@@ -571,9 +571,6 @@ impl LspOperations {
     }
 
     /// The raw `textDocument/codeAction` answer for an already-warm key.
-    ///
-    /// The file-path form of this request resolves its own client; this one
-    /// takes the key it is given, so the whole code-action flow stays warm.
     async fn code_actions_for_key(
         &self,
         key: &str,

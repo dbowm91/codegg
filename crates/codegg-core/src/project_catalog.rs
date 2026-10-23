@@ -1,10 +1,5 @@
 //! Daemon-owned project catalog service on top of `ProjectStorage`.
 //!
-//! This module delivers the durable catalog of logical projects and
-//! repositories with archive/restore, lifecycle/health/locator placeholders,
-//! explicit local registration from existing workspace/repository,
-//! conservative legacy association, and restart hydration.
-//!
 //! It does NOT perform filesystem scanning, remote execution, or
 //! expensive service activation. The catalog is read/list/manage from
 //! internal/diagnostic surfaces only.
@@ -586,15 +581,12 @@ impl ProjectCatalog {
         // Probe lineage before deciding anything, but DO NOT create the
         // `repository` row yet.
         //
-        // Registration used to record `status = 'resolved'` with a NULL
-        // repository and never probe Git at all, so the `repository` table
-        // stayed empty for every TUI-launched project. Because the
-        // existing-binding branch returned early, and
+        // Because the existing-binding branch returned early, and
         // `ProjectStorage::reconcile_workspace_once` treats a `resolved`
         // binding as authoritative and never re-probes, that empty identity
-        // was permanent: a delegated run needing managed isolation then failed
-        // with `isolation_unavailable` in a repository with perfectly good
-        // lineage evidence.
+        // was permanent: a delegated run needing managed isolation then
+        // failed with `isolation_unavailable` in a repository with perfectly
+        // good lineage evidence.
         let lineage = Self::probe_repository_lineage(std::path::Path::new(&canonical_root));
 
         // Check if workspace is already bound to a project

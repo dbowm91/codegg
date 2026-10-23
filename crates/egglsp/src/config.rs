@@ -1,8 +1,4 @@
 //! Crate-local `LspConfig` and `LspRule` types.
-//!
-//! Codegg converts its own config into these at the boundary. The shape
-//! mirrors the prior `crate::config::schema::LspConfig` / `LspRule` so
-//! that no model-facing tool schema has to change.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -296,7 +292,6 @@ mod tests {
         );
     }
 
-    /// Pass 8 — \`try_to_domain\` accepts a valid config and
     /// returns a domain policy.
     #[test]
     fn try_to_domain_accepts_valid_config() {
@@ -315,7 +310,6 @@ mod tests {
         assert_eq!(policy.reset_after_healthy, Duration::from_secs(120));
     }
 
-    /// Pass 8 — `try_to_domain` falls back to the base
     /// policy for missing fields.
     #[test]
     fn try_to_domain_falls_back_to_base() {

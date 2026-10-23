@@ -589,10 +589,6 @@ pub struct WriterScopeRequest {
 #[allow(clippy::double_must_use)]
 pub trait WriterFenceFactory: Send + Sync {
     /// Resolve the fence for one run.
-    ///
-    /// Returns `None` when the run holds no managed checkout and no
-    /// workspace root was captured, in which case the call has no scope and
-    /// performs no containment.
     async fn fence_for(
         &self,
         request: WriterScopeRequest,

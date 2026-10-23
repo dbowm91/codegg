@@ -8,12 +8,6 @@
 //! keeps active workspace state. An [`ExecutionContext`] is passed by `Arc`
 //! through every daemon-owned execution path so that commands, tools, and
 //! subagents never infer their working directory from process-global cwd.
-//!
-//! The module is UI-, server-, and plugin-free: it is the lowest level at
-//! which the daemon reasons about "which project is the agent working on".
-//! All path checks happen through [`ExecutionContext::resolve_relative_cwd`],
-//! [`ExecutionContext::resolve_read_path`], and
-//! [`ExecutionContext::resolve_write_path`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

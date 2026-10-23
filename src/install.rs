@@ -1,9 +1,5 @@
 //! Installation-owned runfile resolution (self-contained-installation M002).
 //!
-//! The prebuilt release bundle carries `codegg`, `codegg-sandbox-helper`,
-//! and `codegg-eggsearch` in one directory. This module resolves those
-//! siblings relative to the canonical running `codegg` executable.
-//!
 //! Contract:
 //! - `current_exe` canonical parent is authoritative. `cwd`, `PATH`, and
 //!   inherited helper-specific environment variables are never consulted

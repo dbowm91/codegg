@@ -9,7 +9,7 @@
 //! shim is intentionally narrow: a `From<egglsp::LspError>` for
 //! `crate::error::LspError`, the legacy `Lsp` aggregator struct,
 //! and the `crate::config::schema::LspConfig` → `egglsp::LspConfig`
-//! `From` impl. See `plans/native_tool_crates_hardening.md` Phase 7.
+//! `From` impl. See `architecture/lsp.md` for the shim's contract.
 
 use std::path::Path;
 use std::sync::Arc;

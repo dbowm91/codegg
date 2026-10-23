@@ -353,9 +353,6 @@ pub fn apply_completion(
 
 /// Reload the editor's open document when the apply wrote it.
 ///
-/// The apply changed the file on disk behind the editor's buffer, so a clean
-/// buffer is reloaded and the editor shows what is on disk.
-///
 /// A buffer with a draft is **not** reloaded. A reload discards the local
 /// draft, and the daemon's own dirty-document check is not the editor's:
 /// the editor is a replica, so the daemon can believe a document is clean
@@ -497,11 +494,6 @@ mod tests {
     /// construction. What *is* assertable, and what actually protects the
     /// user, is the consequence: the change the review displays is the same
     /// change the request carries, bound to the same candidate and digest.
-    ///
-    /// If a future change re-derived the displayed diff from disk, or opened
-    /// the review from a different source than the apply, the two would
-    /// diverge here and the user would be approving something other than what
-    /// lands.
     #[test]
     fn the_reviewed_change_and_the_applied_request_are_the_same_change() {
         let (mut app, _dir, preview_id, target) = app_with_pending_candidate();
@@ -599,12 +591,6 @@ mod tests {
     }
 
     /// The carried path's one-apply-path invariant.
-    ///
-    /// The candidate the editor carries is the material the daemon minted.
-    /// The review displays a parse of its patch text and the request carries
-    /// that same patch text, so what the user reviewed is what would be
-    /// written — and the digest on the request is the daemon's, so the
-    /// daemon's own recomputation still binds it to this exact candidate.
     #[test]
     fn a_carried_candidate_builds_the_request_the_review_displayed() {
         use codegg_protocol::lsp::LspPreviewPatchDto;
@@ -669,8 +655,6 @@ mod tests {
         );
     }
 
-    /// The carried path needs no LSP tool.
-    ///
     /// This is the whole reason the candidate is carried rather than
     /// registered: `app.lsp_tool` is `None` in socket mode, so a path that
     /// needed the frontend's registry could not reach the apply at all in the

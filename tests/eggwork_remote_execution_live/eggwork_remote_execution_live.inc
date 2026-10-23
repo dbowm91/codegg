@@ -30,9 +30,9 @@
 //!
 //! ```text
 //! sed -i '' 's/#!\[cfg(target_os = "linux")\]/#![cfg(all())]/' \
-//!   tests/eggwork_remote_execution_live.rs
+//!   tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc
 //! cargo test --locked --test eggwork_remote_execution_live -- --test-threads=1
-//! git checkout tests/eggwork_remote_execution_live.rs
+//! git checkout tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc
 //! ```
 //!
 //! This is a debugging aid, not a qualification: the gate is restored, and

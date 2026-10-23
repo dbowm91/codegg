@@ -18,9 +18,6 @@
 //! 5. The plan emits at most one `pending_heavy_load` tab; the
 //!    heavy-load transaction reuses the existing milestone 3 view
 //!    switch machinery.
-//!
-//! Cancellation: the coordinator is registered as a TUI task so the
-//! existing `TuiTaskRegistry::cancel_for_tab` lifecycle applies.
 
 use crate::tui::app::state::manifest::{ManifestLoadOutcome, TuiWorkspaceManifest};
 use crate::tui::app::state::restore::{
@@ -273,11 +270,6 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
     }
 
     // Materialize lightweight tabs.
-    //
-    // Captured *before* the plan runs: `apply_restore_plan` calls
-    // `clear_for_restore`, so the launch binding this process established is
-    // gone by the time it returns. `preserve_launch_binding` puts it back if
-    // the restore left the session pointing at a different directory.
     let launch_binding = LaunchBinding::capture(&app.project_tabs);
 
     let heavy_target = apply_restore_plan(&mut app.project_tabs, &plan);

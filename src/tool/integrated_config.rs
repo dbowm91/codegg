@@ -1,11 +1,4 @@
 //! Centralized runtime config resolution for integrated tool backends.
-//!
-//! This module bridges the config-time schema types (`SearchConfig`,
-//! `DeterministicToolsConfig`, `PreflightConfig`) to runtime structs
-//! consumed by `ToolRegistry::with_options()`. It fills defaults,
-//! validates values, and emits warnings for suspicious configurations.
-//!
-//! See `plans/eggsearch-eggsact-phase-06-backend-config-policy.md`.
 
 use crate::config::schema::Config;
 

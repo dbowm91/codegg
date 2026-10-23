@@ -1,9 +1,5 @@
 //! Git mutation projector.
 //!
-//! The mutation framework returns typed [`MutationResult`] values. The
-//! projector formats those values into concise, structured summaries
-//! suitable for model context and TUI transcript rows.
-//!
 //! Unlike the shell-output projectors in `src/shell/projector.rs`, the
 //! git mutation projector does not consume a `CommandOutputStore` — it
 //! is a pure formatter over the typed `MutationResult` because mutation

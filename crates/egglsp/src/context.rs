@@ -1,11 +1,6 @@
 //! Unified LSP context packet types, budgeting, dedup/ranking, and
 //! the evidence collector API.
 //!
-//! This module provides a single abstraction for gathering structured
-//! LSP evidence (diagnostics, definitions, references, symbols,
-//! semantic tokens, etc.) into an [`LspContextPacket`] that callers
-//! can budget, dedup, rank, and serialize.
-//!
 //! # Design
 //!
 //! - [`LspContextRequest`] describes *what* evidence to collect.
@@ -176,9 +171,6 @@ pub enum LspContextRequest {
         risk_mode: LspRiskMode,
     },
     /// Collect impact analysis evidence for a symbol change.
-    ///
-    /// Gathers definition, capped cross-file references, diagnostics
-    /// in affected files, and document highlights near changed hunks.
     ImpactAnalysis {
         /// Target symbol to analyze.
         symbol: SymbolTarget,
@@ -204,9 +196,6 @@ pub enum LspContextRequest {
         related_files: Vec<PathBuf>,
     },
     /// Collect evidence for reviewing API/interface boundaries.
-    ///
-    /// Gathers document symbols (public/exported), definitions for
-    /// boundary symbols, implementations, and capped external references.
     InterfaceBoundary {
         /// File containing the boundary symbols.
         file: PathBuf,
@@ -557,17 +546,14 @@ impl std::fmt::Display for AgentContextSource {
 /// # Relationship to `SemanticContextPacket`
 ///
 /// The tool-local [`SemanticContextPacket`] (defined in
-/// `src/tool/lsp.rs`) is a *separate, tool-facing* DTO that drives
-/// the `semanticContext` tool operation and carries extra fields
-/// specific to that tool (source excerpt, call/type hierarchy,
-/// overlay summary, source-action hints). It is not the canonical
-/// context packet. Tool output for `semanticContext` continues to
-/// flow through `SemanticContextPacket`; richer agent/review
-/// contexts flow through `LspContextPacket` via the
+/// `src/tool/lsp.rs`) is a *separate, tool-facing* DTO that drives the
+/// `semanticContext` tool operation and carries extra fields specific to that
+/// tool (source excerpt, call/type hierarchy, overlay summary, source-action
+/// hints). It is not the canonical context packet. Tool output for
+/// `semanticContext` continues to flow through `SemanticContextPacket`;
+/// richer agent/review contexts flow through `LspContextPacket` via the
 /// `ServiceLspEvidenceProvider` defined in
-/// `crates/egglsp/src/evidence_adapter.rs`. The two are bridged by
-/// `SemanticContextPacket::into_lsp_context_packet` when callers
-/// want to fold a tool response into the canonical packet.
+/// `crates/egglsp/src/evidence_adapter.rs`.
 ///
 /// # Drift guardrails (Pass 4)
 ///

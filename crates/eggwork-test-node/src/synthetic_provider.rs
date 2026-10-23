@@ -1,10 +1,5 @@
 //! A synthetic Gregg host-telemetry provider for the fixture node.
 //!
-//! The node's telemetry owner polls a **loopback** provider and normalizes
-//! the answer into `eggwork_core::HostTelemetry`. This module stands in for a
-//! real Gregg daemon so the live qualification path can exercise the whole
-//! chain — provider, node, client — without installing Gregg.
-//!
 //! The payload is built from the real `gregg_protocol` types, so the fixture
 //! serves the same wire contract a production provider serves. Nothing here
 //! is a CodeGG-facing shape: the provider's vocabulary stops at the node's

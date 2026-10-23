@@ -17,10 +17,6 @@
 //!
 //! ## The contract
 //!
-//! The mapping is a **bijection between the layout's cells and the bytes the
-//! wrap renders**: every cell holds exactly one rendered character, and every
-//! rendered character is on exactly one cell.
-//!
 //! The bytes the wrap deliberately does **not** render — a line break, and
 //! the whitespace a row break swallowed — are on no cell at all. The wrap's
 //! own contract says as much: the range of a collapsed whitespace run "is what
@@ -34,11 +30,6 @@
 //! the last rendered character sits one column past it.
 //!
 //! ## The trailing row
-//!
-//! A buffer that ends with a line break has one more line than the wrap's
-//! rows: the empty line the caret sits on once the break is typed. The
-//! layout adds that row, so the row count agrees with the buffer's line count
-//! and the caret after the break has a row of its own.
 
 use crate::tui::wrap::{escape_sequence_len, visible_width, WrappedRow, ESC};
 use unicode_width::UnicodeWidthChar;
@@ -252,8 +243,6 @@ impl VisualLayout {
     }
 }
 
-/// The cells of one wrapped row.
-///
 /// A slice whose byte length matches its source range is the source text
 /// itself, so its characters are the row's cells one for one. A slice whose
 /// byte length does not match is a collapsed whitespace run: the wrap
@@ -334,11 +323,6 @@ mod tests {
     }
 
     /// The texts the mapping is proved over.
-    ///
-    /// The empty buffer, a buffer ending in a line break, content wider than
-    /// the row, a token wider than the row, multi-byte characters, collapsed
-    /// whitespace and trailing whitespace are all here, because each of them
-    /// breaks a different assumption about the mapping.
     const TEXTS: &[&str] = &[
         "",
         "hello",
@@ -477,7 +461,6 @@ mod tests {
         }
     }
 
-    /// A multi-byte character is one cell, not one cell per byte.
     #[test]
     fn a_multi_byte_character_is_one_cell() {
         let layout = layout("é", 10);
@@ -490,7 +473,6 @@ mod tests {
         assert_eq!(layout.cell_of_byte(1), Some(cell));
     }
 
-    /// A collapsed whitespace run is attributed to the one column that
     /// replaced it, which is what the wrap's contract asks a consumer for.
     #[test]
     fn a_collapsed_whitespace_run_is_on_the_space_s_column() {

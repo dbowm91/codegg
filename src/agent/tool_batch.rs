@@ -2119,10 +2119,6 @@ impl AgentLoop {
                             // not fire first and discard it. Broker and wrapper watchdog grace
                             // layers sit above the tool's deadline and must stay strictly ordered:
                             //
-                            //   T        tool's own timeout -> detailed `ToolError::Timeout`
-                            //   T + 5s   broker watchdog   -> "broker invocation timed out"
-                            //   T + 10s  this wrapper      -> last-resort backstop
-                            //
                             // The broker now adds its own grace internally while the tool
                             // keeps the original execution budget. This outer timeout remains
                             // the final bounded backstop.

@@ -1,8 +1,4 @@
 //! M002: `projects` request family for `CoreDaemon`.
-//!
-//! Project catalog, workspace registry/services, managed worktrees, and daemon/workspace snapshots.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};

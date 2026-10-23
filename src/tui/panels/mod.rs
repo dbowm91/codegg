@@ -1,11 +1,5 @@
 //! Pluggable side-panel host.
 //!
-//! The right-hand column used to be one widget chosen by an `if` in the
-//! render path: the session sidebar, or — on the Workspace route —
-//! project chat. That made "swap the panel" impossible to express, and it
-//! meant every panel re-implemented focus, key routing, and its own title
-//! bar independently.
-//!
 //! This module introduces the pieces that make the region a *host*:
 //!
 //! * [`SidePanelId`] — the closed set of panels a host can show. Adding a
@@ -28,13 +22,6 @@
 //! never loaded on two edges at once.
 //!
 //! ## Authority
-//!
-//! A panel is *presentation plus local intent*, exactly like a `Component`
-//! dialog. It renders from already-resolved frontend state, and every
-//! mutation it triggers is an emitted [`TuiMsg`] that `App::process_msg`
-//! routes into an existing command seam. No panel opens a client, reads a
-//! project directory, or decides that an operation succeeded — the same
-//! contract `ChatDialog` and `SidebarWidget` already follow.
 //!
 //! ## Key ownership
 //!
@@ -827,10 +814,6 @@ pub enum PanelFill {
     /// which is where it has always docked.
     Loading,
     /// A box is mounted but its data has not arrived. Leave it live.
-    ///
-    /// This is the protection the `Research` / `TaskView` literal list used to
-    /// provide: adopting a box at this point would freeze it on its spinner
-    /// and cancel the load running behind it.
     StillLoading,
     /// A box was mounted, but it belongs to `other` rather than to the panel
     /// that was asked for. The box keeps the keyboard and names its own panel.
@@ -978,12 +961,6 @@ pub trait SidePanel {
 
     /// Route one key. Called only while the host holds focus, and must
     /// consume every key — see the module docs for why.
-    ///
-    /// `action` is the binding-resolved form of the same key. Panels that
-    /// predate the host and are driven by the shared keybind tables (the
-    /// session sidebar) consume it so their behavior is unchanged by the
-    /// move; panels that own a bespoke keymap (chat) ignore it and read
-    /// `key` directly.
     fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -1019,20 +996,11 @@ pub trait SidePanel {
     /// Takes `ctx` because the claim can depend on state the panel does not
     /// own: the Terminal panel claims the key only while its PTY view is
     /// focused, which lives on the controller rather than on the panel.
-    ///
-    /// `Esc` is **not** the host's exit key any more. It is the mode switch —
-    /// Insert to Normal — and it reaches a panel directly, so a panel that
-    /// owns a text field or a live PTY keeps it.
     fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
         false
     }
 
     /// Whether this panel wants the keyboard in **Insert** mode.
-    ///
-    /// The host's rule is "a focused panel owns keys in Normal mode, and the
-    /// composer owns them in Insert mode" (`App::on_key`). That rule is right
-    /// for every panel that renders its *own* text field, where Insert means
-    /// "type into that field" and the composer's draft is the right target.
     ///
     /// A panel that fronts something other than itself — a live PTY — needs
     /// the opposite: Insert must reach the process, or a user who docked the
@@ -1247,10 +1215,6 @@ pub struct SidePanelHost {
     slots: [PanelSlot; PANEL_SLOT_COUNT],
     /// Which edge the keyboard-facing API (`active`, `placement`, `Ctrl+B`)
     /// speaks for.
-    ///
-    /// Not "wherever focus is": this is the edge the *next* gesture acts on,
-    /// so it can name a panel the user is reading without having driven the
-    /// keyboard into it yet.
     selected: PanelPlacement,
     focused: bool,
     /// Whether yazi-style resize mode is armed (`Ctrl+N`).
@@ -1543,16 +1507,6 @@ impl SidePanelHost {
         // - A **bespoke** panel holds a live projection the user can already
         //   see and whose chrome names it, so an unfocused one declines and
         //   the row goes away entirely.
-        //
-        // The gate that once lived here — no hint from any panel until it had
-        // the keyboard — answered the `/files` case wrongly, and the terminal
-        // panel was the one panel that kept an unfocused branch to exploit it.
-        // That branch then outlived its reasoning: every verb in
-        // `"TERM · focus to scroll, select and type"`, including the
-        // `Shift+←/→` gesture it advertised, needs the keyboard the composer
-        // had taken, so the row persisted above the LLM buffer describing a
-        // terminal the user was not in. Bespoke panels now decline; hosted
-        // panels still speak.
         let panel = match self.active() {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
@@ -1569,17 +1523,6 @@ impl SidePanelHost {
         // it. `Esc` used to be that answer and it no longer is — it is the
         // mode switch — so a reader who presses it to get out stays put, and a
         // row that does not say otherwise is a trap.
-        //
-        // One place adds it, so no panel can forget it and none can advertise
-        // a different exit. It leads the row because the tail is the first
-        // thing a narrow column clips, and this is the part a reader who is
-        // stuck needs first.
-        //
-        // The terminal is the exception: in INS the panel is a live PTY and
-        // `Shift+Q` is program input that reaches the shell, so advertising
-        // it as the exit there would be a lie. That row keeps saying `Esc
-        // read` instead, and the exit is offered again once the reader is
-        // back in NOR.
         let terminal_reading =
             self.active() == SidePanelId::Terminal && input_mode == InputMode::Insert;
         if !self.is_focused() || terminal_reading {
@@ -1743,8 +1686,6 @@ impl SidePanelHost {
         }
     }
 
-    /// The panel instance for `id`.
-    ///
     /// Panel *state* is keyed by [`SidePanelId`] rather than by edge, which is
     /// what lets a panel move between edges without losing its cursor, filter
     /// or scroll offset: the state travels with the id, and the slot only
@@ -1992,9 +1933,6 @@ impl SidePanelHost {
 /// `Esc` to leave that field, and a panel that owns a live PTY needs `Esc` to
 /// reach the terminal. `q` is the program's quit key, and a quit key that
 /// also meant "leave this panel" was two meanings for one press.
-///
-/// The panel gets first refusal through [`SidePanel::owns_exit_key`], so a
-/// panel that wants the key itself can still take it.
 fn is_exit_key(key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::SHIFT) {
         return false;
@@ -2041,11 +1979,6 @@ mod tests {
     // ------------------------------------------------------------ placements
 
     /// Every direction must mean exactly one thing under every placement.
-    ///
-    /// The dispatcher in `move_directionally` answers `toward` and `away`
-    /// first and falls back to `cycle_step`. If any direction satisfied more
-    /// than one of those, one of the branches would be silently unreachable
-    /// and a gesture would quietly change meaning between layouts.
     #[test]
     fn every_direction_is_exactly_one_gesture_per_placement() {
         for placement in PanelPlacement::ALL.iter().copied() {
@@ -2307,10 +2240,9 @@ mod tests {
     /// `label`/`hint` are what the manager row reads. A variant that forgets
     /// them is reachable but cannot be bound or identified.
     ///
-    /// This used to also pin a `load_command` per panel, back when the placeholder
-    /// named that command. It does not any more: a panel describes its *state*,
-    /// and the only consumer of a per-panel command string was the copy that told
-    /// the user to go and run it.
+    /// It does not any more: a panel describes its *state*, and the only
+    /// consumer of a per-panel command string was the copy that told the user
+    /// to go and run it.
     #[test]
     fn every_panel_names_its_config_spelling_and_itself() {
         for panel in SidePanelId::ALL.iter().copied() {

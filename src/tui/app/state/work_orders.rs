@@ -6,10 +6,6 @@
 //! performs no I/O. Every async completion that consumes this state must
 //! carry project/view/request identity (see `UiRouteToken` +
 //! `AsyncUiRequestState`) so stale completions are dropped at apply time.
-//!
-//! `InputMode::Insert|Normal` remains a separate text-editing/Vim concern:
-//! [`ComposerMode`] is the submission/composer mode owned by project UI
-//! state.
 
 use crate::protocol::work_order::{
     WorkOrderCreateRequest, WorkOrderDto, WorkOrderGateDto, WorkOrderOccurrenceDto,

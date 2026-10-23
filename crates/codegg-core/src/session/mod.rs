@@ -1,8 +1,4 @@
 //! Session management and persistence.
-//!
-//! This module handles session storage, retrieval, and management. Sessions track
-//! conversation history, metadata, and analytics. Sessions can be archived and
-//! resumed across CLI invocations.
 
 pub mod checkpoint;
 pub mod continuation;

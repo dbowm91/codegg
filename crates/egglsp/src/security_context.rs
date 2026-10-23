@@ -1,7 +1,4 @@
 //! Security review context integration.
-//!
-//! Provides compact risk-tagged summaries from [`LspContextPacket`]
-//! for use in the security review workflow.
 
 use std::path::PathBuf;
 

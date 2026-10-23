@@ -350,9 +350,6 @@ pub async fn sweep_scratch_once_with_budget(
         // reclaimer tries it at delete time, and the sweep is the retry for
         // the tree it had to refuse because work was still running. It does
         // not wait out the retention window — the session is gone.
-        //
-        // A live session's tree is protected by the window: it is idle, not
-        // abandoned, and the operator may still return to it.
         if !session.deleted && now_ms.saturating_sub(session.time_updated) < retention_ms {
             report.skipped_active += 1;
             continue;
@@ -590,10 +587,6 @@ async fn session_tree_is_reclaimable(
 }
 
 /// Find the durable session that owns a tree's digest, if any.
-///
-/// The digest is one-way, so the mapping is computed forward: every durable
-/// session id is hashed and the result compared. A tree that matches no
-/// session is an orphan, and an orphan has no lease.
 async fn session_owning_digest(
     pool: &SqlitePool,
     digest_hex: &str,
@@ -1161,8 +1154,6 @@ mod tests {
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
-    /// A soft-deleted session's tree is reclaimed by the sweep.
-    ///
     /// The event-driven reclaimer owns that case at delete time. The sweep is
     /// the retry for the tree it had to refuse because work was still running
     /// when the session was deleted, and it does not wait out the retention
@@ -1223,9 +1214,6 @@ mod tests {
 
     /// A session restored before the sweep is live again, so the retention
     /// window protects it.
-    ///
-    /// This is the writer-lock recheck: the sweep read the session set before
-    /// the restore, and the re-read inside the lock is what sees it.
     #[tokio::test]
     async fn the_sweep_leaves_a_restored_session_alone() {
         let _root = scratch_root("the-sweep-leaves-a-resto");
@@ -1428,7 +1416,6 @@ mod tests {
         );
     }
 
-    /// A disabled policy never fires.
     #[tokio::test]
     async fn a_disabled_policy_never_sweeps() {
         let _root = scratch_root("a-disabled-policy-never-");
@@ -1483,7 +1470,6 @@ mod tests {
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
-    /// The operator disposition removes the tree when it is applied.
     #[tokio::test]
     async fn the_operator_reclaim_removes_the_tree_when_applied() {
         let _root = scratch_root("the-operator-reclaim-rem");

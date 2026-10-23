@@ -831,9 +831,6 @@ impl CoreDaemon {
             // Fixed-target Eggwork remote execution (M001). The executor is
             // registered only when named nodes are configured; Eggwork jobs
             // without a matching profile fail closed at execution time.
-            //
-            // The node table was resolved once above, where the telemetry
-            // coordinator took its share of the same resolution.
             if let Some(exec_config) = eggwork_nodes.take() {
                 if exec_config.nodes.is_empty() {
                     tracing::info!("eggwork executor not registered: no nodes configured");

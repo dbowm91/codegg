@@ -233,7 +233,7 @@ fn broker_catalog_exposes_diff_with_programmatic_contract() {
 // Disposition for every other nearby read-looking tool. Only the five local
 // deterministic reads are admitted by THIS milestone; everything else
 // records why M001 does not promote it. `repo_search` was deferred here
-// as M002 scope and is now covered by `tests/tool_program_search_palette.rs`
+// as M002 scope and is now covered by `tests/tool_programs/tool_program_search_palette.inc`
 // (external nondeterministic matrix with cache disabled).
 
 #[test]
@@ -261,7 +261,7 @@ fn candidate_census_only_deterministic_local_reads_are_eligible() {
         // NOTE (M002): `repo_search` is intentionally absent. M001 deferred
         // it as M002 scope; M002 admitted it under the external
         // nondeterministic matrix (cache disabled). Its census now lives in
-        // `tests/tool_program_search_palette.rs`.
+        // `tests/tool_programs/tool_program_search_palette.inc`.
         ("repo_fetch", "external network fetch (out of scope)"),
         ("repo_map", "external-backed mapping (out of scope)"),
         ("codesearch", "external-backed search (out of scope)"),

@@ -1,11 +1,5 @@
 //! Rows for the unified tasks overlay (`Ctrl+T`).
 //!
-//! The overlay answers one question — *what is this session waiting on?* —
-//! across three kinds of work that used to need three different places to
-//! look: the todo strip, the main buffer's subagent strip, and the job list
-//! that previously had no surface at all. Grouping them behind one key is the
-//! whole point; splitting them again per group would defeat it.
-//!
 //! # Two rules shape this module
 //!
 //! - **Projection-derived, never synthesized.** Subagents come from
@@ -21,10 +15,8 @@
 //! # Why subagent and job groups are filtered but todos are not
 //!
 //! Todos persist for the life of a session: a completed item is still part of
-//! the plan, and hiding it would make the progress count lie. Subagents and
-//! jobs are *waited on*, and a finished one is no longer being waited on —
-//! listing them would fill the overlay with history the user did not ask for.
-//! So those two groups filter to live states only. See [`is_live_state`].
+//! the plan, and hiding it would make the progress count lie. So those two
+//! groups filter to live states only. See [`is_live_state`].
 
 use crate::tui::app::state::subagents::SubagentRow;
 use crate::tui::render_cost;

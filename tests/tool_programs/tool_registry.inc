@@ -7,7 +7,7 @@
 //! keeps them from breaking on every cosmetic change while still
 //! catching accidental contract drift.
 //!
-//! See `plans/native_tool_crates_hardening.md` Phase 11.
+//! See `architecture/native_crates.md`.
 
 use codegg::tool::backend::{
     ExternalToolBackendConfig, ToolBackendConfig, ToolImplementationBackend,

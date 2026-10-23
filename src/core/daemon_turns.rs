@@ -1,8 +1,4 @@
 //! M002: `turns` request family for `CoreDaemon`.
-//!
-//! Turn submit/cancel/steer, agent/model selection writes, permission/question responses, and transport lifecycle.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use std::sync::Arc;
 
@@ -2302,9 +2298,6 @@ impl QueueMutation<'_> {
 
 impl CoreDaemon {
     /// Execute one authorized queue mutation, then audit it.
-    ///
-    /// Order is deliberate: **authorize, mutate, audit.** A refusal returns
-    /// before any write, so an unauthorized mutation leaves no partial state.
     async fn handle_user_prompt_queue_mutation(
         &self,
         session_id: String,
@@ -2681,12 +2674,6 @@ impl CoreDaemon {
     }
 
     /// Audit the attempt and attach the post-attempt projection.
-    ///
-    /// Every outcome routes through here so no path can return without leaving
-    /// a record, and every outcome carries the projection — including the
-    /// refusals, because a refusal may have been caused by a row another
-    /// frontend already removed, and a box left showing it would be showing
-    /// something the daemon no longer believes.
     #[allow(clippy::too_many_arguments)]
     async fn finish_send_now(
         &self,
@@ -3347,10 +3334,6 @@ mod tests {
 
         /// Install a temporary configuration file for the duration of the
         /// test.
-        ///
-        /// The environment lock this guard already holds serializes the
-        /// configuration path too: it is process-global for the same reason
-        /// the API key is.
         fn install_config(&mut self, contents: &str) {
             let dir = tempfile::tempdir().expect("config temp dir");
             let path = dir.path().join("codegg.json");
@@ -3704,9 +3687,6 @@ mod tests {
     /// adapter, which declares no reasoning capability record. The refusal
     /// happens at admission, before provider resolution, so this model needs
     /// no connection of its own.
-    ///
-    /// This is the rule whose behaviour change is the most visible, so it
-    /// is pinned here.
     #[tokio::test(flavor = "current_thread")]
     async fn a_selection_on_an_unknown_dimension_is_refused_at_admission() {
         let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
@@ -3907,10 +3887,6 @@ mod tests {
     /// Provider reasoning control M002: the same selection reaches a
     /// **queued-prompt delivery**, the second of the three paths that used
     /// to drop it on the floor.
-    ///
-    /// The queue entry itself carries no selection: the selection is
-    /// resolved at **delivery** time, because the model chosen at delivery
-    /// may differ from the one at enqueue.
     ///
     /// The ordering is the proof. The entry is enqueued while **no**
     /// selection is persisted at all, and the selection is written only

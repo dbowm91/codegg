@@ -1,8 +1,4 @@
 //! M002: `assets` request family for `CoreDaemon`.
-//!
-//! Runtime-asset refresh/status over the daemon-owned AssetRefreshCoordinator.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};

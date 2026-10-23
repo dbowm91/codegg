@@ -430,18 +430,15 @@ mod tests {
         // either — but two codes that leave the user in the same position
         // deserve one sentence.
         //
-        // `session_control_conflict` used to be grouped with
-        // `session_control_not_controller`, on the reading that the two differ
-        // only in *why* a foreign principal holds the turn. Reading
-        // `check_turn_controller` (`src/core/daemon_control.rs`) says otherwise:
-        // conflict is returned when `lease_turn != turn_id`, i.e. the lease
-        // covers a **different turn**, and not-controller when a different
-        // principal holds the lease for the one named. The first is a stale
-        // turn — retrying against the current turn works; the second is not
-        // this user's turn at all. Telling a conflict "another frontend has it"
-        // sends the user looking for a frontend that may not exist. They group
-        // with `turn_id_mismatch`, which is the same fact seen at the runtime
-        // instead of the control plane.
+        // Reading `check_turn_controller` (`src/core/daemon_control.rs`) says
+        // otherwise: conflict is returned when `lease_turn != turn_id`, i.e.
+        // the lease covers a **different turn**, and not-controller when a
+        // different principal holds the lease for the one named. The first is
+        // a stale turn — retrying against the current turn works; the second
+        // is not this user's turn at all. Telling a conflict "another
+        // frontend has it" sends the user looking for a frontend that may not
+        // exist. They group with `turn_id_mismatch`, which is the same fact
+        // seen at the runtime instead of the control plane.
         let groups: &[&[&str]] = &[
             &[STEER_QUEUE_FULL_CODE],
             &[STEER_UNAVAILABLE_CODE],

@@ -221,14 +221,6 @@ impl ThemePickerDialog {
 
     /// One listing routine for both render paths.
     ///
-    /// The footer was the reason this could not stay one routine before. It
-    /// spelled `j/k/↑/↓ … | Esc cancel` (or `revert`) in a modal, where `Esc`
-    /// really does mean cancel, and was then repainted verbatim into a panel
-    /// column — where `↑/↓` are panel directions and `Esc` is the mode
-    /// switch, meaning something else, so a third of every footer taught keys
-    /// that could not fire. The words that describe the column's own verbs now
-    /// live in `keymap_hint`, and what is left here is a `Chrome::Owned` footer.
-    ///
     /// The viewport arithmetic below is deliberately the modal's, unchanged:
     /// both paths subtract the same chrome budget from the rect they are given
     /// and read the same [`Self::visible_height`] through `count_visible_themes`,

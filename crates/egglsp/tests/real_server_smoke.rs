@@ -20,9 +20,7 @@ use tempfile::TempDir;
 
 /// Timeout for server initialization handshake.
 const INIT_TIMEOUT: Duration = Duration::from_secs(20);
-/// Timeout for `initialized` notification.
 const INITIALIZED_TIMEOUT: Duration = Duration::from_secs(10);
-/// Timeout for readiness/indexing.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for individual semantic requests.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1882,12 +1880,6 @@ impl RealServerHarness {
     /// 3. `client.writer.close()` — signals EOF to the server.
     /// 4. `runtime.wait_for_exit()` under `graceful_timeout`.
     /// 5. Force kill and re-wait on `absolute_timeout` exhaustion.
-    ///
-    /// Pass 3 — each step is captured in the returned
-    /// `HarnessShutdownResult` so the
-    /// `LspCompatibilityReport.shutdown_trace` field carries the
-    /// full per-step evidence, not just a coarse `requested` /
-    /// `server_exited` boolean pair.
     async fn shutdown_and_collect(
         &self,
         graceful_timeout: Duration,
@@ -2630,10 +2622,6 @@ async fn run_smoke_suite(
     // fixture does not require touching the harness — only the
     // per-language constructor needs to opt in to the new
     // operations.
-    //
-    // Pass 2 — each helper now emits a paired
-    // `LspOperationCompatibility` record at the request site
-    // (no name parsing on the read path).
     let mut operation_records: Vec<egglsp::compatibility::LspOperationCompatibility> = Vec::new();
     run_generalized_operation_checks(
         client,
@@ -2943,13 +2931,6 @@ impl RealServerFixture {
 /// Tier 2 matrix. Future daemon-mode launches (e.g. clangd
 /// with `--background-index`) will set `OperationMode::Daemon`
 /// without changing the trace shape.
-///
-/// Pass 3 — every step recorded by
-/// `RealServerHarness::shutdown_and_collect` is mapped to a
-/// field on `LspShutdownTrace`. The trace is no longer
-/// reconstructed from a single boolean pair; the
-/// `LspClient::request_protocol_shutdown_traced` per-step
-/// protocol trace flows through unchanged.
 fn build_shutdown_trace(
     shutdown_result: &HarnessShutdownResult,
     shutdown_ms: u64,
@@ -6248,14 +6229,6 @@ async fn run_generalized_operation_checks(
     }
 
     // Rename preview
-    //
-    // Pass 2 — gate the check on the typed
-    // `rename_expectation` (or the legacy
-    // `expected_capabilities.rename` flag for fixtures that
-    // opt in via the boolean). The legacy
-    // `mutation_targets.rename_preview_requested` field
-    // has been removed; `rename_expectation` is the
-    // canonical opt-in.
     if fixture.rename_expectation.is_some() || fixture.expected_capabilities.rename {
         run_rename_preview_check(
             client,
@@ -6809,11 +6782,6 @@ fn update_matrix_manifest(
 // long-running process where the full LSP stack is not needed).
 
 /// Test 1: The harness captures real stderr output.
-///
-/// Spawns a process that writes to stderr, wires it through the
-/// `RealServerHarness`, and verifies that `shutdown_and_collect`
-/// produces a `HarnessShutdownResult` whose `stderr_tail` contains
-/// the expected output.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_captures_stderr() {
     // Use a simple shell command that writes to stderr and exits.
@@ -6896,12 +6864,6 @@ async fn smoke_harness_captures_stderr() {
     let _lines: usize = tail.len();
 }
 
-/// Test 2: The harness force-kills hung servers.
-///
-/// Spawns a process that sleeps for a long time, wires it through
-/// the `RealServerHarness`, and verifies that `shutdown_and_collect`
-/// with a short graceful deadline produces a `ForceKilled` or
-/// `TimeoutExpired` result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_force_kills_hung_server() {
     // Use `sleep` to create a hung process.
@@ -7069,8 +7031,6 @@ async fn smoke_harness_force_kills_process_that_ignores_stdin_close() {
     );
 }
 
-/// Test 3: Progress readiness failure is reported.
-///
 /// Verifies that `LspClient::wait_for_progress_end` returns `false`
 /// when no progress end event is observed within the timeout.
 /// This is a direct test of the production readiness primitive
@@ -7132,16 +7092,6 @@ async fn progress_readiness_failure_is_reported() {
 }
 
 /// Test 4: Empty diagnostics readiness passes.
-///
-/// Pass 7 — Verifies that `LspClient::wait_for_first_diagnostics`
-/// returns `false` when no diagnostics notification is observed
-/// within the timeout window (which is the correct behavior for a
-/// server that doesn't publish diagnostics). This is a direct
-/// test of the production readiness primitive. The previous test
-/// name `empty_diagnostics_readiness_passes` was misleading because
-/// it implies readiness passes when diagnostics are empty, but the
-/// test was actually verifying the *missing-diagnostics* branch.
-/// Renamed per the Phase 3 final-closure audit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_diagnostics_readiness_times_out() {
     // Use a simple process that stays alive but does not speak LSP.

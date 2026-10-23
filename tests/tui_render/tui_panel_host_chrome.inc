@@ -55,6 +55,8 @@
 //! regression net against a *partial* fix — a widget that drops its outer
 //! border but leaves an inner one still fails — and are recorded as such rather
 //! than claimed as evidence that the work happened.
+//!
+//! See `architecture/tui.md` for the full contract.
 
 use std::sync::Arc;
 

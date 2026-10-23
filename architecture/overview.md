@@ -794,6 +794,53 @@ of what it covers. A document that appears in both is listed here once.
 - [Git Phase F Handoff](git_phase_f_handoff.md) — snapshot-time closure record
 - [Git Polish/Verification Handoff](git_polish_verification_handoff.md) — snapshot-time post-closure record
 
+## Comment policy
+
+A comment earns its place by carrying something the code cannot: a rule the
+code cannot enforce, a boundary it will not discover on its own, a failure
+mode that looks impossible until you know the history, or a pointer to the
+document that owns the reasoning.
+
+What a comment does **not** do is restate the code beside it. The
+`architecture/` documents are the canonical home of the rationale; a code
+comment that repeats them is a third copy, and the third copy drifts. The
+policy is therefore:
+
+- **A rule stays.** "The waiter unregisters on every exit path, so age-based
+  eviction is only a leak guard" is a rule the code cannot enforce by
+  itself. It stays at the code.
+- **A restatement goes.** "This module provides the pair table and the
+  depth-counting scanner" says what the next twenty lines say. It goes.
+- **A duplicate becomes a pointer.** If the `architecture/` document already
+  holds the reasoning, the comment names it instead of repeating it.
+- **A history becomes its current-state rule.** "This used to keep only the
+  file name" is replaced by "this resolves the full relative path"; the
+  current rule is what a reader needs.
+- **A known limitation is disclosed.** A comment that names an imprecision,
+  an approximation or a residual stays, because a reader who cannot see the
+  limitation cannot reason about the code.
+
+`scripts/check_comment_budget.py` enforces the parts of this that can be
+checked mechanically, against the budget in `docs/comment-budget.toml`:
+
+| Rule | Fails on |
+|---|---|
+| **R0** unreadable file | the guard could not read a file — a partial scan is never reported as a pass |
+| **R1** stale path reference | a comment names a repository path that does not exist |
+| **R2** unresolvable doc pointer | a comment names an `architecture/` document, or a section inside one, that does not exist |
+| **R3** oversized comment block | a comment block is longer than `max_block_lines` |
+| **R4** comment budget | a file's comment mass exceeds its recorded ceiling, or the corpus exceeds the global ceiling |
+| **R5** orphaned contract | a long block restates a contract without naming the document that owns it |
+| **R6** lost guard landmark | a comment marker that a guard greps for is gone from the tree |
+
+**The budget is a ratchet, not a snapshot.** Every recorded value is a
+ceiling, derived from a measurement of the tree
+(`python3 scripts/check_comment_budget.py --bank` recomputes them). The
+corpus may not grow past the recorded total, and a reduction lowers the
+ceiling. The only way to spend the lines a reduction frees is to edit
+`docs/comment-budget.toml`, which shows up in the same diff as the comment
+that took them — so the corpus cannot re-inflate silently.
+
 ## Static guards
 
 Run these after changing execution surfaces or adding workspace crate dependencies:

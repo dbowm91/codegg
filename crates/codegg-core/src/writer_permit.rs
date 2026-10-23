@@ -11,34 +11,11 @@
 //! - a claim that any particular writer has been mediated. C002 builds the
 //!   *authority*; C003 and C004 are what route writers through it.
 //!
-//! # What it is not, precisely
-//!
-//! The permit is **not** the worktree lease. The lease says *who owns the
-//! checkout*; the permit says *who may write to it right now*. A checkout can be
-//! owned by one run and written by that run's writer; the two identities are
-//! tracked separately, because ownership outlives a single write.
-//!
 //! # The state machine
 //!
-//! ```text
-//!                 acquire
-//!      Available ─────────► Held
-//!          ▲                  │ │
-//!          │                  │ │ begin_release
-//!          │  complete_release│ ▼
-//!          │   (settled)   Releasing
-//!          │                  │
-//!          │                  │ complete_release (unproven)
-//!          │                  ▼
-//!          └────────────── Quarantined
-//!                              ▲
-//!         quarantine (any state) ─┘
-//! ```
-//!
-//! `Releasing` exists so that a crash *between* the holder declaring it is done
-//! and the permit actually being freed is distinguishable from a holder that is
-//! still working. Both are unsafe, but only one of them is *known* to be
-//! mid-release, and reconciliation reports them differently.
+//! `Releasing` exists so that a crash *between* the holder declaring it is
+//! done and the permit actually being freed is distinguishable from a holder
+//! that is still working, and reconciliation reports them differently.
 //!
 //! `Quarantined` is terminal until an operator releases it explicitly. A
 //! quarantine is never cleared by a timer: **a lease deadline is never enough to
@@ -56,10 +33,6 @@
 //! 3. the **lease generation** — the worktree lease generation the permit was
 //!    granted under, so a holder from a superseded lease cannot mutate the row
 //!    after the checkout was re-leased.
-//!
-//! Together these defeat ABA: a row that was released and re-acquired has a
-//! new revision, a new owner token, and (if the lease moved) a new generation,
-//! so a stale actor's request matches none of them.
 //!
 //! # Idempotency
 //!

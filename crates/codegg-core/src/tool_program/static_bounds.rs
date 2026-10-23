@@ -467,9 +467,6 @@ fn analyze_expr(
 }
 
 /// Estimate the number of iterations a loop will execute.
-///
-/// Returns a conservative upper bound. For unknown iterables, returns 1
-/// (the static bound is the safety net).
 fn estimate_iteration_count(iter: &Expr) -> u64 {
     match iter {
         Expr::Range {

@@ -290,11 +290,6 @@ pub fn turn_usage_from_run(
 }
 
 /// The turn runtime trait abstracts the full agent turn lifecycle.
-///
-/// Implementations build the tool registry, permission checker, agent loop,
-/// and system prompt, then spawn the agent loop execution. The daemon owns
-/// session-level concerns (active-turn bookkeeping, event publishing) while
-/// the runtime owns everything needed to run the LLM turn.
 #[async_trait::async_trait]
 // Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
 // (the desugared future is already must_use). Suppressed at the macro site;

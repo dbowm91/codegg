@@ -1,7 +1,4 @@
 //! Native codegg theme file format (TOML).
-//!
-//! All colors are strings. The file mirrors the [`SemanticTheme`](crate::theme::schema::SemanticTheme)
-//! schema but in a flat, import-friendly shape.
 
 use std::path::PathBuf;
 

@@ -1,8 +1,4 @@
 //! M002: `providers` request family for `CoreDaemon`.
-//!
-//! Eggpool provisioning and provider-connection lifecycle over the daemon-owned provisioner.
-//! Operates on the same daemon-owned state as the thin dispatcher;
-//! introduces no new store, scheduler, state machine, or authority.
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};

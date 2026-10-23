@@ -1,15 +1,12 @@
 //! Consolidated session integration test family (M004).
 //!
-//! History: each module lives at `tests/session_family/<name>.inc`
-//! and was previously a separate `tests/session_<name>.rs` file (5
-//! binaries total). The same Cargo trick that powers the M003 pilot
-//! (`tests/<family>/mod.rs` parent + explicit `[[test]]` entry +
-//! `<name>.inc` siblings to suppress per-file auto-discovery) is in
-//! use here without modification. The shared helper module
-//! `tests/common/mod.rs` is bound via `#[path]` because the
-//! conventional `mod common;` from the original files is now a
-//! sibling of the consolidated binary rather than a sibling of the
-//! original file-level integration test.
+//! The same Cargo trick that powers the M003 pilot (`tests/<family>/mod.rs`
+//! parent + explicit `[[test]]` entry + `<name>.inc` siblings to suppress
+//! per-file auto-discovery) is in use here without modification. The shared
+//! helper module `tests/common/mod.rs` is bound via `#[path]` because the
+//! conventional `mod common;` from the original files is now a sibling of the
+//! consolidated binary rather than a sibling of the original file-level
+//! integration test.
 //!
 //! Per M004, this entry is the only file at `tests/session_family/`
 //! top level. Tests/assertions/heavy-binary semantics are

@@ -1,9 +1,5 @@
 //! Auth and credential resolution.
 //!
-//! Core auth types (AuthConfig, Credential, CredentialKind, CredentialStore,
-//! AuthResolver, etc.) are now defined in the `codegg-providers` crate and
-//! re-exported here for backward compatibility.
-//!
 //! This module retains CLI-specific, external-command, and OAuth scaffolding
 //! that is not part of the provider crate.
 

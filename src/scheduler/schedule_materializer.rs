@@ -1,13 +1,5 @@
 //! The production occurrence materializer.
 //!
-//! A fired schedule occurrence becomes a durable job through
-//! [`JobSubmissionService`](super::submission::JobSubmissionService) — the
-//! single production admission path — so a scheduled job is admitted exactly
-//! like a submitted one: the workspace is validated, the canonical resource
-//! profile is applied, one durable record is created, and the scheduler is
-//! woken. Nothing here creates a job behind the submission facade, and nothing
-//! here invokes an executor.
-//!
 //! # The host boundary is re-applied at materialization time
 //!
 //! A schedule is authorized **once**, when it is created. By the time an

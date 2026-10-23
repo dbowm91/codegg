@@ -981,10 +981,6 @@ static PREVIEW_CANDIDATE_REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// Mint one reviewable candidate, or none.
 ///
-/// The daemon owns the language server, so it owns the material the apply path
-/// consumes: the patches, the base each was computed against, and the digest
-/// that binds a request to exactly this candidate.
-///
 /// **Nothing is registered.** The apply path verifies a digest recomputed over
 /// the request's *own* patches (`src/lsp/mutation.rs:380-401`), so a candidate
 /// that travelled from here and was altered in transit fails the check. That
@@ -1200,9 +1196,6 @@ fn code_action_patches(
 }
 
 /// Whether the apply path would refuse this material for its size.
-///
-/// The bounds are the candidate's own, so a candidate this accepts is one
-/// the daemon can at least shape into a request.
 fn code_action_exceeds_candidate_bounds(patches: &[(String, String, String)]) -> bool {
     if patches.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCHES {
         return true;
@@ -1365,16 +1358,10 @@ pub async fn publish_changed_diagnostics(
 
 /// The workspace-relative path a diagnostic URI belongs to.
 ///
-/// Diagnostics are keyed by URI, but the protocol reports workspace-relative
-/// paths so a client can join them to its own file list.
-///
-/// This resolves the **full** relative path, not the file name. It used to
-/// keep only `path.file_name()`, so `src/lib.rs` and `tests/lib.rs` were the
-/// same key and the second silently overwrote the first in the tracker — the
-/// client was shown one file's diagnostics under the other file's name. A
-/// URI outside `root` is skipped rather than reported under a fabricated
-/// path, because a wrong-but-present path is worse for a client than an
-/// absent one.
+/// This resolves the **full** relative path, not the file name: two files
+/// that differ only by directory must not collide as one tracker key. A URI
+/// outside `root` is skipped rather than reported under a fabricated path,
+/// because a wrong-but-present path is worse for a client than an absent one.
 fn diagnostics_relative_path(uri: &str, root: &Path) -> Option<String> {
     url::Url::parse(uri)
         .ok()

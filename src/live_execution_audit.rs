@@ -2,16 +2,6 @@
 //!
 //! Canonical ownership for single-host live `command_execute` events:
 //!
-//! ```text
-//! ToolBroker::execute/execute_with_retry (model/tool path)
-//!   ├─ bash tool      → family "shell" / "test" / "process" (this module)
-//!   ├─ terminal tool  → family "process" (direct native spawn)
-//!   ├─ test tool      → family "test" (scheduler-owned test dispatch)
-//!   └─ git tool / bash-routed git → NO command event;
-//!        GitMutationExecutor owns the single `git_operation` event
-//! interactive create → family "interactive" (daemon pre-router path)
-//! ```
-//!
 //! Every helper emits at most one structural event per real dispatched
 //! execution and only when the M001 trusted context plus the shared
 //! bounded emitter are both present. Digests are SHA-256 hex over

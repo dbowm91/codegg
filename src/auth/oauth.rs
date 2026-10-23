@@ -4,8 +4,6 @@
 //! exists so that [`crate::auth::AuthConfig::OAuthDevice`] has a typed
 //! home and so that future official flows (e.g. device-code for a provider
 //! that documents a public contract) can land here without churn.
-//!
-//! All entry points return [`AuthError::Unsupported`].
 
 use crate::auth::AuthConfig;
 use crate::auth::AuthError;

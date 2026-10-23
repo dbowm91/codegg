@@ -424,7 +424,6 @@ async fn user_prompt_queue_unowned_queue_is_refused_for_every_mutation() {
     );
 }
 
-/// Only the explicit adoption repairs an unowned queue.
 #[tokio::test]
 async fn user_prompt_queue_explicit_adoption_repairs_an_unowned_queue() {
     let pool = isolated_pool().await;
@@ -1682,10 +1681,6 @@ const COLLISION_STEPS: usize = 4;
 const FIRST_COLLISION_CONTEXT: &str =
     "[ReversePending, ClaimFail, ReversePending, ReversePending] @ ReversePending";
 /// The `(id, ordinal, status)` rows as the failing step saw them, ascending.
-///
-/// Two pending rows in the dense band and one terminal row resting at band
-/// height. The displacement lifts `a` 0 → 1 000 000 while `c` still occupies
-/// that ordinal.
 fn first_collision_rows() -> Vec<QueueRow> {
     vec![
         ("a".to_owned(), 0, "pending".to_owned()),

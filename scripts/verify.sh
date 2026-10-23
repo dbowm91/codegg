@@ -117,6 +117,12 @@ run_guards() {
     echo "==> python3 scripts/check_tui_editor_doc_drift.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
 
+    echo "==> python3 scripts/check_comment_budget.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_comment_budget.py --self-test)
+
+    echo "==> python3 scripts/check_comment_budget.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_comment_budget.py)
+
     echo "==> python3 scripts/check_tui_transport_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_transport_authority.py)
 

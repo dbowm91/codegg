@@ -49,12 +49,9 @@ pub const MAX_QUOTA_SLOTS: u32 = 64;
 pub enum ResourceClass {
     /// Workspace-mutating build-class work.
     ///
-    /// `Build` and `Format` jobs compile or rewrite the workspace. They
-    /// previously shared the *global* `exclusive:workspace-mutation`
-    /// exclusivity key, which serialized every build in every
-    /// workspace — including unrelated ones. The roadmap already
-    /// recorded that key as unscoped and therefore wrong. The build
-    /// class replaces it with a counted, workspace-scoped quota whose
+    /// `Build` and `Format` jobs compile or rewrite the workspace. The
+    /// roadmap already recorded that key as unscoped and therefore wrong. The
+    /// build class replaces it with a counted, workspace-scoped quota whose
     /// limit is configuration-owned.
     Build,
 }

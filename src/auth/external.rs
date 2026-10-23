@@ -6,17 +6,6 @@
 //! intentionally disabled: the original `std::process::Command`-based
 //! implementation did not enforce its timeout, which would let a
 //! hanging command stall provider registration indefinitely.
-//!
-//! [`AuthResolver::resolve`](crate::auth::resolver::AuthResolver::resolve)
-//! returns
-//! [`AuthError::Unsupported("ExternalCommand")`](crate::auth::error::AuthError::Unsupported)
-//! for `AuthConfig::ExternalCommand`. This module's
-//! [`ExternalCommandProvider::fetch`] entry point mirrors that policy:
-//! it validates the command is non-empty and otherwise returns the
-//! same `Unsupported` error so no safe path can accidentally shell
-//! out. When async timeout plumbing is in place (using
-//! `tokio::process::Command` with `tokio::time::timeout`), this arm can
-//! be re-enabled.
 
 use crate::auth::AuthError;
 use crate::auth::Credential;

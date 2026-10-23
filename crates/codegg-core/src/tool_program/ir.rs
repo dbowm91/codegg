@@ -1,7 +1,4 @@
 //! Versioned IR types for Tool Programs.
-//!
-//! The IR is a flat instruction sequence with source-span mapping,
-//! deterministic evaluation, and content-addressed integrity.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

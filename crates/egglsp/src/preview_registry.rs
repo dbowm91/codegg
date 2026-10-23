@@ -7,19 +7,7 @@
 //!
 //! Every preview artifact follows this lifecycle:
 //!
-//! ```text
-//! created -> inspectable -> applicable candidate
-//! created -> stale -> recompute or discard
-//! created -> expired -> discard
-//! created -> applied by external mutating path -> historical/applied marker or removal
-//! created -> cleared by user -> removed
-//! ```
-//!
 //! # Cap
-//!
-//! The registry has a default cap of [`DEFAULT_MAX_ENTRIES`] entries.
-//! When the cap is exceeded, the oldest entries are evicted first.
-//! Users can also clear entries manually via [`PreviewArtifactRegistry::clear`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

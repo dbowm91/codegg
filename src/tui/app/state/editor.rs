@@ -1,9 +1,5 @@
 //! M006-A: TUI editor state.
 //!
-//! Owns the editor's frontend state: the document session handle, the
-//! requested path, the in-flight lifecycle operation, and the presentation
-//! of controller states and errors.
-//!
 //! **Holds no document text.** Text reaches the render path only as a
 //! scoped borrow of `DocumentController::try_snapshot()` inside a single
 //! frame. `scripts/check_tui_editor_text_authority.py` enforces this.

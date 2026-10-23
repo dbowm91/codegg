@@ -2803,7 +2803,6 @@ mod tests {
         assert!(decode_bubblewrap_json_status(b"{\"child-pid\":0}\n").is_err());
     }
 
-    /// A status stream that reports a child is the observed setup.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_status_stream_with_a_child_is_the_observed_setup() {

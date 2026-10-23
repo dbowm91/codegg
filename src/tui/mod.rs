@@ -1,106 +1,4 @@
 //! # Terminal User Interface (TUI)
-//!
-//! This module provides the terminal-based UI for codegg, built with [ratatui].
-//!
-//! ## Architecture Overview
-//!
-//! The TUI is structured around several key components:
-//!
-//! - [`App`]: Main application state and event handling
-//! - [`components`]: Reusable UI widgets (messages, prompt, sidebar, etc.)
-//! - [`input`]: Keyboard event handling and keybindings
-//! - [`layout`]: Layout management and area calculations
-//! - [`theme`]: Color themes and styling
-//! - [`route`]: Route/state machine management
-//! - [`command`]: Slash command registry
-//!
-//! ## State Management
-//!
-//! The [`App`] struct is organized into several state domains:
-//!
-//! - [`UiState`](app::UiState): UI state (theme, layout, dialogs, routes)
-//! - [`SessionState`](app::SessionState): Session management
-//! - [`PromptState`](app::PromptState): Prompt input state
-//! - [`MessagesState`](app::MessagesState): Message history and display
-//! - [`DialogState`](app::DialogState): Dialog visibility and data
-//! - [`AgentState`](app::AgentState): Agent and model configuration
-//!
-//! ### State Flow
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────┐
-//! │                      App                                │
-//! │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
-//! │  │ UiState  │ │ Session  │ │ Prompt   │ │ Dialog    │  │
-//! │  │ - theme  │ │ - session│ │ - prompt │ │ - dialogs │  │
-//! │  │ - layout │ │ - store  │ │ - compl. │ │ - state   │  │
-//! │  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
-//! └─────────────────────────────────────────────────────────┘
-//!                         │
-//!                         ▼
-//!              ┌─────────────────────┐
-//!              │  Event Handling     │
-//!              │  on_key()           │
-//!              │  on_mouse()         │
-//!              └─────────────────────┘
-//!                         │
-//!                         ▼
-//!              ┌─────────────────────┐
-//!              │      Render         │
-//!              │  render()          │
-//!              │  render_dialog()    │
-//!              └─────────────────────┘
-//! ```
-//!
-//! ## Rendering
-//!
-//! Rendering uses ratatui's widget model. The main render loop in
-//! [`run_event_loop`] handles:
-//! - Panic recovery via [`catch_unwind`](std::panic::catch_unwind)
-//! - Error boundary display via [`render_error`](app::App::render_error)
-//! - Terminal resize handling
-//!
-//! ### Render Order
-//!
-//! 1. **Header**: Agent name, model, session info
-//! 2. **Viewport**: Messages (Home or Session view)
-//! 3. **Prompt**: Input area with status indicator
-//! 4. **Footer**: Token counts, session status
-//! 5. **Sidebar**: Optional session/agent info panel
-//! 6. **Dialog**: Modal overlay (if open)
-//! 7. **Completions**: Slash/file completion popup (if active)
-//! 8. **Toasts**: Notification messages
-//!
-//! ## Event Flow
-//!
-//! ```text
-//! Terminal Input ──► EventStream ──► on_key() / on_mouse()
-//!                                       │
-//!                                       ▼
-//!                              ┌─────────────────┐
-//!                              │ Route to State  │
-//!                              │ - dialog_key    │
-//!                              │ - prompt_key    │
-//!                              │ - binding_action│
-//!                              └─────────────────┘
-//!                                       │
-//!                                       ▼
-//!                              ┌─────────────────┐
-//!                              │ State Mutation  │
-//!                              │ - update state  │
-//!                              │ - open/close    │
-//!                              └─────────────────┘
-//! ```
-//!
-//! 1. Terminal events are captured via crossterm's [`EventStream`]
-//! 2. Events are routed to [`App::on_key`](app::App::on_key) or [`App::on_mouse`](app::App::on_mouse)
-//! 3. Key events are matched against bindings, routed to dialog/prompt handlers
-//! 4. State changes trigger re-renders via [`App::render`](app::App::render)
-//!
-//! ## Error Handling
-//!
-//! Render errors are caught and displayed gracefully without crashing the application.
-//! The event loop uses `catch_unwind` to recover from rendering panics.
 
 pub mod app;
 pub mod async_cmd;
@@ -2164,12 +2062,6 @@ mod async_cmd_tests {
     // one. `send_prompt` branched on the mode alone and pushed every prompt
     // into the absent channel: a silent no-op that pinned the session on
     // `Working` forever, for every model and provider.
-    //
-    // Follow-up regression: the fix for that excluded ALL of `AppMode::RemoteCore`
-    // from session creation, but the socket path owns a `core_client` and can
-    // create a session exactly like the embedded path. Opening codegg in a new
-    // repo therefore had no session AND no way to make one, so every prompt
-    // died on "No session bound to the daemon connection".
 
     /// Build a socket-daemon app with an open project tab, so a prompt with no
     /// session has somewhere to create one.
@@ -2281,12 +2173,6 @@ mod async_cmd_tests {
 
     /// The event loop's gate must admit the socket path, or the armed
     /// continuation is never started and the prompt hangs forever.
-    ///
-    /// This is the second half of the deadlock: `send_prompt` arms the
-    /// continuation, but `runtime/event_loop.rs` gated the submit block on
-    /// `!matches!(mode, AppMode::RemoteCore { .. })`, so a socket-daemon app
-    /// could arm a continuation nothing would ever consume. Both call sites
-    /// now share `App::is_ws_attach_transport`.
     #[test]
     fn socket_daemon_is_not_the_ws_attach_transport() {
         let mut app = socket_daemon_app_with_tab();
@@ -2326,12 +2212,10 @@ mod async_cmd_tests {
     /// Regression: a permission answer from the socket-daemon frontend must
     /// reach the daemon through `core_client`.
     ///
-    /// `SubmitPermission` used to branch on `AppMode::RemoteCore` alone, which
-    /// the socket path also sets. That routed the answer into
-    /// `send_remote_message`, whose `None` arm dropped it after only a
-    /// `tracing::warn!`. The dialog was torn down, the daemon-side waiter
-    /// stayed parked on an unbounded human wait, and the turn hung forever
-    /// with no visible error — approving did nothing.
+    /// That routed the answer into `send_remote_message`, whose `None` arm
+    /// dropped it after only a `tracing::warn!`. The dialog was torn down,
+    /// the daemon-side waiter stayed parked on an unbounded human wait, and
+    /// the turn hung forever with no visible error — approving did nothing.
     ///
     /// The local path is observable: with no core client it reports a visible
     /// delivery failure instead of silently discarding the answer. Reaching

@@ -1,10 +1,5 @@
 //! Token counting and context packing primitives.
 //!
-//! This crate provides deterministic token accounting that can be tested
-//! without booting any host application. One consumer is CodeGG's
-//! compaction policy (`agent/compaction.rs`), which stays outside this
-//! crate.
-//!
 //! ## Two layers
 //!
 //! - **Deterministic tokenizer layer** (stable): pick a [`TokenizerType`]

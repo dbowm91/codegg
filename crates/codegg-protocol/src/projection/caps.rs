@@ -8,11 +8,6 @@
 //! projection whose `protocol_version` is outside their declared
 //! range must produce an explicit resync / unsupported diagnostic
 //! rather than silently degrading.
-//!
-//! The current projection protocol version is
-//! [`PROJECTION_PROTOCOL_VERSION`]. Old clients that ignore unknown
-//! fields remain forward-compatible as long as the negotiated version
-//! is at least [`PROJECTION_PROTOCOL_VERSION_MIN`].
 
 use serde::{Deserialize, Serialize};
 

@@ -6,13 +6,6 @@
 //! sequence-numbered scrollback, input/resize/termination, process-group
 //! cleanup, and daemon-shutdown cancellation.
 //!
-//! ```text
-//! Arc<ExecutionContext> + SpawnSpec
-//!   -> workspace/cwd policy (ExecutionContext::resolve_relative_cwd)
-//!   -> AdmissionController::try_admit_arc (no spawn before permit)
-//!   -> openpty + tokio::process::Command with slave stdio + setsid/ctty
-//!   -> LiveSession { AsyncFd master, ring, permit guard, waiter/reader }
-//!   -> write / resize / read_from(seq) / terminate (TERM -> KILL) / shutdown
 //! ```
 //!
 //! # Ownership and non-goals
@@ -24,9 +17,7 @@
 //! - No durable job record is created: interactive PTYs are ephemeral and
 //!   do not survive daemon restart. Restart reports prior handles gone.
 //! - This is not a second general process supervisor: finite argv work
-//!   stays with `ManagedProcessService`. The only direct-spawn site here
-//!   is the PTY slave-stdio child, admitted by the scheduler permit
-//!   contract below.
+//!   stays with `ManagedProcessService`.
 //!
 //! # Scheduler admission contract
 //!
@@ -34,34 +25,29 @@
 //! [`AdmissionController::try_admit_arc`] with the dimensions returned by
 //! [`permit_dimensions_for_interactive`] (the `ManagedProcess` resource
 //! class: one process slot) *before* any PTY or child is created. Spawn
-//! failure releases the permit and no handle becomes live. Contention
-//! queues/refuses per existing admission policy rather than spawning
-//! anyway. The guard is held inside the live session and dropped on
-//! natural exit, terminate, or shutdown, releasing capacity.
+//! failure releases the permit and no handle becomes live. The guard is held
+//! inside the live session and dropped on natural exit, terminate, or
+//! shutdown, releasing capacity.
 //!
 //! # Platform support
 //!
 //! Supported: Unix hosts where `libc::openpty` exists (Linux, macOS).
 //! Unsupported: non-Unix targets, where [`InteractiveProcessService::spawn`]
 //! returns [`InteractiveError::PlatformUnsupported`] without spawning.
-//! The implementation uses only `libc` (already a direct dependency) plus
-//! `tokio`; no multiplexer or session framework is imported, per the
-//! milestone handoff notes.
 //!
 //! # Bounds
 //!
 //! - Scrollback: [`DEFAULT_SCROLLBACK_BYTES`] retained per session
 //!   (configurable within [`MIN_SCROLLBACK_BYTES`]..=[`MAX_SCROLLBACK_BYTES`]).
-//!   Older bytes are dropped; [`SequenceRing`] tracks the gap so M002 can
-//!   answer resync deterministically.
-//! - Input: each [`InteractiveProcessService::write_input`] call is capped at
-//!   [`MAX_INPUT_WRITE_BYTES`].
+//! - Input: each write call is capped at [`MAX_INPUT_WRITE_BYTES`].
 //! - PTY size: 1..=[`MAX_PTY_DIMENSION`] columns/rows.
 //! - Environment overrides: at most [`MAX_ENV_OVERRIDES`] entries, each name
 //!   and value bounded; denied command-bearing variables can never be
 //!   reintroduced (the canonical sanitized policy owns the deny list).
 //! - Termination: SIGTERM to the child process group, escalating to SIGKILL
 //!   after [`TERMINATE_GRACE`]. Shutdown uses [`SHUTDOWN_GRACE`] per session.
+//!
+//! See `architecture/process-tool-execution-ownership.md` for the contract.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;

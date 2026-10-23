@@ -107,10 +107,6 @@ pub enum ScratchError {
 }
 
 /// Resolve the cache root the daemon's scratch tree lives under.
-///
-/// Every path in this module resolves its root here, so there is exactly one
-/// place that knows where the tree lives — and, in a test build, exactly one
-/// place that can be redirected.
 fn scratch_cache_root() -> Result<PathBuf, ScratchError> {
     #[cfg(test)]
     if let Some(root) = test_scratch_root() {

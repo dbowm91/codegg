@@ -15,11 +15,9 @@ use crate::tool_program::ToolProgramError;
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 /// Maximum AST node count.
 const MAX_AST_NODES: usize = 10_000;
-/// Maximum nesting depth.
 const MAX_NESTING_DEPTH: usize = 20;
 /// Maximum string literal length.
 const MAX_STRING_LENGTH: usize = 10_000;
-/// Maximum collection elements.
 const MAX_COLLECTION_ELEMENTS: usize = 1_000;
 
 /// Parse restricted-Python source into a normalized AST.

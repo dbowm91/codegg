@@ -1,7 +1,4 @@
 //! LLM caller helper for model-backed research phases.
-//!
-//! Provides a simple interface to call an LLM provider and collect the
-//! complete text response, used by evidence extraction and claim construction.
 
 use std::sync::Arc;
 

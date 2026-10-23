@@ -1,12 +1,5 @@
 //! Bash-owned command policy and classification glue.
 //!
-//! This module owns the model-shell policy seam and decision-making helpers
-//! local to the `bash` tool: advisory risk-pattern scanning,
-//! `blocked_commands` / `allowlist` enforcement, isolated child-workspace
-//! validation, kill-switch evaluation, and thin adapters over the canonical
-//! command-intent owners. The retained `terminal` compatibility adapter calls
-//! the shared shell-safety seam here.
-//!
 //! Canonical behavior lives elsewhere and is invoked here, never copied:
 //!
 //! - destructive classification: `crate::tool::destructive`
@@ -26,8 +19,6 @@
 //!   -> command-intent classify/plan (observe vs active route)
 //!   -> spawn (raw shell) or scheduler submission (active route)
 //! ```
-//!
-//! No function in this module spawns a process or submits a scheduler job.
 
 use std::path::Path;
 
@@ -64,7 +55,7 @@ pub(crate) struct RoutingMetric {
     pub(crate) fallback: bool,
 }
 
-/// Compatibility helper for older tests/callers. The canonical family
+/// Compatibility helper for older test callers. The canonical family
 /// mapping is owned by `command_intent::plan`.
 #[cfg(test)]
 pub(crate) fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {

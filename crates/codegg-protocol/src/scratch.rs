@@ -14,9 +14,6 @@
 //! session id cannot be recovered from it.
 //!
 //! ## Compatibility
-//!
-//! Additive fields and variants are minor: old clients that ignore unknown
-//! variants remain forward-compatible.
 
 use serde::{Deserialize, Serialize};
 
