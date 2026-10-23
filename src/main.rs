@@ -886,7 +886,6 @@ fn scratch_refusal_name(
     }
 }
 
-/// Print the daemon's scratch usage report.
 fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageReportDto) {
     println!(
         "Scratch usage (measured {})",

@@ -243,7 +243,6 @@ impl ChatDialog {
         self.open_seed(ChatComposeSeed::say());
     }
 
-    /// Open the composer for `seed`.
     fn open_seed(&mut self, seed: ChatComposeSeed) {
         if seed.edit_target.is_some() {
             self.mode = ChatMode::Edit;

@@ -277,8 +277,6 @@ async fn user_prompt_queue_delivery_follows_ordinal_order() {
     );
 }
 
-/// A `delivering` entry stays visible in the read projection.
-///
 /// Before M003 gave `delivering` a producer, `list_live` selected
 /// `status = 'pending'` only. Once an entry starts delivering it would vanish
 /// from the client's list — which reads as data loss for a prompt the user can

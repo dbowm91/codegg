@@ -489,7 +489,6 @@ mod tests {
         assert_eq!(app.ui_state.reasoning_preference_revision, Some(7));
     }
 
-    /// A daemon-side selection **wins** over a stale local display.
     #[tokio::test]
     async fn a_daemon_side_selection_wins_over_a_stale_local_display() {
         let (daemon, _writes) = ReasoningDaemon::new(CoreResponse::ReasoningPreference {
@@ -607,7 +606,6 @@ mod tests {
         );
     }
 
-    /// A model that permits no disable is never offered one.
     #[test]
     fn a_model_that_permits_no_disable_is_never_offered_one() {
         let mut app = App::new_for_testing("/tmp".to_string());

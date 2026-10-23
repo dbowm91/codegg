@@ -5358,7 +5358,6 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    /// Test: cooperative cancellation drops the factory future.
     /// The factory uses `release.notified().await` which IS
     /// cancellation-safe (dropping the future unsubscribes from
     /// the notification), so this exercises the cooperative path.
@@ -6953,7 +6952,6 @@ mod tests {
 
     // ── Pass 4: Manual Restart API ───────────────────────────────
 
-    /// `manual_restart_client` terminates the old runtime
     /// before invoking the coordinator. The runtime_map entry
     /// for the old generation is removed before any
     /// reinit is attempted, so the manual path cannot leave
@@ -6992,7 +6990,6 @@ mod tests {
         );
     }
 
-    /// `manual_restart_client` bypasses the
     /// `LspRestartMode::Disabled` policy. The descriptor
     /// associated with `key` may have a disabled restart
     /// policy; the manual path runs regardless. We assert
@@ -7073,7 +7070,6 @@ mod tests {
 
     // ── Pass 2 — Manual supersession generation timing ─────────────
 
-    /// Pass 2 — `manual_detects_generation_advance_during_wait`.
     /// The manual supersession path captures the pre-wait
     /// generation BEFORE cancelling any in-flight owner. If the
     /// in-flight owner advances the generation during the wait
@@ -7185,7 +7181,6 @@ mod tests {
         );
     }
 
-    /// Pass 2 — `manual_same_generation_proceeds_after_wait`.
     /// When the in-flight owner does NOT advance the
     /// generation (the wait completes with the same
     /// generation as pre-wait), the manual flow MUST proceed
@@ -7245,7 +7240,6 @@ mod tests {
         }
     }
 
-    /// Pass 2 — `manual_timeout_preserves_original_generation`.
     /// When the in-flight automatic owner does NOT signal
     /// completion within `MANUAL_SUPERSESSION_OWNER_TIMEOUT`
     /// (3s), the manual restart path must abort with a typed
@@ -7387,7 +7381,6 @@ mod tests {
         );
     }
 
-    /// Pass 4 — `manual_generation_advance_returns_server_restarted`.
     /// Strong assertion: the manual path must return exactly
     /// `LspError::ServerRestarted` (not `Ok`, not `LaunchFailed`,
     /// not `InitializationCancelled`) when the generation
@@ -7456,7 +7449,6 @@ mod tests {
         assert_eq!(entry.unwrap().generation, 2);
     }
 
-    /// Pass 4 — `one_runtime_and_one_client_after_supersession`.
     /// After a successful manual supersession (the in-flight
     /// automatic restart completes and the manual restart
     /// proceeds), exactly one runtime entry and exactly one
@@ -7570,7 +7562,6 @@ mod tests {
         assert!(reset.is_some(), "healthy interval elapsed: reset must fire");
     }
 
-    /// `restart_attempts` increments across restart
     /// invocations. The shared counter is the cross-
     /// invocation bound, so a rapid crash cycle drains the
     /// budget across cycles rather than per-invocation.

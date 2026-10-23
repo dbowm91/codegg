@@ -292,7 +292,6 @@ mod tests {
         );
     }
 
-    /// Pass 8 — \`try_to_domain\` accepts a valid config and
     /// returns a domain policy.
     #[test]
     fn try_to_domain_accepts_valid_config() {
@@ -311,7 +310,6 @@ mod tests {
         assert_eq!(policy.reset_after_healthy, Duration::from_secs(120));
     }
 
-    /// Pass 8 — `try_to_domain` falls back to the base
     /// policy for missing fields.
     #[test]
     fn try_to_domain_falls_back_to_base() {

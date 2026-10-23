@@ -1037,8 +1037,6 @@ fn trusted_object_directory(
     Ok(Some(object_dir))
 }
 
-/// Fingerprint of a Git object store.
-///
 /// It is injected rather than called directly so a test can reproduce the
 /// transient failure a concurrent object-store rewrite produces — a pack file
 /// removed between the directory read and the stat — without racing a real
@@ -3447,8 +3445,6 @@ mod tests {
         marker
     }
 
-    /// The read route is the one that was open.
-    ///
     /// `git status` and `git diff` compare the working tree against the index
     /// *through the clean filter*, so a repository that declares a filter and
     /// ships an attribute that selects it used to get that command executed

@@ -20,9 +20,7 @@ use tempfile::TempDir;
 
 /// Timeout for server initialization handshake.
 const INIT_TIMEOUT: Duration = Duration::from_secs(20);
-/// Timeout for `initialized` notification.
 const INITIALIZED_TIMEOUT: Duration = Duration::from_secs(10);
-/// Timeout for readiness/indexing.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for individual semantic requests.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -6866,7 +6864,6 @@ async fn smoke_harness_captures_stderr() {
     let _lines: usize = tail.len();
 }
 
-/// Test 2: The harness force-kills hung servers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_force_kills_hung_server() {
     // Use `sleep` to create a hung process.
@@ -7034,8 +7031,6 @@ async fn smoke_harness_force_kills_process_that_ignores_stdin_close() {
     );
 }
 
-/// Test 3: Progress readiness failure is reported.
-///
 /// Verifies that `LspClient::wait_for_progress_end` returns `false`
 /// when no progress end event is observed within the timeout.
 /// This is a direct test of the production readiness primitive

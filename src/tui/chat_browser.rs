@@ -578,8 +578,6 @@ fn unread_boundary(view: &ChatView<'_>) -> Option<usize> {
     )
 }
 
-/// Style for a message row.
-///
 /// That field is a *background* — every other selected surface in the TUI
 /// pairs it with a foreground (`bg(selection).fg(primary)`). Used alone it
 /// made the author's name a dark slate on a dark slate: technically styled,

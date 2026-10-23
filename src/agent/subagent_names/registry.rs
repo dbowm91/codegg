@@ -370,8 +370,6 @@ mod tests {
         assert_eq!(lease.entry().map(|e| e.usefulness), Some(entry.usefulness));
     }
 
-    /// A suffixed lease resolves to the **same** entry as its base name.
-    ///
     /// The suffix is a disambiguator for concurrent leases, not a different
     /// agent: `Sally-2` must not acquire a second personality, and the numeric
     /// suffix must never appear in the descriptor.

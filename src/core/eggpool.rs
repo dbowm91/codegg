@@ -4081,7 +4081,6 @@ mod tests {
         ));
     }
 
-    /// Exactly one active connection is the authority for its provider.
     #[tokio::test(flavor = "current_thread")]
     async fn one_active_connection_is_the_authority_for_its_provider() {
         let _master = MasterKeyGuard::new("eggpool-connection-authority-master");

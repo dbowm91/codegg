@@ -461,8 +461,6 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
     }
 }
 
-/// Run one step of the contained worktree child.
-///
 /// The child is launched through the canonical managed-process owner, with the
 /// sandbox description as a **required** sandbox: there is no uncontained
 /// route to fall back to.

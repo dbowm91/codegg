@@ -111,8 +111,6 @@ const MAX_TEXT_CHARS: usize = 512;
 /// refuse rather than a `truncate`.
 const MAX_COMPOSE_BYTES: usize = 256 * 1024;
 
-/// The empty state, verbatim.
-///
 /// It names `a` from M005 onward, because `a` now exists. Before M005 it named
 /// no verb for creating an entry precisely because naming one that does nothing
 /// is worse than saying nothing.

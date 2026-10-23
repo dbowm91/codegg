@@ -2601,8 +2601,6 @@ fn open_editor_file_picker(app: &mut App) {
     app.open_file_picker();
 }
 
-/// Open the editor's own `:` command palette.
-///
 /// The palette is the editor's catalogue — the rows are
 /// [`EditorCommandName::ALL`], filtered as you type — and it is deliberately
 /// **not** the global `?` help dialog. Bare `?` still opens the help; `space
@@ -9588,8 +9586,6 @@ mod tests {
         assert_eq!(state.mode(), EditorMode::Insert);
     }
 
-    /// `O` opens a line **above** the cursor's line.
-    ///
     /// The two verbs are one implementation with two arguments, so the test
     /// that only covers one of them covers half the contract.
     #[tokio::test]
@@ -10413,8 +10409,6 @@ mod tests {
         submit_edit(state, edit);
     }
 
-    /// `Alt-u` moves the history cursor back, and the document follows.
-    ///
     /// Driven through the **real dispatch path**, because the roadmap's §9
     /// records why: a helper called directly proves the helper works, not
     /// that the chord reaches it.
@@ -10980,7 +10974,6 @@ mod tests {
         tab.workspace_id = Some("workspace-m010".to_string());
     }
 
-    /// The reclaim: `space f` opens the browser, and the browser names the
     /// root it is browsing.
     #[tokio::test]
     async fn space_f_opens_the_file_browser_and_it_names_the_root_it_is_browsing() {
@@ -11086,7 +11079,6 @@ mod tests {
         );
     }
 
-    /// The clipboard family: each space chord names its own verb.
     #[tokio::test]
     async fn the_space_clipboard_family_names_the_verb_each_chord_runs() {
         for (glyph, expected) in [
@@ -11214,7 +11206,6 @@ mod tests {
         }
     }
 
-    /// `space ?` opens the editor's own **keymap box** — the catalogue of
     /// its keys, in its bottom-right corner — and not the global help dialog.
     /// Bare `?` still opens the help.
     #[tokio::test]
@@ -11429,7 +11420,6 @@ mod tests {
             .collect()
     }
 
-    /// `=` asks for the format preview and changes nothing.
     #[tokio::test]
     async fn the_format_preview_is_requested_and_changes_nothing() {
         let (state, _daemon) = opened_writer("hello").await;
@@ -11632,7 +11622,6 @@ mod tests {
         );
     }
 
-    /// The rename preview's result reaches the panel, with the files it
     /// would change.
     #[tokio::test]
     async fn the_rename_preview_reaches_the_panel_with_the_files_it_would_change() {
@@ -11765,8 +11754,6 @@ mod tests {
         );
     }
 
-    /// A preview with no candidate stays a preview.
-    ///
     /// A truncated preview, or one with nothing to change, carries no
     /// candidate — and a review that offered to apply it would be offering an
     /// apply the daemon would refuse.
@@ -11816,7 +11803,6 @@ mod tests {
         );
     }
 
-    /// A code action with a candidate opens the review on **that** action's
     /// candidate.
     ///
     /// A code action is a *choice*, so the review does not open by itself:
@@ -11895,8 +11881,6 @@ mod tests {
         );
     }
 
-    /// A command-only action cannot be applied, and says why.
-    ///
     /// The surface never runs commands, and the LSP specification applies an
     /// action's edit *and then* its command — so an action that carries a
     /// command is never applied here. The reader is told that in the place
@@ -11984,7 +11968,6 @@ mod tests {
         app
     }
 
-    /// A successful apply reloads the file it wrote.
     #[tokio::test]
     async fn a_successful_apply_reloads_the_file_it_wrote() {
         let (state, _daemon) = opened_writer("hello").await;

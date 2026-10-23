@@ -233,8 +233,6 @@ impl VisualLayout {
     }
 }
 
-/// The cells of one wrapped row.
-///
 /// A slice whose byte length matches its source range is the source text
 /// itself, so its characters are the row's cells one for one. A slice whose
 /// byte length does not match is a collapsed whitespace run: the wrap
@@ -438,7 +436,6 @@ mod tests {
         }
     }
 
-    /// A multi-byte character is one cell, not one cell per byte.
     #[test]
     fn a_multi_byte_character_is_one_cell() {
         let layout = layout("é", 10);
@@ -451,7 +448,6 @@ mod tests {
         assert_eq!(layout.cell_of_byte(1), Some(cell));
     }
 
-    /// A collapsed whitespace run is attributed to the one column that
     /// replaced it, which is what the wrap's contract asks a consumer for.
     #[test]
     fn a_collapsed_whitespace_run_is_on_the_space_s_column() {

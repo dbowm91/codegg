@@ -4997,7 +4997,6 @@ fn collect_cache_file_hashes_for_request(
     hashes
 }
 
-/// Build an [`egglsp::LspContextRequest`] from a
 /// [`crate::agent::turn_runtime::LspAgentContextInput`].
 fn build_lsp_context_request(
     input: &crate::agent::turn_runtime::LspAgentContextInput,

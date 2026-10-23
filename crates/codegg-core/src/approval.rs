@@ -1495,8 +1495,6 @@ impl RuntimePreferenceRow {
     }
 }
 
-/// Decode a stored reasoning selection.
-///
 /// The durable value is the protocol's own serialized shape, so there is
 /// no second vocabulary to keep in sync. A value that does not decode —
 /// or that no longer passes the shape check — is **not authority**: it

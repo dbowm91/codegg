@@ -3240,8 +3240,6 @@ mod tests {
         );
     }
 
-    /// Whether the composer claims this key.
-    ///
     /// The claim table is the authority: a letter it owns belongs to the
     /// composer, and the app's binding map is consulted only for the letters
     /// it does not own.
@@ -3269,8 +3267,6 @@ mod tests {
         }
     }
 
-    /// The help does not advertise bare `a` as the sidebar's gesture.
-    ///
     /// `a` is the composer's insert-after key (ADR-0042). The old row taught
     /// `a` as "Focus sidebar (agent tree)" in vim mode, which was true of the
     /// old binding and false of the new one — a help row that lies about a

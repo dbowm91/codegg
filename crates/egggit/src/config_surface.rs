@@ -823,7 +823,6 @@ fn ends_with_continuation(line: &str) -> bool {
     trailing % 2 == 1
 }
 
-/// Parse a `[section]`, `[section "subsection"]` or `[section.subsection]`
 /// header.
 fn parse_section_header(line: &str) -> Result<(String, Option<String>), ()> {
     let rest = &line[1..];
@@ -880,7 +879,6 @@ fn parse_key_value(line: &str) -> Result<(String, String), ()> {
     Ok((key.to_ascii_lowercase(), value))
 }
 
-/// Parse a configuration value.
 fn parse_value(text: &str) -> Result<String, ()> {
     let trimmed = text.trim_start();
     if let Some(tail) = trimmed.strip_prefix('"') {

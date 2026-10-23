@@ -424,7 +424,6 @@ async fn user_prompt_queue_unowned_queue_is_refused_for_every_mutation() {
     );
 }
 
-/// Only the explicit adoption repairs an unowned queue.
 #[tokio::test]
 async fn user_prompt_queue_explicit_adoption_repairs_an_unowned_queue() {
     let pool = isolated_pool().await;

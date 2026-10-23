@@ -655,8 +655,6 @@ mod tests {
         );
     }
 
-    /// The carried path needs no LSP tool.
-    ///
     /// This is the whole reason the candidate is carried rather than
     /// registered: `app.lsp_tool` is `None` in socket mode, so a path that
     /// needed the frontend's registry could not reach the apply at all in the

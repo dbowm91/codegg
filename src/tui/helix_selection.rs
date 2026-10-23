@@ -1189,7 +1189,6 @@ mod tests {
         }
     }
 
-    /// The viewport cell, as a surface.
     struct CellSurface;
 
     impl rules::Surface for CellSurface {
@@ -1205,7 +1204,6 @@ mod tests {
         }
     }
 
-    /// The composer's point, as a surface.
     struct ComposerSurface;
 
     impl rules::Surface for ComposerSurface {

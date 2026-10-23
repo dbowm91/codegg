@@ -1154,8 +1154,6 @@ mod tests {
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
-    /// A soft-deleted session's tree is reclaimed by the sweep.
-    ///
     /// The event-driven reclaimer owns that case at delete time. The sweep is
     /// the retry for the tree it had to refuse because work was still running
     /// when the session was deleted, and it does not wait out the retention
@@ -1418,7 +1416,6 @@ mod tests {
         );
     }
 
-    /// A disabled policy never fires.
     #[tokio::test]
     async fn a_disabled_policy_never_sweeps() {
         let _root = scratch_root("a-disabled-policy-never-");
@@ -1473,7 +1470,6 @@ mod tests {
         let _ = crate::scratch::reclaim_session_scratch_dir(&session_id);
     }
 
-    /// The operator disposition removes the tree when it is applied.
     #[tokio::test]
     async fn the_operator_reclaim_removes_the_tree_when_applied() {
         let _root = scratch_root("the-operator-reclaim-rem");

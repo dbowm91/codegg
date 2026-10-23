@@ -2364,8 +2364,6 @@ mod tests {
         );
     }
 
-    /// The walk goes **Todos header** → subagent rows → job rows.
-    ///
     /// The old order put a todo row between the Todos header and the
     /// Subagents header, and the todo row had no action behind it: Enter on it
     /// resolved to `SidebarActivation::None`, so the selection highlight was
@@ -2452,7 +2450,6 @@ mod tests {
         }
     }
 
-    /// The Todos header is focusable, and Enter on it folds the section.
     #[test]
     fn the_todos_header_is_focusable_and_folds_the_section() {
         let mut sidebar = SidebarWidget::default();
@@ -2539,7 +2536,6 @@ mod tests {
         );
     }
 
-    /// With no todos the focus list for the other sections is unchanged.
     #[test]
     fn with_no_todos_the_other_sections_focus_list_is_unchanged() {
         let mut sidebar = SidebarWidget::default();
@@ -2582,8 +2578,6 @@ mod tests {
         );
     }
 
-    /// Click and `Enter` must resolve to the same activation.
-    ///
     /// They arrive by different routes — the mouse through `focus_hovered`,
     /// the keyboard through an already-focused row — so they are only
     /// guaranteed to agree if both end at the same `SidebarFocusTarget`.

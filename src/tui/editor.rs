@@ -6174,8 +6174,6 @@ fn closest_pair_object(
     Ok(range)
 }
 
-/// The one member that covers `range`.
-///
 /// A character selection's range runs to `char_end(head)`, so a member built
 /// to cover `start..end` must name the **last character's start** as its head
 /// — pointing `head` at `end` would cover one character too many.
@@ -8207,7 +8205,6 @@ mod tests {
         );
     }
 
-    /// A multi-byte target matches whole characters, never a byte of a
     /// neighbour — and the scan advances across multi-byte characters.
     ///
     /// The load-bearing case is the *interior* byte. The second byte of `é` is

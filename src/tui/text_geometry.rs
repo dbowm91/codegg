@@ -701,8 +701,6 @@ mod tests {
         }
     }
 
-    /// A multi-byte character is **word content**, not a separator.
-    ///
     /// `w` from the start of `日本語 text` must land on `text`, not on the end
     /// of the document: the classifier reads the character's *first* byte,
     /// which is `>= 0x80` and therefore word content.

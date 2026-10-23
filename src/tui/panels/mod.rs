@@ -1686,8 +1686,6 @@ impl SidePanelHost {
         }
     }
 
-    /// The panel instance for `id`.
-    ///
     /// Panel *state* is keyed by [`SidePanelId`] rather than by edge, which is
     /// what lets a panel move between edges without losing its cursor, filter
     /// or scroll offset: the state travels with the id, and the slot only

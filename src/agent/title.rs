@@ -174,7 +174,6 @@ pub(crate) fn sanitize_title(raw: &str) -> Option<String> {
     Some(text)
 }
 
-/// Truncate to a char boundary.
 fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()

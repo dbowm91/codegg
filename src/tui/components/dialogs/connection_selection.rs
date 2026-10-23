@@ -196,8 +196,6 @@ fn column_title(
     }
 }
 
-/// Render one connection row.
-///
 /// A display name is not an identity: two connections can legitimately share
 /// one (`eggstackmain` twice on the same provider, differing only by id and
 /// bound key), and `R`/`d`/`e` act on whichever row is highlighted. The row
@@ -576,8 +574,6 @@ mod tests {
         dialog
     }
 
-    /// The model pane must be reachable without `Tab`.
-    ///
     /// `Tab` was the only model-navigation binding this dialog had and it never
     /// fired: `FocusManager::handle_key` consumes `Tab`/`Shift+Tab` for dialog
     /// focus traversal before dispatching to the component, so `move_model` was

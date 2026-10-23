@@ -3900,7 +3900,6 @@ mod tests {
         );
     }
 
-    /// The rename preview names the files that would change, and says that
     /// nothing is applied.
     ///
     /// The rendering is M013's, but a rendering nobody exercises is a
@@ -3947,7 +3946,6 @@ mod tests {
         );
     }
 
-    /// The format preview shows the diff, and says that nothing is applied.
     #[test]
     fn the_format_preview_shows_the_diff_and_says_it_is_not_applied() {
         use codegg_protocol::lsp::{
@@ -4160,7 +4158,6 @@ mod tests {
         );
     }
 
-    /// A truncated preview says why it cannot be applied.
     #[test]
     fn a_truncated_preview_says_it_cannot_be_applied() {
         use codegg_protocol::lsp::{

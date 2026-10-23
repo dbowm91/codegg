@@ -911,7 +911,6 @@ pub trait RestartShared {
     /// exceeds the budget.
     async fn reserve_restart_attempt(&self, key: &str, max_attempts: u32) -> Result<u32, LspError>;
 
-    /// Reset the `restart_attempts` counter to `0` if the
     /// service has been healthy for at least
     /// `reset_after_healthy`. Returns the previous counter
     /// value when the reset was applied, or `None` when the
@@ -3261,7 +3260,6 @@ mod tests {
 
     // ── Pass 9 — Final race tests ────────────────────────────────
 
-    /// Pass 9 — `manual_timeout_does_not_touch_current_client`.
     /// If an in-flight automatic owner is cancelled and does NOT
     /// signal completion within `MANUAL_SUPERSESSION_OWNER_TIMEOUT`
     /// (3s), the manual restart path must abort with a typed busy
@@ -3481,7 +3479,6 @@ mod tests {
         );
     }
 
-    /// Pass 9 — `old_owner_completion_cannot_release_new_owner`.
     /// Integration analogue of the lib-level
     /// `restart_lease_cleanup_is_owner_safe` test. The
     /// `release_internal` path must only remove the map entry
@@ -3555,7 +3552,6 @@ mod tests {
         );
     }
 
-    /// Pass 9 — `manual_revalidates_generation_after_wait`.
     /// When the in-flight automatic owner bumps the generation
     /// (because the auto restart succeeded) WHILE the manual
     /// restart is waiting on completion, the manual restart
@@ -3698,7 +3694,6 @@ mod tests {
         let _ = first_lease.release().await;
     }
 
-    /// Pass 4 — `post_publication_cancellation_returns_live_outcome`.
     /// When the lease token is cancelled AFTER the replacement
     /// has been published (installed in the live clients map),
     /// the coordinator MUST NOT abort. It must continue to a
@@ -3800,7 +3795,6 @@ mod tests {
         );
     }
 
-    /// Pass 3 — `cancellation_after_publication_finishes_replacement`.
     /// Strong assertion locking down the post-publication
     /// cancellation policy: when the lease token is cancelled
     /// AFTER the replacement has been published AND installed
@@ -3920,7 +3914,6 @@ mod tests {
         );
     }
 
-    /// Pass 3 — `cancellation_before_publication_still_reaps_replacement`.
     /// Strong assertion locking down the pre-publication
     /// cancellation policy (Pass 4 invariant): when the lease
     /// token is cancelled BEFORE the replacement has been
@@ -4131,7 +4124,6 @@ mod tests {
 
     // ── Pass 2 — Manual supersession ownership invariants ────────────
 
-    /// Pass 2 — `cancelled_owner_retains_slot_until_finished`.
     /// Strong ownership invariant assertion: while a waiter is
     /// still pending for a cancelled owner, the ownership entry
     /// MUST remain installed in the per-key map with the same
@@ -4202,7 +4194,6 @@ mod tests {
         let _ = third_lease.release().await;
     }
 
-    /// Pass 4 — `manual_acquires_only_after_finished`. A manual
     /// supersession that cancels an in-flight owner MUST NOT
     /// acquire the slot until the in-flight owner explicitly
     /// signals `Finished` AND removes its own entry. We model
@@ -4326,8 +4317,6 @@ mod tests {
     // ── Pass 11 (Phase 3 final closure) — Adversarial release-ordering
     //    tests ──────────────────────────────────────────────────────
 
-    /// Pass 11 — `finished_is_not_observable_until_slot_is_removed`.
-    ///
     /// The release handshake guarantees that the owner-ID-matched
     /// map entry is removed *before* `Finished` is broadcast. We
     /// exercise this under deliberate map-lock contention: while
@@ -4435,8 +4424,6 @@ mod tests {
         let _ = second_lease.release().await;
     }
 
-    /// Pass 11 — `drop_fallback_removes_before_finished`.
-    ///
     /// The `Drop` fallback path MUST preserve the same
     /// remove-before-signal ordering as the explicit
     /// `release().await` path. We exercise Drop by letting the
@@ -4506,8 +4493,6 @@ mod tests {
         let _ = second_lease.release().await;
     }
 
-    /// Pass 11 — `old_owner_release_does_not_signal_for_new_owner`.
-    ///
     /// If a newer owner is installed in the map while the older
     /// owner's lease is still alive, the older owner's release
     /// MUST NOT send `Finished` (because the slot is not theirs
@@ -4601,8 +4586,6 @@ mod tests {
         );
     }
 
-    /// Pass 11 — `completion_channel_close_without_finished_is_error`.
-    ///
     /// Strong invariant: if the completion sender is dropped
     /// without ever sending `Finished`, the waiter must return
     /// `Err(LspError::InitializationCancelled)` — never `Ok`. We
@@ -4653,8 +4636,6 @@ mod tests {
 
     // ── Pass 12 (Phase 3 final cleanup) — Async release cancellation safety
 
-    /// Pass 12 — `cancelled_async_release_falls_back_to_drop_cleanup`.
-    ///
     /// Test mechanics:
     /// 1. Acquire lease A (entry installed).
     /// 2. Construct a waiter via `cancel_restart_ownership`.
@@ -4797,7 +4778,6 @@ mod tests {
         let _ = second_lease.release().await;
     }
 
-    /// Pass 12 — `completion_channel_close_error_names_owner`.
     #[tokio::test(flavor = "current_thread")]
     async fn completion_channel_close_error_names_owner() {
         use super::super::restart::cancel_restart_ownership;
@@ -4841,8 +4821,6 @@ mod tests {
         drop(first_lease);
     }
 
-    /// Pass 12 — `completion_timeout_error_names_owner`.
-    ///
     /// The waiter timeout error string includes the in-flight
     /// owner id and the timeout value so the caller can
     /// correlate the failure and reason about bounded waits.

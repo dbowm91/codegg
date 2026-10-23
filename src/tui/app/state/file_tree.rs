@@ -1772,7 +1772,6 @@ mod tests {
         );
     }
 
-    /// The indent is **relative to the scope**.
     #[test]
     fn display_depth_is_relative_to_the_scope() {
         let root = temp();

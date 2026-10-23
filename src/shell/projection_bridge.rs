@@ -37,7 +37,6 @@ fn append_capped(buf: &mut Vec<u8>, dropped: &mut usize, bytes: &[u8]) {
     *dropped += bytes.len() - take;
 }
 
-/// In-flight accumulator for one command.
 #[derive(Debug, Default)]
 struct InFlightCommand {
     command: String,

@@ -1943,7 +1943,6 @@ fn make_test_descriptor(
 // Suppress unused-import warning for `LspProcessRuntime` re-export.
 // ── Pass 9 — Final race tests ────────────────────────────────────────
 
-/// Pass 9 — `manual_waits_for_cancelled_automatic_completion`.
 /// A manual restart MUST wait for an in-flight automatic restart
 /// owner to complete before touching the live client. We seed
 /// the service with a descriptor that auto-restarts on exit,
@@ -2167,7 +2166,6 @@ edition = "2021"
 
 // ── Pass 4 — Manual supersession revalidates after auto publishes ───
 
-/// Pass 4 — `manual_waits_for_published_replacement_completion_then_revalidates`.
 /// A manual restart MUST wait for an in-flight automatic restart
 /// owner to complete its full coordinator cycle (including
 /// publishing the replacement into the live clients map)
