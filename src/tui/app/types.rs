@@ -774,20 +774,33 @@ pub enum TuiMsg {
     FilesRefresh,
     /// `/files`: open `path` (`l`, and `Enter` on a directory).
     ///
-    /// The box holds a *copy* of the shared tree state and cannot reach `App`
-    /// from `render`, so the motion is an intent like opening a file: the
-    /// command layer decides whether the directory opens in place, the scope
-    /// slides, or — for a file, which has nothing to enter — the document
-    /// opens, and issues the walk. The path is workspace-relative, exactly as
-    /// the listing reported it.
+    /// The box holds a *view* of the shared tree structure and cannot reach
+    /// `App` from `render`, so the motion is an intent like opening a file:
+    /// the command layer decides whether the directory opens in place, the
+    /// scope slides, or — for a file, which has nothing to enter — the
+    /// document opens, and issues the walk. The path is workspace-relative,
+    /// exactly as the listing reported it.
     FilesDescend {
         path: String,
     },
     /// `/files`: go back one level (`h`).
     ///
-    /// Carries no path — "one level up" is a relation, not a location, and
-    /// the box cannot compute a parent of a root it does not own.
-    FilesAscend,
+    /// Carries the path of the row the cursor is on: "one level up" is a
+    /// relation the **authority** resolves, against the unfiltered row set,
+    /// because "the parent of this row" is a structural question and the
+    /// surface's own filtered view cannot answer it.
+    FilesAscend {
+        path: String,
+    },
+    /// `/files`: make `path` the selection (`j`, `k`, `Ctrl+d`, `Ctrl+u`).
+    ///
+    /// The surface names the row it wants — it knows its own filtered rows —
+    /// and the authority records the selection. The selection is a **path**,
+    /// so it does not depend on a filter or on two copies agreeing about an
+    /// index.
+    FilesSelect {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

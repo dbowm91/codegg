@@ -296,10 +296,14 @@ impl App {
         if self.file_tree_state.nodes.is_empty() || belongs_to_another_workspace {
             crate::tui::commands::file_tree::rebuild(self);
         }
-        let dialog = FilesDialog::new(
-            Arc::clone(&self.ui_state.theme),
-            self.file_tree_state.clone(),
-        );
+        let mut dialog = FilesDialog::new(Arc::clone(&self.ui_state.theme));
+        // The box is mounted with the authority's current structure, through
+        // the same adoption the frame pass uses. A box that opened on an
+        // empty view would name no root and list no rows until the next
+        // frame, which is a frame the user never asked for.
+        let revision = self.file_tree_state.revision;
+        let structure = self.file_tree_state.structure();
+        dialog.adopt_structure(revision, &|| structure.clone());
         self.focus_manager.push(Box::new(dialog));
     }
 

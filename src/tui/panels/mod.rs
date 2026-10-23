@@ -58,6 +58,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::tui::app::state::ChatState;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::component::Component;
 use crate::tui::components::sidebar::SidebarWidget;
 use crate::tui::input::{InputAction, InputMode};
 use crate::tui::theme::Theme;
@@ -1432,6 +1433,21 @@ impl SidePanelHost {
         }
     }
 
+    /// Mutate the component a hosted panel owns, when it is of type `T`.
+    ///
+    /// The seam the frame pass needs to reach a **docked** box: a box that
+    /// was docked is owned by this host, not by the focus manager, so a
+    /// refresh that only knew about the modal stack left the docked panel
+    /// showing a frozen copy of the tree. `None` for a bespoke panel, or for
+    /// a hosted panel whose adopted component is a different type.
+    pub fn with_hosted_mut<T: Component + 'static, R>(
+        &mut self,
+        id: SidePanelId,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        self.hosted_mut(id)?.with_widget_mut::<T, R>(f)
+    }
+
     pub fn is_focused(&self) -> bool {
         self.focused && !self.panel_is_empty()
     }
@@ -2429,7 +2445,11 @@ mod tests {
             root,
             crate::tui::file_tree::build_tree(&std::env::temp_dir()),
         );
-        Box::new(FilesDialog::new(Arc::new(Theme::default()), state))
+        let mut dialog = FilesDialog::new(Arc::new(Theme::default()));
+        let revision = state.revision;
+        let build = || state.structure();
+        dialog.adopt_structure(revision, &build);
+        Box::new(dialog)
     }
 
     /// The reported defect, as an assertion: a `/files` box docked in a side
@@ -2579,7 +2599,7 @@ mod tests {
         use crate::tui::components::dialogs::files::FilesDialog;
 
         let theme = Arc::new(Theme::default());
-        let mut dialog = FilesDialog::new(Arc::clone(&theme), Default::default());
+        let mut dialog = FilesDialog::new(Arc::clone(&theme));
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
         render_hosted(&mut dialog, &mut buf, area, &theme, " ● Files ");

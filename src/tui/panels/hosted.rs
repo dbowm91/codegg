@@ -90,6 +90,22 @@ impl HostPanel {
         self.widget = widget;
     }
 
+    /// Mutate the adopted component, when it is of type `T`.
+    ///
+    /// The typed seam a surface's own state needs: the host holds a
+    /// `Box<dyn Component>`, so a caller that knows the concrete type —
+    /// the app's frame pass, pushing a refreshed view into a mounted box —
+    /// needs a way in that is checked by the compiler rather than by a
+    /// downcast at every call site. `None` when the adopted component is a
+    /// different type, which is the ordinary case for a panel that hosts
+    /// something else.
+    pub fn with_widget_mut<T: Component + 'static, R>(
+        &mut self,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        self.widget.as_any_mut().downcast_mut::<T>().map(f)
+    }
+
     fn title(&self, focused: bool) -> String {
         let dot = if focused { "●" } else { " " };
         format!(" {} {} ", self.id.label(), dot)

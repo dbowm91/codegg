@@ -147,6 +147,12 @@ impl App {
         // in the same place.
         crate::tui::commands::turn_control::expire_pending_stop_armed(self);
         crate::tui::commands::exit_control::expire_pending_exit_arm(self);
+        // The navigator's structure is pushed into every mounted `/files`
+        // surface **before** any of them is drawn, so a surface is painted
+        // from the structure the authority holds now. The copy happens only
+        // when the authority's revision moved, so an unchanged frame costs
+        // nothing.
+        self.refresh_file_tree_surfaces();
         // One rect per *occupied* edge, named rather than positional: the
         // transcript reads `regions.main` whatever the panels do, so adding a
         // second column cannot renumber the thing underneath it.
@@ -1103,7 +1109,36 @@ impl App {
             Arc::clone(&self.ui_state.theme),
         )
         .render(frame, area);
-        self.file_tree_state.viewport_rows = layout.viewport_rows;
+        self.file_tree_state.set_viewport_rows(layout.viewport_rows);
+    }
+
+    /// Push the authority's tree structure into every mounted `/files` surface.
+    ///
+    /// Once per frame, ahead of the tree pane, the side panel and the modal
+    /// dialog, so a surface is drawn from the structure the authority holds
+    /// *now*. The copy happens only when the authority's revision moved: an
+    /// unchanged frame costs nothing, and a changed frame costs one copy per
+    /// mounted surface.
+    ///
+    /// The refresh reaches the **modal box** and the **docked panel**, and it
+    /// is not gated on the modal stack: a docked box is owned by the panel
+    /// host, not by the focus manager, and a refresh that only knew about the
+    /// focus manager left the docked panel showing a frozen copy.
+    fn refresh_file_tree_surfaces(&mut self) {
+        use crate::tui::components::component::DialogType;
+        use crate::tui::components::dialogs::files::FilesDialog;
+
+        let authority = &self.file_tree_state;
+        let revision = authority.revision;
+        let build = || authority.structure();
+        self.focus_manager
+            .with_dialog_mut::<FilesDialog, ()>(DialogType::Files, |dialog| {
+                dialog.adopt_structure(revision, &build);
+            });
+        self.panel_host
+            .with_hosted_mut::<FilesDialog, ()>(SidePanelId::Files, |dialog| {
+                dialog.adopt_structure(revision, &build);
+            });
     }
 
     /// M005: non-modal Workspace primary view. Reads the bounded

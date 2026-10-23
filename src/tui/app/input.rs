@@ -1007,8 +1007,17 @@ impl App {
                 // under the new root's title.
                 crate::tui::commands::file_tree::descend_to(self, &path);
             }
-            TuiMsg::FilesAscend => {
-                crate::tui::commands::file_tree::ascend_one_level(self);
+            TuiMsg::FilesAscend { path } => {
+                // The surface names the row it is on; the authority resolves
+                // "one level up" against the unfiltered row set, because the
+                // parent of a row is a structural relation and the surface's
+                // own filtered view cannot answer it.
+                crate::tui::commands::file_tree::ascend_one_level(self, &path);
+            }
+            TuiMsg::FilesSelect { path } => {
+                // The surface names the row it wants and the authority
+                // records it: one selection, a path, shared by every surface.
+                crate::tui::commands::file_tree::select_path(self, &path);
             }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {

@@ -414,8 +414,9 @@ pub fn apply_listing(
     root: PathBuf,
     listing: crate::tui::file_tree::TreeListing,
 ) {
-    let applied = app
-        .file_tree_state
+    // A stale completion is dropped inside the authority, and it is
+    // deliberately not cancelled: cancelling would strand the queued intent.
+    app.file_tree_state
         .apply_listing(generation, request_id, root, listing);
     // Release the permit even for a stale completion: the active round-trip
     // has ended (its `RunningGuard` already decremented `running`), and the
@@ -424,39 +425,11 @@ pub fn apply_listing(
     // Single call: `finish_active` clears the active request and takes the
     // pending in one lock hold; `launch_taken_pending` revalidates it.
     release_after_completion(app, generation, request_id);
-    if !applied {
-        // Stale: deliberately no `request.cancel()`. Cancelling here would
-        // bump the request id past the queued latest intent and strand it.
-        return;
-    }
-    // Mirror the accepted listing into a mounted `/files` box. It holds its
-    // own copy of the state (a widget cannot reach `App` from `render`), so
-    // without this a refresh would repaint the Ctrl+T pane and leave the box
-    // showing the previous listing. Cloned only when a box is actually open —
-    // the round-trip that produced this state is far more expensive than the
-    // copy.
-    //
-    // The box's **filter** and its panel mode are the box's own input, not
-    // the shared navigation state: a listing landing while the user is typing
-    // a filter must not wipe the text they typed or drop them out of insert
-    // mode. They are carried across the mirror.
-    if app
-        .focus_manager
-        .has_dialog(crate::tui::components::component::DialogType::Files)
-    {
-        let snapshot = app.file_tree_state.clone();
-        app.focus_manager
-            .with_dialog_mut::<crate::tui::components::dialogs::files::FilesDialog, ()>(
-                crate::tui::components::component::DialogType::Files,
-                |dialog| {
-                    let filter = dialog.state.filter.clone();
-                    let panel_mode = dialog.state.panel_mode;
-                    dialog.state = snapshot;
-                    dialog.state.filter = filter;
-                    dialog.state.panel_mode = panel_mode;
-                },
-            );
-    }
+    // The listing needs no mirror: the authority bumped its revision, and the
+    // frame pass pushes the structure into every mounted `/files` surface
+    // before it is drawn. A mirror here would be a second, dead way to
+    // adopt a listing — and the one that was there only reached the modal
+    // box, which is why a docked panel kept showing a frozen copy.
 }
 
 /// Apply a failed daemon listing: record the explicit error, then release
@@ -541,6 +514,16 @@ pub fn descend_to(app: &mut App, path: &str) {
     }
 }
 
+/// Make `path` the pane's selection.
+///
+/// The path-bearing half of every movement verb: a surface names the row it
+/// wants and the authority records it, so the selection is a **path** rather
+/// than an index into whichever rows a surface happened to be showing. A path
+/// the listing does not hold is refused, silently.
+pub fn select_path(app: &mut App, path: &str) {
+    app.file_tree_state.select(path);
+}
+
 /// Go back one level: the `h`/left-arrow verb.
 ///
 /// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
@@ -550,8 +533,12 @@ pub fn descend_to(app: &mut App, path: &str) {
 /// root expanded in the new scope. At the workspace root there is no scope
 /// to slide to, so the selected directory collapses in place — the key is
 /// never dead.
-pub fn ascend_one_level(app: &mut App) {
-    match app.file_tree_state.peek_up() {
+///
+/// `path` is the row the surface is on. The relation is resolved against the
+/// **unfiltered** row set, so the parent of a row is found even when the
+/// surface's own filter hides it.
+pub fn ascend_one_level(app: &mut App, path: &str) {
+    match app.file_tree_state.peek_up(path) {
         PeekUp::Leave { parent } => {
             app.file_tree_state.leave_into(&parent);
         }
@@ -699,9 +686,13 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             true
         }
         // `h` peeks up. `Backspace` is the same verb: it is what a user
-        // reaches for when the cursor is "inside" something.
+        // reaches for when the cursor is "inside" something. The row the
+        // cursor is on is named, and the authority resolves the relation.
         KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-            ascend_one_level(app);
+            let Some(path) = app.file_tree_state.selected.clone() else {
+                return true;
+            };
+            ascend_one_level(app, &path);
             true
         }
         // Enter opens a file, or enters a directory, through the existing
@@ -718,7 +709,7 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
         // `i` opens the panel's live filter. The mode is panel-local, so
         // the app-level mode (and the composer badge) does not move.
         KeyCode::Char('i') => {
-            app.file_tree_state.panel_mode = TreePanelMode::Insert;
+            app.file_tree_state.set_panel_mode(TreePanelMode::Insert);
             true
         }
         _ => false,
@@ -732,18 +723,18 @@ fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bo
         // `Esc` leaves insert mode and keeps the filter: the user is
         // navigating the filtered rows now, not discarding the search.
         KeyCode::Esc => {
-            app.file_tree_state.panel_mode = TreePanelMode::Normal;
+            app.file_tree_state.set_panel_mode(TreePanelMode::Normal);
             true
         }
         KeyCode::Backspace => {
-            app.file_tree_state.filter.pop();
+            app.file_tree_state.filter_pop();
             app.file_tree_state.reanchor_selection();
             true
         }
         // Enter applies the filter: the same rows stay, and the mode goes
         // back to navigation.
         KeyCode::Enter => {
-            app.file_tree_state.panel_mode = TreePanelMode::Normal;
+            app.file_tree_state.set_panel_mode(TreePanelMode::Normal);
             true
         }
         // Only plain (or shifted) characters are typed. A control or alt
@@ -751,7 +742,7 @@ fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bo
         KeyCode::Char(character)
             if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
         {
-            app.file_tree_state.filter.push(character);
+            app.file_tree_state.filter_push(character);
             app.file_tree_state.reanchor_selection();
             true
         }
@@ -812,6 +803,15 @@ pub fn hand_off_to_editor(app: &mut App) {
 mod tests {
     use super::*;
     use crate::tui::app::state::file_tree::FileTreeStatus;
+
+    /// The `h` verb from the authority's own selection: what the tree pane
+    /// does, which is to name the row the cursor is on.
+    fn ascend(app: &mut App) {
+        let Some(path) = app.file_tree_state.selected.clone() else {
+            return;
+        };
+        ascend_one_level(app, &path);
+    }
     use crate::tui::app::state::project_tabs::{ProjectTabId, ProjectTabState};
     use crate::tui::file_tree::TreeNodeKind;
     use codegg_protocol::document::{
@@ -1215,7 +1215,7 @@ mod tests {
         rebuild_once(&mut app, &mut rx).await;
         assert_eq!(app.file_tree_state.root_prefix(), "src");
 
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(
             app.file_tree_state.root_prefix(),
             "",
@@ -1264,7 +1264,7 @@ mod tests {
         ));
         app.file_tree_state.expanded.insert("src".to_string());
 
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert!(
             app.file_tree_state.at_workspace_root(),
             "there is no level above the workspace root"
@@ -1366,7 +1366,7 @@ mod tests {
         );
 
         // `h` from inside `app`: up to its parent row, and it collapses.
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "src");
         assert_eq!(
             shown(&app),
@@ -1383,14 +1383,14 @@ mod tests {
         );
 
         // `h` again: out of `tui` as well, still inside the `src` scope.
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "src");
         assert_eq!(shown(&app), vec!["src/tui".to_string()]);
         assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui"));
 
         // `h` on a top-level row: the scope slides up, with the old scope
         // root expanded in the new scope.
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "");
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(
