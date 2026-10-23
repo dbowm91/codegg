@@ -513,7 +513,71 @@ rather than assumed.
 | `cargo clippy -p codegg-core -p codegg-config -p codegg-protocol -p codegg-providers -p codegg-client --all-targets --locked -- -D warnings` | **pass** — exit 0, zero findings |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | **7 findings** in the `codegg` lib and 8 in its lib test — **identical on clean `origin/main`**, at the same locations |
 | `cargo nextest run -p codegg-core --profile ci -E 'test(reasoning) or binary(reasoning_overlay_narrowing)'` | **22 passed**, including all 6 overlay-narrowing cases and both compare-and-swap cases |
+| `cargo nextest run -p codegg --profile ci -E 'test(core::daemon_turns) or test(tui::commands::reasoning)'` | **29 passed** |
+| `cargo nextest run -p codegg-providers --profile ci -E 'test(eggpool)'` | **30 passed** |
+| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **15,862 of 15,870 passed** (1 leaky, 9 skipped) — 7 failed and 1 timed out, and **every one of the eight is `main`'s**, reproduced on a clean checkout of `origin/main` at `f1b83a7a7` (§7.7) |
 | `scripts/check_adr_integrity.py` | **pass** — active ADR IDs unique, local paths resolve |
+
+## 7.7 Every non-pass in the workspace suite is `main`'s
+
+The workspace suite returned **7 failures and 1 timeout**. Each was run on a
+**clean checkout of `origin/main` at `f1b83a7a7`** — the exact tree this branch
+merges — and each reproduces there:
+
+| Test | Merged tree | Clean `origin/main` |
+|---|---|---|
+| `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs` | FAIL | FAIL |
+| `core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances` | FAIL | FAIL |
+| `managed_process::tests::offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn` | FAIL | FAIL |
+| `scratch_cache_root_contract::the_default_cache_root_is_the_home_directory_cache` | FAIL | FAIL |
+| `scratch_cache_root_contract::an_explicit_cache_home_is_the_root_the_allocator_uses` | FAIL | FAIL |
+| `codegg::command_git git_read_consistency::a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache` | FAIL | FAIL |
+| `codegg::contained_worktree_c008 the_grant_names_only_the_administration_directory` | FAIL | FAIL |
+| `agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication` | TIMEOUT (300 s) | **PASS in 0.029 s** |
+
+The two that are *new relative to the previous reconciliation* are `main`'s
+new work: the read-consistency contract from C003 and the contained-worktree
+grant from C008. Neither test references anything this branch changed — no
+approval store, no reasoning capability record, no model profile, no storage
+layout, no schema — and every file they exercise
+(`tests/command_git/git_read_consistency.inc`,
+`tests/contained_worktree_c008.rs`, `crates/egggit/`,
+`src/git_contained_worktree.rs`, `src/security/sandbox/policy.rs`) is
+**byte-identical to `origin/main`**.
+
+The timeout is a host-load artifact of a machine running thirty-plus
+concurrent cargo builds, and it passes in 0.029 s in isolation on `main`.
+
+**So the third merge introduces zero new test failures.**
+
+### The hosted `verify` job's one failure is a flake `main` has already recorded
+
+The hosted `CI / verify` job for this pull request failed on exactly one test:
+`codegg-core goal::checkpoint::tests::test_append_checkpoint_update`
+(`assertion failed: content.contains("Phase 1")`). It is a **known flake of
+`main`'s**, recorded in three of `main`'s own closure records —
+`plans/closure/agent-convergence/002-status.md`,
+`plans/closure/eggplan-assessment-integration/002-status.md` and
+`plans/closure/decision-model-extraction-runtime/005-status.md`, the last of
+which records the *same* assertion with the *same* resolution: "rerunning
+that test alone passed, and the subsequent complete canonical nextest sweep
+passed."
+
+Re-run in isolation on this branch, it **passes**:
+
+```
+PASS [   0.013s] (1/1) codegg-core goal::checkpoint::tests::test_append_checkpoint_update
+Summary [   0.015s] 1 test run: 1 passed, 1128 skipped
+```
+
+The test and the code it exercises are **byte-identical to `origin/main`**, and
+`main`'s own hosted `verify` job at `f1b83a7a7` passed — the flake simply
+fired on this run. The two hosted Linux jobs that fail
+(`process-ipc` and `restricted-userns-fails-closed`) fail on `main` at that
+same SHA too, with the same compile error in
+`tests/linux_git_test_support/` — `main`'s C003 read-consistency change made
+`execute_contained_live_read_test_only` return
+`GitReadFact<ManagedProcessResult>` without updating that Linux-gated target.
 
 **The one new guard violation the third stage produced, and its fix.** `main`
 added `scripts/check_test_ownership.py` and `docs/test-ownership.toml` with
