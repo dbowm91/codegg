@@ -53,7 +53,7 @@ default blocked-command set remains empty.
 | `rm -rf /` remains classified as catastrophic | `…::root_delete_spellings_are_classified_as_root_targets`; `…::human_shell_blocks_the_filesystem_root_spellings` | pass | Unchanged verdict |
 | A user-configured deny still matches | `…::a_configured_deny_still_denies_before_the_risk_signal` | pass | `bash_deny_patterns: ["rm -rf /tmp/build"]` → `PermissionResult::Deny` |
 | `default_blocked_commands()` is still empty | `src/tool/bash/policy.rs::default_blocked_commands_is_empty_by_design` (pre-existing lib test, untouched) | pass | The set was not "restored" |
-| The fixture set is not vacuous | The baseline run below: **9 of 11 tests fail** against the baseline implementation | pass | Captured verbatim in §4 |
+| The fixture set is not vacuous | The baseline run below: **10 of 11 tests fail** against the baseline implementation | pass | Captured verbatim in §4.1; the one green test is the plan's *migration invariant* (a configured deny must keep matching), which is green before and after by design |
 | The classifier does not pretend to resolve a variable target | `…::a_variable_target_is_reported_as_unresolved` → `RootDeleteVerdict::UnresolvedTarget` | pass | `rm -rf "$TARGET"` |
 | A benign prefix does not suppress the signal | `…::a_benign_prefix_does_not_suppress_the_root_delete_signal` | pass | `echo ok && rm -rf --no-preserve-root /` |
 | The fixtures never spawn a command | `scripts/check_shell_policy_test_safety.py` (the fixture member is in its audited list) | pass | No `.execute(`, no `Command::new`, no `TerminalTool` |
@@ -170,10 +170,13 @@ spawned**.
 | `rm -rf /tmp/build` | **catastrophic** (the bash seam flagged the `/` prefix and the shell block refused it) | `NotRootDelete`, human shell `Allow` | the scoped-absolute-path defect |
 | `rm -rf ./build` | not catastrophic | `NotRootDelete` | unchanged |
 | `rm -rf /home/user/project/cache` | **catastrophic** (the bash seam's root-name suffix list) | `NotRootDelete` | the scoped-absolute-path defect |
+| `rm -rf ~/docs` | **catastrophic** (the baseline's `rm … (~|$HOME)` pattern had no end anchor, so it flagged every path starting with `~`) | `NotRootDelete` | a removal *inside* the home directory, not of it |
 | `rm -rf "$TARGET"` | not recognised (but not *distinguishable* from "scoped") | `UnresolvedTarget` | the classifier now says "not recognised" explicitly |
 
 The three rows the plan requires to move — the two effective spellings and the scoped
-absolute path — all move.
+absolute path — all move. `rm -rf ~/docs` is the milestone's own addition: it is a scoped
+removal the **baseline classifier** mis-flagged, so the fixture fails on the baseline for
+the classifier's own verdict and not only through the two seams.
 
 ### 3.5 The guard
 
@@ -232,7 +235,8 @@ scripts/verify.sh quick
 
 - The fixture member: **11 passed, 0 failed** after the change
   (`cargo test --test security_permission -- destructive_delete_classification`).
-- The affected library test modules: **128 passed, 0 failed**
+  The scoped-row set carries one row beyond the plan's (`rm -rf ~/docs`) precisely so that
+  every test which pins the *classification* fails on the baseline; see §4.1.- The affected library test modules: **128 passed, 0 failed**
   (`cargo test -p codegg --lib -- destructive tool::bash::policy shell::policy`); the
   human-shell policy module alone: **29 passed, 0 failed**. The pre-existing bash-policy
   assertions that pin the advisory contract (`echo "$(rm -rf /)"`, `echo \`rm -rf /\``,
@@ -258,13 +262,16 @@ scripts/verify.sh quick
 
 The baseline has no verdict API, so the fixture cannot compile against it directly. The
 demonstration therefore restored the baseline production files
-(`git stash push -- src/tool/destructive.rs src/tool/bash/policy.rs src/shell/policy.rs`) and
-appended a **temporary, uncommitted shim** to the baseline `src/tool/destructive.rs` that
+(`git checkout HEAD~2 -- src/tool/destructive.rs src/tool/bash/policy.rs src/shell/policy.rs`)
+and appended a **temporary, uncommitted shim** to the baseline `src/tool/destructive.rs` that
 exposes the verdict API by reusing the baseline's **own** `DESTRUCTIVE_BASH_REGEXES`
 verbatim. The classification behaviour under test was therefore the baseline's, unmodified;
-the shim was discarded afterwards (`git checkout --` + `git stash pop`).
+the shim was discarded afterwards (`git checkout HEAD -- <production files>`).
 
-Result: **2 passed, 9 failed**. The captured output (trimmed to the assertion messages):
+Both commits were already on the branch before the revert, and the diff was also saved to
+`/tmp/c002-baseline-revert.patch`, so the capture is recoverable from the commit alone.
+
+Result: **1 passed, 10 failed**. The captured output (trimmed to the assertion messages):
 
 ```
 ---- destructive_delete_classification::root_delete_spellings_are_classified_as_root_targets stdout ----
@@ -274,6 +281,11 @@ assertion `left == right` failed: the effective root-delete spelling "rm -rf --n
 
 ---- destructive_delete_classification::effective_root_delete_spellings_raise_the_advisory_risk_signal stdout ----
 the effective root-delete spelling "rm -rf --no-preserve-root /" must raise the advisory risk signal
+
+---- destructive_delete_classification::scoped_removals_are_not_classified_as_root_targets stdout ----
+assertion `left == right` failed: the scoped removal "rm -rf ~/docs" must not be classified as a root target
+  left: RootTarget(HomeDirectory)
+ right: NotRootDelete
 
 ---- destructive_delete_classification::scoped_removals_do_not_raise_the_advisory_risk_signal stdout ----
 the scoped removal "rm -rf /home/user/project/cache" must not raise the advisory risk signal
@@ -300,12 +312,21 @@ assertion `left == right` failed
 ---- destructive_delete_classification::an_effective_root_delete_reaches_the_approval_path stdout ----
 the effective root-delete spelling must escalate to the approval path, got: Allow
 
-test result: FAILED. 2 passed; 9 failed; 0 ignored; 0 measured; 325 filtered out
+test result: FAILED. 1 passed; 10 failed; 0 ignored; 0 measured; 325 filtered out
 ```
 
 The two rows the plan names — `rm -rf --no-preserve-root /` (and its option-after-target
 sibling, which fails the same assertion) and the scoped absolute path
 `rm -rf /home/user/project/cache` / `rm -rf /tmp/build` — all fail on the baseline.
+
+**The one test that is green on the baseline is a migration invariant, not a defect pin:**
+`a_configured_deny_still_denies_before_the_risk_signal` asserts that a user-configured
+`bash_deny_patterns` entry still denies. That property is true before and after the change —
+it is the plan's required migration test ("a test that a user-configured deny still matches
+a configured pattern after the change, proving the user's rules were not touched"), and a
+test that only held *after* the change would assert that the user's rules were broken at the
+baseline, which is not the defect this milestone repairs. Every test that pins the
+classification itself fails on the baseline.
 
 ### 4.2 Platform statement
 
