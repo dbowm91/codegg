@@ -129,8 +129,10 @@ pub struct PreflightService {
 ```
 
 Constructors:
-- `new(policy)` — creates fresh `EggsactRuntime` with
-  `audience = "harness"` and `max_output_chars: 8_000`
+- `new(policy) -> Result<Self, ToolError>` — creates a fresh
+  `EggsactRuntime` with `audience = "harness"` and
+  `max_output_chars: 8_000`; **fallible** — an unusable eggsact profile
+  or runtime returns `Err`
 - `with_runtime(runtime, policy)` — shares existing runtime (testing)
 
 Check methods (all return `PreflightDecision`):
@@ -159,7 +161,7 @@ Parse methods (public for testing):
 
 ## Configuration Surface
 
-### Schema (`[preflight]` in opencode.json)
+### Schema (`[preflight]` in `codegg.jsonc`)
 
 ```json
 {
@@ -192,20 +194,78 @@ duplicated CodeGG allowlist.
 ## Integration Points
 
 The preflight service is called by mutating tools **before** executing
-their primary operation. Current integration points:
+their primary operation. Current integration points (every call site
+verified against source):
 
-| Tool | Check Method | What It Validates |
-|------|-------------|-------------------|
-| `edit`, `replace`, `apply_patch` | `check_text_replace` | Replacement exists, is unambiguous |
-| Config write operations | `check_json_valid`, `check_toml_valid`, `check_config` | Config syntax validity |
-| `bash` | `check_command` | Shell command risk patterns |
-| All tools | `check_text_security` | Unicode confusables, hidden chars |
+| Tool | Check Method | Call site | What It Validates |
+|------|-------------|-----------|-------------------|
+| `edit` | `check_text_replace` | `src/tool/edit.rs:183` | Replacement exists, is unambiguous |
+| `edit` | `check_text_security` | `src/tool/edit.rs:196` | Unicode confusables, hidden chars in the replacement |
+| `replace` | `check_text_replace` | `src/tool/replace.rs:191` | Replacement exists, is unambiguous |
+| `replace` | `check_text_security` | `src/tool/replace.rs:204` | Unicode confusables, hidden chars in the replacement |
+| `apply_patch` | `check_text_security` | `src/tool/apply_patch.rs:260`, `:573` | Unicode confusables, hidden chars in patch content and result |
+| `bash` | `check_command` | `src/tool/bash.rs:593`, `src/agent/tool_batch.rs:704` | Shell command risk patterns |
+| — | `check_json_valid`, `check_toml_valid`, `check_config` | no production call site | Config syntax validity (methods exist; unused today) |
+
+`write` does **not** run a preflight check. `check_text_security` is not a
+universal tool hook — it runs only on the three content-mutating tools
+above.
 
 Tool integration is opt-in. Each tool calls the relevant check method
 and acts on the `PreflightDecision`:
 - `Block` in `BlockOnDefinite` mode → tool returns error
 - `Warn` → findings appended to tool output (if `model_visible_findings`)
 - `Allow` → proceed normally
+
+### Wiring
+
+`AgentLoop` builds one `PreflightService` per loop from the resolved
+`PreflightPolicy` (`src/agent/loop.rs:268-275`):
+
+```rust
+let command_preflight = crate::preflight::PreflightService::new(preflight_policy)
+    .map_err(|error| tracing::warn!(%error, "command preflight unavailable"))
+    .ok();
+```
+
+`PreflightService::new` is fallible — an unusable eggsact profile or
+runtime yields `Err`, which the loop degrades to `None`. A missing
+service means "no preflight", not "preflight failed".
+
+## Preflight Is Advisory: Escalation Requires a Finding
+
+Command preflight is wired by default, so `CommandPreflightResult` is
+`Some` for essentially every `bash` call. Escalation is therefore gated
+on a **finding**, never on the preflight having run
+(`src/agent/tool_batch.rs:258-262`):
+
+```rust
+fn preflight_requires_escalation(
+    command_preflight: Option<&crate::tool::authorization::CommandPreflightResult>,
+) -> bool {
+    command_preflight.is_some_and(|result| result.summary.is_some())
+}
+```
+
+Two rules follow, and both are load-bearing:
+
+- An advisory with nothing to say must never outrank the operator. The
+  older `command_preflight.is_some()` test escalated *every* `bash` call,
+  including clean ones.
+- Because the escalation arm is reached from `PermissionResult::Allow` as
+  well as `PermissionResult::Ask`, the old test also discarded stored
+  `AlwaysAllow` grants — the agent silently outranked a prior human
+  approval.
+
+A separate predicate, `preflight_policy_denies_execution`
+(`src/agent/tool_batch.rs:264-268`), gates on `result.blocked` — the
+policy's own refusal, which *is* authoritative.
+
+`BashTool` mirrors the split: when the accepted execution authorization
+already carries a bounded command-preflight summary, the tool reuses it
+instead of running a second scan (`src/tool/bash.rs:582-591`), so a
+post-approval scan cannot produce a decision that contradicts the one the
+operator approved.
 
 ## How Findings Are Surfaced
 
@@ -271,6 +331,44 @@ Unit tests cover:
 - `src/eggsact/adapter.rs` — `EggsactRuntime` used by preflight
 
 ## Source Verification
+
+Verified 2026-10-23 against source. Corrected:
+
+- The Integration Points table listed four rows that did not match the
+  code. `apply_patch` was grouped under `check_text_replace` but actually
+  calls only `check_text_security` (`src/tool/apply_patch.rs:260`, `:573`);
+  `check_text_security` was claimed to run for "All tools" but runs only in
+  `edit`, `replace`, and `apply_patch`; the "Config write operations" row
+  had **no production call site** — `check_json_valid`, `check_toml_valid`,
+  and `check_config` exist but nothing calls them; and `write` was not
+  listed, because it runs no preflight check at all. The table now carries
+  the verified call site for every row.
+- `PreflightService::new` was documented as infallible; it returns
+  `Result<Self, ToolError>` (`src/preflight/service.rs:188`), and
+  `AgentLoop` degrades the error to "no preflight"
+  (`src/agent/loop.rs:268-275`).
+
+Added: a "Preflight Is Advisory: Escalation Requires a Finding" section
+recording `preflight_requires_escalation`
+(`src/agent/tool_batch.rs:258-262`), `preflight_policy_denies_execution`
+(`:264-268`), and the `BashTool` reuse of the already-approved preflight
+summary (`src/tool/bash.rs:582-591`) — the invariant that an advisory must
+never create an escalation on its own.
+
+Verified accurate: `PreflightSeverity` `service.rs:14-21`;
+`PreflightLocation` `:25-29`; `PreflightFinding` `:33-39`;
+`PreflightDecision` enum `:43-47` + impl `:49-86`; `PreflightPolicy`
+struct `:90-107` + impl `:149-178`; `PreflightMode` `:112-121`;
+`PreflightService` struct `:181-184` + impl `:186-548`; all six
+`check_*` methods and their eggsact tool names
+(`text_replace_check`, `validate_json`, `validate_toml`,
+`config_preflight`, `command_preflight`, `text_security_inspect`) with
+their policy gates (`patch`, `config` ×3, `shell`, `unicode`); the three
+`parse_*` methods; the helper functions; `PreflightPolicy::default()`
+(enabled, `Warn`, all categories on, `service.rs:123-136`); harness
+`max_output_chars: 8_000` (`service.rs:192`) vs model `12_000`
+(`src/eggsact/adapter.rs:82`); and the `PreflightConfig` schema
+(`crates/codegg-config/src/schema.rs:4309-4326`).
 
 Verified 2026-10-06 against source. Corrected (the prior "off by 1-4 lines"
 estimate was roughly right, but several refs pointed at an `impl` block range

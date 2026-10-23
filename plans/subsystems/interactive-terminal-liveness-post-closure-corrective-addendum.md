@@ -1,6 +1,6 @@
 # Interactive Terminal Liveness Post-Closure Corrective Addendum
 
-Status: **complete** (C001 conditionally closed — condition discharged by C003; C002 closed; C003 closed; C004 closed 2026-10-17)
+Status: **closed** (C001 conditionally closed — condition discharged by C003; C002 closed; C003 closed; C004 closed 2026-10-17)
 
 Long-term references:
 - `plans/000-long-term-specification.md#45-locality-by-default` — PTYs execute on the node owning the workspace; the coordinator receives **structured events and bounded output** rather than proxying local operation synchronously.
@@ -477,3 +477,11 @@ claim**, without editing those records.
 | C002 | closed (Option B — honest typed refusal) | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/002-honest-transport-refusal-and-capability-boundary.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/002-status.md` | none; no ADR required — C002 delivered no transport |
 | C003 | **closed 2026-10-17** (reclassified from polish to capability 2026-10-17) | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/003-live-surface-cadence-and-honest-mode-state.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/003-status.md` | none; conformance against the closed event loop and panel-key interfaces. No ADR required; no second timer (I4); no terminal bytes on the bus (I2) |
 | C004 | **closed 2026-10-17** | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/004-terminal-surface-ergonomics.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/004-status.md` | none; both former blockers were discharged by C003's closure — the loop is now armed for a mounted surface, and the derived-mode work has landed. No ADR required. The only item left open is the box's viewport plumbing, deferred with a recorded reason in the closure record |
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- Closure records `plans/closure/interactive-terminal-liveness-post-closure-corrective/001-status.md` through `004-status.md` each carry a closed status.
+- `complete` is not in the status vocabulary (`plans/registry.md` § *Status vocabulary*); *closed* is the term for an accepted closure record.
+- C003's production wiring is visible in the tree: `service_terminal_output_pull` is called from `src/tui/runtime/event_loop.rs:498`, so the C001 condition is discharged by C003 as the header claims.

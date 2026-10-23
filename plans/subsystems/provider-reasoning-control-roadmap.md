@@ -375,15 +375,18 @@ This roadmap is closed when:
 
 ### Merge reconciliation with `main` (2026-10-22, and again 2026-10-23)
 
-`main` was reconciled with the closed milestone chain **five times**, because it
-advanced four times while the merged tree was being qualified: first 439 commits to
+`main` was reconciled with the closed milestone chain **six times**, because it
+advanced five times while the merged tree was being qualified: first 439 commits to
 `8cee65934` (eight conflicts), then six more to `47f5572b1` — the
 agent-workstream blackboard's M008 — with one conflict, then 79 more to
 `f1b83a7a7` — the CI/test-throughput recovery workstream and its M004
 root-test-target family consolidation — with two conflicts, then five more to
 `3e43d4144` (the landing of PR #170 and PR #171) with one conflict, and finally five more to
 `12999178a` (PR #173, which is `main`'s own fix for the Linux-gated test-support compile
-error this line's pull request had inherited, and PR #174) with **no conflict at all**.
+error this line's pull request had inherited, and PR #174) with **no conflict at all**, and
+finally nine more to `ff82c68da` (a documentation-surfaces pass that changed **two rows'
+`Source`** and added a third) with **seven** conflicted architecture documents, every one
+resolved by union.
 The reasoning contract survived intact; three allocations yielded to `main` and one surface moved:
 
 - **ADR-0044 → ADR-0048 → ADR-0049** (the open-vocabulary record) and

@@ -7,7 +7,7 @@ and a bounded previous-failures index for automatic reruns.
 ## Purpose
 
 Supervised test execution with structured output parsing,
-process-group-aware timeout handling, lifecycle event publishing,
+managed-child timeout handling, lifecycle event publishing,
 and a bounded previous-failures index. The module is the domain
 authority for test-run semantics; callers reach it exclusively
 through the scheduler.
@@ -24,7 +24,7 @@ through the scheduler.
 | `custom.rs` | Shared custom command allowlist (12 entries, argv-prefix bounded) |
 | `parse.rs` | Line-by-line output parser with ANSI escape stripping |
 | `report.rs` | Text formatter: `format_test_report()` |
-| `runner.rs` | Streaming runner with process-group-aware log capture |
+| `runner.rs` | Streaming runner over a managed child (timeout, stall, redaction, RunStore) |
 | `index.rs` | Bounded previous-failures index (legacy, superseded by RunStore) |
 | `bus_sink.rs` | `BusEventSink` — bridges `TestEventSink` to `GlobalEventBus` |
 | `projection.rs` | `test_report_to_projection()` + `compute_test_delta()` |
@@ -40,13 +40,15 @@ through the scheduler.
 3. **Defense-in-depth**: The resolver re-runs the strict validator before producing
    `ResolvedTestCommand.argv` — even if a presentation-boundary caller forgets to
    validate, the runner still rejects injection attempts.
-4. **Execution**: `run_resolved_test()` spawns a tokio process via
-   `Command::new(argv[0]).args(&argv[1..])` — never via shell. On Unix, the child is
-   placed in its own session/process group via `setsid()` so timeout kills target the
-   entire tree using `libc::kill(-pgid, SIGKILL)`.
-5. **Supervision**: A `tokio::select!` loop enforces wall-clock timeout (default 300s),
-   no-output stall timeout (default 120s), and emits throttled progress events through
-   the `TestEventSink`.
+4. **Execution**: `run_resolved_test()` launches the argv through
+   `ManagedProcessService::run_streaming()` — never via a shell. The managed
+   process owns the child: it applies the requested `SandboxProfile` (a
+   `ReadOnly` profile is refused — test execution needs `WorkspaceWrite`),
+   the `NetworkIntent`, an inherited-or-sanitized environment policy, and a
+   32 MiB per-stream output cap with `ContinueDrain` overflow.
+5. **Supervision**: A `tokio::select!` loop enforces wall-clock timeout
+   (default 300s), no-output stall timeout (default 120s, polled every 5s),
+   and emits throttled progress events through the `TestEventSink`.
 6. **Parsing**: stdout/stderr lines are fed to `TestParseState` via `Arc<Mutex<>>`.
    ANSI escape sequences are stripped before pattern matching.
 7. **Reporting**: `build_report()` classifies exit codes, panics, compile errors,
@@ -61,8 +63,8 @@ through the scheduler.
 
 All production model-facing test execution flows through the scheduler:
 
-- `TestJobExecutor` (`src/scheduler/executors.rs:68`, `impl JobExecutor` at `:83`)
-  implements `JobExecutor` for `JobKind::Test`.
+- `TestJobExecutor` (`src/scheduler/executors.rs`) implements `JobExecutor` for
+  `JobKind::Test`.
   It constructs a `TestScope::BashDispatch(argv)` from the job payload and delegates to
   `resolve_and_run_test()`.
 - `src/tool/test.rs` submits jobs via `JobSubmissionService` and waits for completion.
@@ -195,7 +197,7 @@ pub trait TestEventSink: Send + Sync {
 
 Snapshot types carry `session_id`, `job_id`, and event-specific fields.
 
-### DelegatedTestRun (`runner.rs:356-359`)
+### DelegatedTestRun (`src/test_runner/runner.rs`)
 
 Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some`
 when the canonical TestRunner successfully began a `RunKind::Test` record; `None`
@@ -203,7 +205,7 @@ when no record could be begun or no `RunStore` was provided. This is the
 **record-ownership contract**: callers suppress duplicate persistence only when
 `run_id` is present.
 
-### TestResolveError (`resolve.rs:12-34`)
+### TestResolveError (`src/test_runner/resolve.rs`)
 
 ```rust
 pub enum TestResolveError {
@@ -219,21 +221,25 @@ pub enum TestResolveError {
 }
 ```
 
-### TestRunError (`runner.rs:31-61`)
+### TestRunError (`src/test_runner/runner.rs`)
 
 ```rust
 pub enum TestRunError {
     Resolve(TestResolveError),
     LogDir(io::Error),
-    Spawn(io::Error),
-    StdoutPipe(io::Error),
-    StderrPipe(io::Error),
+    Process(ManagedProcessError),
     LogWrite(io::Error),
-    ProcessWait(String),
     EmptyCommand,
     InvalidRequest(String),
+    RunStore(String),
 }
 ```
+
+`Process` wraps `crate::managed_process::ManagedProcessError` — the launch,
+containment, and termination failures of the managed child. `RunStore` carries
+the stringified store error: a persistence failure is surfaced to the scheduler
+rather than swallowed, because an accepted rerun must not be reported as a
+successful, untraceable child.
 
 ### TestParseState (`parse.rs:21-30`)
 
@@ -255,13 +261,18 @@ pub struct TestParseState {
 ```rust
 // resolve.rs
 pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestCommand>
+pub fn resolve_validated_custom_command(cmd: &str) -> Result<ValidatedCustomCommand>
 pub fn has_cargo_manifest(workdir: &Path) -> bool
 pub fn has_python_test_markers(workdir: &Path) -> bool
 pub fn detect_language_for_auto(workdir: &Path) -> Result<TestLanguage>
 
 // runner.rs
 pub async fn resolve_and_run_test(...) -> Result<DelegatedTestRun, TestRunError>
+pub async fn resolve_and_run_test_with_profile(...) -> Result<DelegatedTestRun, TestRunError>
+pub async fn resolve_and_run_test_with_profile_and_network(...) -> Result<DelegatedTestRun, TestRunError>
 pub async fn run_resolved_test(...) -> Result<DelegatedTestRun, TestRunError>
+pub async fn run_resolved_test_with_profile(...) -> Result<DelegatedTestRun, TestRunError>
+pub async fn run_resolved_test_with_profile_and_network(...) -> Result<DelegatedTestRun, TestRunError>
 
 // parse.rs
 pub fn ingest_stdout_line(state: &mut TestParseState, line: &str)
@@ -286,7 +297,7 @@ pub fn compute_test_delta(current: &TestReport, previous: &TestReport) -> TestDe
 
 ## Configuration Surface
 
-### Runner constants (`runner.rs:24-28`)
+### Runner constants (`src/test_runner/runner.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -294,9 +305,9 @@ pub fn compute_test_delta(current: &TestReport, previous: &TestReport) -> TestDe
 | `DEFAULT_STALL_TIMEOUT_SECS` | 120 | No-output stall timeout |
 | `DEFAULT_MAX_REPORT_BYTES` | 20,000 | Report body cap |
 | `STALL_CHECK_INTERVAL` | 5s | Polling interval for stall detection |
-| `GRACEFUL_KILL_TIMEOUT` | 3s | Wait after SIGKILL before reporting |
+| `TEST_PROCESS_OUTPUT_CAP` | 32 MiB | Per-stream stdout/stderr cap on the managed child |
 
-### Formatter constants (`report.rs:3-8`)
+### Formatter constants (`src/test_runner/report.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -305,7 +316,7 @@ pub fn compute_test_delta(current: &TestReport, previous: &TestReport) -> TestDe
 | `MAX_TIMEOUT_EXCERPT_BYTES` | 2000 | Truncation limit for timeout last_output |
 | `DEFAULT_MAX_REPORT_BYTES` | 20,000 | Total report body cap |
 
-### Index constants (`index.rs:14-18`)
+### Index constants (`src/test_runner/index.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -332,15 +343,38 @@ metacharacters (`;`, `&&`, `||`, `|`, `>`, `<`, backticks, `$()`, `${}`, quotes,
 globs, tilde, `#`, `!`, control characters, bidi Unicode) and enforces
 argv-token-bounded prefix matching (so `pytestevil` does NOT match `pytest`).
 
-### Process-group cleanup (Unix only)
+### Process ownership: the managed child, not a raw `tokio::process`
 
-On Unix, the child is placed in its own session/process group via `setsid()`
-in `pre_exec` (`runner.rs:386-391`). Timeout kills target the entire process
-tree using `libc::kill(-pgid, SIGKILL)` (`runner.rs:591-608`).
+The runner no longer spawns a bare `tokio::process::Command` and no longer
+manages a process group itself. It builds a
+`crate::managed_process::ManagedProcessRequest` and runs it through
+`ManagedProcessService::run_streaming()`, so timeout, cancellation,
+containment, output caps, and reaping are owned by the shared managed-process
+subsystem rather than by `src/test_runner/`.
 
-**Non-Unix fallback**: `spawn_child` skips `setsid()`, and `kill_child` falls
-back to `child.kill().await`, which only kills the direct child. Grandchildren
-can outlive the timeout. This is a known limitation.
+What the runner does own:
+
+- **Sandbox profile.** `SandboxProfile::ReadOnly` is refused outright
+  ("test execution requires WorkspaceWrite authority"). A profile that
+  requires filesystem containment builds its launch spec through
+  `crate::security::sandbox::sandbox_config_for_durable_payload()` while the
+  config is still being assembled — asking afterwards produced a spec with no
+  captured identity, and the launch failed closed.
+- **Network intent.** `NetworkIntent::LegacyUnrestricted` by default; the
+  scheduler may pass a stricter intent.
+- **Environment policy.** Inherited by default; sanitized when the profile
+  requires filesystem containment.
+- **Output caps.** 32 MiB per stream with `OverflowPolicy::ContinueDrain`.
+  Exceeding the cap is reported as `ChildFailed("managed output limit
+  exceeded")`.
+- **Cancellation.** The request's `CancellationToken` cancels the managed
+  child; the supervisor classifies the resulting termination as
+  `WallClockTimeout`, `StallTimeout`, or `Cancelled` depending on why it
+  stopped.
+
+**Non-Unix fallback:** no longer applies — the managed process owns the
+child on every platform, so the old "grandchildren can outlive the timeout"
+caveat is a property of the managed-process subsystem, not of this module.
 
 ### Previous-failures index (legacy)
 
@@ -348,8 +382,9 @@ The legacy `.codegg/test-runs/index.json` is retained for backward compatibility
 RunStore is the authoritative persistence layer. The legacy index is deprecated
 and will be removed once `PreviousFailures` reads from RunStore directly.
 
-Writing is serialized via `OnceLock<tokio::sync::Mutex<()>>` (`index.rs:113`).
-Atomic writes use a per-process `.tmp` + rename (`index.rs:194-199`).
+Writing is serialized via `OnceLock<tokio::sync::Mutex<()>>` (`src/test_runner/index.rs`).
+Atomic writes use a per-process `.tmp` + rename (`write_index_atomic()` in the
+same file).
 
 ### Stale completion protection
 
@@ -367,9 +402,14 @@ record. Callers check `run_id` to suppress duplicate persistence. The runner cal
 
 ### Validation re-run
 
-The resolver (`resolve_validated_custom_command` at `resolve.rs:232`) re-runs
-the strict validator as defense-in-depth. Empty input is mapped to the legacy
-`EmptyCustomCommand` variant so existing callers keep working.
+The resolver (`resolve_validated_custom_command()` in
+`src/test_runner/resolve.rs`) re-runs the strict validator as defense-in-depth.
+Empty input is mapped to the legacy `EmptyCustomCommand` variant so existing
+callers keep working.
+
+`TestScope::BashDispatch` is the one scope that does **not** re-validate: its
+argv was already validated by the planner, and the resolver consumes it
+directly (using `request.execution_cwd` when present, otherwise the workdir).
 
 ## Testing
 
@@ -383,12 +423,12 @@ Submodule targeting:
 
 ```bash
 cargo test -p codegg --lib test_runner::custom    # 29 tests
-cargo test -p codegg --lib test_runner::parse      # 25 tests
+cargo test -p codegg --lib test_runner::parse      # 23 tests
 cargo test -p codegg --lib test_runner::report     # 12 tests
-cargo test -p codegg --lib test_runner::runner     # 8 tests
+cargo test -p codegg --lib test_runner::runner     # 17 tests
 cargo test -p codegg --lib test_runner::index      # 17 tests
 cargo test -p codegg --lib test_runner::projection # 21 tests
-cargo test -p codegg --lib test_runner::resolve    # 15 tests
+cargo test -p codegg --lib test_runner::resolve    # 16 tests
 ```
 
 Integration test suites:
@@ -429,3 +469,51 @@ files, 13 `FailureClass` variants, the four enums at `types.rs:5/22/29/38`,
 14, `TestParseState` 8, `TestScope` 8 variants, 12-entry allowlist, runner
 constants (`runner.rs:24-28`), formatter constants, index constant values,
 `TestJobExecutor` (`src/scheduler/executors.rs:68`/`83`).
+
+Verified 2026-10-23 against `src/test_runner/{types,resolve,runner,parse,report,index,custom,bus_sink,projection}.rs`,
+`src/scheduler/executors.rs`, and the root `Cargo.toml` test targets.
+Corrected:
+
+- **The process model was wrong.** The document claimed the runner spawns a
+  bare `tokio::process::Command`, puts the child in its own session via
+  `setsid()` in `pre_exec`, and kills the tree with
+  `libc::kill(-pgid, SIGKILL)`, with a "non-Unix fallback" caveat. None of
+  that is in the source any more: `run_resolved_test*()` builds a
+  `crate::managed_process::ManagedProcessRequest` and runs it through
+  `ManagedProcessService::run_streaming()`. The section is now titled "Process
+  ownership: the managed child, not a raw `tokio::process`" and documents what
+  the runner actually owns — sandbox profile (with `ReadOnly` refused),
+  network intent, environment policy, the 32 MiB per-stream output cap, and
+  cancellation.
+- **`TestRunError` rewritten.** The old variant list (`Spawn`, `StdoutPipe`,
+  `StderrPipe`, `ProcessWait`) does not exist. The current enum is
+  `Resolve`, `LogDir`, `Process(ManagedProcessError)`, `LogWrite`,
+  `EmptyCommand`, `InvalidRequest(String)`, `RunStore(String)`.
+- **Runner constants corrected.** `GRACEFUL_KILL_TIMEOUT` is gone (it belonged
+  to the removed raw-spawn path); `TEST_PROCESS_OUTPUT_CAP` (32 MiB) was
+  missing and is now listed.
+- **Test counts re-measured** with a Rust-aware scan of the `#[test]` /
+  `#[tokio::test]` attributes: parse 25 → 23, runner 8 → 17, resolve 15 → 16.
+  custom 29, index 17, projection 21, and report 12 are unchanged.
+- **Stale line refs replaced by symbol names**: `DelegatedTestRun`,
+  `TestResolveError`, `TestRunError`, the runner/formatter/index constant
+  blocks, `resolve_validated_custom_command()`, the index lock, and the atomic
+  write.
+- **`TestJobExecutor` line refs dropped** (`executors.rs:68`/`:83` had drifted;
+  the `impl JobExecutor` block is now at `:112`).
+- **API surface completed**: `resolve_validated_custom_command()` and the
+  `*_with_profile` / `*_with_profile_and_network` variants of
+  `resolve_and_run_test()` and `run_resolved_test()` are now listed, and the
+  `BashDispatch` scope's explicit no-re-validation contract is stated in
+  "Validation re-run".
+
+Verified accurate: 10 files; 13 `FailureClass` variants with `Display`,
+`from_display_str()`, `as_str()`, and `Hash`; `TestScope`'s 8 variants and the
+`BashDispatch` bypass; the four scalar enums; the `TestRunRequest` (9 fields),
+`ResolvedTestCommand` (4), `TestFailure` (5), `TestTimeout` (3), `TestReport`
+(14), and `TestParseState` (8) field lists; the `TestEventSink` trait shape;
+the 12-entry allowlist and its argv-token-bounded matching; the formatter and
+index constant values; the language-detection rules (including the
+`tests/`-must-contain-`.py` refinement that keeps Rust workspaces out of
+`AmbiguousEcosystem`); the `Resolve` → `Reject` backends; the record-ownership
+contract; and the legacy-index status.

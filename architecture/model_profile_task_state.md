@@ -161,10 +161,10 @@ The full adapter result, beyond just the profile:
 `PromptProfileKind` (`crates/codegg-config/src/schema.rs:77`) has 9 variants:
 `FrontierReasoning`, `FrontierExecutor`, `FastExecutor`, `LocalStrict`,
 `ToolFragile`, `LongContextPlanner`, `Reviewer`, `Summarizer`, `Default`.
-Only six are referenced by the built-in adapter TOMLs
+Only five are referenced by the built-in adapter TOMLs
 (`frontier_reasoning`, `long_context_planner`, `local_strict`,
-`fast_executor`, `default`); `ToolFragile`, `Reviewer`, and `Summarizer` are
-config-selectable.
+`fast_executor`, `default`); `FrontierExecutor`, `ToolFragile`, `Reviewer`, and
+`Summarizer` are config-selectable.
 
 Per-profile turn policy defaults live in `src/agent/policy.rs` and group
 profiles explicitly rather than per adapter:
@@ -304,10 +304,14 @@ pub struct TaskStatePolicy {
   `max_total_items = 0`, `inject_after_tool_calls = None`
 - `GuidedCurrentTask` forces: `allow_model_todo_write = false`,
   `max_total_items = min(4, configured)`
-- There is no global `max_total_items` cap in `TaskStatePolicy`: `apply_config`
-  takes the configured value verbatim. The `clamp(1, 12)` bound lives in the
-  WorkPlan projection (`crates/codegg-core/src/work_plan/todo_projection.rs:127`),
-  which truncates actionable items before writing them into TodoState.
+- `max_total_items` has a **global cap of 12** in `TaskStatePolicy::validate`
+  (`crates/codegg-core/src/model_profile/types.rs:180-182`), and
+  `apply_config` ends by calling `validate()` (`:167`), so a configured value
+  above 12 is narrowed to 12 rather than taken verbatim. The separate
+  `clamp(1, 12)` in the WorkPlan projection
+  (`crates/codegg-core/src/work_plan/todo_projection.rs:127`) is a *lower*
+  bound on that cap (a configured 0 becomes 1), and it truncates actionable
+  items before writing them into TodoState.
 
 ### State Transitions
 
@@ -464,3 +468,35 @@ adapter TOMLs and all 7 adapter IDs/priorities
 `min(4)` narrowing (`model_profile/types.rs:177-179`),
 `OrchestrationTier` (`SoloPreferred`/`DelegationCapable`/`ConvergenceCapable`,
 default `SoloPreferred`), and `crates/codegg-core/src/work_plan/` existence.
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: the sentence "Only six are referenced by the built-in adapter
+  TOMLs" was wrong twice over — it named five profiles, and the count is
+  **five**. The five are `frontier_reasoning` (anthropic.toml, openai.toml),
+  `long_context_planner` (google.toml), `local_strict` (laguna.toml,
+  local.toml), `fast_executor` (minimax.toml), and `default` (generic.toml).
+  `FrontierExecutor` was also missing from the "config-selectable" list, which
+  now reads `FrontierExecutor`, `ToolFragile`, `Reviewer`, `Summarizer`.
+- **Verified accurate**: 7 adapter TOMLs and all 7 adapter ids/priorities
+  (`generic` -1000, `local-strict` 5, `anthropic-frontier` 10,
+  `openai-frontier` 10, `google-long-context` 10, `minimax-fast-executor` 20,
+  `poolside-laguna-agentic` 40); `BUILTIN_ADAPTER_SOURCES`
+  (`crates/codegg-core/build.rs:171`); `ResolvedModelAdapter` 18 fields
+  (`adapter.rs:187`); `ResolvedModelProfile` 20 fields
+  (`crates/codegg-core/src/model_profile/types.rs:9`) and `TaskStatePolicy`
+  12 fields (`types.rs:40`); `PromptProfileKind` 9 variants
+  (`crates/codegg-config/src/schema.rs:77`); every cell of the
+  `default_context_window` / `default_threshold` / `default_reserved` table
+  (`src/agent/policy.rs:80-110`); the `clamp(1, 12)` WorkPlan projection cap
+  (`crates/codegg-core/src/work_plan/todo_projection.rs:127`);
+  `TodoState` 4 fields, `TodoItem` 5 fields, `TodoStatus` 5 variants,
+  `TodoPriority` 3 variants (`crates/codegg-core/src/task_state/mod.rs`).
+- **Corrected**: the "Validation Rules" section claimed there is **no** global
+  `max_total_items` cap in `TaskStatePolicy`. That was false.
+  `TaskStatePolicy::validate` caps `max_total_items` at 12
+  (`crates/codegg-core/src/model_profile/types.rs:180-182`) and
+  `apply_config` calls `validate()` before returning (`:167`), so a configured
+  value above 12 is narrowed to 12. The `clamp(1, 12)` in the WorkPlan
+  projection is a separate lower bound, not the only bound. The section now
+  states both bounds.

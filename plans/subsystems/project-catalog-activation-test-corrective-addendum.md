@@ -1,6 +1,6 @@
 # Project Catalog Activation Test Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository planning baseline: `30e00916`
 
@@ -54,7 +54,7 @@ One milestone:
 
 - `plans/implementation/project-catalog-activation-test-corrective/001-concurrent-coalescing-lease-lifetime.md`
 
-Status: implemented.
+Status: closed.
 
 C001 must:
 
@@ -90,3 +90,11 @@ C001 closes only when:
 - hosted `CI / verify` runs the full workspace sweep to completion, and
   `Desktop E2E` is green, on the fix head;
 - the additive closure record is committed and registered.
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- `plans/closure/project-catalog-activation-test-corrective/001-status.md` carries `Status: closed`.
+- The per-milestone line that read `Status: implemented.` (§2 *Corrective scope*) was also stale and now reads `Status: closed.`
+- `plans/registry.md` already reads *closed* for this corrective.

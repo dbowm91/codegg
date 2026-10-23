@@ -1,6 +1,6 @@
 # Tool-Selection Advisor — Post-Closure Model and Disclosure Corrective Addendum
 
-Status: active
+Status: blocked (M001–M003 closed; M004 blocked on live primary-model/provider qualification evidence)
 
 Repository audit baseline: `c9087346620988a7c793fb2687732a62e481103a`
 
@@ -323,3 +323,11 @@ A negative A/B result is acceptable closure evidence. In that case the contextua
 | M002 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/002-contextual-encoder-runtime-and-training.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/002-status.md` | Historical closure retained; training/evaluation claims require the later evidence-integrity corrective. |
 | M003 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/003-pre-turn-proactive-tool-disclosure.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/003-status.md` | Authority placement remains valid; candidate-shortlisting quality is corrected separately. |
 | M004 | blocked | `plans/implementation/tool-selection-advisor-post-closure-corrective/004-small-model-trajectory-qualification.md` | — | Requires positive C004 closure from `tool-selection-advisor-evidence-integrity-corrective-addendum.md` plus original live-provider/resource evidence. |
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- §12 *Milestone status* lists M001–M003 as `closed` and M004 as `blocked`, and §7 M004's own status line says it is blocked on live primary-model/provider qualification evidence.
+- A roadmap whose only remaining milestone is blocked is *blocked*, not *active*.
+- `plans/registry.md` already reads *blocked* for this addendum.

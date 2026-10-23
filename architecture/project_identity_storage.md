@@ -24,6 +24,10 @@ until an operator uses project rebind to select one root. Binding revisions
 are incremented on successful rebinds and are required by
 `ProjectStorage::rebind_workspace` and `rebind_session`.
 
+`ProjectStorageError` has five variants: `Database`, `NotFound`,
+`InvalidValue`, `RevisionConflict` (carries `kind`, `expected`, `actual`),
+and `Conflict`.
+
 ## Reconciliation rules
 
 `ProjectStorage::reconcile_workspace_path` probes only the supplied registered
@@ -39,6 +43,35 @@ diagnostic and does not merge records.
 marks sessions without a resolvable workspace as `rebind_required`. It is
 safe to rerun: resolved workspace bindings and resolved session bindings are
 retained, and uniqueness constraints prevent duplicate authority.
+
+`reconcile_workspace_path` is the public probe-and-reconcile entry point;
+it calls `inspect_repository_lineage` **before** any write transaction and
+then delegates to `reconcile_workspace`, which retries
+`reconcile_workspace_once` up to three times on a
+`database is locked` error (10 ms backoff) and otherwise returns the single
+result. `reconcile_workspace_once` is private and is the arm that treats a
+`resolved` binding as authoritative without re-probing.
+
+## Managed checkout binding (M006)
+
+A checkout is a second working directory of a project, not a new project. The
+auto-provisioning rule above gives every previously unseen workspace root its
+own logical project, which is right for a directory the user opens and wrong
+for a launch. `ProjectStorage::bind_checkout_workspace` is the explicit
+alternative: the checkout's workspace joins the launch's project, shares the
+launch's repository, and records the managed `WorktreeId` it belongs to.
+
+The call is **refused** when the workspace is already bound to a *different*
+project (`ProjectStorageError::Conflict`) — a checkout that belongs to
+another project is not adopted by a launch; the caller must name that
+project. A workspace bound with a non-`resolved` status is refused the same
+way. Because the transaction reads the existing binding before writing the
+row, it opens with `BEGIN IMMEDIATE` (`crate::storage::immediate::ImmediateWrite`),
+not a deferred transaction.
+
+`ProjectStorage::record_workspace_worktree` is the narrower seam that
+attaches a `WorktreeId` to an already-`resolved` workspace binding and
+updates `workspace_project_binding.worktree_id`.
 
 ## Directory open registration
 
@@ -85,9 +118,10 @@ caller receives `ProjectStorageError::RevisionConflict`.
 ## Project Catalog Layer
 
 The catalog service in `codegg_core::project_catalog` sits above
-`ProjectStorage` and provides list, get, register, archive, and restore
-operations on logical projects, with locator placeholders, health
-placeholders, and restart hydration. See `architecture/project_catalog.md`.
+`ProjectStorage` and provides list, get, register, archive, restore, update,
+and delete operations on logical projects, plus locator attach/detach, health
+placeholders, session/workspace listings, `mark_opened`, `count_by_lifecycle`,
+and restart hydration. See `architecture/project_catalog.md`.
 
 ## Discovery reconciliation boundary
 
@@ -105,7 +139,8 @@ workspace bindings.
 cargo test -p codegg-core project_storage
 cargo test -p codegg-core repository_lineage
 cargo test -p codegg-core migration
-cargo test --test storage_migrations
+# `storage_migrations` is a member of the `core_daemon` family, not a target.
+cargo test --test core_daemon -- storage_migrations
 python3 scripts/check_identity_path_usage.py
 python3 scripts/check_identity_path_usage.py --fixture scripts/fixtures/identity_path_usage/path_derived.rs  # expected rejection
 ```
@@ -120,11 +155,36 @@ and `session.directory` values are compatibility projections.
 
 ## Source verification
 
-Verified 2026-10-06 against
+Verified 2026-10-23 against
 `crates/codegg-core/src/project_storage.rs`,
-`crates/codegg-core/src/migration.rs`, and
-`crates/codegg-core/src/session/schema.rs`. No corrections were needed —
-this doc was accurate. Verified accurate: all six canonical v25 tables
+`crates/codegg-core/src/project_catalog.rs`,
+`crates/codegg-core/src/migration.rs`,
+`crates/codegg-core/src/session/schema.rs`,
+`crates/codegg-core/src/session/store.rs`,
+`crates/codegg-protocol/src/core.rs`, and
+`src/tui/commands/project_picker.rs`.
+
+Corrections made in this pass:
+
+- **`ProjectStorageError` variant count: 4 → 5.** The enum now also carries
+  `Conflict` alongside `Database`, `NotFound`, `InvalidValue`, and
+  `RevisionConflict`.
+- **Added the managed-checkout binding section.** `bind_checkout_workspace`
+  and `record_workspace_worktree` were missing entirely, although
+  `project_storage.rs` owns them and the M006 checkout-is-a-second-working-
+  directory rule is load-bearing for a launch.
+- **Test target fix.** `cargo test --test storage_migrations` selects
+  nothing: `storage_migrations` is a member of the root package's
+  `core_daemon` family (`tests/core_daemon/storage_migrations.inc`).
+  Corrected to `cargo test --test core_daemon -- storage_migrations`.
+- **Added the `reconcile_workspace` / `reconcile_workspace_once` split**
+  (public probe-then-reconcile, private authoritative arm with a bounded
+  `database is locked` retry), which the "Directory open registration"
+  section referenced by name without stating where it lives.
+- **Catalog layer operation list** now names `update`/`delete` and the
+  locator/health/hydration surfaces that `project_catalog.rs` actually owns.
+
+Verified accurate, no change: all six canonical v25 tables
 (`logical_project`, `repository`, `project_repository`,
 `workspace_project_binding`, `session_project_binding`,
 `identity_diagnostic`), the `ProjectStorage` API surface
@@ -132,7 +192,8 @@ this doc was accurate. Verified accurate: all six canonical v25 tables
 `rebind_session`, `inspect_workspace`,
 `list_diagnostics_for_workspace`), `migrate_legacy_project_database` in
 `migration.rs:128` establishing the workspace binding before importing
-session IDs, the four `ProjectStorageError` variants including
-`RevisionConflict`, and the `SessionStore::create_with_binding` seam. The
-doc carries no numeric or line-ref claims, so nothing required
-correction.
+session IDs, and the `SessionStore::create_with_binding` seam in
+`session/store.rs:179`. The `ensure_bound_project_context` flow really does
+issue `CoreRequest::WorkspaceRegister` then `CoreRequest::ProjectRegister`,
+and the catalog's healing `UPDATE` really is guarded on
+`repository_id IS NULL` (`project_catalog.rs:846`).

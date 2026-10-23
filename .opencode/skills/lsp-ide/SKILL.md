@@ -99,3 +99,54 @@ are distinct targets. Real-server tests require separately installed servers
 and are excluded from default workspace sweeps; follow the exact feature
 guidance in `AGENTS.md`. Keep navigation and diagnostics read-only unless a
 separately planned edit contract authorizes mutation.
+
+## See Also
+
+- `architecture/lsp.md` — authoritative LSP contract
+- `architecture/ide.md` — the IDE-facing operations and their DTOs
+- `architecture/tui.md` — the editor keymap and the change-review surface
+- `architecture/client.md` — the frontend/client boundary the TUI consumes
+- `architecture/agent.md` — tool dispatch for the model-facing preview-apply
+  tool
+- `architecture/security.md` — the daemon-owned sandbox and containment rules
+  that bound an LSP server launch
+- `.opencode/skills/tui/SKILL.md` — TUI command registration and async dispatch
+- `.opencode/skills/tool-execution/SKILL.md` — the process-ownership rules that
+  govern the LSP child processes
+- `.opencode/skills/security-hardening/SKILL.md` — platform containment
+  guarantees (Linux/macOS qualified, Windows backend absent)
+
+## Source verification
+
+Verified 2026-10-23 against `crates/egglsp/src/server.rs`,
+`crates/egglsp/src/bin/`, `crates/egglsp-test-server/src/main.rs`,
+`src/lsp/`, `src/core/daemon_lsp.rs`, `src/tui/commands/change_review.rs`,
+`crates/codegg-protocol/src/core.rs`,
+`scripts/check_tui_editor_apply_path.py`, `Cargo.toml`, and `AGENTS.md`.
+
+Confirmed unchanged: `crates/egglsp` owning the implementation with
+`src/lsp/` as a thin shim (the shim holds `mod.rs`, `mutation.rs`,
+`semantic_context.rs`, the `hunk_nav*` modules, and `m004.rs` — no language
+server implementation); `CoreDaemon::start_lsp_diagnostics_driver`
+(`src/core/daemon_lsp.rs:1469`), called from `src/main.rs:4580,4860`;
+`build_apply_request` (`src/tui/commands/change_review.rs:77`) as the single
+place a `CoreRequest::LspPreviewApply` is built;
+`CoreRequest::LspPreviewApply` (`crates/codegg-protocol/src/core.rs:3176`);
+`scripts/check_tui_editor_apply_path.py` enforcing that single apply path;
+and the two distinct test-server binaries — `codegg-lsp-test-server` is the
+root package's `[[bin]]` behind `lsp-test-support`
+(`Cargo.toml:106-109`, path `crates/egglsp-test-server/src/main.rs`), while
+the `egglsp` package builds `egglsp-test-server` from `crates/egglsp/src/bin/`.
+
+No claim in this skill was contradicted by the current tree. The only changes
+are the addition of this note and of the missing `## See Also` section, which
+the skill's own intro pointed at (`architecture/lsp.md`, `architecture/tui.md`,
+`architecture/client.md`) but never listed under a `## See Also` heading.
+
+Not verified: the F2–F7 key bindings and the `space k` / `space s` /
+`space S` / `space d` / `space h` / `gr` / `gd` / `gi` / `space r` / `=` /
+`space a` chords are asserted by this skill but were **not** re-checked
+line-by-line against the TUI keymap in this pass — the TUI keymap lives in
+`src/tui/` and is owned by the `tui` skill's audit. Treat the chord list as
+authoritative only after reading the TUI editor's own keymap.
+

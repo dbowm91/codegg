@@ -377,6 +377,7 @@ pub fn spawn_process_runtime(
     generation: u64,
     child: tokio::process::Child,
     stderr: tokio::process::ChildStderr,
+    status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
 ) -> (LspProcessRuntime, tokio::task::JoinHandle<()>)
 ```
 
@@ -422,7 +423,7 @@ pub async fn restart_client_coordinator<S, F>(...) -> Result<(), LspError>
 
 #### User-configurable restart
 
-User-configurable restart overrides profile defaults via the `[lsp.<server>.restart]` TOML section. The `LspRestartPolicyConfig` struct (in `crates/egglsp/src/config.rs`, mirrored in `crates/codegg-config/src/schema.rs`) has optional fields: `mode`, `max_attempts`, `initial_backoff_ms`, `max_backoff_ms`, `reset_after_healthy_secs`. `LspClientDescriptor::from_profile` merges non-None user fields into the profile defaults using `merge_with_profile()`, so explicit user config wins over profile defaults over server-definition defaults. The merged result is persisted in the `descriptor_map` and read by the restart coordinator on each restart attempt.
+User-configurable restart overrides profile defaults via the `[lsp.<server>.restart]` TOML section. The `LspRestartPolicyConfig` struct (in `crates/egglsp/src/config.rs`, mirrored in `crates/codegg-config/src/schema.rs`) has optional fields: `mode`, `max_attempts`, `initial_backoff_ms`, `max_backoff_ms`, `reset_after_healthy_secs`. `mode` is `"disabled"` or `"on_unexpected_exit"` (`LspRestartModeConfig`). The `restart` table lives inside the per-server `LspRule::Active` arm of the untagged `[lsp]` config, so a server rule that omits it keeps the profile default. `LspClientDescriptor::from_profile` merges non-None user fields into the profile defaults using `merge_with_profile()`, so explicit user config wins over profile defaults over server-definition defaults. The merged result is persisted in the `descriptor_map` and read by the restart coordinator on each restart attempt.
 
 ### document_sync.rs - Document Replay Registry
 
@@ -490,9 +491,9 @@ impl Lsp {
 
 ```rust
 pub struct LspService {
-    clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
-    initializing: Arc<Mutex<HashMap<String, InitSlot>>>,
-    active_init_tasks: Arc<Mutex<HashMap<u64, InitTaskControl>>>,
+    clients: ClientMap,                       // Arc<RwLock<HashMap<String, Arc<LspClient>>>>
+    initializing: InitMap,                    // Arc<Mutex<HashMap<String, InitSlot>>>
+    active_init_tasks: ActiveTaskMap,         // Arc<Mutex<HashMap<u64, InitTaskControl>>>
     document_owners: Arc<RwLock<HashMap<String, String>>>,
     document_registry: Arc<OpenDocumentRegistry>,
     operational_state: Arc<RwLock<HashMap<String, OperationalServerState>>>,
@@ -506,8 +507,19 @@ pub struct LspService {
     lifecycle: Arc<RwLock<LifecycleState>>,
     lifecycle_tx: watch::Sender<LifecycleState>,
     config: LspConfig,
+    process_launcher: Arc<dyn LspProcessLauncher>,
+    restart_tasks: RestartTaskMap,            // Arc<Mutex<HashMap<String, RestartTaskControl>>>
+    restart_owner_counter: AtomicU64,
 }
 ```
+
+`process_launcher` is the service-scoped child owner used for initial LSP
+launches and restarts: a constrained service receives its daemon-owned
+launcher there and cannot switch launch authority per request.
+`restart_tasks` plus `restart_owner_counter` are the per-key restart
+ownership map (one entry per key under active restart) and the monotonic
+owner-id source; concurrent restarts of the same key resolve deterministically
+and different keys restart independently — there is no global restart mutex.
 
 `LspService::new(config)` is the **crate-private** (test-only) bare constructor — it returns a `Self` without the cyclic back-reference wired, so the exit-receiver task is NOT auto-started. It is restricted to `pub(crate)` so production callers cannot accidentally create an un-supervised service. `LspService::new_arc(config) -> Arc<Self>` is the production constructor: it builds the service via `Arc::new_cyclic(|weak| Self { ..., self_ref: OnceLock::from(weak.clone()), ... })`, which wires the back-reference and guarantees `ensure_exit_receiver_started` can self-activate from `&self` callers. The test `new_arc_wires_self_ref` proves the production constructor populates `self_ref` (read via the `Weak` upgrade). No public production path creates an un-supervised service.
 
@@ -533,15 +545,21 @@ Documented on the struct for future contributors.
 
 ```rust
 impl LspService {
-    pub fn new(config: LspConfig) -> Self
+    #[cfg(test)]
+    pub(crate) fn new(config: LspConfig) -> Self
     pub fn new_arc(config: LspConfig) -> Arc<Self>  // production: wires back-reference
+    pub fn new_arc_with_launcher(config: LspConfig, launcher: Arc<dyn LspProcessLauncher>) -> Arc<Self>
     pub async fn ensure_exit_receiver_started(self: &Arc<Self>)
     pub async fn get_or_create_client(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn get_or_create_client_for_file(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn ensure_file_open_from_disk(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn find_existing_client_for_root_hint(&self, root_hint: Option<&Path>, server_id: Option<&str>) -> Result<(String, PathBuf), LspError>
     pub async fn open_file(&self, file_path: &Path, text: &str) -> Result<(), LspError>
+    pub async fn open_file_managed(&self, file_path: &Path, text: &str) -> Result<(), LspError>
+    pub async fn set_managed_document(&self, file_path: &Path, text: &str) -> Result<(), LspError>
+    pub async fn is_managed_document_dirty(&self, file_path: &Path) -> bool
     pub async fn update_file(&self, file_path: &Path, text: &str) -> Result<(), LspError>
+    pub async fn update_file_managed(&self, file_path: &Path, text: &str) -> Result<(), LspError>
     pub async fn close_file(&self, file_path: &Path) -> Result<(), LspError>
     pub async fn save_file(&self, file_path: &Path, text: Option<&str>) -> Result<(), LspError>
     pub async fn shutdown_all(&self)
@@ -552,10 +570,23 @@ impl LspService {
     pub async fn mark_diagnostics_stale_for_key(&self, key: &str)
     pub async fn operational_health_snapshot(&self, key: &str) -> LspOperationalHealthSnapshot
     pub async fn restart_client(&self, key: &str) -> Result<(), LspError>
+    pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError>
     pub async fn descriptor_for_key(&self, key: &str) -> Option<LspClientDescriptor>
     pub async fn set_descriptor_for_key(&self, key: &str, descriptor: LspClientDescriptor)
+    pub async fn effective_capabilities_for_key(&self, key: &str) -> Option<LspCapabilitySnapshot>
+    pub async fn capability_decision(&self, key: &str, op: LspSemanticOperation) -> CapabilityDecision
 }
 ```
+
+The client key is `"{project_root}:{server_id}"` — the canonical separator is
+built in one place (`service.rs`, `format!("{}:{}", project_root.display(),
+server_id)`) and reused for lookup, health, generation, and restart paths.
+
+The `*_managed` entry points are the managed-document arm: they record the
+canonical snapshot and dirty state in `OpenDocumentRegistry` so a restart can
+replay it, whereas the plain `open_file`/`update_file` arm owns disk-backed
+documents only. `is_managed_document_dirty` is the gate the checked-apply
+path uses to refuse a preview apply against a dirty managed buffer.
 
 **`save_file` freshness tracking**: When `save_file` is called with text content (`text: Some(...)`), it updates the `last_content_change_at` timestamp for the file, marking diagnostics as potentially stale since the server may recompute diagnostics for the new content. A bare save (`text: None`) sends the `didSave` notification without affecting freshness.
 
@@ -605,7 +636,8 @@ crates/egglsp/src/operations/
 ├── rename.rs           # prepare_rename_typed, rename_preview_typed, PrepareRenameResult, RenamePreview
 ├── formatting.rs       # format_preview_typed, FormattingPreview (with base_stale, final_disk_hash)
 ├── semantic_tokens.rs  # semantic_tokens, decode_semantic_tokens (checked arithmetic overflow)
-└── overlay_ops.rs      # semantic_check_preview (OverlaySession integration)
+└── overlay_ops.rs      # semantic_check_preview (OverlaySession integration),
+                        #   prepare_call_hierarchy / incoming_calls / outgoing_calls
 ```
 
 ```rust
@@ -648,6 +680,11 @@ impl LspOperations {
     // M017 — the warm-only code-action read. One request, many previews.
     pub async fn code_action_previews_for_warm_client(&self, key: &str, file_path: &Path, range: Range, only: Option<Vec<CodeActionKind>>, max_actions: usize, allowed_root: Option<&Path>) -> Result<Vec<CodeActionEntry>, LspError>
     pub async fn format_preview_typed(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<FormattingPreview, LspError>
+
+    // warm-client reads: the caller resolves the client key and every step
+    // (capability gate, document sync, generation stamp) is taken against
+    // that same key, so the flow never starts a language server.
+    pub async fn semantic_tokens_for_warm_client(&self, key: &str, file_path: &Path, max_tokens: usize) -> Result<Vec<DecodedSemanticToken>, LspError>
 }
 ```
 
@@ -1748,13 +1785,22 @@ The `TierSource` enum records which step produced the result for debug observabi
 
 ### Token Budget Integration
 
-`LspContextPolicy` derives `LspContextBudget` via `to_budget()`:
+`LspContextPolicy` derives `LspContextBudget` via `to_budget()`. The byte
+cap comes from the policy's own `max_context_bytes` (per-tier default from
+`max_context_bytes_for_tier`); the item caps come from
+`RecipeSettings::for_tier(tier).to_budget()`:
 
 | Tier | max_context_bytes | max_references | max_symbols |
 |------|-------------------|----------------|-------------|
-| Small | 16,384 | 0 | 15 |
-| Workhorse | 32,768 | 15 | 20 |
+| Small | 16,384 | 0 | 30 |
+| Workhorse | 32,768 | 30 | 30 |
 | Frontier | 65,536 | 50 | 50 |
+
+Only `Frontier` narrows the item caps: `RecipeSettings::frontier_tier()`
+overrides `max_references` and `max_symbols` to 50, while `small_tier()` and
+`workhorse_tier()` inherit the `RecipeSettings::default()` values
+(`max_references: 30`, `max_symbols: 30`) except for `small_tier()`'s
+explicit `max_references: 0`.
 
 `max_context_bytes` can be overridden via `LspContextPolicy::resolve(...)`.
 
@@ -1762,13 +1808,16 @@ The `TierSource` enum records which step produced the result for debug observabi
 
 `LspContextPolicy` implements `Into<LspContextRenderConfig>` and `Into<RecipeSettings>` (via `From` on `&LspContextPolicy`). These are also available as methods `to_render_config()` and `to_recipe_settings()`.
 
-**Known limitation:** `LspContextRenderConfig` does **not** currently
-expose `include_cross_file` / `include_hierarchy` fields, so
-`to_render_config()` does not propagate those policy flags. The
-`RecipeSettings` path (`to_recipe_settings()`) is unaffected and
-propagates both flags correctly. Consumers that need cross-file or
-hierarchy gating at the renderer should use `RecipeSettings` until
-`LspContextRenderConfig` is extended.
+`LspContextRenderConfig` now carries `include_cross_file` and
+`include_hierarchy`, and both conversion paths propagate them (see
+[Phase 15](#phase-15-renderer-policy-unification-and-context-diagnostics)).
+The renderer path additionally narrows the item caps against the tier:
+`max_diagnostics.min(20)`, `max_references.min(30)`, `max_symbols.min(30)`,
+with a per-section byte cap of 1000 / 2000 / 4000 for Small / Workhorse /
+Frontier. The un-derived `LspContextRenderConfig::default()` is
+`max_diagnostics: 10`, `max_references: 15`, `max_symbols: 15`,
+`max_bytes_per_section: 2000` — those are renderer defaults, not the
+evidence-collection budget.
 
 ### Debug Observability
 
@@ -2263,6 +2312,15 @@ Only these operations are model-facing:
 | `hunkSourceContext` | (combines diff parsing + semantic context) | `HunkSourceNavigationResponse` (per-hunk evidence with enclosing symbols, diagnostics, definitions, references; read-only, bounded) |
 | `callHierarchy` | `textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls` | `CallHierarchySummary` (items, incoming, outgoing, errors, truncated) |
 | `typeHierarchy` | `textDocument/prepareTypeHierarchy` + `typeHierarchy/supertypes` + `typeHierarchy/subtypes` | `TypeHierarchySummary` (items, supertypes, subtypes, errors, truncated) |
+| `capabilities` | (reads the published client capabilities; no request is sent) | `LspCapabilitySnapshot` (normalized + observed push-diagnostics reconciliation for the resolved server) |
+
+The schema's `operation` enum carries **34** values: the 24 low-level
+operations in the table above plus the 10 workflow recipes
+(`workflow_repair_local`, `workflow_repair_hunk`, `workflow_review_file`,
+`workflow_review_diff`, `workflow_security_review`, `workflow_impact`,
+`workflow_test_repair`, `workflow_interface`, `workflow_cross_repair`,
+`workflow_call_neighbors`). The workflow recipes are described under
+[Phase 14](#phase-14-workflow-composition-ux).
 
 `codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
 
@@ -3109,6 +3167,11 @@ construction uses `ToolRegistry::with_session_config_defaults(&config,
 ...)` so the resolved config is preserved; the legacy
 `with_session_defaults(...)` is documented as a footgun for
 config-aware paths.
+
+The hidden program-only `lsp_read` adapter is registered **unconditionally**,
+including when the model-facing `lsp` tool is a `DisabledTool` stub: without
+a live server its reads fail closed as typed execution errors, and it stays
+hidden from model definitions and from `tool_search`.
 
 ## Protocol Peer Hardening (Phase 1)
 
@@ -4449,7 +4512,7 @@ Total test count for `phase5_context_integration.rs`: 40 (33 pre-existing + 7 ne
 
 ## Phase 5 Final Closeout and Stabilization (Passes 1–9)
 
-The Phase 5 hardening produced a complete, production-shaped pipeline but left a few small stabilization items open. The final closeout narrows the surface and reasserts invariants at the boundary; current follow-up and verification work is tracked in the [LSP Phase 9–12 hardening plan](../plans/lsp_phase_9_12_hardening_plan.md).
+The Phase 5 hardening produced a complete, production-shaped pipeline but left a few small stabilization items open. The final closeout narrows the surface and reasserts invariants at the boundary; current follow-up and verification work was tracked in the LSP Phase 9–12 hardening plan, which was removed with the legacy `plans/` corpus in `ec78e006d`.
 
 ### Pass 1 — Timing-flake stabilization
 
@@ -4562,8 +4625,6 @@ Closed Phases 6, 7, and 8 with targeted fixes:
 
 Do not add parallel context packet types. All LSP evidence flows through `LspContextPacket` and its canonical bridges in `crates/egglsp/src/bridges.rs`. The `LspTuiSummary` is derived from the packet via `build_tui_summary()` or the live-service `LspTool::build_lsp_summary()` path.
 
-## Troubleshooting
-
 ## Controlled mutation application
 
 The LSP surface is preview-first. `renamePreview`, `formatPreview`,
@@ -4599,6 +4660,8 @@ revision/digest mismatch, path escape, unsupported operation, lost workspace
 identity, or cancellation before commit fails closed without a partial
 visible apply.
 
+## Troubleshooting
+
 ### Binary not found
 The LSP server binary is not on `PATH` or not installed. Install the server using its recommended method (e.g., `rustup component add rust-analyzer`, `npm install -g pyright`, `go install golang.org/x/tools/gopls@latest`). Check `server.rs` for the expected binary name.
 
@@ -4622,10 +4685,13 @@ After an LSP server restart, previously collected context items may be marked as
 
 ## See Also
 
-- [lsp.md](lsp.md) - LSP implementation guide
+- [native_crates.md](native_crates.md) - the `egglsp` crate boundary
 - [tool.md](tool.md) - LSP tool wrapper
-- [LSP Phase 9–12 hardening plan](../plans/lsp_phase_9_12_hardening_plan.md) - Current hardening plan
-- [LSP Phase 13–17 corrective verification](../plans/lsp_phase_13_17_corrective_verification_plan.md) - Current verification plan
+- [tool_programs.md](tool_programs.md) - the program-callable LSP read surface
+- [document.md](document.md) - document coordinator and checked apply
+- [plans/adrs/ADR-0008-lsp-preview-apply-authorization-and-runtime-ownership.md](../plans/adrs/ADR-0008-lsp-preview-apply-authorization-and-runtime-ownership.md) - preview apply authorization and runtime ownership
+- [plans/adrs/ADR-0012-native-lsp-read-surface-delivery-and-authorization.md](../plans/adrs/ADR-0012-native-lsp-read-surface-delivery-and-authorization.md) - native LSP read surface delivery and authorization
+- [plans/implementation/architecture-convergence-incomplete-verticals/007-controlled-lsp-mutation-application.md](../plans/implementation/architecture-convergence-incomplete-verticals/007-controlled-lsp-mutation-application.md) - controlled LSP mutation application
 
 ## Source Verification
 
@@ -4640,14 +4706,15 @@ Confirmed accurate, no change needed:
   count.
 - **Backend abstraction**: `ToolImplementationBackendSchema`
   (`crates/codegg-config/src/schema.rs`) has exactly the 4 documented values —
-  `Native`, `Mcp`, `Builtin`, `Disabled` (`:2885`-`:2888`). The
+  `Native`, `Mcp`, `Builtin`, `Disabled`. The
   native/MCP/disabled + `fallback_to_native` matrix in "Backend config (MCP
   fallback semantics)" matches `src/tool/mod.rs`, including the
-  `ConfiguredButUnavailable` → `unavailable` status mapping (`src/tool/mod.rs:1405`,
-  `:1470`; rendered in `src/main.rs:2180`).
+  `ConfiguredButUnavailable` → `unavailable` status mapping
+  (`src/tool/mod.rs:1854`, rendered by the `Display` impl at `:1878`; the
+  CLI status path renders it at `src/main.rs:3253`).
 - **Cache**: `LspCacheMode` has only `Disabled` and `Memory`
   (`crates/egglsp/src/cache.rs:53`), consistent with the "0 active disk cache
-  mode" claim at line 1941.
+  mode" bullet in the "Phase 3 Final Closure" checklist.
 
 One dated claim has drifted (not corrected in place, since it sits in the
 historical "Phase 6-8 Closeout" record): "714 egglsp tests pass" (line ~4298) —
@@ -4663,3 +4730,126 @@ the status mapping `src/tool/mod.rs:1337`->`:1405`, and the
 `RegistryBackendStatusKind` variant anchor `:1402`->`:1470`, each re-checked to
 land on the same construct. The daemon-connected client still gets no LSP, and
 the cache-mode pair (`Disabled`/`Memory`) is unchanged.
+
+Verified 2026-10-23 (deep-dive pass) against `crates/egglsp/src/`
+(`server.rs`, `service.rs`, `capability.rs`, `compatibility.rs`,
+`context_policy.rs`, `workflow_recipes.rs`, `cache.rs`), the `src/lsp/` shim,
+`src/tool/lsp.rs`, `src/tool/lsp_read.rs`, `src/tool/mod.rs`,
+`src/tui/app/mod.rs`, `crates/codegg-config/src/schema.rs`, and `plans/`.
+This document is large (4600+ lines), so the load-bearing numeric,
+structural, and API-surface claims were verified rather than every line.
+
+Corrected:
+- **Dead type reference**: the `LspService` struct listing named a
+  `ClientEntry` value type that does not exist anywhere in `egglsp`. The map
+  is `Arc<RwLock<HashMap<String, Arc<LspClient>>>>` (the `ClientMap` alias in
+  `crates/egglsp/src/service.rs:32`).
+- **Missing `LspService` fields**: added `process_launcher`
+  (`Arc<dyn LspProcessLauncher>`), `restart_tasks` (`RestartTaskMap`), and
+  `restart_owner_counter` (`AtomicU64`) to the struct listing, with a note on
+  what each one owns.
+- **Constructor visibility**: `LspService::new` is `#[cfg(test)] pub(crate)`,
+  not `pub`; the code block now says so, matching the prose that already
+  described it as a test-only bare constructor.
+- **Missing managed-document API**: added `open_file_managed`,
+  `set_managed_document`, `update_file_managed`, `is_managed_document_dirty`,
+  `new_arc_with_launcher`, `manual_restart_client`,
+  `effective_capabilities_for_key`, and `capability_decision` to the
+  `impl LspService` listing, plus the canonical client-key format
+  (`"{project_root}:{server_id}"`, built at `service.rs:1239`).
+- **Dead plan references**: "See Also" pointed at
+  the (now-removed) LSP Phase 9–12 hardening plan and
+  `../plans/lsp_phase_13_17_corrective_verification_plan.md`; neither file
+  exists under `plans/` any more. Replaced with the live ADR and
+  implementation-plan documents for the same contracts, plus the sibling
+  architecture docs.
+- **Stale line anchors** in the 2026-10-06 entry above:
+  `ToolImplementationBackendSchema` is at
+  `crates/codegg-config/src/schema.rs:3589` (not `:2885`-`:2888`);
+  `RegistryBackendStatusKind` is at `src/tool/mod.rs:1846` with the
+  `ConfiguredButUnavailable` variant at `:1854` (not `:1402`/`:1470`); the
+  CLI renders `unavailable` at `src/main.rs:3253` (not `:2180`); and the
+  frontend `LspTool` is built at `src/main.rs:4022`-`:4034` (not `:2894`).
+- **Wrong budget numbers**: the "Token Budget Integration" table claimed
+  `max_symbols` 15 (Small) / 20 (Workhorse) and `max_references` 15
+  (Workhorse). The real values come from
+  `RecipeSettings::for_tier(tier).to_budget()`: Small 0 / 30, Workhorse
+  30 / 30, Frontier 50 / 50 (`max_references` / `max_symbols`). The old
+  numbers were the `LspContextRenderConfig::default()` renderer defaults
+  (15 / 15), which bound **rendering**, not evidence collection.
+- **Self-contradicting limitation**: the Phase 11 "Conversions" section
+  still called `LspContextRenderConfig`'s missing
+  `include_cross_file` / `include_hierarchy` fields a "known limitation",
+  which the Phase 15 section of the same document said had been fixed. The
+  struct carries both fields
+  (`crates/egglsp/src/context_renderer.rs:75`-`:94`) and
+  `RecipeSettings::to_render_config()` propagates them. The stale paragraph
+  is replaced with the actual propagation rules and the render-tier caps.
+- **Missing constructor parameter**: `spawn_process_runtime` takes a
+  `status_task: Option<tokio::task::JoinHandle<Result<(), String>>>`
+  argument that the doc's signature omitted.
+
+Added (depth):
+- The `capabilities` model-facing operation was missing from the "Exposed
+  Operations" table. It is in the tool's `operation` enum
+  (`src/tool/lsp.rs:2661`) and returns the normalized
+  `LspCapabilitySnapshot` for the resolved server, reconciled with observed
+  push-diagnostics (`LspService::effective_capabilities_for_key`).
+- The tool's `operation` enum has **34** values (24 low-level + 10 workflow
+  recipes); the doc previously listed only the 23 low-level operations it
+  knew about, with no total.
+- The "Backend config (MCP fallback semantics)" section now records that the
+  hidden program-only `lsp_read` adapter is registered unconditionally, even
+  when the model-facing `lsp` tool is a `DisabledTool` stub
+  (`src/tool/mod.rs:1184`-`:1196`).
+
+Confirmed accurate, no change needed:
+- `LspServerDef`, `DownloadSpec`, `ArchiveType` (Zip/TarGz/TarXz/Raw), and
+  the three `find_server*` accessors match
+  `crates/egglsp/src/server.rs` exactly.
+- The `SemanticContextCollector` listing (fields and `new`/`collect`
+  signatures) matches `src/lsp/semantic_context.rs`; the collector is
+  CodeGG-side and consumes `egglsp::semantic_context` DTOs.
+- `LspContextDiagnostics` and its 13 fields match
+  `crates/egglsp/src/context_policy.rs:470`-`:497`.
+- The `LspWorkflowRecipe` variants behind the ten `/lsp-*` workflow commands
+  match `crates/egglsp/src/workflow_recipes.rs:58`-`:86`;
+  `HunkSourceNavigation` and `PreviewSuggestion` are recipes without a
+  user-facing command.
+- The `tier1_profiles()` / `tier2_profiles()` / `all_profiles()` accessors
+  exist in `crates/egglsp/src/compatibility.rs` (`:628`, `:633`, `:644`).
+- The `lsp_read` operation allowlist (exactly `diagnostics`,
+  `documentSymbol`, `workspaceSymbol`, `hover`, `goToDefinition`,
+  `findReferences`) matches `src/tool/lsp_read.rs:61`-`:66`.
+- `/lsp-start` and `/lsp-replay-docs` are correctly documented as **not
+  registered**; the ten `/lsp-*` workflow commands in the Phase 14 table all
+  exist in `src/tui/app/mod.rs`.
+- The `LspOperationalState` variants and the `LspOperationalHealthSnapshot`
+  fields match `crates/egglsp/src/health.rs`; the client key format
+  `"{project_root}:{server_id}"` is built at
+  `crates/egglsp/src/service.rs:1239`.
+- `LspClientDescriptor`, `RestartTrigger`, `backoff_delay`,
+  `restart_client_coordinator`, and the four `LspReadinessPolicy` variants
+  match `crates/egglsp/src/restart.rs` and
+  `crates/egglsp/src/compatibility.rs`.
+- `LspRestartPolicyConfig` really does exist in both
+  `crates/egglsp/src/config.rs` and
+  `crates/codegg-config/src/schema.rs`, with the five documented optional
+  fields and a `merge_with_profile()`; the `restart` table hangs off the
+  per-server `LspRule::Active` arm of the untagged `[lsp]` config, so the
+  TOML path is `[lsp.<server>.restart]`.
+- `StaleEvidencePolicy` (3 variants, `IncludeWithWarning` default),
+  `LspUnavailablePolicy` (3 variants, `NoteOnly` default),
+  `LspTaskRisk` (4 variants, `Normal` default), `TierSource` (5 variants),
+  and the 3-variant `ModelTier` all match
+  `crates/egglsp/src/context_policy.rs` and
+  `crates/egglsp/src/context_renderer.rs`.
+- The `LspCacheKey` fields and the `[lsp_semantic_cache]` defaults
+  (`max_entries` 64, `max_bytes` 4194304, `ttl_seconds` 300) match
+  `crates/egglsp/src/cache.rs` and
+  `crates/codegg-config/src/schema.rs`.
+- `classify_json_rpc_message`, `JsonRpcId`, `dispatch_server_request`, and
+  the 256-entry `DynamicRegistrationState` cap
+  (`server_request.rs:52`) match the source.
+- The `operations/` module tree and the listed `LspOperations` methods match
+  `crates/egglsp/src/operations/`.

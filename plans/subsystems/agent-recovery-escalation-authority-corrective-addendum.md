@@ -1,6 +1,6 @@
 # Agent Recovery Escalation Authority Corrective Addendum
 
-Status: proposed
+Status: active (C001 closed; C002 eligible for fresh planning)
 
 Long-term references:
 
@@ -259,3 +259,11 @@ observation contract contains no permanently-false field.
 |---|---|---|---|---|
 | C001 | closed | `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` | `plans/closure/agent-recovery-escalation-authority/001-status.md` | None |
 | C002 | not started; eligible for fresh planning | — | — | C001 now closed |
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- C001 closed: `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` carries `Status: closed`, and `plans/closure/agent-recovery-escalation-authority/001-status.md` is its closure record (`Status: closed`).
+- C002 has no implementation plan and is deliberately unopened, so the addendum is *active*, not *proposed* and not *closed*.
+- `plans/registry.md` already read *active (C001 closed; C002 eligible for fresh planning)* for this addendum; the header here was the stale copy.

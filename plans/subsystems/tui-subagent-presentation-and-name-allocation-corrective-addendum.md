@@ -1,6 +1,6 @@
 # TUI Subagent Presentation and Name Allocation — Corrective Addendum
 
-Status: active
+Status: closed (P001–P004 closed)
 
 Source roadmaps (neither is reopened by this addendum):
 
@@ -433,3 +433,10 @@ over an in-memory active-lease set, with no persistence, no protocol field,
 and no new identity. `scripts/check_execution_ownership.py` and
 `scripts/check_scheduler_bypass.py` stayed green throughout, and
 `docs/execution-ownership.toml` did not change.
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- Closure records `plans/closure/tui-subagent-presentation-and-name-allocation/001-status.md` through `004-status.md` each carry `Status: closed`.
+- `plans/registry.md` now reads *closed (P001–P004 all closed)*.

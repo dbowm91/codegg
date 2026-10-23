@@ -3,7 +3,8 @@
 ## Purpose
 
 The `storage` module provides SQLite database initialization, connection
-pooling, WAL configuration, and the platform-resolved path layout for
+pooling, WAL configuration, the `BEGIN IMMEDIATE` write-transaction helper,
+and the platform-resolved path layout for
 the user-scoped daemon catalog. It also hosts the `UserPreferences`
 key/value store backed by `user_preferences` table.
 
@@ -13,6 +14,8 @@ key/value store backed by `user_preferences` table.
 crates/codegg-core/src/storage/
 ├── mod.rs          # Database wrapper, init functions, pragmas,
 │                   # STORAGE_LAYOUT_VERSION, deprecated init()
+├── immediate.rs    # ImmediateWrite — BEGIN IMMEDIATE write transaction
+│                   # helper (C002); read-then-write paths must use it
 ├── paths.rs        # DaemonPaths — single source of truth for
 │                   # catalog and asset paths
 └── preferences.rs  # UserPreferences — persistent key/value store
@@ -22,13 +25,14 @@ crates/codegg-core/src/storage/
 
 ### Database Initialization
 
-There are **six** entry points for getting a `SqlitePool`:
+There are **seven** entry points for getting a `SqlitePool`:
 
 | Function | Path | Purpose |
 |----------|------|---------|
 | `init_daemon_catalog(paths)` | `catalog_db_path()` | User-scoped daemon catalog, no migrations |
 | `init_migrated_daemon_catalog(paths)` | Same as above | Runs migrations on a single-connection bootstrap pool, closes it, then opens the normal catalog pool |
-| `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db` | Legacy project-local store for backward compat |
+| `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db` | Legacy project-local store for backward compat, **no migrations** |
+| `init_migrated_legacy_project_store(root)` | Same as above | Legacy project store **with** migrations; the consumer entry point (CLI session commands, in-process core, standalone server) |
 | `init_pool_at(db_path)` | Caller-supplied path | Generic pool at an arbitrary path |
 | `init_pool_at_for_migration(db_path)` | Caller-supplied path | Single-connection pool reserved for migrations |
 | `init(project_dir)` (deprecated) | Empty → config dir; non-empty → legacy | Retained for tests; new code MUST NOT use |
@@ -37,6 +41,12 @@ There are **six** entry points for getting a `SqlitePool`:
 authority**. It creates a single-connection pool for migration, runs
 all schema migrations, closes the migration pool, then opens the normal
 10-connection pool via `init_daemon_catalog`.
+
+The unmigrated `init_legacy_project_store` exists so the legacy import
+tooling can open the same path and decide whether the file is a *real*
+legacy session database: migrating first would make that probe
+self-fulfilling. Every consumer of the project store wants the schema, not
+the probe, and must use `init_migrated_legacy_project_store` instead.
 
 ### Path Layout (`DaemonPaths`)
 
@@ -75,7 +85,7 @@ Key derived paths:
 
 ### SQLite Configuration
 
-Applied in `connect_and_configure()` (`storage/mod.rs:214`) as a
+Applied in `connect_and_configure()` (`storage/mod.rs:247`) as a
 single batched query:
 
 | Pragma | Value | Purpose |
@@ -128,8 +138,8 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **84**, defined by
-`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:43`), and must track the
+The current layout version is **88**, defined by
+`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:56`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
@@ -199,7 +209,7 @@ reconciles terminal/non-replayable delegated jobs to `Interrupted`,
 
 ## Key Types & APIs
 
-### Database (`storage/mod.rs:41`, `impl` at `storage/mod.rs:45`)
+### Database (`storage/mod.rs:50`, `impl` at `storage/mod.rs:54`)
 
 ```rust
 impl Database {
@@ -210,6 +220,37 @@ impl Database {
     pub async fn close(self);
 }
 ```
+
+### ImmediateWrite (`storage/immediate.rs`)
+
+```rust
+pub async fn begin_immediate(pool: &SqlitePool) -> Result<ImmediateWrite, sqlx::Error>;
+
+pub struct ImmediateWrite { /* conn, settled */ }
+
+impl ImmediateWrite {
+    pub async fn begin(pool: &SqlitePool) -> Result<Self, sqlx::Error>;
+    pub async fn begin_with<E>(pool: &SqlitePool, map: impl Fn(sqlx::Error) -> E) -> Result<Self, E>;
+    pub async fn commit(self) -> Result<(), sqlx::Error>;
+    pub async fn commit_with<E>(mut self, map: impl Fn(sqlx::Error) -> E) -> Result<(), E>;
+}
+```
+
+`ImmediateWrite::begin` opens the transaction with `BEGIN IMMEDIATE`, so
+SQLite's write lock is taken **at `BEGIN`** rather than acquired later as a
+read-lock upgrade. A deferred transaction takes no lock at all: the first
+`SELECT` holds a shared read lock and the first `UPDATE` must upgrade it —
+which SQLite refuses *without* waiting, so `busy_timeout` never applies and
+two such callers can both fail with `SQLITE_BUSY` instead of one winning
+and the other waiting (measured: 204 of 256 concurrent claim rounds failed
+before the fix). `ImmediateWrite` is therefore mandatory for any path that
+reads before it writes; `scripts/check_queue_write_transaction_shape.py`
+(C002) enforces the shape on the queue store. The transaction is opened
+through sqlx's `TransactionManager` (not a raw `BEGIN`) so sqlx's own
+transaction depth counter stays correct — a raw `BEGIN` leaves it at zero,
+which turns the queued rollback into a no-op and returns the connection to
+the pool still holding its write lock. `Drop` rolls back an unsettled
+transaction.
 
 ### DaemonPaths (`storage/paths.rs:20`)
 
@@ -252,6 +293,8 @@ pub async fn init_migrated_daemon_catalog(paths: &DaemonPaths)
     -> Result<SqlitePool, StorageError>;
 pub async fn init_legacy_project_store(project_root: &Path)
     -> Result<SqlitePool, StorageError>;
+pub async fn init_migrated_legacy_project_store(project_root: &Path)
+    -> Result<SqlitePool, StorageError>;
 pub async fn init_pool_at(db_path: &Path)
     -> Result<SqlitePool, StorageError>;
 pub async fn init_pool_at_for_migration(db_path: &Path)
@@ -288,25 +331,43 @@ pub async fn init_pool_at_for_migration(db_path: &Path)
 8. **Catalog DB vs workspace-local artifacts**: The catalog owns
    sessions, jobs, notification history. Workspace-local artifacts
    (run store data) live under `<workspace>/.codegg/runs/`.
+9. **Read-then-write paths need `BEGIN IMMEDIATE`**: a deferred transaction
+   takes a shared read lock on its first `SELECT` and must *upgrade* it at
+   the first `UPDATE`, which SQLite refuses without waiting — `busy_timeout`
+   never applies and two callers can both fail. Use
+   `storage::immediate::begin_immediate` (or `ImmediateWrite::begin`) for any
+   path that reads before it writes. `scripts/check_queue_write_transaction_shape.py`
+   (C002) enforces the shape on the queue store.
+10. **Legacy-store consumers must use the migrated entry point**:
+    `init_legacy_project_store` deliberately does not migrate (the legacy
+    import probe must not be self-fulfilling); consumers use
+    `init_migrated_legacy_project_store`.
 
 ## Migrations (Storage Layout Context)
 
 Migrations are implemented in `session/schema.rs`, not in the storage
 module. The storage module calls `session::schema::migrate()` during
-initialization. `session/schema.rs` contains 92 `CREATE TABLE`
-statements; migrations v1–v84 are all present as `migrate_v<N>` functions
-(declaration order in the file is not numeric — `migrate_v67`,
-`migrate_v34`, `migrate_v33` lead, and `migrate_v50`/`v47`/`v46`/`v32` are
-defined at the end).
+initialization. `session/schema.rs` contains **95** `CREATE TABLE`
+statements covering **91** tables (92 distinct `CREATE TABLE` names, less
+the transient `origin_attribution_new` rebuild name; `migration_version`,
+`origin_attribution`, and that rebuild name each appear twice).
+Migrations v1–v88 are all present as `migrate_v<N>` functions — 88 of
+them, none missing (declaration order in the file is not numeric —
+`migrate_v67`, `migrate_v34`, `migrate_v33` lead, and
+`migrate_v50`/`v47`/`v46`/`v32` are defined at the end).
 
 Several late migrations delegate their statements to a module-owned
 schema constant rather than inlining SQL: v55 →
-`collaboration::CHAT_SCHEMA_STATEMENTS`, v58 →
+`collaboration::CHAT_SCHEMA_STATEMENTS`, v56 →
+`collaboration::CHAT_ACTION_SCHEMA_STATEMENTS`, v58 →
 `approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS`, v59 →
-`work_plan::WORK_PLAN_SCHEMA_STATEMENTS`, v65 →
+`work_plan::WORK_PLAN_SCHEMA_STATEMENTS`, v60 →
+`work_order::WORK_ORDER_SCHEMA_STATEMENTS`, v63 →
+`work_order::TASK_TRIGGER_SCHEMA_STATEMENTS`, v64 →
+`collaboration::CHAT_POLICY_SCHEMA_STATEMENTS`, v65 →
 `session_control::SESSION_CONTROL_SCHEMA_STATEMENTS`, and v68 →
-`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`. v84 follows
-the same convention with
+`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`, v84 →
+`approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS`, and v88 →
 `approval::RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS`.
 
 Key storage-layout migrations:
@@ -358,6 +419,59 @@ Key storage-layout migrations:
 - **v66**: Eggwork fixed-target execution target and remote handle fields
 - **v67**: nullable `job_attempt.source_subject_json` for attempt-scoped execution source provenance; historical rows remain NULL and are never backfilled from a workspace
 - **v68**: `work_plan_eggplan_binding`, `work_plan_eggplan_item_binding`, `work_order_eggplan_binding` (M003; append/replace only). No migration for C001: the physical `source_subject_json` column already stores versioned JSON, and the nested `ExecutionSubjectRevision` evolved additively from schema v1 (native `dirty_digest` only) to schema v2 (plus optional `eggplan_dirty_digest` in `sha256:<hex>` form). Historical v1 rows stay readable; dirty v1 fails closed for bound exact-subject evidence. The v2 Eggplan-compatible digest is captured through `eggplan_repo::capture_git_subject_fingerprint` (Eggplan pin `0dd33b761e85f1364320a9208aaebd5be281c6a5`), so the persisted value is the exact byte string Eggplan repository assessment compares against, and the column remains the only execution-subject persistence owner.
+- **v69**: `provider_connection_health.credential_status` — the separate
+  provider credential-verification axis, distinct from catalog reachability
+  (`status`). Every pre-existing row defaults to `'unverified'` because no
+  prior schema recorded authenticated evidence.
+- **v70**: `cached_models` rebuilt with the composite primary key
+  `(id, provider)` (see the `cached_models` note above).
+- **v71**: human-execution C004 — `human_shell_promotion`, the durable,
+  bounded ownership record for redacted shell projections explicitly staged
+  for one session and authenticated principal.
+- **v72**: human-execution C004 — idempotent durable turn-admission receipts.
+- **v73**: async background jobs M001 — `job_background_subscription` and
+  `job_notification` (terminal notices).
+- **v74**: async background jobs M003 — `job_continuation_lease`, the
+  single-use continuation lease.
+- **v75**: async background jobs M004 — `ci_watch`, durable GitHub Actions
+  watch records.
+- **v76**: async background jobs corrective C001 — `ci_watch.claim_owner`,
+  `ci_watch.claim_until`, `ci_watch.generation` (persisted cross-service
+  observation lease).
+- **v77**: async background jobs corrective C002 — `continuation_grant` and
+  `idle_continuation`, explicit idle-continuation grants and exactly-once
+  dispatch intents.
+- **v78**: async background jobs C005 (ADR-0031) — `origin_attribution`
+  rebuild admitting the `continuation_grant` scope kind, the same
+  row-preserving rebuild pattern as v61. Existing rows are copied verbatim.
+- **v79**: Agent Workstream Blackboard M003 — `workstream_claim`,
+  `workstream_claim_dependency`, `workstream_claim_event` (intent only; no
+  filesystem, Git, scheduler, or sandbox authority).
+- **v80**: M002a (ADR-0035) — `user_prompt_queue_entry`, the durable,
+  bounded, expiring user prompt queue.
+- **v81**: M002b (ADR-0037 Option B) — `user_prompt_queue_owner`, the
+  durable session-scoped queue-owner binding.
+- **v82**: M007 (ADR-0039) — `user_prompt_queue_entry.run_at_ms`, the
+  optional due time for delayed queue delivery.
+- **v83**: managed agent scratch M002 — durable parent-owned resources,
+  immutable child grant snapshots, and scheduler attempt leases.
+- **v84**: Linux execution isolation M005 — `runtime_preferences.network_intent`
+  (`legacy_unrestricted` | `offline_required`, nullable), persisted from
+  `approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS`. Missing
+  values resolve to the legacy unrestricted behavior.
+- **v85**: C007 — `git_index_publication`, the durable journal for private
+  Git index publication. One row per publication intent, carrying the gitdir
+  identity, the fingerprint of the real index the staging observed (the
+  compare-and-swap operand), the fingerprint of the staged index, and the
+  private staged-index path — the evidence a recovery pass needs to decide
+  whether a publication committed, aborted, or is ambiguous after a crash.
+- **v86**: M005 writer-containment corrective C002 — `writer_permit`, one
+  row per managed worktree (the checkout is the unit of serialization, not
+  the writer).
+- **v87**: M006 — `session_launch`, the durable session-launch saga. `stage`
+  is a closed enum (`accepted`, `checkout_reserved`, `checkout_ready`,
+  `session_created`, `bound`, `completed`, `needs_attention`);
+  `needs_attention` is terminal until an operator acts.
 
 ## Testing
 
@@ -365,7 +479,9 @@ Key storage-layout migrations:
 cargo test -p codegg-core --lib storage
 cargo test -p codegg-core --lib storage::paths
 cargo test -p codegg-core --lib storage::preferences
-cargo test -p codegg-core --test storage_migrations
+# `storage_migrations` is a member of the root package's `core_daemon`
+# family, not a standalone codegg-core test target.
+cargo test --test core_daemon -- storage_migrations
 ```
 
 ## Related Docs
@@ -379,17 +495,46 @@ cargo test -p codegg-core --test storage_migrations
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/storage/{mod,paths,preferences}.rs`
-and `crates/codegg-core/src/session/schema.rs`. Corrected: added the
-missing v37–v45, v48, and v50 migration entries (the list jumped v36 → v46);
-stated the layout version explicitly as 68 and fixed
-`default_data_root()` ref `paths.rs:41` → `:40`; added the omitted
-`init_pool_at_for_migration` entry point and corrected "four" → "six";
-fixed the pragma table (the blockquote had been spliced into the middle of
-it, truncating it after `busy_timeout`, and the post-connect batch
-actually sets `busy_timeout=5000` while the builder sets 30s); added the
-`DaemonPaths` accessor line numbers and `Database` impl ref; noted the 73
-`CREATE TABLE` statements and the module-owned schema-constant delegation
-used by v55/v58/v59/v65/v68. All other refs (`:39` layout const, `:41`
-struct, `:214` connect fn, pool sizes, TTLs, preference keys) verified
-accurate.
+Verified 2026-10-23 against `crates/codegg-core/src/storage/{mod,paths,preferences,immediate}.rs`
+and `crates/codegg-core/src/session/schema.rs`.
+
+Corrections made in this pass:
+
+- **Layout version 79 → 87**, and its ref `storage/mod.rs:41` → `:48`. The
+  layout constant must track the highest migration; `migrate_v<N>` runs
+  v1–v87 with **no gaps** (87 functions).
+- **`CREATE TABLE` count 87 → 95 statements / 91 tables** (92 distinct
+  `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild
+  name; `migration_version`, `origin_attribution`, and that rebuild name
+  each appear twice). This matches `architecture/overview.md`'s
+  "Verified counts" table.
+- **"six" init entry points → seven.** `init_migrated_legacy_project_store`
+  was missing entirely, along with the reason the *unmigrated*
+  `init_legacy_project_store` exists at all (the legacy-import probe must
+  not be self-fulfilling by migrating first).
+- **`storage/immediate.rs` added to the module tree** and given a
+  Key Types entry. `ImmediateWrite` / `begin_immediate` is the C002
+  `BEGIN IMMEDIATE` helper that every read-then-write path must use; it was
+  absent from a doc whose subject is the storage module.
+- **Ref fixes:** `connect_and_configure()` `:214` → `:247`; `Database`
+  struct `:41` → `:50`; `impl Database` `:45` → `:54`.
+- **Test target fix.** `cargo test -p codegg-core --test storage_migrations`
+  selects nothing — `storage_migrations` is a member of the root package's
+  `core_daemon` family (`tests/core_daemon/storage_migrations.inc`), and
+  `crates/codegg-core/tests/` has no such file. Corrected to
+  `cargo test --test core_daemon -- storage_migrations`.
+- **Migration list completed.** v69–v87 were missing from the
+  "Key storage-layout migrations" list (it stopped at v68), and the
+  module-owned schema-constant delegation list was missing v56, v60, v63,
+  v64, and v84.
+
+Verified accurate, no change: the pragma table and the blockquote
+explaining why per-connection pragmas must ride `SqliteConnectOptions` (the
+builder sets `busy_timeout(30s)`/`foreign_keys(true)`/`journal_mode(WAL)`/
+`synchronous(NORMAL)`; the post-connect batch re-asserts `busy_timeout=5000`),
+the pool sizes (10 normal / 1 migration) and the 30 s acquire timeout, the
+`Database` method set (`new`, `pool`, `migrate`, `health_check`, `close`),
+the WAL-checkpoint-then-background-`quick_check` startup sequence with its
+5 s delay and non-fatal policy, the `DaemonPaths` struct and all eleven
+accessor line refs, the `UserPreferences` API and its two known keys, and
+the `CODEGG_DATA_HOME` override.

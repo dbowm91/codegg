@@ -62,7 +62,8 @@ core that defeats the singleton invariant.
    entries with eviction.
 
 3. **Security Headers** — `X-Content-Type-Options: nosniff`,
-   `X-Frame-Options: DENY`, `Strict-Transport-Security: max-age=31536000`.
+   `X-Frame-Options: DENY`,
+   `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
 
 4. **CORS** — Configurable via `[server.cors]` origins. Defaults:
    `http://localhost:3000`, `http://127.0.0.1:3000`. Methods: GET, POST,
@@ -171,7 +172,9 @@ with `#[serde(tag = "type")]` JSON serialization.
 **Client → Server**: `Input`, `KeyDown`, `MouseClick`, `Resize`,
 `Resume`, `RequestSnapshot`, `PermissionResponse`, `QuestionResponse`,
 `SessionInfo`, `ProjectionCapabilities`, `ProjectionSubscribe`,
-`ProjectionResume`, `ProjectionAck`, `ProjectionUnsubscribe`.
+`ProjectionResume`, `ProjectionAck`, `ProjectionUnsubscribe`,
+`ProjectionSubscriptionStatus`, `ProjectionArtifactListRequest`,
+`ProjectionArtifactReadRequest`.
 
 **Server → Client**: `EventEnvelope` (sequence-tagged for replay),
 `TextDelta`, `ToolCallStarted`, `ToolResult`,
@@ -184,8 +187,9 @@ with `#[serde(tag = "type")]` JSON serialization.
 `ProjectionCompatibilityDiagnostic`).
 
 `StateSnapshot` is declared on `TuiMessage` and answered by the TUI's own
-remote-mode handler (`src/tui/app/mod.rs:1855`), but `src/server/ws.rs` never
-emits it — this server does not send state snapshots.
+remote-mode handler (`src/tui/app/mod.rs:3591` / `:3601`), but
+`src/server/ws.rs` never emits it — this server does not send state
+snapshots.
 
 `RenderFrame` is unsupported — returns `Error` with code
 `unsupported_render_frame`.
@@ -277,7 +281,9 @@ Service type: `_opencode._tcp.local.` on multicast `224.0.0.251:5353`.
 ### Error Handling
 
 ```rust
-// src/error.rs (behind #[cfg(feature = "server")])
+// crates/codegg-core/src/error.rs:410
+// (re-exported by the root crate as `codegg::error::ServerRuntimeError`;
+//  the feature-gated axum wrapper lives in `src/error.rs:192-211`)
 pub enum ServerRuntimeError {
     Bind(String),
     Shutdown(String),
@@ -291,6 +297,11 @@ pub enum ServerRuntimeError {
 |-------|-------------|
 | `Auth` | 401 |
 | Others | 500 |
+
+The HTTP mapping is implemented by the root crate's feature-gated
+`AxumServerRuntimeError` newtype (`src/error.rs:194`), which implements
+axum's `IntoResponse` — the orphan rule forbids implementing it directly
+on `codegg_core::error::ServerRuntimeError`.
 
 ### Rate Limiters
 
@@ -429,10 +440,14 @@ Contract notes:
 # Server crate (feature-gated)
 cargo test -p codegg --features server
 
-# WebSocket integration
+# WebSocket / TUI render family (one executable per subject area)
 cargo test --test tui_render
 
-# Static guards (after changes; only the first two run in verify.sh quick / CI)
+# Server feature integration family
+cargo test --test server_feature
+
+# Static guards (change-triggered; only
+# check_http_route_disposition.py runs in verify.sh quick / CI)
 python3 scripts/check_http_route_disposition.py
 python3 scripts/check_websocket_bounds.py
 python3 scripts/check_projection_transport_isolation.py
@@ -450,6 +465,58 @@ python3 scripts/check_execution_ownership.py
 - `architecture/server.md` — implementation guide
 
 ## Source verification
+
+Verified 2026-10-23 against `src/server/` (`mod.rs`, `http.rs`, `ws.rs`,
+`state.rs`, `authz.rs`, `scope.rs`, `perm_ids.rs`, `rpc.rs`, `mdns.rs`,
+`middleware/auth.rs`, `routes/`), `src/core/transport/projection.rs`,
+`src/error.rs`, `crates/codegg-core/src/error.rs`, `src/main.rs`,
+`crates/codegg-protocol/src/frames.rs`, and `scripts/verify.sh` +
+`.github/workflows/ci.yml` for the guard set.
+- Corrected three stale line references: the `StateSnapshot` production
+  site `src/tui/app/mod.rs:1855` -> `:3591` / `:3601` (the server emits it
+  zero times — 0 matches for `TuiMessage::StateSnapshot` in
+  `src/server/ws.rs`); the `ServerRuntimeError` reference
+  `src/error.rs:179-187` -> `crates/codegg-core/src/error.rs:410` with the
+  feature-gated axum wrapper at `src/error.rs:192-211`; and the
+  `--standalone-core` exit path `src/main.rs:3552` -> `:4774-4783`.
+- Added the three client→server `/tui` variants the server's inbound match
+  accepts but the doc omitted: `ProjectionSubscriptionStatus`,
+  `ProjectionArtifactListRequest`, `ProjectionArtifactReadRequest`
+  (`src/server/ws.rs:2749`, `:2752`, `:2766`).
+- Corrected the `Strict-Transport-Security` header value: it is
+  `max-age=31536000; includeSubDomains` (`src/server/http.rs:345`), not the
+  bare `max-age=31536000`.
+- Corrected the guard-set note in Testing: only
+  `check_http_route_disposition.py` runs in `scripts/verify.sh quick` and in
+  CI (verified at `scripts/verify.sh:126` and `.github/workflows/ci.yml:154`).
+  `check_websocket_bounds.py`, `check_projection_transport_isolation.py`,
+  `check_projection_transport_lifecycle.py`, and
+  `check_execution_ownership.py` are change-triggered, not part of either
+  sweep.
+- Verified accurate, no change: 13 route modules under `src/server/routes/`
+  (14 files including `mod.rs`); `run_server` at `http.rs:182`; the nine
+  `ServerState` fields at `state.rs:106-135`; the middleware order in
+  `http.rs` (auth -> rate limit -> security headers -> CORS -> compression
+  -> trace, with `/health` and the merged `task_trigger_router` on the
+  outer router so neither carries auth or the IP-keyed limiter);
+  `WS_OUTBOUND_QUEUE_CAPACITY` (`ws.rs:28`, 256), `TUI_REQUEST_QUEUE_CAPACITY`
+  (`ws.rs:29`, 32), `WS_MAX_MESSAGE_SIZE` / `WS_MAX_FRAME_SIZE`
+  (`ws.rs:35-36`, 4 MiB each); the per-connection projection caps
+  (`src/core/transport/projection.rs:22-24`) and `CRITICAL_DELIVERY_TIMEOUT`
+  of 500 ms (`:25`); both rate limiters at 100 req/60s with a 10,000-key cap
+  (`MAX_RATE_LIMITER_KEYS` at `http.rs:50`, `MAX_WS_RATE_LIMITER_KEYS` at
+  `state.rs:147`) and the task-trigger route's own limiter
+  (`http.rs:354`); the CORS default origins and GET/POST/DELETE method set
+  (`http.rs:140-162`); the compression skip-status set
+  (`http.rs:37`); the auth middleware's fail-closed 503/401 split, the
+  `cggt_...` personal-token path, `bootstrap_global_bearer`,
+  `CODEGG_SERVER_AUTH_DISABLED`, and `redact_presented_token`
+  (`src/server/middleware/auth.rs:16-132`); the four `RouteDisposition`
+  variants and `route_disposition_table()` (`src/server/authz.rs:42-84`);
+  the mDNS service type `_opencode._tcp.local.` and multicast
+  `224.0.0.251:5353` (`src/server/mdns.rs:10-11`); the SSE 15s heartbeat
+  (`src/server/routes/event.rs:48-53`); `ServerRuntimeError`'s five
+  variants; and `SnapshotDaemon`'s fields.
 
 Verified 2026-10-06 against `src/server/` and
 `crates/codegg-protocol/src/frames.rs`. Corrected the inbound WebSocket
@@ -474,13 +541,14 @@ list, which omitted the 11 projection-family variants
 (`ProjectionCapabilitiesAck` … `ProjectionCompatibilityDiagnostic`), and
 removed `StateSnapshot` from it: `src/server/ws.rs` never constructs that
 variant (0 matches) — it is emitted only by the TUI's remote-mode handler at
-`src/tui/app/mod.rs:1855`. Re-confirmed accurate: every route in the Router
+`src/tui/app/mod.rs:3591`. Re-confirmed accurate: every route in the Router
 Structure tree is mounted in `http.rs` (the trigger route comes from the
 merged `task_trigger_router`, not an `api_router` `.route()` call);
-`/health` is mounted on the outer router at `http.rs:349` and served by
+`/health` is mounted on the outer router at `http.rs:353` and served by
 `routes::health::health_check` imported at `http.rs:24` (no inline copy);
 `ServerRuntimeError`'s five variants and the `Auth`→401 / rest→500 mapping in
-`src/error.rs:179-187`; `--standalone-core` exiting 2 at `src/main.rs:3552`;
+`crates/codegg-core/src/error.rs:410` and `src/error.rs:204-211`;
+`--standalone-core` exiting 2 at `src/main.rs:4774-4783`;
 the SSE 15s heartbeat and its broadcast-lag-only `resync_required` path; the
 `sanitize_path` ordering and its absolute-root requirement; and
 `auth_disabled_by_env` accepting only `1`/`true`.

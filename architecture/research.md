@@ -20,6 +20,7 @@ formatted reports, and optionally verifies citations with an LLM.
 | Tool surface | `src/tool/research.rs` |
 | Service facade | `src/research/service.rs` |
 | Specialized runtime | `src/research/runtime.rs` |
+| Child fan-out | `src/agent/specialized_runtime.rs` — `coordinate_research`, `fan_out_children`, `aggregate_research` |
 | Trigger heuristics | `src/research/triggers.rs` |
 
 ### Module Layout
@@ -316,11 +317,6 @@ All defined in `src/research/types.rs`:
 | `ResearchDepth` | 48 | `Low`, `Medium`, `High` |
 | `ResearchOutputProfile` | 56 | `HumanFullReport`, `HumanBrief`, `AgentAnswer`, `AgentHandoff`, `EvidenceBundle` |
 | `ResearchBudget` | 66 | `max_sources`, `max_chunks_per_source`, `max_evidence_spans`, `max_model_calls`, `max_output_tokens`, `allow_network` |
-
-`max_model_calls` is currently **advisory only** — no phase meters model
-calls against it, so it bounds nothing today. It is still recorded per
-run so the persisted request states the intended ceiling rather than
-implying "no model use".
 | `ResearchSourceSpec` | 77 | Source specification with `SourceSpecType` and value |
 | `SourceRecord` | 95 | Collected source with URI, type, quality, locator, content hash |
 | `EvidenceSpan` | 230 | Extracted text span with source reference and locator |
@@ -330,6 +326,11 @@ implying "no model use".
 | `ResearchPlan` | 362 | Scope, comparison axes, source classes, stopping conditions |
 | `ResearchBundle` | 375 | Complete artifact bundle loaded from store |
 | `ResearchRunResult` | 399 | Completion result with outputs and artifact dir |
+
+`max_model_calls` is currently **advisory only** — no phase meters model
+calls against it, so it bounds nothing today. It is still recorded per
+run so the persisted request states the intended ceiling rather than
+implying "no model use".
 
 ### Claim Types (`ClaimType` in `src/research/types.rs`)
 
@@ -367,7 +368,7 @@ or `MultiSource` (comparative/broad).
 `validate_report()` (line 199) enforces citation integrity and bounds
 before the parent accepts a child's output.
 
-### Child fan-out (`specialized_runtime.rs`)
+### Child fan-out (`src/agent/specialized_runtime.rs`)
 
 `coordinate_research()` dispatches the planned children to the sub-agent pool
 through the module's `fan_out_children()` helper, which runs them concurrently and
@@ -403,7 +404,7 @@ suggest auto-invoking research:
 | Architecture ("architecture", "design", "refactor") | `ArchitectureDecision` | 0.5 |
 
 Confidence is boosted by conceptual failure patterns (+0.2) and large file
-surfaces (+0.1). The `TriggerConfig` defaults are in `triggers.rs:14`.
+surfaces (+0.1). The `TriggerConfig` defaults are in `triggers.rs:5`.
 
 ## Artifact Store (`store.rs`)
 
@@ -509,7 +510,42 @@ missing `mod.rs` row to the module-layout table. Verified accurate:
 `analyze_trigger` (`triggers.rs:92`), the five runtime bounds (3/32/96/48/2000),
 all enum variant lists (`ResearchMode` 8, `ResearchAudience` 5, `ResearchDepth`
 3, `ResearchOutputProfile` 5, `ClaimType` 7, `SourceType` 10), `ResearchBudget`
-6 fields, and the five output-profile artifact filenames (`store.rs:117-121`).
+6 fields, and the five output-profile artifact filenames (`store.rs:129-133`).
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: the child fan-out lives in `src/agent/specialized_runtime.rs`,
+  not under `src/research/`. The `src/research/` tree holds 22 `.rs` files
+  (14 top-level + 8 under `sources/`, of which 7 implement
+  `ResearchSourceAdapter`); `coordinate_research`, `fan_out_children`,
+  `aggregate_research`, and `MAX_CHILD_TIMEOUT` are in the agent module
+  (`src/agent/specialized_runtime.rs:73`/`:130`/`:243`/`:22`). The "Child
+  fan-out" heading and the "Where It Lives" table now name the real path.
+- **Corrected**: `TriggerConfig` is at `src/research/triggers.rs:5`
+  (was `:14`).
+- **Corrected**: five `types.rs` line anchors had drifted again —
+  `ContradictionRecord` `305`, `ResearchRunStatus` `325`, `ResearchPlan`
+  `362`, `ResearchBundle` `375`, `ResearchRunResult` `399`. The 2026-10-06
+  entry's `237`/`257`/`294`/`307`/`329` are stale.
+- **Corrected**: `ResearchCoordinator::check_contradictions` is at
+  `src/research/coordinator.rs:554` (was `:443`), and the five output-profile
+  artifact filenames are at `src/research/store.rs:129-133` (was `:117-121`).
+- **Verified accurate**: `ResearchSourceAdapter` (`sources/mod.rs:15`);
+  `deterministic_claims` (`claims.rs:8`); `build_claims_with_model`
+  (`claims.rs:70`); `verify_structural` (`verify.rs:25`); `verify_semantic`
+  (`verify.rs:114`); `classify`/`build_plan`/`validate_report`
+  (`runtime.rs:108`/`:129`/`:199`); `analyze_trigger` (`triggers.rs:92`);
+  `chunk_local_file` (`extract.rs:31`); `chunk_url_text` (`extract.rs:81`);
+  `extract_evidence_with_model` (`extract.rs:326`); `call_llm`/`call_llm_json`
+  (`llm.rs:21`/`:87`); the five runtime bounds (`MAX_CHILD_TASKS` 3,
+  `MAX_SOURCES` 32, `MAX_EVIDENCE` 96, `MAX_CLAIMS` 48, `MAX_TEXT_CHARS` 2,000 —
+  `runtime.rs:11-15`); every enum variant list and count; `ResearchBudget`
+  6 fields; the `types.rs` anchors for `ResearchRequest` (`:9`),
+  `ResearchMode` (`:25`), `ResearchAudience` (`:38`), `ResearchDepth` (`:48`),
+  `ResearchOutputProfile` (`:56`), `ResearchBudget` (`:66`),
+  `ResearchSourceSpec` (`:77`), `SourceRecord` (`:95`), `SourceType` (`:179`),
+  `EvidenceSpan` (`:230`), `ClaimRecord` (`:244`), `ClaimType` (`:257`); and
+  `src/research/sources/` holds 8 files with 7 adapter implementations.
 
 Verified 2026-10-13 against `eggstack/eggsearch` immutable tag `v0.4.1`
 (`32769d684417567dfb30fc5adea1475cee7f0ed0`), its

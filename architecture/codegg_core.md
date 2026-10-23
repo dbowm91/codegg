@@ -12,10 +12,16 @@ discovery). It is designed to be a low-coupling foundation that root
 ## Where It Lives
 
 `crates/codegg-core/` — workspace member, `Cargo.toml` at root.
+`crates/codegg-core/build.rs` is a build script that reads the model-adapter
+TOML assets and generates `model_adapters.rs` into `OUT_DIR`
+(`cargo:rerun-if-changed` on the asset directory); it depends only on
+`regex`, `serde`, and `toml`.
 
 ## Modules
 
-45 `pub mod` declarations in `crates/codegg-core/src/lib.rs`:
+54 `pub mod` declarations in `crates/codegg-core/src/lib.rs` (the file is
+exactly those 54 lines — there are no `pub use` re-exports and no crate-level
+attributes there):
 
 | Module | Purpose |
 |--------|---------|
@@ -28,9 +34,12 @@ discovery). It is designed to be a low-coupling foundation that root
 | `audit_instrumentation` | Audit instrumentation hooks |
 | `authorization` | Authorization policy and operation descriptors |
 | `bus` | Event bus (GlobalEventBus), PermissionRegistry, QuestionRegistry |
+| `checkout_reservation` | Authoritative checkout reservation check (M005 C004) |
 | `collaboration` | Multi-user collaboration presence and chat |
 | `context` | Context packing, projection, and compaction utilities |
+| `decision` | Bounded, backend-neutral decision semantics for adapters |
 | `error` | Central error taxonomy (AppError, ToolError, etc.) |
+| `git_publication` | Durable journal for private Git index publication (C007) |
 | `goal` | Long-horizon goal runtime, budget enforcement |
 | `identity` | Identity validation and parsing |
 | `jobs` | Durable jobs, attempts, schedules, recovery, idempotency |
@@ -39,6 +48,7 @@ discovery). It is designed to be a low-coupling foundation that root
 | `model_profile` | Declarative adapter resolution, model profiles, task state policy |
 | `model_routing` | Adapter into the neutral `eggpool-model-routing` semantic router |
 | `presence` | Ephemeral project-scoped presence leases (M001, task-free, bounded) |
+| `process_admission` | Authoritative process admission authority (M005 C005) |
 | `project_catalog` | Project catalog management and invariants |
 | `project_discovery` | Bounded project discovery logic |
 | `project_discovery_service` | Project discovery service layer |
@@ -48,10 +58,13 @@ discovery). It is designed to be a low-coupling foundation that root
 | `provider_connections` | Provider connection lifecycle and tombstone compat |
 | `repository_lineage` | Repository lineage tracking |
 | `resilience` | Circuit breaker re-export |
+| `run_placement` | Where a delegated run is placed; shared-checkout availability |
 | `run_result` | Agent run result types and persistence |
 | `run_store` | Run store for persisting agent run artifacts |
 | `session` | Session storage, schema, checkpoint |
 | `session_control` | Turn-scoped shared-session controller lease (ADR-0007) |
+| `session_launch` | Durable, recoverable session-launch saga (M006) |
+| `shared_checkout` | The managed checkout a shared agent-run group uses (M005 C006) |
 | `snapshot` | File state capture and diff |
 | `storage` | SQLite initialization, preferences, daemon catalog |
 | `task_state` | Todo state management and projections |
@@ -62,8 +75,10 @@ discovery). It is designed to be a low-coupling foundation that root
 | `work_plan` | Bounded work plans: model, store, checkpoint, assessment, projection |
 | `workspace` | Workspace identity, registry, path policy, execution context |
 | `workspace_services` | Per-workspace service bundle (RunStore, PathPolicy, etc.) |
+| `workstream_claim` | Durable intent claims for the Agent Workstream Blackboard |
 | `worktree` | Git worktree operations |
 | `worktree_service` | Worktree service layer |
+| `writer_permit` | Durable, generation-fenced checkout writer permits (M005 C002) |
 
 ## Dependencies
 
@@ -82,7 +97,14 @@ discovery). It is designed to be a low-coupling foundation that root
 
 Notable third-party: `tokio`, `sqlx` (SQLite), `serde`, `serde_json`,
 `anyhow`, `url`, `chrono`, `uuid`, `sha2`, `similar`, `regex`,
-`rustpython-parser` (Tool Programs), `dashmap`, `parking_lot`.
+`rustpython-parser` (Tool Programs), `dashmap`, `parking_lot`, `thiserror`,
+`async-trait`, `tracing`, `unicode-normalization`, `dirs`, `rand`,
+`base64`, `subtle`, `once_cell`, `tokio-util`. On Unix only: `libc`,
+`rustix` (the `fs` feature).
+
+`md5 = "0.8"` is the one **local** (non-workspace) third-party pin in this
+manifest; it is retained only for legacy project-memory namespace
+reads/migration.
 
 `codegg-core` does NOT depend on:
 
@@ -90,7 +112,10 @@ Notable third-party: `tokio`, `sqlx` (SQLite), `serde`, `serde_json`,
 - `ratatui`, `crossterm` (TUI)
 - `wasmtime` (plugins)
 - `eggcontext` (token counting — consumed by root only)
+- `codegg-document` (text transaction core — consumed by root only)
 - Root `codegg` crate
+- Any `eggplan-*` crate (the work-plan repository binding is
+  application-layer only)
 
 ## Boundary Enforcement
 
@@ -163,8 +188,30 @@ verified, and content-addressed.
 
 `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog.
 `init_legacy_project_store(root)` retains backward compat. The current layout
-version is defined by `storage::STORAGE_LAYOUT_VERSION`.
-`DaemonPaths` is the single source of truth for catalog and asset paths.
+version is defined by `storage::STORAGE_LAYOUT_VERSION` (currently **87**,
+and `scripts/check_project_catalog_invariants.py` fails the build if it drifts
+below the highest migration number in `session/schema.rs`). `DaemonPaths` is
+the single source of truth for catalog and asset paths.
+
+`storage::immediate` owns the `BEGIN IMMEDIATE` helper required by the C002
+queue-write transaction-shape guard; `storage::preferences` owns the durable
+preference store; `storage::paths` owns `DaemonPaths`.
+
+### Writer Authority (M005)
+
+Five core modules together are the checkout-writing authority, and they are
+**not** the scheduler and **not** the worktree lease:
+
+| Module | Authority |
+|--------|-----------|
+| `writer_permit` | Durable, generation-fenced "who may write this checkout *now*" permit |
+| `checkout_reservation` | "Is this checkout reserved, and by whom?" for writers that arrive without a run |
+| `process_admission` | Pre-effect admission for OS processes (which name no file) |
+| `shared_checkout` | Which managed checkout a bounded agent-run group shares |
+| `run_placement` | Where a delegated run is placed; shared profile availability (platform-gated) |
+
+`session_launch` adds the durable, recoverable launch saga that spans a
+Git worktree on disk and a session row in SQLite.
 
 ## Configuration Surface
 
@@ -173,7 +220,14 @@ callers via `codegg-config::schema::Config`.
 
 ## Invariants & Gotchas
 
-- `#![deny(unsafe_code)]` at crate root — no unsafe allowed.
+- Unsafe code is denied for this crate, but **not** by a crate-level
+  attribute: `crates/codegg-core/Cargo.toml` carries `[lints] workspace = true`
+  and the root `Cargo.toml` sets `[workspace.lints.rust] unsafe_code = "deny"`.
+  The root `codegg` package deliberately does **not** inherit that table
+  (`src/bin/codegg-sandbox-helper.rs` has reviewed `unsafe`); it keeps
+  `#![deny(unsafe_code)]` in `src/lib.rs` instead. Do not add a duplicate
+  `#![deny(unsafe_code)]` to `codegg-core/src/lib.rs` — the crate root is
+  exactly the 54 `pub mod` lines.
 - `codegg-core` must NOT gain UI, server, plugin, or auth dependencies.
   Run `scripts/check-core-boundary.sh` after changes.
 - The `tool_program` module uses `rustpython-parser` for AST parsing.
@@ -205,15 +259,30 @@ module. Key test modules:
   state deep dive
 - `architecture/native_crates.md` — library-first tool architecture
 - `architecture/testing.md` — test resource taxonomy
+- `architecture/writer_permit.md` — checkout writer permit
+- `architecture/session_launch.md` — session launch saga
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`,
-`crates/codegg-core/Cargo.toml`, and the module header comments in
-`crates/codegg-core/src/*.rs`. Corrected the module table from 40 to 45
-entries: added `approval`, `model_routing`, `session_control`, `work_order`,
-and `work_plan`, then diffed the table's names against `lib.rs` (exact
-match). Added `eggpool-model-routing` to the dependency list — it is a
-rev-pinned git dependency in `Cargo.toml` and reached through
-`model_routing`. Confirmed `codegg-core` does not depend on `eggcontext`,
-`codegg-document`, axum/ratatui/wasmtime, or the root crate.
+Verified 2026-10-23 against `crates/codegg-core/src/lib.rs` (54 `pub mod`
+lines; the module table above was diffed against it name-for-name and the
+count corrected from 45 to 54 — `checkout_reservation`, `decision`,
+`git_publication`, `process_admission`, `run_placement`, `session_launch`,
+`shared_checkout`, `workstream_claim`, and `writer_permit` were missing),
+`crates/codegg-core/Cargo.toml` (dependency and `[lints]` tables),
+`crates/codegg-core/build.rs`, the root `Cargo.toml` (workspace members,
+`[workspace.lints.rust]`, the root package's deliberate non-inheritance of
+the lints table), `crates/codegg-core/src/error.rs` (all 11 error enums
+present), root `src/error.rs` (`AxumAppError`, `AxumServerRuntimeError`),
+root `src/protocol_conversions.rs` (agent-side conversions + core re-export),
+`scripts/check-core-boundary.sh` (the forbidden-import regex and the
+forbidden-dependency list both match what this doc claims), and
+`crates/codegg-core/src/storage/mod.rs`
+(`STORAGE_LAYOUT_VERSION = 87`, `init_daemon_catalog`,
+`init_legacy_project_store`).
+
+Two corrections made in this pass: the module count (45 → 54) and the
+unsafe-code story — `codegg-core` denies unsafe through
+`[lints] workspace = true`, **not** through a crate-level
+`#![deny(unsafe_code)]`; `crates/codegg-core/src/lib.rs` contains nothing but
+the 54 `pub mod` lines.

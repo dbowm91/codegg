@@ -22,7 +22,7 @@ that authority.
 
 ### Owned Modules
 
-`codegg-core` currently owns 46 modules (exported from
+`codegg-core` currently owns 54 modules (exported from
 `crates/codegg-core/src/lib.rs`):
 
 | Module | Key Types |
@@ -36,10 +36,12 @@ that authority.
 | `audit_instrumentation` | audit emission helpers |
 | `authorization` | capability authorization service and operation matrix |
 | `bus` | GlobalEventBus, PermissionRegistry, QuestionRegistry |
+| `checkout_reservation` | authoritative checkout reservation check (M005 C004) |
 | `collaboration` | project-chat collaboration domain |
 | `context` | ProjectContextResolver, ProjectContext, SessionId |
 | `decision` | bounded backend-neutral decision semantics (no tool authority, model, or transport) |
 | `error` | AppError, ProviderError, ToolError, is_retryable |
+| `git_publication` | durable journal for private Git index publication (C007) |
 | `goal` | Goal, GoalStatus, GoalBudget, GoalStore, runtime |
 | `identity` | typed IDs and project/repository/workspace/session relations |
 | `jobs` | JobStore, ScheduleStore, JobState, DaemonGeneration, RecoveryPolicy |
@@ -48,6 +50,7 @@ that authority.
 | `model_profile` | model profile types |
 | `model_routing` | Codegg adapter for shared semantic model-policy compilation |
 | `presence` | ephemeral presence leases |
+| `process_admission` | authoritative process admission authority (M005 C005) |
 | `project_catalog` | durable logical project registry |
 | `project_discovery` | project root detection heuristics |
 | `project_discovery_service` | service facade for discovery |
@@ -57,10 +60,13 @@ that authority.
 | `provider_connections` | connection store, metadata, lifecycle |
 | `repository_lineage` | repository identity and lineage |
 | `resilience` | CircuitBreaker, FallbackProvider |
+| `run_placement` | delegated-run placement policy and the shared-checkout profile gate (M005 C006) |
 | `run_result` | durable run result records |
 | `run_store` | run record persistence and artifact storage |
 | `session` | session storage, message history, checkpointing |
 | `session_control` | session control state |
+| `session_launch` | durable, recoverable session-launch saga (M006) |
+| `shared_checkout` | managed checkout shared by an agent-run group (M005 C006) |
 | `snapshot` | file state capture and restore |
 | `storage` | SQLite initialization, connection pooling |
 | `task_state` | task state tracking |
@@ -71,10 +77,45 @@ that authority.
 | `work_plan` | work-plan types |
 | `workspace` | WorkspaceRegistry, WorkspaceId, ExecutionContext |
 | `workspace_services` | per-workspace service bundles and lifecycle |
+| `workstream_claim` | durable workstream intent claims — never consulted for authorization |
 | `worktree` | git worktree management |
 | `worktree_service` | managed worktree lifecycle service |
+| `writer_permit` | durable, generation-fenced checkout writer permits (M005 C002) |
 
 ### User Prompt Queue Read Contract (M002a, ADR-0035)
+
+`CoreRequest::UserPromptQueueList { session_id }` returns
+`CoreResponse::UserPromptQueue { session_id, entries }`. The read is
+deliberately inert: it exposes queued prompt metadata, never prompt text,
+and it never mutates the queue's durable state beyond marking due entries
+expired.
+
+| Property | Value |
+|---|---|
+| Authorization | `ScopeKind::ViaSession` + `Capability::SessionRead`, via `operation_descriptor` (`policy.rs:394`). The handler hand-rolls no check. |
+| Audit class | `UNINSTRUMENTED_OPERATIONS` — a read of inert metadata with no shared-state mutation. Denial *is* audited upstream by `authorize_request`. |
+| Routing | `DaemonRequestFamily::Turns` (`daemon_family.rs:153`); registered in `session_id_for_request` so the audit chain carries the session locator. |
+| Storage | `codegg_core::session::UserPromptQueueStore` over the daemon pool (`daemon_turns::list_user_prompt_queue`, `src/core/daemon_turns.rs:1930`). |
+| Ordering | Daemon-owned dense `ordinal`, ascending. The frontend never re-sorts. |
+| Expiry | Lazy and deterministic — the read marks due entries `expired` and returns survivors in one transaction. |
+
+The read deliberately does **not** route through `is_controller_bypass`. That
+bypass is an identity-only comparison against `LOCAL_OWNER_PRINCIPAL_ID` that
+is not bound to a session, so it would let any local owner read any session's
+queue. A read needs session read authority.
+
+Every new DTO field is `#[serde(default)]`, so a projection written by a newer
+daemon stays readable by an older client and an absent projection reads as an
+empty queue. Entry text never appears in a `tracing` call, an audit record, or
+a `CoreResponse::Error` message — `UserPromptQueueError`'s Display carries only
+identity, bounds, and availability.
+
+**M002b (ADR-0037) has since landed the mutation surface**, so this read is no
+longer the whole feature. The six `UserPromptQueue*` mutations and
+`UserPromptQueueSendNow` are documented in "Queue Mutation Contract (M002b,
+ADR-0037)" and "Queue Send-Now Contract (M006, ADR-0036, Option A)" below.
+The read contract itself is unchanged: it stays a `SessionRead`-scoped,
+`AgentInvoke`-free projection of the queue's metadata.
 
 ### User Prompt Queue Due-Time Contract (M007, ADR-0039)
 
@@ -240,11 +281,14 @@ constrains nothing):
 | `advance_due_queue_entries` | on the bounded queue advance tick, when `run_queue_advance_task` wakes at the earliest due instant across all sessions | **M007, authorized by ADR-0039 (accepted).** A scheduled entry on an idle session has no terminal transition and no restart to wait for; without this it would deliver late, or never within the session |
 
 None of the three is a poller. The daemon has **no periodic session-observation
-loop** — its three `tokio::time` intervals are projection retention (300s),
-opt-in provider refresh (30s), and opt-in TTS drain (500ms) — and M003 adds
-none. M007 adds one wakeup source and no loop: the tick computes the earliest
-due instant, sleeps exactly until it, and **parks on a `Notify` with no timer
-armed** when nothing is scheduled, so an idle daemon stays idle.
+loop** — none of its background intervals watches a session for queue
+eligibility. Its daemon-owned `tokio::time` intervals are projection
+retention (300s), opt-in provider refresh (30s), TTS drain (500ms), the LSP
+diagnostics poll (750ms), the scratch census refresh (600s), and the
+configurable scratch retention sweep — and M003 adds none. M007 adds one
+wakeup source and no loop: the tick computes the earliest due instant, sleeps
+exactly until it, and **parks on a `Notify` with no timer armed** when nothing
+is scheduled, so an idle daemon stays idle.
 
 Stranded `delivering` rows are resolved **from the receipt**, never from the
 entry, because the receipt is the only evidence of whether a turn actually
@@ -361,6 +405,7 @@ Root `src/lib.rs` re-exports these modules so downstream code can use
 `crate::bus`, `crate::session`, etc.:
 
 ```rust
+pub use codegg_core::run_result;
 pub use codegg_core::{
     agent_convergence, agent_run, agent_run_control, agent_run_group, bus,
     goal, identity, memory, migration, model_profile, project_storage,
@@ -385,7 +430,7 @@ These modules remain in root `src/` due to high coupling with UI/server/agent:
 | `client` | remote TUI client (feature-gated) |
 | `core` | daemon runtime, transport adapters |
 | `plugin` | WASM plugin system |
-| `search`, `search_backend` | web search |
+| `search_backend` | web search backend |
 | `research` | deep research |
 | `auth` | typed auth config, credential store |
 | `context` | context projection and compaction |
@@ -421,9 +466,34 @@ These modules remain in root `src/` due to high coupling with UI/server/agent:
 | `git_recovery` | git conflict recovery |
 | `git_run_store` | git run store integration |
 | `git_service` | canonical read git executor |
+| `git_publication` | C007 private-index publication (staging, publisher, reconciler) |
+| `git_consistency` | git read-consistency authority for the root crate |
+| `git_contained_worktree` | contained managed-worktree creation |
 | `job_dispatcher` | job dispatch logic |
 | `job_recovery` | job recovery logic |
 | `test_runner` | test execution harness |
+| `decision` | optional System One-compatible decision backend |
+| `decision_sdm` | adapter to the pinned SDM decision runtime (`decision-runtime-sdm`) |
+| `directory_listing` | daemon-neutral workspace directory walker (C005, ADR-0022) |
+| `document_service` | process-local authority for open editor documents |
+| `error` | re-export of `codegg_core::error` plus Axum response wrappers |
+| `execution_subject_capture` | application-layer execution-subject capture |
+| `executor_audit_hooks` | executor-owned live audit hook pins |
+| `goal_continuation` | application-layer assembly of host-observed goal continuation evidence |
+| `goal_verification` | application-layer assembly of host-owned goal evidence |
+| `http_client` | ordinary HTTP client construction policy |
+| `install` | installation-owned runfile resolution (self-contained-installation M002) |
+| `interactive_process` | scheduler-owned PTY engine for local interactive processes (M001) |
+| `live_execution_audit` | live execution audit hooks (corrective M002) |
+| `policy_surface` | frontend-neutral approval/sandbox user-surface logic (M007) |
+| `run_rerun` | daemon-side validation and reconstruction for historical run reruns |
+| `scratch` | daemon-owned scratch resources for model execution |
+| `tool_advisor` | versioned tool-selection data contracts and deterministic evaluation |
+| `work_plan_arbiter` | host-owned WorkPlan completion arbiter |
+| `work_plan_eggplan` | application-layer Eggplan assessment facade |
+| `work_plan_evidence` | application-layer assembly of WorkPlan host evidence |
+| `work_plan_repository_binding` | application-layer repository plan binding service |
+| `work_plan_todo_sync` | WorkPlan-to-Todo one-way sync helpers |
 
 ### Dependencies (Cargo.toml)
 
@@ -432,12 +502,15 @@ but **never** on UI/server/plugin crates:
 
 ```
 codegg-config, codegg-git, codegg-protocol, codegg-providers
-egggit, egglsp, eggsentry
+egggit, egglsp, eggsentry, eggpool-model-routing
 anyhow, base64, async-trait, chrono, dashmap, dirs,
 md5, once_cell, parking_lot, rand, regex, serde, serde_json,
-sha2, similar, sqlx, thiserror, tokio, tokio-util, toml,
-tracing, uuid, rustpython-parser
+sha2, similar, sqlx, subtle, thiserror, tokio, tokio-util, toml,
+tracing, unicode-normalization, url, uuid, rustpython-parser
 ```
+
+On Unix, `codegg-core` additionally depends on `libc` and `rustix`
+(`fs`), for the sandbox/process-containment primitives.
 
 ### Forbidden Dependencies
 
@@ -472,8 +545,9 @@ intentionally live outside it.
 
 The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
 the `CoreDaemon` request dispatch into `core::daemon_family` plus 16
-`core::daemon_*` family handler modules (and the two sub-handler modules
-`daemon_control` / `daemon_workspace_dashboard`); Residual M003 has separated
+`core::daemon_*` family handler modules (and the sub-handler modules
+`daemon_control` / `daemon_workspace_dashboard` / `daemon_queue_delivery` /
+`daemon_continuation` / `daemon_lsp_completion`); Residual M003 has separated
 construction, bootstrap/recovery, refresh, and shutdown into
 `core::daemon_construct`, `core::daemon_bootstrap`, `core::daemon_refresh`,
 and `core::daemon_shutdown` while preserving the exact initialization order
@@ -500,15 +574,19 @@ transport from the underlying agent and session logic.
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
-| `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~6,000 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
-| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 261 variants to one family plus `owner_module()`. Chat, team, interactive, human shell, and work orders classify here but are served pre-router to preserve stack/cancellation semantics. |
+| `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~7,300 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
+| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 263 variants to one family plus `owner_module()`. Chat, team, interactive, human shell, and work orders classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. Also owns `spawn_turn_reaper`, whose post-terminal hook is M003's queue-delivery wake, and `publish_queue_changed`. |
+| `core::daemon_continuation` | idle-continuation grant handlers | C005 (ADR-0031): grant management (create/revoke/status) plus the daemon-internal delegated turn admission for idle continuations. |
 | `core::daemon_queue_delivery` | `CoreDaemon::submit_queued_prompt_turn`, `reconcile_stranded_queue_deliveries`, `advance_due_queue_entries` | M003 (ADR-0038): the single daemon-internal queue-delivery entry, its bounded restart twin, and M007's bounded advance tick (ADR-0039, accepted). Restricted to three callers by `scripts/check_queue_delivery_callsites.py`. |
 | `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
 | `core::daemon_project_init` | `handle_project_init_request` | Bounded `/init` evidence preview and one-use, project-scoped guarded publication of root `AGENTS.md`. |
+| `core::project_init` | reviewed project-init draft state | Ephemeral daemon-owned state for reviewed project-initialization drafts. |
 | `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |
+| `core::daemon_lsp_completion` | completion read surface | M003 (ADR-0021, Option B): one bounded, inert, warm-server-only LSP completion read under the `via_session + file.read` gate. |
 | `core::daemon_scratch` | `handle_scratch_request` | The scratch usage census (M006) and the scratch retention sweep (M007): the daemon-held measurement of its own disposable scratch tree, and the bounded reclamation of that tree. |
+| `core::scratch_sweep` | `ScratchRetentionPolicy`, `spawn_scratch_sweep` | M007: the durable scratch-retention sweep — the decision is recorded durably, never derived from the filesystem alone. |
 | `core::daemon_team` | `handle_team_request` | Team membership, principal, and device-token administration (team-collaboration M003). |
 | `core::daemon_human_shell` | `handle_human_shell_request` | The human shell family: the staged human command surface and its promotion model. |
 | `core::daemon_work_orders` | `handle_work_order_request` | Project work orders, occurrences, sequence lanes, and trigger management. |
@@ -532,13 +610,22 @@ transport from the underlying agent and session logic.
 | `core::event_log` | `EventLog` | In-memory event ring buffer with optional SQLite-backed projection sink. |
 | `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
 | `core::notification` | `NotificationRouter`, `AudioArbiter` | TTS and notification policy routing. |
+| `core::node_telemetry` | node telemetry handler | Read-only node telemetry request (Eggwork M002) over the daemon-owned `NodeTelemetryService`; never queues a job or probes a node directly. |
 | `core::lsp_diagnostics_store` | diagnostics store | Daemon-owned LSP diagnostics persistence. |
 | `core::work_order_coordinator` | work-order coordinator | Wakes and advances work-order gates and schedules. |
 | `core::session_runtime` | `SessionRuntimeRegistry` | Active session runtime state tracking. |
+| `core::session_launch` | session-launch service | M006: the daemon-side launch service, driven recoverably — every step is written to the durable launch saga before the next step begins. |
 | `core::session_selection` | `SelectionService` | Session-level connection/model selection via typed stores. M004: `ModelSelect` adapter, `apply_last_used_preference`, durable-projected runtime cache. |
 | `core::provider_connections` | `ConnectionManager`, `ProviderConnectionStore` | Provider instance caching, lifecycle, and purge. |
+| `core::provider_qualification` | credential qualification writer | M010: durable, revision-scoped writer for provider-connection credential qualification verdicts. |
 | `core::eggpool` | `EggpoolProvisioner` | Connection provisioning and background refresh. |
+| `core::global_agent_authority` | global agent directory authority | The user-level agent directory as a **distinct** document authority with its own write gate and a narrower allowed filename set. |
 | `core::project_activation` | `ProjectActivationRegistry` | Owner-scoped activation leases for projects. |
+| `core::remote_targets` | remote target admission policy | M001: which Eggwork nodes a client may name, and the execution posture a targetable node must declare. |
+| `core::process_admission` | process admission wiring | M005 C005: the daemon's wiring for the authoritative process-admission check, which no filesystem fence can replace. |
+| `core::checkout_mediation` | checkout mediation for non-broker writers | M005 C004: the daemon-side half of the mediation contract for CodeGG's non-broker checkout writers (document service, change-review applier, project init, checkpoint restore, HTTP file routes). |
+| `core::writer_fence` | checkout writer fence adapter | M005 C003: the daemon-side adapter that mediates the model's native writers against the checkout's permit. |
+| `core::writer_permit` | writer-permit adapter | The daemon-side adapter for the M005 checkout writer permit; `codegg_core::writer_permit` owns the authority. |
 
 Frontend identity, local endpoint/path resolution, socket transport, and
 connect/reuse/start orchestration live in the leaf `codegg-client` crate.
@@ -590,20 +677,20 @@ Defined in `crates/codegg-protocol/src/core.rs`.
 
 #### Request Families
 
-- **Session lifecycle**: list, create, load, attach, fork, delete, archive,
-  restore, share, unshare, rename, export, import, create-from-template,
-  initialize, subscribe, resume
+- **Session lifecycle**: list, create, launch, load, attach, fork, delete,
+  archive, restore, share, unshare, rename, export, import,
+  create-from-template, initialize, subscribe, resume
 - **Turn lifecycle**: submit, cancel, steer, agent select, model select
 - **Session data**: message loading and message counts
 - **Provider connections**: create, cancel, status, list, models, rotate,
   refresh, enable, disable, delete, restore, purge, detail
 - **Session selection**: get, list, update, models
 - **Workspace**: register, list, archive, snapshot, services snapshot,
-  config reload
-- **Project catalog**: list, get, register, archive, restore, health,
-  capabilities
+  config reload, directory list
+- **Project catalog**: list, get, register, archive, restore, delete, update,
+  health, capabilities
 - **Durable jobs**: submit, wait, get, list, cancel, retry, attempts,
-  recovery report
+  scheduler snapshot, recovery report
 - **Schedules**: create, list, get, pause, resume, delete
 - **Goals**: set, from-file, show, pause, resume, clear, done, checkpoint,
   set-budget
@@ -631,19 +718,25 @@ Defined in `crates/codegg-protocol/src/core.rs`.
 - All other session variants (List, Fork, Delete, Archive, Restore, Share,
   Unshare, Rename, Export, Import, CreateFromTemplate)
 - `Subscribe` — returns `Json { current_seq, session_id }`
-  (`daemon_turns.rs:643`); it is a probe, not a streaming registration
+  (`daemon_turns.rs`, `CoreRequest::Subscribe` arm); it is a probe, not a
+  streaming registration
 - `Resume` — replays events from `from_event_seq`, or returns
   `ResyncRequired` when the requested sequence is no longer covered, or an
-  empty `Events` when the client is already in sync (`daemon_turns.rs:652`)
+  empty `Events` when the client is already in sync (`daemon_turns.rs`,
+  `CoreRequest::Resume` arm)
 - `TurnCancel` / `TurnSteer` — gated on the controller predicate; observers
-  and non-controller Contributors are rejected (`daemon_turns.rs:695`/`:737`)
+  and non-controller Contributors are rejected (`daemon_turns.rs`,
+  `CoreRequest::TurnCancel` / `CoreRequest::TurnSteer` arms)
 - `AgentSelect` — binds through `bind_runtime_for_session`, returns
-  `session_unbound` when binding fails (`daemon_turns.rs:798`)
+  `session_unbound` when binding fails (`daemon_turns.rs`,
+  `CoreRequest::AgentSelect` arm)
 - `ModelSelect` — durable `SelectionService` adapter; the runtime cache is
-  projected only *after* durable success (`daemon_turns.rs:825`)
+  projected only *after* durable success (`daemon_turns.rs`,
+  `CoreRequest::ModelSelect` arm)
 - `Initialize` — classified to the Turns family
-  (`daemon_family.rs:292`) but has no handler arm in `daemon_turns.rs` and
-  falls into the family's `_ =>` `unimplemented` response
+  (`daemon_family.rs`, `CoreRequest::Initialize => Self::Turns`) but has no
+  handler arm in `daemon_turns.rs` and falls into the family's `_ =>`
+  `unimplemented` response
 - `PermissionRespond` / `QuestionRespond` — Registry responses
 - `ModelsRefresh` — Returns refreshed model list
 - `TaskList` / `TaskSchedule` / `TaskDelete` — Task operations
@@ -783,14 +876,14 @@ Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`,
 **`WorkspaceId`** is a typed `String` newtype identifying a registered
 workspace.
 
-**Session binding**: `CoreDaemon::bind_runtime_for_session` (`daemon_refresh.rs:830`)
+**Session binding**: `CoreDaemon::bind_runtime_for_session` (`daemon_refresh.rs`)
 resolves a `session_id` to a `SessionRuntime` via `SessionStore` +
 `WorkspaceRegistry`. `TurnSubmit` and `AgentSelect` reject unbound sessions
 with `session_unbound`. `ModelSelect` does not bind a runtime: it validates
 session existence through `SelectionService::update`
-(`src/core/session_selection.rs:641`) and then projects the selection into the
+(`src/core/session_selection.rs`) and then projects the selection into the
 runtime cache best-effort, only after durable success
-(`src/core/daemon_turns.rs:825-899`).
+(`src/core/daemon_turns.rs`, `CoreRequest::ModelSelect` arm).
 
 **Storage**: workspace tables were introduced by migration v22 (a `workspace`
 table plus `workspace_id` index on `session`). The schema has advanced well
@@ -848,10 +941,10 @@ compatibility boundary.
 ### Implementation Notes
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in
-  `crates/codegg-protocol/src/core.rs:28`).
-- `CoreDaemon` spans `~6,800` lines in `daemon.rs` plus 16 `daemon_*`
-  family handler modules totaling ~17,400 lines, plus `daemon_family.rs`
-  (~560 lines), plus four `daemon_*` lifecycle modules totaling ~3,400
+  `crates/codegg-protocol/src/core.rs`).
+- `CoreDaemon` spans `~7,300` lines in `daemon.rs` plus 16 `daemon_*`
+  family handler modules totaling ~17,700 lines, plus `daemon_family.rs`
+  (~560 lines), plus four `daemon_*` lifecycle modules totaling ~3,600
   lines. It holds daemon identity, runtime deps, event log, session/client
   registries, notification router, workspace registry,
   workspace services, eggpool provisioner, selection service, asset refresh
@@ -914,7 +1007,8 @@ compatibility boundary.
 
 ### Test Coverage
 
-- `turn_submit_uses_injected_runtime` (`src/core/daemon.rs:5944`) —
+- `turn_submit_uses_injected_runtime` (`src/core/daemon.rs`,
+  `turn_submit_uses_injected_runtime`) —
   Verifies that `TurnSubmit` delegates to the injected `TurnRuntime` rather
   than constructing one inline.
 - `request_family_routes_each_coherent_family`
@@ -933,7 +1027,7 @@ compatibility boundary.
   `bootstrap_phases_match_documented_order`,
   `refresh_coordinators_match_documented_set`, and
   `shutdown_phases_match_documented_order` fail on silent reorder; the
-  19 new lifecycle tests (5 construct + 5 bootstrap + 5 refresh + 4
+  22 lifecycle tests (5 construct + 6 bootstrap + 7 refresh + 4
   shutdown) cover wiring, pool-less shape, identity, service reuse,
   hydrate/bridge/recover order, missing-pool/table tolerance, health/activation
   fail-closed behavior, and abort-on-drop without new frameworks.
@@ -1096,3 +1190,92 @@ Verified accurate on this tree: the `Box::pin`-per-family discipline, the
 `DaemonRequestFamily::owner_module` mapping, the four lifecycle modules and
 their separated responsibilities, and the `CoreRequest`/`CoreResponse`
 variant counts of **261** and **171** respectively.
+
+Fourth pass (2026-10-23) against `crates/codegg-core/src/lib.rs`,
+`crates/codegg-core/src/session/user_prompt_queue.rs`,
+`crates/codegg-core/src/authorization/policy.rs`, `src/lib.rs`,
+`src/core/*.rs`, `src/core/instance.rs`, `src/core/daemon_family.rs`,
+`crates/codegg-protocol/src/core.rs`,
+`crates/codegg-core/src/storage/mod.rs`, `crates/codegg-core/Cargo.toml`,
+`scripts/check-core-boundary.sh`, and `scripts/check_daemon_cwd_usage.py`.
+The three earlier passes above are left as they were written; this pass
+records what had drifted since.
+
+- **The `CoreRequest`/`CoreResponse` counts recorded in the third pass were
+  stale: 261/171 → 263/172.** Both were re-counted programmatically from
+  the enum bodies in `crates/codegg-protocol/src/core.rs`:
+  **263** `CoreRequest` variants (239 struct-bodied + 24 unit) and **172**
+  `CoreResponse` variants (171 struct-bodied + the unit `Ack`). This
+  matches the `architecture/overview.md` verified-counts table and the
+  `DaemonRequestFamily::of` claim in the Module Inventory.
+- **Two line references in the earlier passes had drifted further.**
+  `PROTOCOL_VERSION` is at `crates/codegg-protocol/src/core.rs:29` (the
+  first pass recorded `:28`), and `storage::STORAGE_LAYOUT_VERSION` is
+  **87** (`crates/codegg-core/src/storage/mod.rs:48`; the first pass
+  recorded 72). The body's pointer to
+  `storage::STORAGE_LAYOUT_VERSION` remains the authority for the current
+  value.
+- **The line totals were stale.** `daemon.rs` is **7,290** lines (the
+  third pass said 6,807); the 16 family handler modules total **17,724**
+  lines (the third pass said 17,422); `daemon_family.rs` is **561** lines
+  (the third pass said 559); and the four lifecycle modules —
+  `daemon_construct` (1,111), `daemon_bootstrap` (1,094),
+  `daemon_refresh` (1,268), `daemon_shutdown` (152) — total **3,625**
+  lines (the third pass said 3,442). The `~7,300` / `~17,700` / `~560` /
+  `~3,600` figures in the Module Inventory and Implementation Notes were
+  already correct and were left unchanged.
+- **The lifecycle-test count was stale: 19 → 22.** The four lifecycle
+  modules hold 5 construct + 6 bootstrap + 7 refresh + 4 shutdown = **22**
+  tests (the doc said 19, split 5/5/5/4).
+- **Filled an empty section.** `### User Prompt Queue Read Contract (M002a,
+  ADR-0035)` had a heading and no body — the property table that belongs
+  to it had been orphaned under the due-time contract. The section now
+  carries the table, the `is_controller_bypass` rationale, and the
+  `#[serde(default)]` rule, and it records that **M002b (ADR-0037) has
+  since landed the mutation surface** — the old body claimed "No mutation
+  surface exists yet" and that the read "always returns an empty list",
+  both contradicted by the queue-mutation contract lower in the same doc
+  and by the live `R::UserPromptQueue*` operation descriptors.
+- **Corrected the root `src/lib.rs` re-export block**, which omitted
+  `pub use codegg_core::run_result;` (it is a separate one-line `pub use`,
+  not part of the grouped block).
+- **Added the missing request families to the `#### Request Families`
+  summary**: `SessionLaunch` (session lifecycle), `ProjectUpdate` and
+  `ProjectDelete` (project catalog), `WorkspaceDirectoryList` (workspace),
+  and `SchedulerSnapshot` (durable jobs).
+- Verified accurate, no change: `codegg-core` owns exactly **54** `pub mod`
+  declarations and the Owned Modules table lists all 54 with no extras
+  and none missing; the `DaemonRequestFamily` enum still holds **18**
+  variants with the **13-dispatched / 5-pre-router** split (the five
+  pre-router families are chat, team, interactive, human shell, and work
+  orders — `src/core/daemon.rs:4504-4508`); the `owner_module` table still
+  names exactly **16** family owner files; `CoreRuntimeMode` at
+  `src/core/instance.rs:41`; `default_user_runtime_root` at
+  `crates/codegg-client/src/paths.rs:161`; the `CoreClient` trait shape
+  (`src/core/mod.rs:76-81`) and its three implementations
+  (`InprocCoreClient` at `src/core/mod.rs:108`, `StdioCoreClient` at
+  `src/core/transport/stdio.rs:12`, `SocketCoreClient` at
+  `src/core/transport/socket.rs:12`); the `DaemonConnectError` variants
+  (`StartupTimeout` / `InconsistentState` / `ChildExited` / `Io`,
+  `src/core/instance.rs:385-399`); the `ConnectOrStartOptions` fields and
+  their 10 s / 100 ms defaults (`src/core/instance.rs:437-459`); the
+  `DaemonInstanceMetadata` fields (`src/core/instance.rs:241-253`); the
+  10 MB `daemon.log` rotation (`src/core/instance.rs:214-215`); the
+  `codegg-core` dependency list and the `libc`/`rustix` Unix additions
+  (`crates/codegg-core/Cargo.toml:57-59`); the forbidden-dependency list
+  matching `scripts/check-core-boundary.sh:39`; the
+  `check_daemon_cwd_usage.py` scope and its two `EXEMPT_FILES`
+  (`src/main.rs`, `src/exec.rs`); the `turn_submit_uses_injected_runtime`
+  test (`src/core/daemon.rs:7192`),
+  `request_family_routes_each_coherent_family`
+  (`src/core/daemon_family.rs:382`), and
+  `thin_dispatcher_delegates_to_family_handlers`
+  (`src/core/daemon_family.rs:527`); `bind_runtime_for_session` in
+  `daemon_refresh.rs:985`; `App::bootstrap_launch_project_context`
+  (`src/tui/app/mod.rs:14432`); the `UserPromptQueueList` descriptor
+  (`ViaSession` + `SessionRead`, `policy.rs:394`), its `Turns` routing
+  (`daemon_family.rs:153`), and the `list_user_prompt_queue` handler
+  (`src/core/daemon_turns.rs:1930`); the
+  `user_prompt_queue_due_time_after_expiry` refusal code
+  (`crates/codegg-core/src/session/user_prompt_queue.rs:271`); and the
+  `user_prompt_queue_owner` table (`session/schema.rs:3449`).

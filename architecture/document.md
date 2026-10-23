@@ -215,7 +215,7 @@ source modules), `crates/codegg-protocol/src/document.rs`,
   variants plus `DocumentControllerError`'s 11, both in the exact order
   listed above.
 - Corrected one accessor description: `try_snapshot` returns an owned
-  `(DocumentSnapshot, u64)` tuple (`crates/codegg-client/src/document.rs:272`),
+  `(DocumentSnapshot, u64)` tuple (`crates/codegg-client/src/document.rs:279`),
   not a borrow.
 - Verified accurate: the `file.read` / `file.modify` split
   (`authorization/policy.rs:108-123` maps `DocumentOpen` / `SnapshotGet` /
@@ -231,3 +231,17 @@ source modules), `crates/codegg-protocol/src/document.rs`,
   `sync_all`, then renames (`src/lsp/mutation.rs:32-77`). `CoreEvent` carries
   no `Document*` variant, confirming the "not sent through the global fanout"
   claim.
+
+Re-verified 2026-10-23 against source. Corrected one line reference:
+`try_snapshot` `crates/codegg-client/src/document.rs:272` → **`:279`**.
+
+Confirmed unchanged: `crop` 0.4.3 with `default-features = false` and the
+`std` feature (`crates/codegg-document/Cargo.toml:12`) and `ropey` genuinely
+absent from `Cargo.lock`; the protocol bounds
+`MAX_DOCUMENT_TEXT_BYTES` 8 MiB, `MAX_DOCUMENT_EDITS` 256, and
+`MAX_DOCUMENT_INSERT_BYTES` 1 MiB (`crates/codegg-protocol/src/document.rs:6-8`);
+`MAX_DOCUMENTS` 128 (`src/document_service.rs:16`); the `document.v1`
+capability constant (`crates/codegg-protocol/src/document.rs:5`); and
+`DocumentState`'s **10** variants (`crates/codegg-client/src/document.rs:48`) —
+`Closed`, `Opening`, `Synced`, `DirtyLocal`, `Flushing`, `ResyncRequired`,
+`Conflict`, `ReadOnly`, `Disconnected`, `GoneWithLocalDraft`.

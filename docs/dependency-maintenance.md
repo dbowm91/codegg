@@ -111,27 +111,78 @@ default-feature policy:
 
 ## External Egg-stack dependency status
 
-Checked against crates.io / the upstream repositories on 2026-10-09.
+Checked against crates.io / the upstream repositories on 2026-10-23.
 
 | Dependency | Pinned | Latest | Status |
 |---|---|---|---|
 | `eggfetch-core` | `0.2.2` | `0.2.2` | current |
-| `eggserve-core` | `0.2.0` | `0.4.0` | **cannot adopt** (see below) |
+| `eggserve-core` | `0.2.0` | `0.5.0` | **cannot adopt** (see below) |
 | `egggress` | not used | — | no dependency anywhere in the workspace |
-| `eggup-core` / `eggup-acquisition` | git `66813b3b` | git `70ec4e63` | behind; immutable-pin policy owned by `codegg upgrade` |
-| `eggpool-*` (wire + provider-profile) | git `9ac6a131` | git `eed0d58f` | behind; M001 closure revision, pinned deliberately |
+| `eggup-core` / `eggup-acquisition` | git `66813b3b` | git `648b1db2` | behind; immutable-pin policy owned by `codegg upgrade` |
+| `eggpool-wire` / `eggpool-provider-profile` | git `9ac6a131` | git `e6822d8f` | behind; M001 closure revision, pinned deliberately |
+| `eggpool-model-routing` | git `d70b5963` | git `e6822d8f` | behind; a separate pin from the provider-profile pair above |
 | `eggplan-*` | git `0dd33b76` | git `37ad290c` | behind |
 | `eggwork-client` / `eggwork-core` | git `81f34e08` | git `81f34e08` | current — upstream `main` head, carrying Workspace M004, Security M004 Landlock hardening, the M004b sandbox-helper staging correction, and the closed optional Gregg host telemetry M001+M002 (Eggwork M002) |
 
-**Why `eggserve-core` stays at 0.2.0.** `eggserve-core` 0.4.0 pulls in
-`landlock`, which is Linux-only: it references `libc::SYS_landlock_create_ruleset`,
-`libc::O_PATH`, and `libc::prctl`, none of which exist on `darwin`, so the
-dependency cannot compile on macOS. This affects only
-`crates/eggwork-test-node`, which is **excluded** from the workspace
-(`exclude = [...]`, own lockfile) and is therefore already unbuildable on macOS
-at its pinned version. Adopting 0.4.0 needs upstream feature gating of the
-sandbox dependency, not a CodeGG-side change.
+**Why `eggserve-core` stays at 0.2.0.** The macOS blocker is not the
+`eggserve-core` line: the published `eggserve-core` 0.4.0 and 0.5.0 dependency
+metadata on crates.io lists no `landlock` dependency anywhere in the
+`eggserve-core` / `eggserve-server` / `eggserve-static` / `eggserve-h3` tree.
+The `landlock` dependency that cannot compile on macOS comes from
+`eggwork-runner` at the pinned Eggwork revision `81f34e08` — it is a normal
+(unconditional) dependency there, and it is what makes the test node
+Linux-only.
+
+That affects only `crates/eggwork-test-node`, which is **excluded** from the
+workspace (`exclude = [...]`, own lockfile) and is therefore already
+unbuildable on macOS at its pinned version. CodeGG's own workspace declares
+`landlock` under `[target.'cfg(target_os = "linux")'.dependencies]`, so the
+root package is unaffected. Bumping `eggserve-core` inside the test node would
+not change the macOS outcome; moving the `landlock` dependency behind a
+Linux-only target in Eggwork is an upstream change, not a CodeGG-side one.
+Adopting a newer eggserve line remains a deliberate dependency-review step.
 
 The remaining git pins are behind their upstreams. They are reviewed closure
 revisions rather than floating branches, and moving them is a deliberate
 dependency-review step, not a maintenance patch.
+
+## Source verification
+
+Checked 2026-10-23 against the manifests, the lockfiles, and the upstream
+registries.
+
+- Workspace pins read from `Cargo.toml` and `crates/*/Cargo.toml`:
+  `eggfetch-core` 0.2.2 (default features off; root selects `http1`,
+  `tls-rustls`, `json`), `eggup-core` / `eggup-acquisition` git `66813b3b`,
+  `eggplan-*` git `0dd33b76`, `eggwork-client` / `eggwork-core` git
+  `81f34e08`, `eggpool-wire` / `eggpool-provider-profile` git `9ac6a131`
+  (`crates/codegg-providers/Cargo.toml`), `eggpool-model-routing` git
+  `d70b5963` (`crates/codegg-core/Cargo.toml`), `eggserve-core` 0.2.0
+  (`crates/eggwork-test-node/Cargo.toml`).
+- Upstream `main` heads re-checked with `git ls-remote` on 2026-10-23:
+  eggup `648b1db2`, eggplan `37ad290c`, eggpool `e6822d8f`, eggwork
+  `81f34e08`. The `Latest` column was updated from these.
+- crates.io latest versions re-checked on 2026-10-23: `eggfetch-core` 0.2.2,
+  `eggserve-core` 0.5.0 (was 0.4.0 in the table).
+- The `landlock` attribution was corrected. The published dependency metadata
+  for `eggserve-core` 0.4.0 and 0.5.0 (and `eggserve-server`,
+  `eggserve-static`, `eggserve-h3`) lists no `landlock` dependency.
+  `crates/eggwork-test-node/Cargo.lock` shows `landlock` as an unconditional
+  dependency of `eggwork-runner` at the pinned Eggwork revision. CodeGG's own
+  workspace declares `landlock` under
+  `[target.'cfg(target_os = "linux")'.dependencies]` in `Cargo.toml`, so the
+  root package is unaffected on macOS.
+- `[workspace.lints.rust] unsafe_code = "deny"` is inherited by exactly three
+  crates — `codegg-core`, `codegg-client`, `codegg-document` — via
+  `[lints] workspace = true` in each member manifest.
+- `exclude = ["crates/eggwork-test-node", "apps/desktop/src-tauri"]`:
+  `Cargo.toml`.
+- `serde_norway` 0.9.42 (`crates/codegg-config/Cargo.toml`);
+  `arboard` with `default-features = false`; `image` 0.25 with
+  `png`/`jpeg`/`gif`/`webp`/`bmp`; `ratatui-image` 10 with only the
+  `crossterm` backend; `md5` 0.8 in `codegg-core`; `strum` 0.26; `base64`
+  0.22 (`Cargo.toml`, `crates/codegg-core/Cargo.toml`).
+- The `rsa` / `sqlx-mysql` audit exception: `.cargo/audit.toml`.
+- Workspace YAML parsing in `codegg-config`'s document codec:
+  `crates/codegg-config/src/document.rs`, `serde_norway` pin in
+  `crates/codegg-config/Cargo.toml`.

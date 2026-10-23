@@ -41,6 +41,28 @@ journal event as a provider turn or tool invocation.
 | `crates/codegg-protocol/src/projection/replay.rs` | Durable replay transport types |
 | `crates/codegg-protocol/src/projection/controller.rs` | Frontend projection client controller |
 | `crates/codegg-protocol/src/projection/consumer.rs` | Non-TUI headless reference consumer |
+| `crates/codegg-protocol/src/projection/workstream.rs` | Bounded workstream view adapter |
+
+The durable half of the subsystem lives in `codegg-core`:
+
+| Path | Role |
+|------|------|
+| `crates/codegg-core/src/projection_replay/mod.rs` | Module root, re-exports |
+| `crates/codegg-core/src/projection_replay/store.rs` | SQLite stream/event/checkpoint storage |
+| `crates/codegg-core/src/projection_replay/service.rs` | Publish / subscribe / resume / ack service |
+| `crates/codegg-core/src/projection_replay/subscription.rs` | In-memory subscription registry |
+| `crates/codegg-core/src/projection_replay/publication.rs` | Core-event → projection-event mapping |
+| `crates/codegg-core/src/projection_replay/safe_publication.rs` | Visibility classification gate |
+| `crates/codegg-core/src/projection_replay/seam.rs` | The daemon's publication seam |
+| `crates/codegg-core/src/projection_replay/policy.rs` | Disclosure policy and decisions |
+| `crates/codegg-core/src/projection_replay/redactor.rs` | Field-level redaction |
+| `crates/codegg-core/src/projection_replay/retention.rs` | Count/age/byte retention and pruning |
+| `crates/codegg-core/src/projection_replay/context.rs` | Principal / client / capability context |
+| `crates/codegg-core/src/projection_replay/artifacts.rs` | Artifact handles and read outcomes |
+| `crates/codegg-core/src/projection_replay/artifact_registry.rs` | Artifact handle registry |
+| `crates/codegg-core/src/projection_replay/agent_runs.rs` | Durable run/worktree/group summaries |
+| `crates/codegg-core/src/projection_replay/metrics.rs` | Bounded observability counters |
+| `crates/codegg-core/src/projection_replay/handle.rs` | Daemon-level `Arc`-wrapped publication helper |
 
 ## How It Works
 
@@ -52,10 +74,11 @@ Two constants define the contract surface:
 - `PROJECTION_PROTOCOL_VERSION_MIN` (`u32 = 1`) — minimum
   interoperable version.
 
-`ProjectionCapabilities` carries a `min_version..=max_version` range
-plus a `supports_incremental_events` boolean. The negotiated version
-is the intersection of the two sides' ranges. Versions outside the
-range produce `ReducerError::UnsupportedProtocolVersion`.
+`ProjectionCapabilities` carries a `min_version..=max_version` range plus
+two booleans: `supports_incremental_events` and `supports_unknown_fields`
+(both default `true` via serde). The negotiated version is the
+intersection of the two sides' ranges. Versions outside the range produce
+`ReducerError::UnsupportedProtocolVersion`.
 
 The capability identifier is `PROJECTION_CAPABILITY =
 "session_projection.v1"`.
@@ -81,6 +104,9 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_NOTIFICATION_BOUND` | 16 |
 | `MAX_PROJECTION_SUBAGENTS` | 16 |
 | `MAX_PROJECTION_SESSION_SUBAGENTS` | 32 |
+| `MAX_PROJECTION_DISPLAY_NAME_BYTES` | 32 |
+| `MAX_PROJECTION_DESCRIPTOR_BYTES` | 256 |
+| `MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES` | 8,192 (`SUBAGENTS × DESCRIPTOR_BYTES × 2`) |
 | `MAX_PROJECTION_AGENT_RUNS` | 64 |
 | `MAX_PROJECTION_WORKTREES` | 32 |
 | `MAX_PROJECTION_RUN_GROUPS` | 32 |
@@ -120,7 +146,7 @@ Every payload field carries a `VisibilityClass` tag:
 | `Duplicate` | `event_seq` at or below snapshot's. |
 | `ScopeMismatch` | `session_id` does not match. |
 | `Reconciled` | Impossible transition; diagnostic recorded. |
-| `ResyncRequired` | Full resync requested. |
+| `ResyncRequired { from_event_seq, current_seq }` | Full resync requested. |
 | `Error(ReducerError)` | Protocol version or seq regression. |
 
 Lifecycle invariants:
@@ -206,7 +232,10 @@ surface as an additive layer.
 - `ProjectionCursor` — client-held cursor for resume.
 - `ProjectionReplayBatch` — batch of replayed events with optional
   snapshot.
-- `ProjectionSnapshotBundle` — `One` or `BoundedSessionList`.
+- `ProjectionSnapshotBundle` — `One`, `BoundedSessionList` (with a
+  `truncated` flag) or `LspDiagnostics` (a diagnostics subscriber has no
+  session snapshot, so it carries the project-scoped content and starts
+  from the resync authority rather than an empty view).
 - `ProjectionAck` — acknowledgement of processed events.
 - `ProjectionArtifactReadRequest/Response` — bounded artifact reads.
 
@@ -299,9 +328,62 @@ Two consequences are load-bearing:
 ### Atomic Control Delivery (M006)
 
 Remote projection control responses are critical writer operations.
-The adapter serializes the frame, enqueues on a bounded control
-channel, and waits for a bounded writer receipt (500 ms). `Initializing
--> Live` completes only after that receipt.
+The adapter serializes the frame, enqueues on a bounded control channel,
+and waits for a bounded writer receipt. `Initializing -> Live` completes
+only after that receipt.
+
+The bound is `CRITICAL_DELIVERY_TIMEOUT` = 500 ms
+(`src/core/transport/projection.rs:25`), applied by
+`bounded_critical_delivery` to every critical send. A control frame is
+never treated as delivered merely because it was serialized or queued: the
+owning writer must acknowledge the write. A timeout yields
+`CriticalDeliveryError::Timeout`, which rolls the subscription back
+rather than leaving a half-activated stream behind.
+
+### Durable Replay Storage (codegg-core)
+
+The protocol crate owns the *contract*; `codegg-core/src/projection_replay/`
+owns the *durability*. Three SQLite tables back the subsystem
+(`crates/codegg-core/src/session/schema.rs`):
+
+- `projection_stream` — one row per stream (`kind` is `session` or
+  `project`), carrying `next_seq`, `retention_floor_seq`,
+  `high_water_seq`, `latest_checkpoint_seq`, `binding_revision`,
+  `projection_version` and a `lifecycle` (`active`, `rebound`,
+  `invalidated`).
+- `projection_event` — the durable event log, one row per published
+  envelope, carrying `event_seq`, `event_kind`, `visibility_class`,
+  `payload_json`, `payload_bytes` and `source_core_seq`.
+- `projection_checkpoint` — periodic bounded snapshots
+  (`snapshot_json`, `snapshot_bytes`) that let a resuming client skip
+  replaying from the stream head.
+
+`ProjectionReplayService` is the only write path. It maps core events
+through the M1 adapters, persists the accepted projection event
+transactionally **before** live delivery, and then fans out to the
+in-memory `SubscriptionRegistry`. Sequence allocation, retention
+pruning, checkpointing and subscriber lifecycle are the service's other
+responsibilities.
+
+`ProjectionPublicationSeam` is the daemon-facing wrapper: it resolves
+the stream binding (`resolve_binding`), applies the disclosure context,
+and publishes. The daemon installs it in `src/core/daemon_construct.rs`
+when a SQLite pool is available, and spawns a background task that calls
+`maintenance_tick` every 300 s.
+
+Disclosure is gated before anything is written: `safe_publication`
+classifies each `CoreEvent` into a `SafePublicationClass` and maps it to
+a `VisibilityClass`; `ProjectionAccessPolicy` (default
+`DefaultAccessPolicy`) returns a `DisclosureDecision` with a
+`DisclosureReason`; and `ProjectionFieldRedactor` redacts the fields the
+decision allows. `ProjectionAccessContext` carries the principal,
+client id, capability set and transport class that the decision is
+evaluated against.
+
+Retention defaults (`RetentionPolicy::default()`): 20,000 events / 64 MiB
+/ 7 days per session stream, 50,000 events / 128 MiB / 7 days per project
+stream, a 64 KiB hard per-event byte cap, a checkpoint every 256 events
+or 1 MiB (minimum 5 min apart), and at most 4 checkpoints per stream.
 
 ### Durable delegated-run projection (agent-run/worktree M006)
 
@@ -322,7 +404,7 @@ ownership only; they do not grant control authority, which remains enforced by
 the durable group/control services.
 
 Member-terminal reconciliation publishes an `AgentRunGroupUpdated`
-`AppEvent` (`crates/codegg-core/src/bus/events.rs:365`), which the
+`AppEvent` (`crates/codegg-core/src/bus/events.rs:396`), which the
 adapter projects as `AgentRunGroupUpserted`, for the authoritative
 recomputed summary, including terminal summaries reached
 without a later status_group request. The event's session routing comes from
@@ -370,10 +452,13 @@ additive fields/events through the existing negotiated protocol.
 ### Fixtures and Independent Consumers
 
 `projection::fixtures` provides golden snapshots and event scripts:
-`idle_snapshot`, `active_turn_event_script`, `completed_snapshot`,
-`permission_event_script`, `subagent_event_script`,
+`idle_snapshot`, `active_turn_snapshot`, `completed_snapshot`,
+`permission_pending_snapshot`, `project_summary_fixture`,
+`active_turn_event_script`, `permission_event_script`,
+`completed_event_script`, `subagent_event_script`,
 `file_change_event_script`, `job_event_script`,
-`question_event_script`, `project_summary_fixture`.
+`question_event_script`, plus `fixture_reducer_config` and
+`envelope_from_event`.
 
 The canonical reducer and the headless consumer are the production owners of
 projection interpretation. Two independent consumers are exercised by the
@@ -408,10 +493,21 @@ headless consumer or a second projection protocol.
 | `ProjectionStreamId` | `replay.rs:41` | Opaque stream identifier |
 | `ProjectionCursor` | `replay.rs:107` | Client cursor for resume |
 | `ProjectionReplayBatch` | `replay.rs:177` | Replay event batch |
-| `ToolProgramSummary` | `dto.rs:822` | Background tool program state |
-| `ToolProgramDetail` | `dto.rs:947` | Full tool program inspection |
-| `ToolProgramCallPage` | `dto.rs:918` | Paginated call history |
-| `VisibilityClass` | `dto.rs:27` | Public/ClientLocal/Internal/Sensitive |
+| `ToolProgramSummary` | `dto.rs:928` | Background tool program state |
+| `ToolProgramDetail` | `dto.rs:1053` | Full tool program inspection |
+| `ToolProgramCallPage` | `dto.rs:1024` | Paginated call history |
+| `VisibilityClass` | `dto.rs:28` | Public/ClientLocal/Internal/Sensitive |
+| `ProjectionReplayService` | `projection_replay/service.rs:78` | Publish/subscribe/resume/ack service |
+| `ProjectionReplayStore` | `projection_replay/store.rs` | SQLite stream/event/checkpoint storage |
+| `SubscriptionRegistry` | `projection_replay/subscription.rs:77` | In-memory subscription registry |
+| `ProjectionPublicationSeam` | `projection_replay/seam.rs:147` | Daemon-facing publication seam |
+| `RetentionPolicy` | `projection_replay/retention.rs:6` | Count/age/byte retention bounds |
+| `ProjectionAccessPolicy` | `projection_replay/policy.rs:146` | Disclosure policy trait |
+| `DisclosureDecision` | `projection_replay/policy.rs:84` | Allow / deny with a reason code |
+| `ProjectionFieldRedactor` | `projection_replay/redactor.rs:312` | Field-level redaction |
+| `ProjectionAccessContext` | `projection_replay/context.rs:281` | Principal/client/capability context |
+| `ProjectionArtifactRegistry` | `projection_replay/artifact_registry.rs` | Artifact handle registry |
+| `ProjectionReplayMetrics` | `projection_replay/metrics.rs:9` | Bounded observability counters |
 
 ## Configuration Surface
 
@@ -495,8 +591,9 @@ already persisted (cross-instance duplicate absorption).
    seeding and live delivery".
 
 6. **Publication is retried, not dropped**: `SeamProjectionSink::publish`
-   retries bounded times (3 attempts, 50 ms apart) when the failure is
-   transient SQLite lock contention, and gives up immediately otherwise.
+   (`src/core/daemon_construct.rs`) retries bounded times (3 attempts,
+   50 ms apart) when the failure is transient SQLite lock contention,
+   and gives up immediately otherwise.
    The daemon's pool runs several connections against one WAL database, so
    a writer can collide with a reader's snapshot; `busy_timeout` does not
    cover the WAL snapshot-conflict variant (`SQLITE_BUSY_SNAPSHOT`, 517).
@@ -519,20 +616,22 @@ already persisted (cross-instance duplicate absorption).
 # adapters, fixtures, controller)
 cargo test -p codegg-protocol
 
-# Independent consumer equivalence test
-cargo test --test session_family
+# Independent consumer equivalence test (member of the session_family family)
+cargo test --test session_family -- projection_consumer
 
 # Headless reference consumer and canonical CoreResponse flow
-cargo test --test headless_projection_consumer
+# (member of the core_daemon family)
+cargo test --test core_daemon -- headless_projection_consumer
 
-# Adversarial tests
-cargo test --test context_projection_adversarial
+# Adversarial tests (member of the command_git family)
+cargo test --test command_git -- context_projection_adversarial
 
 # Projection replay family (consolidated binary, M003 pilot): 11 modules
 cargo test --test projection_replay
 
-# Remote transport tests (needs server feature)
-cargo test --test projection_transport_real --features server
+# Remote transport tests (member of the server_feature family;
+# needs the server feature)
+cargo test --features server --test server_feature -- projection_transport_real
 
 # Lint
 cargo clippy -p codegg-protocol --all-targets --all-features -- -D warnings
@@ -556,6 +655,70 @@ python3 scripts/check_websocket_bounds.py
 - `architecture/bus.md` — event bus
 
 ## Source verification
+
+Verified 2026-10-23 against `crates/codegg-protocol/src/projection/`,
+`crates/codegg-core/src/projection_replay/`,
+`crates/codegg-core/src/session/schema.rs` (projection tables),
+`src/core/daemon_construct.rs`, `src/core/transport/projection.rs` and
+`src/core/daemon_bootstrap.rs`.
+
+Changes made in this pass:
+
+- **The whole durable half of the subsystem was missing from "Where It
+  Lives".** `crates/codegg-core/src/projection_replay/` (16 files, ~7.5 k
+  lines) — the SQLite store, the publish/subscribe/resume/ack service, the
+  subscription registry, the disclosure policy, the field redactor, the
+  retention policy, the artifact registry and the publication seam — had
+  no entry in the table and no section describing it. Added a second
+  table for the crate, a new "Durable Replay Storage (codegg-core)"
+  section, and the `codegg-core` key types to the API table. Also added
+  the missing `crates/codegg-protocol/src/projection/workstream.rs` row.
+- **The limits table was missing three constants**:
+  `MAX_PROJECTION_DISPLAY_NAME_BYTES` (32),
+  `MAX_PROJECTION_DESCRIPTOR_BYTES` (256) and
+  `MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES` (8,192, computed as
+  `SUBAGENTS × DESCRIPTOR_BYTES × 2`).
+- **`ProjectionCapabilities` was described with one boolean.** It carries
+  two — `supports_incremental_events` and `supports_unknown_fields`.
+- **`ProjectionSnapshotBundle` was described with two variants.** It has
+  three: `One`, `BoundedSessionList` and `LspDiagnostics`.
+- **`ApplyOutcome::ResyncRequired` is a struct variant**
+  (`{ from_event_seq, current_seq }`), not a unit variant.
+- **Corrected `file.rs:line` refs**: `VisibilityClass` `dto.rs:27` →
+  `:28`; `ToolProgramSummary` `dto.rs:822` → `:928`;
+  `ToolProgramCallPage` `dto.rs:918` → `:1024`; `ToolProgramDetail`
+  `dto.rs:947` → `:1053`.
+- **Corrected the `AgentRunGroupUpdated` bus ref**
+  `crates/codegg-core/src/bus/events.rs:365` → `:396`.
+- **Fixed three Testing commands that targeted nonexistent binaries.**
+  The root package's integration tests are families, so a member is
+  selected by name after `--`:
+  `headless_projection_consumer` → `--test core_daemon -- headless_projection_consumer`;
+  `context_projection_adversarial` → `--test command_git -- context_projection_adversarial`;
+  `projection_transport_real` → `--features server --test server_feature -- projection_transport_real`.
+- **Named the mechanisms** the Atomic Control Delivery and publication
+  retry invariants describe: `CRITICAL_DELIVERY_TIMEOUT` = 500 ms and
+  `bounded_critical_delivery` (`src/core/transport/projection.rs:25,246`),
+  and `SeamProjectionSink` (`src/core/daemon_construct.rs`).
+- **Completed the fixtures list** with `active_turn_snapshot`,
+  `permission_pending_snapshot`, `completed_event_script`,
+  `fixture_reducer_config` and `envelope_from_event`.
+
+Verified accurate and left unchanged: the `ProjectionEvent` count (47
+variants, re-diffed against `event.rs:128`), every other limit value,
+the three replay caps (512 events / 1 MiB / 64 KiB), the three controller
+caps, `PROJECTION_PROTOCOL_VERSION` / `PROJECTION_PROTOCOL_VERSION_MIN`
+= 1, `PROJECTION_CAPABILITY`, the six `ApplyOutcome` variants, the four
+`ProjectionStreamScope` variants, `REMOTE_TUI_PROTOCOL_VERSION` = 5, the
+`ProjectionState` trait and its two helpers, the workstream caps
+(16 members / 128 claims / 512 dependency edges), the
+`BackgroundJobCompleted` → `JobUpserted` adapter mapping
+(`adapters.rs:865`), the `ProjectionLifecycleBoundary` checkpoints and
+the `Initializing -> Live` activation ordering, the five static-guard
+scripts (all present in `scripts/`), and the `projection_replay` family's
+11 modules.
+
+### Earlier passes
 
 Verified 2026-10-06 against `crates/codegg-protocol/src/projection/`.
 Corrected the `ProjectionEvent` variant count 46 → 47 and added the two

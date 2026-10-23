@@ -406,6 +406,43 @@ M004 observe integration selects the positive M002 frontier.
 
 ## Source Verification
 
+Verified 2026-10-23 against source. Corrected:
+
+- `ToolCatalog::rank_descriptors` `src/tool/catalog.rs:197` → `:220`
+  (the method moved when `ToolCatalog` became a single
+  `Arc<RwLock<ToolCatalogState>>` field).
+- The `candidates_from_deferred_surface` call sites were given as
+  `src/agent/request_preparation.rs:117` and `:207`; they are `:129` and
+  `:219`.
+- The `codegg tool-advisor` CLI was cited at `src/main.rs:880`; the
+  command is declared at `src/main.rs:296`, its subcommand enum is at
+  `:518`, and the handler `cmd_tool_advisor` is at `:2516`.
+- The root `Cargo.toml` feature table was incomplete: it listed
+  `default`, `arboard`, `plugins`, `debug-logging`, `server`, `image`,
+  `lsp-test-support`, `lsp-real-server-tests`, and
+  `decision-runtime-sdm`, but not `windows-sandbox-test-support` or
+  `linux-git-test-support`. Both are test-only features that compile a
+  capability's constructor into existence in a test-only build and in no
+  shipped build.
+
+Verified accurate: `candidates_from_deferred_surface`
+(`src/tool_advisor/mod.rs:396`) and `preselect_candidates` (`:443`);
+`Tool::causal_contract` (`src/tool/mod.rs:253`) and
+`ToolRegistry::causal_contract_of` (`:1686`);
+`CausalInadmissibilityReason` (`causal_frontier.rs:1627`),
+`CausalFrontier::evaluate` (`:1734`), `find_minimal_effect_path`
+(`:2708`), `plan_effect_path` (`:2780`); the 20-entry
+`NATIVE_PILOT_TOOLS` catalog (`causal_frontier.rs:529-551`);
+`assets/tool-advisor/corpus.jsonl` (256 cases) and
+`causal-frontier-v1.jsonl` (168 cases); the nine modules under
+`src/tool_advisor/`; every referenced asset, closure record, and generator
+script; `crates/codegg-core/src/decision.rs` (specs, statuses, backend
+states, `DecisionEngine`, `NoopDecisionEngine`); `src/decision.rs`
+(`MAX_BODY` 64 KiB, no redirect following, `discover_models`, `rank: false`,
+the `noul` binary answer, the `maximum - minimum > 9.0` ambiguity guard);
+and `src/decision_sdm.rs` (`MAX_ARTIFACT_BYTES` 4 MiB, `SdmDecisionEngine::load`
+/ `from_bytes`).
+
 Verified 2026-10-06 against source. Corrected: the projection helper was named
 `candidates_from_surface`, which does not exist; the real entry point is
 `candidates_from_deferred_surface` (`src/tool_advisor/mod.rs:396`, also called
@@ -444,11 +481,13 @@ explicitly scoped to its original verification date. Historical sections that
 describe the retired contextual scorer, the sequence encoder, and the
 requalification CLI are retained as evidence and are marked retired; the
 `codegg tool-advisor` CLI is now `bench | data | inspect | lint | status`
-(`src/main.rs:880`), and `qualify`/`requalify` no longer exist. The named
+(`src/main.rs:296` declares the command; the subcommand enum is at
+`src/main.rs:518` and `cmd_tool_advisor` at `:2516`), and
+`qualify`/`requalify` no longer exist. The named
 symbols still resolve: `build_leakage_groups`, `partition_cases`,
 `family_holdout_partition`, `split_for`, and `preselect_candidates` remain in
 `src/tool_advisor/mod.rs` (lines 1088/1149/1196/919/443),
-`ToolCatalog::rank_descriptors` in `src/tool/catalog.rs:197`, and every
+`ToolCatalog::rank_descriptors` in `src/tool/catalog.rs:220`, and every
 referenced asset, closure record, and generator script is present.
 
 Re-verified the new decision subsystem against source, all claims accurate:

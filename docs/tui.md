@@ -2198,3 +2198,51 @@ and a panel with nothing loaded in it says nothing either.
 - `docs/tools.md` — what the agent can actually call
 - `docs/themes.md` — theme authoring
 - `docs/TROUBLESHOOTING.md` — common failures
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Launch flags (`-c`, `-s`, `--fork`, `--no-session`, `-m`, `-a`, `--cwd`,
+  `-p`/`--run`, `--standalone`) and the policy flags
+  (`--approval-mode`, `--sandbox`, `--yolo`): `src/main.rs` (`Cli`,
+  `ExecutionPolicyArgs`).
+- Default keybindings and their descriptions: `src/tui/input.rs`
+  (`default_bindings_internal`) and the `Action` description list —
+  `Ctrl+T` (tasks), `Ctrl+B` (sidebar), `Shift+N`/`Shift+P`/`Shift+X`
+  (buffer tabs), `Shift+F` (project picker), `Shift+S` (panel manager),
+  `Ctrl+Alt+S` (sidebar focus), `Ctrl+Alt+N`/`Ctrl+Alt+B` (project tabs),
+  `Ctrl+O` (Workspace view), `Shift+Q` (panel exit), `Ctrl+C` (interrupt).
+- `Ctrl+Q` is the quit arm alongside `q`: `src/tui/commands/exit_control.rs`.
+- The three-second exit arm window: `src/tui/app/state/prompt.rs`
+  (`EXIT_ARM_WINDOW`).
+- The 16-tab caps: `src/tui/app/state/subagent_tabs.rs`
+  (`MAX_OPEN_SUBAGENT_TABS`) and `src/tui/app/state/project_picker.rs`
+  (`MAX_OPEN_PROJECT_TABS`).
+- `/projects`, `/workspaces`, `/workspace`, `/panels`, `/files`, `/diff`,
+  `/plan`, `/keybinds`, `/theme`, `/skills`, `/reload`, `/skill-promote`,
+  `/skill-proposals`, `/skill-proposal`: `src/tui/command.rs`.
+- Editor function keys — F2 diagnostics, F3 hover, F4 definition, F5
+  references, F6 document symbols, F7 workspace symbols, F8 completion, F9
+  semantic-token refresh: `src/tui/commands/editor.rs`.
+- Editor bounds: 5,000-line built-in highlighting scan
+  (`src/tui/editor_highlight.rs`), 1,000-token semantic cap
+  (`crates/codegg-protocol/src/lsp.rs`, `MAX_LSP_SEMANTIC_TOKENS`), 32 KiB
+  render line and 256 KiB frame source (`src/tui/editor.rs`), and the 2 MiB
+  editor search bound (`src/tui/editor.rs`, `MAX_EDITOR_SEARCH_BYTES`).
+- Directory listing bounds — 100,000 entries examined, 4,096 nodes kept, a
+  three-level walk window, and the 512 KiB response cap:
+  `src/directory_listing.rs` and
+  `crates/codegg-protocol/src/document.rs`
+  (`MAX_DIRECTORY_LISTING_RESPONSE_BYTES`).
+- Human shell caps — 1 MB per command, 8 MB total, 100 commands, 300 s
+  timeout (`src/shell/types.rs`), and the 256 KiB head plus 256 KiB tail
+  retention (`src/shell/store.rs`).
+- Approval modes `interactive` / `automatic` / `yolo` and sandbox profiles
+  `read-only` / `workspace-write` / `full-host`:
+  `src/policy_surface.rs` and `codegg_core::approval::SandboxProfile`.
+- Permission dialog keys: `src/tui/components/dialogs/permission.rs`.
+- Theme subcommands and the `<name>` shorthand:
+  `src/tui/app/mod.rs` (`handle_theme_command`).
+- The 50 bundled Halloy themes and the `cyber-red` default:
+  `assets/themes/halloy/`, `src/theme/registry.rs`.

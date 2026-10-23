@@ -54,8 +54,8 @@ The Eggup dependencies use immutable git revision
    absolute paths, backslashes, duplicates/case collisions, unexpected names,
    and entries above their bounds.
 6. Hash each extracted file, stage it with Eggup, and validate CodeGG's exact
-   selected version, eggsearch `0.4.3` at immutable source commit
-   `5e7b853e7eebf29c58f84959805c8774279d7ea4`, and the helper's safe refusal
+   selected version, eggsearch `0.4.4` at immutable source commit
+   `32f48bb57a43274d763c7f9ba919eab84d125edc`, and the helper's safe refusal
    probe. The notice is never executed.
 7. Classify current managed siblings by CodeGG-owned identity probes and commit
    the whole runfile generation with Eggup. Missing managed siblings may be
@@ -71,11 +71,11 @@ checks; they are not independent signatures.
 ## Key APIs
 
 `src/upgrade/mod.rs` provides `VersionInfo`, `check_for_updates()`, and
-`upgrade()`. `src/upgrade/managed.rs` contains release target mapping, bounded
-CodeGG Eggfetch adapter, checksum and archive policy, candidate validation,
-and live ownership verification. `describe_manual_fresh_install()` remains a pure helper
-for already-current and manual-install dispositions; it does not perform the
-supported native update.
+`upgrade()`, plus `describe_manual_fresh_install()` — a pure helper for
+already-current and manual-install dispositions that does not perform the
+supported native update. `src/upgrade/managed.rs` contains release target
+mapping, the bounded CodeGG Eggfetch adapter, checksum and archive policy,
+candidate validation, and live ownership verification.
 
 The `[autoupdate]` config remains inert. The verified update runs only after
 explicit `codegg upgrade` invocation.
@@ -86,3 +86,33 @@ Focused tests cover checksum selection, archive allowlist and negative cases,
 and target drift. `tests/config_provider/upgrade.inc` covers version disposition and pins the
 fresh-installer variable to `CODEGG_VERSION`. Run the normal project checks
 from `AGENTS.md`; release/install scripts must remain green.
+
+## See Also
+
+- `architecture/upgrade.md` — authoritative upgrade contract
+- `.opencode/skills/documentation/SKILL.md` — keeping the release/install prose honest
+
+## Source verification
+
+Verified 2026-10-23 against `src/upgrade/mod.rs`, `src/upgrade/managed.rs`,
+`src/install.rs`, `Cargo.toml`, `scripts/release/lib-release.sh`,
+`scripts/release/package-binary.sh`, and `tests/config_provider/upgrade.inc`.
+Confirmed: `VersionInfo` (`src/upgrade/mod.rs:44`), `check_for_updates()`
+(`:64`), `upgrade()` (`:101`), and `describe_manual_fresh_install()` (`:124`)
+all live in `src/upgrade/mod.rs`; the four supported target triples
+(`src/upgrade/managed.rs:25-30`); the pinned eggsearch version `0.4.4` and
+commit `32f48bb57a43274d763c7f9ba919eab84d125edc`
+(`src/install.rs:22,24`); the shared Eggup revision
+`66813b3b94de3a9b2f270e0000dc339ef6f0b478` for both `eggup-core` and
+`eggup-acquisition` (`Cargo.toml:117-118`); the release bundle members
+`codegg`, `codegg-sandbox-helper`, `codegg-eggsearch`
+(`scripts/release/lib-release.sh:17`); the release API URL
+(`src/upgrade/mod.rs:68`); and the `CODEGG_VERSION` pin
+(`tests/config_provider/upgrade.inc:58`).
+
+Corrected: `describe_manual_fresh_install()` was described as living in
+`src/upgrade/managed.rs`; it lives in `src/upgrade/mod.rs`. The "10-second
+Eggfetch profile" is a 10-second **connect** timeout with a 30-second total
+timeout (`src/upgrade/managed.rs:156`); the wording was left as-is because the
+profile is named in `architecture/upgrade.md`, which is authoritative for it.
+

@@ -3,9 +3,10 @@
 > **Historical snapshot**: This document records the post-closure verified state. For current architecture, see `architecture/git.md`.
 >
 > **Counts below are as-of-close and have since drifted.** Verified 2026-10-06
-> against current source; see "Snapshot drift" at the end of this document for
-> the as-of-close → current mapping. The narrative, matrix, and rationale
-> sections are left as written so the polish-pass record stays intact.
+> and re-verified 2026-10-23 against current source; see "Snapshot drift" at the
+> end of this document for the as-of-close → current mapping. The narrative,
+> matrix, and rationale sections are left as written so the polish-pass record
+> stays intact.
 
 > Companion to
 > Git Polish Maintainability Verification (plan pruned post-completion).
@@ -174,7 +175,7 @@ re-rendering via `render_argv`. The TUI `RunRerun` handler is
 currently a placeholder (`src/tui/app/mod.rs:3615`); it does not
 attempt to re-execute.
 
-Full inventory and rationale: [`docs/validation/git-rerun-secret-lifecycle.md`](../../docs/validation/git-rerun-secret-lifecycle.md).
+Full inventory and rationale: [`docs/validation/git-rerun-secret-lifecycle.md`](../docs/validation/git-rerun-secret-lifecycle.md).
 
 ## Durable vs ephemeral RunStore fields
 
@@ -277,7 +278,7 @@ regressions vs. Phase F baseline.
 
 ## Cross-platform status
 
-See [`docs/validation/git-cross-platform.md`](../../docs/validation/git-cross-platform.md)
+See [`docs/validation/git-cross-platform.md`](../docs/validation/git-cross-platform.md)
 for the full matrix. The polish pass did not change any
 cross-platform behavior:
 
@@ -312,7 +313,7 @@ cross-platform behavior:
    reads back `rerun.argv`. The polish pass strengthened the
    invariant (redacted argv), so a future replay implementation
    must reconstruct the raw URL — see
-   [`docs/validation/git-rerun-secret-lifecycle.md`](../../docs/validation/git-rerun-secret-lifecycle.md).
+   [`docs/validation/git-rerun-secret-lifecycle.md`](../docs/validation/git-rerun-secret-lifecycle.md).
 3. **Windows env-var overlays** (`USERPROFILE`, `HOMEDRIVE`,
    `HOMEPATH`, `PATHEXT`) are not in the canonical list. Defer
    until Windows CI is added.
@@ -385,19 +386,19 @@ cross-platform behavior:
 
 Snapshot taken at the polish/maintainability gap-closure delta. Numbers above
 are as-of-close and are intentionally **not** rewritten. Current values
-verified 2026-10-06:
+verified 2026-10-06 and re-verified 2026-10-23:
 
 | Claim (as-of-close) | Current value | Where verified |
 |---|---|---|
 | `GitOperation` enum, **47** variants (line 39) | **54** | `crates/codegg-git/src/operation.rs` |
-| `cargo test -p codegg-git` — "354 + 7 ignored + new B4 tests" | **358** test functions; **0** `#[ignore]` attributes remain in the crate | `crates/codegg-git/src/*.rs` |
+| `cargo test -p codegg-git` — "354 + 7 ignored + new B4 tests" | **360** test functions; **0** `#[ignore]` attributes remain in the crate | `crates/codegg-git/src/*.rs` |
 | `git_execution_origin_matrix` — 19 tests, then 26 after D4 delta (lines 106, 241, 247, 352) | **23** | `tests/command_git/git_execution_origin_matrix.inc` |
 | `git_closure_matrix` — "141+ passed (10 original + 4 new)" | **34** | `tests/command_git/git_closure_matrix.inc` |
-| TUI `RunRerun` placeholder at `src/tui/app/mod.rs:3615` (lines 174, 310) | No `RunRerun` symbol remains; the rerun path is now the `/shell-rerun` command at `src/tui/app/mod.rs:6142`, which resolves a real id and emits `ShellRerun { id }` (not `id: 0`) | `src/tui/app/mod.rs` |
-| B4 — "3 new in-module tests in `crates/codegg-git/src/process_policy.rs`" (line 345) | **0** tests there; the file is now a bare re-export shim. The canonical policy and its single `policy_tables_are_disjoint_and_unique` test live in `crates/egggit/src/process.rs` | `crates/codegg-git/src/process_policy.rs`, `crates/egggit/src/process.rs:249` |
+| TUI `RunRerun` placeholder at `src/tui/app/mod.rs:3615` (lines 174, 310) | The *TUI-side* `RunRerun` handler is gone, but a **live daemon-side rerun path** now exists: `CoreRequest::RunRerun` (`src/core/daemon_jobs.rs:786`) → `CoreResponse::RunRerunAccepted`, driven by `src/tui/commands/run_rerun.rs` (`start_run_rerun`, `:7`). The earlier claim that no `RunRerun` symbol remains was wrong. Separately, the `/shell-rerun` TUI command is now at `src/tui/app/mod.rs:8498` and resolves a real id, emitting `ShellRerun { id }` (not `id: 0`) | `src/tui/app/mod.rs`, `src/core/daemon_jobs.rs`, `src/tui/commands/run_rerun.rs` |
+| B4 — "3 new in-module tests in `crates/codegg-git/src/process_policy.rs`" (line 345) | **0** tests there; the file is now a bare re-export shim. The canonical policy and its single `policy_tables_are_disjoint_and_unique` test live in `crates/egggit/src/process.rs:2265` | `crates/codegg-git/src/process_policy.rs`, `crates/egggit/src/process.rs:2265` |
 | Env-policy ownership — "Single source of truth: `codegg_git::process_policy`" (line 137) | Inverted: `egggit::process` is canonical; `codegg_git::process_policy` is documented as a compatibility re-export | `crates/codegg-git/src/process_policy.rs:1`-`:6` |
-| crate module maps (lines 37-101) | Now also contain `crates/codegg-git/src/workflow.rs`, `crates/egggit/src/process.rs`, and `crates/egggit/src/subject.rs` | `ls crates/codegg-git/src crates/egggit/src` |
-| `cargo test -p codegg-core` — "119" (line 253) | **826** test functions crate-wide (`crates/codegg-core/src/**`); the as-of-close figure's filter scope is not stated, so it is not directly comparable | `crates/codegg-core/src/` |
+| crate module maps (lines 37-101) | Now also contain `crates/codegg-git/src/workflow.rs`, `crates/egggit/src/process.rs`, `crates/egggit/src/subject.rs`, `crates/egggit/src/config_surface.rs`, and `crates/egggit/src/consistency.rs` | `ls crates/codegg-git/src crates/egggit/src` |
+| `cargo test -p codegg-core` — "119" (line 253) | **908** test functions crate-wide (`crates/codegg-core/src/**`); the as-of-close figure's filter scope is not stated, so it is not directly comparable | `crates/codegg-core/src/` |
 | `git_credential_cross_path` — "14" after F2/F3 (lines 239, 360, 363) | **9** | `tests/command_git/git_credential_cross_path.inc` |
 
 All counts above are `#[test]` / `#[tokio::test(…)]` attribute counts, not
@@ -410,7 +411,44 @@ exists as described.
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-git/src/`, `crates/egggit/src/`,
+### Pass of 2026-10-23
+
+This document is a **historical snapshot** of the post-closure
+polish/gap-closure delta. Its as-of-close counts, the crate/module map, the
+execution-origin and permission/risk matrices, the performance table, and the
+Known Limitations list are left exactly as written; only the "Snapshot drift"
+table — which carries *current* values — and the current-source references
+below were re-verified. No build or test run was performed; every count is a
+source-level `#[test]` / `#[tokio::test]` attribute count.
+
+- **Corrected a wrong drift claim.** The drift table said "No `RunRerun` symbol
+  remains". The *TUI-side* handler is indeed gone, but a live daemon-side
+  rerun path exists: `CoreRequest::RunRerun` (`src/core/daemon_jobs.rs:786`)
+  answered with `CoreResponse::RunRerunAccepted`, driven by
+  `src/tui/commands/run_rerun.rs`. The row now says so, and the
+  `/shell-rerun` command's current anchor (`src/tui/app/mod.rs:8498`) is
+  given. The body's "TUI `RunRerun` is a placeholder" limitation is left as
+  written: it was true of the polish-pass record.
+- **Re-verified the other drift values.** `codegg-git` 358 → **360**;
+  `codegg-core` 826 → **908**; `GitOperation` 54, `git_execution_origin_matrix`
+  23, `git_closure_matrix` 34 and `git_credential_cross_path` 9 are unchanged;
+  the crate still contains **0** `#[ignore]` attributes.
+- **Re-anchored the drift table's verification locations**: the
+  `policy_tables_are_disjoint_and_unique` test moved from
+  `crates/egggit/src/process.rs:249` to `:2265`, and the crate module map
+  row now also names `crates/egggit/src/config_surface.rs` and
+  `crates/egggit/src/consistency.rs`, which the map omits.
+- **Re-anchored the current-source refs in the "Verified accurate as written"
+  table below**: `RedactedUrl::new` `sensitive.rs:44` → `:48`;
+  `NetworkEnvPolicy::apply_to_command` `src/git_network_ops.rs:54` → `:53`;
+  `git_mutations.rs::policy_drift_tests` `src/git_mutations.rs:52` → `:53`;
+  `worktree_uses_canonical_policy`
+  `crates/codegg-core/src/worktree.rs:142` → `:188`.
+- Everything else in the body was left untouched.
+
+### Pass of 2026-10-06
+
+Verified against `crates/codegg-git/src/`, `crates/egggit/src/`,
 `crates/codegg-core/src/{run_store,worktree}.rs`, the root `src/git_*.rs` /
 `src/tool/git.rs` modules, and `tests/`.
 
@@ -440,13 +478,13 @@ Verified accurate as written:
 
 | Claim | Source |
 |---|---|
-| `ParseError` = 9 variants | `crates/codegg-git/src/error.rs:4`-`:30` |
+| `ParseError` = 9 variants | `crates/codegg-git/src/error.rs:4`-`:31` |
 | `GitOperation` = 54 variants, `GitRiskClass` = 11 | `crates/codegg-git/src/operation.rs`, `risk.rs` |
-| `RedactedUrl` in `crates/codegg-git/src/sensitive.rs` | `sensitive.rs:39`, `:44` |
+| `RedactedUrl` in `crates/codegg-git/src/sensitive.rs` | `sensitive.rs:39`, `:48` |
 | `crates/codegg-git/src/origin.rs` exists | present |
-| `NetworkEnvPolicy::apply_to_command` | `src/git_network_ops.rs:54` |
-| `git_mutations.rs::policy_drift_tests` | `src/git_mutations.rs:52` |
-| `worktree_uses_canonical_policy` | `crates/codegg-core/src/worktree.rs:142` |
+| `NetworkEnvPolicy::apply_to_command` | `src/git_network_ops.rs:53` |
+| `git_mutations.rs::policy_drift_tests` | `src/git_mutations.rs:53` |
+| `worktree_uses_canonical_policy` | `crates/codegg-core/src/worktree.rs:188` |
 | every `egggit` module named in the map | `blame`, `conflict`, `diff`, `log`, `operation_state`, `refs`, `status`, `status_v2`, `worktree` all present |
 | every `codegg-git` module named in the map | `error`, `operation`, `origin`, `parser`, `path`, `process_policy`, `ref_name`, `render`, `risk`, `sensitive` all present |
 | commits `cb192e9`, `c2e806f`, `53b2beb`, `86c16a9`, `8d686c7` | all resolve in `git log` |

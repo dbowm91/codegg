@@ -21,7 +21,7 @@ best-effort emission, redaction, backpressure, and operator reads).
 - Storage: introduced by migration v54 (`migrate_v54`,
   `crates/codegg-core/src/session/schema.rs`), which creates
   `audit_event` and `audit_body`. The catalog is now at storage
-  layout 68; v54 remains the audit origin.
+  layout 87; v54 remains the audit origin.
 - Protocol: `AuditQueryRequestDto`, `AuditExportRequestDto`,
   `AuditEventDto`, `AuditCapabilitiesDto` plus
   `CoreRequest::AuditQuery/AuditExport/AuditCapabilities` and
@@ -71,10 +71,13 @@ Known actions (`AuditAction::ALL`, 30): `authentication`,
 `human_shell_run`, `checkout_writer_refusal`, `process_denial`,
 `scratch_reclaim`.
 
-Writers use strict parsing (unknown actions fail closed at build
-time). Readers use lenient parsing: unknown stored actions degrade to
-`Unknown` and unknown filters degrade to empty pages — never to an
-error that leaks existence.
+Writers use strict parsing (`AuditAction::parse_known` — unknown actions
+fail closed at build time with `audit_unknown_action`). Readers use
+lenient parsing (`AuditAction::parse_lenient`): unknown stored actions
+degrade to `Unknown` and unknown filters degrade to empty pages — never
+to an
+error that leaks existence. `Unknown` is that reader-side degradation
+marker, not a known action: it is deliberately **not** in `AuditAction::ALL`.
 
 Visibility (`AuditVisibility`): `project`, `session_participants`,
 `actor_only`, `administrators`. The default is `project`.
@@ -82,7 +85,7 @@ Visibility (`AuditVisibility`): `project`, `session_participants`,
 ## Attribution (caller cannot rewrite)
 
 `AuditEventBuilder::new(action, principal, provenance)`
-(`crates/codegg-core/src/audit.rs:574`) copies the transport-bound
+(`crates/codegg-core/src/audit.rs`) copies the transport-bound
 `AuthenticatedPrincipal` plus the captured M003
 `AuditDecisionProvenance` (the decision linkage copied from the
 `AuthorizationDecision` that allowed the operation). There are no
@@ -90,17 +93,28 @@ setters for actor, decision, policy, or sequence. Correlation defaults
 to the decision's correlation id. This preserves the M003 invariant:
 request payloads supply locators, never authority.
 
+The bridge from an enforced decision to that provenance is
+`codegg_core::authorization::audit_provenance`, which copies the
+decision id, correlation id, policy, and project id off the
+`AuthorizationDecision` the gate just returned. See
+`architecture/authorization.md` ("Audit bridge").
+
 ## Bounded redacted metadata
 
 - At most 16 entries; keys 1–64 bytes matching
   `[a-z0-9][a-z0-9_.-]*`; values 0–512 bytes; 4096 bytes total.
+  The bounds are named constants in `crates/codegg-core/src/audit.rs`
+  (`MAX_METADATA_ENTRIES`, `MAX_METADATA_KEY_LENGTH`,
+  `MAX_METADATA_VALUE_LENGTH`, `MAX_METADATA_TOTAL_BYTES`,
+  `MAX_BODY_BYTES`).
 - Keys containing secret-bearing substrings are rejected via
-  `SECRET_KEY_SUBSTRINGS` (`crates/codegg-core/src/audit.rs:317`, 14 entries):
+  `SECRET_KEY_SUBSTRINGS` (`crates/codegg-core/src/audit.rs`, 14 entries):
   `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `bearer`,
   `credential`, `private_key`, `privatekey`, `cookie`, `authorization`,
   `session_key`, `client_secret`.
 - Values are scanned separately by `SECRET_VALUE_SUBSTRINGS`
-  (`audit.rs:337`, 16 entries): `password`, `passwd`, `secret`, `bearer `,
+  (`crates/codegg-core/src/audit.rs`, 16 entries): `password`, `passwd`,
+  `secret`, `bearer `,
   `private_key`, `-----begin`, `sk-live`, `sk-test`, `ghp_`, `gho_`,
   `github_token`, `akia`, `aws_secret`, `client_secret`, `api_key=`,
   `token=`.
@@ -135,7 +149,7 @@ losing attributable structure.
 - Pages order by `seq ASC` with cursor pagination (`next_cursor`,
   `truncated`). Filters are conjunctive; unknown action/principal
   filters return empty pages.
-- `export_digest` (`crates/codegg-core/src/audit.rs:902`) is SHA-256
+- `export_digest` (`crates/codegg-core/src/audit.rs`) is SHA-256
   over the canonical per-event line
   `<seq LE bytes>|event_id|action|actor_principal|decision_id|metadata_digest|content_digest`
   (pipe-separated, newline-terminated; absent `content_digest` is fed
@@ -147,7 +161,7 @@ losing attributable structure.
   `authorization_denied`. Single-project denials carry no existence
   signal beyond the operation/capability names the caller supplied.
 - Capability negotiation: `AuditCapabilities` reports all six
-  `AuditCapabilitiesDto` fields (`crates/codegg-protocol/src/core.rs:205`):
+  `AuditCapabilitiesDto` fields (`crates/codegg-protocol/src/core.rs`):
   `supported`, `max_query_limit`, `max_export_events`,
   `max_metadata_entries`, `max_metadata_total_bytes`,
   `max_body_bytes`. Clients MUST clamp to the numeric bounds before
@@ -187,7 +201,7 @@ losing attributable structure.
 ## Operator runbook
 
 - After upgrading, the daemon migrates the catalog to the current
-  layout v68 on next start; the audit tables entered at v54
+  layout v87 on next start; the audit tables entered at v54
   (additive; restart-safe; no backfill).
 - Grant `Maintainer` or `Owner` to team members who need audit reads;
   `Viewer`/`Contributor` cannot query or export.
@@ -214,7 +228,16 @@ and whether the action is live in this milestone.
 Coverage has four distinct categories (M004):
 
 - daemon request operation mappings (`INSTRUMENTED_OPERATIONS`): the
-  control-plane seam emits these live after the M003 gate;
+  control-plane seam emits these live after the M003 gate. The table
+  holds **113** entries. Two of them are **not** `CoreRequest`
+  operation names and therefore have no `operation_descriptor` row:
+  `provider_connection_use` (the synthetic provider-scope decision
+  from `authorize_provider_use`) and `user_prompt_queue_deliver` (the
+  daemon-internal queue delivery). Every one of the **257** real
+  operations is classified in exactly one of the two lists — **111**
+  instrumented operations and **146** uninstrumented operations — and
+  `scripts/check_audit_coverage.py` fails closed if any operation is
+  classified in neither;
 - executor-owned live hooks (`EXECUTOR_LIVE_AUDIT_HOOKS`):
   `command_execute` at the canonical tool dispatch, `git_operation` at
   `GitMutationExecutor`, `job_complete` at the scheduler terminal
@@ -225,8 +248,9 @@ Coverage has four distinct categories (M004):
   (`FUTURE_DISTRIBUTED_AUDIT_ACTIONS`): `node_enrollment`,
   `remote_execute` — builders landed, no live single-host emission;
 - intentionally content-free/high-volume domains
-  (`UNINSTRUMENTED_OPERATIONS`): bounded reads/listings plus the
-  `interactive_process_*` daemon operations, whose live evidence is the
+  (`UNINSTRUMENTED_OPERATIONS`, **146** entries): bounded
+  reads/listings plus the ten `interactive_process_*` daemon
+  operations, whose live evidence is the
   interactive `command_execute` hook below rather than a daemon mapping.
   Human-shell promotion stage emits the structural `prompt_submit` action
   with only the promotion ID and bounded byte count; recovery listing is a
@@ -255,14 +279,21 @@ Coverage has four distinct categories (M004):
 
 Live daemon seam (`src/core/daemon.rs`):
 
-- `emit_audit_for_authorized` (`src/core/daemon.rs:3119`) runs after the
+- `emit_audit_for_authorized` (`src/core/daemon.rs`) runs after the
   M003 gate and before any side effect for every
-  `operation_to_audit_action` mapping (`src/core/daemon.rs:3128`) except
-  creation/audit-read operations that mint their identity or count in
-  the handler (`SessionCreate`, `JobSubmit`, `ChatActionSubmit`,
-  `AuditQuery`, `AuditExport`, which emit post-creation with durable
-  ids/counts).
-- `emit_audit_for_denial` emits one terminal `authorization_decision`
+  `operation_to_audit_action` mapping (the `instr::operation_to_audit_action`
+  lookup at the top of the same function) **except** the creation and
+  audit-read operations that mint their identity or count in the
+  handler. Those skip the pre-side-effect emit and are recorded
+  post-creation/post-mutation with their durable ids and revisions:
+  `SessionCreate`, `ProjectDelete`, `ProjectUpdate`, `ProjectArchive`,
+  `ProjectRestore`, `JobSubmit`, `ChatActionSubmit`,
+  `HumanShellRunCreate`, `ContinuationGrantCreate`, `AuditQuery`, and
+  `AuditExport`. Three further guards skip the pre-emit by family:
+  `is_work_order_mutation`, `is_team_mutation`, and
+  `is_control_mutation`.
+- `emit_audit_for_denial` (`src/core/daemon.rs`) emits one terminal
+  `authorization_decision`
   event with the operation/capability the caller supplied and the
   denial reason. Direct project locators are preserved so
   project-scoped denials stay queryable by the project owner through
@@ -513,6 +544,15 @@ three corrected actions are live with executable evidence; distributed
   `remote_execute` with `live_mapped: false`). Core unit tests pin the
   four-category distinction and reject `UNINSTRUMENTED_OPERATIONS`
   evasion.
+- Declarative daemon-hook table:
+  `codegg-core::audit_instrumentation::DAEMON_LIVE_AUDIT_HOOKS` holds
+  exactly two entries — `checkout_writer_refusal` (owner
+  `daemon:checkout_mediation`, emit `emit_checkout_writer_refusal`) and
+  `process_denial` (owner `tool:process_admission`, emit
+  `emit_process_denial`). Both are refusals, so neither has a daemon
+  operation mapping; the guard
+  `check_daemon_hook_table_is_authoritative` fails closed if the table
+  or an owner moves.
 - Declarative owner pins: `src/executor_audit_hooks.rs`
   (`EXECUTOR_HOOK_OWNER_PINS`) names every canonical emit owner file
   and symbol. The guard parses this table (not ad-hoc call text) and
@@ -552,12 +592,12 @@ operation cannot hide as uninstrumented.
 
 ```bash
 cargo test -p codegg-core audit
-cargo test --test identity_m004_audit_foundation
-cargo test --test identity_m005_audit_instrumentation
-cargo test --test identity_m002_live_audit_hooks -- --test-threads=1
-cargo test --test identity_m003_scheduler_job_complete -- --test-threads=1
-cargo test --test identity_live_execution_audit -- --test-threads=1
-cargo test --test storage_migrations
+cargo test --test core_daemon -- identity_m004_audit_foundation
+cargo test --test core_daemon -- identity_m005_audit_instrumentation
+cargo test --test core_daemon -- identity_m002_live_audit_hooks -- --test-threads=1
+cargo test --test core_daemon -- identity_m003_scheduler_job_complete -- --test-threads=1
+cargo test --test core_daemon -- identity_live_execution_audit -- --test-threads=1
+cargo test --test core_daemon -- storage_migrations
 python3 scripts/check_audit_invariants.py --verbose
 python3 scripts/check_audit_coverage.py --verbose
 python3 scripts/check_audit_coverage.py --self-test
@@ -569,6 +609,69 @@ scripts/verify.sh quick
 ```
 
 ## Source verification
+
+**2026-10-23 re-verification.** Re-measured the action taxonomy against
+`AuditAction::ALL` in `crates/codegg-core/src/audit.rs`: the canonical
+list holds **30** entries, and the taxonomy section above lists exactly
+those 30 names. The two intermediate figures recorded in the dated
+paragraphs below — "now 28" (2026-10-21) and "moved from 28 to 29"
+(2026-10-20, C005) — are historical and each was correct **as of its own
+date**; `checkout_writer_refusal` (C004) and `process_denial` (C005)
+each added one, and the live count is 30. Read the taxonomy section, not
+the dated notes, for the current number.
+
+Re-measured the operation classification: `INSTRUMENTED_OPERATIONS`
+holds **113** entries (111 real `CoreRequest` operations plus the two
+synthetic names `provider_connection_use` and
+`user_prompt_queue_deliver`) and `UNINSTRUMENTED_OPERATIONS` holds
+**146**. The union covers all **257** operations with zero overlap, and
+`REQUIRED_AUDIT_COVERAGE` holds exactly **30** rows — one per
+`AuditAction::ALL`.
+
+**Line references made robust.** Several line references in this
+document had drifted past the ~5-line tolerance, so they were replaced
+by symbol names (the file and symbol, not a line number):
+`AuditEventBuilder::new`, `SECRET_KEY_SUBSTRINGS`,
+`SECRET_VALUE_SUBSTRINGS`, and `export_digest` in
+`crates/codegg-core/src/audit.rs`; `AuditCapabilitiesDto` in
+`crates/codegg-protocol/src/core.rs`; `emit_audit_for_authorized`,
+`emit_audit_for_denial`, and the `instr::operation_to_audit_action`
+lookup in `src/core/daemon.rs`.
+
+**Other corrections.** Corrected the storage layout figure **68 → 87**
+in the Ownership and Operator-runbook sections. Corrected the
+post-creation emit exception list, which had drifted: it now names
+`SessionCreate`, `ProjectDelete`, `ProjectUpdate`, `ProjectArchive`,
+`ProjectRestore`, `JobSubmit`, `ChatActionSubmit`,
+`HumanShellRunCreate`, `ContinuationGrantCreate`, `AuditQuery`, and
+`AuditExport`, plus the three family guards
+(`is_work_order_mutation`, `is_team_mutation`,
+`is_control_mutation`). Added the `DAEMON_LIVE_AUDIT_HOOKS` table (two
+entries) and the `authorization::audit_provenance` bridge.
+
+**Verified accurate, unchanged.** The `AuditAction::ALL` name list and
+its count of 30; the schema shape of `audit_event`/`audit_body` and the
+v54 origin; the metadata bounds (16 entries, keys 1–64 bytes matching
+`[a-z0-9][a-z0-9_.-]*`, values 0–512 bytes, 4096 bytes total, 64 KiB
+bodies, named as `MAX_METADATA_*`/`MAX_BODY_BYTES` constants); the
+14-entry `SECRET_KEY_SUBSTRINGS` and 16-entry `SECRET_VALUE_SUBSTRINGS`
+deny-lists; `AuditVisibility` (`project`, `session_participants`,
+`actor_only`, `administrators`, default `project`); `AuditQueryFilter`
+fields and the 1–100 query clamp (default 50) with the 200-event export
+bound; `AuditWriterConfig` defaults (`max_inflight` 32,
+`write_timeout_ms` 2000); `AuditWriterMetrics` fields; the `AuditWriter`
+method surface (`new`, `store`, `metrics`, `try_append`, `append`) with
+the `audit_backpressure` and `audit_write_timeout` wire codes and the
+`audit_secret_detected` code; `AuditFailurePolicy::{FailClosed,
+FailVisible}`; `expire_bodies(now_ms)`; `EXECUTION_AUDIT_EMIT_TIMEOUT`
+at 500 ms; `emit_counters_snapshot`; the ten
+`interactive_process_*` operations in `UNINSTRUMENTED_OPERATIONS`; and
+`AuditEventBuilder::new`'s third parameter being the
+`AuditDecisionProvenance` (`provenance`), not the decision itself.
+
+The historical paragraphs below are left as they stood at their own
+verification dates; the corrections above supersede them where they
+disagree with the current tree.
 
 Re-verified 2026-10-21 after M007 added `scratch_reclaim`. The action
 taxonomy above was **stale**: it claimed 26 known actions and omitted

@@ -107,7 +107,12 @@ into a second source of truth.
    indistinguishable from a real due time in the delivery predicate (`0 <= now`
    is true, so the row is immediately due) while rendering every pre-existing row
    as scheduled — a claim that is *correct in the query* and *wrong to the user*.
-   The v81 -> v82 upgrade test asserts `NULL` for exactly this reason.
+   The v82 column is nullable, which is what gives "no due time" a
+   representation; `crates/codegg-core/tests/user_prompt_queue.rs:288-299`
+   asserts that nullability directly. Note that the specifically-named
+   upgrade test `v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel`, cited by a
+   comment in that file and by the M007 closure record, is **not present in
+   the tree** — do not assume it ran.
    - The whole due-time validity rule is one function, `validate_run_at`, shared
      by `add` and `edit`. Refuses a due time at or beyond the entry's own expiry;
      accepts one in the past (the user has already passed it). Refusing rather
@@ -126,8 +131,14 @@ python3 scripts/check_project_catalog_invariants.py # layout version + catalog i
 ```bash
 cargo test -p codegg-core session::
 cargo test -p codegg-core storage::
-cargo test --test checked_restore_integration
+cargo test --test core_daemon -- checked_restore_integration
 ```
+
+The root package's integration tests are **families** — one cargo executable
+per subject area, under `tests/<family>/`. `cargo test --test <member>` names
+no target, selects zero tests, and still exits 0. `checked_restore_integration.inc`
+is a member of the `core_daemon` family, so the correct form is
+`cargo test --test core_daemon -- checked_restore_integration`.
 
 New `#[tokio::test]`s default to `current_thread`; use
 `flavor = "multi_thread", worker_threads = 2` only for real
@@ -169,8 +180,57 @@ recorded why the non-migrating initializer is deliberately kept separate —
 `migrate_legacy_project_database` calls `init_legacy_project_store` to probe
 whether a file is a genuine legacy DB, so migrating there would make the probe
 self-fulfilling. All six canonical entry points verified present in
-`crates/codegg-core/src/storage/mod.rs` (`:119`, `:130`, `:144`, `:163`,
-`:175`, `:226`); `init()` at `:297` confirmed to have no in-tree callers; and
+`crates/codegg-core/src/storage/mod.rs` (`:126`, `:137`, `:151`, `:170`,
+`:182`, `:233`); `init()` at `:304` confirmed to have no in-tree callers; and
 `verify_file` confirmed to be defined and re-exported
-(`session/mod.rs:25`) but never called in-tree. Normalized `.skills/` skill
+(`session/mod.rs:27`) but never called in-tree. Normalized `.skills/` skill
 cross-references to `.opencode/skills/`.
+
+Fourth pass (2026-10-23): re-verified against
+`crates/codegg-core/src/session/{schema,store,models,message,row,status,state,events,import,checkpoint,user_prompt_queue,mod}.rs`,
+`crates/codegg-core/src/storage/{mod,paths,preferences}.rs`,
+`crates/codegg-core/src/{project_catalog,project_storage,identity,run_store}.rs`,
+`src/run_rerun.rs`, `src/core/daemon_refresh.rs`, `tests/common/pool.rs`,
+`crates/codegg-core/tests/user_prompt_queue.rs`,
+`tests/core_daemon/checked_restore_integration.inc`,
+`scripts/check-core-boundary.sh`, and
+`scripts/check_project_catalog_invariants.py`.
+
+Confirmed unchanged: the migration chain runs to `migrate_v87`, and
+`STORAGE_LAYOUT_VERSION` is **87** (`crates/codegg-core/src/storage/mod.rs:48`)
+— it tracks the highest migration, which is exactly what
+`scripts/check_project_catalog_invariants.py` enforces. Also confirmed:
+`migrate_v22` (the workspace-table migration), `migrate_v79` (workstream
+claims), and `migrate_v82` (`run_at_ms`) all exist; `shared_pool()`
+(`tests/common/pool.rs:37`) and `isolated_pool()` (`:52`) are the two pool
+helpers; `bind_runtime_for_session` lives in `src/core/daemon_refresh.rs:985`;
+and the body deliberately copies no schema, migration, table, or event totals
+— it points at `architecture/overview.md` instead.
+
+Corrected: the layout version in this note was `68` tracking `migrate_v68`; it
+is **87** tracking `migrate_v87`. The six pool entry-point line references
+had drifted by 7–9 lines (`:119, :130, :144, :163, :175, :226` → `:126,
+:137, :151, :170, :182, :233`), `init()` moved `:297` → `:304`, and the
+`verify_file` re-export moved `session/mod.rs:25` → `:27`. The integration
+test command named a target that does not exist — `checked_restore_integration.inc`
+is a member of the `core_daemon` family, so `cargo test --test
+checked_restore_integration` selected zero tests and exited 0.
+
+Corrected a claim that named a test that does not exist: the body said "The
+v81 -> v82 upgrade test asserts `NULL` for exactly this reason." The test
+`v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel` is referenced by a comment
+at `crates/codegg-core/tests/user_prompt_queue.rs:273` and by
+`plans/closure/user-prompt-queue/007-status.md:221`, but there is **no**
+`crates/codegg-core/tests/storage_migrations.rs` in the tree and the function
+name appears nowhere else. The substantive invariant *is* asserted, but by a
+different test: `crates/codegg-core/tests/user_prompt_queue.rs:288-299`
+asserts `pragma_table_info('user_prompt_queue_entry').notnull == 0` for
+`run_at_ms`. The body now names that test and flags the missing one, so a
+reader does not assume an upgrade test ran that did not.
+
+Reported, not fixed (outside this skill's ownership): the dangling reference
+to `v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel` and to the absent
+`crates/codegg-core/tests/storage_migrations.rs` lives in
+`crates/codegg-core/tests/user_prompt_queue.rs` and in the M007 closure
+record. Both are source-side, not skill-side.
+

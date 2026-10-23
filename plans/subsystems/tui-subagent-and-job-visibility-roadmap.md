@@ -1,6 +1,6 @@
 # TUI Subagent and Job Visibility Roadmap
 
-Status: proposed
+Status: active — M001–M005 landed without closure records; superseded for corrective work by `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md`
 
 Long-term references:
 - `plans/000-long-term-specification.md` (canonical end-state specification)
@@ -831,3 +831,11 @@ Interaction with a subagent is **not** part of this definition.
 | M004 sessions panel sections | landed (subagent + job sections, `InspectSubagent`, id-keyed job focus) | — | — | none |
 | M005 guards, help, docs | landed (Shift+T help entry, Insert-mode Shift-letter fix, docs + module map) | — | — | none |
 | M900 send-to-subagent | not approved for planning | — | — | design decision |
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- §7 and §12 record M001–M005 as *landed* on `feat/auto-20261016-845b613f`, so *proposed* was stale.
+- No closure record exists under `plans/closure/tui-subagent-and-job-visibility-convergence/` for this roadmap, so the milestones are **not** closed — only landed. `plans/README.md` is explicit that *no milestone is complete merely because code landed*.
+- M900 remains *not approved for planning*.

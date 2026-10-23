@@ -22,8 +22,8 @@ Historical closure records this record supplements and does **not** rewrite:
 - `plans/closure/provider-reasoning-control/004-status.md` (M004, closed)
 - `plans/closure/provider-reasoning-control/005-status.md` (M005, closed)
 
-Repository baseline reconciled: `origin/main` at `12999178a`, reached in
-**five** stages. The first merge was against `8cee65934` ("fix(server): map
+Repository baseline reconciled: `origin/main` at `ff82c68da`, reached in
+**six** stages. The first merge was against `8cee65934` ("fix(server): map
 the process-denial refusal to 409, not an unhandled variant"), which is
 **439 commits** ahead of this branch's merge-base `c93211542` ("Merge pull
 request #153 from dbowm91/docs/core-family-counts-m006"). The branch head at
@@ -35,7 +35,7 @@ stage. In the third stage — the one against the `origin/main` the pull request
 targets — the branch's side of the merge-base was 92 files and `main`'s was
 585, with **eleven files** changed on both sides.
 
-**The reconciliation took five stages, because `main` moved four times while
+**The reconciliation took six stages, because `main` moved five times while
 it was in flight.** The first merge was against `8cee65934`. During the merged
 tree's qualification — which, on this host, took hours — `main` advanced a
 further **six commits** to `47f5572b1` (the agent-workstream blackboard's
@@ -56,7 +56,13 @@ of PR #173 (adapt the Linux-gated test-support call sites to C003's typed
 live-read result) and PR #174 (record the C003 landing). The fifth merge
 brought that in, and it is recorded in §2d.
 
-The third, fourth and fifth merges are the ones that make this line
+`main` then advanced a further **nine commits** to `ff82c68da` — a
+documentation-surfaces pass (PR #175) that re-verified the user-facing guides,
+the module guides, the architecture deep-dive index **and the count audit**,
+plus PR #175's two fixes. The sixth merge brought that in, and it is recorded
+in §2e and §4e.
+
+The third, fourth, fifth and sixth merges are the ones that make this line
 publishable: together they are the reconciliation against the `origin/main`
 the pull request is opened against.
 
@@ -260,6 +266,63 @@ The merge was **conflict-free**: `main`'s five commits touched only
 `plans/closure/linux-sandbox-admission-follow-up-corrective/003-status.md`,
 and **no reasoning-control file was among them**. The Verified-counts table
 was not touched by `main` and did not move.
+
+## 2e. The sixth stage: `main` re-audited the counts and changed two rows' `Source`
+
+`main` advanced nine commits to `ff82c68da`, and PR #175 among them is a
+**documentation-surfaces pass**: it re-verified the nineteen user-facing guides,
+the twenty-seven module guides, the architecture deep-dive index, **and the
+count audit** — which changed the *method* behind two Verified-counts rows and
+added a third.
+
+This is the only stage whose conflicts were **seven files, all of them
+architecture documents**, and every one of them was resolved by *union* rather
+than by picking a side:
+
+| File | Conflict | Resolution |
+|---|---|---|
+| `architecture/overview.md` | 5 hunks: the two rows whose `Source` changed, the new *Guard scripts (all)* row, the `scripts/` inventory count, and two dated-note blocks | `main`'s new `Source`s and its re-audited prose, with every number **re-measured in the merged tree** (§4e) |
+| `architecture/authorization.md` | 4 hunks: the operation-count prose, the `network_intent_set` row, a duplicated `user_prompt_queue_*` block, and the *Source verification* section | `main`'s rebuilt, alphabetically sorted table — which already carries the eight queue rows, so `main`'s copy replaced the duplicate — plus `main`'s `network_intent_set` row, with the counts re-measured; our two dated verification paragraphs kept after `main`'s 2026-10-23 block |
+| `architecture/model-adapters.md` | 4 hunks: the adapter table, the config-override prose, the invariants bullets, a split bullet | a **merged table** carrying both `main`'s `Priority` column and our `Capability record` column; `main`'s new suffix-tolerant prose kept alongside our *Reasoning Capability Record* section; both bullet sets kept |
+| `architecture/protocol.md` | 3 hunks: the `CoreRequest`/`CoreResponse`/`CoreEvent` headings, the group lists, the reasoning-responses paragraph | the group lists **unioned** (`main`'s `NetworkIntentSet` and our three reasoning operations), with the variant counts and the enum line numbers **re-measured** in the merged tree |
+| `architecture/storage.md` | 3 hunks: the layout-version sentence, the table/migration inventory, the migration-constant list | re-measured: layout **88**, 95 statements over 91 tables, 88 migrations `v1`–`v88`, with **both** `v84` (network intent) and `v88` (reasoning selection) named |
+| `architecture/config.md` | 1 hunk | our reasoning paragraphs, with `main`'s corrected `schema.rs:1025` line number |
+| `architecture/provider.md` | 2 hunks | our reasoning paragraphs, with `main`'s corrected `provider_core.rs:264` / `:249` line numbers |
+
+`main`'s PR #175 also **fixed two real defects** in `main` itself — a
+`codegg-document` pin that bypassed the workspace's `=0.1.0`, and a
+`tool-program-harness` family target named after the member — which the merge
+brings in.
+
+## 4e. The sixth stage's re-measurement — two rows changed their `Source`
+
+`main`'s count audit changed **two rows' `Source`** and added a third, so both
+the Source and the number had to be resolved, and `main`'s own measurement
+method had to be applied to the merged tree:
+
+| Row | `main`'s own tree | Merged tree | Source |
+|---|---|---|---|
+| Architecture docs | 92 | **92** | `architecture/*.md` |
+| Distinct production tool names | 75 | **75** | `impl Tool for …` `name()` across `src/` (the whole tree) |
+| Tool source files | 83 | **84** | `src/tool/**.rs` (incl. `bash/`) |
+| Guard scripts (all) | 76 | **80** | `scripts/check_*` |
+| CI guard scripts | 36 | **40** | `.github/workflows/ci.yml` |
+| Integration test files | 321 | **321** | `tests/*.rs` + `tests/*/*.inc`, `tests/common/` excluded |
+| Storage layout version | 87 | **88** | `crates/codegg-core/src/storage/mod.rs` |
+| `CoreRequest` variants | 263 | **266** | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 172 | **174** | `crates/codegg-protocol/src/core.rs` |
+| Authorized operations | 257 | **260** | `crates/codegg-core/src/authorization/policy.rs` |
+
+`main`'s tool-name method was reproduced exactly rather than approximated: the
+merged tree carries **67** production `impl Tool for` blocks, **8** test-only
+mocks, **62** literal names and **13** eggsact validator names — which is
+`main`'s published **75**, confirmed rather than copied.
+
+**One row was stale on `main` and is corrected rather than incremented.**
+*Tool source files* read **83**, but the tree carries **84** `.rs` files under
+`src/tool/`: `main`'s count excludes `src/tool/bash/tests/git_fixture.rs`, and
+`main`'s own listed `Source` (`src/tool/**.rs`, incl. `bash/`) does not
+exclude it. `main`'s count-audit record documents no such exclusion.
 
 ## 3. The indicator's re-landing
 
@@ -702,3 +765,40 @@ not touch (`src/managed_process.rs`, `src/tool_batch.rs`,
 `src/scheduler/executors.rs`, `src/permission/reviewer.rs`,
 `src/tool/extension.rs`, `src/tool/git_read.rs`, `src/tool/verify.rs`). They
 are `main`'s open items, not this line's.
+
+## 7.8 The hosted CI verdicts
+
+The hosted lanes for this pull request were run on the tree that carried the
+fifth merge, and they are the authoritative gate for this repository:
+
+| Hosted lane | Result |
+|---|---|
+| `CI / verify` | **pass** (27 m 59 s) |
+| `Linux M004 process and IPC qualification` (`process-ipc`) | **pass** (38 m 07 s) |
+| `restricted-userns-fails-closed` | **pass** (14 m 25 s) |
+| `Windows process launcher` | **pass** (30 m 48 s) |
+| `Linux C006 protected mount qualification` | **pass** |
+| `native-probe-contract` | **pass** |
+| `c014-negative-reproduction`, `git-cost-pilot` | skipped by their own conditions |
+| GitGuardian Security Checks | **fail** — `main`'s false positive, see below |
+
+The two Linux jobs had been red on this branch because they inherited
+`main`'s compile error in `tests/linux_git_test_support/`; the fifth merge
+brought in `main`'s own fix, and they are green here now.
+
+**GitGuardian's one finding is `main`'s, and it is a false positive.** It
+reports a *Generic CLI Secret* at `crates/egggit/src/config_surface.rs:1096`,
+which is the hostile-git-config **fixture** the
+`detects_url_scoped_credential_helper` test builds:
+
+```rust
+"[credential \"https://example.com\"]\n\thelper = store --password=hunter2\n"
+```
+
+The file is **absent from this line's feature commit** (`6d36a1888`) — it
+arrives only through the merge of `main` — and the identical finding appears
+on **`main`'s own PR #169**, which is the pull request that added the file.
+`main` is not protected, so there are no required status checks in this
+repository and the check is advisory. It is left alone here on purpose: the
+string is another workstream's test fixture, and changing it in this line
+would be scope creep into code this line does not own.

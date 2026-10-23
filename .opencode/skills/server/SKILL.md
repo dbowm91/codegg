@@ -55,7 +55,7 @@ pub async fn run_server(
 ```
 
 **Phase 1 (singleton daemon)**: The server requires `--standalone-core` to
-construct its own daemon. Without it, `cmd_server` (`src/main.rs:3552`) prints
+construct its own daemon. Without it, `cmd_server` (`src/main.rs:4774`) prints
 an actionable error and exits with code 2 rather than silently creating a
 second core that defeats the singleton invariant. The optional `daemon` handle
 carries the daemon-connected server mode.
@@ -295,7 +295,7 @@ The `WsRateLimiter` in `ServerState` is shared across all WebSocket connections.
 `routes/event.rs` SSE handler uses `GlobalEventBus::subscribe()` directly from `crate::bus::global`. There is no local EventBus struct.
 
 ### Health Route
-`/health` is mounted on the outer router (`http.rs:349`), outside
+`/health` is mounted on the outer router (`http.rs:353`), outside
 `api_router`, so it carries neither auth nor rate limiting. Its handler is
 `routes::health::health_check`, imported at `http.rs:24` — there is no second
 inline copy.
@@ -324,8 +324,9 @@ pub enum ServerRuntimeError {
 ```
 
 Root `src/error.rs` re-exports it via `pub use codegg_core::error::*` and adds
-the `AxumServerRuntimeError` newtype behind `#[cfg(feature = "server")]`, which
-maps `Auth` to 401 and the other variants to 500.
+the `AxumServerRuntimeError` newtype behind `#[cfg(feature = "server")]`
+(`src/error.rs:194`), whose `IntoResponse` impl maps `Auth` to 401 and the
+other variants to 500 (`src/error.rs:204-213`).
 
 ## Static Guards
 
@@ -388,8 +389,8 @@ Re-verified 2026-10-06 against `src/server/`, `src/main.rs`, and
 HTTP Routes list is mounted in `src/server/http.rs` (compared against the
 `.route(...)` table); `run_server` at `http.rs:182`; `ServerState`'s 9 fields
 at `state.rs:106`; `ServerRuntimeError`'s 5 variants at
-`crates/codegg-core/src/error.rs:375` and the `Auth`→401 / rest→500 mapping
-in `src/error.rs:179-187`; `--standalone-core` exiting 2 at `src/main.rs:3552`;
+`crates/codegg-core/src/error.rs:411` and the `Auth`→401 / rest→500 mapping
+in `src/error.rs:204-213`; `--standalone-core` exiting 2 at `src/main.rs:4774`;
 both rate limiters at 100/60s with 10,000-key caps (`MAX_RATE_LIMITER_KEYS`
 at `http.rs:50`, `MAX_WS_RATE_LIMITER_KEYS` at `state.rs:147`); the SSE
 heartbeat and `resync_required` lag path; the `sanitize_path` ordering; the
@@ -399,10 +400,10 @@ Corrected this pass:
 - **Health route** claimed `routes/health.rs` was "standalone, not wired to
   main router" with an "inline `async fn health_check()` at the top level".
   There is no inline copy: `http.rs:24` imports `routes::health::health_check`
-  and `http.rs:349` mounts it on the outer router (outside `api_router`, hence
+  and `http.rs:353` mounts it on the outer router (outside `api_router`, hence
   no auth and no rate limit).
 - **TLS** claimed "config supports TLS section". `ServerConfig`
-  (`crates/codegg-config/src/schema.rs:1020`) has no TLS field and `tls`
+  (`crates/codegg-config/src/schema.rs:1376`) has no TLS field and `tls`
   appears nowhere in `crates/codegg-config/src/` or `src/server/`.
 - **SSE** claimed `ResyncRequired` on "lag or send failures"; `event.rs` only
   has the broadcast-lag path.
@@ -425,3 +426,36 @@ Corrected this pass:
 - **See Also** paths switched from `.skills/...` to the canonical
   `.opencode/skills/...` (AGENTS.md names that the canonical location; the
   others are symlinks).
+
+Second pass (2026-10-23): re-verified against `src/server/{http,state,ws,authz,perm_ids,rpc,scope,mdns}.rs`,
+`src/server/routes/*.rs`, `src/server/middleware/{mod,auth}.rs`,
+`src/main.rs`, `src/error.rs`, `crates/codegg-core/src/error.rs`,
+`crates/codegg-config/src/schema.rs`, `crates/codegg-protocol/src/tui.rs`,
+and `scripts/`.
+
+Confirmed unchanged: `run_server` (`src/server/http.rs:182`); the
+`health_check` import (`http.rs:24`); `MAX_RATE_LIMITER_KEYS = 10_000`
+(`http.rs:50`); `RateLimiter::new(100, 60)` (`http.rs:248`); `ServerState`'s
+9 fields (`src/server/state.rs:106`) and `MAX_WS_RATE_LIMITER_KEYS = 10_000`
+(`state.rs:147`); `WS_OUTBOUND_QUEUE_CAPACITY = 256` (`ws.rs:28`),
+`TUI_REQUEST_QUEUE_CAPACITY = 32` (`ws.rs:29`), and
+`WS_MAX_MESSAGE_SIZE = 4 MiB` (`ws.rs:35`); the
+`check_path_for_symlinks` import (`src/server/routes/file.rs:13`); the 13
+`routes/` modules plus `mod.rs`; `ServerRuntimeError`'s 5 variants — `Bind`,
+`Shutdown`, `WebSocket`, `Rpc`, `Auth`
+(`crates/codegg-core/src/error.rs:411-428`); and the absence of any `tls`
+token in `crates/codegg-config/src/schema.rs`.
+
+Corrected: `cmd_server` was cited at `src/main.rs:3552` (actually `:4774`);
+the `/health` mount at `http.rs:349` (actually `:353`); `ServerRuntimeError`
+at `crates/codegg-core/src/error.rs:375` (actually `:411`); the `Auth`→401 /
+rest→500 mapping at `src/error.rs:179-187` (the `AxumServerRuntimeError`
+newtype is at `src/error.rs:194` and its `IntoResponse` impl at
+`src/error.rs:204-213`); and `ServerConfig` at
+`crates/codegg-config/src/schema.rs:1020` (actually `:1376`).
+
+Not changed: `cargo test --test tui_render` is correct as written — the
+`tui_render` family is a real cargo target (`Cargo.toml`), not a member, so
+no `-- <member>` narrowing is needed. The server's own WebSocket/TUI
+integration coverage lives in that family rather than in a `server` target.
+

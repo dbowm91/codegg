@@ -11,7 +11,12 @@ backends via `CoreClient`.
 
 ## Where It Lives
 
-`src/tui/` — ~14,358 lines in `app/mod.rs` alone.
+`src/tui/` — 196 Rust files, ~202,400 lines in total. `src/tui/app/mod.rs` is
+~20,300 lines on its own and holds the `App` state machine, the command
+dispatch, and the panel renderers; the rest is split across `src/tui/app/state/`
+(34 files), `src/tui/components/`, `src/tui/panels/`, `src/tui/runtime/`, and
+`src/tui/ui_builders/`. The full tree is under
+[Directory Structure](#directory-structure).
 
 ## How It Works
 
@@ -2722,7 +2727,7 @@ spawn-and-complete or fire-and-forget instead.
 
 ## Key Types & APIs
 
-### App (`src/tui/app/mod.rs:222`)
+### App (`src/tui/app/mod.rs:328`)
 
 ```rust
 pub struct App {
@@ -2732,9 +2737,11 @@ pub struct App {
     pub messages_state: MessagesState,
     pub dialog_state: DialogState,
     pub agent_state: AgentState,
+    pub command_registry: CommandRegistry,
     pub sidebar: SidebarWidget,
     pub panel_host: crate::tui::panels::SidePanelHost,
     pub status_bar: StatusBarWidget,
+    pub policy_ui: PolicyUiState,
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
@@ -2748,11 +2755,17 @@ pub struct App {
     pub busy_spinner: SpinnerWidget,
     pub active_goal: Option<GoalSnapshot>,
     pub lsp_tool: Option<Arc<LspTool>>,
+    pub search_runtime: Option<SearchRuntimeContext>,
+    pub lsp_status_cache: Option<String>,
     pub security_review_running: Option<SecurityReviewTaskState>,
     pub shell_store: ShellOutputStore,
     pub command_run_store: CommandOutputStore,
     pub shell_handles: HashMap<u64, ShellHandle>,
+    pub interactive_terminals: InteractiveTerminalController,
+    pub pending_turn_submission: Option<PendingTurnSubmission>,
+    pub turn_submit_request: AsyncUiRequestState,
     pub task_registry: TuiTaskRegistry,
+    pub file_tree_coordinator: FileTreeScanCoordinator,
     pub plugin_ui_state: PluginUiState,
     pub plugin_manager: Option<PluginManager>,
     pub remote_sequence: u64,
@@ -2760,9 +2773,16 @@ pub struct App {
 }
 ```
 
+The struct carries roughly 95 public fields; the listing above names the
+load-bearing ones and the elided tail is the viewport/scroll/click/hover/border
+geometry plus the per-turn submit plumbing. Two of the named fields are the
+admission seam worth knowing about: `pending_turn_submission` and
+`turn_submit_request` hold the submit that the event loop will hand to the
+core, and `interactive_terminals` owns the live PTY surfaces.
+
 ### State Domains (`src/tui/app/state/`)
 
-27 state modules (28 `.rs` files including `mod.rs`):
+33 state modules (34 `.rs` files including `mod.rs`):
 
 | Module | Purpose |
 |--------|---------|
@@ -2788,7 +2808,12 @@ pub struct App {
 | `restore.rs` | State restore |
 | `routing.rs` | Route routing helpers |
 | `session.rs` | Session, token counts, history, changed files, git sidebar, rate limits |
+| `session_work.rs` | Session work-surface state |
 | `snapshot.rs` | Remote snapshot building |
+| `subagent_addressee.rs` | C007: who the composer is addressed to |
+| `subagent_tabs.rs` | Subagent tab set over the main buffer (Shift+N/P/X) |
+| `subagents.rs` | SubagentRow projection rows and strip/buffer view state |
+| `tasks.rs` | Ctrl+T tasks overlay rows (todos, subagents, jobs) |
 | `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
 | `view_switch.rs` | Active-view switch coordinator |
 | `work_orders.rs` | M003/C001 task + work-order state, `ComposerMode` |
@@ -4027,13 +4052,14 @@ panel never calls `process_msg` itself; only `App::on_mouse`'s
 `ClickTarget::Sidebar` arm does, which is what keeps the click and Enter routes
 identical (`a_clicked_subagent_row_opens_the_same_tab_as_enter`).
 
-### UiState (`src/tui/app/state/ui.rs:40`)
+### UiState (`src/tui/app/state/ui.rs:41`)
 
 ```rust
 pub struct UiState {
     pub theme: Arc<Theme>,
     pub layout: TuiLayout,
     pub sidebar_visible: bool,
+    pub tree_focused: bool,
     pub auto_scroll: bool,
     pub show_thinking: bool,
     /// The extended-thinking selection (`/reasoning`), projected from the
@@ -4088,15 +4114,23 @@ pub struct UiState {
     pub tts_via_daemon: bool,
     pub diagnostics: TuiDiagnostics,
     pub plugin_ui_caps: PluginUiCapabilities,
+    pub subagents: SubagentState,
 }
 ```
 
-### SessionState (`src/tui/app/state/session.rs:71`)
+### SessionState (`src/tui/app/state/session.rs:94`)
 
 ```rust
 pub struct SessionState {
     pub session: Option<Session>,
     pub session_status: SessionStatus,
+    pub working_since: Option<Instant>,
+    pub running_tool: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub stopped_turn: Option<String>,
+    /// Latched turn failure. Cleared only by `TurnStarted`; `report_turn_error`
+    /// writes here, and shell/clipboard/theme feedback must not.
+    pub last_error: Option<String>,
     pub token_in: u64,
     pub token_out: u64,
     pub live_output_tokens: u64,
@@ -4120,8 +4154,27 @@ pub struct SessionState {
     pub permission_pending: bool,
     pub subagent_count: usize,
     pub git_sidebar: GitSidebarState,
+    pub user_prompt_queue: VecDeque<String>,
+    pub root: Option<String>,
+    pub branch: Option<String>,
+    pub dirty: bool,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub untracked_count: usize,
+    pub conflicted_count: usize,
+    pub ahead: usize,
+    pub behind: usize,
+    pub operation_state_label: Option<String>,
+    pub available_actions: Vec<String>,
+    pub conflicted_paths: Vec<String>,
 }
 ```
+
+`context_limit` starts at **0**, and `0` means "unknown" — every reader
+(the footer, the stats dialog, the timeline readout) treats it as unknown
+rather than dividing by it. `last_error` is the latched turn failure: it is
+cleared only by `TurnStarted`, and `report_turn_error` is for turn failures
+alone, not for shell, clipboard, or theme feedback.
 
 ### AgentState (`src/tui/app/state/agent.rs:6`)
 
@@ -4179,7 +4232,7 @@ behind the one on screen — see *Pending approvals are a queue*),
 Plugin dialogs stored in `PluginUiState`, not `DialogState`.
 A single `Dialog::Plugin` variant handles all plugin dialogs.
 
-### Dialog Variants (`src/tui/app/types.rs:2`)
+### Dialog Variants (`src/tui/app/types.rs:4`)
 
 ```rust
 pub enum Dialog {
@@ -4189,13 +4242,13 @@ pub enum Dialog {
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Logs, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
+    DoctorReport, Logs, Plugin, RunDetail, JobDetail, ProjectPicker, Collaborators, ProjectChat,
     Team, Control, TeamTokenSecret, TriggerSecret,
-    TaskSchedule, TaskView, WorkspaceDashboard, PolicySelector,
+    TaskSchedule, TaskView, WorkspaceDashboard, PolicySelector, Queue,
 }
 ```
 
-51 variants.
+53 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -4215,13 +4268,13 @@ pub enum DialogType {
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Logs, Plugin, RunDetail, Collaborators, ProjectChat,
+    DoctorReport, Logs, Plugin, RunDetail, JobDetail, Collaborators, ProjectChat,
     Team, Control, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
-    TriggerSecret, WorkspaceDashboard, PolicySelector, None,
+    TriggerSecret, WorkspaceDashboard, PolicySelector, Queue, None,
 }
 ```
 
-51 variants, matching `Dialog` 1:1 through the exhaustive compatibility
+53 variants, matching `Dialog` 1:1 through the exhaustive compatibility
 conversions.
 
 `TaskSchedule` is the WorkOrder scheduling sheet
@@ -4295,25 +4348,50 @@ with close observes the dropped dashboard state and does nothing.
 canonical lifecycle identity is the live component's `DialogType`; the
 `ui_state.dialog` value is only a derived compatibility mirror.
 
-### Component Trait (`src/tui/components/component.rs:183`)
+### Component Trait (`src/tui/components/component.rs:215`)
 
 ```rust
 pub trait Component: Send + Any + AsAny {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg>;
-    fn handle_paste(&mut self, text: String) -> Option<TuiMsg> { None }
+    fn docks_as_viewer(&self) -> bool { false }
+    fn keymap_hint(&self) -> Option<String> { None }
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render(frame, area, theme);
+    }
+    fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> { None }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>);
     fn dialog_type(&self) -> DialogType;
     fn is_modal(&self) -> bool { self.dialog_type().is_modal() }
-    fn hit_test(&self, rel_y: usize) -> Option<usize> { None }
-    fn set_selected(&mut self, idx: usize) {}
+    fn hit_test(&self, _rel_y: usize) -> Option<usize> { None }
+    fn set_selected(&mut self, _idx: usize) {}
     fn focus_next(&mut self) {}
     fn focus_prev(&mut self) {}
     fn focusable_count(&self) -> usize { 1 }
     fn focused_index(&self) -> usize { 0 }
-    fn set_focused(&mut self, idx: usize) {}
+    fn set_focused(&mut self, _idx: usize) {}
 }
 ```
+
+Three of these defaults are load-bearing:
+
+- `docks_as_viewer` — `App::handle_dialog_key` intercepts `Shift+←/→/↑/↓`
+  **only** when this is `true`, which is how the plain viewer boxes dock into
+  the side column without each re-implementing the check. A dialog with a
+  composer, a filter, or its own mode tracking must answer the gesture
+  itself, so the default `false` is the safe one.
+- `keymap_hint` — the verbs this widget owns, spelled the way this widget
+  spells them. The panel host asks for it so the shared hint line above the
+  composer describes **this box** rather than a host-side paraphrase.
+- `render_in_panel` — defaults to the modal render. A widget that draws its
+  own border, title, or keymap footer overrides this instead of `render`,
+  because the host has already painted a border and a title into the same
+  rect.
+
+`centered_rect(percent_x, percent_y, area)` lives in the same module and is
+the single definition of the centred-popup shape; it was duplicated in
+`app/mod.rs` and `components/dialogs/run_detail.rs` before it was lifted
+here.
 
 ### FocusManager (`src/tui/components/component/focus.rs`)
 
@@ -4323,17 +4401,20 @@ pub struct FocusManager {
 }
 ```
 
-Key methods: `push(component)`, `pop()`, `top()`/`top_mut()`,
+Key methods: `push(component) -> bool`, `pop()`, `top()`/`top_mut()`,
 `with_dialog(_mut)`, `with_component`, `handle_key(key)`,
-`active_dialog_type()`, `len()`. Focus belongs to each component, so nested
+`active_dialog_type()`, `len()`. `push` returns `false` and refuses the push
+when a component of the same `DialogType` is already mounted, so an async
+refresh or a rapid reopen cannot create a hidden second owner. Focus belongs to each component, so nested
 push/pop preserves the underlying modal's selection. `Tab` and `Shift-Tab`
 wrap against the current component count, including zero and one-control
 dialogs.
 
-### TuiMsg (`src/tui/app/types.rs:123`)
+### TuiMsg (`src/tui/app/types.rs:155`)
 
-116 variants — synchronous intent from TUI to App, consumed by
-`App::process_msg`. Grouped by intent:
+164 variants — synchronous intent from TUI to App, consumed by
+`App::process_msg`. The table below groups the principal intents; it is a
+grouping, not the full 164-variant list.
 
 | Group | Variants |
 |---|---|
@@ -4351,7 +4432,7 @@ dialogs.
 | Task view | `TaskViewMove`, `TaskViewReorder`, `TaskViewOpen`, `TaskViewRefresh`, `TaskViewCancel`, `TaskViewResume`, `TaskViewDetail` |
 | Task schedule / triggers | `TaskScheduleConfirm`, `TaskScheduleMove`, `TaskTriggerSetup`, `TaskTriggerRevoke`, `TaskTriggerRotate`, `TaskTriggerRefresh`, `TriggerSecretClose`, `TeamTokenSecretClose` |
 
-### TuiCommand (`src/tui/app/commands.rs:15`)
+### TuiCommand (`src/tui/app/commands.rs:56`)
 
 ### Esc never quits; exiting is explicit
 
@@ -4418,7 +4499,7 @@ the daemon's durable selection converging on the display.
 Pinned by `scripts/check_model_select_convergence.py` and
 `tests/tui_render/tui_model_selection_persist.inc`.
 
-Async commands sent via channel — 205 variants covering: session CRUD,
+Async commands sent via channel — 245 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
 template creation, session message loading, subagent spawn, task/worktree
 operations, memory operations, goal lifecycle, research browser, doctor,
@@ -5867,9 +5948,11 @@ root routing.
 
 ### InputAction
 
-52 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
+61 variants (`src/tui/input.rs:137`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
-`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTasksList`, `ToggleSection`,
+`NewSession`, `ToggleAgentRun`, `ToggleSidebar`, `FocusSidebar`,
+`OpenPanelManager`, `DirectionLeft`, `DirectionRight`, `DirectionUp`,
+`DirectionDown`, `ToggleTasksList`, `ToggleSection`,
 `CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
 `CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
 `Quit`, `ForceQuit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`,
@@ -5878,7 +5961,15 @@ root routing.
 `ClearSearch`, `Command`, `ToggleTts`, `StopTts`, `ToggleFullscreen`,
 `TogglePermissionMode`, `OpenDiff`, `GoToTop`, `GoToBottom`,
 `OpenProjectPicker`, `NextProjectTab`, `PreviousProjectTab`,
-`CloseProjectTab`, `ToggleComposerMode`, `OpenWorkspaceDashboard`.
+`CloseProjectTab`, `NextSubagentTab`, `PreviousSubagentTab`,
+`CloseSubagentTab`, `ToggleComposerMode`, `OpenWorkspaceDashboard`.
+
+The four `Direction*` variants are the resolved direction of a chord whose
+final key decides the axis, so the handler that consumes them never has to
+re-derive the axis from the key that was pressed. The three `*SubagentTab`
+variants drive the subagent tab set over the main buffer (Shift+N/P/X);
+`CloseProjectTab` is the workspace-project equivalent and is a different
+verb.
 
 ### New session (`Ctrl+N`, `/new`)
 
@@ -5979,7 +6070,8 @@ tui/
 │   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
 │   ├── modal.rs            # FocusManager-backed modal lifecycle
 │   ├── plugin_ui.rs        # Validated plugin UI effect application
-│   └── state/              # 31 state domain modules + mod.rs
+│   ├── turn_submit.rs      # Prompt submit admission and turn start
+│   └── state/              # 33 state domain modules + mod.rs
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
 │       ├── change_review.rs # M006-E review state machine
@@ -6003,6 +6095,7 @@ tui/
 │       ├── restore.rs      # State restore
 │       ├── routing.rs      # Route routing helpers
 │       ├── session.rs      # SessionState (session, history, git info)
+│       ├── session_work.rs  # Session work-surface state
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── subagent_addressee.rs # C007: who the composer is addressed to
 │       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
@@ -6012,7 +6105,7 @@ tui/
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode
 │       └── workspace_dashboard.rs # M005 Workspace primary-view cache
-├── commands/               # 37 command handler submodules + mod.rs
+├── commands/               # 41 command handler submodules + mod.rs
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
 │   ├── change_review.rs    # M006-E review commands
@@ -6060,7 +6153,7 @@ tui/
 │   ├── component/
 │   │   ├── focus.rs        # FocusManager for modal focus stack
 │   │   └── context.rs      # AppContext for overlay dialogs
-│   ├── dialogs/            # 40 modal dialogs + mod.rs (all implement Component)
+│   ├── dialogs/            # 41 modal dialogs + mod.rs (all implement Component)
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette (query/selection model only —
 │   │   │                     # it no longer renders; see "One popup" below)
@@ -6105,7 +6198,6 @@ tui/
 │   ├── diff.rs             # DiffViewer
 │   ├── editor.rs           # M006-A buffer widget
 │   ├── file_tree.rs        # M006-D file tree widget
-│   ├── help_overlay.rs     # (removed in C001 — help is mode-aware via input.rs)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── messages/           # MessagesWidget submodules
@@ -6124,6 +6216,8 @@ tui/
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── panels/                 # Swappable side-panel host (Shift+S manager)
 │   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost
+│   ├── agents.rs           # Agent-tree panel
+│   ├── hosted.rs           # Hosted (plugin-provided) panel slot
 │   ├── chat.rs             # Interactive project-chat panel
 │   ├── terminal.rs         # Live PTY panel (NOR/INS, starts a shell on `i`)
 │   ├── help.rs             # Keybinding-reference panel (hosts HelpDialog)
@@ -6134,16 +6228,27 @@ tui/
 ├── panel_resize.rs         # Outward-only panel resize rules + key→border geometry
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
+├── chat_browser.rs         # One chat browser, two surfaces (main buffer + chat panel)
+├── composer_claims.rs      # Composer claim/state helpers
+├── composer_text.rs        # Composer text editing helpers
 ├── editor.rs               # M006-A editor presentation record/state
+├── editor_completion.rs    # Editor completion popup model
 ├── editor_effect.rs        # M010 editor-level pending effect + clipboard verb
+├── editor_highlight.rs     # Editor semantic highlight projection
+├── editor_lsp.rs           # Editor LSP presentation (M006-C)
+├── editor_match.rs         # Editor match/search state
 ├── document_session.rs     # TuiDocumentSession (DocumentController seam)
 ├── file_diff.rs            # Async diff stats for sidebar
+├── file_icons.rs           # File-kind icon mapping
 ├── file_tree.rs            # M006-D directory walk + node model
+├── file_tree_coordinator.rs # File-tree refresh/lazy-load coordinator
 ├── interactive_terminal.rs # Interactive terminal projection
 ├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
+├── text_geometry.rs        # Shared text measurement helpers
+├── wrap.rs                 # Text wrapping primitives
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (167 built-in)
+├── command.rs              # Slash command registry (168 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats
@@ -6211,7 +6316,9 @@ Do NOT use `UiNode` for: interactive components needing focus management
 
 ## Configuration Surface
 
-No direct TUI config keys in `opencode.jsonc`. TUI state is driven by:
+No direct TUI config keys in the CodeGG config file (`codegg.jsonc`,
+`codegg.json`, or `config.json`; the annotated example is
+`codegg.example.jsonc`). TUI state is driven by:
 - Theme selection via `[theme]` config
 - Keybindings via `[keybindings]` config
 - Vim mode via config
@@ -6538,6 +6645,90 @@ arms), `TuiCommand` (203) and `InputAction` (50) counts, the 46-variant
 (`check_tui_project_authority.py` scanning `session_state.project_dir` and
 `std::env::current_dir()`; `check_tui_editor_text_authority.py` rejecting
 second text buffers and direct filesystem reads).
+
+Verified 2026-10-23 (deep-dive pass) against `src/tui/`
+(`app/mod.rs`, `app/types.rs`, `app/commands.rs`, `app/state/*.rs`,
+`app/state/dialog.rs`, `components/component.rs`,
+`components/component/focus.rs`, `input.rs`, `task_lifecycle.rs`,
+`command.rs`, `runtime/command_dispatch.rs`), `tests/tui_render/`, and
+`scripts/check_tui_*`. This document is large (7000+ lines), so the
+load-bearing numeric, structural, and API-surface claims were verified
+rather than every line.
+
+Corrected:
+- **Stale file-size claim**: "Where It Lives" said `src/tui/app/mod.rs` is
+  "~14,358 lines". It is now ~20,300 lines, and `src/tui/` as a whole is
+  196 `.rs` files / ~202,400 lines. The section now carries the real
+  numbers and points at the Directory Structure tree.
+- **Stale module counts in the Directory Structure tree**: `app/state/` is
+  **33** modules (34 `.rs` files), not 31 (32); `commands/` is **41**
+  submodules, not 37; `components/dialogs/` is **41** dialogs, not 40.
+  `command.rs` holds **168** built-in commands, not 167 (the count asserted
+  by `built_in_command_count_matches_release_docs`, `src/tui/command.rs:1217`).
+- **Stale tree entries**: removed `components/help_overlay.rs` (deleted;
+  the tree still listed it as "removed in C001"), and added the modules the
+  tree did not mention at all — `app/turn_submit.rs`, `app/state/session_work.rs`,
+  `panels/agents.rs`, `panels/hosted.rs`, and the top-level
+  `chat_browser.rs`, `composer_claims.rs`, `composer_text.rs`,
+  `editor_completion.rs`, `editor_highlight.rs`, `editor_lsp.rs`,
+  `editor_match.rs`, `file_icons.rs`, `file_tree_coordinator.rs`,
+  `text_geometry.rs`, `wrap.rs`.
+- **Stale line anchors**: `App` is at `app/mod.rs:328` (not `:222`);
+  `SessionState` at `app/state/session.rs:94` (not `:71`);
+  `Component` at `components/component.rs:215` (not `:183`);
+  `TuiMsg` at `app/types.rs:155` (not `:123`); `TuiCommand` at
+  `app/commands.rs:56` (not `:15`); `Dialog` at `app/types.rs:4` (not `:2`);
+  `InputAction` at `src/tui/input.rs:137` (not `:102`);
+  `dispatch_tui_command` at `src/tui/runtime/command_dispatch.rs:87`
+  (not `:84`). The `dispatch_tui_command` reference is now stated by symbol
+  name as well, so it survives further drift.
+- **Stale variant counts**: `TuiMsg` is **164** variants (not 116);
+  `TuiCommand` is **245** (not 205/203); `InputAction` is **61** (not 52);
+  `Dialog` and `DialogType` are **53** each (not 51/46) — `JobDetail` and
+  `Queue` were missing from both listings.
+- **Incomplete `Component` trait listing**: the listing omitted
+  `docks_as_viewer`, `keymap_hint`, and `render_in_panel`, which are the
+  three defaults the docking contract depends on. They are now listed with
+  what each one means.
+- **Incomplete `LspService`-style listings**: the `App` struct listing
+  omitted `command_registry`, `policy_ui`, `search_runtime`,
+  `lsp_status_cache`, `interactive_terminals`, `pending_turn_submission`,
+  `turn_submit_request`, and `file_tree_coordinator`; the `SessionState`
+  listing omitted `last_error` (the latched turn failure),
+  `working_since`, `running_tool`, `active_turn_id`, `stopped_turn`,
+  `user_prompt_queue`, and the git-summary fields. The `UiState` listing
+  omitted `tree_focused` and `subagents`.
+- **Wrong config filename**: the Configuration Surface section referred to
+  `opencode.jsonc`. This repo has no such file — the config files are
+  `codegg.jsonc`, `codegg.json`, and `config.json`, and the annotated
+  example is `codegg.example.jsonc`.
+- **Stale `GitSidebarState` anchor**: it is at `app/state/session.rs:222`,
+  not `:134`.
+
+Confirmed accurate, no change needed:
+- `TuiTaskKind` (13 variants) and `TuiTaskRegistry`
+  (`src/tui/task_lifecycle.rs:133`), `AsyncUiRequestState`
+  (`app/state/async_request.rs:20`), `ComposerMode`
+  (`app/state/work_orders.rs:25`), and `Route` (`src/tui/route.rs:2`).
+- `dispatch_tui_command` is `pub(crate) async` with exactly **five**
+  `.await` points, all inside the durable-editor arms —
+  `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
+  `EditCheckpointList` (`runtime/command_dispatch.rs:2687`, `:2738`,
+  `:2792`, `:2846`, `:2898`).
+- `EXIT_ARM_WINDOW` is three seconds
+  (`src/tui/app/state/prompt.rs:126`), and the "two deliberate presses" rule
+  for `q` and `Ctrl+C` is documented correctly.
+- The render-regression count is 111 `#[test]` in
+  `tests/tui_render/tui_render.inc`.
+- `FocusManager` is `stack: VecDeque<Box<dyn Component>>`, and `push`
+  returns `bool` and refuses a duplicate `DialogType` — the doc's listing is
+  now explicit about that, because a hidden second owner is the failure it
+  prevents.
+- The Invariants & Gotchas section already states the load-bearing rules
+  correctly: no working strip and nothing reserved between transcript and
+  composer, `Esc` as the mode switch, the composer naming exactly one
+  destination, the single directional dispatcher, and the one-time docking
+  gesture interception gated on `Component::docks_as_viewer()`.
 ### Editor LSP presentation (M006-C)
 
 The editor consumes the daemon-owned `LspDiagnosticsGet` and `LspReadGet`

@@ -27,3 +27,18 @@ successful write refreshes project instructions for future turns; active turns
 keep their existing snapshot. No provider connection is required. See
 [`architecture/agent.md`](../architecture/agent.md#repository-initialization-drafts)
 for the implementation contract.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- The `/init` slash command exists and maps to the project-init action:
+  `src/tui/command.rs` (`BuiltinSlashAction::ProjectInit`).
+- The `<!-- codegg:init:start -->` / `<!-- codegg:init:end -->` markers and
+  the human-text-preserving rewrite: `src/agent/bootstrap.rs`.
+- Draft, publish, and refresh flows, and the one-use daemon token:
+  `src/tui/commands/project_init.rs`.
+- `a` publishes the root `AGENTS.md` and `Esc` cancels without writing:
+  `src/tui/components/dialogs/info.rs` (`ProjectInitApprove`) and
+  `src/tui/app/input.rs`.
+- The related `/project-init` slash command: `src/tui/command.rs`.

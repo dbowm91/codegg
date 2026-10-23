@@ -1,6 +1,6 @@
 # Stable-Toolchain Clippy-Drift Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository planning baseline: `f3886890`
 
@@ -38,7 +38,7 @@ One milestone:
 
 - `plans/implementation/toolchain-clippy-drift-corrective/001-async-trait-double-must-use-suppression.md`
 
-Status: ready.
+Status: closed.
 
 C001 must:
 
@@ -86,3 +86,11 @@ C001 closes only when:
 - `scripts/verify.sh quick` passes;
 - hosted `CI / verify` is green on the fix head;
 - additive closure record is committed.
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- `plans/closure/toolchain-clippy-drift-corrective/001-status.md` carries `Status: closed`.
+- The per-milestone line that read `Status: ready.` (§2 *Corrective scope*) was also stale and now reads `Status: closed.`
+- `plans/registry.md` already reads *closed* for this corrective.

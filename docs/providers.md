@@ -360,3 +360,35 @@ than having the setting forwarded on a guess.
   are handled end to end.
 - `docs/TROUBLESHOOTING.md` — "Model not found" and other user-facing failures.
 - `architecture/config.md` — the full configuration schema.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- **Seventeen** built-in providers and their registration order (Anthropic,
+  OpenAI, Google, OpenRouter, OpenCode Zen, Mistral, Groq, DeepInfra, Cerebras,
+  Cohere, Together, Perplexity, xAI, Venice, MiniMax, OpenCode Go,
+  GeneralCompute): `crates/codegg-providers/src/provider_core.rs`
+  (`register_builtin`).
+- The `TOGETHERAI_API_KEY` env var for `together`:
+  `crates/codegg-providers/src/provider_core.rs`.
+- The API-key-only providers (Anthropic, OpenAI, Google, OpenRouter,
+  OpenCode Zen, MiniMax): `crates/codegg-providers/src/setup_catalog.rs`
+  (`CredentialCapability::ApiKeyOnly`).
+- The OpenCode Go endpoint families and their model examples:
+  `crates/codegg-providers/src/opencode_go.rs` and the shared profile's
+  `assets/_provider_profiles.toml` in the `eggpool-provider-profile` crate —
+  `/chat/completions` (GLM, Kimi, DeepSeek, MiMo, LongCat), `/responses`
+  (gpt-6-luna, gpt-5.6-luna, Grok 4.6/4.7, the Muse contributor models), and
+  `/messages` (MiniMax, Qwen).
+- Master key resolution order (`CODEGG_MASTER_KEY`,
+  `CODEGG_ENCRYPTION_KEY`, `OPENCODE_ENCRYPTION_KEY`, then the managed file)
+  and the `<config dir>/codegg/master.key` path:
+  `crates/codegg-config/src/encryption.rs`.
+- The credential store path `<config dir>/codegg/credentials.json`:
+  `crates/codegg-providers/src/provider_core.rs`.
+- The auth variants `api_key`, `stored`, `external_command`, `oauth_device`,
+  `none`: `crates/codegg-providers/src/auth_types.rs` (`AuthConfig`).
+- `codegg providers` output shape and the `NO KEY for provider` warning:
+  `src/main.rs` `cmd_providers`.
+- `/connect` and `/connections` slash commands: `src/tui/command.rs`.

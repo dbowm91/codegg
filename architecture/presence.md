@@ -33,11 +33,18 @@ crates/codegg-core/src/authorization/policy.rs
                                           # operation_descriptor + representative requests,
                                           # re-exported by the authorization facade
                                           # (heartbeat/snapshot require project.observe, DirectProject)
-src/core/daemon.rs                        # daemon-owned PresenceService, handlers, activity touches,
-                                          # disconnect expiry, restart clear
+src/core/daemon.rs                        # daemon-owned PresenceService field,
+                                          # note_presence_activity, note_client_disconnected
+src/core/daemon_projection.rs             # PresenceCapabilities / PresenceHeartbeat /
+                                          # PresenceSnapshotGet handlers + the M003
+                                          # session.observe rechecks
+src/core/daemon_sessions.rs               # SessionAttach/Load success -> Active touch
+src/core/daemon_turns.rs                  # TurnSubmit acceptance -> AgentRunning touch
 src/core/transport/daemon_socket.rs       # disconnect expiry (Unix socket)
 src/server/ws.rs                          # disconnect expiry (WebSocket x3)
 tests/core_daemon/presence_m001_leases.inc             # service + daemon boundary tests
+tests/core_daemon/presence_m003_observation.inc         # M003 observation tests
+tests/tui_render/presence_m002_collaborators.inc        # M002 TUI collaborator tests
 ```
 
 ## How It Works
@@ -114,9 +121,10 @@ wall-clock millis for DTOs, so tests are deterministic.
   `project_id` locator; DTOs carry no principal/role/capability (pinned
   by `daemon_request_dtos_carry_no_authority` test).
 - **Activity integration** (`note_presence_activity`, best-effort):
-  `SessionAttach/Load` success touches `Active`; `TurnSubmit`
-  acceptance touches `AgentRunning`. Failures are ignored so session /
-  agent correctness never depends on presence.
+  `SessionAttach`/`SessionLoad` success touches `Active`
+  (`src/core/daemon_sessions.rs`); `TurnSubmit` acceptance touches
+  `AgentRunning` (`src/core/daemon_turns.rs`). Failures are ignored so
+  session / agent correctness never depends on presence.
 - **Disconnect**: Unix-socket and all three WebSocket close paths call
   `note_client_disconnected` (`remove_client`) after `unregister`.
   Disconnect shortens/expires contributions; reconnect with a newer
@@ -155,16 +163,22 @@ wall-clock millis for DTOs, so tests are deterministic.
 
 ```bash
 cargo test -p codegg-core --lib presence
-cargo test --test presence_m001_leases
+cargo test --test core_daemon -- presence_m001_leases
 cargo test -p codegg-core --lib authorization
 python3 scripts/check_authorization_matrix.py
 bash scripts/check-core-boundary.sh
 ```
 
-Key suites: `tests/core_daemon/presence_m001_leases.inc` (8 service + 7 daemon
-tests: heartbeat/expiry/idle, disconnect/reconnect, two-clients,
-several-sessions, aggregation, privacy negatives, churn bound,
-restart, stale generation, DTO authority negative, capabilities).
+Key suites: `tests/core_daemon/presence_m001_leases.inc` (15 tests: 7
+service-level `service_*` + 8 daemon-level `daemon_*` — heartbeat/expiry/
+idle, disconnect/reconnect, two-clients, several-sessions, aggregation,
+privacy negatives, churn bound, restart, stale generation, DTO authority
+negative, capabilities).
+
+The root package's integration tests are **families** — one executable per
+subject area under `tests/<family>/`. `cargo test --test <family> -- <member>`
+selects one member; `cargo test --test <family>` alone selects the whole
+family.
 
 ## M002 — TUI Collaborator Surface
 
@@ -218,7 +232,7 @@ tests/tui_render/presence_m002_collaborators.inc
   migration.
 
 ```bash
-cargo test --test presence_m002_collaborators
+cargo test --test tui_render -- presence_m002_collaborators
 cargo test -p codegg --lib tui::app::state::presence
 ```
 
@@ -337,15 +351,15 @@ unchanged; M003 reuses `project.observe`/`session.observe`).
 
 ```bash
 cargo test -p codegg --lib tui::app::state::observe
-cargo test --test presence_m003_observation
-cargo test --test presence_m001_leases
-cargo test --test presence_m002_collaborators
+cargo test --test core_daemon -- presence_m003_observation
+cargo test --test core_daemon -- presence_m001_leases
+cargo test --test tui_render -- presence_m002_collaborators
 python3 scripts/check_authorization_matrix.py
 bash scripts/check-core-boundary.sh
 ```
 
-Key suite: `tests/core_daemon/presence_m003_observation.inc` (11 tests: allow/deny +
-absent-indistinguishability, outsider non-enumeration, daemon
+Key suite: `tests/core_daemon/presence_m003_observation.inc` (11 tests:
+allow/deny + absent-indistinguishability, outsider non-enumeration, daemon
 steer/cancel/model/file negatives, observer-only teardown vs surviving
 observer, owner-disconnect control negative, revocation resume-denial +
 cleanup, multi-observer + per-client/daemon bounds, snapshot+replay
@@ -353,6 +367,87 @@ secret-redaction proof, artifact project scope, TUI lifecycle/banner/
 policy/reconnect, collaborator observe-hint seam).
 
 ## Source verification
+
+Verified 2026-10-23 against `crates/codegg-core/src/presence.rs`,
+`crates/codegg-protocol/src/core.rs`,
+`crates/codegg-core/src/projection_replay/subscription.rs`,
+`crates/codegg-core/src/projection_replay/context.rs`,
+`crates/codegg-core/src/authorization/policy.rs`,
+`crates/codegg-core/src/authorization/authority.rs`,
+`crates/codegg-core/src/team.rs`, `src/core/daemon.rs`,
+`src/core/daemon_projection.rs`, `src/core/daemon_sessions.rs`,
+`src/core/daemon_turns.rs`, `src/core/transport/daemon_socket.rs`,
+`src/server/ws.rs`, `src/tui/app/state/presence.rs`,
+`src/tui/app/state/observe.rs`, `src/tui/commands/presence.rs`,
+`src/tui/commands/observe.rs`, `src/tui/runtime/command_dispatch.rs`,
+`src/tui/command.rs`, `src/tui/components/dialogs/info.rs`,
+`src/tui/components/component.rs`, and the three presence integration test
+files.
+- **Corrected a wrong module attribution**: the doc credited
+  `src/core/daemon.rs` with the presence *handlers*. The handlers live in
+  `src/core/daemon_projection.rs` (the `PresenceCapabilities` /
+  `PresenceHeartbeat` / `PresenceSnapshotGet` arms, the `evict_expired`
+  scan before a snapshot, and the M003 `session.observe` recheck); only the
+  `PresenceService` field, `note_presence_activity`, and
+  `note_client_disconnected` are on `src/core/daemon.rs`. Added
+  `daemon_sessions.rs` / `daemon_turns.rs` for the two activity-touch call
+  sites, which the doc had not named.
+- **Corrected the service/daemon test split**: the doc said "8 service + 7
+  daemon"; the file holds **7 `service_*` + 8 `daemon_*`** = 15 tests.
+  `tests/core_daemon/presence_m001_leases.inc` is wired into the
+  `core_daemon` family at `tests/core_daemon/mod.rs:78`.
+- **Corrected the test commands**: `cargo test --test presence_m001_leases`
+  and friends named no such targets — the root package's integration tests
+  are families, so the commands are now
+  `cargo test --test core_daemon -- presence_m001_leases` and
+  `cargo test --test tui_render -- presence_m002_collaborators`. Added the
+  family rule inline.
+- **Added the missing M002 test file**: `tests/tui_render/presence_m002_collaborators.inc`
+  (12 tests) was unlisted.
+- Verified accurate, no change: the 4-variant `PresenceActivity` and its
+  rank order `Idle=0 < Observing=1 < Active=2 < AgentRunning=3`
+  (`presence.rs:92-99`), the `PresenceConfig` defaults — `lease_ttl` 90s,
+  `idle_after` 30s, `max_contributions` 4096, `max_projects` 512,
+  `max_principals_per_project` 256, `max_sessions_per_principal` 16
+  (`presence.rs:148-153`) — and `heartbeat_interval_hint() == lease_ttl / 3`
+  (`presence.rs:161`); the protocol surface of exactly 3 `CoreRequest`
+  Presence variants (`Capabilities`/`Heartbeat`/`SnapshotGet`), 3
+  `CoreResponse` variants (`HeartbeatAck`/`Snapshot`/`Capabilities`), and 1
+  `CoreEvent` variant (`PresenceUpdated`); the error codes
+  `presence_capacity` / `presence_stale_generation` /
+  `presence_invalid_project` / `presence_invalid_session` /
+  `presence_invalid_input`; the subscription caps `max_per_client: 32` and
+  `max_per_daemon: 256` (`subscription.rs:47-48`); the TUI bounds
+  `MAX_PRESENCE_PROJECTS = 16` and
+  `MAX_PRESENCE_DISPLAY_PRINCIPALS = 32`
+  (`src/tui/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
+  (`observe.rs:37`), and `MAX_PRESENCE_ERROR_LEN = 256`
+  (`presence.rs:42`); `App.presence` (`src/tui/app/mod.rs:674`),
+  `header_summary` and `panel_lines`
+  (`src/tui/app/state/presence.rs:442,471`); `start_refresh_presence`
+  (`src/tui/commands/presence.rs:28`); `InfoType::Collaborators`
+  (`src/tui/components/dialogs/info.rs:49`) and
+  `DialogType::Collaborators` (`src/tui/components/component.rs:63`);
+  the `/collaborators` (`/presence`), `/observe` (`/watch`), and
+  `/stop-observing` (`/unwatch`) registry entries
+  (`src/tui/command.rs:863,870,873`); the `StartObserve` /
+  `ObserveSubscribed` / `ObserveResumed` / `StopObserving` dispatch arms
+  (`src/tui/runtime/command_dispatch.rs:343,349,375,395`); the three
+  read-only policy messages; `authorize_scope`
+  (`projection_replay/context.rs:397`) and
+  `team_capabilities_to_projection`
+  (`authorization/authority.rs:157`); the `project.observe` /
+  `session.observe` capability names (`crates/codegg-core/src/team.rs:322,326`);
+  the `PresenceHeartbeat`/`PresenceSnapshotGet`/`PresenceCapabilities`
+  `operation_descriptor` and `representative_requests` entries
+  (`authorization/policy.rs:1030-1038`, `:2129-2138`); the three
+  `note_client_disconnected` call sites in `src/server/ws.rs` and the one in
+  `src/core/transport/daemon_socket.rs`; the `PresenceService` field
+  (`src/core/daemon.rs:98`) and its construction in
+  `with_deps_and_identity` (`src/core/daemon_construct.rs:259`); the 11 unit
+  tests inside `crates/codegg-core/src/presence.rs`; the 11 tests in
+  `tests/core_daemon/presence_m003_observation.inc`; and the "no storage
+  migration" claim (no presence tables exist in `session/schema.rs`).
 
 Verified 2026-10-06 against `crates/codegg-core/src/presence.rs`,
 `crates/codegg-protocol/src/core.rs`,

@@ -31,3 +31,21 @@ external data. Do not reuse a developer's browser profile or credentials by
 default, do not execute commands copied from pages, and keep generated browser
 artifacts in the project/run artifact area. CodeGG permissions, sandbox mode,
 and MCP exposure policy remain authoritative.
+
+## Source verification
+
+Checked 2026-10-23 against the source tree.
+
+- Both package directories exist under `assets/portable-plugins/`:
+  `playwright-browser-testing/` (with `plugin.json` and
+  `skills/playwright-browser-testing/SKILL.md`) and `playwright-mcp/` (with
+  `plugin.json`, `mcp.json`, and `README.md`). The CLI package's single
+  `SKILL.md` and the MCP package's `mcp.json` are as described.
+- No Rust source references `assets/portable-plugins/`, so neither package is
+  auto-loaded: `src/`, `crates/`.
+- The MCP companion's `npx --no-install @playwright/mcp` invocation:
+  `assets/portable-plugins/playwright-mcp/mcp.json`.
+- `plugins_dir()` = `dirs::data_local_dir()/codegg/plugins` is the install
+  target: `src/plugin/install.rs`.
+- The plugin manifest formats a package may use (`manifest.toml`,
+  `plugin.json`, `.claude-plugin/plugin.json`): `src/plugin/package.rs`.
