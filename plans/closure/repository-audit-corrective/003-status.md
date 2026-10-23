@@ -284,13 +284,32 @@ The production files were reverted to the baseline commit (`8590c17c5`) while
 the new test file was kept, and the narrow test was run:
 
 ```bash
-# production files reverted, the new test file kept
-git checkout -- src/tui/app/mod.rs src/tui/command.rs src/tui/app/types.rs \
-                 src/tui/commands/subagent_steer.rs
+# the production files reverted to the baseline; the commit holds the change,
+# so this is a checkout, not a loss of work
+git checkout 8590c17c5 -- src/tui/app/mod.rs src/tui/command.rs \
+                          src/tui/app/types.rs src/tui/commands/subagent_steer.rs
 # the test module's two-line declaration re-added (test scaffolding, not
 # production code) so the new file is compiled and actually runs
 CARGO_BUILD_JOBS=3 cargo test -p codegg --lib command_argument
 ```
+
+The capture was run three times. The **first** run found two of the new
+tests passing against the baseline — `memory_list_receives_no_query_argument`
+and `open_receives_the_path_without_the_command_name` — because the test
+helper did not mirror production: the palette's query holds the **whole
+typed line** on the composer path, and the helper left it empty. The
+query-reading arms therefore saw an empty query rather than the typed line,
+and two assertions written against the production symptom did not fire. The
+helper was corrected to set the palette's query to the typed line. The
+`open` assertion was then rewritten from "the command must report its
+outcome" to a **positive** anchor — the handler must report a
+document-open diagnostic — while ruling out the path refusal, so the test
+cannot pass vacuously on an empty toast list; that rewrite was checked
+against the fixed tree (it failed there first, because the test app has a
+project context and the handler takes the project/workspace branch, so the
+anchor was corrected to the diagnostic-plus-not-refused form). The **third**
+capture, run at handoff against the final assertions, is the one recorded
+below.
 
 Result: **12 failed, 1 passed**. The captured assertion messages are the
 production symptoms, verbatim:
@@ -305,11 +324,21 @@ production symptoms, verbatim:
 | `memory_list_receives_no_query_argument` | `the list sub-command must be recognised: ["Unknown memory command: /list"]` |
 | `habit_dismiss_receives_the_id_without_the_command_name` | `the dismissal must carry the habit id, not the typed line: HabitDismiss { id: "/habit-dismiss habit-7" }` |
 | `habits_receives_the_ready_filter_without_the_command_name` | `the ready filter must survive the extraction: HabitList { ready_only: false }` |
-| `open_receives_the_path_without_the_command_name` | `the path must not carry the command name: ["Cannot open document: path must be workspace-relative, not absolute"]` |
+| `open_receives_the_path_without_the_command_name` | `the path must reach the handler as a workspace-relative path: ["Cannot open document: path must be workspace-relative, not absolute"]` |
 | `loop_receives_the_interval_without_the_command_name` | `the handler queued a command: Empty` (the baseline parsed `/loop` as the interval and scheduled nothing) |
 | `review_change_receives_the_id_without_the_command_name` | `the candidate id must reach the review handler: ["Usage: /review <preview-id>"]` |
 | `review_change_alias_receives_the_same_id` | `the alias must resolve to the same command and lose its own token: ["Usage: /review <preview-id>"]` |
 | `theme_alias_receives_the_subcommand` | **passed** — `/theme` was already correct; this test is the alias regression guard, not an affected-command test |
+
+The one test that passes on the baseline passes because the baseline is
+**correct** for `/theme`: the old helper split the first token itself, so
+the alias worked by a different mechanism. The test earns its place as the
+guard that the new extraction did not break the alias path — without it, a
+canonical-only strip at the entry point would silently regress `/theme`
+(the argument would be `"/theme list"`, and the helper would read the
+sub-command as `"/theme"`). The alias removal itself is pinned by
+`argument_from_typed_line_removes_the_alias`, which cannot compile against
+the baseline at all — the method does not exist there.
 
 The three extraction tests in `src/tui/command.rs` exercise a method that
 does not exist on the baseline, so they cannot compile there; the baseline
