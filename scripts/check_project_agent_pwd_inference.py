@@ -80,7 +80,6 @@ ALLOWLIST: list[re.Pattern] = [
     re.compile(r"///.*current_dir"),
     re.compile(r"//!.*PWD"),
     re.compile(r"//!.*current_dir"),
-    re.compile(r"//.*PWD"),
     # The single, deprecated CLI-bootstrap `AgentRegistry::load`
     # constructor is the only production-path PWD read; new callers
     # must use `load_for_context`.
@@ -152,7 +151,6 @@ def _preceding_lines_with_pattern(
 # intentional CLI/bootstrap boundary read.
 BOUNDARY_PATTERNS: list[re.Pattern] = [
     re.compile(r"pub fn resolve_agents\(config:\s*&Config\)"),
-    re.compile(r"CLI bootstrap reads cwd exactly once"),
     re.compile(r"with_workspace_root\(cwd\)"),
 ]
 
@@ -167,11 +165,12 @@ def _preceding_lines_with_deprecated(lines: list[str], idx: int) -> bool:
     return any("#[deprecated" in lines[j] for j in range(start, idx))
 
 
-def collect_findings() -> list[Finding]:
+def collect_findings(src: Path | None = None) -> list[Finding]:
     findings: list[Finding] = []
+    base = src if src is not None else SRC
 
     for pattern in PROTECTED_GLOBS:
-        for path in SRC.glob(pattern):
+        for path in base.glob(pattern):
             if not path.is_file():
                 continue
             try:
@@ -203,7 +202,87 @@ def collect_findings() -> list[Finding]:
     return findings
 
 
+def _self_test() -> int:
+    """Prove the guard rejects the defect class it exists for.
+
+    The three cases are the three ways the allowlist could be abused to
+    suppress a real PWD read: a plain read, a read with a trailing comment
+    that names `PWD`, and a read whose doc comment names `PWD`. Only the
+    third is exempt, and only because the *doc comment* is the subject of
+    the rule — the finding is about a read, not about a mention.
+    """
+    import shutil
+    import tempfile
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="codegg-pwd-self-test-") as raw:
+        scratch = Path(raw)
+        copy = scratch / "src"
+        shutil.copytree(SRC, copy)
+
+        target = copy / "agent" / "prompt.rs"
+        original = target.read_text(encoding="utf-8")
+        try:
+            # 1. A plain read is rejected.
+            target.write_text(
+                original
+                + '\nfn pwd_probe_plain() -> String {\n'
+                + '    std::env::var("PWD").unwrap_or_default()\n'
+                + "}\n",
+                encoding="utf-8",
+            )
+            findings = collect_findings(copy)
+            if not findings:
+                failures.append("the guard did not reject a plain PWD read")
+            else:
+                print(f"  rejected a plain PWD read: {findings[0].line_text}")
+
+            # 2. A read with a trailing `// PWD` comment is still rejected:
+            #    the narrowed allowance covers doc comments only.
+            target.write_text(
+                original
+                + '\nfn pwd_probe_trailing() -> String {\n'
+                + '    std::env::var("PWD").unwrap_or_default() // PWD\n'
+                + "}\n",
+                encoding="utf-8",
+            )
+            findings = collect_findings(copy)
+            if not findings:
+                failures.append(
+                    "the guard accepted a PWD read hidden behind a trailing `// PWD` comment"
+                )
+            else:
+                print(f"  rejected a trailing-comment PWD read: {findings[0].line_text}")
+
+            # 3. A doc comment that mentions PWD is still exempt.
+            target.write_text(
+                original
+                + '\n/// The legacy constructor reads `PWD` directly.\n'
+                + "fn pwd_probe_doc() {}\n",
+                encoding="utf-8",
+            )
+            findings = collect_findings(copy)
+            if findings:
+                failures.append(
+                    "the guard rejected a doc-comment mention of PWD: "
+                    + findings[0].line_text
+                )
+            else:
+                print("  accepted a doc-comment mention of PWD")
+        finally:
+            target.write_text(original, encoding="utf-8")
+
+    if failures:
+        for failure in failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 1
+    print("PWD-inference guard self-test passed")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv:
+        return _self_test()
     findings = collect_findings()
 
     if findings:
