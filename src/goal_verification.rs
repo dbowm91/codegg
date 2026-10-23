@@ -6,11 +6,9 @@
 //! model prose.
 
 use chrono::{DateTime, Utc};
-use codegg_core::goal::{
-    GoalEvidenceContext, GoalExecutionEvidence, GoalTodoEvidence, HostEvidenceStatus,
-};
+use codegg_core::goal::{GoalEvidenceContext, GoalExecutionEvidence, GoalTodoEvidence};
 use codegg_core::jobs::store::JobStoreQuery;
-use codegg_core::jobs::{JobKind, JobState, JobStore, SqliteJobStore, GOAL_PROVENANCE_LABEL_KEY};
+use codegg_core::jobs::{JobKind, JobStore, SqliteJobStore, GOAL_PROVENANCE_LABEL_KEY};
 use sqlx::SqlitePool;
 
 const MAX_EVIDENCE_RECORDS: u32 = 128;
@@ -55,7 +53,7 @@ pub async fn assemble(
         executions.push(GoalExecutionEvidence {
             id: job.job_id.as_str().to_string(),
             source: source.to_string(),
-            status: host_status(job.state),
+            status: codegg_core::jobs::evidence::job_success_evidence(job.state),
         });
     }
 
@@ -74,23 +72,19 @@ pub async fn assemble(
     Ok(GoalEvidenceContext { executions, todos })
 }
 
-fn host_status(state: JobState) -> HostEvidenceStatus {
-    match state {
-        JobState::Completed => HostEvidenceStatus::Passed,
-        JobState::Failed
-        | JobState::Cancelled
-        | JobState::TimedOut
-        | JobState::Interrupted
-        | JobState::Expired => HostEvidenceStatus::Failed,
-        JobState::Scheduled | JobState::Queued | JobState::Running | JobState::Blocked => {
-            HostEvidenceStatus::InProgress
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use codegg_core::goal::HostEvidenceStatus;
+    use codegg_core::jobs::JobState;
+
+    // The shared authority answers "does this job count as evidence that the
+    // work SUCCEEDED?" — a different question from whether the job is
+    // finished. The pinned test names that projection `host_status`, and this
+    // one-line delegation keeps the test body byte-identical to the one that
+    // pinned the fail-closed verdicts.
+    fn host_status(state: JobState) -> HostEvidenceStatus {
+        codegg_core::jobs::evidence::job_success_evidence(state)
+    }
 
     #[test]
     fn terminal_job_states_are_fail_closed() {

@@ -270,7 +270,7 @@ fn enforce_job_owner(job_session: &Option<String>, caller: Option<&str>) -> Resu
 }
 
 fn job_state_str(state: &codegg_core::jobs::JobState) -> &'static str {
-    crate::scheduler::job_notifications::terminal_status_str(state)
+    crate::scheduler::job_notifications::job_status_projection(state)
 }
 
 fn executor_status_str(status: &crate::scheduler::ExecutorStatus) -> &'static str {

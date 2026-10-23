@@ -278,6 +278,16 @@ run_guards() {
     echo "==> python3 scripts/check_tool_program_parse_only.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check_tool_program_parse_only.py --self-test)
 
+    # The domain's `JobState::is_terminal()` is the terminality authority.
+    # Every projection of a job state has to agree with it, and a new
+    # variant must not be added while the projections answer for the old
+    # set. The guard replaced a hand-written terminality list in a query
+    # that contradicted the domain.
+    echo "==> python3 scripts/check_job_state_terminality_agreement.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_job_state_terminality_agreement.py)
+    echo "==> python3 scripts/check_job_state_terminality_agreement.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_job_state_terminality_agreement.py --self-test)
+
     # Every registered CI test filter must still name a command the workflow
     # runs, and must select at least one test the source declares. A filter
     # that names a renamed target qualifies nothing and still reports green.

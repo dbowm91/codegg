@@ -424,9 +424,9 @@ risk classes **11**, and workspace member crates **11** (+ root).
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 327 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 80 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 40 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 329 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 81 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 41 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 
@@ -626,7 +626,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (327 files)
+├── tests/                      # Integration tests (329 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -878,3 +878,17 @@ was true of the tree it described and is **not** true of the merged tree. The
 merged tree, and this line's six new members still sit on top of that. Every other
 code-count row was re-checked against its own listed `Source` in the merged tree and is
 unchanged.
+
+Three rows moved on **2026-10-23**, when the repository-audit-corrective line's
+C004 milestone landed: the *Integration test files* row is **329** (the count
+moved by two — `tests/core_daemon/job_state_terminality_c004.inc` and
+`tests/scheduler_jobs/job_status_projection_c004.inc`; both are members of
+existing families, so the root package's **test-target** count did **not**
+move), the *Guard scripts (all)* row is **81** (the count moved by one — the
+new `scripts/check_job_state_terminality_agreement.py`), and the *CI guard
+scripts* row is **41** (the count moved by one — the same guard, wired into
+both `scripts/verify.sh quick` and `.github/workflows/ci.yml`). Every other
+code-count row was re-checked against its own listed `Source` and is
+unchanged; in particular the `codegg-core` modules row is still **54**, because
+C004's new `codegg-core/src/jobs/evidence.rs` is a **sub**module of `jobs` and
+not a top-level `pub mod` in the crate's `lib.rs`.
