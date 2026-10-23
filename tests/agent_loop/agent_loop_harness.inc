@@ -1638,6 +1638,11 @@ impl Tool for DeferredSchemaTool {
 struct DeferredSchemaRejectingProvider {
     requests: Arc<Mutex<Vec<ChatRequest>>>,
     calls: Arc<AtomicUsize>,
+    /// The rejection the fake gateway returns on its first call. The two
+    /// forms under test are distinct rejections of the same deferral: an
+    /// endpoint that does not recognise the `defer_loading` field, and one
+    /// that recognises it but demands the discovery tool accompany it.
+    rejection: &'static str,
 }
 
 #[async_trait]
@@ -1656,10 +1661,7 @@ impl Provider for DeferredSchemaRejectingProvider {
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         self.requests.lock().await.push(request.clone());
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            return Err(ProviderError::api(
-                "400",
-                "Unsupported field defer_loading in tool definition",
-            ));
+            return Err(ProviderError::api("400", self.rejection));
         }
         Ok(Box::pin(futures_util::stream::iter(vec![
             Ok(ChatEvent::TextDelta("done".to_string().into())),
@@ -1685,6 +1687,7 @@ async fn deferred_schema_400_retries_once_without_changing_authorized_tools() {
     let provider = DeferredSchemaRejectingProvider {
         requests: Arc::new(Mutex::new(Vec::new())),
         calls: Arc::new(AtomicUsize::new(0)),
+        rejection: "Unsupported field defer_loading in tool definition",
     };
     let requests = Arc::clone(&provider.requests);
     let mut registry = ToolRegistry::new();
@@ -1700,6 +1703,53 @@ async fn deferred_schema_400_retries_once_without_changing_authorized_tools() {
         .run(make_chat_request("Use the deferred probe"))
         .await
         .expect("the request-only compatibility retry should complete");
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].model, requests[1].model);
+    let first_tools = requests[0].tools.as_ref().expect("initial tool surface");
+    assert!(first_tools
+        .iter()
+        .any(|tool| tool.name == "deferred_probe" && tool.defer_loading == Some(true)));
+    let fallback_tools = requests[1].tools.as_ref().expect("fallback tool surface");
+    assert!(fallback_tools
+        .iter()
+        .any(|tool| tool.name == "deferred_probe"));
+    assert!(fallback_tools
+        .iter()
+        .all(|tool| tool.defer_loading.is_none()));
+}
+
+/// A gateway that recognises `defer_loading` but refuses a deferred set that
+/// does not ship the discovery tool rejects it with a different message from
+/// the one above, and for a different reason: the request is well-formed, the
+/// endpoint simply requires `tools.tool_search` to accompany a deferred set.
+/// That is what a resolved surface which filtered `tool_search` out produces.
+///
+/// The remedy is the same one-request compatibility retry — drop the deferral
+/// flags — and the same property must hold: the retry does not change the
+/// authorized tool set, it only stops asking the endpoint to defer.
+#[tokio::test]
+async fn deferred_discovery_requirement_400_retries_once_without_changing_authorized_tools() {
+    let provider = DeferredSchemaRejectingProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(AtomicUsize::new(0)),
+        rejection: "Deferred tools require tools.tool_search",
+    };
+    let requests = Arc::clone(&provider.requests);
+    let mut registry = ToolRegistry::new();
+    registry.register(DeferredSchemaTool);
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
+    agent_loop
+        .run(make_chat_request("Use the deferred probe"))
+        .await
+        .expect("the discovery-requirement compatibility retry should complete");
 
     let requests = requests.lock().await;
     assert_eq!(requests.len(), 2);
