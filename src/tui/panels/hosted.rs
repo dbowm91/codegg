@@ -12,15 +12,6 @@
 //!
 //! ## The render bridge
 //!
-//! `SidePanel::render` receives a `&mut Buffer`; every `Component::render`
-//! takes a `&mut Frame`, and ratatui's `Frame` has no public constructor. The
-//! one widget that predates the host — `HelpDialog` — solves this with a
-//! bespoke `render_into(&mut Buffer, ..)` added alongside `Component::render`.
-//! Repeating that for 28 dialogs would be a large mechanical diff across
-//! unrelated files, so the bridge here does it generically: render into an
-//! in-memory backend the size of the column, then copy the result into the
-//! host's buffer.
-//!
 //! This is a *bridge*, not the destination. It costs one small allocation per
 //! panel per frame, and it is the only reason a dockable box can be adopted
 //! without touching that box. A widget that wants to render into a buffer

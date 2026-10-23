@@ -2,21 +2,6 @@
 //!
 //! ## Layout Structure
 //!
-//! ```text
-//! ┌──────────────────────────────────────────────────────────┐
-//! │                        Header (1 line)                     │
-//! ├─────────────────────────────────────┬────────────────────┤
-//! │                                     │                    │
-//! │            Viewport                 │       Panel        │
-//! │         (flexible)                  │    (30 columns)    │
-//! │                                     │                    │
-//! ├─────────────────────────────────────┤                    │
-//! │          Prompt (3 lines)           │                    │
-//! ├─────────────────────────────────────┤                    │
-//! │          Footer (1 line)            │                    │
-//! └─────────────────────────────────────┴────────────────────┘
-//! ```
-//!
 //! That is the default [`PanelPlacement::Right`]. The panel may instead take
 //! the left column or a full-width row under the main buffer, which is the
 //! same split on the other axis:

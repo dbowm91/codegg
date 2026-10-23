@@ -25,11 +25,6 @@ pub struct TestTool {
     job_notifications: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     /// The session's workspace root. This is the default test `workdir`, and
     /// the base a relative `workdir` resolves against.
-    ///
-    /// Without it the tool fell back to `std::env::current_dir()`, which in a
-    /// daemon is the directory the daemon was launched from — so a session
-    /// rooted at one repository ran that repository's tests inside whatever
-    /// unrelated tree the user happened to start the daemon from.
     workspace_root: Option<PathBuf>,
 }
 

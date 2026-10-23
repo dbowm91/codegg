@@ -10,9 +10,6 @@
 //! Entry text is user-authored prompt content with the same sensitivity as a
 //! submitted turn. It never appears in an error message, an audit record, or a
 //! `tracing` call; diagnostics reference entry identity only.
-//!
-//! Storage changes here are additive. No existing table is altered and no stored
-//! data is rewritten.
 
 use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;

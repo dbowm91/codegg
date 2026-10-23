@@ -1,9 +1,5 @@
 //! Restart coordination for LSP clients.
 //!
-//! The coordinator owns the retry, backoff, exhaustion, cancellation,
-//! document replay, and ownership-restoration flow, and it is the single
-//! entry point for both manual and automatic restart.
-//!
 //! **Cancellation is intent, not completion.** `cancel_restart_ownership`
 //! signals intent through the lease's cancellation token but does NOT remove
 //! the ownership entry. The entry stays installed until the in-flight owner
@@ -16,8 +12,6 @@
 //! The coordinator never reconstructs a hard-coded `src/lib.rs` path: it
 //! uses the persisted [`LspClientDescriptor`] and the currently open
 //! document registry to pick a seed file.
-//!
-//! See `architecture/lsp.md` for the full contract.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -2718,13 +2712,6 @@ mod tests {
     /// post-spawn cancellation check, the cleanup must remove
     /// the unpublished client from the live clients map and
     /// return `InitializationCancelled("...after spawn")`.
-    ///
-    /// We accomplish this by cancelling the token FROM WITHIN
-    /// the reinit closure body, immediately before returning.
-    /// The coordinator's pre-spawn cancellation check has
-    /// already passed (the closure is running), and the
-    /// post-spawn check is the next boundary the coordinator
-    /// evaluates.
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_removes_unpublished_client_when_lease_cancelled_after_spawn() {
         let shared = MockShared::new();

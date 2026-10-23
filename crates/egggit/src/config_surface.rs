@@ -466,9 +466,6 @@ impl Inspector {
     }
 
     /// Resolve and follow one include directive.
-    ///
-    /// `including_file` is the file that names the include: Git resolves a
-    /// relative include against the directory of that file.
     fn follow_include(
         &mut self,
         include: &ParsedInclude,

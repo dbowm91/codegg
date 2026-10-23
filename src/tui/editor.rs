@@ -3686,10 +3686,6 @@ fn rotate_selection_contents(
 
 /// `&` — pad every member out to the widest member's **display** width.
 ///
-/// Display width, not bytes, is the whole content of the verb: a tab is one
-/// column and a CJK ideograph is two, so byte-aligning them would produce
-/// output that lines up in the source and not on the screen.
-///
 /// Measured through [`bounded_display_width`] so a member wider than the
 /// 32 KiB line budget costs the budget and not the line — and when that
 /// happens the truncation is **disclosed** rather than papered over, because

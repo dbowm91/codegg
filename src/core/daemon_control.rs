@@ -8,12 +8,6 @@
 //! transfers control; transfer/takeover is explicit, revisioned (CAS),
 //! and audited. Revoked/suspended principals cannot exercise a stale
 //! lease because every check re-resolves current team state.
-//!
-//! The durable record lives in
-//! [`codegg_core::session_control::SessionControllerStore`] (migration
-//! v65). The in-memory [`crate::core::session_runtime::TurnHandle`]
-//! carries the same principal/client/revision so pool-less local
-//! daemons and restart reconciliation share one predicate shape.
 
 use codegg_core::identity::{PrincipalId, ProjectId};
 use codegg_core::team::{Capability, MembershipState, PrincipalStatus, ProjectRole};
@@ -313,13 +307,6 @@ impl CoreDaemon {
     /// **additional** requirement while one happens to exist.
     ///
     /// The four-row mismatch table, fail-closed with no precedence rule:
-    ///
-    /// | queue owner | turn controller | result |
-    /// |---|---|---|
-    /// | caller | caller | allowed |
-    /// | caller | someone else | `ControllerMismatch` |
-    /// | someone else | caller | `NotQueueOwner` |
-    /// | someone else | someone else | `NotQueueOwner` |
     ///
     /// Ownership is evaluated before the turn term, which is what makes rows 3
     /// and 4 report `NotQueueOwner` rather than depending on check order. An

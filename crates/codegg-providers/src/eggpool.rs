@@ -1162,11 +1162,6 @@ impl Default for CredentialProbeOptions {
 }
 
 /// Where one verification request is actually sent.
-///
-/// Resolved before any socket is opened. For a provider the shared profile
-/// adapts, this is the profile's own model → surface → URL/auth resolution; for
-/// a plain OpenAI-compatible endpoint it is `{base}/chat/completions` with a
-/// bearer credential, matching the catalog probe on the same connection.
 #[derive(Debug, Clone)]
 struct VerificationRoute {
     url: String,

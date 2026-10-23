@@ -4306,9 +4306,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // `(ALT|SHIFT, Char('u'))`. `Alt-u` is `(ALT, Char('u'))` — and it
         // must not be confused with the third arm, which is the same glyph
         // under a different modifier and means the *other* direction.
-        //
-        // Every modifier here is an exact bitmask, so `ALT` and `ALT|SHIFT`
-        // are disjoint claims and the guard reads them as such.
         (m, KeyCode::Char('u')) if m == alt => {
             editor_history_earlier(state);
             BufferKey::Consumed
@@ -4860,11 +4857,6 @@ mod tests {
     // ── Scripted document.v1 daemon ──────────────────────────────────────
 
     /// Minimal in-memory daemon for `document.v1`.
-    ///
-    /// Enough to qualify the editor's lifecycle end to end: it serves
-    /// snapshots, applies transactions, and can be told to conflict, to go
-    /// offline, to report the document gone, or to block a reload so a
-    /// destructive phase can be observed while it is in flight.
     struct FakeDaemon {
         text: std::sync::Mutex<String>,
         revision: AtomicU64,

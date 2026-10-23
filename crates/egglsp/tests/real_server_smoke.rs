@@ -7092,16 +7092,6 @@ async fn progress_readiness_failure_is_reported() {
 }
 
 /// Test 4: Empty diagnostics readiness passes.
-///
-/// Pass 7 — Verifies that `LspClient::wait_for_first_diagnostics`
-/// returns `false` when no diagnostics notification is observed
-/// within the timeout window (which is the correct behavior for a
-/// server that doesn't publish diagnostics). This is a direct
-/// test of the production readiness primitive. The previous test
-/// name `empty_diagnostics_readiness_passes` was misleading because
-/// it implies readiness passes when diagnostics are empty, but the
-/// test was actually verifying the *missing-diagnostics* branch.
-/// Renamed per the Phase 3 final-closure audit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_diagnostics_readiness_times_out() {
     // Use a simple process that stays alive but does not speak LSP.

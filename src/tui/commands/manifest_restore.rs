@@ -18,9 +18,6 @@
 //! 5. The plan emits at most one `pending_heavy_load` tab; the
 //!    heavy-load transaction reuses the existing milestone 3 view
 //!    switch machinery.
-//!
-//! Cancellation: the coordinator is registered as a TUI task so the
-//! existing `TuiTaskRegistry::cancel_for_tab` lifecycle applies.
 
 use crate::tui::app::state::manifest::{ManifestLoadOutcome, TuiWorkspaceManifest};
 use crate::tui::app::state::restore::{

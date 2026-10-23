@@ -2869,9 +2869,6 @@ async fn migrate_v69(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// `UNIQUE constraint failed: cached_models.id`, and because the writer
 /// clears the table first, the cache was left permanently empty — every
 /// discovery refresh then re-hit the network.
-///
-/// Rebuild the table with the composite key `(id, provider)`, which is
-/// the real identity of a discovered model.
 async fn migrate_v70(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
@@ -3691,15 +3688,6 @@ async fn migrate_v87(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 
 /// Provider reasoning control M002: the daemon-owned, principal-scoped
 /// extended-thinking selection.
-///
-/// One additive nullable column on `runtime_preferences`. Plain
-/// `ADD COLUMN` keeps every existing row untouched — approval, sandbox,
-/// session model and Task-composer preferences are all preserved — and
-/// the new column defaults to `NULL` ("no explicit selection"). The
-/// stored value is the protocol's own serialized selection shape, so the
-/// durable column carries no second vocabulary; the label inside it is an
-/// open, provider-scoped string. Bounds are enforced in Rust, not by the
-/// schema, on a migrated database.
 ///
 /// This migration was **v84** on the provider-reasoning-control branch and is
 /// **v88** in the merged tree. `main` had already published v84 (the additive

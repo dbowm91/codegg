@@ -853,12 +853,6 @@ impl TerminalScreen {
     /// Render the visible viewport as styled lines, honouring the current
     /// scrollback offset plus any active selection, scrub and cursor.
     ///
-    /// `selection` carries its own head, so one `contains` test drives the
-    /// highlight whether the reader built the selection with `x` (where the
-    /// head is pinned and the cursor is free to wander) or `v` (where the head
-    /// tracks the cursor). `redactions` is the resolved `d` scrub, one entry
-    /// per viewport row.
-    ///
     /// `cursor_visible` is the *blink* phase, and it changes the modifier only
     /// — never the caret's position. The cell stays painted while the caret is
     /// dark, because a cursor that stops reserving its own cell would let the

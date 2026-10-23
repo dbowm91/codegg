@@ -1,8 +1,5 @@
 //! Shell command output projectors.
 //!
-//! The projection abstraction of the shell output pipeline; see
-//! `architecture/human_shell.md`.
-//!
 //! This module introduces the projection abstraction that converts raw
 //! command artifacts into explicit model-facing and TUI-facing views. The
 //! trait [`CommandOutputProjector`] is independent of any specific

@@ -1,10 +1,5 @@
 //! macOS Seatbelt backend.
 //!
-//! Seatbelt evaluates an SBPL (Scheme) profile and, on macOS, is reachable
-//! **in-process** through `sandbox_init`. No `sandbox-exec` wrapper is
-//! needed: the helper calls `sandbox_init` and then `exec()`s the target,
-//! exactly as it does for Landlock, and the restrictions survive the exec.
-//!
 //! The header is marked deprecated and App Sandbox is the blessed path for
 //! shipped applications — but App Sandbox is entitlement-gated and means
 //! nothing for a CLI tool. Seatbelt remains the only OS-provided,

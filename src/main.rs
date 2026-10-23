@@ -70,9 +70,6 @@ impl ExecutionPolicyArgs {
 
 /// Canonical `--format text|json` output selection shared by root one-shot
 /// mode and `exec`.
-///
-/// The pre-existing `--output-format` (root) and `--json-output`/`-j`
-/// (`exec`) spellings remain as compatibility aliases.
 fn resolve_output_format(format: OutputFormat, json_output: bool) -> OutputFormat {
     if json_output || matches!(format, OutputFormat::Json) {
         OutputFormat::Json
@@ -3111,10 +3108,6 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
 }
 
 /// Read-only provider listing for `doctor providers`.
-///
-/// Reuses the same config-aware registration as `codegg providers` and
-/// the TUI. No network probes: model inventory stays behind
-/// `codegg models`, which may contact providers.
 fn print_providers_report(config: &Config) {
     let mut registry = ProviderRegistry::new();
     provider::register_builtin_with_config(&mut registry, config);

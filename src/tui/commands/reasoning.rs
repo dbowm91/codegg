@@ -14,10 +14,6 @@
 //! capability — and a peer that predates the capability entirely — yields
 //! the known-label fallback, and the command says that it is a fallback
 //! rather than presenting the ladder as the model's full option set.
-//!
-//! Concurrency follows the `start_*/apply_*` pair pattern used by the
-//! runtime-policy commands: every `start_*` bumps the request generation
-//! and the matching `apply_*` drops stale completions.
 
 use codegg_protocol::core::{ReasoningMode, ReasoningOverride, RuntimePreferenceDto};
 

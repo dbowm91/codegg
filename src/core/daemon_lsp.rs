@@ -1358,9 +1358,6 @@ pub async fn publish_changed_diagnostics(
 
 /// The workspace-relative path a diagnostic URI belongs to.
 ///
-/// Diagnostics are keyed by URI, but the protocol reports workspace-relative
-/// paths so a client can join them to its own file list.
-///
 /// This resolves the **full** relative path, not the file name: two files
 /// that differ only by directory must not collide as one tracker key. A URI
 /// outside `root` is skipped rather than reported under a fabricated path,

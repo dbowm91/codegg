@@ -1415,9 +1415,6 @@ fn parse_log_output(stdout: &str) -> Vec<CommitInfoPayload> {
 }
 
 /// Parse unified diff output into a structured [`DiffResultPayload`].
-///
-/// Handles `diff --git` headers, rename/copy detection, binary files,
-/// `@@` hunk headers, and +/- line counting.
 fn parse_diff_output(stdout: &str) -> Result<DiffResultPayload, DiffParseError> {
     let mut files: Vec<DiffFilePayload> = Vec::new();
     let mut total_insertions: usize = 0;

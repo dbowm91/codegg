@@ -35,8 +35,6 @@
 //! mutation-producing operation. `textDocument/rename`,
 //! `textDocument/formatting`, and `textDocument/codeAction` are
 //! not part of the trait surface.
-//!
-//! See `architecture/lsp.md` for the full contract.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

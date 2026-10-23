@@ -53,8 +53,6 @@
 //! itself a claimed letter, or a capital claim that is not reachable under
 //! both key encodings. The table is the guard's input, so the table is the
 //! source of truth — there is deliberately no second copy of it anywhere.
-//!
-//! See `architecture/tui.md` for the full contract.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 

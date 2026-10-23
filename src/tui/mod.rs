@@ -1,16 +1,4 @@
 //! # Terminal User Interface (TUI)
-//!
-//! The TUI owns one [`App`] and the state domains it holds — UI, session,
-//! prompt, messages, dialog, and agent state — beside the component, input,
-//! layout, theme, route, and command modules.
-//!
-//! Input arrives on crossterm's [`EventStream`], is routed by
-//! [`App::on_key`](app::App::on_key) / [`App::on_mouse`](app::App::on_mouse)
-//! against the binding maps, mutates state, and re-renders through
-//! [`App::render`](app::App::render). The render order is header, viewport,
-//! prompt, footer, sidebar, dialog, completions, then toasts.
-//!
-//! See `architecture/tui.md` for the full contract.
 
 pub mod app;
 pub mod async_cmd;

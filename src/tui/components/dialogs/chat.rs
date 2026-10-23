@@ -352,11 +352,6 @@ impl ChatDialog {
     }
 
     /// The body shown in the viewport, including status branches.
-    ///
-    /// `height`/`width` come from the real render area, so the message
-    /// window is sized to what actually fits. Sizing it by message count
-    /// instead would emit up to 100 lines into a ~30-row viewport, and the
-    /// cursor would scroll out of sight in the middle of the window.
     fn body_lines(&self, height: usize, width: usize, theme: &Arc<Theme>) -> Vec<Line<'static>> {
         let dim = Style::default().fg(theme.muted);
         let view = Self::view_of(&self.snapshot);
