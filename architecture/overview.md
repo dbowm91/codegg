@@ -401,14 +401,35 @@ modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements
 risk classes **11**, and workspace member crates **11** (+ root).
 
 Three rows moved once more on **2026-10-23**, when the repository audit
-corrective workstream's C001 landed. Each moved because the milestone added
-exactly one thing of that kind, and each was re-measured against its own
-listed `Source` rather than incremented by hand: **integration test files
-327 → 328** (`tests/tui_render/nested_runtime_command_dispatch.inc`), **guard
-scripts (all) 80 → 81** (`scripts/check_no_nested_runtime_block_on.py`), and
-**CI guard scripts 40 → 41** (the same guard, wired into the hosted CI guard
-step). No row's **measure** changed. The remaining 21 rows were **confirmed
-unchanged** by measurement, not by assumption.
+corrective workstream's C001, C002, C003 and C004 milestones landed. Each
+milestone added one thing of each kind, and every value was re-measured
+against its own listed `Source` with `python3 scripts/measure_overview_counts.py`
+rather than incremented by hand: **integration test files 327 → 331** (C001's
+`tests/tui_render/nested_runtime_command_dispatch.inc`, C002's
+`tests/security_permission/destructive_delete_classification.inc`, and C004's
+`tests/core_daemon/job_state_terminality_c004.inc` and
+`tests/scheduler_jobs/job_status_projection_c004.inc` — all four are members
+of **existing** families, so the root package's **test-target** count did not
+move), **guard scripts (all) 80 → 84**
+(`scripts/check_no_nested_runtime_block_on.py`,
+`scripts/check_destructive_risk_signal_coverage.py`,
+`scripts/check_command_argument_contract.py` and
+`scripts/check_job_state_terminality_agreement.py`), and **CI guard scripts
+40 → 44** (those same four guards, each wired into `scripts/verify.sh quick`
+and the hosted CI guard step; a guard's two `ci.yml` steps — the guard and its
+`--self-test` — are one distinct script). No row's **measure** changed. The
+remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption.
+
+The four milestones were developed on sibling branches from a common base and
+each re-measured these rows in isolation, so each recorded only its own
+increment. Merging them lost one increment per row in `architecture/overview.md`
+— the two edits landed in different hunks, so the file merged without a
+conflict — and the row values above are the canonical measurement of the
+**merged** tree. The `codegg-core` modules row is still **54**: C004's new
+`codegg-core/src/jobs/evidence.rs` is a **sub**module of `jobs`, not a
+top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
+`architecture/count_audit_history.md`.
 
 | Item | Count | Source |
 |------|-------|--------|
@@ -435,8 +456,8 @@ unchanged** by measurement, not by assumption.
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 331 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 83 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 43 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 84 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 44 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 
