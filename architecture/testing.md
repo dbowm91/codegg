@@ -446,10 +446,15 @@ above.
 
 ### Known macOS-local failures
 
-On **macOS** the workspace suite has six failures that are **not** regressions.
-Each was proved pre-existing by checking out the baseline commit `2c1953347`
-into a separate worktree and running the same tests there; the baseline probe
-is recorded in `plans/closure/ci-test-throughput-recovery/004-status.md` §8.1.
+On **macOS** the workspace suite has **seven** failures that are **not**
+regressions. The first six were proved pre-existing by checking out the
+baseline commit `2c1953347` into a separate worktree and running the same
+tests there; the baseline probe is recorded in
+`plans/closure/ci-test-throughput-recovery/004-status.md` §8.1. The seventh
+arrived on `main` after that probe, so it is proved against `origin/main`'s
+own copy of the file instead; it is recorded in
+`plans/closure/ci-test-throughput-recovery/008-merge-and-absorption-status.md`
+§7.
 
 | Test | Why it fails on macOS |
 |---|---|
@@ -459,11 +464,42 @@ is recorded in `plans/closure/ci-test-throughput-recovery/004-status.md` §8.1.
 | `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace` | The standalone shell's output does not arrive within the test's own wait. |
 | `scratch_cache_root_contract::the_default_cache_root_is_the_home_directory_cache` | The test expects `$HOME/.cache`; macOS's cache directory is `$HOME/Library/Caches`. |
 | `scratch_cache_root_contract::an_explicit_cache_home_is_the_root_the_allocator_uses` | Same convention mismatch. |
+| `contained_worktree_c008::the_grant_names_only_the_administration_directory` | The test needs the Linux protected-mount view, so the containment grant cannot be built here: `the worktree child could not be contained: permission denied: protected mount view is available only on Linux`. The target is Linux-targeted and is exercised by the hosted `Linux M004 process and IPC qualification` lane, not by a local gate. |
 
 Do not "fix" these by editing the assertions — they are testing the Linux
 contract on a platform that does not provide it. When a *new* failure appears
 next to these, it is real: check it against the baseline before assuming the
 same class.
+
+### Known macOS-local gate failures
+
+The **clippy gate** is also red on macOS, and for `origin/main`'s own reasons
+rather than for anything the test layout did. The gate's command is the one
+`scripts/verify.sh full` runs:
+
+```bash
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+On macOS it reports **nine** distinct findings across two targets — the **lib**
+(7) and the **lib test** (2: `new` and `new_with_network_intent` at
+`src/lsp/m004.rs:106`, and `spec_with` at `src/managed_process.rs:2715`) —
+because the lib's failure stops the build before the **bin** is reached. A run
+**without** `-D warnings` reaches the bin and reports a **tenth**: `unused
+import: Seek` at `src/bin/codegg-sandbox-helper.rs:30`, whose only use is the
+`file.seek(…)` at line 594 inside a `#[cfg(target_os = "linux")]` function.
+Every one of the ten is code that no macOS path calls, so the hosted Linux
+runner — where the code *is* called — sees no finding at all.
+
+**So `scripts/verify.sh full` is red on macOS on `origin/main` today, for this
+reason and no other; `scripts/verify.sh quick` is green there.** The affected
+files are `origin/main`'s, byte-identical to the ones the CI/test-throughput
+line recorded, and the disposition is recorded in
+`plans/closure/ci-test-throughput-recovery/008-merge-and-absorption-status.md`
+§7. The local consequence worth stating is the one the line's own §2.9 repair
+showed: a dead-code finding in a **test target** is invisible to local macOS
+clippy, because the lib fails first, so the hosted Linux runner is the only
+authority for that class.
 
 ### Root integration-test families
 The root package's integration tests are **families**: a directory under
