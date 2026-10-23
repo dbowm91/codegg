@@ -185,9 +185,7 @@ fn is_command_position(command: &str, start: usize) -> bool {
 /// The argument text of an `rm` invocation: everything after the command word
 /// up to the next command separator.
 fn argument_region(text: &str) -> &str {
-    let end = text
-        .find(|ch| matches!(ch, ';' | '&' | '|' | '\n'))
-        .unwrap_or(text.len());
+    let end = text.find([';', '&', '|', '\n']).unwrap_or(text.len());
     &text[..end]
 }
 
@@ -264,7 +262,7 @@ fn normalize_word(word: &str) -> String {
             word = word[first.len_utf8()..end].to_string();
         }
     }
-    word.trim_end_matches(|ch| matches!(ch, ')' | ']' | '}' | '`' | ';' | '&' | '|' | '"' | '\''))
+    word.trim_end_matches([')', ']', '}', '`', ';', '&', '|', '"', '\''])
         .to_string()
 }
 

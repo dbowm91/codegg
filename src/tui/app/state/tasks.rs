@@ -670,7 +670,7 @@ mod tests {
             .collect();
         let jobs: Vec<JobLike> = (0..40).map(|i| job(&format!("j{i}"), "running")).collect();
 
-        let rows = bounded(&build_task_rows(&todos, &subagents, &jobs));
+        let rows = bounded(build_task_rows(&todos, &subagents, &jobs));
         assert!(
             rows.len() <= MAX_TASKS_TOTAL_ROWS,
             "overlay grew to {} rows, budget is {MAX_TASKS_TOTAL_ROWS}",
@@ -695,7 +695,7 @@ mod tests {
             .collect();
         let jobs: Vec<JobLike> = (0..2).map(|i| job(&format!("j{i}"), "running")).collect();
 
-        let rows = bounded(&build_task_rows(&todos, &subagents, &jobs));
+        let rows = bounded(build_task_rows(&todos, &subagents, &jobs));
         let kept = |pred: fn(&TaskRow) -> bool| rows.iter().filter(|r| pred(r)).count();
         assert!(
             kept(|r| matches!(r, TaskRow::Todo { .. })) <= MAX_TASKS_STRIP_ROWS,
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn bounding_keeps_every_header() {
-        let rows = bounded(&build_task_rows(
+        let rows = bounded(build_task_rows(
             &[todo("a")],
             &[subagent("explore", "running")],
             &[job("test", "queued")],

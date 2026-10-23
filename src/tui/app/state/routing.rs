@@ -23,14 +23,15 @@
 //! Invariants enforced here:
 //!
 //! - `ProjectTabId` is never serialized into daemon protocol identity fields.
-//! It is frontend-local only and is the only key on which we route within the
-//! TUI. - The active heavy view and inactive summaries are mutually exclusive
-//! in their data: heavy view remains the legacy compatibility surface;
-//! inactive summaries hold only bounded indicators. Duplicate message bodies,
-//! file bodies, diffs, logs, LSP state, and exclusive workspace-service
-//! leases are never copied into an inactive summary. -
-//! `last_accepted_sequence` is monotonically increasing per reconnect epoch
-//! so stale replays are dropped or trigger a bounded resync request.
+//!   It is frontend-local only and is the only key on which we route within the
+//!   TUI.
+//! - The active heavy view and inactive summaries are mutually exclusive in
+//!   their data: heavy view remains the legacy compatibility surface;
+//!   inactive summaries hold only bounded indicators. Duplicate message bodies,
+//!   file bodies, diffs, logs, LSP state, and exclusive workspace-service
+//!   leases are never copied into an inactive summary.
+//! - `last_accepted_sequence` is monotonically increasing per reconnect epoch
+//!   so stale replays are dropped or trigger a bounded resync request.
 
 use std::collections::HashMap;
 

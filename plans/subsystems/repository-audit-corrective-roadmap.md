@@ -348,6 +348,56 @@ The roadmap is closed when:
 - the registry's rows for this line are consistent with the roadmap and the closure records;
 - no milestone closed on compilation alone.
 
+### 11.1 Merge reconciliation (integration pass, 2026-10-23)
+
+The seven milestones were developed on sibling branches from one common base and
+merged into a single integration branch. Merging is where the seams show, and
+four of them needed a recorded decision rather than a mechanical resolution.
+
+**1. The count table lost one increment per row.** Each milestone re-measured
+`architecture/overview.md`'s "Verified counts" table against its **own** branch,
+so each recorded only its own increment. The two edits landed in different
+hunks, so the file merged **without a conflict** and the merged table carried
+one increment where two were owed. The table was re-measured on the merged tree
+with `python3 scripts/measure_overview_counts.py` and every row reconciled; the
+per-amendment history is in `architecture/count_audit_history.md`. The
+canonical merged values are **334** integration test files, **86** guard
+scripts, **47** CI guard scripts. `AGENTS.md`'s quick/CI guard counts were
+corrected to match, and the quick set is still a strict superset of the CI set.
+
+**2. The comment budget had to be banked twice.** C007's budget
+(`docs/comment-budget.toml`) is a **ratchet**: it records the corpus size at
+the last bank and forbids growth. C006 and C007's own branches were measured
+before each other landed, so the merged tree exceeded the recorded ceiling in
+exactly the files C006 had changed. The fix is the designed one —
+`python3 scripts/check_comment_budget.py --bank` re-measures the ceilings, and
+the banked diff is a **visible, reviewed** change in the same commit as the
+code that took the lines. A second bank was needed after `cargo fmt` reflowed
+`src/tool/destructive.rs`; the bank must always follow the formatter.
+
+**3. Fourteen clippy findings appeared only in the merged tree.** C005 made
+**macOS a gate platform** for `cargo clippy --workspace --all-targets -- -D
+warnings`, and measured it clean on its own branch. On the merged tree the
+gate found **14** findings that no single branch had:
+`manual_pattern_char_comparison` in C002's canonical `rm` recogniser
+(`src/tool/destructive.rs`), `doc_lazy_continuation` in a C007-rewrapped module
+doc list (`src/tui/app/state/routing.rs`), and
+`needless_borrows_for_generic_args` at five call sites in C006's task-row
+bounding (`src/tui/app/mod.rs`, `src/tui/app/state/tasks.rs`). All fourteen
+were **fixed, not suppressed** — the char comparisons now use a char array as a
+`Pattern`, the doc list is re-indented into a real list, and the needless
+borrows are dropped. The merged tree is clippy-clean on macOS.
+
+**4. One stale path reference was deferred across the merge boundary.** C007's
+comment-budget guard found
+`plans/shell_output_projection_phase_01_command_event_model.md` cited in
+`src/tui/app/mod.rs` — a plan file that **no longer exists** — and deferred
+the fix to C006's merge, because C006 owned that file. With C006 merged, the
+reference now points at the canonical home, `architecture/human_shell.md`
+("CommandOutputStore"). This is the ratchet working as designed: the
+reference was caught by a guard, recorded rather than silently rewritten, and
+closed when the owning milestone landed.
+
 ## 12. Milestone status
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |

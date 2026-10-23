@@ -15059,7 +15059,7 @@ impl App {
     /// which rows exist. A cursor that could point past the bound would open a
     /// subagent the user cannot see.
     pub fn bounded_task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
-        crate::tui::app::state::tasks::bounded(&self.task_rows())
+        crate::tui::app::state::tasks::bounded(self.task_rows())
     }
 
     /// Move the overlay's selection cursor by `offset` rows.
