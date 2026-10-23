@@ -148,10 +148,7 @@ impl App {
         crate::tui::commands::turn_control::expire_pending_stop_armed(self);
         crate::tui::commands::exit_control::expire_pending_exit_arm(self);
         // The navigator's structure is pushed into every mounted `/files`
-        // surface **before** any of them is drawn, so a surface is painted
-        // from the structure the authority holds now. The copy happens only
-        // when the authority's revision moved, so an unchanged frame costs
-        // nothing.
+        // surface **before** any of them is drawn.
         self.refresh_file_tree_surfaces();
         // One rect per *occupied* edge, named rather than positional: the
         // transcript reads `regions.main` whatever the panels do, so adding a
@@ -206,16 +203,10 @@ impl App {
         // Reserve the strip's row *inside* the prompt allocation so the input
         // box keeps the height it asked for and the chat viewport absorbs the
         // difference. Carving it back out of the prompt chunk instead would
-        // silently shrink the input whenever a todo list exists — and the
-        // strip appears mid-turn, so the transcript would jump under the user.
-        // The contextual key line sits directly above the input and is
-        // reserved from the prompt allocation for the same reason the todo
-        // strip is: carving it out afterwards would shrink the input every
-        // time a panel took focus.
+        // silently shrink the input whenever a todo list exists.
         let hint_rows = u16::from(self.composer_hint_text().is_some());
         // The unified tasks overlay reserves from the prompt allocation for
-        // the same reason the todo strip does: carving it out afterwards would
-        // shrink the input box every time the overlay opened. It is added
+        // the same reason the todo strip does. It is added
         // *after* the todo strip because the overlay renders directly beneath
         // it, so their order in the allocation has to match their order on
         // screen.
@@ -230,10 +221,6 @@ impl App {
         // like a dead key on exactly the terminals where a status overlay would
         // be most wanted. A too-short pane shows neither rather than a wrong
         // one.
-        //
-        // Sharing the budget is also the point: neither may be sized as if it
-        // were the only thing asking, or the two together overshoot and
-        // `Min(10)` quietly yields.
         //
         // The bar is taken first because it is persistent while the overlay is
         // on-demand, and a missing bar is worse than a shorter overlay — tabs
@@ -1094,10 +1081,7 @@ impl App {
     /// M006-D: render the project-scoped file tree beside the editor.
     ///
     /// Borrows only `file_tree_state` and the theme, and is a no-op when the
-    /// pane is hidden or did not fit, so the M006-A render path is unchanged
-    /// in the default configuration. The measured viewport is published back
-    /// into the state because `Ctrl+d`/`Ctrl+u` page by it and no other layer
-    /// knows how tall the pane ended up.
+    /// pane is hidden or did not fit.
     fn render_file_tree_pane(&mut self, frame: &mut Frame, area: Option<Rect>) {
         let Some(area) = area else { return };
         if !self.file_tree_state.visible {
@@ -1115,15 +1099,9 @@ impl App {
     /// Push the authority's tree structure into every mounted `/files` surface.
     ///
     /// Once per frame, ahead of the tree pane, the side panel and the modal
-    /// dialog, so a surface is drawn from the structure the authority holds
-    /// *now*. The copy happens only when the authority's revision moved: an
-    /// unchanged frame costs nothing, and a changed frame costs one copy per
-    /// mounted surface.
-    ///
-    /// The refresh reaches the **modal box** and the **docked panel**, and it
-    /// is not gated on the modal stack: a docked box is owned by the panel
-    /// host, not by the focus manager, and a refresh that only knew about the
-    /// focus manager left the docked panel showing a frozen copy.
+    /// dialog. The copy happens only when the authority's revision moved, and
+    /// it reaches the **docked panel** as well as the modal box: a docked box
+    /// is owned by the panel host, not by the focus manager.
     fn refresh_file_tree_surfaces(&mut self) {
         use crate::tui::components::component::DialogType;
         use crate::tui::components::dialogs::files::FilesDialog;

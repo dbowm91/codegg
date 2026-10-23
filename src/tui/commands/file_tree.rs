@@ -68,20 +68,16 @@ pub fn toggle_tree(app: &mut App) {
 /// Request the daemon-owned directory listing under single-flight admission.
 ///
 /// C004: at most one listing round-trip is in flight — the permit is held
-/// from admission until the completion arrives, not merely while its async
-/// waiter is registered. A rebuild that arrives while a request is active
-/// supersedes intent immediately (generation bump) but coalesces as the
-/// single pending latest intent; no new request issues until the active
-/// one completes. The active waiter is deliberately **not** aborted:
-/// aborting it would strand the pending intent without a completion to
-/// drive it. Completions are still generation/root/request-guarded, so a
-/// stale listing never renders against the wrong workspace.
+/// from admission until the completion arrives. A rebuild that arrives while
+/// a request is active supersedes intent immediately (generation bump) but
+/// coalesces as the single pending latest intent; no new request issues
+/// until the active one completes.
 ///
 /// C005: the request carries the tab's canonical project/workspace binding
 /// and the response must echo the daemon's workspace identity before it is
 /// displayed. A slow or failed daemon round-trip cannot preempt anything;
 /// the newest request shows an explicit `Waiting` state while the prior
-/// request drains. The event loop stays responsive.
+/// request drains.
 pub fn rebuild(app: &mut App) {
     let context = match app.project_execution_context() {
         Ok(context) => context,
@@ -464,17 +460,14 @@ pub fn page_selection(app: &mut App, direction: isize) {
 
 /// Make `path` the pane's root and list it: the `l`/right-arrow verb.
 ///
-/// A daemon round-trip, not a local filter — see the module note in
-/// [`crate::tui::app::state::file_tree`]. A path that is not a directory in
+/// A daemon round-trip, not a local filter. A path that is not a directory in
 /// the current listing, or is already the root, does nothing at all rather
 /// than issuing a request the daemon would answer with nothing.
 ///
 /// Under the peek motion this no longer re-roots the pane: a directory
 /// whose children are still inside the listing window is expanded *in
 /// place* and the cursor moves into it, and only a directory at the
-/// window's edge slides the scope. The parent and the siblings stay
-/// visible — that is the difference between peeking into a directory and
-/// re-rooting the pane on it.
+/// window's edge slides the scope.
 ///
 /// A **file** has nothing to peek into, so the motion opens it: `l` on a
 /// file is the same path `Enter` takes, and the key is never dead.
@@ -518,8 +511,7 @@ pub fn descend_to(app: &mut App, path: &str) {
 ///
 /// The path-bearing half of every movement verb: a surface names the row it
 /// wants and the authority records it, so the selection is a **path** rather
-/// than an index into whichever rows a surface happened to be showing. A path
-/// the listing does not hold is refused, silently.
+/// than an index into whichever rows a surface happened to be showing.
 pub fn select_path(app: &mut App, path: &str) {
     app.file_tree_state.select(path);
 }
@@ -529,14 +521,12 @@ pub fn select_path(app: &mut App, path: &str) {
 /// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
 /// enters a directory, `h` leaves the one the cursor is in. The cursor
 /// inside a directory moves to its parent row and that directory collapses;
-/// the cursor on a top-level row slides the scope up, with the old scope
-/// root expanded in the new scope. At the workspace root there is no scope
-/// to slide to, so the selected directory collapses in place — the key is
-/// never dead.
+/// the cursor on a top-level row slides the scope up. At the workspace root
+/// there is no scope to slide to, so the selected directory collapses in
+/// place — the key is never dead.
 ///
-/// `path` is the row the surface is on. The relation is resolved against the
-/// **unfiltered** row set, so the parent of a row is found even when the
-/// surface's own filter hides it.
+/// `path` is the row the surface is on; the relation is resolved against the
+/// **unfiltered** row set.
 pub fn ascend_one_level(app: &mut App, path: &str) {
     match app.file_tree_state.peek_up(path) {
         PeekUp::Leave { parent } => {
@@ -562,13 +552,10 @@ pub fn ascend_one_level(app: &mut App, path: &str) {
 ///
 /// The open path is `open_editor` verbatim, so the tree inherits its lexical
 /// validation, its already-open short-circuit, its daemon-authorized
-/// attachment, and its request/generation discipline without duplicating any
-/// of them.
+/// attachment, and its request/generation discipline.
 ///
-/// A **directory** is entered, not toggled: the standalone toggle verb is
-/// retired, and `Enter` is the same motion as `l` (see [`descend_to`]). Both
-/// directions are one motion now, so this is [`descend_to`] with the row's
-/// own kind resolved.
+/// A **directory** is entered, not toggled: `Enter` is the same motion as
+/// `l` (see [`descend_to`]).
 pub fn activate_selected(app: &mut App) {
     let Some(row) = app.file_tree_state.selected_row() else {
         return;

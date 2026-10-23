@@ -230,14 +230,11 @@ pub const INDENT_LEVEL_COLS: usize = 3;
 /// `budget` is what remains of the column once the name and the icon are
 /// accounted for, and levels that do not fit are dropped from the **outside**
 /// in: the guide to the immediate parent is what tells the reader what this
-/// row belongs to, so that is the part that survives. When even one level does
-/// not fit, the guide is empty and the name sits flush left — the name is
-/// content, the guide is orientation.
+/// row belongs to, so that is the part that survives.
 pub fn tree_indent(rows: &[TreeRow], index: usize, inner_width: usize) -> String {
     let indent = crate::tui::app::state::file_tree::indent_for(rows, index);
     // Char count rather than display width: it under-counts a CJK name, which
-    // can leave the guide one column wider than the budget. Cheap and it
-    // errs toward keeping the guide rather than dropping it.
+    // can leave the guide one column wider than the budget.
     let name_cols = rows.get(index).map_or(0, |row| row.name.chars().count());
     indent_prefix(
         indent.depth,

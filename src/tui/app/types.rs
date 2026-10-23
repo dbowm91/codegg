@@ -260,16 +260,10 @@ pub enum TuiMsg {
     /// Put the manager's highlighted panel on `placement`.
     ///
     /// The Normal-mode directional inside the manager, so *where* a panel lives
-    /// is the same gesture everywhere else in the TUI rather than a manager-only
-    /// verb. Separate from [`SelectPanel`](Self::SelectPanel) for the reason
-    /// [`SetPanelPlacement`](Self::SetPanelPlacement) is: this one positions
-    /// and leaves the panel unloaded, so arriving on an edge and filling it are
-    /// two deliberate acts rather than one gesture that silently starts a load.
-    ///
-    /// Deliberately not [`MoveDirection`](Self::MoveDirection): that resolves
-    /// the keyboard position between the edges already in use, which is the
-    /// wrong question while the manager is modal — there is no panel focused to
-    /// move.
+    /// is the same gesture everywhere else in the TUI. Separate from
+    /// [`SelectPanel`](Self::SelectPanel): this one positions and leaves the
+    /// panel unloaded, so arriving on an edge and filling it are two
+    /// deliberate acts rather than one gesture that silently starts a load.
     MovePanelTo {
         panel: crate::tui::panels::SidePanelId,
         placement: crate::tui::panels::PanelPlacement,
@@ -785,19 +779,15 @@ pub enum TuiMsg {
     },
     /// `/files`: go back one level (`h`).
     ///
-    /// Carries the path of the row the cursor is on: "one level up" is a
-    /// relation the **authority** resolves, against the unfiltered row set,
-    /// because "the parent of this row" is a structural question and the
-    /// surface's own filtered view cannot answer it.
+    /// Carries the path of the row the cursor is on: the **authority**
+    /// resolves the relation, against the unfiltered row set.
     FilesAscend {
         path: String,
     },
     /// `/files`: make `path` the selection (`j`, `k`, `Ctrl+d`, `Ctrl+u`).
     ///
-    /// The surface names the row it wants — it knows its own filtered rows —
-    /// and the authority records the selection. The selection is a **path**,
-    /// so it does not depend on a filter or on two copies agreeing about an
-    /// index.
+    /// The surface names the row it wants; the authority records it. The
+    /// selection is a **path**, so it does not depend on a filter.
     FilesSelect {
         path: String,
     },

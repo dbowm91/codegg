@@ -3,9 +3,7 @@
 //! This is a **navigator**, not a document surface. It owns no file text and
 //! performs no reads of its own: the listing arrives already walked, and
 //! opening a row is a [`TuiMsg::FilesOpenSelected`] intent the command layer
-//! turns into an editor attachment through `open_editor`. That is the same
-//! split the Ctrl+T tree pane and `/open` use, so all three reach a document
-//! through one path.
+//! turns into an editor attachment through `open_editor`.
 //!
 //! ## The box holds a view, not a copy of the tree
 //!
@@ -22,10 +20,9 @@
 //!
 //! The genuinely per-surface state: the **filter text**, the **insert mode**
 //! and the **scroll offset**. The filter stays box-local by a closed
-//! decision — the Ctrl+T pane's filter lives in the authority and this one
-//! does not — so the two surfaces may show different rows, which is the
-//! accepted contract rather than a defect. The box measures its own
-//! viewport, so `Ctrl+d` pages against the height of *this* box.
+//! decision, so the two surfaces may show different rows: the accepted
+//! contract rather than a defect. The box measures its own viewport, so
+//! `Ctrl+d` pages against the height of *this* box.
 
 use std::sync::Arc;
 
@@ -50,30 +47,22 @@ use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 /// Hints rendered under the listing. Kept in one place so the box, its
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
 ///
-/// The single source is not a convention any more: [`Component::keymap_hint`]
-/// hands this exact string to the panel host, so the composer status line for
-/// a docked `/files` panel is these bytes and not a host-side paraphrase. A
-/// second copy in `panels/hosted.rs` is what taught the panel to advertise an
-/// `i act` verb `handle_key` never implemented.
+/// [`Component::keymap_hint`] hands this exact string to the panel host.
 pub const HINT: &str =
     "j/k move · ^d/^u page · l/→ open · h/← up · enter open · i filter · r refresh · ⇧Q close";
-
-/// Separator between breadcrumb components. A `›` reads as "down one level"
-/// and is BMP box-adjacent, so it survives the plain-icon fallback.
+/// Separator between breadcrumb components. A `›` reads as "down one level".
 const BREADCRUMB_SEP: &str = " › ";
 
 /// The revision a box starts on: one no authority can hold, so the first
 /// refresh always copies.
 const NO_REVISION: u64 = u64::MAX;
-
 #[derive(Clone)]
 pub struct FilesDialog {
     pub theme: Arc<Theme>,
     /// The authority's tree structure, as a read-only view.
     ///
     /// Refreshed from `App::file_tree_state` once per frame, before this
-    /// surface is drawn, and only when the authority's revision moved. It is
-    /// a distinct type from the authority, so this box cannot mutate it.
+    /// surface is drawn, and only when the authority's revision moved.
     view: FileTreeStructure,
     /// The authority's revision the view was taken at.
     view_revision: u64,
@@ -115,10 +104,9 @@ impl FilesDialog {
     /// Adopt the authority's current structure.
     ///
     /// The copy happens only when the authority's revision has moved: an
-    /// unchanged frame costs nothing, and a changed frame costs one copy per
-    /// mounted surface. The box's own filter, insert mode and scroll are
-    /// untouched — a listing landing must not wipe the filter the user is
-    /// typing.
+    /// unchanged frame costs nothing. The box's own filter, insert mode and
+    /// scroll are untouched — a listing landing must not wipe what the user
+    /// is typing.
     pub fn adopt_structure(&mut self, revision: u64, build: &dyn Fn() -> FileTreeStructure) {
         if self.view_revision == revision {
             return;
@@ -172,8 +160,7 @@ impl FilesDialog {
     /// Name the row `delta` rows from the cursor.
     ///
     /// The box knows its own filtered rows, so it can say which row it wants
-    /// — and the command layer records it on the authority. The box does not
-    /// move a cursor of its own.
+    /// and the command layer records it on the authority.
     fn move_by(&self, delta: isize) -> Option<TuiMsg> {
         let path = self.path_at_offset(delta)?;
         Some(TuiMsg::FilesSelect { path })
@@ -182,8 +169,7 @@ impl FilesDialog {
     /// Rows one page moves: two thirds of **this box's** viewport.
     ///
     /// The box measures its own height during its render, so a page is a
-    /// page of this box and not of whichever other surface happens to be on
-    /// screen.
+    /// page of this box.
     fn page_step(&self) -> isize {
         ((self.visible_height * 2) / 3).max(1) as isize
     }
@@ -193,12 +179,10 @@ impl FilesDialog {
         let path = self.path_at_offset(direction * self.page_step())?;
         Some(TuiMsg::FilesSelect { path })
     }
-
     /// Keep the cursor on a row the filter still shows.
     ///
     /// The selection is the authority's, so a filter that hides it names the
-    /// row the cursor belongs on and the command layer moves the authority
-    /// there. A selection the filter still shows is left alone.
+    /// row the cursor belongs on.
     fn reanchor(&self) -> Option<TuiMsg> {
         let rows = self.rows();
         let first = rows.first()?;
@@ -223,18 +207,12 @@ impl FilesDialog {
 
     /// Activate the selected row.
     ///
-    /// A directory is **peeked into** — the same motion `l` makes, and the
-    /// same one the Ctrl+T pane's `l` makes — so the two surfaces cannot
-    /// disagree about what `Enter` does. A file asks the command layer to
-    /// open it; only a file can become a document, so only a file emits an
-    /// open intent.
+    /// A directory is **peeked into** — the same motion `l` makes. A file
+    /// asks the command layer to open it; only a file can become a document.
     fn activate(&self) -> Option<TuiMsg> {
         let row = self.selected_row()?;
         match row.kind {
-            // A directory is **entered**, the same motion `l` makes: the
-            // standalone toggle verb is retired, and a toggle at the listing
-            // window's edge expanded a directory that has no children in the
-            // listing — which reads as an empty directory, not as a move.
+            // A directory is **entered**, the same motion `l` makes.
             TreeNodeKind::Directory => Some(TuiMsg::FilesDescend { path: row.path }),
             TreeNodeKind::File => Some(TuiMsg::FilesOpenSelected { path: row.path }),
         }
@@ -247,9 +225,8 @@ impl FilesDialog {
         let mut lines: Vec<Line> = Vec::new();
 
         // The **filter field** takes a row of its own when it has something to
-        // show. It is a row rather than an overlay because the panel is a
-        // listing, and a listing that silently changed under a typed filter
-        // would be a listing the reader could not account for.
+        // show: a listing that silently changed under a typed filter would
+        // be a listing the reader could not account for.
         let field = TreeFilterField::new(&self.filter, self.panel_mode == TreePanelMode::Insert);
         let field_rows = u16::from(field.is_visible());
         let list_height = area.height.saturating_sub(field_rows);
@@ -281,10 +258,7 @@ impl FilesDialog {
                 let is_selected = selected == Some(self.scroll.get() + offset);
                 // Depth, last-ness and the guide glyph come from one shared
                 // calculation, so a row nested one level in looks the same in
-                // this box, in the Ctrl+T pane, and in a listing scoped with
-                // `l` — whose top level arrives at the depth the workspace
-                // root's own top level arrives at, and so used to draw exactly
-                // like the root it was no longer showing.
+                // this box and in the Ctrl+T pane.
                 let indent =
                     file_icons::tree_indent(&rows, self.scroll.get() + offset, area.width as usize);
                 let (glyph, icon_style) = file_icons::icon_style(
@@ -321,13 +295,8 @@ impl FilesDialog {
                     Style::default().fg(theme.warning),
                 )));
                 // A truncated listing is bounded *in scope*, not a failure to
-                // find anything, and the recovery is a keypress. Without this
-                // the notice reads as a terminal verdict: the user is left
-                // staring at whatever survived the cut with nothing to do
-                // about it. `l` re-walks the selected directory on its own
-                // budget, so it is the way past every kind of truncation here
-                // — the retained-node cap, the depth window, and the response
-                // byte cap alike.
+                // find anything, and the recovery is a keypress: `l` re-walks
+                // the selected directory on its own budget.
                 lines.push(Line::from(Span::styled(
                     "  l to list a directory on its own · h to go back",
                     Style::default().fg(theme.muted),
@@ -359,10 +328,7 @@ impl FilesDialog {
     ///
     /// A pane scoped with `l` is not showing the workspace root, and a title
     /// that still read the workspace name would be telling the user the wrong
-    /// thing about every row under it. Spelling the scope as
-    /// `workspace › one › two` says the same thing the indentation now says
-    /// about the rows: this is the third level of the same tree, one `h` from
-    /// its parent.
+    /// thing about every row under it.
     pub(crate) fn title(&self) -> String {
         let total = self.rows().len();
         let workspace = self
@@ -420,10 +386,7 @@ impl FilesDialog {
 impl Component for FilesDialog {
     /// A plain viewer box: no composer of its own, so the panel host may
     /// resolve `Shift+←/→/↑/↓` as the docking gesture before this dialog
-    /// sees the key. The filter is the *panel's* input and the panel's mode,
-    /// not the composer's — the composer badge reports the app-level mode,
-    /// and a filter being typed must never be reported as the composer being
-    /// in Insert.
+    /// sees the key.
     fn docks_as_viewer(&self) -> bool {
         true
     }
@@ -446,16 +409,13 @@ impl Component for FilesDialog {
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         // The panel's own insert mode owns the keyboard while it is active:
-        // printable keys edit the filter and `Esc` leaves insert mode. The
-        // composer is a different surface with a different job, and this
-        // filter is the panel's input.
+        // printable keys edit the filter and `Esc` leaves insert mode.
         if self.panel_mode == TreePanelMode::Insert {
             return self.handle_insert_key(key);
         }
         // Checked before the character arms: `Ctrl+d`/`Ctrl+u` carry
         // `Char('d')`/`Char('u')` codes, so a listing taller than the box
-        // needs a verb that moves more than one row. The box owns the
-        // keyboard while it is open, so nothing downstream competes for them.
+        // needs a verb that moves more than one row.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('d') => return self.page(1),
@@ -466,12 +426,10 @@ impl Component for FilesDialog {
         match key.code {
             // `Esc` is the **mode** switch, not the exit. In Normal mode
             // there is no mode to leave, so the key does nothing: the panel
-            // keeps the keyboard and the selection, and `Shift+Q` is how the
-            // user leaves.
+            // keeps the keyboard and the selection.
             KeyCode::Esc => None,
             // `Shift+Q` closes the box, the same gesture that exits a
-            // docked panel. It is spelled with the shift modifier so the
-            // plain `q` stays the program's quit key.
+            // docked panel. The plain `q` stays the program's quit key.
             KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 Some(TuiMsg::CloseDialog)
             }
@@ -486,9 +444,7 @@ impl Component for FilesDialog {
             // `l` opens the selected row and `h` goes back one level. Both
             // are intents that name the row they act on: the box holds a view
             // of the shared structure and the walk belongs to the command
-            // layer, so it names the row rather than moving its own scope. A
-            // directory is entered; a file is opened, because it has nothing
-            // to enter.
+            // layer.
             KeyCode::Char('l') | KeyCode::Right => {
                 let row = self.selected_row()?;
                 Some(TuiMsg::FilesDescend { path: row.path })
@@ -499,8 +455,7 @@ impl Component for FilesDialog {
             }
             KeyCode::Enter => self.activate(),
             // `r` re-walks the workspace. It is an intent, not a walk: the
-            // command layer owns the async read and the completion comes back
-            // through the shared generation-guarded path.
+            // command layer owns the async read.
             KeyCode::Char('r') => Some(TuiMsg::FilesRefresh),
             _ => None,
         }
@@ -526,8 +481,7 @@ impl Component for FilesDialog {
 
         // The listing gets the whole box. The hotkey line that used to sit
         // at the bottom of the box duplicated the keymap the composer status
-        // line already carries above the input, and in a narrow box it
-        // wrapped onto rows and pushed the listing out of view.
+        // line already carries above the input.
         self.visible_height = inner.height as usize;
         self.reveal();
         self.render_rows(frame, inner, theme);
@@ -538,7 +492,6 @@ impl Component for FilesDialog {
     }
 }
 
-/// Read-only view used by tests and the hosted panel.
 impl FilesDialog {
     pub fn visible_row_count(&self) -> usize {
         self.rows().len()
@@ -568,8 +521,7 @@ mod tests {
     /// The authority and the box that renders it.
     ///
     /// The box holds a **view** of the authority, so a test that wants to see
-    /// a different tree moves the authority and refreshes the box, exactly as
-    /// a frame does.
+    /// a different tree moves the authority and refreshes the box.
     struct Fixture {
         state: FileTreeState,
         dialog: FilesDialog,
@@ -1038,10 +990,8 @@ mod tests {
 
     /// The acceptance signal for the reported defect: a listing scoped with `l`
     /// is walked with depth restarting at the subtree, so its top level arrives
-    /// at exactly the depth the workspace root's top level arrives at — and
-    /// both renderers drew that identically, so entering a directory made the
-    /// listing *look* like the root again. Assert on the rendered buffer, not
-    /// on `depth`: `depth` was never wrong, the drawing of it was.
+    /// at the depth the workspace root's own top level arrives at. Assert on
+    /// the rendered buffer, not on `depth`.
     #[test]
     fn a_scoped_listing_draws_its_rows_one_level_in() {
         let root = temp();
@@ -1083,13 +1033,9 @@ mod tests {
              the icon and the name, got {row:?}"
         );
 
-        // And the same row in the *root* listing sits at the same indent.
-        //
-        // The indent is **relative to the scope**, so each listing draws its
-        // own top level at the left edge and the scope's absolute depth is
-        // carried by the breadcrumb in the title rather than by a stack of
-        // guides the reader has to count. The two listings are told apart by
-        // their scope, not by their shape.
+        // And the same row in the *root* listing sits at the same indent: the
+        // indent is **relative to the scope**, so each listing draws its own
+        // top level at the left edge.
         let root_text = render_text(&mut at_root.dialog, 44, 10);
         let dir_line = root_text
             .lines()
@@ -1109,7 +1055,7 @@ mod tests {
     }
 
     /// The title is a breadcrumb, so a nested scope says which component each
-    /// `h` steps back through — a flat path hid exactly that.
+    /// `h` steps back through.
     #[test]
     fn the_title_is_a_breadcrumb_of_the_scope() {
         let root = temp();
@@ -1141,9 +1087,8 @@ mod tests {
         );
     }
 
-    /// The host must not paraphrase this box's keymap. The one line the panel
-    /// shows above the composer is these bytes, so `i act` — a verb no arm in
-    /// `handle_key` dispatches — cannot survive here.
+    /// The host must not paraphrase this box's keymap, so the `i act` verb
+    /// `handle_key` never dispatches cannot survive here.
     #[test]
     fn the_keymap_the_host_advertises_is_this_box_keymap() {
         let root = temp();
@@ -1157,9 +1102,8 @@ mod tests {
         );
     }
 
-    /// The box's own hotkey row is gone. The row above the composer carries
-    /// the panel's keymap, and a second copy at the bottom of the box was the
-    /// noise the user asked to be rid of.
+    /// The box's own hotkey row is gone: the row above the composer carries
+    /// the panel's keymap.
     #[test]
     fn the_modal_box_spends_its_rows_on_the_listing() {
         let root = temp();
@@ -1172,11 +1116,8 @@ mod tests {
         );
     }
 
-    /// In a docked panel the host owns the chrome. `render_in_panel` must not
-    /// repaint a border or a title over the one the host already drew — the
-    /// focus dot in that title is how a focused panel is told apart from an
-    /// unfocused one — and must not spend rows on a keymap the composer row is
-    /// already showing.
+    /// In a docked panel the host owns the chrome: `render_in_panel` must not
+    /// repaint a border or a title over the one the host already drew.
     #[test]
     fn a_hosted_render_keeps_the_hosts_chrome_and_spends_every_row_on_rows() {
         let root = temp();

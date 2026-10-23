@@ -25,11 +25,8 @@
 //! client or resolves a project. That is why an adopted panel is empty until a
 //! box is docked into it: the box was the thing that fetched the content. A
 //! panel selected straight from the manager with nothing adopted renders an
-//! explicit placeholder describing the panel's **state** — nothing loaded, a
-//! load in flight, or the reason it cannot act — because an empty bordered box
-//! is indistinguishable from a rendering bug, and a panel that told the user
-//! to go run a `/` command elsewhere was describing a workflow this surface
-//! does not have.
+//! explicit placeholder describing the panel's **state**, because an empty
+//! bordered box is indistinguishable from a rendering bug.
 
 use std::sync::Arc;
 
@@ -93,12 +90,9 @@ impl HostPanel {
     /// Mutate the adopted component, when it is of type `T`.
     ///
     /// The typed seam a surface's own state needs: the host holds a
-    /// `Box<dyn Component>`, so a caller that knows the concrete type —
-    /// the app's frame pass, pushing a refreshed view into a mounted box —
-    /// needs a way in that is checked by the compiler rather than by a
-    /// downcast at every call site. `None` when the adopted component is a
-    /// different type, which is the ordinary case for a panel that hosts
-    /// something else.
+    /// `Box<dyn Component>`, so a caller that knows the concrete type needs a
+    /// way in that is checked by the compiler. `None` when the adopted
+    /// component is a different type.
     pub fn with_widget_mut<T: Component + 'static, R>(
         &mut self,
         f: impl FnOnce(&mut T) -> R,
@@ -188,10 +182,7 @@ impl SidePanel for HostPanel {
 ///
 /// The manager sets this when it tries to fill a panel, so the column can say
 /// what actually happened instead of asserting that nothing is loaded. It is
-/// deliberately a **state**, never an instruction: the panel is already where
-/// the user asked for it, so there is nothing to move into it, and telling them
-/// to leave and run a `/` command described a workflow this surface does not
-/// have.
+/// deliberately a **state**, never an instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceholderState {
     /// Nothing has been committed to this panel yet, so there is nothing to

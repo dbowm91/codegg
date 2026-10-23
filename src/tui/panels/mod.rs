@@ -68,25 +68,13 @@ use crate::tui::theme::Theme;
 ///
 /// ratatui's `Frame` has no public constructor, so the widget is rendered into
 /// an in-memory backend sized to the column and the result is copied out.
-/// `TestBackend` is used for what it actually is — a `Backend` over a plain
-/// `Buffer` — not as a test harness; nothing here asserts.
-///
-/// This exists so a dockable box can be adopted into the column without
-/// rewriting that box's render path. It is the one place this bridge is
-/// allowed, so a widget that needs real cursor or clipping semantics inside
-/// the column can grow a native `render_into(&mut Buffer, ..)` — as
-/// `HelpDialog` did — and the host can prefer it.
 ///
 /// ## The host owns the chrome
 ///
 /// The block painted here is the panel's identity: the name, and the `●` that
 /// marks which panel has the keyboard. A widget that then painted its own
 /// border over the same rect did not layer, it overwrote — the title and the
-/// focus dot included, so a focused panel and an unfocused one rendered
-/// identically and the one piece of information the title carried was the one
-/// thing destroyed. Hence [`Component::render_in_panel`], which defaults to
-/// `render` for every widget that draws no chrome and is overridden by the ones
-/// that do.
+/// focus dot included. Hence [`Component::render_in_panel`].
 pub fn render_hosted(
     widget: &mut dyn crate::tui::components::component::Component,
     buf: &mut Buffer,
@@ -1436,10 +1424,7 @@ impl SidePanelHost {
     /// Mutate the component a hosted panel owns, when it is of type `T`.
     ///
     /// The seam the frame pass needs to reach a **docked** box: a box that
-    /// was docked is owned by this host, not by the focus manager, so a
-    /// refresh that only knew about the modal stack left the docked panel
-    /// showing a frozen copy of the tree. `None` for a bespoke panel, or for
-    /// a hosted panel whose adopted component is a different type.
+    /// was docked is owned by this host, not by the focus manager.
     pub fn with_hosted_mut<T: Component + 'static, R>(
         &mut self,
         id: SidePanelId,

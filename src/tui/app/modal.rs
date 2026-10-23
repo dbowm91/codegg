@@ -277,15 +277,10 @@ impl App {
     /// own listing, so it opens where a previous browse left off and both
     /// surfaces agree about the current workspace. A walk is kicked only
     /// when nothing has been listed yet, or when the shared tree belongs to
-    /// a *different* workspace: a browser that shows the previous
-    /// workspace's files under this one's name is worse than a slow one.
-    /// Reopening a populated box for the same workspace is instant and must
-    /// not hit the filesystem.
+    /// a *different* workspace.
     ///
     /// The listing itself is daemon-owned (ADR-0022, C005) — the TUI never
-    /// walks its own filesystem — and the box names the root it is browsing,
-    /// because `FilesDialog::title` is a breadcrumb over the tree's own
-    /// root.
+    /// walks its own filesystem.
     pub fn open_file_picker(&mut self) {
         use crate::tui::components::dialogs::files::FilesDialog;
         let active_root = self.active_workspace_root();
@@ -298,9 +293,7 @@ impl App {
         }
         let mut dialog = FilesDialog::new(Arc::clone(&self.ui_state.theme));
         // The box is mounted with the authority's current structure, through
-        // the same adoption the frame pass uses. A box that opened on an
-        // empty view would name no root and list no rows until the next
-        // frame, which is a frame the user never asked for.
+        // the same adoption the frame pass uses.
         let revision = self.file_tree_state.revision;
         let structure = self.file_tree_state.structure();
         dialog.adopt_structure(revision, &|| structure.clone());
