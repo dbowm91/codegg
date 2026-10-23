@@ -11,15 +11,27 @@
 //! dispatch *is* the thing M004 changed, so the dispatch is what the test
 //! exercises.
 //!
-//! The offsets the tests expect are the ones `codegg::tui::text_geometry`
-//! computes. The composer is not allowed a second opinion about where a word
-//! is: the editor uses the same functions, and a composer that disagreed with
-//! it would be two surfaces answering "where is the next word" differently.
+//! The word motions answer with `codegg::tui::text_geometry`, and the
+//! vertical motions with `codegg::tui::composer_geometry`: the composer is
+//! not allowed a second opinion about where a word is or where a row starts,
+//! and a composer that disagreed with the shared geometry would be two
+//! surfaces answering the same question differently.
+//!
+//! The vertical motions are **visual-row** motions (ADR-0042's amendment),
+//! and they are claimed only when the composer's content does not fit its
+//! box. Both facts are layout facts, so the tests below lay the composer out
+//! before they press a key: a composer that has never been drawn has no
+//! measurement, and an unmeasured composer does not claim the key.
 
 use codegg::tui::app::App;
+use codegg::tui::composer_geometry::VisualLayout;
 use codegg::tui::input::{InputAction, InputMode};
 use codegg::tui::text_geometry;
+use codegg::tui::wrap::wrap_styled_spans_by_word_rows;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::TestBackend;
+use ratatui::text::Span;
+use ratatui::Terminal;
 
 fn test_app() -> App {
     App::new_for_testing("/tmp".into())
@@ -136,83 +148,186 @@ fn the_word_motions_stop_at_the_buffers_edges() {
 }
 
 // ---------------------------------------------------------------------------
-// The vertical motions
+// The visual-row motions
 // ---------------------------------------------------------------------------
 
-/// `j` and `k` move the caret between the buffer's lines.
-#[test]
-fn j_and_k_move_the_caret_between_lines() {
-    let mut app = test_app();
-    compose(&mut app, "one\ntwo\nthree", 0);
-
-    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
-    assert_eq!(caret(&app), 4, "`j` did not move the caret down a line");
-
-    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
-    assert_eq!(caret(&app), 0, "`k` did not move the caret up a line");
+/// Lay the composer out, so the claim has a measurement.
+///
+/// The `j`/`k` claim is a **layout** fact: the composer claims them when its
+/// content does not fit its box, and the box only exists once the app has
+/// rendered. A test that presses a key without rendering first is testing
+/// the *unmeasured* case, where the key falls through to the transcript.
+fn render_app(app: &mut App, width: u16, height: u16) {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("render the app");
 }
 
-/// The vertical motions keep the column where the target line allows.
+/// The visual layout the composer drew.
+///
+/// The composer is not allowed a second opinion about where a row starts: the
+/// test asks the same geometry module the composer asks.
+fn visual_layout(app: &App) -> VisualLayout {
+    let text = app.prompt_state.prompt.get_text();
+    let width = app.prompt_state.prompt.wrap_width;
+    let rows = wrap_styled_spans_by_word_rows(&[Span::raw(text.clone())], width);
+    VisualLayout::new(&text, &rows)
+}
+
+/// A prompt whose content overflows the composer's box.
+///
+/// The box grows to fit its content up to the pane's budget, so "overflows"
+/// means "more rows than the box can show" — which takes a text long enough
+/// to wrap onto more rows than the box has.
+fn overflowing_prompt() -> String {
+    (0..200).map(|index| format!("w{index:03} ")).collect()
+}
+
+/// `j` moves the caret down a **visual row**, and the transcript does not
+/// scroll.
+///
+/// The row is a row of the wrapped text: the prompt here has no newline in it
+/// at all, and it still occupies several rows.
+#[test]
+fn j_moves_the_caret_down_a_visual_row() {
+    let mut app = test_app();
+    compose(&mut app, &overflowing_prompt(), 0);
+    render_app(&mut app, 80, 24);
+    assert!(
+        app.prompt_state.prompt.content_overflows(),
+        "precondition: the composer's content overflows its box"
+    );
+    let layout = visual_layout(&app);
+    let expected = layout.byte_at(1, 0).expect("the second row has a cell");
+
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+
+    assert_eq!(
+        caret(&app),
+        expected,
+        "`j` did not move the caret down a visual row"
+    );
+}
+
+/// `k` moves the caret up a visual row.
+#[test]
+fn k_moves_the_caret_up_a_visual_row() {
+    let mut app = test_app();
+    compose(&mut app, &overflowing_prompt(), 0);
+    render_app(&mut app, 80, 24);
+    let layout = visual_layout(&app);
+    let second_row = layout.byte_at(1, 0).expect("the second row has a cell");
+    compose(&mut app, &overflowing_prompt(), second_row);
+    render_app(&mut app, 80, 24);
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+
+    assert_eq!(
+        caret(&app),
+        layout.byte_at(0, 0).expect("the first row has a cell"),
+        "`k` did not move the caret up a visual row"
+    );
+}
+
+/// The vertical motions keep the column where the target row allows.
 #[test]
 fn the_vertical_motions_keep_the_column() {
     let mut app = test_app();
-    compose(&mut app, "one\ntwo", 2);
+    compose(&mut app, &overflowing_prompt(), 3);
+    render_app(&mut app, 80, 24);
+    let layout = visual_layout(&app);
+    let expected = layout.byte_at(1, 3).expect("the second row has a cell");
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
 
-    assert_eq!(caret(&app), 6, "the column should have been kept");
+    assert_eq!(caret(&app), expected, "the column should have been kept");
 }
 
-/// The vertical motions land on exactly the offset the shared geometry
-/// computes.
+/// The vertical motions land on exactly the offset the shared **visual**
+/// geometry computes.
+///
+/// The composer answers "where is the row below this byte" with the shared
+/// geometry module, and so does this test: a composer with a second opinion
+/// about where a row starts is two surfaces answering the same question
+/// differently.
 #[test]
 fn the_vertical_motions_land_on_the_shared_geometrys_offsets() {
-    let text = "one\ntwo\nthree";
-    for offset in 0..=text.len() {
+    let text = overflowing_prompt();
+    for (width, height) in [(40u16, 24u16), (80, 24), (120, 24)] {
         let mut app = test_app();
-        compose(&mut app, text, offset);
-
-        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(
-            caret(&app),
-            text_geometry::move_vertical(text, offset, 1, None),
-            "`j` disagreed with the shared geometry at offset {offset}"
+        compose(&mut app, &text, 0);
+        render_app(&mut app, width, height);
+        let layout = visual_layout(&app);
+        assert!(
+            layout.row_count() > 1,
+            "the text must wrap onto more than one row at width {width}"
+        );
+        assert!(
+            app.prompt_state.prompt.content_overflows(),
+            "precondition: the composer's content overflows its box at width {width}"
         );
 
-        let mut app = test_app();
-        compose(&mut app, text, offset);
-        press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(
-            caret(&app),
-            text_geometry::move_vertical(text, offset, -1, None),
-            "`k` disagreed with the shared geometry at offset {offset}"
-        );
+        // Every twenty-fifth byte: the widget's own test walks every byte of
+        // the text, and this one walks the *dispatch* — that the key reaches
+        // the geometry — across the pane's widths.
+        for byte in (0..=text.len()).step_by(25) {
+            let mut app = test_app();
+            compose(&mut app, &text, byte);
+            render_app(&mut app, width, height);
+            let layout = visual_layout(&app);
+            let position = layout.caret_position(byte).expect("the caret is on a row");
+            let target = (position.row + 1).min(layout.row_count() - 1);
+            let expected = if target == position.row {
+                // Clamped at the last row: the caret stays where it is.
+                byte
+            } else {
+                layout
+                    .byte_at(target, position.column)
+                    .or_else(|| layout.row_cells(target).last().map(|cell| cell.byte_end))
+                    .unwrap_or_else(|| layout.row_source_start(target).unwrap_or(0))
+            };
+
+            press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+            assert_eq!(
+                caret(&app),
+                expected,
+                "`j` disagreed with the shared geometry at width {width}, byte {byte}"
+            );
+        }
     }
 }
 
-/// `j` and `k` are claimed only on a multi-line buffer.
+/// `j` and `k` are claimed only when the composer's content **overflows** its
+/// box.
 ///
-/// On a single-line buffer they fall through to transcript scroll, which is
-/// what ADR-0042's conditional pair says. The caret staying put is the
-/// observable half; the scroll is the other half, and it is checked in the
-/// claim table's own tests.
+/// On a composer whose content fits they fall through to transcript scroll,
+/// which is what ADR-0042's conditional pair says. The caret staying put is
+/// the observable half; the scroll is the other half, and it is checked in
+/// the claim table's own tests.
 #[test]
-fn the_vertical_motions_do_not_apply_to_a_single_line_buffer() {
+fn the_vertical_motions_do_not_apply_when_the_content_fits() {
     let mut app = test_app();
     compose(&mut app, "one two three", 4);
+    render_app(&mut app, 80, 24);
+    assert!(
+        !app.prompt_state.prompt.content_overflows(),
+        "precondition: the composer's content fits its box"
+    );
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         caret(&app),
         4,
-        "`j` moved the caret on a single-line buffer"
+        "`j` moved the caret on a composer whose content fits"
     );
 
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
     assert_eq!(
         caret(&app),
         4,
-        "`k` moved the caret on a single-line buffer"
+        "`k` moved the caret on a composer whose content fits"
     );
 }
 
@@ -226,6 +341,71 @@ fn a_motion_does_not_change_the_text() {
     press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
 
     assert_eq!(prompt_text(&app), "one two three");
+}
+
+// ---------------------------------------------------------------------------
+// The page motions
+// ---------------------------------------------------------------------------
+
+/// `Ctrl+d` pages the **composer** when its content overflows the box.
+///
+/// The innermost surface first: the composer is the surface the user is
+/// looking at, and its content does not fit.
+#[test]
+fn ctrl_d_pages_the_composer_when_its_content_overflows() {
+    let mut app = test_app();
+    compose(&mut app, &overflowing_prompt(), 0);
+    render_app(&mut app, 80, 24);
+    assert!(
+        app.prompt_state.prompt.content_overflows(),
+        "precondition: the composer's content overflows its box"
+    );
+    let scroll_before = app.prompt_state.prompt.scroll;
+
+    press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+    assert!(
+        app.prompt_state.prompt.scroll > scroll_before,
+        "`Ctrl+d` must page the composer when its content overflows the box"
+    );
+}
+
+/// `Ctrl+d` pages the **transcript** when the composer's content fits.
+///
+/// The transcript's page is unchanged when the composer fits: the composer's
+/// box holds its content, so there is nothing of the composer's to page.
+#[test]
+fn ctrl_d_pages_the_transcript_when_the_composers_content_fits() {
+    let mut app = test_app();
+    for index in 0..40 {
+        app.messages_state
+            .messages
+            .add_user_message(format!("transcript line {index}"), None);
+    }
+    // The test app has no session, so the transcript is never laid out by the
+    // render: the widget's width and viewport are set here, or its line
+    // count is zero and it cannot scroll at all.
+    app.messages_state.messages.set_width(80);
+    app.messages_state.messages.set_visible_height(10);
+    compose(&mut app, "a short prompt", 0);
+    render_app(&mut app, 80, 24);
+    assert!(
+        !app.prompt_state.prompt.content_overflows(),
+        "precondition: the composer's content fits its box"
+    );
+    let composer_scroll = app.prompt_state.prompt.scroll;
+    app.messages_state.messages.scroll = 0;
+
+    press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+    assert_eq!(
+        app.prompt_state.prompt.scroll, composer_scroll,
+        "the composer must not page when its content fits"
+    );
+    assert!(
+        app.messages_state.messages.scroll > 0,
+        "`Ctrl+d` must page the transcript when the composer's content fits"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -122,9 +122,9 @@ Discover commands in-app instead:
 Keybindings with two modifiers use `Ctrl+Alt`, never `Ctrl+Shift`. CodeGG does
 not ask the terminal for enhanced key reporting, so a `Ctrl+Shift+<letter>`
 keystroke arrives indistinguishable from `Ctrl+<letter>` and fires that key's
-plain-`Ctrl` action instead. `Shift+S` opens the panel
-manager, `Ctrl+Alt+S` focuses the sidebar, and `Ctrl+Alt+N` / `Ctrl+Alt+B` move
-between project tabs.
+plain-`Ctrl` action instead. `Shift+S` opens the panel manager, `Ctrl+Alt+S`
+focuses the sidebar, `Ctrl+Alt+O` opens every hidden detail in the transcript,
+and `Ctrl+Alt+N` / `Ctrl+Alt+B` move between project tabs.
 
 ### Moving between the box and the panel
 
@@ -316,6 +316,22 @@ Registry metadata — domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
 
+### The composer's box grows with your text
+
+The box at the bottom grows as your prompt gets longer — up to **ten rows**,
+counting the mode row at the top and the character-count and `(multiline)`
+markers at the bottom. It never takes more than its share of the screen: the
+composer is capped at **40 %** of the screen's height, so on a short terminal
+the conversation keeps the rest.
+
+The ten-row cap is a cap on the **box**, not on what you can type. Text past
+the tenth row stays in the box and you reach it by scrolling; nothing is
+truncated and nothing is dropped.
+
+The mode row stays at the top and the markers stay at the bottom, and your
+text scrolls between them. Long lines wrap at **word** boundaries, so a word is
+never split across two rows.
+
 ### The cursor in the composer
 
 The composer shows a caret, and what that caret tells you is where the
@@ -358,11 +374,16 @@ The word motions move it by word instead of by character:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a line, keeping the column |
+| `j` / `k` | Move down / up a row of the box, keeping the column |
 
-`j` and `k` only move the caret when your prompt spans **more than one
-line**. On a single line they scroll the conversation instead, which is what
-they have always done.
+`j` and `k` only move the caret when your prompt **does not fit its box** —
+when there is more of it than the box can show. When the prompt fits, they
+scroll the conversation instead, which is what they have always done.
+
+`Ctrl+u` and `Ctrl+d` **page**. They page the **composer** when the composer
+has more to show than its box can hold, and the **conversation** when it does
+not — the same two keys, and the same page size either way. The page is not
+restricted to `[NOR]`: it behaves the same in both modes.
 
 ### The composer's own keymap in `[NOR]` mode
 
@@ -375,7 +396,7 @@ three cannot disagree:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a line — only when the prompt spans more than one line |
+| `j` / `k` | Move down / up a row of the box — only when the prompt does not fit its box |
 | `v` | Start selecting characters; a caret motion then extends the selection |
 | `x` | Select the whole line, and grow the selection a line at a time |
 | `d` | Delete the selection |
@@ -388,8 +409,8 @@ three cannot disagree:
 
 Two rules cover the edges of that table:
 
-- **`j` and `k` need more than one line.** On a single-line prompt they are
-  the conversation's, and scroll it.
+- **`j` and `k` need a prompt that does not fit.** When the prompt fits its box
+  they are the conversation's, and scroll it.
 - **An edit that changes the length of the text drops the selection.** The
   selection remembers *positions* in the text, so once the text moves the
   selection would point at the wrong characters. Editing, undoing and
@@ -405,7 +426,7 @@ a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
 ```
 
 - The letters are the composer's own keys, and they are the ones available
-  **right now** — `j` and `k` are absent while your prompt is one line long,
+  **right now** — `j` and `k` are absent while your prompt fits its box,
   because there they scroll the conversation.
 - `space help` opens the help box, where every key above is described in
   full.
@@ -542,6 +563,78 @@ behind it in the draft stash.
 
 A lost connection is reported as a connection problem, not as "the agent is
 busy", and it restores your prompt the same way.
+
+## Reading the transcript
+
+### What is collapsed by default
+
+The conversation arrives **collapsed**. A tool call is one row until you open
+it, and a block of thinking is one row until you open it too — so a screen
+full of tool calls can be skimmed instead of scrolled. The agent's own writing
+is never collapsed: what it says to you is always there in full.
+
+A collapsed row is the whole of the tool call:
+
+```
+  ✓ bash npm test (1.2s) (+42 lines) expand
+```
+
+The icon is the call's status, the name is the tool, and the rest is what it
+was pointed at and how long it took. **`(+42 lines)`** is how much of the
+output is hidden — the count of the rows the expansion actually draws, so it
+is what you get when you open it. (The `read` tool is the exception: it draws
+its own numbered code, so its count is the raw output's line count.) Opening
+the call takes the count away: with the output on screen, "42 hidden lines"
+is just noise.
+
+Two things are worth knowing:
+
+- **A call that has not produced anything yet draws a second line.** It says
+  whether the call is queued or running, and if it is waiting on you it says
+  so and names the key: `queued — waiting on your approval · Enter to
+  review`. That line is the way back to an approval you dismissed, so it is
+  never dropped.
+- **On a narrow terminal the row gives up the timing, not the name.** The
+  duration and the exit code are dropped before the tool's name or the
+  `expand` word, so there is always a way back into the call.
+
+### Opening one thing
+
+Click the row of the thing you want. A tool call's row opens that tool call;
+a thinking block's row opens that thinking block. Clicking the agent's own
+writing changes nothing — there is nothing hidden in it to open.
+
+When the same message holds both a thinking block and a tool call, each opens
+on its own: click the thinking row for the thinking, and the tool call's row
+for the tool call.
+
+### What an expanded tool call shows
+
+What you get is the call's **input** and its **output**, each formatted to be
+read rather than to be copied:
+
+- The **input** is pretty-printed when it is JSON, so a long argument reads as
+  a list instead of one dense line.
+- The **output** of a web-search style tool — `websearch`, `research`,
+  `webfetch` — is shown as an **outline**: an indented list of the fields and
+  the results, with every value in it spelled out.
+- Any **other** output is shown as pretty-printed JSON when it is JSON, and as
+  the raw text when it is not.
+
+The **trust banner** that wraps an external result is not shown. It is text
+addressed to the agent rather than the result itself, so the expanded call
+shows the result and leaves the banner out.
+
+### Opening everything at once
+
+`Ctrl+Alt+O` opens **every** hidden detail in the conversation — every tool
+call, every thinking block — and a second press closes them all again. A short
+message says which of the two happened: `all details expanded` or
+`all details collapsed`.
+
+`/expand-all` does the same thing, and is also spelled `/expand-disclosures`
+and `/collapse-all`. If you would rather not use a chord at all, that is the
+route.
 
 ## The prompt queue
 

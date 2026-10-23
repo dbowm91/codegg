@@ -109,6 +109,7 @@ pub mod command;
 pub mod commands;
 pub mod components;
 pub mod composer_claims;
+pub mod composer_geometry;
 pub mod composer_text;
 pub mod file_diff;
 pub mod file_icons;

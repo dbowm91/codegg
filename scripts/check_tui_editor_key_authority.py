@@ -96,7 +96,7 @@ the same defect as a duplicated chord, and M011 binds `Alt-Backspace` and
 **The decision M011 asked for: an explicit exactly-once check rather than a
 second kind of counted chord.** The summary line counts character chords,
 because that is what the guard block can shadow; folding key-code claims into
-that count would change what "66 Normal-mode chord(s)" means for no gain, and
+that count would change what "72 Normal-mode chord(s)" means for no gain, and
 the line is quoted in the milestone closure. So key-code claims are policed —
 two arms claiming the same one is a violation — and the Insert-mode word
 chords are checked explicitly:
@@ -150,7 +150,7 @@ learns the shape, which is the only ordering that makes it load-bearing.
 
 Two things make the guard non-vacuous.
 
-The **model** asserts the three functions and the three guard-block chords
+The **model** asserts the three functions and the two guard-block chords
 still exist and that all three tables are non-empty, so it cannot pass by the
 file being emptied, the functions renamed, or the guards deleted.
 

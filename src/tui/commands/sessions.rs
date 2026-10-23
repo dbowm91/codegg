@@ -1696,7 +1696,9 @@ fn transcript_part(
         },
         crate::session::message::PartData::Reasoning { reasoning } => MsgPart::Reasoning {
             content: reasoning.clone(),
-            collapsed: false,
+            // A reasoning block is one row until the user asks for its body
+            // (M003).
+            collapsed: true,
         },
         crate::session::message::PartData::ToolCall {
             id,

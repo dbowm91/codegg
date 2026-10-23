@@ -253,6 +253,16 @@ Each frame is closed with a matching `[/<frame-kind>]` line. Fetch and
 evidence frames include a stronger warning about attacker-controlled
 content. External results always identify Eggsearch as their source.
 
+**The frame is a prompt-injection defence, and it belongs to the model path.**
+The model receives it byte for byte. The TUI *parses* the frame **for display
+only**: the expanded detail view shows the payload inside the frame instead of
+the banner, and the banner is never presented to the user as the tool's result
+(`architecture/tui.md#the-detail-view-the-payload-not-the-banner`). That line
+does not weaken the frame — `src/search_backend/framing.rs` is unchanged, the
+extraction is a bounded read that never rewrites what the model receives, and
+the TUI duplicates the marker names because the framing module is the model
+path's contract and is not the TUI's to change.
+
 Output is clamped by `clamp_output(content, max_chars, label)`
 (`src/search_backend/framing.rs:163`), which truncates to the longest
 UTF-8-valid prefix within the byte cap

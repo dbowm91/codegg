@@ -181,6 +181,12 @@ pub enum BuiltinSlashAction {
     Thinking,
     /// Cycle the per-turn extended-thinking setting (off / default / effort).
     Reasoning,
+    /// Expand every tool call and every reasoning block in the transcript, or
+    /// collapse every one of them.
+    ///
+    /// The palette twin of the `Ctrl+Alt+O` chord: the gesture changes what
+    /// the buffer shows, so it has to be reachable without knowing the key.
+    ExpandAllDisclosures,
     ModelsRefresh,
     Variants,
     Fork,
@@ -591,6 +597,9 @@ impl CommandRegistry {
             Command::new("/reasoning", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Reasoning))
                 .with_aliases(&["reasoning-effort", "thinking-budget"])
                 .with_description("Cycle extended thinking: default / effort / off"),
+            Command::new("/expand-all", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::ExpandAllDisclosures))
+                .with_aliases(&["expand-disclosures", "collapse-all"])
+                .with_description("Expand every tool call and reasoning block (or collapse every one)"),
             Command::new("/models", CommandCategory::System, CommandAction::Dialog(Dialog::Model))
                 .with_aliases(&["/model"])
                 .with_description("Switch model (/models, alias /model)"),
@@ -1247,7 +1256,12 @@ mod tests {
         // intent policy). `main` added `/nodes` for Eggwork M002 and this
         // branch added `/network`; both moved the same pin, so the merged
         // total is one higher than either side alone.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 168);
+        //
+        // 168 -> 169 for **M004's `/expand-all`** (the expand-all gesture
+        // that mirrors the `Ctrl+Alt+O` chord). The same pin also lives in
+        // `architecture/command.md` via `command_docs_count_matches_registry`,
+        // so both have to move together.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 169);
     }
 
     #[test]
@@ -1500,6 +1514,7 @@ mod tests {
             B::Timestamps,
             B::Thinking,
             B::Reasoning,
+            B::ExpandAllDisclosures,
             B::ModelsRefresh,
             B::Variants,
             B::Fork,
