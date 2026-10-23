@@ -1074,6 +1074,14 @@ impl JobExecutor for SubagentJobExecutor {
                     };
                     // M005 C006: a shared placement joins the group's checkout
                     // instead of allocating a second one.
+                    //
+                    // The group's checkout is resolved *and* created under the
+                    // group's own lock, so two members that reach this point
+                    // together end up on one checkout: the first allocates it,
+                    // the second joins it. The placement is opt-in, so the
+                    // default path below is untouched.
+                    //
+                    // c006-shared-placement: the group's shared checkout
                     if let Some(group_id) = placement.shared_group_id().cloned() {
                         let Some(coordinator) = self.authority.shared_checkout.as_ref() else {
                             return failure_completion(

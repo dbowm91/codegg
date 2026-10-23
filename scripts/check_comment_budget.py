@@ -50,11 +50,13 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -98,6 +100,8 @@ CONTRACT_RE = re.compile(
     r"prohibited|guarantee[sd]?|shall)\b",
     re.IGNORECASE,
 )
+# A milestone-prefixed marker that a guard greps for in a comment.
+LANDMARK_RE = re.compile(r"^(?:[cC]\d{3}|[mM]\d{3,4}|ADR-\d{4})[-a-z0-9]*:\s*\S")
 # An owning document: the place the contract is already written down.
 OWNER_RE = re.compile(
     r"architecture/[A-Za-z0-9_\-./]+\.md|plans/[A-Za-z0-9_\-./]+\.md|"
@@ -183,6 +187,51 @@ def measure(rts, path: Path, root: Path) -> FileFacts:
     rel = path.relative_to(root).as_posix()
     ratio = comment_lines / code_lines if code_lines else float(comment_lines)
     return FileFacts(rel, comment_lines, comment_words, code_lines, blocks, longest, ratio)
+
+
+def guard_landmarks(root: Path) -> dict[tuple[str, str], list[str]]:
+    """Every contract landmark the repository's guards require, and where.
+
+    A guard that identifies a call site by a comment marker depends on that
+    comment. A comment reduction that removes the marker silently disables
+    the guard, so the marker is part of the guard's contract.
+
+    The landmarks are read out of the guards themselves: a module-level
+    constant whose name mentions `LANDMARK` and whose value is a list of
+    `(path, markers)` pairs. The module is parsed, not executed, so reading
+    a guard's contract can never run it.
+    """
+    found: dict[tuple[str, str], list[str]] = {}
+    scripts = root / "scripts"
+    if not scripts.is_dir():
+        return found
+    for guard in sorted(scripts.glob("check_*.py")):
+        try:
+            tree = ast.parse(guard.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.List):
+                continue
+            targets = node.targets
+            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+                continue
+            if "LANDMARK" not in targets[0].id.upper():
+                continue
+            for element in node.value.elts:
+                if not (isinstance(element, ast.Tuple) and len(element.elts) == 2):
+                    continue
+                try:
+                    target = ast.literal_eval(element.elts[0])
+                    markers = ast.literal_eval(element.elts[1])
+                except (ValueError, SyntaxError):
+                    continue
+                if not isinstance(target, str) or not isinstance(markers, (list, tuple)):
+                    continue
+                for marker in markers:
+                    if isinstance(marker, str):
+                        found.setdefault((target, marker), []).append(guard.name)
+    return found
 
 
 def path_exists(root: Path, candidate: str) -> bool:
@@ -305,6 +354,20 @@ def check_tree(root: Path) -> list[str]:
                 max_block_lines,
                 oversized,
                 "\n".join(lines[block_start : block_end + 1]),
+            )
+
+    # --- R6: a guard landmark must still be there -------------------------
+    for (target, marker), guards in sorted(guard_landmarks(root).items()):
+        path = root / target
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            violations.append(f"R0 {target}: the file could not be read")
+            continue
+        if marker not in text:
+            violations.append(
+                f"R6 {target}: the contract landmark {marker!r}, which "
+                f"{', '.join(sorted(set(guards)))} greps for, is gone from the file"
             )
 
     # --- R4: the budget ---------------------------------------------------
@@ -519,14 +582,24 @@ def _synthetic_tree(root: Path) -> Path:
         "architecture", "docs", "plans", "scripts", "assets", ".opencode", ".github",
     ):
         (root / tree).mkdir(parents=True, exist_ok=True)
+    marker = "c007-denial: " + "probe"
     probe = root / "src" / "probe.rs"
     probe.write_text(
         "// A small probe module.\n"
         "//\n"
         "// Its comments are ordinary: they state no rule and name no path.\n"
+        f"// {marker}\n"
         "pub fn probe() -> u32 {\n"
         "    1\n"
         "}\n",
+        encoding="utf-8",
+    )
+    guard = root / "scripts" / "check_probe.py"
+    guard.parent.mkdir(parents=True, exist_ok=True)
+    guard.write_text(
+        "CONTRACT_LANDMARKS = [(\"src/probe.rs\", ("
+        + repr(marker)
+        + ",))]\n",
         encoding="utf-8",
     )
     manifest = root / MANIFEST_REL
@@ -537,7 +610,7 @@ def _synthetic_tree(root: Path) -> Path:
         "[global]\n"
         "max_comment_lines = 6\n"
         "max_comment_words = 60\n"
-        "max_ratio = 1.0\n"
+        "max_ratio = 10.0\n"
         "\n"
         "[files]\n"
         "\n"
@@ -610,6 +683,18 @@ def _self_test() -> int:
             else:
                 print(f"  rejected {label}: {hit}")
             probe.write_text(original, encoding="utf-8")
+
+        # R6: a comment marker a guard greps for must still be there.
+        probe.write_text(
+            original.replace("// c007-denial: probe\n", ""), encoding="utf-8"
+        )
+        violations = check_tree(scratch)
+        hit = next((v for v in violations if v.startswith("R6")), None)
+        if hit is None:
+            failures.append("the guard did not reject a removed guard landmark")
+        else:
+            print(f"  rejected a removed guard landmark: {hit}")
+        probe.write_text(original, encoding="utf-8")
 
         # The known illustrative paths must stay acceptable.
         probe.write_text(
