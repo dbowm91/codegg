@@ -115,7 +115,7 @@ pub struct RequestEnvelope<T> {
 }
 ```
 
-### EventEnvelope (`core.rs:1113`)
+### EventEnvelope (`core.rs:1188`)
 
 ```rust
 pub struct EventEnvelope<T> {
@@ -251,7 +251,7 @@ disposable scratch tree census and per-tree reclaim verdict
 (`reclaimable: Option<bool>` since scratch protocol version 2).
 
 Groups present in `CoreRequest` but not enumerated above (see
-`crates/codegg-protocol/src/core.rs:2229` for the authoritative list):
+`crates/codegg-protocol/src/core.rs:2315` for the authoritative list):
 `Document*` (11: `DocumentCapabilities`, `DocumentOpen`, `DocumentCreate`,
 `DocumentDelete`, `DocumentSnapshotGet`, `DocumentStatusGet`,
 `DocumentWriterAcquire`, `DocumentChange`, `DocumentSave`, `DocumentReload`,
@@ -262,7 +262,7 @@ full serialized `CoreResponse` 512 KiB cap with trailing-top-level trim to
 zero, `truncated=true` when emptied),
 `ActiveGoalLoad`,
 `ManagedWorktree*` (4), `WorkPlanBindRepository` /
-`WorkPlanRepositoryBinding` (2) plus `WorkOrderBindRepository`,
+`WorkPlanRepositoryBinding` (2),
 `EditCheckpoint*` (6), `Lsp*` (5, incl. M003 `LspCompletionGet`), `Audit*` (3),
 `InteractiveProcess*` (10), `Presence*` (3), `Chat*` (20), `Team*` (11),
 approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
@@ -270,7 +270,8 @@ approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
 `TaskModelPreferenceSet`, `ExecutionPolicyGet`), provider reasoning control
 (`ReasoningPreferenceGet`, `ReasoningPreferenceSet`, `ReasoningCapabilities` —
 M002: the principal-scoped extended-thinking selection and the
-open-vocabulary capability advertisement), and `WorkOrder*` (22).
+open-vocabulary capability advertisement), and `WorkOrder*` (22, which
+already contains `WorkOrderBindRepository`).
 
 ### CoreResponse (`core.rs:1202`)
 
@@ -710,22 +711,25 @@ Verified 2026-10-23 against `crates/codegg-protocol/src/lib.rs`,
 `crates/codegg-core/src/authorization/policy.rs` for the capability split and
 `src/shell/daemon.rs` for the human-shell run TTL.
 - Re-counted every wire total by enumerating variant declarations rather
-  than estimating: **CoreRequest 263** (239 struct-bodied + 24 unit,
-  `core.rs:2229` through `core.rs:3844`), **CoreResponse 172** (171
-  struct-bodied plus the unit `Ack`, `core.rs:1127` through `core.rs:2061`),
-  **CoreEvent 92** (`core.rs:4015` onward), **ProjectionEvent 47**
+  than estimating: **CoreRequest 266** (240 struct-bodied + 26 unit,
+  `core.rs:2315` through `core.rs:3958`), **CoreResponse 174** (173
+  struct-bodied plus the unit `Ack`, `core.rs:1202` through `core.rs:2147`),
+  **CoreEvent 92** (`core.rs:4162` onward), **ProjectionEvent 47**
   (`projection/event.rs:128`), and **TuiMessage 40** (`tui.rs:19`). These
   supersede the 234 / 149 / 87 totals recorded by the 2026-10-10 pass and
   match the `architecture/overview.md` verified-counts table.
 - Re-derived every CoreRequest group header from the live variant list and
-  made the accounting sum to 263: Session Lifecycle 19 -> 20 (added
+  made the accounting sum to 266: Session Lifecycle 19 -> 20 (added
   `SessionLaunch`), Project Catalog 9 -> 10 (added `ProjectUpdate`),
   `Document*` 9 -> 11 (added `DocumentCreate` and `DocumentDelete`),
   `Chat*` 19 -> 20 (added `ChatProjectPolicySet`/`ChatChannelPolicySet`),
   and the approval/execution-policy list gained `NetworkIntentSet`. Added
   six previously unmentioned groups: Human Shell Runs (4), Human Shell
   Promotions (2), User Prompt Queue (8), Continuation Grants (3), Node
-  Telemetry (1), Scratch (2).
+  Telemetry (1), Scratch (2). `WorkOrder*` (22) already contains
+  `WorkOrderBindRepository`, so the `WorkPlan*` pair no longer lists it
+  separately — that correction is what keeps the total at 266 rather
+  than 267.
 - Re-derived the CoreEvent group headers: Project 5 -> 6, and added the 17
   groups that account for the 39 previously unlisted events (Schedule 6,
   Agent Run 6, Session Control 2, Todos 1, Worktree 1, LSP 1, Tool Program
@@ -733,10 +737,10 @@ Verified 2026-10-23 against `crates/codegg-protocol/src/lib.rs`,
   Team 3, Work Order 4, Background Job 1, User Prompt Queue 1, Error 1).
 - Fixed stale line references: `PROTOCOL_VERSION` `core.rs:28` -> `:29`,
   `RequestEnvelope` `core.rs:33` -> `:77`, `EventEnvelope` `core.rs:984` ->
-  `:1113`, `CoreRequest` `core.rs:1857` -> `:2229`, `CoreResponse`
-  `core.rs:1041` -> `:1127`, `CoreEvent` `core.rs:3135` -> `:4015`, the
-  "authoritative list" pointer `core.rs:1806` -> `:2229`, and
-  `is_secret_bearing` `core.rs:3117` -> `:3980`.
+  `:1188`, `CoreRequest` `core.rs:1857` -> `:2315`, `CoreResponse`
+  `core.rs:1041` -> `:1202`, `CoreEvent` `core.rs:3135` -> `:4162`, the
+  "authoritative list" pointer `core.rs:1806` -> `:2315`, and
+  `is_secret_bearing` `core.rs:3117` -> `:4127`.
 - Rebuilt the "Where It Lives" tree: `lib.rs` declares 15 public modules and
   the doc omitted `scratch.rs`; `projection/` holds 12 submodules and the doc
   omitted `workstream.rs`.
@@ -758,7 +762,7 @@ Verified 2026-10-23 against `crates/codegg-protocol/src/lib.rs`,
   `validate_ui_effects()`, `validate_ui_node()`, `degrade_effect()`,
   `degrade_node_to_text()`, and `effect_summary()` all exist in `ui.rs`;
   `is_secret_bearing` matches exactly five variants;
-  the `secret_bearing_variants_are_denied` test exists at `core.rs:4819`;
+  the `secret_bearing_variants_are_denied` test exists at `core.rs:4966`;
   the `CreateProviderConnectionResult` alias;
   `projection::consumer::HeadlessProjectionConsumer`; and the
   `MAX_DOCUMENT_TEXT_BYTES` 8 MiB bound.

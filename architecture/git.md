@@ -953,7 +953,7 @@ measurement.
   `src/git_consistency.rs::live_read_capability` returns `None` in every
   build.
 - **Confirmed the C007 publication path**: the `git_index_publication` journal
-  is created by `migrate_v84` (`crates/codegg-core/src/session/schema.rs:3864`);
+  is created by `migrate_v85` (`crates/codegg-core/src/session/schema.rs:3925`);
   the durable type is `codegg_core::git_publication`.
 - **Confirmed the C008 contained-worktree path**: `src/git_contained_worktree.rs`
   exists, `plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`

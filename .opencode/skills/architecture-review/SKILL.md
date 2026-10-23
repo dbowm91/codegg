@@ -38,8 +38,8 @@ registrations in `src/tool/mod.rs::with_options()` (54 `register` + 13
 `register_boxed`), 75 distinct production tool names, 39 LSP server
 definitions (`crates/egglsp/src/server.rs::server_definitions()`), 61
 `AppEvent` variants, 168 built-in slash commands, 10 built-in agents, 91
-`CREATE TABLE` tables / storage layout 87, 321 integration test files, 92
-architecture docs, 76 `check_*` guards of which CI runs 36.
+`CREATE TABLE` tables / storage layout 88, 321 integration test files, 92
+architecture docs, 80 `check_*` guards of which CI runs 40.
 
 **Scope the production-tool row to the whole `src/` tree.** It previously
 measured `src/tool/` + `src/context/` only, which hid `python_script` — a
@@ -53,7 +53,7 @@ returns `self.codegg_name` instead of a literal — so they are counted at
 their `EggsactTool::new()` call sites, giving 75 (62 literal + 13
 runtime-named). The same caution applies to a row whose *label* is narrower
 than its measure: "CI guard scripts" was published as 76 (every
-`scripts/check_*`) when CI actually runs 36, and the row is now split into
+`scripts/check_*`) when CI ran 36 of them, and the row is now split into
 "Guard scripts (all)" and "CI guard scripts".
 
 ## Review Process
@@ -242,4 +242,18 @@ at `src/tui/command.rs:1250` (was `:1104-1107`, which now points at
 const's doc comment). Line-number references to that table are fragile — the
 table's position moves whenever a row is added — so the body now names the
 section rather than pinning its range.
+
+Fifth pass (2026-10-23, after the provider-reasoning-control milestone
+landed on `main`): re-ran `python3 scripts/measure_overview_counts.py`
+against the live tree. Three figures in the snapshot above had moved and
+were corrected — **storage layout 87 -> 88** (the milestone's migration
+was renumbered v84 -> v88 because `main` had already published v84
+through v87), **guard scripts 76 -> 80**, and **CI guard scripts 36 -> 40**.
+The fourth pass's pinned ranges are kept as the record of that pass and
+are superseded: the `## Verified counts` table is now at
+`architecture/overview.md:403-536`, the slash-command tripwire is at
+`src/tui/command.rs:1217`, and `STORAGE_LAYOUT_VERSION` is at
+`crates/codegg-core/src/storage/mod.rs:56`. The lesson stands: name the
+section, and re-measure rather than trusting a snapshot — including this
+one.
 

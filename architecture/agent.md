@@ -1159,7 +1159,7 @@ and the three referenced guard scripts:
 - "Where It Lives" listed `src/agent/loop.rs` twice (two rows); merged into
   one and annotated the verified `Agent` / `AgentRuntimeKind` shapes.
 - Verified accurate: every `src/agent/*` path in the inventory table;
-  `AgentLoop::run`/`run_inner` (`loop.rs:766`/`:776`);
+  `AgentLoop::run`/`run_inner` (`loop.rs:913`/`:923`);
   `TurnRunInput`/`DefaultTurnRuntime` (`turn_runtime.rs:84`/`:193`) and
   per-turn construction (`:725`); `AgentLoopServices`/`TurnLifecycle`
   (`coordinator.rs:44`/`:122`) with 6 `TurnPhase` variants (`:110`);
@@ -1230,7 +1230,7 @@ Line anchors corrected:
   per-turn construction is `AgentLoopBuildInput` (`turn_runtime.rs:927`).
 - `AgentLoopServices`/`TurnLifecycle` `coordinator.rs:44`/`:122` →
   `:44`/`:153`; the 6 `TurnPhase` variants are at `coordinator.rs:141`.
-- `AgentLoop::run`/`run_inner` `loop.rs:766`/`:776` → `:909`/`:919`.
+- `AgentLoop::run`/`run_inner` `loop.rs:766`/`:776` → `:913`/`:923`.
 - `apply_semantic_routing` `request_preparation.rs:691` → `:703`; its single
   call site `loop.rs:846` → `:989`.
 - `AssetContext` `asset_context.rs:82` → `:84`.

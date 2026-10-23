@@ -6,7 +6,7 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 50 guard scripts, and a workspace check
+                          # checks, 54 guard scripts, and a workspace check
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
@@ -109,9 +109,9 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 50 guard scripts, and a workspace `cargo check`. CI
+checks, 54 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 36 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 40 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
 As measured on 2026-10-23, quick runs **14 guards CI omits**: the client and
@@ -408,9 +408,9 @@ list):
   own config then its conventional env var, so defining a provider in config
   does NOT disable env-var auto-registration for the others. The
   `if registry.list().is_empty() { register_builtin(registry) }` fallback at
-  `crates/codegg-providers/src/provider_core.rs:1088` is a redundant safety
+  `crates/codegg-providers/src/provider_core.rs:1416` is a redundant safety
   net that only fires when config-based registration produced zero results
-  (`architecture/provider.md:81-85`).
+  (`architecture/provider.md` §"17 Config+Env Providers").
 - `AssetRegistry::build` takes each global root as the *parent* dir and appends
   `<vendor>/skills` (`src/skills/registry.rs:250-303`). Pass
   `default_global_discovery_root()` — exactly `dirs::config_dir()` — never an

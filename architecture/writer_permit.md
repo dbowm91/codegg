@@ -715,7 +715,7 @@ attributes.
 
 - **Corrected a wrong migration ref.** The `writer_permit` table is created by
   `migrate_v86` (`crates/codegg-core/src/session/schema.rs:3598`), not
-  `migrate_v84` — v84 creates the C007 `git_index_publication` journal.
+  `migrate_v85` — v85 creates the C007 `git_index_publication` journal.
 - **Corrected two test counts.** `tests/core_daemon/writer_fence_c003.inc`
   holds **10** test functions, not 9; `tests/shared_checkout_c006.rs` holds
   **16**, not 15. `crates/codegg-core/tests/writer_permit.rs` = **21** and

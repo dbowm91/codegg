@@ -660,7 +660,7 @@ sandbox profile, last-used provider/model identity (M003 foundation,
 M004 convergence), the separately-scoped last Task-composer
 provider/model identity (project Work Orders M003, `migrate_v62`), and
 the extended-thinking selection (provider reasoning control M002,
-`migrate_v84`).
+`migrate_v88`).
 Methods: `get`, `set_approval_mode`, `set_sandbox_profile`,
 `set_model_preference`, `set_task_model_preference`,
 `set_reasoning_selection`.
@@ -683,7 +683,7 @@ provider-reasoning pair `ReasoningPreferenceGet` /
 `ReasoningPreferenceSet` -> `ReasoningPreference` and the capability
 advertisement `ReasoningCapabilities` -> `ReasoningCapabilities`.
 
-The reasoning selection (`reasoning_selection`, added by `migrate_v84` as
+The reasoning selection (`reasoning_selection`, added by `migrate_v88` as
 one additive nullable column) is the **open, provider-scoped**
 extended-thinking selection: the effort label inside it is a free-form
 string carried verbatim, never a level on a closed enum. The stored value is

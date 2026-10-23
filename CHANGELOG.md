@@ -186,7 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model's own options: a model that always reasons has no off switch, a model
   that refuses an off says so instead of appearing broken, and a model whose
   provider has published no contract falls back to the familiar labels and
-  says that too. The current selection is shown in the working strip, so you
+  says that too. The current selection is shown in the footer status bar, so you
   can see what a turn will run at without running it, and the choice is
   written to the daemon — the frontend no longer keeps its own copy.
 

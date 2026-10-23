@@ -85,7 +85,7 @@ Key derived paths:
 
 ### SQLite Configuration
 
-Applied in `connect_and_configure()` (`storage/mod.rs:247`) as a
+Applied in `connect_and_configure()` (`storage/mod.rs:255`) as a
 single batched query:
 
 | Pragma | Value | Purpose |
@@ -209,7 +209,7 @@ reconciles terminal/non-replayable delegated jobs to `Interrupted`,
 
 ## Key Types & APIs
 
-### Database (`storage/mod.rs:50`, `impl` at `storage/mod.rs:54`)
+### Database (`storage/mod.rs:58`, `impl` at `storage/mod.rs:62`)
 
 ```rust
 impl Database {
