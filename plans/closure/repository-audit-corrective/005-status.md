@@ -228,11 +228,13 @@ regression introduced here:
 **Why the body was not removed anyway.** The plan's §14 gives the stop
 condition and its reason: *"the legacy body is then not pure history, and
 removing it would change behaviour. Record what is missing."* Removing a
-body that is `#[cfg(any())]` cannot change runtime behaviour — but it would
-destroy the **only** written record of three UI behaviours, one of which the
-live UI still advertises on screen. The branch table above is the replacement
-for the comment, and it is a better record than the comment was, because it
-names the live counterpart for every branch.
+body that is `#[cfg(any())]` cannot change runtime behaviour — and **no file
+under `src/tui/` was changed by this milestone at all**, so the live dialog
+dispatch is byte-for-byte what it was at the baseline. But deleting the body
+would destroy the **only** written record of three UI behaviours, one of
+which the live UI still advertises on screen. The branch table above is the
+replacement for the comment, and it is a better record than the comment was,
+because it names the live counterpart for every branch.
 
 **What would unblock the removal.** A decision, in one of two shapes:
 (a) implement the three branches in the live dispatch — which is a **live
@@ -369,15 +371,33 @@ python3 scripts/measure_overview_counts.py
 | `cargo test --test security_permission -- reviewer_broker_boundary` | **pass** — 4 passed, 0 failed, 325 filtered out. |
 | `cargo test --test tui_render -- dialog_dispatch_coverage` | **pass** — 4 passed, 0 failed. |
 | `python3 scripts/measure_overview_counts.py` | `CI guard scripts` **41** (was 40), `Integration test files` **329** (was 327), `Guard scripts (all)` **80** (unchanged), `Storage layout version` **88** (unchanged). |
+| `scripts/verify.sh quick` | **exit 0** — "Quick verification passed." All 55 guards ran (including the newly wired broker-boundary guard and its `--self-test`), the `dev/harness_lab` suite ran 328 tests with 1 skipped and passed, and `cargo check --workspace --all-targets --locked` finished in 3m17s. |
+| `scripts/verify.sh scoped 8590c17c5` | **not run — its selection widens to the workspace sweep this environment forbids.** `python3 scripts/scoped_selection.py --base 8590c17c5 --format text` reports: *"Files outside every workspace member: … tests/security_permission/mod.rs, tests/security_permission/reviewer_broker_boundary.inc, tests/tui_render/dialog_dispatch_coverage.inc, tests/tui_render/mod.rs → no test target can be ruled out for these; the scope widens to the whole workspace."* Any change that touches `tests/` widens the scope, because the root package's integration-test files are not attributed to a member's source paths. `verify.sh scoped` would therefore run `cargo nextest run --workspace --locked --profile ci`, which this milestone's testing discipline forbids on a machine shared with three sibling milestones. The **selection** is recorded; the sweep is the hosted CI job's to run. |
+| `cargo fmt --all -- --check` | clean (run implicitly by `verify.sh quick`). |
+
+**One run is worth recording honestly.** The *first* `verify.sh quick` run on
+this branch failed at the `dev/harness_lab` step
+(`test_a_transport_fault_lane_does_not_stop_the_next_lane`: "native broker did
+not complete the deterministic tool call"). It was a **load-induced flake**,
+not a regression, and the evidence is that the same test **passes in
+isolation** (`python3 -m unittest dev.harness_lab.tests.test_sustained.InterruptionTest.test_a_transport_fault_lane_does_not_stop_the_next_lane`
+→ OK), the whole `test_sustained` module passes (8 tests → OK), and the whole
+328-test suite passes on a re-run (→ OK, 1 skipped) — the failing run was the
+one executed while three sibling milestones were compiling concurrently on the
+same machine. The milestone's `src/` changes are macOS-behaviour-neutral by
+construction (§3.4), and none of them touches the ACP session path or the
+write tool the fixture drives.
 
 **Not run, and why.** `scripts/verify.sh full` and a workspace-wide test
 sweep were **not run locally**: this milestone's testing discipline shares
 one machine with three sibling milestones and forbids
 `cargo nextest run --workspace`, `cargo test --workspace`, `cargo test`
-without `--test`, and `verify.sh full`. The hosted CI `verify` job is the
-authority for the workspace sweep and for the Linux lint result, and **no
-hosted CI run is claimed by this record**. `scripts/verify.sh scoped` and
-`scripts/verify.sh quick` results are recorded in the branch report.
+without `--test`, and `verify.sh full`. `scripts/verify.sh scoped` was also
+not run, because its own selection widens to the workspace sweep for any
+change that touches `tests/` (see the table above). The hosted CI `verify`
+job is the authority for the workspace sweep and for the Linux lint result,
+and **no hosted CI run is claimed by this record**. `scripts/verify.sh quick`
+**is** green locally (exit 0).
 
 ### The guard's cost
 
@@ -469,7 +489,7 @@ budget stop condition does not fire.
 |---|---|
 | `architecture/tool_broker.md` | new §"The broker boundary guard" — the rule, the recorded exception with its owner and reason, and the `--self-test`. Links the guard; does not restate its implementation. |
 | `architecture/tool.md` | §"ToolContracts and the Canonical Broker" gains the guard's static-guard note and a pointer to the exception. |
-| `architecture/core.md` | unchanged — the broker boundary is not a `src/core/` transport-facade concern, and the guard's blast radius does not include `src/core/`. The doc's own "Static guard" note convention is followed in `tool_broker.md` instead. |
+| `architecture/core.md` | new §"Tool-call boundary (the broker)" — the daemon's rule that every tool dispatch crosses `ToolBroker`, and a link to the guard and the recorded exception. The doc's own "Static guard" note convention is followed; the guard's implementation is not restated. |
 | `architecture/testing.md` | §"Known macOS-local gate failures" replaced by §"The lint gate's platform matrix" — the matrix, the per-platform expectation, the ten itemised findings, and the masked tenth. |
 | `architecture/overview.md` | Verified counts: `CI guard scripts` 40 → **41**, `Integration test files` 327 → **329**. |
 | `architecture/count_audit_history.md` | third amendment: why each of the two rows moved, and that the sibling branches' own re-measurements are expected to conflict at merge time. |
