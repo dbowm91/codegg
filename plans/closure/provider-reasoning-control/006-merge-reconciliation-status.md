@@ -561,6 +561,7 @@ rather than assumed.
 | `cargo nextest run -p codegg --profile ci -E 'test(core::daemon_turns) or test(tui::commands::reasoning)'` | **29 passed** |
 | `cargo nextest run -p codegg-providers --profile ci -E 'test(eggpool)'` | **30 passed** |
 | `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **15,862 of 15,870 passed** (1 leaky, 9 skipped) — 7 failed and 1 timed out, and **every one of the eight is `main`'s**, reproduced on a clean checkout of `origin/main` at `f1b83a7a7` (§7.7) |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | **12,424 of 12,432 passed** (8 skipped) — the **same seven failures and the same one timeout**, and nothing else |
 | `scripts/check_adr_integrity.py` | **pass** — active ADR IDs unique, local paths resolve |
 
 ## 7.7 Every non-pass in the workspace suite is `main`'s
@@ -592,6 +593,12 @@ layout, no schema — and every file they exercise
 
 The timeout is a host-load artifact of a machine running thirty-plus
 concurrent cargo builds, and it passes in 0.029 s in isolation on `main`.
+
+The **feature-gated** lane — `server,plugins,lsp-test-support`, the surfaces
+the merge could have disturbed that the default lane does not build — returned
+**12,424 of 12,432 passed**, with the **same seven failures and the same one
+timeout** and nothing else. The server, plugin and fake-LSP surfaces are
+qualified too, and the answer is the same: nothing new.
 
 **So the third merge introduces zero new test failures.**
 
