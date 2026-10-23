@@ -3090,6 +3090,70 @@ first — the command palette (`App::handle_command_key`) and direct typed
 input (`App::handle_slash_command`) — so both hand the dispatcher the same
 argument.
 
+### The render path's caches (C006)
+
+The frame's *cadence* is not a cache's business: the dirty flag, the 16 ms
+streaming interval, the single frame source, the one `ActivityPhase` and the
+render's `catch_unwind` are contracts, and they live in **Invariants &
+Gotchas**. What this section records is what a frame **computes** — the
+results derived from content, and therefore cacheable.
+
+The rule is the same everywhere: **a cache is keyed on what its value
+depends on, and on nothing else.** A cache keyed on something coarser (a
+revision that moves for an edit on another line, a width that moved for a
+window that did not) throws away work it could have kept; a cache keyed on
+something finer keeps work it must not.
+
+| What is derived | Keyed on | Dropped by |
+|---|---|---|
+| The composer's wrapped layout | the buffer's revision and the wrap width | a change to the text or to the width |
+| A message part's Markdown | the message, the part, the part's length and the width | a transcript change that is not an append |
+| The streaming tail's Markdown | the tail's blocks, the text's epoch and the width | a replacement of the text, a width change, a theme change |
+| The editor's syntax highlight | the path, the theme and the **content** of each scanned line | a change to the content, the language or the palette |
+
+Three things the caches must not change:
+
+- **The rendered output.** Every cache here memoizes a pure function of its
+  key, so the cached rows are the rows the uncached computation produced.
+  `scripts/check_tui_render_cost.py` pins the *shape* — one producer for the
+  composer's wrap, one producer for the Markdown parse, no whole-buffer clone
+  on the render path — and the `tui_render` family proves the equality over
+  a fixture set that includes the escape sequences and the OSC-8 hyperlink.
+- **The wrap primitives.** The caches reuse the shared wrap; they do not
+  re-derive it. The `tui-main-buffer-text-rendering` and
+  `tui-composer-text-layout` lines own those primitives, and their
+  conditionally-closed conditions stand: C006 changes what is *cached*, not
+  how anything is wrapped, and the recorded search defects and the
+  escape-atomicity invariant are untouched.
+- **The row count.** The transcript's rows come from one producer — the
+  layout cache — and the scrollbar's row count and the drawn rows are the
+  same rows. A cache that changed which rows exist would move the scroll
+  range away from the content, which is the defect the disclosure work
+  removed.
+
+The counters that make the cost measurable live in
+`src/tui/render_cost.rs`: they count the wraps, the Markdown parses, the
+highlight scans and the task rows the overlay copies, so a test can assert
+on *how many* of them a frame did rather than on how long it took.
+
+#### The transcript's retention
+
+The primary transcript is **unbounded**: every message the session received
+stays in memory, in display order, and the user can scroll back to all of
+it. The sibling chat surface (`src/tui/app/state/chat.rs`) caps its
+per-channel window at 100 messages, but that cap belongs to a *different*
+surface — a chat channel's window, whose daemon-side page size is 1000 — and
+it does not transfer to the transcript, whose durable copy is the session
+store and whose in-memory copy is the live view the user is reading.
+
+The cost of that choice is stated rather than hidden: a long session's
+memory grows with the session, and the layout cache holds a second rendered
+copy of it. The layout cache's rows are the **row index** — the one producer
+of the row count and of the scroll range — so they cannot be dropped without
+introducing a second producer of the row count. A bound that removed a
+message the user could previously reach would be a user-visible change, and
+a user-visible change is a different milestone than a cost one.
+
 ## Key Types & APIs
 
 ### App (`src/tui/app/mod.rs:328`)

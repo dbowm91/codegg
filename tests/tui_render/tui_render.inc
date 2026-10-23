@@ -222,7 +222,9 @@ fn app_streaming() -> App {
     app.messages_state
         .messages
         .add_assistant_text("Once upon a time".into());
-    app.messages_state.messages.streaming_tokens = " in a land far away...".to_string();
+    app.messages_state
+        .messages
+        .set_streaming_tokens(" in a land far away...".to_string());
     app
 }
 

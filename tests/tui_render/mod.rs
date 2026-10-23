@@ -139,6 +139,9 @@ pub mod tui_project_routing;
 #[path = "tui_project_tabs.inc"]
 pub mod tui_project_tabs;
 
+#[path = "tui_render_cost.inc"]
+pub mod tui_render_cost;
+
 #[path = "tui_render.inc"]
 pub mod tui_render;
 

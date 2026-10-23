@@ -119,6 +119,7 @@ pub mod interactive_terminal;
 pub mod layout;
 pub mod panel_resize;
 pub mod panels;
+pub mod render_cost;
 pub mod route;
 pub(crate) mod runtime;
 pub mod selection;

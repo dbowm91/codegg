@@ -161,6 +161,12 @@ jobs:
       - name: Command argument contract guard
         run: python3 scripts/check_command_argument_contract.py
 
+      - name: TUI render cost self-test
+        run: python3 scripts/check_tui_render_cost.py --self-test
+
+      - name: TUI render cost guard
+        run: python3 scripts/check_tui_render_cost.py
+
       - name: HTTP route disposition guard
         run: python3 scripts/check_http_route_disposition.py
 

@@ -1385,8 +1385,11 @@ impl App {
         }
 
         let theme = self.ui_state.theme.clone();
+        // The rows are bounded in place: the overlay draws at most twelve of
+        // them, and deep-cloning the whole list to throw most of it away
+        // cost the whole task list twice per frame.
         let all_rows = self.task_rows();
-        let rows = bounded_task_rows(all_rows.clone());
+        let rows = bounded_task_rows(&all_rows);
         let selected = self.selected_task_row_index(&rows);
 
         let mut lines: Vec<Line> = Vec::new();
@@ -1972,7 +1975,10 @@ impl App {
         self.prompt_state.prompt.set_mode_indicator(mode_indicator);
         self.prompt_state.prompt.set_prefix(session_prefix);
 
-        let prompt_text = self.prompt_state.prompt.get_text();
+        // The composer's text is borrowed: the placeholder only asks whether
+        // it starts with a shell marker, and a frame that cloned the whole
+        // buffer to ask that paid for the buffer on every frame.
+        let prompt_text = self.prompt_state.prompt.text();
         let placeholder = if let Some(name) = addressee_badge.as_deref() {
             format!("Reply to the agent about {name}…")
         } else if target == crate::tui::panels::InputTarget::Chat {

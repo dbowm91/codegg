@@ -36,11 +36,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::Hasher;
 use std::ops::Range;
 
 use codegg_document::DocumentSnapshot;
+use crate::tui::render_cost;
 use once_cell::sync::Lazy;
 use ratatui::style::Color;
+use std::collections::hash_map::DefaultHasher;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
@@ -74,14 +77,19 @@ pub struct HighlightSpan {
 
 /// Identity the cached spans were produced for.
 ///
-/// Any difference invalidates the cache: a new path is a different grammar,
-/// a new code theme is a different palette, and a new revision means the
-/// bytes the spans describe have changed underneath them.
+/// Any difference invalidates the cache: a new path is a different grammar
+/// and a new code theme is a different palette.
+///
+/// The **revision** is deliberately not part of the key. A local edit bumps
+/// the revision, and keying on it meant every keystroke threw the whole
+/// cache away — on the one path the cache was built for. The document's
+/// *content* decides instead: the per-line hashes say **where** the
+/// document changed, so a keystroke in the middle of a file keeps the lines
+/// above it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScanKey {
     path: String,
     code_theme: String,
-    revision: u64,
 }
 
 /// Incremental, bounded syntax highlighting state for one document.
@@ -99,6 +107,15 @@ pub struct EditorHighlight {
     /// line the machine has not yet seen.
     scanned_to: usize,
     cache: BTreeMap<usize, Vec<HighlightSpan>>,
+    /// The hash of the bytes each scanned line was produced from.
+    ///
+    /// The hashes say **where** the document changed rather than only that
+    /// it changed, so a local edit keeps the lines above it. They are kept
+    /// for every scanned line, not only for the cached ones: a line whose
+    /// spans were evicted still has to be comparable.
+    line_hashes: BTreeMap<usize, u64>,
+    /// The revision the scan was made against.
+    scanned_revision: u64,
     /// Set once the document exceeds [`MAX_HIGHLIGHT_SCAN_LINES`].
     disabled: bool,
 }
@@ -147,7 +164,6 @@ impl EditorHighlight {
         let key = ScanKey {
             path: path.to_string(),
             code_theme: code_theme.to_string(),
-            revision: snapshot.revision().get(),
         };
         if self.key.as_ref() != Some(&key) {
             self.reset();
@@ -156,6 +172,13 @@ impl EditorHighlight {
         if self.disabled || line >= MAX_HIGHLIGHT_SCAN_LINES {
             self.disabled = true;
             return &[];
+        }
+        // The document changed under the cache. The revision says *that* it
+        // changed; the per-line hashes say *where*, so the lines the edit did
+        // not touch keep their spans.
+        let revision = snapshot.revision().get();
+        if self.state.is_some() && self.scanned_revision != revision {
+            self.rebase(snapshot, path, code_theme, revision);
         }
         // Serve from cache when this row and every line before it are done.
         // The `scanned_to` check matters as much as the lookup: a cached row
@@ -168,7 +191,103 @@ impl EditorHighlight {
         self.cache.get(&line).map_or(&[], Vec::as_slice)
     }
 
+    /// Rebuild the machine after the document changed under it.
+    ///
+    /// A local edit changes the lines it touches and none of the others, so
+    /// the cache is **not** thrown away. The lines before the change keep
+    /// their spans; the machine is replayed to the change, because the
+    /// parser is forward-only and the lines after the change have to be
+    /// coloured from the context they would have been coloured from.
+    fn rebase(
+        &mut self,
+        snapshot: &DocumentSnapshot,
+        path: &str,
+        code_theme: &str,
+        revision: u64,
+    ) {
+        self.scanned_revision = revision;
+        let Some(changed) = self.first_changed_line(snapshot) else {
+            // The scanned lines are unchanged: the edit is below them, and
+            // the machine's state is still the state of those lines.
+            return;
+        };
+        self.cache.retain(|index, _| *index < changed);
+        self.line_hashes.retain(|index, _| *index < changed);
+        self.replay_to(snapshot, path, code_theme, changed);
+    }
+
+    /// The first line whose content differs from the scan the cache holds.
+    fn first_changed_line(&self, snapshot: &DocumentSnapshot) -> Option<usize> {
+        for index in 0..self.scanned_to {
+            let Some(cached) = self.line_hashes.get(&index) else {
+                // The line's bytes are not known, so nothing above it can be
+                // trusted either.
+                return Some(index);
+            };
+            if self.line_hash(snapshot, index) != Some(*cached) {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// The hash of a line's bytes.
+    fn line_hash(&self, snapshot: &DocumentSnapshot, index: usize) -> Option<u64> {
+        let range = snapshot.line_range(index).ok()?;
+        let raw = snapshot.read_bytes(range.start, range.end).ok()?;
+        Some(hash_bytes(raw.as_bytes()))
+    }
+
+    /// Replay the machine up to `line` without keeping the spans.
+    ///
+    /// The spans of the lines before `line` are already cached and are not
+    /// rewritten: the machine is being rebuilt, not the colours.
+    fn replay_to(&mut self, snapshot: &DocumentSnapshot, path: &str, code_theme: &str, line: usize) {
+        let Some(syntax) = syntax_for(path) else {
+            self.state = None;
+            self.cache.clear();
+            return;
+        };
+        let Some(theme) = THEME_SET.themes.get(code_theme) else {
+            self.state = None;
+            self.cache.clear();
+            return;
+        };
+        self.state = Some(HighlightLines::new(syntax, theme));
+        self.scanned_to = 0;
+        self.scanned_revision = snapshot.revision().get();
+        for index in 0..line {
+            if !self.advance(snapshot, index) {
+                break;
+            }
+        }
+    }
+
+    /// Advance the machine over `index` without keeping its spans.
+    fn advance(&mut self, snapshot: &DocumentSnapshot, index: usize) -> bool {
+        let Some(state) = self.state.as_mut() else {
+            return false;
+        };
+        let Some(range) = snapshot.line_range(index).ok() else {
+            return false;
+        };
+        let Ok(raw) = snapshot.read_bytes(range.start, range.end) else {
+            return false;
+        };
+        if state.highlight_line(&raw, &SYNTAX_SET).is_err() {
+            return false;
+        }
+        self.scanned_to = index + 1;
+        true
+    }
+
     /// Reset the machine and replay lines `0..=line` from the top.
+    ///
+    /// The machine's state is valid up to `scanned_to`, so a line past it
+    /// continues the scan instead of starting it over: the previous version
+    /// cleared the cache and replayed from the top for **every** line past
+    /// the viewport, which made a frame cost the square of the viewport's
+    /// height.
     fn rescan_to(
         &mut self,
         snapshot: &DocumentSnapshot,
@@ -189,9 +308,21 @@ impl EditorHighlight {
             self.cache.clear();
             return;
         };
+        if self.state.is_some() && line >= self.scanned_to {
+            // The machine already consumed the lines before `scanned_to`, so
+            // the scan continues from there and the cached lines stay.
+            for index in self.scanned_to..=line {
+                if !self.consume(snapshot, index) {
+                    break;
+                }
+            }
+            self.evict();
+            return;
+        }
         self.cache.clear();
         self.state = Some(HighlightLines::new(syntax, theme));
         self.scanned_to = 0;
+        self.scanned_revision = snapshot.revision().get();
         for index in 0..=line {
             if !self.consume(snapshot, index) {
                 break;
@@ -239,7 +370,11 @@ impl EditorHighlight {
             }
             offset += width;
         }
+        render_cost::count_highlight_scan();
         self.cache.insert(index, spans);
+        // The bytes this line was coloured from, so a later edit can say
+        // whether this line changed.
+        self.line_hashes.insert(index, hash_bytes(raw.as_bytes()));
         self.scanned_to = index + 1;
         true
     }
@@ -260,6 +395,17 @@ impl EditorHighlight {
             self.cache.remove(&oldest);
         }
     }
+}
+
+/// The hash of a line's bytes.
+///
+/// The hash says **whether** the line changed, not what it changed to. A
+/// collision would colour a line from a stale context, which is why the
+/// hash is a keyed one rather than a checksum.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 /// Resolve the bundled grammar for a workspace-relative path.

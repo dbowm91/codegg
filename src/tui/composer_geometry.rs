@@ -40,7 +40,7 @@
 //! layout adds that row, so the row count agrees with the buffer's line count
 //! and the caret after the break has a row of its own.
 
-use crate::tui::wrap::{visible_width, WrappedRow};
+use crate::tui::wrap::{escape_sequence_len, visible_width, WrappedRow, ESC};
 use unicode_width::UnicodeWidthChar;
 
 /// One cell of the wrapped layout: a rendered column and the source bytes
@@ -205,32 +205,42 @@ impl VisualLayout {
     }
 
     /// The cell whose first byte is exactly `byte`.
+    ///
+    /// The rows are in source order and their ranges do not overlap, so the
+    /// byte names at most one row; the row is found by position rather than
+    /// by a scan over every cell.
     fn cell_starting_at(&self, byte: usize) -> Option<VisualCell> {
-        for row in &self.cells {
-            for cell in row {
-                if cell.byte_start == byte {
-                    return Some(*cell);
-                }
-                if cell.byte_start > byte {
-                    return None;
-                }
-            }
-        }
-        None
+        let row_index = self
+            .ranges
+            .iter()
+            .position(|(start, end)| *start <= byte && byte < *end)?;
+        self.row_cells(row_index)
+            .iter()
+            .find(|cell| cell.byte_start == byte)
+            .copied()
     }
 
     /// The last cell that starts before `byte`.
+    ///
+    /// The cells are in source order, so the answer is in the last row that
+    /// starts before the byte; an empty row (the row a trailing line break
+    /// opens) holds no cell, so the search falls back to the row before it.
     fn last_cell_before(&self, byte: usize) -> Option<VisualCell> {
-        let mut found = None;
-        for row in &self.cells {
-            for cell in row {
-                if cell.byte_start >= byte {
-                    return found;
-                }
-                found = Some(*cell);
+        let mut row_index = self.ranges.iter().rposition(|(start, _)| *start < byte)?;
+        loop {
+            if let Some(cell) = self
+                .row_cells(row_index)
+                .iter()
+                .rev()
+                .find(|cell| cell.byte_start < byte)
+            {
+                return Some(*cell);
             }
+            if row_index == 0 {
+                return None;
+            }
+            row_index -= 1;
         }
-        found
     }
 
     /// The row that follows the line break at `newline`.
@@ -270,24 +280,39 @@ fn row_cells(row: &WrappedRow, row_index: usize) -> Vec<VisualCell> {
         // A slice that carries a terminal control sequence measures zero
         // columns for the sequence itself, so the widths are taken from the
         // sequence-aware measurement rather than from the characters.
+        //
+        // The measurement is made **once**, in a single pass over the slice:
+        // a character's visible width is the difference between the visible
+        // width of the text up to it and the visible width of the text before
+        // it, and taking that difference per character re-measured the whole
+        // prefix every time, which made the cost quadratic in the slice's
+        // length. The single pass computes the same widths, and it skips a
+        // control sequence whole — the sequence stays one atomic token, so an
+        // OSC-8 hyperlink's target is never broken and never counted.
         let measured = text.contains('\u{1b}');
-        let mut previous = 0usize;
-        for (offset, ch) in text.char_indices() {
-            let next = offset + ch.len_utf8();
-            let width = if measured {
-                visible_width(&text[..next]) - visible_width(&text[..previous])
-            } else {
-                UnicodeWidthChar::width(ch).unwrap_or(0)
-            };
-            previous = next;
+        let bytes = text.as_bytes();
+        let mut idx = 0usize;
+        while idx < bytes.len() {
+            if measured && bytes[idx] == ESC {
+                let mut end = idx + escape_sequence_len(&bytes[idx..]);
+                while end < bytes.len() && !text.is_char_boundary(end) {
+                    end += 1;
+                }
+                idx = end;
+                continue;
+            }
+            let ch = text[idx..].chars().next().expect("idx is a char boundary");
+            let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let start = idx;
+            idx += ch.len_utf8();
             if width == 0 {
                 continue;
             }
             cells.push(VisualCell {
                 row: row_index,
                 column,
-                byte_start: slice.source_start + offset,
-                byte_end: slice.source_start + next,
+                byte_start: slice.source_start + start,
+                byte_end: slice.source_start + idx,
                 width,
             });
             column += width;

@@ -12333,7 +12333,10 @@ impl App {
     }
 
     fn update_completions(&mut self) {
-        let text = self.prompt_state.prompt.get_text();
+        // The composer's text is borrowed: the completion path runs on every
+        // keystroke, and it cloned the whole buffer to look at the text
+        // before the caret.
+        let text = self.prompt_state.prompt.text();
         let cursor = self.prompt_state.prompt.cursor_pos();
         let before_cursor = &text[..cursor];
 
@@ -15056,7 +15059,7 @@ impl App {
     /// which rows exist. A cursor that could point past the bound would open a
     /// subagent the user cannot see.
     pub fn bounded_task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
-        crate::tui::app::state::tasks::bounded(self.task_rows())
+        crate::tui::app::state::tasks::bounded(&self.task_rows())
     }
 
     /// Move the overlay's selection cursor by `offset` rows.
