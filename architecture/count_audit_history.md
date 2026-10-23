@@ -308,3 +308,29 @@ when the measure is narrower than the claim.
 Both the `architecture/overview.md` catalog table and `docs/tools.md`'s family
 table now name all 75, and the two sets are identical with no name in one and
 absent from the other.
+
+### Third amendment — 2026-10-23, repository-audit corrective C005
+
+Two rows moved, and both moved because this milestone **added** something
+rather than because a measure was wrong.
+
+| Row | Before | After | Why |
+|-----|--------|-------|-----|
+| CI guard scripts | 40 | **41** | `scripts/check_tool_broker_boundary.py` was repaired and wired into the CI guard step. The guard file already existed, so the *Guard scripts (all)* row (80) is unchanged — the row counts files, and this milestone changed a file's contents rather than adding one. |
+| Integration test files | 327 | **329** | Two new root integration family members: `tests/security_permission/reviewer_broker_boundary.inc` and `tests/tui_render/dialog_dispatch_coverage.inc`. The `tests/common/` helper tree is still excluded, and neither member adds a standalone target. |
+
+Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
+against this tree, each against its own listed `Source`; the measurement
+agrees with the published values.
+
+No other row moved: this milestone changed no schema, no tool registration,
+no module, and no storage layout. `Storage layout version` stays **88**, and
+the "quick runs 14 guards CI does not" note in the `CI guard scripts` row is
+unchanged — the broker-boundary guard is now in **both** `quick` and CI, so it
+adds one guard to each and does not change the size of the quick-only set.
+
+The measurement was taken on the C005 branch, before the sibling corrective
+milestones (C001, C002) are merged. Those two branches re-measured the same
+table on their own trees, so this row set is expected to conflict at merge
+time; the reconciliation is the union of each side's contribution, re-measured
+in the merged tree rather than carried over from either side.

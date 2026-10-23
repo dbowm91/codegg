@@ -31,6 +31,9 @@ pub mod connect_dialog_input;
 #[path = "connect_tui_restoration.inc"]
 pub mod connect_tui_restoration;
 
+#[path = "dialog_dispatch_coverage.inc"]
+pub mod dialog_dispatch_coverage;
+
 #[path = "file_tree_trajectory.inc"]
 pub mod file_tree_trajectory;
 

@@ -902,6 +902,17 @@ which enforces a 10-step policy pipeline. Each tool has a `ToolContract`
 describing caller policy, effect class, idempotency, retry/cache, and
 projection policy. See [tool_broker.md](tool_broker.md).
 
+**Static guard**: `scripts/check_tool_broker_boundary.py` enforces that
+boundary in `scripts/verify.sh quick` and in CI. It distinguishes a registry
+dispatch (`ToolRegistry::execute_capture`) — always a crossing outside the
+registry's own module — from a tool-instance dispatch
+(`Tool::execute`/`Tool::execute_structured`), which is intra-tool delegation
+inside `src/tool/` and a crossing outside it. One recorded exception exists,
+the M006 Automatic approval reviewer's investigation call, scoped to one
+call in one function with a named owner; see
+[tool_broker.md](tool_broker.md) §"The broker boundary guard" and
+`architecture/approval_reviewer.md`.
+
 ## Security Considerations
 
 ### Repository retrieval workspace authority

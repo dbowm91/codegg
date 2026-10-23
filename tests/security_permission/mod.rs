@@ -52,6 +52,9 @@ pub mod preflight_integration;
 #[path = "process_denial_c005.inc"]
 pub mod process_denial_c005;
 
+#[path = "reviewer_broker_boundary.inc"]
+pub mod reviewer_broker_boundary;
+
 #[path = "sandbox_containment.inc"]
 pub mod sandbox_containment;
 

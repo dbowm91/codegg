@@ -232,6 +232,13 @@ impl EnvironmentPolicy {
             .collect()
     }
 
+    /// The interactive sandbox target's environment.
+    ///
+    /// Only the Linux sandboxed interactive child reads this back; on every
+    /// other target it is not compiled, so the macOS build carries no dead
+    /// method. The plain [`Self::sandbox_entries`] variant stays
+    /// cross-platform because the managed (non-interactive) launch uses it.
+    #[cfg(target_os = "linux")]
     pub(crate) fn sandbox_interactive_entries(
         &self,
         provenance: &ProcessProvenance,
@@ -867,7 +874,13 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    // The request is mutated only by the Linux OfflineRequired tightening
+    // below, so the `mut` binding is Linux-only. Split rather than suppress,
+    // so the non-Linux build carries no dead mutability.
+    #[cfg(target_os = "linux")]
     let mut request = request;
+    #[cfg(not(target_os = "linux"))]
+    let request = request;
     let required_profile = request.required_sandbox_profile.or_else(|| {
         request
             .execution_authorization
@@ -1974,7 +1987,11 @@ fn configure_status_fds(
     command: &mut Command,
     source_status_fd: i32,
     source_ack_fd: Option<i32>,
-    close_unapproved_fds: bool,
+    // Closing the unapproved descriptors is a Linux `close_range` operation.
+    // The parameter is cfg-split rather than suppressed so the non-Linux
+    // build carries no dead binding.
+    #[cfg(target_os = "linux")] close_unapproved_fds: bool,
+    #[cfg(not(target_os = "linux"))] _close_unapproved_fds: bool,
 ) {
     unsafe {
         command.pre_exec(move || {
@@ -2712,6 +2729,10 @@ mod tests {
     use std::ffi::OsString;
 
     /// A launch spec carrying only the dimensions the network producer reads.
+    ///
+    /// The tests that use it assert the Linux network-boundary contract, so
+    /// it is compiled on Linux only.
+    #[cfg(target_os = "linux")]
     fn spec_with(offline_network: bool, process_isolation: bool) -> SandboxLaunchSpec {
         SandboxLaunchSpec {
             target: PathBuf::from("/bin/true"),
