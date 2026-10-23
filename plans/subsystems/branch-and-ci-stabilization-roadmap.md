@@ -1,6 +1,6 @@
 # Branch and CI Stabilization Roadmap
 
-Status: active; C001 closed
+Status: closed (C001 closed)
 
 Repository planning baseline: `d251b11c` (branch tip before the rebase onto `main`)
 
@@ -490,3 +490,11 @@ This roadmap is complete when:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped, re-observed green at 15755/15755 on the first reconciled head, at 15771/15771 on the twice-merged head, and at **15841 run, 15841 passed, 8 skipped** on both the four-times-merged head (`39632391908`) and the final five-times-merged head `4e4023ed8` (`39642334455`), with all seven native workflows **success** on it; the branch is reconciled with `main` at `239f06e7f` and carries its tip as a direct ancestor, through five merges — `2a0bae08f`, `84aa47528`, `28724bd83`, `c93211542`, `239f06e7f`) | |
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- C001 is this roadmap's only milestone (§12 *Milestone status table* lists exactly one row).
+- `plans/closure/branch-and-ci-stabilization/001-status.md` carries `Status: closed`.
+- `plans/registry.md` already reads *closed; C001 closed*; the header here was the stale copy.

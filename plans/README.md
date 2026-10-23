@@ -43,8 +43,30 @@ Closure records and archive
 - `subsystems/` — subsystem specifications and dependency-ordered roadmaps. These translate the long-term documents into coherent workstreams.
 - `implementation/` — focused milestone plans handed to implementation agents. These are operational and may evolve as code changes.
 - `closure/` — verification, evidence, residual-risk, and completion records for implemented milestones.
+- `validation/` — measurement records kept apart from closure evidence: a pre-registered measurement design and the record of what was actually measured, for work whose value rests on a number rather than on a milestone's exit conditions.
 - `archive/` — completed or superseded interim planning retained for traceability.
 - `registry.md` — compact index of active subsystem roadmaps, implementation plans, closure work, and dependencies.
+
+## Status vocabulary
+
+The registry's status column uses one vocabulary, defined in `registry.md`
+under *Status vocabulary* and repeated here so a document's own `Status:`
+line and the registry cannot drift apart:
+
+- **proposed** — roadmap or plan exists but is not approved for execution.
+- **ready** — dependencies and interfaces are satisfied; plan may be handed off.
+- **active** — implementation or closure work is in progress.
+- **blocked** — a named dependency or evidence requirement prevents progress.
+- **closing** — implementation landed and closure evidence is being gathered.
+- **closed** — closure record accepted.
+- **conditionally closed** — substantial work landed, but a named correctness or operational evidence condition remains.
+- **superseded** — replaced by another document.
+- **archived** — no longer active and retained for traceability.
+
+A subsystem roadmap carries the vocabulary in its own `Status:` header
+(`plans/subsystems/README.md` § Required roadmap structure); an ADR carries
+its own, narrower one — *proposed*, *accepted*, *rejected*, *deprecated*, or
+*superseded* (`plans/003-planning-process.md`).
 
 ## Core rule
 
@@ -96,3 +118,12 @@ Begin with `subsystems/README.md`, then use the templates and rules in:
 - `closure/README.md`
 
 Register active work in `registry.md` before handing implementation plans to agents.
+
+## Source verification
+
+**2026-10-23** — audited read-only against the repository working tree:
+
+- *Directory roles* now matches the actual `plans/` layout. `validation/` existed and held measurement records but was not described; it is now named. Every directory that exists under `plans/` is described, and every directory described here exists.
+- The status vocabulary above is copied verbatim from `registry.md` § *Status vocabulary*, so the two lists cannot drift.
+- The narrower ADR vocabulary (*proposed*, *accepted*, *rejected*, *deprecated*, *superseded*) is from `plans/003-planning-process.md`.
+- The named entry points (`subsystems/README.md`, `adrs/README.md`, `implementation/README.md`, `closure/README.md`) all exist.

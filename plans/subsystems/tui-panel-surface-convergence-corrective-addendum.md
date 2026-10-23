@@ -1,6 +1,6 @@
 # TUI Panel Surface Convergence Corrective Addendum
 
-Status: active (M001, M002a and M002b closed; M003 approved into planning, plan written)
+Status: closed (M001, M002a, M002b and M003 closed)
 
 Repository baseline audited: `b77c8156b594494b7f59e0348d93a73ca2c1fd1c`
 (`feat(tui): editor cursor, readable colours, in-file / search, syntax colours`, 2026-10-16),
@@ -547,3 +547,11 @@ define it, and it would run against the `Chrome::{Owned,Hosted}` contract M002b 
 established), and it does not delete the legacy `Widget` impls (the eight with no callers
 are trivial; `connect` and `share` need their comparison tests rewritten first). Both are
 recorded as recommended standalone milestones rather than silently dropped.
+
+## Source verification
+
+**2026-10-23** — status verified read-only against the repository working tree:
+
+- Closure records `plans/closure/tui-panel-surface-convergence-corrective/001-status.md` through `004-status.md` each carry a closed status.
+- M003's plan was written and closed; the header still described it as *approved into planning*.
+- `plans/registry.md` already reads *M001, M002a, M002b and M003 closed*.

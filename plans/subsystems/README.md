@@ -24,7 +24,7 @@ worktree-orchestration-roadmap.md
 ```markdown
 # <Subsystem> Roadmap
 
-Status: proposed | active | closing | closed | superseded
+Status: proposed | ready | active | blocked | closing | closed | conditionally closed | superseded | archived
 
 Long-term references:
 
@@ -177,3 +177,10 @@ The long-term roadmap suggests, but does not mandate, the following initial work
 15. operational hardening and ecosystem bridges.
 
 Create only roadmaps that are ready to be reasoned about. Do not generate all candidate files merely to populate the directory.
+
+## Source verification
+
+**2026-10-23** — audited read-only against the repository working tree:
+
+- The `Status:` header vocabulary above was narrower than the one the registry actually uses for subsystem roadmaps: `plans/registry.md` marks a roadmap **blocked** (a named dependency prevents progress) and **conditionally closed** (a named evidence condition remains), and its own *Status vocabulary* section lists **ready** and **archived** as well. The nine values now match `plans/registry.md` § *Status vocabulary* one for one.
+- The four `<subsystem>-roadmap.md` examples in *Naming* still exist.
