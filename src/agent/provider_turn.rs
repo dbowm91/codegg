@@ -430,7 +430,22 @@ fn is_deferred_schema_rejection(error: &AppError) -> bool {
         return false;
     }
     let message = message.to_ascii_lowercase();
-    message.contains("defer_loading")
+    // Two distinct rejections name the deferral, and the retry answers both
+    // the same way — drop the deferral flags and send the request once more:
+    //
+    // - the endpoint does not recognise the `defer_loading` field at all
+    //   ("unsupported field defer_loading in tool definition");
+    // - the endpoint recognises it but requires the discovery tool to
+    //   accompany a deferred set ("deferred tools require tools.tool_search").
+    //
+    // The second is not a schema defect — the request is well-formed — and it
+    // is what a resolved surface that filtered `tool_search` out produces.
+    // It is matched here rather than prevented at the preparation layer,
+    // because the retry is what keeps the authorized tool set unchanged: a
+    // preparation-layer refusal would have to widen the first request's tool
+    // surface, which is a different decision and would defeat the
+    // "without changing authorized tools" property this path owns.
+    let unknown_field = message.contains("defer_loading")
         && [
             "unsupported",
             "unknown",
@@ -439,7 +454,13 @@ fn is_deferred_schema_rejection(error: &AppError) -> bool {
             "invalid",
         ]
         .iter()
-        .any(|marker| message.contains(marker))
+        .any(|marker| message.contains(marker));
+    let requires_discovery_tool = message.contains("defer")
+        && message.contains("tool_search")
+        && ["require", "need", "missing", "must"]
+            .iter()
+            .any(|marker| message.contains(marker));
+    unknown_field || requires_discovery_tool
 }
 
 fn publish_attempt_failed(
@@ -735,9 +756,23 @@ mod tests {
         assert!(is_deferred_schema_rejection(&AppError::Provider(
             ProviderError::api("400", "unsupported field defer_loading")
         )));
+        // The discovery-tool requirement is a second, distinct rejection of
+        // the same deferral, and the retry answers it identically.
+        assert!(is_deferred_schema_rejection(&AppError::Provider(
+            ProviderError::api("400", "Deferred tools require tools.tool_search")
+        )));
+        assert!(is_deferred_schema_rejection(&AppError::Provider(
+            ProviderError::api("400", "deferred tools must ship tools.tool_search")
+        )));
         for error in [
             AppError::Provider(ProviderError::api("401", "unsupported defer_loading")),
             AppError::Provider(ProviderError::api("400", "invalid tool schema")),
+            // A `tool_search` requirement that says nothing about the
+            // deferral is not a rejection of the deferral.
+            AppError::Provider(ProviderError::api(
+                "400",
+                "tools.tool_search is required for discovery",
+            )),
             AppError::Provider(ProviderError::Transport { kind: "io".into() }),
             AppError::Other(anyhow::anyhow!("HTTP 400 unsupported defer_loading")),
         ] {
