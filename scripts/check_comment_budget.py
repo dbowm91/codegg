@@ -221,6 +221,7 @@ def check_tree(root: Path) -> list[str]:
     violations: list[str] = []
 
     # --- R1 / R2 / R3: per-file comment inspection ------------------------
+    measured: list[FileFacts] = []
     for path in rust_files(root):
         rel = path.relative_to(root).as_posix()
         try:
@@ -230,6 +231,7 @@ def check_tree(root: Path) -> list[str]:
             violations.append(f"R0 {rel}: the file could not be read: {error}")
             continue
         lines = text.splitlines()
+        measured.append(_facts_from_scan(rel, text, scan))
         for start, end, com in spans:
             body = scan.text[com.start : com.end]
             line_no = start + 1
@@ -306,7 +308,7 @@ def check_tree(root: Path) -> list[str]:
             )
 
     # --- R4: the budget ---------------------------------------------------
-    facts = [measure(rts, path, root) for path in rust_files(root)]
+    facts = measured
     total_lines = sum(f.comment_lines for f in facts)
     total_words = sum(f.comment_words for f in facts)
     total_code = sum(f.code_lines for f in facts)
@@ -354,6 +356,38 @@ def check_tree(root: Path) -> list[str]:
                 f"recorded ceiling of {float(ratio_max):.4f}"
             )
     return violations
+
+
+def _facts_from_scan(rel: str, text: str, scan) -> FileFacts:
+    """The file's comment facts, from a scan that has already been made."""
+    comment_lines = 0
+    comment_words = 0
+    previous_end = None
+    blocks = 0
+    longest = 0
+    block_start = None
+    block_end = None
+    for com in scan.comments:
+        start = scan.text.count("\n", 0, com.start)
+        end = scan.text.count("\n", 0, max(com.start, com.end - 1))
+        body = scan.text[com.start : com.end]
+        comment_lines += end - start + 1
+        comment_words += len(body.split())
+        if previous_end is not None and start == previous_end + 1:
+            block_end = end
+        else:
+            if block_start is not None:
+                blocks += 1
+                longest = max(longest, block_end - block_start + 1)
+            block_start = start
+            block_end = end
+        previous_end = end
+    if block_start is not None:
+        blocks += 1
+        longest = max(longest, block_end - block_start + 1)
+    code_lines = sum(1 for line in scan.code().splitlines() if line.strip())
+    ratio = comment_lines / code_lines if code_lines else float(comment_lines)
+    return FileFacts(rel, comment_lines, comment_words, code_lines, blocks, longest, ratio)
 
 
 def _check_block(
@@ -474,118 +508,126 @@ def _inject(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def _synthetic_tree(root: Path) -> Path:
+    """A minimal tree the self-test can mutate without copying the real one.
+
+    The real tree is checked in place (the unmodified tree must pass). The
+    defect classes are then injected into this small tree, so the self-test
+    does not copy the repository once per case.
+    """
+    for tree in SOURCE_TREES + (
+        "architecture", "docs", "plans", "scripts", "assets", ".opencode", ".github",
+    ):
+        (root / tree).mkdir(parents=True, exist_ok=True)
+    probe = root / "src" / "probe.rs"
+    probe.write_text(
+        "// A small probe module.\n"
+        "//\n"
+        "// Its comments are ordinary: they state no rule and name no path.\n"
+        "pub fn probe() -> u32 {\n"
+        "    1\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    manifest = root / MANIFEST_REL
+    manifest.write_text(
+        "max_block_lines = 50\n"
+        "unlisted_max_comment_lines = 20\n"
+        "\n"
+        "[global]\n"
+        "max_comment_lines = 6\n"
+        "max_comment_words = 60\n"
+        "max_ratio = 1.0\n"
+        "\n"
+        "[files]\n"
+        "\n"
+        "[examples]\n"
+        '"src/small.rs" = "a known illustrative path"\n'
+        '"src/large.rs" = "a known illustrative path"\n'
+        '"src/foo.rs" = "a known illustrative path"\n'
+        '"src/bar.rs" = "a known illustrative path"\n'
+        '"src/http/ratelimit.rs" = "a known illustrative path"\n'
+        '"tests/test_foo.py" = "a known illustrative path"\n',
+        encoding="utf-8",
+    )
+    return probe
+
+
 def _self_test() -> int:
     """Prove the guard rejects each defect class and accepts the clean tree."""
     failures: list[str] = []
+    violations = check_tree(ROOT)
+    if violations:
+        failures.append(f"the unmodified tree must pass the guard: {violations[0]}")
+        _report(failures)
+        return 1
+    print("  accepted the unmodified tree")
+
     with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-") as raw:
         scratch = Path(raw)
-        copy = scratch / "tree"
-        copy.mkdir()
-        _copy_tree(ROOT, copy)
-        shutil.copy(ROOT / MANIFEST_REL, copy / MANIFEST_REL)
+        probe = _synthetic_tree(scratch)
+        original = probe.read_text(encoding="utf-8")
 
-        violations = check_tree(copy)
+        violations = check_tree(scratch)
         if violations:
-            failures.append(f"the unmodified copy must pass the guard: {violations[0]}")
-            _report(failures)
-            return 1
-        print("  accepted the unmodified tree")
+            failures.append(f"the synthetic tree must pass the guard: {violations[0]}")
+        else:
+            print("  accepted the synthetic tree")
 
         cases = [
             (
                 "an over-budget file",
-                "src/tui/app/render.rs",
-                None,
-                None,
+                "\n" + "// budget probe\n" * 40,
+                lambda v: v.startswith("R4"),
+            ),
+            (
+                "a stale path reference",
+                "\n// see `src/does_not_exist.rs` for the probe\n",
+                lambda v: v.startswith("R1"),
+            ),
+            (
+                "an unresolvable doc pointer",
+                "\n// see `architecture/no_such_document.md` for the probe\n",
+                lambda v: v.startswith("R2"),
+            ),
+            (
+                "an oversized comment block",
+                "\n" + "// probe\n" * 60,
+                lambda v: v.startswith("R3"),
+            ),
+            (
+                "an orphaned contract block",
+                "\n" + "// the render must never draw a half widget.\n" * 60,
+                lambda v: v.startswith("R5"),
             ),
         ]
-        # 1. An over-budget file: append comment lines to a small file.
-        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
-            case_copy = scratch / "case-budget"
-            shutil.copytree(copy, case_copy)
-            target = case_copy / "src/tui/app/render.rs"
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write("\n" + "// budget probe\n" * 40)
-            violations = check_tree(case_copy)
-            if not any(v.startswith("R3") or v.startswith("R4") for v in violations):
-                failures.append("the guard did not reject an over-budget file")
+        for label, payload, accepts in cases:
+            probe.write_text(original + payload, encoding="utf-8")
+            violations = check_tree(scratch)
+            hit = next((v for v in violations if accepts(v)), None)
+            if hit is None:
+                failures.append(f"the guard did not reject {label}")
             else:
-                print(f"  rejected an over-budget file: {violations[0]}")
+                print(f"  rejected {label}: {hit}")
+            probe.write_text(original, encoding="utf-8")
 
-        # 2. A stale path reference.
-        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
-            case_copy = scratch / "case-stale"
-            shutil.copytree(copy, case_copy)
-            target = case_copy / "src/tui/app/render.rs"
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write("\n// see `src/does_not_exist.rs` for the probe\n")
-            violations = check_tree(case_copy)
-            if not any(v.startswith("R1") for v in violations):
-                failures.append("the guard did not reject a stale path reference")
-            else:
-                print(f"  rejected a stale path reference: {violations[0]}")
-
-        # 3. An unresolvable doc pointer.
-        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
-            case_copy = scratch / "case-doc"
-            shutil.copytree(copy, case_copy)
-            target = case_copy / "src/tui/app/render.rs"
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write("\n// see `architecture/no_such_document.md` for the probe\n")
-            violations = check_tree(case_copy)
-            if not any(v.startswith("R2") for v in violations):
-                failures.append("the guard did not reject an unresolvable doc pointer")
-            else:
-                print(f"  rejected an unresolvable doc pointer: {violations[0]}")
-
-        # 4. An oversized comment block.
-        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
-            case_copy = scratch / "case-oversized"
-            shutil.copytree(copy, case_copy)
-            target = case_copy / "src/tui/app/render.rs"
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write("\n" + "// probe\n" * 60)
-            violations = check_tree(case_copy)
-            if not any(v.startswith("R3") for v in violations):
-                failures.append("the guard did not reject an oversized comment block")
-            else:
-                print(f"  rejected an oversized comment block: {violations[0]}")
-
-        # 5. An orphaned contract: a long block that states a rule and names
-        #    no owning document.
-        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
-            case_copy = scratch / "case-orphan"
-            shutil.copytree(copy, case_copy)
-            target = case_copy / "src/tui/app/render.rs"
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    "\n" + "// the render must never draw a half widget.\n" * 60
-                )
-            violations = check_tree(case_copy)
-            if not any(v.startswith("R5") for v in violations):
-                failures.append("the guard did not reject an orphaned contract block")
-            else:
-                print(f"  rejected an orphaned contract block: {violations[0]}")
-
-        # 6. The known illustrative paths must stay acceptable.
-        with tempfile.TemporaryDirectory(prefix="codegg-comment-budget-case-") as raw_case:
-            case_copy = scratch / "case-example"
-            shutil.copytree(copy, case_copy)
-            target = case_copy / "src/tui/app/render.rs"
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    "\n// the illustrative paths `src/small.rs`, `src/large.rs`, "
-                    "`src/foo.rs`, `src/bar.rs`, `src/http/ratelimit.rs` and "
-                    "`tests/test_foo.py` are examples, not references\n"
-                )
-            violations = check_tree(case_copy)
-            if any(v.startswith("R1") for v in violations):
-                failures.append(
-                    "the guard flagged a known illustrative path: "
-                    + next(v for v in violations if v.startswith("R1"))
-                )
-            else:
-                print("  accepted the known illustrative paths")
+        # The known illustrative paths must stay acceptable.
+        probe.write_text(
+            original
+            + "\n// the illustrative paths `src/small.rs`, `src/large.rs`, "
+            "`src/foo.rs`, `src/bar.rs`, `src/http/ratelimit.rs` and "
+            "`tests/test_foo.py` are examples, not references\n",
+            encoding="utf-8",
+        )
+        violations = check_tree(scratch)
+        if any(v.startswith("R1") for v in violations):
+            failures.append(
+                "the guard flagged a known illustrative path: "
+                + next(v for v in violations if v.startswith("R1"))
+            )
+        else:
+            print("  accepted the known illustrative paths")
+        probe.write_text(original, encoding="utf-8")
 
     if failures:
         _report(failures)
