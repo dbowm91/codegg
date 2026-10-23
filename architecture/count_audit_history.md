@@ -331,3 +331,35 @@ operations 260, identity newtypes 19, built-in slash commands 169, built-in
 agents 10, bundled themes 50, TUI state modules 33, database tables 95
 statements / 91 tables, storage layout version 88, Git operation variants 54,
 Git risk classes 11, and workspace member crates 11 (+ root).
+
+### Fourth amendment — 2026-10-23, repository audit corrective C002 + merge reconciliation
+
+Three rows moved because C002 added one thing of each kind, and the merge of
+C001 and C002 needed reconciling. No row's **measure** changed, so no method
+decision is needed; the values were re-measured with
+`scripts/measure_overview_counts.py` and compared to the table row by row.
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 327 | 329 | C001's `tests/tui_render/nested_runtime_command_dispatch.inc` and C002's `tests/security_permission/destructive_delete_classification.inc` — a new `.inc` member of each of two existing families. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; neither family directory nor any `tests/*.rs` was added. |
+| Guard scripts (all) | 80 | 82 | `scripts/check_no_nested_runtime_block_on.py` (C001) and `scripts/check_destructive_risk_signal_coverage.py` (C002). The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 40 | 42 | The same two guards, each wired into the hosted CI guard step. The measure (the distinct `scripts/check_*` names named in `.github/workflows/ci.yml`) is unchanged. |
+
+**Merge reconciliation.** C001 and C002 were developed on sibling branches from
+the same base and each re-measured these three rows in isolation, so each
+recorded its own single increment. `architecture/overview.md` merged without a
+conflict — the two edits landed in different hunks — and the merged table
+carried **one** increment where two were owed. The row values above are the
+canonical measurement of the merged tree (`329` / `82` / `42`); the count rows
+are the only place the merge lost information, and no other file's content was
+affected.
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, tool registrations 67 (54 register + 13
+register_boxed), distinct production tool names 75, tool source files 83, LSP
+server definitions 39, `codegg-core` modules 54, `AppEvent` 61, `CoreRequest`
+266, `CoreResponse` 174, `CoreEvent` 92, `ProjectionEvent` 47, authorized
+operations 260, identity newtypes 19, built-in slash commands 169, built-in
+agents 10, bundled themes 50, TUI state modules 33, database tables 95
+statements / 91 tables, storage layout version 88, Git operation variants 54,
+Git risk classes 11, and workspace member crates 11 (+ root).
