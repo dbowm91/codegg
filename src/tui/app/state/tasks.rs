@@ -328,8 +328,9 @@ pub struct JobLike {
 /// The rows are **borrowed**: the overlay draws at most
 /// [`MAX_TASKS_TOTAL_ROWS`] of them, and taking the whole list by value
 /// meant copying every row to keep a dozen.
-pub fn bounded(rows: &[TaskRow]) -> Vec<TaskRow> {
+pub fn bounded<R: AsRef<[TaskRow]>>(rows: R) -> Vec<TaskRow> {
     // Partition into (header, body) pairs, preserving display order.
+    let rows = rows.as_ref();
     let mut groups: Vec<(TaskRow, Vec<&TaskRow>)> = Vec::new();
     for row in rows {
         match row {

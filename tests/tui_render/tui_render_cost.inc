@@ -166,39 +166,49 @@ fn the_streaming_tail_renders_the_same_rows_as_a_fresh_parse() {
     fresh.add_streaming_token(response);
 
     assert_eq!(
-        streamed.streaming_tail_rows(),
-        fresh.streaming_tail_rows(),
+        messages_buffer(&streamed),
+        messages_buffer(&fresh),
         "the incrementally parsed tail must render what a fresh parse renders"
     );
 }
 
+/// The transcript's drawn rows, at the width the widget was given.
+fn messages_buffer(widget: &MessagesWidget) -> Buffer {
+    let area = Rect::new(0, 0, 40, 20);
+    let mut buffer = Buffer::empty(area);
+    widget.render(area, &mut buffer);
+    buffer
+}
+
 /// The tail's parse count is bounded by the change, not by the response.
 ///
-/// The response is streamed in the same number of chunks whether it is ten
+/// The response is streamed in the same number of changes whether it is ten
 /// bytes or ten thousand, and the parse count must not grow with it.
 #[test]
 fn the_streaming_parse_count_does_not_grow_with_the_response() {
     let theme = Arc::new(Theme::dark());
     let short = "a short response";
-    let long = &"a long response. ".repeat(400);
+    let long = "a long response. ".repeat(400);
 
     let parses = |text: &str| {
         let mut widget = MessagesWidget::new(theme.clone());
         widget.set_width(40);
         let mut count = 0u64;
-        for chunk in text.as_bytes().chunks(16) {
+        // The same number of changes for both responses: eight.
+        let chunk_size = text.len().div_ceil(8).max(1);
+        for chunk in text.as_bytes().chunks(chunk_size) {
             let chunk = String::from_utf8_lossy(chunk).to_string();
             widget.add_streaming_token(&chunk);
             // The tail is parsed when it is drawn, not when it is appended.
             let before = render_cost::snapshot();
-            let _rows = widget.streaming_tail_rows();
+            let _rows = messages_buffer(&widget);
             count += render_cost::snapshot().since(&before).markdown_parses;
         }
         count
     };
 
     let short_parses = parses(short);
-    let long_parses = parses(long);
+    let long_parses = parses(&long);
     assert!(
         short_parses > 0,
         "a streamed response is parsed at least once"
@@ -206,9 +216,40 @@ fn the_streaming_parse_count_does_not_grow_with_the_response() {
     assert_eq!(
         short_parses, long_parses,
         "the parse count is bounded by the number of changes, not by the \
-         response's length: {short} cost {short_parses} and a response {} \
-         times longer cost {long_parses}",
-        long.len() / short.len(),
+         response's length: a {}-byte response cost {short_parses} and a \
+         {}-byte response cost {long_parses}",
+        short.len(),
+        long.len(),
+    );
+}
+
+/// A message's parts are parsed once, not once per token.
+///
+/// A streaming response appends parts to the message being streamed into,
+/// and every token rebuilt that message's rows — which re-parsed **every**
+/// part of it, so the cost of a response grew with the square of its
+/// length.
+#[test]
+fn a_message_parts_markdown_is_parsed_once() {
+    let theme = Arc::new(Theme::dark());
+    let mut widget = MessagesWidget::new(theme);
+    widget.set_width(40);
+    for index in 0..10 {
+        widget.add_assistant_text(format!("paragraph {index}\n\n"));
+    }
+    widget.add_streaming_token("x");
+    // The first draw parses the ten parts and the tail.
+    let _rows = messages_buffer(&widget);
+
+    let cost = cost_of(|| {
+        widget.add_streaming_token("y");
+        let _rows = messages_buffer(&widget);
+    });
+
+    assert_eq!(
+        cost.markdown_parses, 1,
+        "only the streaming tail is parsed again, not the ten parts of the \
+         message it is streamed into"
     );
 }
 
@@ -276,7 +317,7 @@ fn the_tasks_overlay_copies_only_the_rows_it_draws() {
     let rows = build_task_rows(&todos, &[], &[]);
 
     let cost = cost_of(|| {
-        let bounded = bounded(&rows);
+        let bounded = bounded(rows.clone());
         assert!(
             bounded.len() <= MAX_TASKS_TOTAL_ROWS,
             "the overlay draws at most its budget: {} rows",
