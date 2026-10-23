@@ -5,11 +5,12 @@
 //! callers that need a synchronous Git command. It does not know about
 //! CodeGG sessions, runs, jobs, permissions, or projections.
 
+use crate::consistency::GitReadConsistency;
 use crate::EgggitError;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::process::{Command as StdCommand, Output as StdOutput, Stdio};
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::process::Command;
@@ -170,6 +171,20 @@ pub struct GitAsyncCommand {
     _object_view: Option<PrivateObjectView>,
 }
 
+impl GitAsyncCommand {
+    /// The consistency class of the read this command performs.
+    ///
+    /// A command that received the private object view reports the class the
+    /// view was prepared under; a command that consulted no object store
+    /// reports [`GitReadConsistency::NoObjectGeneration`].
+    pub fn read_consistency(&self) -> GitReadConsistency {
+        self._object_view
+            .as_ref()
+            .map(|view| view.consistency)
+            .unwrap_or(GitReadConsistency::NoObjectGeneration)
+    }
+}
+
 impl Deref for GitAsyncCommand {
     type Target = Command;
 
@@ -190,6 +205,16 @@ pub struct GitSyncCommand {
     _object_view: Option<PrivateObjectView>,
 }
 
+impl GitSyncCommand {
+    /// The consistency class of the read this command performs.
+    pub fn read_consistency(&self) -> GitReadConsistency {
+        self._object_view
+            .as_ref()
+            .map(|view| view.consistency)
+            .unwrap_or(GitReadConsistency::NoObjectGeneration)
+    }
+}
+
 impl Deref for GitSyncCommand {
     type Target = StdCommand;
 
@@ -204,10 +229,37 @@ impl DerefMut for GitSyncCommand {
     }
 }
 
+/// The outcome of one Git command together with the consistency class of the
+/// read it performed.
+///
+/// The class is part of the result rather than a separate observation, so a
+/// caller cannot receive the bytes and forget what it was allowed to assume
+/// about them.
+#[derive(Debug)]
+pub struct GitCommandOutput {
+    /// The child's standard output.
+    pub stdout: Vec<u8>,
+    /// The child's standard error.
+    pub stderr: Vec<u8>,
+    /// The child's exit status.
+    pub status: std::process::ExitStatus,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitReadConsistency,
+}
+
 #[derive(Debug)]
 struct PrivateObjectView {
     lease: Option<Arc<CachedObjectView>>,
     ephemeral: Option<tempfile::TempDir>,
+    /// The consistency class of the bytes this view serves.
+    ///
+    /// A view materialized from a fresh, stability-checked copy of the object
+    /// store reports [`GitReadConsistency::ImmutableGeneration`]. A view
+    /// reused from the preparation cache reports
+    /// [`GitReadConsistency::CapturedNotCurrent`]: the bytes were immutable
+    /// when they were captured, and the cache is a best-effort mechanism with
+    /// eviction rather than a durability boundary, so they may now be stale.
+    consistency: GitReadConsistency,
 }
 
 impl PrivateObjectView {
@@ -373,6 +425,7 @@ impl GitEnvPolicy {
         ensure_trusted_git_request(argv)?;
         let object_view = prepare_private_object_view(argv, cwd)?;
         let worktree = canonical_worktree(cwd)?;
+        ensure_repository_config_surface_is_contained(&worktree)?;
         let mut cmd = Command::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
@@ -397,6 +450,7 @@ impl GitEnvPolicy {
         ensure_trusted_git_request(argv)?;
         let object_view = prepare_private_object_view(argv, cwd)?;
         let worktree = canonical_worktree(cwd)?;
+        ensure_repository_config_surface_is_contained(&worktree)?;
         let mut cmd = StdCommand::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
@@ -411,6 +465,82 @@ impl GitEnvPolicy {
             _object_view: object_view,
         })
     }
+}
+
+/// Refuse a trusted Git operation whose repository declares a configuration
+/// surface that the trusted route cannot neutralise.
+///
+/// The trusted route pins the Git **configuration keys** it knows about with
+/// `-c key=value` overrides, and it refuses the operations that consult
+/// filters and merge drivers. Neither of those reaches a surface that only
+/// exists in the *content* of a configuration file:
+///
+/// * `filter.<name>.process`, `filter.<name>.clean` and `filter.<name>.smudge`
+///   are commands Git runs to convert content to and from its object form.
+///   `git status` and `git diff` are on the trusted read route and both
+///   compare the working tree against the index *through the clean filter*,
+///   so a repository that declares a filter and ships an attribute that
+///   selects it gets that command executed by an ordinary status read.
+/// * `include.path` and `includeIf.<condition>.path` pull further
+///   configuration into the child. A dangerous key that lives only inside an
+///   included file is invisible to the override table, because the table
+///   names keys and not files.
+///
+/// The pinned override table cannot help with either: it beats the keys it
+/// names, not the keys it does not know about. The route therefore refuses
+/// rather than proceeding on a repository it cannot vouch for.
+///
+/// A surface that the overrides *do* neutralise — `core.attributesFile`,
+/// `core.alternateRefsCommand`, `core.gitProxy`, `core.pager`,
+/// `core.editor`, `sequence.editor` — is not a refusal, and neither is a
+/// surface only a remote or merge operation can reach, because the trusted
+/// route refuses those operations outright.
+fn ensure_repository_config_surface_is_contained(
+    worktree: &Path,
+) -> Result<(), GitExecutionPolicyOutcome> {
+    let report = crate::config_surface::inspect_repository_config_surface(worktree);
+    if report.is_clean() {
+        return Ok(());
+    }
+
+    let mut capabilities: Vec<GitExecutionCapability> = Vec::new();
+    for surface in &report.surfaces {
+        let capability = match surface {
+            // A filter command is reachable from an ordinary read.
+            crate::config_surface::HostileConfigSurface::FilterCommand => {
+                GitExecutionCapability::CleanSmudgeFilter
+            }
+            // A repository-configured diff driver is reachable from a diff.
+            crate::config_surface::HostileConfigSurface::DiffCommand => {
+                GitExecutionCapability::ExternalDiffOrTextconv
+            }
+            // The inspection could not see everything the child will read.
+            // "We could not check" is not "we checked and found nothing".
+            crate::config_surface::HostileConfigSurface::InspectionTruncated => {
+                GitExecutionCapability::RepositoryAlias
+            }
+            // An include that reached outside the bounded root set was still
+            // inspected, so what it declares is known. The reach itself is
+            // reported, not refused.
+            crate::config_surface::HostileConfigSurface::OutOfBoundsInclude => continue,
+            // Neutralised by the pinned override table, or reachable only from
+            // an operation the trusted route already refuses.
+            _ => continue,
+        };
+        if !capabilities.contains(&capability) {
+            capabilities.push(capability);
+        }
+    }
+
+    if capabilities.is_empty() {
+        return Ok(());
+    }
+    // The refusal uses the same shape the route already uses for work it
+    // cannot do without containment: `ensure_trusted_git_request` converts a
+    // `RequiresContainedExecution` into `BackendUnavailable` for exactly the
+    // same reason. A repository that declares a filter command needs the
+    // contained tier, and the trusted route has no backend for it.
+    Err(GitExecutionPolicyOutcome::BackendUnavailable { capabilities })
 }
 
 /// Classify a shell-free Git invocation before it crosses the process
@@ -588,6 +718,16 @@ where
         ("gpg.program", ""),
         ("core.askPass", ""),
         ("protocol.ext.allow", "never"),
+        // A repository-configured attributes file can select a filter or a
+        // diff driver, which is the same code-execution surface as declaring
+        // the filter itself. The user-level attributes file is pinned out.
+        ("core.attributesFile", "/dev/null"),
+        // A repository-configured alternate-refs command runs a program
+        // Git invokes itself. An empty value stops Git from running it.
+        ("core.alternateRefsCommand", ""),
+        // A repository-configured Git proxy routes Git's own protocol
+        // traffic. An empty value disables it.
+        ("core.gitProxy", ""),
     ] {
         cmd.arg("-c");
         cmd.arg(format!("{key}={value}"));
@@ -683,6 +823,12 @@ where
     }
     cmd.env("GIT_CONFIG_NOSYSTEM", "1".into());
     cmd.env("GIT_CONFIG_GLOBAL", null_config_path().into());
+    // A repository can declare `refs/replace/*`, which makes Git substitute
+    // one object for another on read. The substituted object is a different
+    // object with a different identity, so a read that honoured it would not
+    // describe the generation the repository actually holds. Replace refs are
+    // disabled for every trusted read.
+    cmd.env("GIT_NO_REPLACE_OBJECTS", "1".into());
     // Git normally walks parent directories to discover a repository. The
     // typed service has already selected `worktree`; do not let a missing
     // or newly replaced root marker silently select an enclosing repository.
@@ -986,6 +1132,12 @@ fn prepare_private_object_view_with(
             return Ok(Some(PrivateObjectView {
                 lease: Some(Arc::clone(view)),
                 ephemeral: None,
+                // The cache is a best-effort mechanism with eviction, not a
+                // durability boundary: these bytes were immutable when they
+                // were captured and may now be stale relative to the
+                // repository. Reporting them as an immutable *current*
+                // generation would be the claim the cache cannot support.
+                consistency: GitReadConsistency::CapturedNotCurrent,
             }));
         }
         stale.push(index);
@@ -1074,6 +1226,9 @@ fn prepare_private_object_view_with(
         return Ok(Some(PrivateObjectView {
             lease: None,
             ephemeral: Some(view),
+            // Freshly materialized and stability-checked, so these bytes are
+            // one immutable generation even though the view is not retained.
+            consistency: GitReadConsistency::ImmutableGeneration,
         }));
     }
 
@@ -1105,6 +1260,7 @@ fn prepare_private_object_view_with(
             return Ok(Some(PrivateObjectView {
                 lease: None,
                 ephemeral: Some(view),
+                consistency: GitReadConsistency::ImmutableGeneration,
             }));
         };
         let retired = cache.entries.remove(index);
@@ -1125,6 +1281,11 @@ fn prepare_private_object_view_with(
     Ok(Some(PrivateObjectView {
         lease: Some(cached),
         ephemeral: None,
+        // Freshly materialized and stability-checked: one immutable
+        // generation. A later cache hit downgrades the class to
+        // `CapturedNotCurrent`, which is the honest description once the
+        // generation may have aged behind the repository.
+        consistency: GitReadConsistency::ImmutableGeneration,
     }))
 }
 
@@ -1578,7 +1739,7 @@ impl CommandEnvironment for StdCommand {
 ///
 /// The child runs under [`DEFAULT_READ_TIMEOUT`]; exceeding it kills the
 /// process rather than leaking it.
-pub async fn run(args: &[String], cwd: &Path) -> Result<StdOutput, EgggitError> {
+pub async fn run(args: &[String], cwd: &Path) -> Result<GitCommandOutput, EgggitError> {
     run_with_timeout(args, cwd, DEFAULT_READ_TIMEOUT).await
 }
 
@@ -1588,7 +1749,7 @@ pub async fn run_with_timeout(
     args: &[String],
     cwd: &Path,
     timeout: Duration,
-) -> Result<StdOutput, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     if !cwd.exists() {
         return Err(EgggitError::NotARepository(cwd.display().to_string()));
     }
@@ -1627,16 +1788,23 @@ fn run_command(
     cmd: StdCommand,
     timeout: Duration,
     rendered: &str,
-) -> Result<StdOutput, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     run_command_with_view(cmd, None, timeout, rendered)
 }
 
 fn run_command_with_view(
     mut cmd: StdCommand,
-    _object_view: Option<PrivateObjectView>,
+    object_view: Option<PrivateObjectView>,
     timeout: Duration,
     rendered: &str,
-) -> Result<StdOutput, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
+    // Read the class before the view is dropped: it is the only record of
+    // which consistency the bytes the child is about to read were captured
+    // under.
+    let consistency = object_view
+        .as_ref()
+        .map(|view| view.consistency)
+        .unwrap_or(GitReadConsistency::NoObjectGeneration);
     // `run_command` is also exercised with directly constructed commands in
     // tests, so enforce isolation here as well as in `GitEnvPolicy`.
     isolate_child_process_group(&mut cmd);
@@ -1693,10 +1861,11 @@ fn run_command_with_view(
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
 
-    Ok(StdOutput {
+    Ok(GitCommandOutput {
         stdout: stdout_bytes,
         stderr: stderr_bytes,
         status,
+        consistency,
     })
 }
 
@@ -1736,7 +1905,7 @@ pub async fn run_bounded(
     args: &[String],
     cwd: &Path,
     max_stdout_bytes: usize,
-) -> Result<StdOutput, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     run_bounded_with_timeout(args, cwd, max_stdout_bytes, DEFAULT_READ_TIMEOUT).await
 }
 
@@ -1752,7 +1921,7 @@ pub async fn run_bounded_with_timeout(
     cwd: &Path,
     max_stdout_bytes: usize,
     timeout: Duration,
-) -> Result<StdOutput, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     if !cwd.exists() {
         return Err(EgggitError::NotARepository(cwd.display().to_string()));
     }
@@ -1768,6 +1937,7 @@ pub async fn run_bounded_with_timeout(
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        let consistency = cmd.read_consistency();
         let mut child = cmd
             .spawn()
             .map_err(|error| EgggitError::Io(error.to_string()))?;
@@ -1795,10 +1965,11 @@ pub async fn run_bounded_with_timeout(
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    return Ok(StdOutput {
+                    return Ok(GitCommandOutput {
                         status,
                         stdout: bytes,
                         stderr: Vec::new(),
+                        consistency,
                     })
                 }
                 Ok(None) => {
@@ -3237,6 +3408,173 @@ mod tests {
         );
     }
 
+    /// Build a repository whose `.gitattributes` selects a clean filter, and
+    /// a helper that would leave a marker if it ever ran.
+    #[cfg(unix)]
+    fn repository_with_hostile_clean_filter(root: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let marker = root.join("filter-helper-ran");
+        let helper = root.join("filter-helper.sh");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'; cat\n", marker.display()),
+        )
+        .expect("write hostile filter helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make filter helper executable");
+        assert!(StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(root)
+            .status()
+            .expect("git init")
+            .success());
+        assert!(StdCommand::new("git")
+            .args([
+                "config",
+                "--local",
+                "filter.hostile.clean",
+                helper.to_str().expect("helper path"),
+            ])
+            .current_dir(root)
+            .status()
+            .expect("configure hostile filter")
+            .success());
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=hostile\n")
+            .expect("write hostile filter attributes");
+        std::fs::write(root.join("tracked.txt"), "untrusted content\n")
+            .expect("write filter input");
+        marker
+    }
+
+    /// The read route is the one that was open.
+    ///
+    /// `git status` and `git diff` compare the working tree against the index
+    /// *through the clean filter*, so a repository that declares a filter and
+    /// ships an attribute that selects it used to get that command executed
+    /// by an ordinary status read. The route has no containment, so it must
+    /// refuse instead.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_read_route_refuses_a_repository_that_declares_a_filter_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let marker = repository_with_hostile_clean_filter(root);
+
+        let outcome = run(&["status".to_string()], root)
+            .await
+            .expect_err("a read must not run a repository-declared filter command");
+        assert!(
+            matches!(
+                outcome,
+                EgggitError::Policy(GitExecutionPolicyOutcome::BackendUnavailable {
+                    ref capabilities
+                }) if capabilities == &vec![GitExecutionCapability::CleanSmudgeFilter]
+            ),
+            "unexpected filter disposition: {outcome:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "the repository clean filter must not execute on the trusted read route"
+        );
+    }
+
+    /// The same hole, reached through an `include.path`.
+    ///
+    /// The `-c` overrides beat the keys they *name*, so an included file
+    /// cannot smuggle a named key past them. It can smuggle a key the table
+    /// does not name — and `filter.<name>.clean` is exactly such a key,
+    /// because the filter's name is the repository's to choose. The
+    /// configuration surface is therefore inspected before the child runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_read_route_refuses_a_filter_declared_only_in_an_included_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("repo");
+        std::fs::create_dir(&root).expect("repo root");
+        assert!(StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&root)
+            .status()
+            .expect("git init")
+            .success());
+
+        let marker = fixture.path().join("included-filter-ran");
+        let helper = fixture.path().join("included-filter.sh");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'; cat\n", marker.display()),
+        )
+        .expect("write included filter helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make included filter helper executable");
+
+        // The dangerous key lives ONLY in the included file.
+        let included = fixture.path().join("hostile-included.config");
+        std::fs::write(
+            &included,
+            format!("[filter \"hostile\"]\n\tclean = {}\n", helper.display()),
+        )
+        .expect("write included configuration");
+        assert!(StdCommand::new("git")
+            .args(["config", "--local", "include.path"])
+            .arg(&included)
+            .current_dir(&root)
+            .status()
+            .expect("configure include")
+            .success());
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=hostile\n")
+            .expect("write hostile filter attributes");
+        std::fs::write(root.join("tracked.txt"), "untrusted content\n")
+            .expect("write filter input");
+
+        let outcome = run(&["status".to_string()], &root)
+            .await
+            .expect_err("an included filter command must not reach the trusted read route");
+        assert!(
+            matches!(
+                outcome,
+                EgggitError::Policy(GitExecutionPolicyOutcome::BackendUnavailable {
+                    ref capabilities
+                }) if capabilities == &vec![GitExecutionCapability::CleanSmudgeFilter]
+            ),
+            "unexpected included-filter disposition: {outcome:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "a filter command declared only in an included file must not execute"
+        );
+    }
+
+    /// The ordinary repository is still allowed.
+    ///
+    /// The refusal must not be a blanket one: a repository that declares no
+    /// dangerous surface reads normally.
+    #[tokio::test]
+    async fn trusted_git_read_route_allows_a_repository_without_a_hostile_surface() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        assert!(StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(root)
+            .status()
+            .expect("git init")
+            .success());
+        assert!(StdCommand::new("git")
+            .args(["config", "--local", "user.name", "Someone"])
+            .current_dir(root)
+            .status()
+            .expect("configure user")
+            .success());
+
+        let status = run(&["status".to_string()], root)
+            .await
+            .expect("an ordinary repository must still be readable");
+        assert!(status.status.success());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn trusted_git_executable_alias_requires_containment_before_helper_launch() {
@@ -3421,7 +3759,7 @@ mod tests {
     /// `git` itself cannot be made to hang reliably from a test without a
     /// hostile hook, so the deadline logic is exercised directly against a
     /// long-running child.
-    fn run_sleeping_command(timeout: Duration) -> Result<std::process::Output, EgggitError> {
+    fn run_sleeping_command(timeout: Duration) -> Result<GitCommandOutput, EgggitError> {
         let mut cmd = StdCommand::new("sleep");
         cmd.arg("30");
         cmd.stdin(Stdio::null())

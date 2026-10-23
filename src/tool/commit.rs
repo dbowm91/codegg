@@ -175,11 +175,23 @@ async fn generate_commit_message_with_provider(
 
 impl CommitTool {
     /// Fetch the staged diff text for the LLM prompt.
+    ///
+    /// The diff is a **generation-bound** consumer: it describes the content
+    /// that is about to be committed, so it must come from one captured object
+    /// generation. The fence refuses a read that observed no generation at
+    /// all, and refuses a live-class read unless the caller holds the
+    /// live-read capability — which no production build of this crate can
+    /// obtain.
     async fn get_staged_diff(&self) -> Result<String, ToolError> {
-        let diff = egggit::diff_text(&self.workdir, egggit::DiffMode::Staged)
+        let fact = egggit::diff_text(&self.workdir, egggit::DiffMode::Staged)
             .await
             .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
-        Ok(diff)
+        let admitted = crate::git_consistency::admit_generation_bound(
+            fact,
+            crate::git_consistency::live_read_capability(),
+        )
+        .map_err(|e| ToolError::Execution(format!("staged diff was not admissible: {e}")))?;
+        Ok(admitted.into_value())
     }
 
     /// Map a `GitMutationError` to a `ToolError`.

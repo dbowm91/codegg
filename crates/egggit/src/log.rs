@@ -1,3 +1,5 @@
+use crate::consistency::{GitReadConsistency, GitReadFact};
+use crate::process::GitCommandOutput;
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -34,7 +36,7 @@ pub struct CommitInfo {
 async fn run_git_log(
     root: std::path::PathBuf,
     args: Vec<String>,
-) -> Result<std::process::Output, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     crate::process::run(&args, &root).await
 }
 
@@ -126,11 +128,16 @@ fn parse_log_output(stdout: &str) -> Vec<CommitInfo> {
 ///
 /// `max_count` limits how many commits to return (default 20).
 /// `paths` optionally filters to commits touching specific paths.
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn. A spawn that failed outright observed no object generation at
+/// all, so an empty result from that path carries
+/// [`GitReadConsistency::NoObjectGeneration`].
 pub async fn log_commits(
     root: &Path,
     max_count: Option<usize>,
     paths: &[&str],
-) -> Result<Vec<CommitInfo>, crate::EgggitError> {
+) -> Result<GitReadFact<Vec<CommitInfo>>, crate::EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
@@ -155,20 +162,26 @@ pub async fn log_commits(
     // Handle errors gracefully (empty repos, etc.)
     let output = match output {
         Ok(o) => o,
-        Err(_) => return Ok(Vec::new()),
+        Err(_) => {
+            return Ok(GitReadFact::new(
+                Vec::new(),
+                GitReadConsistency::NoObjectGeneration,
+            ))
+        }
     };
+    let consistency = output.consistency;
 
     // git log returns non-zero for empty repos
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does not have any commits yet") || stderr.contains("unknown revision") {
-            return Ok(Vec::new());
+            return Ok(GitReadFact::new(Vec::new(), consistency));
         }
         return Err(EgggitError::Git(stderr.to_string()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_log_output(&stdout))
+    Ok(GitReadFact::new(parse_log_output(&stdout), consistency))
 }
 
 #[cfg(test)]
@@ -216,7 +229,10 @@ mod tests {
         commit(dir.path(), "first", "a.txt", "hello");
         commit(dir.path(), "second", "a.txt", "world");
 
-        let commits = log_commits(dir.path(), None, &[]).await.unwrap();
+        let commits = log_commits(dir.path(), None, &[])
+            .await
+            .unwrap()
+            .into_value();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "second");
         assert_eq!(commits[1].subject, "first");
@@ -229,7 +245,10 @@ mod tests {
         commit(dir.path(), "first", "a.txt", "hello");
         commit(dir.path(), "second", "a.txt", "world");
 
-        let commits = log_commits(dir.path(), Some(1), &[]).await.unwrap();
+        let commits = log_commits(dir.path(), Some(1), &[])
+            .await
+            .unwrap()
+            .into_value();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].subject, "second");
     }
@@ -241,7 +260,10 @@ mod tests {
         commit(dir.path(), "first", "a.txt", "hello");
         commit(dir.path(), "second", "b.txt", "world");
 
-        let commits = log_commits(dir.path(), None, &["a.txt"]).await.unwrap();
+        let commits = log_commits(dir.path(), None, &["a.txt"])
+            .await
+            .unwrap()
+            .into_value();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].subject, "first");
     }
@@ -252,7 +274,10 @@ mod tests {
         init_repo(dir.path());
         commit(dir.path(), "initial", "a.txt", "hello");
 
-        let commits = log_commits(dir.path(), None, &[]).await.unwrap();
+        let commits = log_commits(dir.path(), None, &[])
+            .await
+            .unwrap()
+            .into_value();
         assert_eq!(commits.len(), 1);
         let c = &commits[0];
         assert_eq!(c.oid.len(), 40);
@@ -268,7 +293,10 @@ mod tests {
     async fn log_empty_repo() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
-        let commits = log_commits(dir.path(), None, &[]).await.unwrap();
+        let commits = log_commits(dir.path(), None, &[])
+            .await
+            .unwrap()
+            .into_value();
         assert!(commits.is_empty());
     }
 
@@ -308,10 +336,34 @@ mod tests {
             .output()
             .unwrap();
 
-        let commits = log_commits(dir.path(), None, &[]).await.unwrap();
+        let commits = log_commits(dir.path(), None, &[])
+            .await
+            .unwrap()
+            .into_value();
         // The merge commit should be the first one
         let merge = commits.iter().find(|c| c.subject == "merge commit");
         assert!(merge.is_some(), "expected merge commit");
         assert_eq!(merge.unwrap().parents.len(), 2);
+    }
+
+    /// A log read consults the object store, so its read observed an object
+    /// generation and the carried class says so.
+    #[tokio::test(flavor = "current_thread")]
+    async fn log_carries_a_generation_consistent_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit(dir.path(), "first", "a.txt", "hello");
+
+        let fact = log_commits(dir.path(), None, &[]).await.unwrap();
+        assert_ne!(
+            fact.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "a log read consults the object store"
+        );
+        assert!(
+            fact.class().is_generation_consistent(),
+            "a log read must report a generation-consistent class, got {}",
+            fact.class()
+        );
     }
 }

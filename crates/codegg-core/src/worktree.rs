@@ -31,7 +31,8 @@ fn into_legacy(info: WorktreeInfo) -> Worktree {
 pub async fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
     let infos = egggit::worktree::list_worktrees(git_root)
         .await
-        .map_err(|e| AppError::Worktree(format!("failed to list worktrees: {e}")))?;
+        .map_err(|e| AppError::Worktree(format!("failed to list worktrees: {e}")))?
+        .into_value();
     Ok(infos.into_iter().map(into_legacy).collect())
 }
 

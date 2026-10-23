@@ -1,3 +1,5 @@
+use crate::consistency::{GitReadConsistency, GitReadFact};
+use crate::process::GitCommandOutput;
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -46,11 +48,11 @@ pub struct RemoteInfo {
 async fn run_git(
     root: std::path::PathBuf,
     args: Vec<String>,
-) -> Result<std::process::Output, EgggitError> {
+) -> Result<GitCommandOutput, EgggitError> {
     crate::process::run(&args, &root).await
 }
 
-async fn capture_stdout(root: &Path, args: &[&str]) -> Result<String, EgggitError> {
+async fn capture_stdout(root: &Path, args: &[&str]) -> Result<GitReadFact<String>, EgggitError> {
     let root = root.to_path_buf();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let output = run_git(root, args).await?;
@@ -59,14 +61,37 @@ async fn capture_stdout(root: &Path, args: &[&str]) -> Result<String, EgggitErro
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(GitReadFact::new(stdout, output.consistency))
+}
+
+/// Fold the classes of a multi-spawn read into the composite class.
+///
+/// The composite is the **weakest** class among the contributing reads: a
+/// read assembled from several spawns is only as strong as its weakest
+/// part. A contributing read that produced no result at all observed no
+/// object generation, so it contributes
+/// [`GitReadConsistency::NoObjectGeneration`].
+fn composite_class(contributions: &[Option<GitReadConsistency>]) -> GitReadConsistency {
+    let mut composite: Option<GitReadConsistency> = None;
+    for contribution in contributions {
+        let class = contribution.unwrap_or(GitReadConsistency::NoObjectGeneration);
+        composite = Some(match composite {
+            Some(accumulated) => accumulated.weaker(class),
+            None => class,
+        });
+    }
+    composite.unwrap_or(GitReadConsistency::NoObjectGeneration)
 }
 
 /// Resolve an immutable commit object in the supplied repository.
 /// Revision expressions are deliberately not accepted: callers that use this
 /// as provenance must provide a full object id and receive the canonical id
 /// back from Git.
-pub async fn resolve_commit(root: &Path, commit: &str) -> Result<String, EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn.
+pub async fn resolve_commit(root: &Path, commit: &str) -> Result<GitReadFact<String>, EgggitError> {
     if commit.is_empty()
         || (commit.len() != 40 && commit.len() != 64)
         || !commit.chars().all(|ch| ch.is_ascii_hexdigit())
@@ -75,13 +100,15 @@ pub async fn resolve_commit(root: &Path, commit: &str) -> Result<String, EgggitE
     }
     let expression = format!("{commit}^{{commit}}");
     let resolved = capture_stdout(root, &["rev-parse", "--verify", &expression]).await?;
+    let consistency = resolved.class();
+    let resolved = resolved.into_value();
     let resolved = resolved.trim();
     if resolved != commit {
         return Err(EgggitError::InvalidBaseRef(format!(
             "commit resolved to a different object: {resolved}"
         )));
     }
-    Ok(resolved.to_owned())
+    Ok(GitReadFact::new(resolved.to_owned(), consistency))
 }
 
 /// Resolve a base **ref** — a branch or tag name — to an immutable
@@ -96,7 +123,13 @@ pub async fn resolve_commit(root: &Path, commit: &str) -> Result<String, EgggitE
 /// leading `-` and any whitespace are refused, so the resolver cannot be
 /// talked into evaluating an arbitrary Git expression. The returned
 /// value is the canonical commit id, which is what callers store.
-pub async fn resolve_base_ref(root: &Path, base_ref: &str) -> Result<String, EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn.
+pub async fn resolve_base_ref(
+    root: &Path,
+    base_ref: &str,
+) -> Result<GitReadFact<String>, EgggitError> {
     let trimmed = base_ref.trim();
     if trimmed.is_empty() {
         return Err(EgggitError::InvalidBaseRef(base_ref.to_owned()));
@@ -111,15 +144,22 @@ pub async fn resolve_base_ref(root: &Path, base_ref: &str) -> Result<String, Egg
     }
     let expression = format!("{trimmed}^{{commit}}");
     let resolved = capture_stdout(root, &["rev-parse", "--verify", &expression]).await?;
+    let consistency = resolved.class();
+    let resolved = resolved.into_value();
     let resolved = resolved.trim();
     if resolved.is_empty() || !resolved.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Err(EgggitError::InvalidBaseRef(base_ref.to_owned()));
     }
-    Ok(resolved.to_owned())
+    Ok(GitReadFact::new(resolved.to_owned(), consistency))
 }
 
 /// List all branches with upstream info.
-pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::EgggitError> {
+///
+/// The listing is assembled from three Git spawns, so the carried class is
+/// the composite class: the weakest of the three.
+pub async fn list_branches(
+    root: &Path,
+) -> Result<GitReadFact<Vec<BranchInfo>>, crate::EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
@@ -127,17 +167,19 @@ pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::Egggit
     // Get current branch name. A failed command is a real I/O/git error
     // and must not be conflated with a legitimately empty (detached HEAD)
     // result, so propagate Err instead of defaulting to "".
-    let current = capture_stdout(root, &["branch", "--show-current"])
-        .await?
-        .trim()
-        .to_string();
+    let current_fact = capture_stdout(root, &["branch", "--show-current"]).await?;
+    let current_class = current_fact.class();
+    let current = current_fact.into_value().trim().to_string();
 
     // Check if detached
     let rev_parse = capture_stdout(root, &["rev-parse", "--verify", "HEAD"]).await;
+    let rev_parse_class = rev_parse.as_ref().ok().map(GitReadFact::class);
     let is_detached = current.is_empty() && rev_parse.is_ok();
 
     // List branches with tracking info
-    let output = capture_stdout(root, &["branch", "-vv"]).await?;
+    let branches_fact = capture_stdout(root, &["branch", "-vv"]).await?;
+    let branches_class = branches_fact.class();
+    let output = branches_fact.into_value();
 
     let mut branches = Vec::new();
     for line in output.lines() {
@@ -221,7 +263,7 @@ pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::Egggit
     if is_detached && !branches.iter().any(|b| b.is_current) {
         let sha = match rev_parse {
             Ok(output) => {
-                let trimmed = output.trim().to_string();
+                let trimmed = output.into_value().trim().to_string();
                 if trimmed.is_empty() {
                     None
                 } else {
@@ -244,16 +286,21 @@ pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::Egggit
         );
     }
 
-    Ok(branches)
+    let composite = composite_class(&[Some(current_class), rev_parse_class, Some(branches_class)]);
+
+    Ok(GitReadFact::new(branches, composite))
 }
 
 /// List all tags.
-pub async fn list_tags(root: &Path) -> Result<Vec<TagInfo>, crate::EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn.
+pub async fn list_tags(root: &Path) -> Result<GitReadFact<Vec<TagInfo>>, crate::EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
 
-    let output = capture_stdout(
+    let tags_fact = capture_stdout(
         root,
         &[
             "tag",
@@ -262,6 +309,8 @@ pub async fn list_tags(root: &Path) -> Result<Vec<TagInfo>, crate::EgggitError> 
         ],
     )
     .await?;
+    let consistency = tags_fact.class();
+    let output = tags_fact.into_value();
 
     let mut tags = Vec::new();
     for line in output.lines() {
@@ -298,16 +347,22 @@ pub async fn list_tags(root: &Path) -> Result<Vec<TagInfo>, crate::EgggitError> 
         tags.push(TagInfo { name, object, kind });
     }
 
-    Ok(tags)
+    Ok(GitReadFact::new(tags, consistency))
 }
 
 /// List all remotes.
-pub async fn list_remotes(root: &Path) -> Result<Vec<RemoteInfo>, crate::EgggitError> {
+///
+/// The result carries the consistency class of the single contributing Git
+/// spawn. A remote listing consults configuration rather than the object
+/// store, so it reports the class of the spawn it actually made.
+pub async fn list_remotes(root: &Path) -> Result<GitReadFact<Vec<RemoteInfo>>, crate::EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
 
-    let output = capture_stdout(root, &["remote", "-v"]).await?;
+    let remotes_fact = capture_stdout(root, &["remote", "-v"]).await?;
+    let consistency = remotes_fact.class();
+    let output = remotes_fact.into_value();
 
     let mut remotes: Vec<RemoteInfo> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -360,7 +415,7 @@ pub async fn list_remotes(root: &Path) -> Result<Vec<RemoteInfo>, crate::EgggitE
         }
     }
 
-    Ok(remotes)
+    Ok(GitReadFact::new(remotes, consistency))
 }
 
 #[cfg(test)]
@@ -407,7 +462,7 @@ mod tests {
         init_repo(dir.path());
         commit(dir.path(), "init", "a.txt", "hello");
 
-        let branches = list_branches(dir.path()).await.unwrap();
+        let branches = list_branches(dir.path()).await.unwrap().into_value();
         assert!(!branches.is_empty());
         let main = branches.iter().find(|b| b.name == "main").unwrap();
         assert!(main.is_current);
@@ -424,7 +479,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let branches = list_branches(dir.path()).await.unwrap();
+        let branches = list_branches(dir.path()).await.unwrap().into_value();
         let feature = branches.iter().find(|b| b.name == "feature").unwrap();
         assert!(feature.is_current);
         let main = branches.iter().find(|b| b.name == "main").unwrap();
@@ -452,7 +507,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let tags = list_tags(dir.path()).await.unwrap();
+        let tags = list_tags(dir.path()).await.unwrap().into_value();
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].name, "v0.1.0");
         assert_eq!(tags[0].kind, "lightweight");
@@ -469,7 +524,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let tags = list_tags(dir.path()).await.unwrap();
+        let tags = list_tags(dir.path()).await.unwrap().into_value();
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].name, "v0.2.0");
         assert_eq!(tags[0].kind, "annotated");
@@ -479,7 +534,7 @@ mod tests {
     async fn list_tags_empty() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
-        let tags = list_tags(dir.path()).await.unwrap();
+        let tags = list_tags(dir.path()).await.unwrap().into_value();
         assert!(tags.is_empty());
     }
 
@@ -487,7 +542,7 @@ mod tests {
     async fn list_remotes_empty() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
-        let remotes = list_remotes(dir.path()).await.unwrap();
+        let remotes = list_remotes(dir.path()).await.unwrap().into_value();
         assert!(remotes.is_empty());
     }
 
@@ -501,7 +556,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let remotes = list_remotes(dir.path()).await.unwrap();
+        let remotes = list_remotes(dir.path()).await.unwrap().into_value();
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0].name, "origin");
         assert_eq!(
@@ -537,7 +592,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let remotes = list_remotes(dir.path()).await.unwrap();
+        let remotes = list_remotes(dir.path()).await.unwrap().into_value();
         assert_eq!(remotes.len(), 1);
         assert_eq!(
             remotes[0].fetch_url.as_deref(),
@@ -555,5 +610,45 @@ mod tests {
         assert!(list_branches(&fake).await.is_err());
         assert!(list_tags(&fake).await.is_err());
         assert!(list_remotes(&fake).await.is_err());
+    }
+
+    /// A tag listing consults the object store, so its read observed an
+    /// object generation and the carried class says so.
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tags_carries_a_generation_consistent_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit(dir.path(), "init", "a.txt", "hello");
+
+        let fact = list_tags(dir.path()).await.unwrap();
+        assert_ne!(
+            fact.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "a tag listing consults the object store"
+        );
+        assert!(
+            fact.class().is_generation_consistent(),
+            "a tag listing must report a generation-consistent class, got {}",
+            fact.class()
+        );
+    }
+
+    /// The branch listing is assembled from three spawns, and the
+    /// composite class is the weakest of them.
+    ///
+    /// `git branch --show-current` consults no object store, so the
+    /// composite read observed no object generation.
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_branches_carries_the_weakest_contributing_class() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit(dir.path(), "init", "a.txt", "hello");
+
+        let fact = list_branches(dir.path()).await.unwrap();
+        assert_eq!(
+            fact.class(),
+            GitReadConsistency::NoObjectGeneration,
+            "the composite class must be the weakest contributing class"
+        );
     }
 }
