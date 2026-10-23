@@ -1,6 +1,6 @@
 # Command Planner
 
-The command planner maps classified intents to execution backends, generates permission requests, and selects projection/RTK policies. This is the second stage of the command intent pipeline (classify → **plan** → route).
+The command planner maps classified intents to execution backends, generates permission requests, and selects projection/RTK policies. This is the second stage of the command intent pipeline (classify → **plan** → dispatch). The dispatch stage is owned by `CommandPlan::dispatch_target()`; `architecture/command_routing.md` is a compatibility facade over that same mapping, not a third stage with its own logic.
 
 ## Purpose
 
@@ -108,18 +108,29 @@ pub struct CommandPlan {
 }
 ```
 
-Methods: `is_executable()`, `requires_any_permission()`.
+Methods: `is_executable()`, `requires_any_permission()`,
+`dispatch_target()`, `command_family()`, `validate_for_active_routing()`.
 
 ## Planning and dispatch target
 
 ```rust
 pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
+pub fn plan_execution_with_context(
+    intent: &CommandIntent,
+    context: &CommandIntentContext,
+) -> CommandPlan
 ```
 
-Production callers with workspace authority use
-`plan_execution_with_context(intent, context)`. The plan then produces the
-single executor-facing target with `CommandPlan::dispatch_target()`; this is
-the canonical backend-to-dispatch mapping.
+`plan_execution()` delegates to `plan_execution_with_context()` with
+`CommandIntentContext::default()`. Production callers with workspace authority
+use `plan_execution_with_context()` directly: the context supplies executor
+authority (the resolved workspace root and execution cwd), while semantic
+classification stays on the `CommandIntent`.
+
+The plan then produces the single executor-facing target with
+`CommandPlan::dispatch_target()`; this is the canonical backend-to-dispatch
+mapping. `CommandDispatchTarget` itself is documented in
+[command_routing.md](command_routing.md).
 
 ### Backend Selection
 
@@ -141,14 +152,28 @@ carries the typed operation, argv, origin, and risk set produced by codegg-git's
 parser, enabling downstream routing to handle git operations uniformly.
 
 **Routing caveat (polish-pass finding, closed by Track U):** The plan-level
-backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash/policy.rs:98`
-historically returned `None` for `CommandIntentKind::GitMutating`, meaning
-bash-translated simple git mutations planned as `Git` but dispatched as
-`RawShell`. As of Track U, bash git mutations route through
-`dispatch_to_git` → `GitMutationExecutor` (sharing env policy, snapshot/delta,
-and RunStore parity with the native tool) when the `route_git_local_mutation`
-gate is enabled. The default remains `Off` so existing user-visible behavior
-is unchanged unless the user opts in.
+backend is `Git`, but the *family* used to gate bash-translated simple git
+mutations was resolved from the coarse `CommandIntentKind`, and the former
+`intent_kind_to_family()` helper returned `None` for
+`CommandIntentKind::GitMutating`. That meant bash-translated simple git
+mutations planned as `Git` but dispatched as `RawShell`. As of Track U the
+family is resolved from the **typed git operation** by
+`git_operation_family()` in `src/command_intent/plan.rs`, and bash git
+mutations route through `dispatch_to_git` → `GitMutationExecutor` (sharing
+env policy, snapshot/delta, and RunStore parity with the native tool) when the
+`route_git_local_mutation` gate is enabled. The default remains `Off` so
+existing user-visible behavior is unchanged unless the user opts in.
+
+Two distinct kind→family mappers exist and must not be confused:
+
+| Function | Input | Purpose |
+|----------|-------|---------|
+| `command_intent_family_for_kind()` (`plan.rs`) | `CommandIntentKind` | Coarse fallback: `GitMutating` → `GitLocalMutation`; `RawShell`/`FileWrite`/`FileEdit`/`Rejected` → `None` |
+| `git_operation_family()` (`plan.rs`) | `(&GitOperation, &RiskSet)` | Authoritative for typed git: `Destructive` → `Network` → `Read` → `LocalMutation`, with pure reads and `ManagedGitArgv`/`RawShellRequired` returning `None` |
+
+The old `intent_kind_to_family()` still exists in `src/tool/bash/policy.rs`,
+but it is a `#[cfg(test)]`-only compatibility helper; production code uses
+`command_intent_family_for_kind()` and `git_operation_family()`.
 
 `ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser
 and preserve the executable separately from its arguments. Missing typed argv
@@ -290,3 +315,34 @@ span kinds, and `CompressionGoal` values as listed), the full timeout table
 (`select_timeout`, `plan.rs:1035-1046`), and all 10 permission defaults
 (`generate_permission_requests`, `plan.rs:844`) including the `git add`-only
 `GitMutation` allow and the read-only-formatter `WriteWorkspace` allow.
+
+Verified 2026-10-23 against `src/command_intent/plan.rs`,
+`src/command_planner.rs`, `src/command_routing.rs`, and
+`src/tool/bash/policy.rs`. Corrected:
+
+- **Dead reference fixed.** The routing caveat pointed at
+  `intent_kind_to_family()` in `src/tool/bash/policy.rs:98`. The function is
+  now at `:70` **and** is `#[cfg(test)]`-only — it is not a production mapper.
+  The document now names the two production mappers instead:
+  `command_intent_family_for_kind()` (coarse, kind → family) and
+  `git_operation_family()` (authoritative, typed git operation → family).
+- **`plan_execution_with_context()` given a signature** and a note that
+  `plan_execution()` is its `CommandIntentContext::default()` wrapper.
+- **`CommandPlan` methods completed**: `dispatch_target()`,
+  `command_family()`, and `validate_for_active_routing()` were missing.
+- **Compatibility re-export block re-quoted verbatim** from
+  `src/command_planner.rs` (same 14 names, same order).
+
+Verified accurate: `src/command_planner.rs` is still a 6-line shim and
+re-exports exactly `command_intent_family_for_kind`, `plan_execution`,
+`plan_execution_with_context`, `CommandDispatchTarget`,
+`CommandPermissionRequest`, `CommandPlan`, `CompressionGoal`,
+`ExecutionBackend`, `GitExecutionRequest`, `NativeCommand`,
+`PermissionDefault`, `PlanRtkPolicy`, `ProjectionSpanKind`, `ProjectorRoute`,
+and `PythonModeGuess`; `ExecutionBackend` 7 variants; `ProjectorRoute` 10
+variants; `PlanRtkPolicy` 3 variants; `PythonModeGuess` 4 variants;
+`CommandPlan` 9 fields; `CommandDispatchTarget` 7 variants; the
+backend-selection, projector-selection, RTK, and timeout tables; the 7
+`validate_for_active_routing()` checks; the 10 permission defaults; and
+`is_safe_git_subcommand()` / `is_formatter_command()` /
+`is_read_only_formatter()`.

@@ -19,7 +19,7 @@ registry side of the contract.
 ```
 crates/
   codegg-core/       Core runtime, session, storage, domain state, jobs,
-                     workspace, tool programs (45 modules)
+                     workspace, tool programs (54 modules)
   codegg-config/     Configuration schema, paths, loading, validation,
                      file watching
   codegg-protocol/   Core protocol types: CoreRequest, CoreResponse,
@@ -187,7 +187,7 @@ back to `ToolBackendConfig::all_native()`.
 
 ### `codegg-core`
 
-45 modules covering core runtime, session, storage, bus, error, goal,
+54 modules covering core runtime, session, storage, bus, error, goal,
 identity, jobs, memory, migration, model_profile, model_routing,
 project_catalog, project_discovery, project_discovery_service,
 project_storage, projection_replay, protocol_conversions,
@@ -314,7 +314,7 @@ Key public API:
 
 ### `eggsact` (in-process, not a workspace crate)
 
-Consumed as a direct Rust dependency (`eggsact = "1.2.5"`), resolved and
+Consumed as a direct Rust dependency (`eggsact = "1.2.5"                # external crates.io dependency, not a member`), resolved and
 tested at `1.2.5` under CodeGG's Rust `1.89` MSRV. The adapter wraps
 `eggsact::agent::ToolRegistry` in-process:
 
@@ -340,7 +340,8 @@ the newer 1.2.5 utility tools.
   `egglsp::...` imports.
 - `src/security/mod.rs` — keeps policy, sandboxing, SSRF in Codegg;
   re-exports `eggsentry` submodules for backward compat.
-- `src/worktree/mod.rs` — keeps mutating worktree operations; re-exports
+- `crates/codegg-core/src/worktree.rs` — keeps mutating worktree operations; the
+  root crate re-exports it as `codegg_core::worktree`
   `list_worktrees` from `egggit`.
 - `src/eggsact/adapter.rs` — wraps `eggsact::agent::ToolRegistry` as
   an in-process dependency.
@@ -369,8 +370,8 @@ cargo test -p egggit
 cargo test -p eggsentry
 cargo test -p eggcontext
 cargo test -p egglsp --features lsp-test-support
-cargo test --test tool_registry
-cargo test --test tool_structured_execution
+cargo test --test tool_programs -- tool_registry
+cargo test --test tool_programs -- tool_structured_execution
 ```
 
 ## Related Docs
@@ -382,14 +383,47 @@ cargo test --test tool_structured_execution
 
 ## Source verification
 
-Verified 2026-10-06 against `Cargo.toml` (workspace `members`/`exclude`,
-`[workspace.dependencies]`), `crates/*/Cargo.toml`, and crate `lib.rs` files.
-Corrected: `codegg-core` module count 40 → 45 (all 45 `pub mod` names now
-listed and diffed against `lib.rs`); workspace members 11 → 12 (added
-`codegg-document`, `codegg-client`); added the previously undocumented
-`codegg-document` crate section and layout/dependency-graph entries;
-`egglsp` module count 56 → 39 `pub mod`; `LspError` 20+ → 26 variants;
-removed a duplicated `cargo test -p codegg-git` line. Confirmed
-`codegg-core` does not depend on `eggcontext` or `codegg-document`, and
-that `eggwork-test-node` / `egglsp-test-server` / `apps/desktop/src-tauri`
-are excluded.
+Verified 2026-10-23 against the root `Cargo.toml` (workspace `members`,
+`exclude`, `[workspace.dependencies]`, `[profile.*]`), every
+`crates/*/Cargo.toml`, and each crate's `src/lib.rs`, plus
+`src/lib.rs`, `src/tool/backend.rs`, `src/tool/backend_config.rs`,
+`src/lsp/mod.rs`, `src/security/mod.rs`, `src/eggsact/adapter.rs`,
+`crates/egglsp/src/error.rs`, and `tests/tool_programs/mod.rs`.
+
+Corrections made in this pass:
+
+- **`codegg-core` module count 45 → 54** in both places it appeared (the
+  layout-tree comment and the `codegg-core` section). The nine modules
+  added since were `checkout_reservation`, `decision`, `git_publication`,
+  `process_admission`, `run_placement`, `session_launch`,
+  `shared_checkout`, `workstream_claim`, and `writer_permit`. This matches
+  `architecture/overview.md`'s "Verified counts" table.
+- **Dead file path removed.** The bridge list pointed at
+  `src/worktree/mod.rs`, which does not exist. The worktree domain lives in
+  `crates/codegg-core/src/worktree.rs` and the root crate re-exports it as
+  `codegg_core::worktree` (`src/lib.rs:23`). There is no `src/worktree/`
+  directory in the root crate.
+- **Test target fixes.** `cargo test --test tool_registry` and
+  `cargo test --test tool_structured_execution` select nothing — both are
+  members of the root package's `tool_programs` family
+  (`tests/tool_programs/tool_registry.inc` and
+  `tests/tool_programs/tool_structured_execution.inc`). Corrected to
+  `cargo test --test tool_programs -- tool_registry` and
+  `cargo test --test tool_programs -- tool_structured_execution`.
+- **`eggsact` marked as an external dependency.** It is a crates.io
+  dependency pinned in the root manifest, not a workspace member and not a
+  `crates/` directory.
+
+Verified accurate, no change: the 12 workspace members and the
+`exclude` list (`crates/eggwork-test-node`, `apps/desktop/src-tauri`),
+`egglsp`'s 39 `pub mod` declarations and 26 `LspError` variants, the two
+distinct test-server binaries (`egglsp`'s own `egglsp-test-server` bin from
+`crates/egglsp/src/bin/`, and the root package's `codegg-lsp-test-server`
+bin built from `crates/egglsp-test-server/src/main.rs`, both behind
+`lsp-test-support`), `codegg-document`'s `crop = "=0.4.3"` pin with the
+`std` feature only, `codegg-providers` → `codegg-config` and
+`codegg-client` → `codegg-protocol` + `codegg-document`, the
+`ToolExecutionContext` field list, `ToolBackendConfig::from_config` and
+`ToolBackendConfig::all_native`, the `codegg-core` forbidden-dependency
+list (matching `scripts/check-core-boundary.sh`), and that no workspace
+member declares its own `[profile.*]` (all inherit the root's).

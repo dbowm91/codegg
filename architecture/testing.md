@@ -262,12 +262,12 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 cargo test -p codegg --lib plugin --all-features
 
 # Workspace isolation
-cargo test --test workspace_isolation
+cargo test --test agent_loop -- workspace_isolation
 
 # Adversarial tests
-cargo test --test command_routing_adversarial
-cargo test --test python_sandbox_adversarial
-cargo test --test context_projection_adversarial
+cargo test --test command_git -- command_routing_adversarial
+cargo test --test tool_programs -- python_sandbox_adversarial
+cargo test --test command_git -- context_projection_adversarial
 
 # Real LSP smoke tests (requires installed servers)
 cargo test -p egglsp --features lsp-real-server-tests \

@@ -29,7 +29,9 @@ equivalents.
    direct `project_id`, owning session row, or job session row), and
    evaluates via `AuthorizationService`.
 4. Creation arms capture the success decision context with the durable
-   record through `OriginAttributionStore` (`record_origin_with_decision`).
+   record through `CoreDaemon::record_origin_with_decision`, which writes
+   through `OriginAttributionStore::record`. The write is best-effort:
+   it warns and never fails the operation.
 
 ## LocalOwner composition
 
@@ -47,6 +49,12 @@ in-memory daemons without a pool decide under the same broad policy.
   `filter_projects_for_principal` reduces rows to `project.read` grants
   via `visible_projects`. A principal with no grants observes an empty
   list, never an error that confirms absence versus denial.
+  `workspace_dashboard` is the other operation routed through
+  `authorize_enumeration`; the remaining `enumeration`-scoped operations
+  (`connection_list_detail`, `provider_connection_list`,
+  `provider_setup_list`) carry no capability and are allowed for any
+  active principal, then filtered by their own redaction rules rather
+  than by project membership.
 - Single-project reads deny as not-found (`denial_as_not_found`): the
   `authorization_denied` shape for `ProjectGet` is byte-identical to the
   catalog's genuinely-absent shape, so unauthorized callers cannot infer
@@ -161,11 +169,15 @@ into the generic subscribe fails rather than silently regressing the gate.
 ## Attribution
 
 `OriginAttribution` is built from the bound principal plus the captured
-`AuthorizationDecision` (`from_authority`). One row per scope
-(`session`, `turn`, `job`, `provider`) in `origin_attribution`
-(introduced by migration v53; the catalog is at storage layout 68); the
-first write wins so the origin is immutable under concurrent writers.
-Restart-safe: file-DB close/reopen preserves rows.
+`AuthorizationDecision` (`from_authority`). One row per scope in
+`origin_attribution` (introduced by migration v53; the catalog is at
+storage layout 87). The store admits exactly **eight** scope kinds —
+`session`, `turn`, `run`, `job`, `worktree`, `provider`, `work_order`,
+and `continuation_grant` — and the Rust allow-list
+(`validate_attribution_scope`) and the SQL `CHECK` on the table agree;
+an unknown kind is refused rather than stored. The first write wins
+(`INSERT ... ON CONFLICT DO NOTHING`), so the origin is immutable under
+concurrent writers. Restart-safe: file-DB close/reopen preserves rows.
 
 Pre-M003 records carry no canonical principal and are attributed
 explicitly through `OriginAttribution::legacy_local` — the literal
@@ -194,6 +206,17 @@ exceed the session grant structurally; the contract-level negative
 time: personal connections are owner-only, project connections require
 the capability on the scoped project, deployment connections require an
 `Owner` grant somewhere (or the local-owner broad policy).
+
+## Audit bridge
+
+`authorization::audit_provenance` copies the decision provenance of a
+gate-enforced `AuthorizationDecision` into
+`codegg_core::audit::AuditDecisionProvenance` (decision id,
+correlation id, policy, project id). The daemon boundary calls it with
+the decision it *just* enforced, so the append-only audit store carries
+the real decision linkage. Instrumentation must use this bridge rather
+than fabricating provenance: request payloads supply locators, never
+authority. See `architecture/audit.md`.
 
 ## Projection adapter
 
@@ -262,6 +285,14 @@ mechanism under the operation name `job_submit_node_target`. It is
 deliberately *not* a new request: naming a node is an attribute of a
 job submission, not a separate authority to acquire.
 
+`node.target` is nonetheless reachable through one ordinary operation:
+`node_telemetry_read` (`CoreRequest::NodeTelemetry`) is `opaque` +
+`node.target`. Because it is opaque, a team principal fails closed with
+`authorization_scope_required` unless the project scope resolves
+server-side; the local-owner broad policy passes it. Reading node
+telemetry therefore never widens the *ability to target* a node — it
+is a separate read gated on the same capability.
+
 The second gate is only half the decision. The daemon-owned
 `RemoteTargetPolicy` (`src/core/remote_targets.rs`) is the other half:
 it holds the administrator's approved-node allowlist and posture
@@ -275,6 +306,24 @@ gate without team state, exactly as it passes every other gate.
 
 See `architecture/jobs.md` ("Explicit target boundary") for the shape
 gate and the schedule-preservation contract.
+
+### Session launch and the checkout split (M006)
+
+`session_launch` is `direct_project` + `session.create`: the session is
+the primary effect. Allocating a **managed checkout** is a *separate*
+effect — it creates a branch and a working tree in the repository — so a
+launch that allocates one passes a second gate,
+`CoreDaemon::authorize_launch_checkout`, under the synthetic operation
+name `worktree_create` (`direct_project` + `worktree.create`). A grant
+carrying `session.create` but not `worktree.create` therefore fails
+closed for a launch that allocates a checkout.
+
+A launch placed in an **existing** managed checkout allocates nothing,
+so it does not ask for `worktree.create`; the checkout it names is
+already owned by the project, and the service refuses a checkout
+belonging to another project. The second check returns `Ok(None)` when
+it does not apply, so the caller can tell "no second check applies"
+from "the second check passed".
 
 ### Team membership and device-token administration (team-collaboration M003)
 
@@ -418,11 +467,31 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (228 native operations; repository initialization adds
-`project_init_draft` and `project_init_publish`; M004 adds `audit_capabilities`,
-`audit_export`, `audit_query` — see `architecture/audit.md` for the
-audit store contract; collaboration M001 adds twelve `chat_*`
-operations below (all `project.chat` except the global
+rendering: **257 native operations** — 257 match arms carrying 257
+distinct operation names, covering all **263 `CoreRequest` variants**
+(239 struct-bodied + 24 unit). The three numbers are different
+things and are not interchangeable:
+
+- **263** — `CoreRequest` variants in `crates/codegg-protocol/src/core.rs`.
+- **257** — distinct operation names, one per `operation_descriptor`
+  arm. Several variants share one operation name (for example
+  `document_read` covers `DocumentOpen`, `DocumentSnapshotGet`,
+  `DocumentStatusGet`, and `DocumentClose`), so 257 names cover 263
+  variants.
+- **247** — entries in `representative_requests()`. That list is a
+  **sample**, not the operation set: it carries one request per
+  operation for 247 of the 257 operations, and **10 operations have no
+  representative request at all** — `document_read`, `document_create`,
+  `document_delete`, `document_modify`, `document_capabilities`,
+  `project_delete`, `project_init_draft`, `project_init_publish`,
+  `user_prompt_queue_send_now`, and `workspace_directory_list`. Do not
+  read the list as a 1:1 map over the operation set.
+
+Group provenance of the rows below: repository initialization adds
+`project_init_draft` and `project_init_publish`; M004 adds
+`audit_capabilities`, `audit_export`, `audit_query` — see
+`architecture/audit.md` for the audit store contract; collaboration M001
+adds thirteen `chat_*` rows (twelve on `project.chat` plus the global
 `chat_capabilities` negotiation row), of which M003 adds three
 `chat_action_*` rows on the same gate; collaboration M002 adds four
 chat-policy administration rows on `member.manage`; work orders M001
@@ -433,7 +502,6 @@ plus `work_order_bind_repository` on the same gates); M005 adds four
 not a Core operation):
 
 | Operation | Scope | Capability |
-|---|---|---|
 | `active_goal_load` | via_session | `session.read` |
 | `agent_select` | via_session | `agent.invoke` |
 | `approval_mode_set` | global | `none` |
@@ -444,10 +512,10 @@ not a Core operation):
 | `audit_capabilities` | global | `none` |
 | `audit_export` | direct_project | `audit.read` |
 | `audit_query` | direct_project | `audit.read` |
-| `chat_capabilities` | global | `none` |
 | `chat_action_get` | direct_project | `project.chat` |
 | `chat_action_list` | direct_project | `project.chat` |
 | `chat_action_submit` | direct_project | `project.chat` |
+| `chat_capabilities` | global | `none` |
 | `chat_channel_ensure` | direct_project | `project.chat` |
 | `chat_channel_list` | direct_project | `project.chat` |
 | `chat_channel_policy_set` | direct_project | `member.manage` |
@@ -482,10 +550,10 @@ not a Core operation):
 | `continuation_grant_revoke` | via_session | `agent.invoke` |
 | `continuation_grant_status` | via_session | `session.read` |
 | `document_capabilities` | global | `none` |
+| `document_create` | direct_project | `file.modify` |
+| `document_delete` | direct_project | `file.modify` |
 | `document_modify` | direct_project | `file.modify` |
 | `document_read` | direct_project | `file.read` |
-| `project_init_draft` | direct_project | `file.read` |
-| `project_init_publish` | direct_project | `file.modify` |
 | `edit_checkpoint_get` | opaque | `file.read` |
 | `edit_checkpoint_list` | via_session | `file.read` |
 | `edit_checkpoint_reapply` | via_session | `file.modify` |
@@ -505,6 +573,12 @@ not a Core operation):
 | `goal_set` | via_session | `agent.invoke` |
 | `goal_set_budget` | via_session | `session.create` |
 | `goal_show` | via_session | `session.read` |
+| `human_shell_promotion_stage` | via_session | `agent.invoke` |
+| `human_shell_promotions_get` | via_session | `agent.invoke` |
+| `human_shell_run_cancel` | direct_project | `command.execute` |
+| `human_shell_run_capabilities` | global | `none` |
+| `human_shell_run_create` | direct_project | `command.execute` |
+| `human_shell_run_read` | direct_project | `command.execute` |
 | `initialize` | global | `none` |
 | `interactive_process_attach` | global | `none` |
 | `interactive_process_capabilities` | global | `none` |
@@ -516,10 +590,6 @@ not a Core operation):
 | `interactive_process_resize` | global | `none` |
 | `interactive_process_resume` | global | `none` |
 | `interactive_process_terminate` | global | `none` |
-| `human_shell_run_cancel` | direct_project | `command.execute` |
-| `human_shell_run_capabilities` | global | `none` |
-| `human_shell_run_create` | direct_project | `command.execute` |
-| `human_shell_run_read` | direct_project | `command.execute` |
 | `job_attempts` | via_job | `session.read` |
 | `job_cancel` | via_job | `job.cancel` |
 | `job_get` | via_job | `session.read` |
@@ -528,11 +598,11 @@ not a Core operation):
 | `job_retry` | via_job | `job.cancel` |
 | `job_submit` | via_session | `job.submit` |
 | `job_wait` | via_job | `session.read` |
-| `lsp_preview_apply` | via_session | `file.modify` |
 | `lsp_completion_get` | via_session | `file.read` |
-| `lsp_read_get` | via_session | `file.read` |
 | `lsp_diagnostics_get` | direct_project | `file.read` |
 | `lsp_diagnostics_subscribe` | direct_project | `file.read` |
+| `lsp_preview_apply` | via_session | `file.modify` |
+| `lsp_read_get` | via_session | `file.read` |
 | `managed_worktree_archive` | opaque | `worktree.remove` |
 | `managed_worktree_cleanup` | opaque | `worktree.remove` |
 | `managed_worktree_get` | opaque | `git.read` |
@@ -543,18 +613,25 @@ not a Core operation):
 | `memory_search` | global | `none` |
 | `model_select` | via_session | `agent.invoke` |
 | `models_refresh` | global | `none` |
+| `network_intent_set` | global | `none` |
+| `node_telemetry_read` | opaque | `node.target` |
 | `notification_speak` | global | `none` |
 | `notification_stop` | global | `none` |
 | `permission_respond` | global | `none` |
+| `presence_capabilities` | global | `none` |
+| `presence_heartbeat` | direct_project | `project.observe` |
+| `presence_snapshot_get` | direct_project | `project.observe` |
 | `project_archive` | direct_project | `project.configure` |
 | `project_catalog_capabilities` | global | `none` |
 | `project_delete` | direct_project | `project.configure` |
-| `project_update` | direct_project | `project.configure` |
 | `project_get` | direct_project | `project.read` |
 | `project_health` | direct_project | `project.read` |
+| `project_init_draft` | direct_project | `file.read` |
+| `project_init_publish` | direct_project | `file.modify` |
 | `project_list` | enumeration | `project.read` |
 | `project_register` | opaque | `project.configure` |
 | `project_restore` | direct_project | `project.configure` |
+| `project_update` | direct_project | `project.configure` |
 | `projection_ack` | global | `none` |
 | `projection_artifact_list` | direct_project | `project.observe` |
 | `projection_artifact_read` | direct_project | `project.observe` |
@@ -574,9 +651,6 @@ not a Core operation):
 | `run_list` | opaque | `session.read` |
 | `run_rerun` | via_session | `agent.invoke` |
 | `runtime_policy_set` | global | `none` |
-| `network_intent_set` | global | `none` |
-| `scratch_reclaim` | opaque | `file.modify` |
-| `scratch_usage` | opaque | `none` |
 | `sandbox_profile_set` | global | `none` |
 | `schedule_create` | via_session | `job.submit` |
 | `schedule_delete` | opaque | `job.cancel` |
@@ -585,14 +659,22 @@ not a Core operation):
 | `schedule_pause` | opaque | `job.cancel` |
 | `schedule_resume` | opaque | `job.cancel` |
 | `scheduler_snapshot` | opaque | `session.read` |
+| `scratch_reclaim` | opaque | `file.modify` |
+| `scratch_usage` | opaque | `none` |
 | `session_archive` | via_session | `session.create` |
 | `session_attach` | via_session | `session.read` |
+| `session_control_get` | via_session | `session.read` |
+| `session_control_release` | via_session | `agent.invoke` |
+| `session_control_request` | via_session | `agent.invoke` |
+| `session_control_takeover` | via_session | `project.configure` |
+| `session_control_transfer` | via_session | `agent.invoke` |
 | `session_create` | direct_project | `session.create` |
 | `session_create_from_template` | direct_project | `session.create` |
 | `session_delete` | via_session | `session.create` |
 | `session_export` | via_session | `session.read` |
 | `session_fork` | via_session | `session.read` |
 | `session_import_data` | opaque | `session.create` |
+| `session_launch` | direct_project | `session.create` |
 | `session_lifecycle_get` | via_session | `session.read` |
 | `session_list` | direct_project | `session.read` |
 | `session_load` | via_session | `session.read` |
@@ -605,16 +687,8 @@ not a Core operation):
 | `session_selection_list` | via_session | `session.read` |
 | `session_selection_models` | via_session | `session.read` |
 | `session_selection_update` | via_session | `agent.invoke` |
-| `session_control_get` | via_session | `session.read` |
-| `session_control_release` | via_session | `agent.invoke` |
-| `session_control_request` | via_session | `agent.invoke` |
-| `session_control_takeover` | via_session | `project.configure` |
-| `session_control_transfer` | via_session | `agent.invoke` |
 | `session_share` | via_session | `project.configure` |
 | `session_unshare` | via_session | `project.configure` |
-| `presence_capabilities` | global | `none` |
-| `presence_heartbeat` | direct_project | `project.observe` |
-| `presence_snapshot_get` | direct_project | `project.observe` |
 | `snapshot_daemon` | global | `none` |
 | `snapshot_models` | global | `none` |
 | `snapshot_session` | via_session | `session.read` |
@@ -644,8 +718,14 @@ not a Core operation):
 | `turn_cancel` | via_session | `agent.invoke` |
 | `turn_steer` | via_session | `agent.invoke` |
 | `turn_submit` | via_session | `agent.invoke` |
-| `human_shell_promotion_stage` | via_session | `agent.invoke` |
-| `human_shell_promotions_get` | via_session | `agent.invoke` |
+| `user_prompt_queue_add` | via_session | `agent.invoke` |
+| `user_prompt_queue_adopt` | via_session | `agent.invoke` |
+| `user_prompt_queue_delete` | via_session | `agent.invoke` |
+| `user_prompt_queue_edit` | via_session | `agent.invoke` |
+| `user_prompt_queue_list` | via_session | `session.read` |
+| `user_prompt_queue_reorder` | via_session | `agent.invoke` |
+| `user_prompt_queue_send_now` | via_session | `agent.invoke` |
+| `user_prompt_queue_transfer` | via_session | `agent.invoke` |
 | `work_order_batch_create` | direct_project | `session.create` |
 | `work_order_bind_repository` | direct_project | `session.create` |
 | `work_order_cancel` | direct_project | `session.create` |
@@ -679,13 +759,6 @@ not a Core operation):
 | `workspace_services_snapshot` | global | `none` |
 | `workspace_snapshot_request` | opaque | `project.read` |
 | `worktree_list` | opaque | `git.read` |
-| `user_prompt_queue_list` | via_session | `session.read` |
-| `user_prompt_queue_add` | via_session | `agent.invoke` |
-| `user_prompt_queue_edit` | via_session | `agent.invoke` |
-| `user_prompt_queue_delete` | via_session | `agent.invoke` |
-| `user_prompt_queue_reorder` | via_session | `agent.invoke` |
-| `user_prompt_queue_adopt` | via_session | `agent.invoke` |
-| `user_prompt_queue_transfer` | via_session | `agent.invoke` |
 
 ### Deliberate divergence: the queue read is narrower than the promotion read
 
@@ -710,10 +783,23 @@ list, so a new queue operation must be classified rather than omitted.
 
 ### Queue mutation authority (M002b, ADR-0037, accepted — Option B)
 
-The six mutating operations require `agent.invoke`, which is the capability the
-**capability gate** enforces. That gate is necessary but **not sufficient**:
-`agent.invoke` says the caller may act on this project, not that this caller
-owns this session's queue.
+The six owner-gated mutating operations — `user_prompt_queue_add`,
+`user_prompt_queue_edit`, `user_prompt_queue_delete`,
+`user_prompt_queue_reorder`, `user_prompt_queue_adopt`, and
+`user_prompt_queue_transfer` — require `agent.invoke`, which is the
+capability the **capability gate** enforces. That gate is necessary but
+**not sufficient**: `agent.invoke` says the caller may act on this
+project, not that this caller owns this session's queue.
+
+The seventh `agent.invoke` queue operation,
+`user_prompt_queue_send_now`, is deliberately **not** one of the six
+(M006 / ADR-0036): it reaches a *running turn* rather than editing the
+queue, so it is gated by the **turn controller** alone. Binding it to
+the durable queue owner would refuse the legitimate case of a caller
+steering its own turn in a session it does not own. The queue-side
+ownership check still happens, but inside the settlement write, where it
+answers a different question ("may this principal change this queue?").
+Do not fold `send_now` into the six.
 
 The second condition is the **durable, session-scoped queue owner** (v81
 `user_prompt_queue_owner`), enforced by `ControllerScope::QueueMutation` /
@@ -739,8 +825,9 @@ than requiring indistinguishability.
 
 ### Audit: queue operations use `prompt_submit`, not `membership_change`
 
-Every queue mutation, **including adoption and transfer**, maps to the
-`prompt_submit` audit action in `INSTRUMENTED_OPERATIONS`. This **deliberately
+Every queue mutation, **including adoption, transfer, and `send_now`**, maps
+to the `prompt_submit` audit action in `INSTRUMENTED_OPERATIONS`. This
+**deliberately
 diverges** from `session_control_transfer`, which maps to `membership_change`.
 The divergence is directed by ADR-0037 — queue authority is queue authority —
 and is recorded rather than "corrected"; matching the transfer precedent would
@@ -755,11 +842,17 @@ id or a digest for an entry that is not yet a turn. Metadata carries entry
 identity, the actor's own owner identity, and a byte count. **No prompt text,
 and no digest of it**: a length is bounded, a digest is a content oracle.
 
+The daemon-internal **delivery** of a queued prompt is a separate builder,
+`user_prompt_queue_delivery_event`, because a delivery *does* have a turn id
+once the turn is admitted. It is not a `CoreRequest` operation and so carries
+no `operation_descriptor` row; it is covered by the synthetic
+`user_prompt_queue_deliver` name in `INSTRUMENTED_OPERATIONS`.
+
 ## Verification
 
 ```bash
 cargo test -p codegg-core --lib authorization
-cargo test --test identity_m003_daemon_authorization
+cargo test --test core_daemon -- identity_m003_daemon_authorization
 python3 scripts/check_authorization_matrix.py --verbose
 python3 scripts/check_project_catalog_invariants.py --verbose
 bash scripts/check-core-boundary.sh
@@ -769,27 +862,89 @@ scripts/verify.sh quick
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/authorization/policy.rs`
-(`operation_descriptor`, `:101`-`:1243`), `crates/codegg-protocol/src/core.rs`,
-and `crates/codegg-core/src/session/schema.rs`. Rebuilt the
-operation-capability matrix to the current 226 operations: extracted every
-operation-name literal from the `operation_descriptor` body (both the
-single-line `OperationDescriptor::new("name", …)` arms and the multi-line
-form) and confirmed an exact set-diff against the doc table in both
-directions — 226 doc rows, 226 source names, zero additions and zero
-removals. Corrected the prose count "188 native operations" → 226. Corrected
-the stale collaboration group size: M001 contributes twelve `chat_*`
-operations (the source section at `policy.rs:857`-`:923`), not fourteen, and
-only `chat_capabilities` is global rather than `project.chat`; confirmed M003's
-three `chat_action_*` rows on the same gate (`policy.rs:924`) and M002's four
-chat-policy administration rows on `member.manage` (`policy.rs:947`).
-Confirmed work orders M001 is seventeen `work_order_*` rows
-(`policy.rs:1099`-`:1192`), with `work_plan_*` and
-`work_order_bind_repository` on the same `session.create`/`session.read`
-gates, and M005's four `work_order_trigger_*` rows (`policy.rs:1193`).
-Corrected `origin_attribution`: introduced by migration v53 while the catalog
-is at storage layout 68. Verified accurate: the twelve M001 chat rows, the
-four chat-policy rows, the seventeen work-order rows and the
-`work_plan_*`/`work_order_bind_repository` rows, each cross-checked against
-the `ScopeKind`/`Capability` arguments of its `OperationDescriptor::new`
-call, plus the 226-row table structure.
+Verified 2026-10-23 against `crates/codegg-core/src/authorization/policy.rs`
+(`operation_descriptor`, `representative_requests`),
+`crates/codegg-core/src/authorization.rs`,
+`crates/codegg-core/src/authorization/authority.rs`,
+`crates/codegg-core/src/authorization/attribution.rs`,
+`crates/codegg-protocol/src/core.rs`,
+`crates/codegg-core/src/session/schema.rs`,
+`crates/codegg-core/src/audit_instrumentation.rs`,
+`src/core/daemon.rs`, `src/core/daemon_control.rs`, `src/core/daemon_turns.rs`,
+`src/core/daemon_queue_delivery.rs`, `src/core/remote_targets.rs`,
+`src/server/authz.rs`, and `src/tool/backend.rs`.
+
+**Counts re-measured.** Extracted every operation-name literal from the
+`operation_descriptor` body (both the single-line
+`OperationDescriptor::new("name", …)` arms and the multi-line form):
+**257 arms carrying 257 distinct operation names**. Mapped all **263**
+`CoreRequest` variants onto those arms — the match is exhaustive with no
+wildcard arm — and counted the `representative_requests()` list at **247**
+entries. Corrected the prose counts "228 native operations" → **257**, and the
+stale "226 operations" / "226 doc rows" → **257** operations and **257** doc
+rows. Corrected the stale collaboration group size: M001 contributes
+**thirteen** `chat_*` rows (twelve on `project.chat` plus the global
+`chat_capabilities` negotiation row), not twelve; confirmed M003's three
+`chat_action_*` rows on the same gate and M002's four chat-policy
+administration rows on `member.manage` — **20** `chat_*` rows in total.
+Confirmed work orders M001 is seventeen `work_order_*` rows, with
+`work_plan_*` and `work_order_bind_repository` on the same
+`session.create`/`session.read` gates, and M005's four
+`work_order_trigger_*` rows (**22** `work_order_*` plus **2** `work_plan_*`
+rows in total).
+
+**Table corrected and rebuilt.** The previous table was missing **five**
+rows that exist in the source: `document_create`, `document_delete`,
+`node_telemetry_read`, `session_launch`, and `user_prompt_queue_send_now`.
+The table was regenerated directly from the source arms — every row's scope
+and capability was re-derived from its `OperationDescriptor::new` arguments
+and the `Capability` serde wire names in `crates/codegg-core/src/team.rs` —
+and re-sorted alphabetically. The doc table and the source operation-name
+set now agree exactly: 257 rows, 257 names, zero additions, zero removals.
+
+**Sample-vs-set claim corrected.** `representative_requests()` is a sample,
+not the operation set: 10 operations have no representative request at all
+(`document_read`, `document_create`, `document_delete`, `document_modify`,
+`document_capabilities`, `project_delete`, `project_init_draft`,
+`project_init_publish`, `user_prompt_queue_send_now`,
+`workspace_directory_list`). The doc now states this instead of implying a
+1:1 correspondence.
+
+**Other corrections.** Corrected the attribution scope list: the store
+admits **eight** scope kinds (`session`, `turn`, `run`, `job`, `worktree`,
+`provider`, `work_order`, `continuation_grant`) — Rust allow-list and SQL
+`CHECK` agree — not the four the previous revision listed. Corrected the
+storage layout figure **68 → 87**
+(`crates/codegg-core/src/storage/mod.rs:STORAGE_LAYOUT_VERSION`). Corrected
+the attribution writer: `record_origin_with_decision` is a `CoreDaemon`
+method that writes through `OriginAttributionStore::record`, not a method on
+the store itself. Confirmed v53 creates `origin_attribution` additively with
+`PRIMARY KEY (scope_kind, scope_id)` (first-write-wins), v78 extends the scope
+`CHECK` with `continuation_grant`, and v81 creates
+`user_prompt_queue_owner`.
+
+**Verified accurate, unchanged.** The denial codes
+(`authorization_denied`, `authorization_scope_required`,
+`authorization_scope_ambiguous`, `authorization_principal_inactive`,
+`authorization_unavailable`) match `AuthorizationError::code`; the
+`denial_as_not_found` shape, `visible_projects`,
+`filter_projects_for_principal`, `narrow_authority`,
+`authorize_child_delegation`, `authorize_provider_use`,
+`team_capabilities_to_projection`, `bounded_resolver_for_principal`,
+`canonical_observe_access_for_project`, `effective_chat_access`,
+`route_disposition_table`, `authorize_control_response`,
+`authorize_control_response_for_turn`, `RemoteTargetPolicy`,
+`ControllerScope::QueueMutation`/`QueueAdoption`, and
+`AuthMethod::QueueDelivery`/`TransportClass::DaemonDelivery` all exist at
+the cited modules. Confirmed `user_prompt_queue_list` and
+`human_shell_promotions_get` are both in `UNINSTRUMENTED_OPERATIONS`, and
+that all seven `user_prompt_queue_*` mutating operations (including
+`send_now`) map to `prompt_submit` in `INSTRUMENTED_OPERATIONS`.
+
+**Gaps filled.** Added the `session_launch` / managed-checkout split
+(`authorize_launch_checkout` under the synthetic `worktree.create`
+operation), the `node_telemetry_read` operation's `node.target` gate, the
+`audit_provenance` bridge from an enforced decision to the audit store, the
+eight attribution scope kinds, and the `send_now` divergence from the six
+owner-gated queue mutations.
+

@@ -14,7 +14,7 @@ asset management.
 | File | Role |
 |------|------|
 | `src/agent/mod.rs` | Module declaration/re-export/composition surface; legacy `resolve_agents()` CLI boundary |
-| `src/agent/definition.rs` | `Agent` (18 fields), `AgentMode`, `AgentRuntimeKind` (6 variants), model aliases, execution profiles, config-layer resolution |
+| `src/agent/definition.rs` | `Agent` (19 fields), `AgentMode`, `AgentRuntimeKind` (6 variants), model aliases, execution profiles, config-layer resolution |
 | `src/agent/file_agents.rs` | Global/project agent-file loading (markdown/TOML), overlay flags, permission specs, lookup helpers |
 | `src/agent/loop.rs` | `AgentLoop` — struct definition, turn identity, live controls, constructors, and high-level `run`/`run_inner` sequencing |
 | `src/agent/tool_inspect.rs` | Pure tool-call inspection/classification (paths, bash/test/git/MCP), timeouts, model-flag gating |
@@ -51,6 +51,10 @@ asset management.
 | `src/agent/specialized_runtime.rs` | Host-owned finalization for security-review and research runtimes |
 | `src/agent/progress_recovery.rs` | `AutonomyState`, `RecoveryController` — bounded structured recovery |
 | `src/agent/mention.rs` | `@mention` parsing and agent filtering |
+| `src/agent/run_control.rs` | Daemon bridge for the durable run-control mailbox and live-turn map |
+| `src/agent/job_notification_recovery.rs` | M003 job-notice delivery dispositions (`notify_only` / `resume_owner` / `suppress`) |
+| `src/agent/convergence.rs` | Application-owned convergence coordinator over `ConvergenceStore` + `TaskTool` |
+| `src/agent/agent_loop_factory.rs` | Typed `AgentLoopBuildInput` → `AgentLoop` construction (daemon callers) |
 | `src/agent/builtins/generated.rs` | Auto-generated built-in agent definitions (do not edit) |
 
 ## How It Works
@@ -423,11 +427,12 @@ the bounded group projection through the same bus path. Durable notification
 claims prevent replay or concurrent reconciliation from duplicating terminal
 follow-ups.
 
-The `task` tool action set is the schema enum in `src/tool/task.rs:799`:
-`spawn`, `converge`, `convergence_status`, `convergence_decide`,
-`convergence_cancel`, `spawn_many`, `create_group`, `status` (`get` is the
-legacy alias), `message`, `interrupt`, `wait`, `cancel`, `status_group`,
-`wait_group`, `cancel_group`. `message` is ordinary bounded model input.
+The `task` tool action set is the schema enum in `src/tool/task.rs:1278`:
+`scratch_create`, `scratch_revoke`, `spawn`, `converge`, `convergence_status`,
+`convergence_decide`, `convergence_cancel`, `spawn_many`, `create_group`,
+`status` (`get` is the legacy alias), `message`, `interrupt`, `wait`, `cancel`,
+`status_group`, `wait_group`, `cancel_group`, `board`, `claim`,
+`release_claim`, `request_handoff`. `message` is ordinary bounded model input.
 `interrupt` sets the loop steering flag and delivers at the next safe
 boundary; it does not claim to preempt a side effect already executing.
 `wait` and `wait_group` clamp `timeout_ms` to 30,000 and a timeout means
@@ -478,6 +483,7 @@ pub struct Agent {
     pub steps: Option<usize>,
     pub system_prompt: Option<String>,
     pub permissions: HashMap<String, String>,
+    pub git_read_only: bool,
     pub hidden: bool,
     pub thinking_budget: Option<usize>,
     pub reasoning_effort: Option<String>,
@@ -498,9 +504,9 @@ pub enum AgentRuntimeKind {
 }
 ```
 
-### AgentLoop (`src/agent/loop.rs:86`)
+### AgentLoop (`src/agent/loop.rs:90`)
 
-The loop has 34 direct fields. Service and policy handles are grouped in
+The loop has 42 direct fields. Service and policy handles are grouped in
 `AgentLoopServices` so the coordinator cannot accidentally initialize one
 canonical concern independently of the others.
 
@@ -511,20 +517,27 @@ Full field list: `services`, `lifecycle`, `state`, `limits`, `steering`,
 `recent_findings`, `reviewer_denial_counts`, `original_user_prompt`,
 `current_user_prompt`, `subagent_pool`, `submission`, `workspace_root`,
 `max_tool_calls`, `goal_wall_clock`, `cancel_rx`, `steer_rx`, `pending_steer`,
-`local_paths`, `context_ledger`, `run_id`, `habit_project_namespace`,
-`habit_actions`, `habit_had_failure`.
+`local_paths`, `context_ledger`, `run_id`, `scratch_scope`,
+`peer_observation_rx`, `peer_observation_session_id`, `peer_group_members`,
+`peer_claim_targets`, `peer_observation_seen`, `peer_observation_gap`,
+`habit_project_namespace`, `habit_actions`, `habit_had_failure`.
 
 - **Coordinator state**: `state`, `limits`, `lifecycle`, `pending_steer`, and live control channels
 - **Identity**: `session_id`, `turn_id`, `run_id`, and immutable `workspace_root`
 - **Service boundary**: `services: AgentLoopServices` (provider, context, tool, recovery, persistence, and projection handles)
 - **Compatibility/observation**: `context_ledger`, `recent_findings`, and bounded habit observation
 - **Delegation**: `subagent_pool`, `submission`
+- **Scratch scope**: `scratch_scope` carries the turn's private scratch authority
+- **Peer observation (blackboard)**: the seven `peer_observation_*` /
+  `peer_group_members` / `peer_claim_targets` fields hold the bounded
+  same-session/same-group fact stream drained at provider boundaries
 
-### AgentLoopState (`src/agent/loop.rs:56`)
+### AgentLoopState (`src/agent/loop.rs:55`)
 
 ```rust
 pub struct AgentLoopState {
     pub current_agent: String,
+    pub reasoning_override: Option<String>,
     pub turn_count: usize,
     pub total_tokens: usize,
     pub start_time: Instant,
@@ -537,7 +550,7 @@ pub struct AgentLoopState {
 }
 ```
 
-### ExecutionLimits (`src/agent/loop.rs:70`)
+### ExecutionLimits (`src/agent/loop.rs:74`)
 
 ```rust
 pub struct ExecutionLimits {
@@ -554,7 +567,7 @@ runtime kind, resolved model, and effective permissions.
 `resolve()` applies model inheritance: agent.model → fallback_model →
 parent model → config model → emergency default.
 
-### EMERGENCY_DEFAULT_MODEL (`src/agent/definition.rs:379`)
+### EMERGENCY_DEFAULT_MODEL (`src/agent/definition.rs:390`)
 
 ```rust
 pub const EMERGENCY_DEFAULT_MODEL: &str = "openai/gpt-4o";
@@ -562,7 +575,7 @@ pub const EMERGENCY_DEFAULT_WORKHORSE_MODEL: &str = "openai/gpt-4o-mini";
 ```
 
 `EMERGENCY_DEFAULT_WORKHORSE_MODEL` is defined at
-`src/agent/definition.rs:382`.
+`src/agent/definition.rs:393`.
 
 ### Durable delegated runs
 
@@ -668,7 +681,7 @@ read/control compatibility surfaces for older clients and standalone mode.
 New daemon clients should prefer typed run IDs, `wait`/group joins, and push
 notifications.
 
-### Model Aliases (`src/agent/definition.rs:374`)
+### Model Aliases (`src/agent/definition.rs:385`)
 
 ```rust
 pub const MODEL_ALIAS_FRONTIER: &str = "tier.frontier";
@@ -680,6 +693,8 @@ pub const MODEL_ALIAS_WORKHORSE: &str = "tier.workhorse";
 ```rust
 pub struct SubAgentRequest {
     pub task_id: u64,
+    pub child_instance_id: String,
+    pub originating_turn_id: Option<String>,
     pub run_id: Option<codegg_core::identity::AgentRunId>,
     pub prompt: String,
     pub agent: String,
@@ -696,6 +711,8 @@ pub struct SubAgentRequest {
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     pub parent_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
 }
 ```
 
@@ -703,7 +720,11 @@ pub struct SubAgentRequest {
 `workspace_locks` is shared with the owning turn when the child runs in the same
 workspace; `parent_sandbox_profile` is the parent-turn ceiling the child is
 narrowed against and can never broaden, and a `FullHost` request under a
-constrained parent fails closed.
+constrained parent fails closed. `child_instance_id` is the delegated child's
+own instance identity (the worker fills a fresh UUID when it is empty) and
+`originating_turn_id` is the turn the child was dispatched from;
+`process_admission` and `writer_fence` carry the scheduler-bound process
+admission and checkout-writer authorities the child executor was given.
 
 ### SubAgentReport (`src/agent/worker.rs:31`)
 
@@ -756,7 +777,7 @@ session state is active; WorkOrder remains distinct from live task delegation.
 `MemoryRead`, `PluginExecute`. The capability set is
 monotonic and supports intersection for parent ceiling enforcement.
 
-### AgentRegistry (`src/agent/registry.rs:377`)
+### AgentRegistry (`src/agent/registry.rs:378`)
 
 Central registry separating declarative sources from resolved runtime
 agents. API: `load_for_context()`, `get()`, `list()`, `list_visible()`,
@@ -1052,7 +1073,7 @@ verification remains authoritative.
 - Compaction: `tests/agent_loop/compaction.inc`
 - Narrowest run:
   ```bash
-  cargo test -p codegg --test compaction
+  cargo test --test agent_loop -- compaction
   cargo test -p codegg --lib agent
   ```
 
@@ -1069,13 +1090,17 @@ verification remains authoritative.
 ## Source Verification
 
 Verified 2026-10-06 against source. Corrected: `AgentLoop` field count
-32 → 34 (all 34 names now listed, `src/agent/loop.rs:86`);
-`SubAgentRequest` listing 11 → 16 fields (`src/agent/worker.rs:82`);
+32 → 34 (all 34 names now listed, `src/agent/loop.rs:86` — the count has
+drifted again since; see the third pass below);
+`SubAgentRequest` listing 11 → 16 fields (`src/agent/worker.rs:82` — also
+drifted since; see the third pass below);
 `Capability` 12 → 15 kinds (`src/agent/tool_surface.rs:15`); stale refs
 `tool_surface.rs:14` → `:15`, `policy.rs:4` → `:5`,
 `registry.rs:374` → `:377`, `ToolExposureMode`. Verified accurate:
-`Agent` (18 fields, `definition.rs:78`), `AgentRuntimeKind` (6 variants,
-`:30`), `AgentLoopState` (10 fields, `loop.rs:56`), `ExecutionLimits`
+`Agent` (18 fields, `definition.rs:78` — now 19; see the third pass below),
+`AgentRuntimeKind` (6 variants,
+`:30`), `AgentLoopState` (10 fields, `loop.rs:56` — now 11; see the third
+pass below), `ExecutionLimits`
 (3 fields, `loop.rs:70`), `SubAgentReport` (6 fields, `worker.rs:31`),
 `ModelRouter` (`router.rs:22`), `ExecutionPolicy` (13 fields,
 `policy.rs:12`), `EMERGENCY_DEFAULT_MODEL` (`:379`), `MODEL_ALIAS_*`
@@ -1085,10 +1110,11 @@ Second pass (2026-10-06) against all of `src/agent/*.rs`,
 `src/tool/task.rs`, `src/agent/builtins/generated.rs`, `assets/agents/*.toml`,
 and the three referenced guard scripts:
 - **`task` tool action set was stale.** It listed six ops; the schema enum at
-  `src/tool/task.rs:799` has sixteen, and the four `convergence_*` plus four
+  `src/tool/task.rs:799` had sixteen, and the four `convergence_*` plus four
   `*_group` ops were undocumented at the durable-run-control section even
   though the bounded-run-groups section described them. Rewrote the list from
-  the enum and added the `wait_group` 30s clamp (`task.rs:1101`).
+  the enum and added the `wait_group` 30s clamp (re-anchored on 2026-10-23
+  to `task.rs:1703`).
 - "Where It Lives" listed `src/agent/loop.rs` twice (two rows); merged into
   one and annotated the verified `Agent` / `AgentRuntimeKind` shapes.
 - Verified accurate: every `src/agent/*` path in the inventory table;
@@ -1122,3 +1148,80 @@ and the three referenced guard scripts:
   and all three guard scripts, including that
   `check_daemon_cwd_usage.py` guards `core/**` plus `agent/turn_runtime.rs`
   and `agent/worker.rs` specifically.
+
+Third pass (2026-10-23) against tree `12999178a` (static grep and file reads
+only; no build or test run). The two earlier passes were written against a
+2026-10-06 tree; several anchors had drifted.
+
+Counts corrected:
+- **`AgentLoop` has 42 direct fields, not 34.** The seven missing names are
+  `scratch_scope`, `peer_observation_rx`, `peer_observation_session_id`,
+  `peer_group_members`, `peer_claim_targets`, `peer_observation_seen`, and
+  `peer_observation_gap` (`src/agent/loop.rs:90`). The list and the count are
+  now complete and agree.
+- **`Agent` has 19 fields, not 18.** The missing field is `git_read_only`
+  (`src/agent/definition.rs:78`).
+- **`AgentLoopState` has 11 fields, not 10.** The missing field is
+  `reasoning_override` (`src/agent/loop.rs:55`).
+- **`SubAgentRequest` has 21 fields, not 16.** The missing fields are
+  `child_instance_id`, `originating_turn_id`, `process_admission`, and
+  `writer_fence` (`src/agent/worker.rs:82`).
+- **The `task` tool action set has 22 entries, not 16.** The schema enum is
+  now `src/tool/task.rs:1278`; the six undocumented entries are
+  `scratch_create`, `scratch_revoke`, `board`, `claim`, `release_claim`, and
+  `request_handoff` (the last four are the blackboard surface, which the
+  bounded-run-groups section already described).
+
+Line anchors corrected:
+- `AgentLoop` `loop.rs:86` → `:90`; `AgentLoopState` `loop.rs:56` → `:55`;
+  `ExecutionLimits` `loop.rs:70` → `:74` and its defaults `loop.rs:79-81` →
+  `:83-85` (the `Default` impl starts at `:80`).
+- `AgentRegistry` `registry.rs:377` → `:378`.
+- `EMERGENCY_DEFAULT_MODEL` `definition.rs:379` → `:390`;
+  `EMERGENCY_DEFAULT_WORKHORSE_MODEL` `:382` → `:393`; `MODEL_ALIAS_*`
+  `:374` → `:385`.
+- `SubAgentPool`/`SubAgentSpawner` `worker.rs:284`/`:752` → `:312`/`:810`.
+- `PromptCompiler` `prompt.rs:338` → `:317`; `ProviderTurnAdapter`
+  `provider_turn.rs:42` → `:43`; `MAX_ATTEMPTS` `provider_turn.rs:64` → `:65`;
+  the backoff helper is `backoff_cap` (`provider_turn.rs:467`), not
+  `:532-534`.
+- `TurnRunInput`/`DefaultTurnRuntime` `turn_runtime.rs:84`/`:193` → `:84`/`:235`;
+  per-turn construction is `AgentLoopBuildInput` (`turn_runtime.rs:927`).
+- `AgentLoopServices`/`TurnLifecycle` `coordinator.rs:44`/`:122` →
+  `:44`/`:153`; the 6 `TurnPhase` variants are at `coordinator.rs:141`.
+- `AgentLoop::run`/`run_inner` `loop.rs:766`/`:776` → `:909`/`:919`.
+- `apply_semantic_routing` `request_preparation.rs:691` → `:703`; its single
+  call site `loop.rs:846` → `:989`.
+- `AssetContext` `asset_context.rs:82` → `:84`.
+- The compatibility re-export is `src/agent/compaction.rs:7` (the file is
+  7 lines; the `pub use` is the last one).
+- 5-layer agent resolution and the `~/.config/codegg/agents` +
+  `.codegg/agents` paths: `definition.rs:484-516` → `resolve_agents_with_context`
+  at `definition.rs:495`.
+- The 30s `timeout_ms` clamp is at `task.rs:1703` (`wait_group`) and
+  `task.rs:1760` (`wait`); the 2026-10-06 entry's `task.rs:1101` is stale.
+
+Also corrected:
+- The "Narrowest run" block's `cargo test -p codegg --test compaction` was
+  rewritten to the family form (`cargo test --test agent_loop -- compaction`);
+  `compaction` is a member of the `agent_loop` family.
+- "Where It Lives" gained the four agent-module rows that existed in the tree
+  but were not listed: `src/agent/run_control.rs`,
+  `src/agent/job_notification_recovery.rs`, `src/agent/convergence.rs`, and
+  `src/agent/agent_loop_factory.rs`.
+
+Verified accurate on 2026-10-23: `AgentRuntimeKind` (6 variants,
+`definition.rs:30`); `SubAgentReport` (6 fields, `worker.rs:31`);
+`ModelRouter` (`router.rs:22`); `ExecutionPolicy` (13 fields, `policy.rs:12`);
+`ToolExposureMode` (`policy.rs:5`); the 15 `Capability` kinds
+(`tool_surface.rs:15`); `ContextFrame` (`context_frame.rs:131`);
+`compact_if_needed` (`context_runtime.rs:827`); the bounded
+`RunControlService::wait` (`run_control.rs:318`);
+`ProjectAssetSnapshot`/`AssetRefreshCoordinator` (`asset_snapshot.rs:34`,
+`asset_refresh.rs:130`); `MAX_GROUP_MEMBERS` 16 and `MAX_GROUP_WAIT_MS` 30,000
+(`crates/codegg-core/src/agent_run_group.rs:20-22`); `OrchestrationTier`
+variants `SoloPreferred`/`ConvergenceCapable`
+(`crates/codegg-config/src/schema.rs:105`/`:107`); `Arc<ExecutionContext>` on
+`AgentLoopBuildInput` (`agent_loop_factory.rs:27`); the 10 built-in agents in
+`generated.rs` (and 10 `assets/agents/*.toml`); and the absence of
+`src/agent/team.rs`.

@@ -44,12 +44,26 @@ paths without a native instance; unknown names remain `Mutating`.
 Categories with `is_permission_free() == true` (`ReadOnly`,
 `SafeMutating`) short-circuit `PermissionChecker::check()` to `Allow`
 before any store/rule/glob lookup, unless a persistent `Deny` is in
-the store. This covers `read`, `glob`, `grep`, `list`, `webfetch`,
-`websearch`, `codesearch`, `repo_search`, `repo_fetch`, `repo_map`,
-`research`, `research_search`, `batch_fetch`, `security_search`,
-`evidence_bundle`, `lsp`, `diff`, `security`, `skill`,
-`tool_search`, `context_read`, `plan_enter`, `plan_exit`, `todowrite`, `todoread`,
-`question`.
+the store.
+
+`ReadOnly` (28 names): `read`, `glob`, `grep`, `list`, `webfetch`,
+`websearch`, `codesearch`, `lsp`, `diff`, `security`, `skill`,
+`tool_search`, `plan_enter`, `plan_exit`, `repo_search`, `repo_fetch`,
+`repo_map`, `research`, `research_search`, `batch_fetch`,
+`security_search`, `evidence_bundle`, `mcp_resource_search`,
+`mcp_resource_read`, `memory_search`, `memory_get`, `context_read`,
+`extension_search`.
+
+`SafeMutating` (5 names): `todowrite`, `todoread`, `question`,
+`invalid`, `extension_install_request`.
+
+The short-circuit is **name-based** and lives only in `check()`. The
+args-carrying entry point `check_with_args()` (used for `bash`,
+`terminal`, `test`, `git`) does **not** short-circuit — it has its own
+scope lookup and its own shell-specific fallback. In practice the only
+args-carrying callers are `bash` and `git`
+(`src/agent/tool_batch.rs`), neither of which is permission-free, so the
+two paths do not disagree.
 
 ### Check Flow
 
@@ -59,10 +73,14 @@ ToolCallRequested
     ▼
 PermissionChecker::check()  (or check_with_args for shell)
     │
-    ├──► Tool category short-circuit (ReadOnly / SafeMutating)
+    ├──► Tool category short-circuit (ReadOnly / SafeMutating)   [check() only]
     │         │
     │         ├── Persistent Deny in store → Deny
     │         └── otherwise                → Allow
+    │
+    ├──► Policy/sandbox denial (effective_policy_denies)
+    │         │
+    │         └── Deny → Return Deny
     │
     ├──► Check PermissionStore (cached, HMAC-verified)
     │         │
@@ -87,13 +105,13 @@ PermissionChecker::check()  (or check_with_args for shell)
     │
     └──► Return default (Ask/Allow/Deny)
 
---- If result is Ask, AgentLoop handles the dialog: ---
+--- If result is Ask, the tool batch handles the dialog: ---
 
-AgentLoop::check_tool_permission()
+ToolBatch::check_tool_permission()  (src/agent/tool_batch.rs)
     │
     ├──► Create oneshot channel
     │
-    ├──► PermissionRegistry::register(perm_id, tx)
+    ├──► PermissionRegistry::register_with_session(session, turn, perm_id, tx)
     │         [Registration-before-publish; sync fn, NOT async]
     │
     ├──► GlobalEventBus::publish(PermissionPending { ... })
@@ -103,10 +121,15 @@ AgentLoop::check_tool_permission()
     │     Always bounded below by the registry orphan guard —
     │     see "Orphan Guard" below)
     │
-    ├──► User responds → PermissionRegistry::respond(perm_id, choice)
+    ├──► User responds → PermissionRegistry::respond_scoped(session_id, perm_id, choice)
     │
     └──► Cache decision if AlwaysAllow/AlwaysDeny
 ```
+
+The single production human-wait owner is
+`ApprovalRouter::request_human_approval()` (`src/permission/approval.rs`),
+which performs the register → publish → wait → unregister sequence.
+`scripts/check_approval_router.py` enforces that it stays the only owner.
 
 ### Orphan Guard
 
@@ -129,15 +152,19 @@ its `session_id` did not match leaves the waiter with no sender to wake it.
 
 ### Bash Command Handling
 
-Structured native file operations (`read`, `write`, `edit`, `apply_patch`, and
-`replace`) may target the authenticated workspace or the session's private
+Structured native **mutations** (`write`, `edit`, `apply_patch`, `replace`)
+may target the authenticated workspace or the session's private
 or explicitly shared scratch directories. Mutations inside those
 host-validated roots do not trigger the general permission default, including
-`permission.default = "ask"`.
-Stored decisions, explicit tool or path rules, and hard denials still apply.
+`permission.default = "ask"` — `check_trusted_root_mutation()` relaxes
+*only* the implicit default `Ask`, and returns `Deny` outright for any
+tool outside that four-tool set. Stored decisions, explicit tool or path
+rules, and hard denials still apply.
 The broker supplies session identity; each tool resolves the CodeGG-managed
 directory and applies the same symlink-aware validator beneath that root.
-Relative paths continue to resolve from the workspace. Scratch access does
+Relative paths continue to resolve from the workspace — a relative path is
+resolved against the workspace root only, never against scratch or a
+secondary root. Scratch access does
 not apply to another session, human shell, plugins, or arbitrary absolute
 paths.
 
@@ -202,7 +229,8 @@ commands like `ls`, `cat`, `cargo build`, `git status` even in a
 strict `default = "ask"` config.
 
 Safe bash patterns are defined in `default_bash_allow_patterns()`
-(`src/permission/mod.rs:1706`). Users can extend or override these via
+(`src/permission/mod.rs`, `default_bash_allow_patterns()`). Users can extend
+or override these via
 `bash_allow_patterns` and `bash_deny_patterns` config fields.
 
 For Bash, rules retain the tier order agent > session > config. Within one
@@ -284,7 +312,7 @@ authoritative.
 
 ## Key Types & APIs
 
-### PermissionLevel (`src/permission/mod.rs:197`)
+### PermissionLevel (`src/permission/mod.rs`)
 
 ```rust
 pub enum PermissionLevel {
@@ -294,7 +322,7 @@ pub enum PermissionLevel {
 }
 ```
 
-### PermissionResult (`src/permission/mod.rs:214`)
+### PermissionResult (`src/permission/mod.rs`)
 
 ```rust
 pub enum PermissionResult {
@@ -304,14 +332,14 @@ pub enum PermissionResult {
 }
 ```
 
-### PermissionDecisionReceipt (`src/permission/mod.rs:226`)
+### PermissionDecisionReceipt (`src/permission/mod.rs`)
 
 Ephemeral receipt produced when the permission boundary accepts a call.
-Contains `decision_id`, `outcome`, `source`, `issued_at`, and optional
-`policy_revision`. Callers must not manufacture policy revisions from
-unrelated session identifiers after evaluation.
+Contains `decision_id`, `outcome` (a `PermissionLevel`), `source`,
+`issued_at`, and optional `policy_revision`. Callers must not manufacture
+policy revisions from unrelated session identifiers after evaluation.
 
-### PermissionChoice (`src/permission/mod.rs:261`)
+### PermissionChoice (`src/permission/mod.rs`)
 
 ```rust
 pub enum PermissionChoice {
@@ -325,7 +353,7 @@ pub enum PermissionChoice {
 Bidirectional `From` impls convert between `PermissionChoice` (domain)
 and `PermissionDecision` (bus DTO).
 
-### PermissionRuleset (`src/permission/mod.rs:360`)
+### PermissionRuleset (`src/permission/mod.rs`)
 
 ```rust
 pub struct PermissionRuleset {
@@ -335,7 +363,7 @@ pub struct PermissionRuleset {
 }
 ```
 
-### ToolRule (`src/permission/mod.rs:307`)
+### ToolRule (`src/permission/mod.rs`)
 
 ```rust
 pub struct ToolRule {
@@ -349,7 +377,7 @@ pub struct ToolRule {
 `matches()` supports `*` wildcard and glob compilation.
 `matches_bash_command()` checks bash command patterns similarly.
 
-### PermissionChecker (`src/permission/mod.rs:805`)
+### PermissionChecker (`src/permission/mod.rs`)
 
 Main enforcement point:
 
@@ -361,23 +389,42 @@ pub struct PermissionChecker {
     store: Arc<RwLock<PermissionStore>>,
     compiled_globs: Vec<(globset::GlobMatcher, PermissionLevel)>,
     canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>,
+    canonicalized_explicit_config_tool_rules: Vec<CanonicalizedToolRule>,
     canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>,
     canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
+    legacy_exec_mode: bool,
     path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
+    temp_root_offers: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 ```
 
+`canonicalized_explicit_config_tool_rules` holds only the levels the
+operator actually wrote (`explicit_config_ruleset()`), so a built-in
+default never looks like a deliberate operator decision.
+`legacy_exec_mode` records that `with_exec_mode()` was applied.
+`temp_root_offers` is the in-memory, per-session "already offered this
+redirect" set (see "The temp-root redirect offer" above).
+
 Key methods:
 - `check(tool, path, session_id)` — main entry point (async)
+- `check_legacy(tool, path)` — no-session variant
 - `check_bash(path, command, session_id)` — bash-specific with
   destructive-pattern fallback
+- `check_bash_legacy(path, command)` — no-session bash variant
 - `check_git(path, subcommand, session_id)` — git-specific
 - `check_with_args(tool, path, args, session_id)` — generic with args
+- `check_trusted_root_mutation(tool, path, allowed_roots, session_id)` —
+  relaxes only the implicit default `Ask` for a structured mutation
+  addressed to an authenticated root
+- `temp_root_redirect_offer(tool, path, allowed_roots, private_scratch, session_id)` —
+  returns the non-authoritative redirect message, or `None`
 - `with_session_rules(rules)` — per-session overrides
 - `with_agent_rules(rules)` — per-agent overrides
 - `with_active_mode(config)` — wires built-in modes into agent rules
 - `with_exec_mode()` — CI/CD mode, all destructive tools auto-allowed
 - `always_allow(tool, path, session_id)` / `always_deny(...)` — persist
+- `always_allow_scoped(...)` / `always_deny_scoped(...)` — persist with a
+  capability scope
 - `clear_decisions()` — wipe cached decisions
 
 ### Agent declarations vs. operator config
@@ -412,7 +459,7 @@ invocation?", and only the tool sees the argv that separates `branch` from
 `branch -d`. It never widens anything: an agent must also be permitted to use
 `git` at all, and any `deny` on `git` still wins.
 
-### PermissionStore (`src/permission/mod.rs:507`)
+### PermissionStore (`src/permission/mod.rs`)
 
 HMAC-signed persistent decision cache:
 
@@ -425,6 +472,7 @@ pub struct PermissionStore {
 pub struct PersistentDecision {
     pub tool: String,
     pub path: Option<String>,
+    pub scope: Option<String>,     // M007 capability scope (cmd:<argv0>, git:<sub>, …)
     pub level: PermissionLevel,
     pub created_at: i64,
     pub signature: String,           // HMAC-SHA256 via CODEGG_PERM_KEY
@@ -434,9 +482,18 @@ pub struct PersistentDecision {
 
 - Session-specific decisions checked first, then global
 - HMAC signature prevents tampering (`CODEGG_PERM_KEY` env var)
-- Persists to `~/.config/codegg/permissions.json`
+- Persists to `~/.config/codegg/permissions.json` — via
+  `canonical_permission_store_path()` (`src/permission/approval.rs`),
+  which honors the `CODEGG_PERMISSIONS_PATH` override. Production
+  `PermissionChecker` constructors use it; subagents get an ephemeral
+  store (`None`) so a child cannot write a global grant.
+- `scope` is `#[serde(default)]`: a pre-M007 file stays readable, and a
+  legacy broad row (no scope) keeps matching every command family for
+  its tool/path. The scope is part of the HMAC input, and
+  `DECISION_SCOPE_MAX_LEN` (80) bounds the serialized scope so a scope
+  can never carry raw command text.
 
-### DoomLoopDetector (`src/permission/mod.rs:1965`)
+### DoomLoopDetector (`src/permission/mod.rs`)
 
 Detects repetitive tool call patterns using window-based counting:
 
@@ -482,24 +539,29 @@ Modes are activated via `[mode.review]` (etc.) in config; the
 permission checker merges mode rules into agent-level rules via
 `with_active_mode()`.
 
-### PermissionRegistry (`crates/codegg-core/src/bus/mod.rs:88`)
+### PermissionRegistry (`crates/codegg-core/src/bus/mod.rs`)
 
 The ask-response broker. **All methods are synchronous (`fn`), NOT
-async.** Uses a `DashMap` with 310s TTL auto-cleanup.
+async.** Uses a `DashMap`; age-based eviction is **off by default**
+(`pending_ttl = PENDING_TTL_UNBOUNDED`) and is armed by the caller (see
+"Orphan Guard").
 
 ```rust
 pub struct PermissionRegistry {
     senders: DashMap<String, PendingPermission>,
     last_cleanup_ms: AtomicU64,
+    pending_ttl: AtomicU64,
 }
 ```
 
 Key methods:
-- `register(perm_id, tx)` — backward-compatible, session = "default"
+- `register(perm_id, tx)` — backward-compatible, session = `"default"`
 - `register_with_session(session_id, turn_id, perm_id, tx)` — full
   session/turn scoping
 - `respond(perm_id, choice)` — backward-compatible
-- `respond_scoped(session_id, perm_id, choice)` — session-verified
+- `respond_scoped(session_id, perm_id, choice)` — session-verified; this
+  is the production reply path (`src/core/daemon_turns.rs`,
+  `src/server/routes/permission.rs`, `src/server/ws.rs`)
 - `unregister(perm_id)` / `unregister_scoped(session_id, perm_id)`
 - `is_registered(perm_id)` / `is_registered_scoped(session_id, perm_id)`
 - `pending_permission_ids()` — all pending across sessions
@@ -507,6 +569,14 @@ Key methods:
 - `resolve_pending_owner(perm_id)` — recovers `(session_id, turn_id)` for a
   **simple** (unprefixed) id; returns `None` when the id is unknown *or*
   when more than one session owns it, so an ambiguous reply fails closed
+- `set_pending_ttl(Option<Duration>)` / `pending_ttl()` — the orphan
+  guard's age bound
+
+`QuestionRegistry` sits next to it in the same module with the same
+shape: `register`/`register_with_session`/`unregister`/
+`unregister_scoped`/`is_registered`/`is_registered_scoped`/
+`resolve_pending_owner`/`get_pending_for_session`, plus
+`answer_question`/`answer_question_scoped` for the reply.
 
 ### Response Identifier Shapes
 
@@ -608,10 +678,25 @@ doom_loop = "ask"
 # Bash-specific patterns
 bash_allow_patterns = ["cargo *"]
 bash_deny_patterns = ["rm -rf *"]
+# Extra shell shapes that escalate to an approval prompt (additive to the
+# built-in risk signals; a review signal, not an execution boundary).
+bash_ask_patterns = ["curl * | sh"]
 allow_all_bash = false
+
+# Bound the human wait. Omit (the default) to wait indefinitely.
+approval_timeout_secs = 300
 ```
 
-### PERMISSION_TYPES Constant (`src/permission/mod.rs:115`)
+The per-tool keys accept either a plain action string or an object form
+(`PermissionRule` in `crates/codegg-config/src/schema.rs` is an untagged
+`Action(String) | Object(HashMap<String, String>)`); a wrong shape
+silently discards the whole file, so validate with
+`codegg validate --config <file>`.
+
+`permission.sandbox_mode` is also part of this block and is read by the
+sandbox-profile resolution, not by the permission checker.
+
+### PERMISSION_TYPES Constant (`src/permission/mod.rs`)
 
 27 recognized tool permission names: `read`, `edit`, `glob`, `grep`,
 `list`, `bash`, `git`, `task`, `todowrite`, `todoread`, `question`,
@@ -619,6 +704,13 @@ allow_all_bash = false
 `repo_map`, `research`, `research_search`, `batch_fetch`,
 `security_search`, `evidence_bundle`, `lsp`, `doom_loop`, `skill`,
 `plan_enter`, `plan_exit`.
+
+`PERMISSION_TYPES` is the *config* vocabulary — it is not the same list
+as the permission-free categories in `tool_category_for_name()`, which
+also names `diff`, `security`, `tool_search`, `context_read`,
+`mcp_resource_search`, `mcp_resource_read`, `memory_search`,
+`memory_get`, `extension_search`, `extension_install_request`, and
+`invalid`.
 
 ## Invariants & Gotchas
 
@@ -638,16 +730,16 @@ allow_all_bash = false
    Deferred/profile-specific disclosure changes advertisement, never the
    broker/permission/contract boundary. Hidden tools (`invalid`,
    `DisabledTool` stubs) are never discoverable.
-4. **Path canonicalization TTL is 1 second** (`PATH_CANONICALIZE_CACHE_TTL_SECS`).
+5. **Path canonicalization TTL is 1 second** (`PATH_CANONICALIZE_CACHE_TTL_SECS`).
    Not-found entries also cache for 1s.
-5. **Session isolation.** Session-specific decisions are checked before
+6. **Session isolation.** Session-specific decisions are checked before
    global decisions. A Deny at any layer overrides allows at lower
    layers.
-6. **Exec mode** (`with_exec_mode()`) sets `default = Allow` and allows
+7. **Exec mode** (`with_exec_mode()`) sets `default = Allow` and allows
    bash, edit, task, todowrite — for CI/CD where no TUI is available.
    It is a headless compatibility adapter, distinct from user `Yolo`
    (M003 preserves `with_exec_mode()` and documents the separation).
-7. **M003 approval routing (ADR-0004).** Deterministic
+8. **M003 approval routing (ADR-0004).** Deterministic
    `PermissionChecker`/`SecurityService` evaluation normalizes to
    `Allow | Deny | Escalate(ApprovalRequest)` before routing. `Allow`
    returns immediately, `Deny` never becomes `Escalate`, and only
@@ -665,7 +757,7 @@ allow_all_bash = false
    reports `user_choice_unpersisted`. Frontend state is a projection, not
    authority; durable preference lives in daemon-owned
    `runtime_preferences` (revision/CAS, secret-free, additive v58).
-8. **M005 sandbox wiring (ADR-0004).** The M003 snapshot profile becomes
+9. **M005 sandbox wiring (ADR-0004).** The M003 snapshot profile becomes
    a production execution property: `ToolRegistryOptions.sandbox_profile`
    (default `WorkspaceWrite`) configures `BashTool` via
    `sandbox_config_for_profile()` over the authoritative workspace root;
@@ -721,7 +813,7 @@ structural digests and bounded labels, never command text, arguments, output,
 or generated script content. This is launch and route provenance, not a trace
 of every nested syscall; see
 `architecture/audit.md` and the M003 validation record.
-9. **M006 automatic reviewer (ADR-0004).** `Automatic` escalations resolve
+10. **M006 automatic reviewer (ADR-0004).** `Automatic` escalations resolve
    through the dedicated bounded reviewer (`src/permission/reviewer.rs`,
    see `approval_reviewer.md`) when a reviewer model is configured and
    registry-validated; otherwise Automatic keeps the M003 defer behavior.
@@ -733,8 +825,10 @@ of every nested syscall; see
    request/policy revision; Deny returns bounded feedback to the primary
    model; repeated equivalent denials backstop to defer/deny. Guard:
    `scripts/check_approval_reviewer.py`.
-10. **M007 user surfaces (ADR-0004).** Mode/profile selection is
-    frontend-neutral: `RuntimePolicySet { approval_mode?, sandbox_profile? }`
+11. **M007 user surfaces (ADR-0004).** Mode/profile selection is
+    frontend-neutral: the `CoreRequest::RuntimePolicySet` request
+    (`crates/codegg-protocol/src/core.rs`) carries
+    `{ approval_mode?, sandbox_profile?, expected_revision? }`
     (single-revision atomic write via `RuntimePreferenceStore::set_policy`,
     CAS `expected_revision`, fail-closed validation) plus the existing
     single-dimension sets; `ExecutionPolicyGet` additionally projects
@@ -762,7 +856,7 @@ of every nested syscall; see
     rows). A current effective Deny is evaluated before the cache so a
     legacy broad Allow cannot mask it. The TUI manifest model hint stays
     display-only (`reconcile_tab_model_with_daemon`).
-11. **M008 qualification (invariant/closure).** `tests/agent_loop/reliability_qualification_m008.inc`
+12. **M008 qualification (invariant/closure).** `tests/agent_loop/reliability_qualification_m008.inc`
     proves deterministic Deny across Interactive/Automatic/Yolo, reviewer
     Allow/Deny/Defer plus malformed/unavailable/injection never-Allow,
     reviewer-cannot-mutate-sandbox, captured-snapshot wins on mode races,
@@ -777,32 +871,73 @@ cargo test -p codegg --lib permission::tests  # specific test module
 ```
 
 Key test patterns:
-- `read_only_tools_short_circuit_to_allow` — 14 read-only tools
+- `read_only_tools_short_circuit_to_allow` — 15 read-only tools
 - `safe_mutating_tools_short_circuit_to_allow` — todowrite, todoread,
   question, invalid
 - `destructive_bash_prompts` — rm -rf /, mkfs, fork bomb, shutdown
 - `non_destructive_bash_auto_allows` — ls, cat, cargo test, git status
 - `builtin_mode_review_blocks_mutation` — review mode Deny rules
 - `builtin_modes_all_allow_todo_tools` — all modes allow todos
+- `trusted_root_write_relaxes_only_the_default_ask` — the scratch-root
+  relaxation never overrides an explicit decision
+- `temp_root_redirect_offer_*` — the redirect offer is scoped to the
+  implicit default, to unauthorized temp roots, and to one offer per
+  (session, tool, target)
 
 ## Related Docs
 
 - [tool.md](tool.md) — Tools that use PermissionChecker
 - [bus.md](bus.md) — PermissionRegistry pattern
 - [security.md](security.md) — Additional security measures
+- [approval_reviewer.md](approval_reviewer.md) — The bounded Automatic reviewer
+- [authorization.md](authorization.md) — Operation descriptors and scopes
+- [audit.md](audit.md) — The durable audit trail
 
 ## Source Verification
 
-Verified 2026-10-06 against `src/permission/` and
-`crates/codegg-core/src/bus/mod.rs`.
-- Corrected 11 stale `file.rs:line` refs (the module has grown ~60 lines since
-  these were written): `PERMISSION_TYPES` `71`→`115`,
-  `PermissionLevel` `125`→`197`, `PermissionResult` `142`→`214` (it is an
-  `enum`), `PermissionDecisionReceipt` `154`→`226`,
-  `PermissionChoice` `189`→`261`, `ToolRule` `235`→`307`,
-  `PermissionRuleset` `288`→`360`, `PermissionStore` `314`→`507`,
-  `PermissionChecker` `533`→`805`, `DoomLoopDetector` `1618`→`1965`, and
-  `default_bash_allow_patterns` `1359`→`1706`.
-- Confirmed correct as written: `PermissionRegistry`
-  (`crates/codegg-core/src/bus/mod.rs:88`), and the `PERMISSION_TYPES` list —
-  all 27 names match `src/permission/mod.rs:115`-`:143` exactly, in order.
+Verified 2026-10-23 against `src/permission/mod.rs`, `src/permission/modes.rs`,
+`src/permission/approval.rs`, `src/permission/reviewer.rs`,
+`src/agent/tool_batch.rs`, `crates/codegg-core/src/bus/mod.rs`,
+`crates/codegg-core/src/approval.rs`, `crates/codegg-config/src/schema.rs`,
+and `crates/codegg-protocol/src/core.rs`.
+
+- **Replaced drifting `file.rs:line` references with symbol names.** The
+  module grew again since the 2026-10-06 pass; every remaining line
+  anchor was off by 3–700 lines. Symbols now carry the claim, so the
+  text does not rot on the next edit.
+- **Corrected the permission-free tool list.** `tool_category_for_name()`
+  names 28 `ReadOnly` and 5 `SafeMutating` tools; the previous list
+  omitted `mcp_resource_search`, `mcp_resource_read`, `memory_search`,
+  `memory_get`, `extension_search`, `extension_install_request`, and
+  `invalid`.
+- **Corrected the `PermissionRegistry` TTL claim.** The registry no
+  longer expires entries on a fixed 310s age: `pending_ttl` defaults to
+  `PENDING_TTL_UNBOUNDED` and is armed by the caller. The 310s constant
+  survives only in the core-bus unit tests.
+- **Added the policy-denial step to the check flow.** `check()` and
+  `check_with_args()` both consult `effective_policy_denies()` *before*
+  the cached store, so a policy/sandbox denial is never masked by a
+  remembered Allow.
+- **Added the M007 `scope` field** to `PersistentDecision` and
+  `DECISION_SCOPE_MAX_LEN` to the store description.
+- **Added `canonicalized_explicit_config_tool_rules`, `legacy_exec_mode`,
+  and `temp_root_offers`** to the `PermissionChecker` field list.
+- **Corrected the read-only test count** from 14 to 15
+  (`read_only_tools_short_circuit_to_allow`).
+- **Corrected `RuntimePolicySet`** — it is a `CoreRequest` variant, not a
+  struct, and it carries `expected_revision`.
+- **Added missing config keys** `bash_ask_patterns`,
+  `approval_timeout_secs`, and `sandbox_mode`, and the untagged
+  `PermissionRule` shape warning.
+- **Renamed the dialog owner** from `AgentLoop::check_tool_permission()`
+  to `ToolBatch::check_tool_permission()` (`src/agent/tool_batch.rs`);
+  the agent loop delegates to the tool batch.
+- **Confirmed correct as written:** the `PERMISSION_TYPES` list (all 27
+  names, in order), the three built-in modes and their restricted-tool
+  sets, the `DoomLoopDetector` bounds (window ≤ 1000, threshold 1–100),
+  `decision_scopes_for_shell_command` intersection semantics, the
+  approval-dialog key map (`y`/`p`/`n`/`1`–`4`/`Esc`), the orphan-guard
+  TTL arithmetic (timeout + 60s grace, else 24h), the
+  `runtime_preferences` v58 table, and
+  `canonical_permission_store_path()`'s `CODEGG_PERMISSIONS_PATH`
+  override with `~/.config/codegg/permissions.json` as the default.

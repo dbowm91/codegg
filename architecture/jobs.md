@@ -20,9 +20,14 @@ data loss.
 |--------|---------|
 | `crates/codegg-core/src/jobs/mod.rs` | Typed IDs, domain types (`JobKind`, `JobSource`, `JobPriority`, `ResourceRequest`, `RetryPolicy`, `IdempotencyClass`, `JobState`, `AttemptState`, `JobPayload`, `NewJob`, `JobRecord`, `JobAttempt`, `CancelReason`, `CancelResult`, `CancelOutcome`, `RecoveryPolicy`, `RecoveryReport`, `AttemptCompletion`), `JobStore` trait, `JobStoreError`, `recover_at_startup` |
 | `crates/codegg-core/src/jobs/store.rs` | `InMemoryJobStore`, `SqliteJobStore`, `JobStoreQuery`, `JobSummary`, `validate_state_transition`, `job_state_transitions`, `attempt_state_transitions`, `validate_attempt_transition` |
+| `crates/codegg-core/src/jobs/quota.rs` | M007 typed keyed-quota vocabulary: `ResourceClass`, `KeyedQuotaRequest`, `MAX_QUOTA_KEY_BYTES`, `MAX_QUOTA_SLOTS` — the counted, workspace-scoped build quota |
 | `crates/codegg-core/src/jobs/schedule.rs` | `ScheduleState`, `ScheduleKind`, `OverlapPolicy`, `MissedRunPolicy`, `ScheduleRecord`, `ScheduleSummary`, `ScheduleTemplate`, `ScheduleQuery`, `OccurrenceStatus`, `ScheduleError`, `ScheduleStore` trait, `OccurrenceMaterializer` trait, `ClaimedOccurrence`, `MaterializerError`, `JobTemplate`, `compute_next_run`, `missed_run_targets` |
 | `crates/codegg-core/src/jobs/schedule_store.rs` | `InMemoryScheduleStore`, `SqliteScheduleStore` |
-| `src/scheduler/submission.rs` | `JobSubmissionService`, `SubmissionKey`, idempotent durable create/enqueue boundary |
+| `src/scheduler/submission.rs` | `JobSubmissionService`, `SubmissionKey`, idempotent durable create/enqueue boundary, and the M007 resource-class scope binding |
+| `src/scheduler/scheduler.rs` | `JobScheduler`: the single daemon admission authority — main loop, reconcile, admit/dispatch, cancel, recovery, shutdown |
+| `src/scheduler/schedule_driver.rs` | Daemon-owned earliest-due wake loop that calls `ScheduleStore::claim_due` |
+| `src/scheduler/schedule_materializer.rs` | `ScheduleMaterializer` — the production `OccurrenceMaterializer` |
+| `src/scheduler/eggwork.rs` | `EggworkExecutor` and `validate_remote_job` — the single remote-shape policy |
 | `src/managed_process.rs` | Canonical managed argv execution: environment policy, process groups, cancellation, bounded output, and provenance |
 | `src/job_dispatcher.rs` | `JobDispatcher` trait, `SubAgentJobDispatcher`, `NullJobDispatcher` |
 | `src/job_recovery.rs` | `recover_jobs_at_startup` helper, `RecoveryReportSummary` |
@@ -70,24 +75,24 @@ authority.
 
 ## Key Types & APIs
 
-### Typed Identifiers (`mod.rs:346-465`)
+### Typed Identifiers (`crates/codegg-core/src/jobs/mod.rs`)
 
 All identifiers are opaque UUID v4 strings wrapped in newtypes. They
 are never parsed as integers.
 
 ```rust
-pub struct JobId(String);        // line 346
-pub struct AttemptId(String);    // line 373
-pub struct ScheduleId(String);   // line 394
-pub struct DependencyId(String); // line 415
-pub struct DaemonGeneration(String); // line 439
+pub struct JobId(String);
+pub struct AttemptId(String);
+pub struct ScheduleId(String);
+pub struct DependencyId(String);
+pub struct DaemonGeneration(String);
 ```
 
-`DaemonGeneration::new()` (line 442) produces a fresh UUID at each
-daemon startup. An attempt is valid only while its stored generation
+`DaemonGeneration::new()` produces a fresh UUID at each daemon
+startup. An attempt is valid only while its stored generation
 matches the active daemon generation.
 
-### Job Kinds (`mod.rs:472`, 15 variants)
+### Job Kinds (`JobKind`, 15 variants)
 
 ```rust
 pub enum JobKind {
@@ -102,20 +107,20 @@ Unknown future kinds deserialize into `Unsupported` for forward
 compatibility. The daemon refuses to execute `Unsupported` jobs but
 persists them so newer daemons can pick them up.
 
-### Job Source and Priority (`mod.rs:619, 651`)
+### Job Source and Priority (`JobSource`, `JobPriority`)
 
 `JobSource` distinguishes `Interactive`, `Scheduled`, `AgentDelegated`,
 `Retry`, `Maintenance`, and `Api` origins. `JobPriority` has five
 buckets (`Urgent` through `Maintenance`) — persisted and validated but
 not yet used for admission ordering.
 
-### Job Payload (`mod.rs:1012`)
+### Job Payload (`JobPayload`)
 
 Typed payload variants (`JobPayload`) carry enough data to rerun safely
 without consulting stale client state. Secret material must never be
 embedded — use credential references.
 
-### Execution Target (`mod.rs:517`, schema v66)
+### Execution Target (`ExecutionTarget`, schema v66)
 
 `ExecutionTarget` selects where an attempt runs: `Local` (default) or
 `EggworkNode { node_id }` (one named Eggwork node). It is persisted on
@@ -426,12 +431,13 @@ Consequences for CodeGG:
   reports applied `workspace_rw`. Network-disabled execution remains
   unsupported and is refused before upload.
 
-### JobState Machine (`mod.rs:895`)
+### JobState Machine (`JobState`)
 
 `JobState` has 10 variants: `Scheduled`, `Queued`, `Running`, `Completed`,
 `Failed`, `Cancelled`, `TimedOut`, `Interrupted`, `Blocked`, `Expired`.
-The transition table lives in `job_state_transitions()` (`store.rs:86`) and
-is enforced by `validate_state_transition()` (`store.rs:70`):
+The transition table lives in `job_state_transitions()`
+(`crates/codegg-core/src/jobs/store.rs`) and is enforced by
+`validate_state_transition()`:
 
 ```
 Scheduled → Queued | Cancelled | Expired
@@ -450,7 +456,7 @@ Terminal states (`Completed`, `Failed`, `Cancelled`, `TimedOut`,
 `Expired`) never transition. Transitions go through `JobStore` methods
 — no generic `set_state`.
 
-### AttemptState Machine (`mod.rs:956`)
+### AttemptState Machine (`AttemptState`)
 
 `AttemptState` has 8 variants: `Created`, `Admitted`, `Running`,
 `Completed`, `Failed`, `Cancelled`, `TimedOut`, `Interrupted`.
@@ -464,9 +470,9 @@ Terminal states (`Completed`, `Failed`, `Cancelled`, `TimedOut`,
 `Interrupted`) never transition. `AttemptState::Interrupted` is used
 during daemon generation recovery.
 
-The transition table is authoritative in
-`attempt_state_transitions()` (`store.rs:104`) and is enforced by
-`validate_attempt_transition()` (`store.rs:119`):
+The transition table is authoritative in `attempt_state_transitions()`
+(`crates/codegg-core/src/jobs/store.rs`) and is enforced by
+`validate_attempt_transition()`:
 
 | From | Allowed next states |
 |------|---------------------|
@@ -482,13 +488,13 @@ The transition table is authoritative in
 `Created → Admitted` is therefore a legal modeled transition, but it is not
 a step the production scheduler performs durably:
 `mark_attempt_running`'s SQL accepts `state IN ('created', 'admitted')`
-(`store.rs:1815`), and the scheduler records admission in its in-memory
+in `SqliteJobStore`, and the scheduler records admission in its in-memory
 running-attempts map and calls `mark_attempt_running` directly
-(`src/scheduler/scheduler.rs:1079`), so the durable attempt goes
+(`src/scheduler/scheduler.rs`), so the durable attempt goes
 `Created → Running`. `Admitted` remains decodable for external writers and
-the projection replay path (`projection_replay/publication.rs:514`).
+the projection replay path (`projection_replay/publication.rs`).
 
-### JobStore Trait (`mod.rs:1668`)
+### JobStore Trait (`crates/codegg-core/src/jobs/mod.rs`)
 
 24 methods on `JobStore`:
 
@@ -519,7 +525,7 @@ the projection replay path (`projection_replay/publication.rs:514`).
 | `find_descendants(JobId) → Vec<JobSummary>` | Find all non-terminal child jobs of a parent (M012) |
 | `cancel_descendants(JobId, CancelReason) → usize` | Cancel all non-terminal descendants; returns count (M012) |
 
-### ScheduleStore Trait (`schedule.rs:235`)
+### ScheduleStore Trait (`crates/codegg-core/src/jobs/schedule.rs`)
 
 6 methods on `ScheduleStore` (`create`, `set_state`, `delete`, `get`,
 `list`, `claim_due`):
@@ -656,7 +662,8 @@ run results and Git worktrees are stored separately from scratch.
 ## Configuration Surface
 
 Job records carry their configuration at creation time. Key defaults
-are centralized in `ResourceRequest::for_kind` (`mod.rs:713`):
+are centralized in `ResourceRequest::for_kind`
+(`crates/codegg-core/src/jobs/mod.rs`):
 
 | Kind | CPU | Memory hint | Processes | IO | Network | Default conflict |
 |---|---:|---:|---:|---:|---:|---|
@@ -674,13 +681,22 @@ are centralized in `ResourceRequest::for_kind` (`mod.rs:713`):
 | Maintenance | 1 | 128 MB | 1 | 1 | 0 | — |
 | ToolProgram | 1 | 512 MB | 1 | 1 | 0 | — |
 
-`RecoveryPolicy` defaults (`mod.rs:1630`): requeue `ReadOnly` and
-`SafeRepeat`; never auto-retry `Conditional`, `NonIdempotent`, or
-`Destructive`.
+`Build` and `Format` carry **no** exclusivity key. The legacy global
+`exclusive:workspace-mutation` key was replaced (M007) by the counted,
+workspace-scoped build quota: `ResourceRequest::attach_resource_class`
+adds a `KeyedQuotaRequest` for `ResourceClass::Build` with an
+*unbound* scope, and the submission boundary binds that scope to the
+canonical `WorkspaceId`. `ResourceClass::for_job_kind` maps **only**
+`Build` and `Format` to the class — no other kind, and no model-authored
+label, can mint one. See `architecture/build_admission.md`.
+
+`RecoveryPolicy` defaults (`crates/codegg-core/src/jobs/mod.rs`): requeue
+`ReadOnly` and `SafeRepeat`; never auto-retry `Conditional`,
+`NonIdempotent`, or `Destructive`.
 
 ## Invariants & Gotchas
 
-### Recovery Contract (`mod.rs:1622`, `store.rs:915`)
+### Recovery Contract (`RecoveryPolicy`, `JobStore::recover_generation`)
 
 At daemon startup (`recover_generation`):
 
@@ -697,17 +713,17 @@ At daemon startup (`recover_generation`):
 The idempotency class is persisted at creation time — it is never
 re-inferred from code at restart.
 
-### `recover_at_startup` integration (`src/scheduler/scheduler.rs:1764`)
+### `recover_at_startup` integration (`src/scheduler/scheduler.rs`)
 
 `JobScheduler::recover_at_startup` calls `JobStore::recover_generation`
 once at daemon startup and wakes the scheduler with
 `WokeReason::Reconciled` so the fair queue is rebuilt from durable
 state. `src/job_recovery.rs` provides a thin
 `recover_jobs_at_startup` wrapper used by `CoreDaemon::recover_jobs`.
-The return type is `RecoveryReportSummary` (`src/job_recovery.rs:19`),
+The return type is `RecoveryReportSummary` (`src/job_recovery.rs`),
 a compact summary suitable for operator-facing logging.
 
-### InMemory vs SQLite recovery (`store.rs:915, 2263`)
+### InMemory vs SQLite recovery (`JobStore::recover_generation`)
 
 Both implementations were historically divergent. The SQLite version
 was canonical; the in-memory version had inverted comparison logic
@@ -716,7 +732,7 @@ rather than those that differed). This was fixed so both implementations
 agree: the `stale` parameter is the *new* daemon generation and
 attempts whose stored generation differs are interrupted.
 
-### Cancellation Race Semantics (`store.rs:770`)
+### Cancellation Race Semantics (`JobStore::request_cancel`)
 
 Deterministic precedence rules (`request_cancel`):
 - **Queued/Blocked/Scheduled job, no attempt started**: transition
@@ -731,14 +747,14 @@ completed. If cancel is persisted first but the process exits
 successfully, the terminal state is `Completed` (not `Cancelled`).
 Stale workers may not overwrite a terminal state.
 
-### Descendant Cancellation (`src/scheduler/scheduler.rs:1346, 1747`)
+### Descendant Cancellation (`src/scheduler/scheduler.rs`)
 
 When a parent attempt terminates (timeout, failure, cancel, interrupt),
 the scheduler calls `cancel_descendants` to ensure children do not
 outlive the parent. This runs both in the executor-completion task and
 in `request_cancel`.
 
-### RunStore Linkage (`JobAttempt` at `mod.rs:1255`)
+### RunStore Linkage (`JobAttempt.run_id`)
 
 `JobAttempt.run_id: Option<RunId>` links an attempt to a RunStore
 record. The two stores serve different purposes:
@@ -769,7 +785,7 @@ summary (2,048 chars), and RunStore link — never stdout dumps or secrets.
 The `job` model tool (`status|wait|cancel|output`) reuses the
 `JobGet/JobWait/JobCancel` authority plus exact-owner session scope;
 `wait` timeout means still-running. See `architecture/scheduler.md`
-"Generic job terminal notices" and `architecture/authorization.md" for the
+"Generic job terminal notices" and `architecture/authorization.md` for the
 owner rule.
 
 ### GitHub Actions watching (M004)
@@ -898,25 +914,29 @@ this module.
 
 Phase 4 adds:
 - **13 `CoreRequest` variants**: `JobSubmit`, `JobGet`, `JobList`,
-  `JobCancel`, `JobRetry`, `ScheduleCreate`, `ScheduleList`,
-  `SchedulePause`, `ScheduleResume`, `ScheduleDelete`, `ScheduleGet`,
-  `JobListAttempts`, `JobRecover`
-- **13 `CoreResponse` variants**: matching responses for each request
-- **18 `CoreEvent` variants**: `JobCreated`, `JobQueued`, `JobBlocked`,
+  `JobCancel`, `JobRetry`, `JobAttempts`, `ScheduleCreate`, `ScheduleList`,
+  `ScheduleGet`, `SchedulePause`, `ScheduleResume`, `ScheduleDelete`,
+  `JobRecoveryReport`
+- **14 `CoreResponse` variants**: `JobSubmitted`, `JobGet`, `JobList`,
+  `JobAttempts`, `JobCancelResult`, `JobWaited`, `JobRetryStarted`,
+  `ScheduleCreated`, `ScheduleList`, `ScheduleGet`, `SchedulePaused`,
+  `ScheduleResumed`, `ScheduleDeleted`, `JobRecoveryReport`
+- **19 `CoreEvent` variants**: `JobCreated`, `JobQueued`, `JobBlocked`,
   `JobAttemptCreated`, `JobStarted`, `JobProgress`,
   `JobCancelRequested`, `JobCompleted`, `JobFailed`, `JobCancelled`,
   `JobTimedOut`, `JobInterrupted`, `JobRetried`, `ScheduleCreated`,
   `ScheduleOccurrenceQueued`, `ScheduleSkipped`, `SchedulePaused`,
   `ScheduleResumed`, `ScheduleDeleted`
-- **11 DTOs**: `JobSubmitDto`, `JobQueryDto`, `JobSummaryDto`,
+- **10 DTOs**: `JobSubmitDto`, `JobQueryDto`, `JobSummaryDto`,
   `JobRecordDto`, `JobAttemptDto`, `ScheduleCreateDto`,
   `ScheduleSummaryDto`, `ScheduleRecordDto`, `RecoveryReportDto`,
-  `CancelResultDto`, `AttemptCompletionDto`
-- **2 `ServerCapabilities` fields**: `durable_jobs`, `schedule_support`
+  `CancelResultDto`
+- **2 `ServerCapabilities` fields**: `durable_jobs`, `durable_schedules`
 
 Phase 5 adds `JobWait`, `SchedulerSnapshot`, the optional bounded
 scheduler projection on `SnapshotDaemon`, and `submission_key` on
-`JobSubmitDto`.
+`JobSubmitDto`. Later milestones add `NodeTelemetry` (M002 host
+telemetry) to the request family.
 
 ### Scheduler submission and execution
 
@@ -943,6 +963,21 @@ exclusivity rules, then creates and enqueues the durable job as one
 logical operation. A repeated `SubmissionKey` with the same request
 fingerprint returns the original job; the in-memory idempotency index
 is intentionally scoped to one daemon generation.
+
+Two normalizations happen at that single boundary and nowhere else:
+
+- A legacy exclusivity key that lacks the `exclusive:` prefix is
+  re-prefixed, so admission sees the intended key.
+- The **M007 resource-class scope is bound unconditionally** to the
+  canonical `WorkspaceId`. For a kind in `ResourceClass::for_job_kind`
+  the submission drops any `exclusive:workspace-mutation` key and any
+  caller-supplied quota in the same namespace, then pushes
+  `KeyedQuotaRequest::for_workspace(class, &spec.workspace_id)`. A
+  caller that supplies its own `ResourceRequest` therefore cannot opt
+  out of the bound it is measured against, and two unrelated
+  workspaces never share a bucket. The kind-derived policy itself can
+  only produce an *unbound* class — the workspace is not known until
+  this boundary.
 
 `ManagedArgvExecutor` is only an adapter. Non-shell argv work delegates
 to `ManagedProcessService`, which supplies sanitized noninteractive
@@ -1032,96 +1067,100 @@ divergent context, source, authority, or call identity fails closed.
 | Integration tests | Synthetic executors with marker files: one dispatch per attempt, cancellation delivery, retry history preservation, non-idempotent job non-requeue, frontend disconnect does not cancel durable jobs |
 
 45 integration tests in `tests/scheduler_jobs/durable_jobs_phase4.inc`.
+The same family carries the quota contract
+(`tests/scheduler_jobs/build_quota_admission.inc`), the schedule
+materialization contract (`schedule_materialization.inc`), and the
+remote-target boundary (`eggwork_target_boundary.inc`,
+`eggwork_remote_limits.inc`).
 
 ### Narrowest run commands
 
 ```bash
 cargo test -p codegg-core jobs                              # unit tests
 cargo test -p codegg-core schedule                          # schedule tests
-cargo test --test durable_jobs_phase4                       # integration tests
-bash scripts/check-core-boundary.sh                        # boundary guard
+cargo test --test scheduler_jobs -- durable_jobs_phase4     # integration tests
+bash scripts/check-core-boundary.sh                         # boundary guard
 ```
+
+`tests/scheduler_jobs/` is a **family**: one executable per subject
+area, selected with `--test scheduler_jobs -- <member>`. A bare
+`--test durable_jobs_phase4` selects nothing and still exits 0.
 
 ## Related Docs
 
 - `architecture/scheduler.md` — Phase 5 admission and dispatch
+- `architecture/build_admission.md` — M007 counted, workspace-scoped quota
 - `architecture/overview.md` — full module map
 - `.opencode/skills/jobs/SKILL.md` — skill reference
 - `architecture/tool_programs.md` — M007/M011 tool program contracts
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store}.rs`,
-`src/scheduler/scheduler.rs`, and `src/job_recovery.rs`. Corrected every
-line ref: the prior set pointed at `jobs/store.rs` for both state enums,
-which actually live in `jobs/mod.rs` (`JobState` `:895`, `AttemptState`
-`:956`) — `store.rs` only holds the transition tables
-(`job_state_transitions` `:86`, `attempt_state_transitions` `:104`);
-`JobStore` trait `:1274` → `:1668`, `ScheduleStore` `:231` → `:235`,
-`JobSource`/`JobPriority` `:554,586` → `:619,651`, `JobPayload` `:947` →
-`:1012`, `ExecutionTarget` `:515` → `:517`, `for_kind` `:648` → `:713`,
-`RecoveryPolicy` defaults `:1240` → `:1630`, `request_cancel` `:557` →
-`:770`, `recover_generation` `:694` → `:915` (SQLite `:2263`). Corrected
-the scheduler refs to the real path `src/scheduler/scheduler.rs`
-(`recover_at_startup` `:1764`, `cancel_descendants` `:1346, 1747`) and
-`RecoveryReportSummary` `job_recovery.rs:18` → `:19`. Corrected
-`JobStore` method count 21 → 24 and added the two undocumented
-`set_attempt_source_subject_started` / `seal_attempt_source_subject`
-methods with their real signatures. Refuted the prior review's
-"omits `Created → Admitted`" claim only in part: the transition table at
-`store.rs:104` *does* allow `Created → Admitted`, but the production
-scheduler never writes it durably (it calls `mark_attempt_running`
-directly, `store.rs:1815` accepts `'created'`/`'admitted'`), so both facts
-are now documented. Also added the 10-variant `JobState` and 8-variant
-`AttemptState` counts with their authoritative transition tables, and the
-15-variant `JobKind` count.
-# Execution source provenance
+Verified 2026-10-23 against `crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store,quota}.rs`,
+`crates/codegg-protocol/src/{core,dto,frames}.rs`, `src/scheduler/{submission,scheduler,eggwork,eggwork_limits,eggwork_telemetry}.rs`,
+`src/job_recovery.rs`, `src/core/{daemon_jobs,remote_targets}.rs`,
+`crates/codegg-core/src/team.rs`, `crates/codegg-core/src/session/schema.rs`,
+and `tests/scheduler_jobs/{mod.rs,durable_jobs_phase4.inc}`.
 
-`JobAttempt.source_subject` is the authority for the source state consumed by
-one execution. It is a versioned bounded envelope; a retry captures a new
-subject and never inherits the preceding attempt's value. `JobRecord` labels
-are not provenance authority. The additive schema v67 column is nullable so
-legacy attempts remain unavailable; migration never consults a workspace.
+Two earlier verification passes (2026-10-06) recorded line-number
+references that have since drifted. Those line refs have been replaced
+**in the body** with symbol names — the durable fix — because every
+one of them was more than five lines off its current location:
+`JobId`/`AttemptId`/`ScheduleId`/`DependencyId`/`DaemonGeneration`
+(`jobs/mod.rs`, now at `:386`–`:479`), `JobKind` (`:512`),
+`ExecutionTarget` (`:562`), `JobSource`/`JobPriority` (`:664`/`:696`),
+`ResourceRequest::for_kind` (`:790`), `JobState` (`:1013`),
+`AttemptState` (`:1074`), `JobPayload` (`:1130`), `JobAttempt` (`:1416`),
+`RemoteExecutionHandle` (`:1697`), `RecoveryPolicy` (`:1783`),
+`JobStore` (`:1829`), the `ScheduleStore` trait (`jobs/schedule.rs:330`),
+`job_state_transitions`/`attempt_state_transitions` and their validators
+(`jobs/store.rs:93`/`:109`/`:127`/`:142`), `request_cancel`
+(`jobs/store.rs:799` in-memory, `:2142` SQLite), `recover_generation`
+(`:944` in-memory, `:2318` SQLite), `mark_attempt_running`'s
+`state IN ('created', 'admitted')` SQL (`:1870`),
+`JobScheduler::recover_at_startup` (`src/scheduler/scheduler.rs:2175`),
+the `mark_attempt_running` call (`:1367`), and the two
+`cancel_descendants` call sites (`:1715`, `:2158`).
 
-The scheduler captures S1 under the canonical workspace lease before executor
-side effects. Local live-workspace execution seals S2 after executor cleanup
-and before terminal persistence. Equal subjects are Stable; differences are
-Drifted while the execution status remains truthful. Eggwork seals around its
-materialized source snapshot before upload/submit; later local edits do not
-rewrite that immutable input identity. M003 preserves this ordering
-exactly: capture S1, build the immutable full snapshot, seal the full
-manifest digest, then choose full/derived transport. A derived patch is
-never persisted as the historical source identity. Capture failure, non-Git workspaces,
-legacy NULLs, and unsupported remote boundaries remain unavailable.
+Substantive corrections made in this pass:
 
-## Source verification (second pass)
+- **Dead references removed.** `AttemptCompletionDto` does not exist in
+  `crates/codegg-protocol/src/dto.rs` — the Phase-4 DTO count is **10**,
+  not 11. `ServerCapabilities` has `durable_schedules`, not
+  `schedule_support` (`crates/codegg-protocol/src/frames.rs`). The
+  `CoreRequest` variants are `JobAttempts` and `JobRecoveryReport`, not
+  `JobListAttempts` and `JobRecover`.
+- **Counts corrected.** `CoreResponse` job/schedule variants are **14**
+  (`JobCancelResult` is the one the old list omitted); `CoreEvent`
+  job/schedule variants are **19** (the old prose said 18 while listing
+  19). `JobKind` is 15, `JobState` is 10, `AttemptState` is 8,
+  `JobStore` has exactly **24** methods in the documented order, and
+  `ScheduleStore` has exactly **6**.
+- **Missing module added.** `crates/codegg-core/src/jobs/quota.rs` —
+  the M007 `ResourceClass` / `KeyedQuotaRequest` vocabulary behind the
+  "build quota (workspace-scoped)" column in the resource table — was
+  absent from the "Where It Lives" table.
+- **Submission-boundary binding documented.** `JobSubmissionService`
+  binds the resource-class scope to the canonical `WorkspaceId`
+  *unconditionally* (dropping `exclusive:workspace-mutation` and any
+  caller-supplied quota in the same namespace first), so a caller that
+  supplies its own `ResourceRequest` cannot opt out of the bound.
+- **Test command corrected.** `cargo test --test durable_jobs_phase4`
+  selects zero tests: `tests/scheduler_jobs/` is a family, so the
+  invocation is `cargo test --test scheduler_jobs -- durable_jobs_phase4`.
 
-Verified 2026-10-06 against `crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store}.rs`,
-`src/scheduler/scheduler.rs`, `src/job_recovery.rs`,
-`crates/codegg-core/src/projection_replay/publication.rs`, and
-`tests/scheduler_jobs/durable_jobs_phase4.inc`. Four residuals left by the first pass were
-corrected: the `claim_due` trait ref `schedule.rs:243` → `:262` (line 243 is
-the first *implementation* in `schedule_store.rs`, not the trait method, and a
-second impl sits at `:521`); the in-memory-scheduler ref
-`scheduler.rs:1071-1078` → `:1079` (the actual `mark_attempt_running` call,
-preceded by an explanatory comment at `:1074`); and the integration test count
-`42` → `45` `#[test]`/`#[tokio::test]` functions in `tests/scheduler_jobs/durable_jobs_phase4.inc`.
-The `scheduler.rs` refs in this file are correct and were **not** affected by
-the `JobScheduler` `:99` → `:135` drift seen in `scheduler.md` — this file
-cites `recover_at_startup` `:1764`, `cancel_descendants` `:1346` and `:1747`,
-and `mark_attempt_running` `:1079`, all verified in place.
-Independently confirmed the first pass's corrections: the five typed-ID
-newtypes (`JobId` `:346`, `AttemptId` `:373`, `ScheduleId` `:394`,
-`DependencyId` `:415`, `DaemonGeneration` `:439`, with `new()` at `:442`),
-the 15-variant `JobKind` (`:472`), `JobSource`/`JobPriority` (`:619`, `:651`),
-`JobPayload` (`:1012`), `ExecutionTarget` (`:517`), `JobState` (`:895`),
-`AttemptState` (`:956`), `JobAttempt` (`:1255`), `RemoteExecutionHandle`
-(`:1536`), `RecoveryPolicy` (`:1622`, `Default` at `:1630`), the `JobStore`
-trait (`:1668`) with exactly **24** methods matching the documented table in
-order, the `ScheduleStore` trait (`schedule.rs:235`) with exactly **6**
-methods, the transition tables (`store.rs:86`, `:104`) and validators
-(`:70`, `:119`), `request_cancel` (`:770`), `recover_generation` (`:915`,
-SQLite `:2263`), `mark_attempt_running`'s `state IN ('created', 'admitted')`
-SQL (`store.rs:1815`), the generation-mismatch recovery predicate
-(`store.rs:2277`), and the `"admitted"` projection replay arm
-(`projection_replay/publication.rs:514`).
+Confirmed accurate and left unchanged: the `JobState` and `AttemptState`
+transition tables (verbatim match), `RecoveryPolicy` defaults, the
+`for_kind` resource table, `JobSource`/`JobPriority` variant sets,
+`ExecutionTarget` persistence (`target_kind`/`target_node_id`,
+schema v66), `ExecutionSubjectProvenance` (`source_subject_json`,
+schema v67), the `RemoteExecutionHandle` attempt column
+(`remote_handle_json`), `occurrence_job_id` as the durable uniqueness
+constraint, `claim_due`'s three-phase split with
+`ImmediateWrite::begin_with` on the commit phase, `validate_remote_job`
+as the single remote-shape policy, `RemoteTargetPolicy` as the
+administrator gate, `Capability::NodeTarget` (wire `node.target`) as the
+principal gate, `cpu_quota_percent` and the `cpu_quota_milli_percent`
+field name, the `NodeTelemetryService` cache/failure/timeout bounds
+(30 s / 3 s / 10 s), and the 45-test count in
+`tests/scheduler_jobs/durable_jobs_phase4.inc`.

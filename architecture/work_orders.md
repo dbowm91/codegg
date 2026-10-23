@@ -132,12 +132,12 @@ empty work-order tables; no `schedule` row is ever backfilled):
   position)` ordering with `UNIQUE(lane_id, position)`.
 
 Indexes cover project/state/updated listings, occurrence lookup,
-lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 68
-(`storage/mod.rs:39`), but the work-order migrations are still
+lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 87
+(`storage/mod.rs:48`), but the work-order migrations are still
 v60-v63; the later migrations belong to other subsystems (v64
 collaboration chat policy, v65 session control, v66 job target
 kind/node, v67 job-attempt source subject, v68 work-plan repository
-binding). `session/schema.rs` wires `migrate_v60` (domain
+binding, and v69-v87 after it). `session/schema.rs` wires `migrate_v60` (domain
 tables), `migrate_v61` (admits the `work_order` origin-attribution
 scope in the v53 table's kind CHECK via a row-preserving rebuild;
 legacy attribution rows survive verbatim), `migrate_v62` (nullable
@@ -281,7 +281,7 @@ Release semantics:
 cargo test -p codegg-core -- work_order
 cargo test -p codegg-protocol -- work_order
 cargo test -p codegg --lib -- work_order_coordinator
-cargo test --test work_orders_m002_materialization
+cargo test --test core_daemon -- work_orders_m002_materialization
 python3 scripts/check_work_order_coordinator.py
 cargo test -p codegg --lib -- tui::commands::work_orders
 cargo test -p codegg --lib -- tui::app::state::work_orders
@@ -571,7 +571,7 @@ live child runs.
 
 ```bash
 cargo test -p codegg --lib -- tool::work_order
-cargo test --test work_orders_m006_agent_tool
+cargo test --test core_daemon -- work_orders_m006_agent_tool
 ```
 
 Integration (`tests/core_daemon/work_orders_m006_agent_tool.inc`): factory separation,
@@ -654,7 +654,7 @@ matrix from
   `task` vs `work_order` tool separation.
 
 ```bash
-cargo test --test work_orders_m007_trajectory
+cargo test --test core_daemon -- work_orders_m007_trajectory
 ```
 
 Related existing suites re-verified with no regressions: M001 (12),
@@ -696,3 +696,28 @@ their wire names (`work_order/model.rs:228-241`), `GateJoin` `All`/`Any`,
 `1..=256` (`MAX_REPEAT_COUNT`, `work_order/model.rs:49`), and every referenced
 file path (boundary script, both daemon modules, all five TUI modules, and both
 integration test files).
+
+Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
+only; no build or test run):
+- **Corrected**: `STORAGE_LAYOUT_VERSION` is now **87**
+  (`crates/codegg-core/src/storage/mod.rs:48`), not 68 — the layout version
+  has advanced 19 migrations since this document was written. The work-order
+  migration range **v60-v63 is still correct**; the document now says that
+  explicitly and names v69-v87 as belonging to other subsystems.
+- **Verified accurate**: the three typed identities
+  `WorkOrderId`/`WorkOrderOccurrenceId`/`SequenceLaneId`
+  (`crates/codegg-core/src/identity.rs`); `MAX_REPEAT_COUNT = 256` and the
+  `repeat_count` bound `1..=256` (`crates/codegg-core/src/work_order/model.rs:49`,
+  with the SQL `CHECK (repeat_count >= 1 AND repeat_count <= 256)` at
+  `work_order/store.rs:65`); `WorkOrderService` (`work_order/store.rs:599`);
+  `WorkOrderCoordinator` (`src/core/work_order_coordinator.rs:73`);
+  `WorkOrder` (`work_order/model.rs:503`); the wire DTO family in
+  `crates/codegg-protocol/src/work_order.rs`; the migration functions
+  `migrate_v60` (`session/schema.rs:2640`), `migrate_v61` (`:2660`),
+  `migrate_v62` (`:2730`), `migrate_v63` (`:2744`); and every referenced file
+  path, including `scripts/check_work_order_coordinator.py`,
+  `src/core/daemon_work_orders.rs`, and the five TUI modules.
+- **Corrected**: the `cargo test` invocation for the materialization fixture
+  now uses the family form — `work_orders_m002_materialization` is a member of
+  the `core_daemon` family, so the command is
+  `cargo test --test core_daemon -- work_orders_m002_materialization`.

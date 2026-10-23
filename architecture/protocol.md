@@ -28,10 +28,15 @@ crates/codegg-protocol/src/
 ├── projection/         # Frontend-neutral session projection contract
 ├── provider.rs         # Secret-safe provider connection/provisioning DTOs
 ├── runtime_assets.rs   # Inert bounded runtime-asset manifest DTOs
+├── scratch.rs          # Managed scratch census/reclaim wire DTOs
 ├── tui.rs              # TuiMessage, QuestionSpec, RemoteTuiStateSnapshot
 ├── ui.rs               # UiNode, UiEffect, UiEffectEnvelope, UiLimits
 └── work_order.rs       # Durable project work order wire DTOs
 ```
+
+`lib.rs` declares 15 public modules; the `projection/` directory holds 12
+submodules (`adapters`, `caps`, `consumer`, `controller`, `dto`, `event`,
+`fixtures`, `limits`, `reducer`, `replay`, `snapshot`, `workstream`).
 
 Domain identity types live in `codegg-core::identity`, not in this wire
 crate. Protocol DTOs keep string-backed `project_id`, `workspace_id`, and
@@ -63,21 +68,28 @@ events pushed to subscribed clients.
 
 `HumanShellRunCapabilities`, `HumanShellRunCreate`, `HumanShellRunRead`, and
 `HumanShellRunCancel` negotiate and operate bounded one-shot runs. Create
-requests carry command text, the selected 1–3600 second timeout, and project,
-workspace, and optional session locators. The daemon resolves authority and
-canonical cwd; request DTOs do not carry caller cwd, shell path, environment,
-principal, or execution-node claims. Output reads are sequence-based and
-capped at 64 KiB. The daemon retains run status/output ephemerally for ten
-minutes, and daemon restart invalidates handles without replay.
+requests carry command text, the selected 1–3600 second timeout
+(`HUMAN_SHELL_MAX_TIMEOUT_SECS = 60 * 60`), and project, workspace, and
+optional session locators. The daemon resolves authority and canonical cwd;
+request DTOs do not carry caller cwd, shell path, environment, principal, or
+execution-node claims. Command text is capped at 16 KiB
+(`HUMAN_SHELL_MAX_COMMAND_BYTES`). Output reads are sequence-based and capped
+at 64 KiB (`HUMAN_SHELL_MAX_READ_BYTES`). The daemon retains run
+status/output ephemerally for ten minutes (`RUN_TTL_MS` in
+`src/shell/daemon.rs`), and daemon restart invalidates handles without
+replay. The wire surface carries its own
+`HUMAN_SHELL_PROTOCOL_VERSION = 1` (`human_shell.rs:5`).
 
 ## Protocol Versions
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `PROTOCOL_VERSION` | 2 | `core.rs:28` |
+| `PROTOCOL_VERSION` | 2 | `core.rs:29` |
 | `REMOTE_TUI_PROTOCOL_VERSION` | 5 | `tui.rs:14` |
-| `PLUGIN_PROTOCOL_VERSION` | 1 | `plugin.rs` |
-| `PROJECTION_PROTOCOL_VERSION` | 1 | `projection/caps.rs` |
+| `PLUGIN_PROTOCOL_VERSION` | 1 | `plugin.rs:7` |
+| `PROJECTION_PROTOCOL_VERSION` | 1 | `projection/caps.rs:27` |
+| `HUMAN_SHELL_PROTOCOL_VERSION` | 1 | `human_shell.rs:5` |
+| `SCRATCH_PROTOCOL_VERSION` | 2 | `scratch.rs:32` |
 
 Version history:
 - `PROTOCOL_VERSION`: 1 -> 2 (Phase 15, typed `UiEffectEnvelope`)
@@ -86,10 +98,14 @@ Version history:
   resume, lifecycle, artifact, compatibility diagnostics)
 - `PLUGIN_PROTOCOL_VERSION`: stable at 1
 - `PROJECTION_PROTOCOL_VERSION`: 1 (Session Projections M1)
+- `HUMAN_SHELL_PROTOCOL_VERSION`: 1
+- `SCRATCH_PROTOCOL_VERSION`: 2 (version 2 made the per-tree reclaim verdict
+  tri-state — `reclaimable` is `Option<bool>`, where `None` means the verdict
+  could not be established)
 
 ## Key Types & APIs
 
-### RequestEnvelope (`core.rs:33`)
+### RequestEnvelope (`core.rs:77`)
 
 ```rust
 pub struct RequestEnvelope<T> {
@@ -99,7 +115,7 @@ pub struct RequestEnvelope<T> {
 }
 ```
 
-### EventEnvelope (`core.rs:984`)
+### EventEnvelope (`core.rs:1113`)
 
 ```rust
 pub struct EventEnvelope<T> {
@@ -112,9 +128,9 @@ pub struct EventEnvelope<T> {
 }
 ```
 
-### CoreRequest (`core.rs:1857`)
+### CoreRequest (`core.rs:2229`)
 
-Tagged enum with 234 variants. Major groups:
+Tagged enum with 263 variants (239 struct-bodied, 24 unit). Major groups:
 
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
@@ -135,13 +151,13 @@ provider-neutral create), `ProviderSetupList` (secret-free setup catalog),
 `ConnectionEnable`, `ConnectionDisable`, `ConnectionDelete`,
 `ConnectionRestore`, `ConnectionPurge`
 
-**Session Lifecycle (19)**: `Initialize`, `Subscribe`, `Resume`,
+**Session Lifecycle (20)**: `Initialize`, `Subscribe`, `Resume`,
 `SessionList`, `SessionCreate` (with optional `project_id`/`workspace_id`
 for identity-aware clients), `SessionAttach`, `SessionLoad`,
 `SessionMessagesLoad`, `SessionMessageCounts`, `SessionFork`,
-`SessionDelete`, `SessionArchive`, `SessionRestore`, `SessionShare`,
-`SessionUnshare`, `SessionRename`, `SessionExport`, `SessionImportData`,
-`SessionCreateFromTemplate`
+`SessionLaunch`, `SessionDelete`, `SessionArchive`, `SessionRestore`,
+`SessionShare`, `SessionUnshare`, `SessionRename`, `SessionExport`,
+`SessionImportData`, `SessionCreateFromTemplate`
 
 **Session Selection (4)**: `SessionSelectionGet`, `SessionSelectionList`,
 `SessionSelectionUpdate`, `SessionSelectionModels`
@@ -180,9 +196,9 @@ and bounded reasons only, never secrets)
 `WorkspaceArchive`, `WorkspaceSnapshotRequest`,
 `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`
 
-**Project Catalog (9)**: `ProjectList`, `ProjectGet`, `ProjectRegister`,
-`ProjectArchive`, `ProjectRestore`, `ProjectDelete`, `ProjectHealth`,
-`ProjectCatalogCapabilities`, `WorkspaceDashboard`
+**Project Catalog (10)**: `ProjectList`, `ProjectGet`, `ProjectRegister`,
+`ProjectArchive`, `ProjectRestore`, `ProjectDelete`, `ProjectUpdate`,
+`ProjectHealth`, `ProjectCatalogCapabilities`, `WorkspaceDashboard`
 
 **Run (4)**: `RunList`, `RunGet`, `RunArtifactRead`, `RunRerun`
 
@@ -212,11 +228,34 @@ and bounded reasons only, never secrets)
 `ToolProgramCallPage`, `ToolProgramNotificationReinject`,
 `ToolProgramRecoveryDebugInspect`
 
+**Human Shell Runs (4)**: `HumanShellRunCreate`,
+`HumanShellRunCapabilities`, `HumanShellRunRead`, `HumanShellRunCancel`
+
+**Human Shell Promotions (2)**: `HumanShellPromotionStage`,
+`HumanShellPromotionsGet` — daemon-staged `!cmd` / `!!cmd` envelopes promoted
+into the next turn's model context.
+
+**User Prompt Queue (8)**: `UserPromptQueueList`, `UserPromptQueueAdd`,
+`UserPromptQueueEdit`, `UserPromptQueueDelete`, `UserPromptQueueReorder`,
+`UserPromptQueueAdopt`, `UserPromptQueueTransfer`,
+`UserPromptQueueSendNow` — the durable, queued human-prompt surface.
+
+**Continuation Grants (3)**: `ContinuationGrantCreate`,
+`ContinuationGrantRevoke`, `ContinuationGrantStatus` — bounded capability
+grants for a continued run.
+
+**Node Telemetry (1)**: `NodeTelemetry` — execution-node telemetry feed.
+
+**Scratch (2)**: `ScratchUsage`, `ScratchReclaim` — the daemon-owned,
+disposable scratch tree census and per-tree reclaim verdict
+(`reclaimable: Option<bool>` since scratch protocol version 2).
+
 Groups present in `CoreRequest` but not enumerated above (see
-`crates/codegg-protocol/src/core.rs:1806` for the authoritative list):
-`Document*` (9: `DocumentCapabilities`, `DocumentOpen`,
-`DocumentSnapshotGet`, `DocumentStatusGet`, `DocumentWriterAcquire`,
-`DocumentChange`, `DocumentSave`, `DocumentReload`, `DocumentClose`),
+`crates/codegg-protocol/src/core.rs:2229` for the authoritative list):
+`Document*` (11: `DocumentCapabilities`, `DocumentOpen`, `DocumentCreate`,
+`DocumentDelete`, `DocumentSnapshotGet`, `DocumentStatusGet`,
+`DocumentWriterAcquire`, `DocumentChange`, `DocumentSave`, `DocumentReload`,
+`DocumentClose`),
 `WorkspaceDirectoryList` (C005/ADR-0022: daemon-owned directory metadata,
 `direct_project` + `file.read`; C006: worker-owned single-flight permit +
 full serialized `CoreResponse` 512 KiB cap with trailing-top-level trim to
@@ -225,14 +264,15 @@ zero, `truncated=true` when emptied),
 `ManagedWorktree*` (4), `WorkPlanBindRepository` /
 `WorkPlanRepositoryBinding` (2) plus `WorkOrderBindRepository`,
 `EditCheckpoint*` (6), `Lsp*` (5, incl. M003 `LspCompletionGet`), `Audit*` (3),
-`InteractiveProcess*` (10), `Presence*` (3), `Chat*` (19), `Team*` (11),
+`InteractiveProcess*` (10), `Presence*` (3), `Chat*` (20), `Team*` (11),
 approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
-`SandboxProfileSet`, `RuntimePolicySet`, `TaskModelPreferenceSet`,
-`ExecutionPolicyGet`), and `WorkOrder*` (22).
+`SandboxProfileSet`, `NetworkIntentSet`, `RuntimePolicySet`,
+`TaskModelPreferenceSet`, `ExecutionPolicyGet`), and `WorkOrder*` (22).
 
-### CoreResponse (`core.rs:1041`)
+### CoreResponse (`core.rs:1127`)
 
-Tagged enum with 149 variants. Major groups:
+Tagged enum with 172 variants (171 struct-bodied plus the unit `Ack`). Major
+groups:
 
 **Connection Responses**: `EggpoolConnectionCreated` (shared result shape,
 also aliased as `CreateProviderConnectionResult`),
@@ -299,14 +339,14 @@ interruption, and never treats raw compatibility events as projection state.
 `SessionSelectionUpdated`, `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`, `JobRecoveryReport`
 
-### CoreEvent (`core.rs:3135`)
+### CoreEvent (`core.rs:4015`)
 
-Tagged enum with 87 variants. Major groups:
+Tagged enum with 92 variants. Major groups:
 
 **Snapshot (6)**: `SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`,
 `AssetRefreshCompleted`, `ConnectionRotated`, `ConnectionStateChanged`
 
-**Project (5)**: `ProjectRegistered`, `ProjectArchived`,
+**Project (6)**: `ProjectRegistered`, `ProjectArchived`,
 `ProjectRestored`, `ProjectDeleted`, `ProjectUpdated`, `ProjectHealthChanged`
 
 **Turn (5)**: `TurnStarted`, `TurnTextDelta`, `TurnReasoningDelta`,
@@ -333,6 +373,47 @@ Tagged enum with 87 variants. Major groups:
 `JobAttemptCreated`, `JobStarted`, `JobProgress`, `JobCancelRequested`,
 `JobCompleted`, `JobFailed`, `JobCancelled`, `JobTimedOut`,
 `JobInterrupted`, `JobRetried`
+
+**Schedule (6)**: `ScheduleCreated`, `ScheduleOccurrenceQueued`,
+`ScheduleSkipped`, `SchedulePaused`, `ScheduleResumed`, `ScheduleDeleted`
+
+**Agent Run (6)**: `AgentRunUpserted`, `AgentRunProgress`, `AgentRunTerminal`,
+`AgentRunControlUpdated`, `AgentRunGroupUpserted`, `ConvergenceUpserted` —
+see `architecture/agent.md`
+
+**Session Control (2)**: `SessionControlChanged`, `SessionControlRequested`
+
+**Todos (1)**: `TodoListUpdated`
+
+**Worktree (1)**: `WorktreeUpserted`
+
+**LSP (1)**: `LspDiagnosticsUpdated`
+
+**Tool Program (3)**: `ToolProgramCompleted`, `ToolProgramFailed`,
+`ToolProgramUpdated`
+
+**Projection (1)**: `ProjectionStreamEvent`
+
+**Interactive Process (1)**: `InteractiveProcessExited`
+
+**Presence (1)**: `PresenceUpdated`
+
+**Chat (5)**: `ChatMessageCommitted`, `ChatMessageEdited`, `ChatMessageRedacted`,
+`ChatComposingUpdated`, `ChatActionUpdated`
+
+**Chat Policy (1)**: `ChatPolicyChanged`
+
+**Team (3)**: `TeamMembershipChanged`, `TeamPrincipalChanged`,
+`TeamTokenChanged`
+
+**Work Order (4)**: `WorkOrderChanged`, `WorkOrderLaneChanged`,
+`WorkOrderOccurrenceChanged`, `WorkOrderTriggerChanged`
+
+**Background Job (1)**: `BackgroundJobCompleted`
+
+**User Prompt Queue (1)**: `UserPromptQueue`
+
+**Error (1)**: `Error`
 
 ### TuiMessage (`tui.rs:19`)
 
@@ -434,8 +515,9 @@ Milestone 1 defines the frontend-neutral, versioned session projection
 contract. Key types: `ProjectionCapabilities`, `ProjectionEvent`,
 `ProjectionEnvelope`, `SessionProjectionSnapshot`, `ProjectionReducer`.
 
-The reducer is pure, deterministic, and never performs I/O. It deduplicates
-by `event_seq` and records diagnostics for impossible transitions rather
+`ProjectionEvent` has 47 variants (`projection/event.rs:128`). The reducer
+is pure, deterministic, and never performs I/O. It deduplicates by
+`event_seq` and records diagnostics for impossible transitions rather
 than panicking.
 
 ## Session Projection Contract (M1)
@@ -454,6 +536,8 @@ The `projection/` submodule defines:
 - Transport-neutral `ProjectionClientController` frontend state machine
   (`controller.rs`) and the `HeadlessProjectionConsumer` reference consumer
   (`consumer.rs`)
+- Bounded workstream view derived from one authorized session snapshot
+  (`workstream.rs`)
 - Golden fixtures (`fixtures.rs`)
 
 ## Identity-Aware Additive Protocol
@@ -582,46 +666,62 @@ status revision changes require an explicit authoritative snapshot request.
 
 ## Source verification
 
-Verified 2026-10-10 against `crates/codegg-protocol/src/lib.rs`,
-`core.rs`, `frames.rs`, `tui.rs`, `document.rs`, and `projection/`, plus
-`crates/codegg-core/src/authorization/policy.rs` for the capability split.
-- Confirmed the three wire totals by counting variant declarations, not by
-  estimation: **CoreRequest 234** (211 struct-bodied + 23 unit, `core.rs:1857`
-  through `core.rs:3196`), **CoreResponse 149** (148 struct-bodied plus the
-  unit `Ack`, `core.rs:1041` through `core.rs:1822`), **CoreEvent 87**
-  (`core.rs:3199` onward), and `TuiMessage` 40 (`tui.rs:19`).
-  An earlier review pass reported 110 / 76 for `CoreResponse` / `CoreEvent`;
-  those earlier estimates were wrong; the current verified totals are 149 / 87.
-- Corrected the CoreRequest group headers against their own listed names:
-  Connection Lifecycle 20 → 21, Session Lifecycle 20 → 19, and the second
-  `Session Lifecycle (2)` group, which lists only `SessionLifecycleGet`,
-  became `Session Lifecycle Query (1)`. Dropped the duplicate `TodoList` from
-  the not-enumerated list (already covered by the `Todo (1)` group).
-- Corrected two CoreEvent headers: Run 7 → 9, and Job `10+` → 13. The
-  job list named three variants that do not exist anywhere in the crate
-  (`JobRecovered`, `JobScheduled`, `JobDependencyResolved`); replaced them
-  with the real 13th variant, `JobRetried`.
-- Corrected `ClientCapabilities` (`frames.rs:35`) **18 → 16 boolean fields**
-  and "7 `plugin_ui_*` flags" → 8; the prose already listed all eight flag
-  names, so only the two counts were wrong.
-- Rebuilt the "Where It Lives" tree: `lib.rs` declares 13 modules, and the doc
-  omitted `document.rs`, `interactive_process.rs`, `lsp.rs`,
-  `runtime_assets.rs`, and `work_order.rs`. `frames.rs` also no longer claims
-  `RequestEnvelope`/`EventEnvelope`, which are defined in `core.rs` (`:33` and
-  `:984`). Added the three missing projection submodules (`replay.rs`,
-  `controller.rs`, `consumer.rs`) to the M1 contract list.
-- Added `TeamTokenCreate` to the secret-bearing local-only list:
-  `is_secret_bearing` at `core.rs:3117` matches five variants, not four.
-- Verified accurate: `ServerCapabilities` (`frames.rs:102`) has exactly 10
-  boolean fields and only `event_replay`, `session_management`, and
-  `permission_routing` lack `#[serde(default)]`; `PROTOCOL_VERSION = 2` at
-  `core.rs:28`; `REMOTE_TUI_PROTOCOL_VERSION = 5` at `tui.rs:14`;
-  `PLUGIN_PROTOCOL_VERSION = 1` at `plugin.rs:7`;
-  `PROJECTION_PROTOCOL_VERSION = 1` at `projection/caps.rs:27`; every
-  enumerated variant name in the CoreRequest/CoreResponse/CoreEvent/TuiMessage
-  groups resolves to a real variant; the not-enumerated counts
-  `Document*` 9, `ManagedWorktree*` 4, `EditCheckpoint*` 6, `Lsp*` 5,
-  `Audit*` 3, `InteractiveProcess*` 10, `Presence*` 3, `Chat*` 19, `Team*` 11,
-  `WorkOrder*` 22, and WorkPlan repository bindings 2; the
-  `CreateProviderConnectionResult` alias; and
-  `projection::consumer::HeadlessProjectionConsumer`.
+Verified 2026-10-23 against `crates/codegg-protocol/src/lib.rs`,
+`core.rs`, `frames.rs`, `tui.rs`, `document.rs`, `human_shell.rs`,
+`scratch.rs`, `ui.rs`, and `projection/`, plus
+`crates/codegg-core/src/authorization/policy.rs` for the capability split and
+`src/shell/daemon.rs` for the human-shell run TTL.
+- Re-counted every wire total by enumerating variant declarations rather
+  than estimating: **CoreRequest 263** (239 struct-bodied + 24 unit,
+  `core.rs:2229` through `core.rs:3844`), **CoreResponse 172** (171
+  struct-bodied plus the unit `Ack`, `core.rs:1127` through `core.rs:2061`),
+  **CoreEvent 92** (`core.rs:4015` onward), **ProjectionEvent 47**
+  (`projection/event.rs:128`), and **TuiMessage 40** (`tui.rs:19`). These
+  supersede the 234 / 149 / 87 totals recorded by the 2026-10-10 pass and
+  match the `architecture/overview.md` verified-counts table.
+- Re-derived every CoreRequest group header from the live variant list and
+  made the accounting sum to 263: Session Lifecycle 19 -> 20 (added
+  `SessionLaunch`), Project Catalog 9 -> 10 (added `ProjectUpdate`),
+  `Document*` 9 -> 11 (added `DocumentCreate` and `DocumentDelete`),
+  `Chat*` 19 -> 20 (added `ChatProjectPolicySet`/`ChatChannelPolicySet`),
+  and the approval/execution-policy list gained `NetworkIntentSet`. Added
+  six previously unmentioned groups: Human Shell Runs (4), Human Shell
+  Promotions (2), User Prompt Queue (8), Continuation Grants (3), Node
+  Telemetry (1), Scratch (2).
+- Re-derived the CoreEvent group headers: Project 5 -> 6, and added the 17
+  groups that account for the 39 previously unlisted events (Schedule 6,
+  Agent Run 6, Session Control 2, Todos 1, Worktree 1, LSP 1, Tool Program
+  3, Projection 1, Interactive Process 1, Presence 1, Chat 5, Chat Policy 1,
+  Team 3, Work Order 4, Background Job 1, User Prompt Queue 1, Error 1).
+- Fixed stale line references: `PROTOCOL_VERSION` `core.rs:28` -> `:29`,
+  `RequestEnvelope` `core.rs:33` -> `:77`, `EventEnvelope` `core.rs:984` ->
+  `:1113`, `CoreRequest` `core.rs:1857` -> `:2229`, `CoreResponse`
+  `core.rs:1041` -> `:1127`, `CoreEvent` `core.rs:3135` -> `:4015`, the
+  "authoritative list" pointer `core.rs:1806` -> `:2229`, and
+  `is_secret_bearing` `core.rs:3117` -> `:3980`.
+- Rebuilt the "Where It Lives" tree: `lib.rs` declares 15 public modules and
+  the doc omitted `scratch.rs`; `projection/` holds 12 submodules and the doc
+  omitted `workstream.rs`.
+- Added the two missing protocol version constants with their locations:
+  `HUMAN_SHELL_PROTOCOL_VERSION = 1` (`human_shell.rs:5`) and
+  `SCRATCH_PROTOCOL_VERSION = 2` (`scratch.rs:32`).
+- Added the human-shell bounds the prose asserted but did not cite:
+  `HUMAN_SHELL_MAX_COMMAND_BYTES = 16 KiB`,
+  `HUMAN_SHELL_MAX_TIMEOUT_SECS = 3600`, `HUMAN_SHELL_MAX_READ_BYTES =
+  64 KiB`, and `RUN_TTL_MS = 10 * 60 * 1000` (`src/shell/daemon.rs:17`).
+- Verified accurate, no change: `ServerCapabilities` (`frames.rs:102`) has
+  exactly 10 boolean fields and only `event_replay`, `session_management`,
+  and `permission_routing` lack `#[serde(default)]`; `ClientCapabilities`
+  (`frames.rs:35`) has exactly 16 boolean fields including the eight
+  `plugin_ui_*` flags; `PLUGIN_PROTOCOL_VERSION = 1` at `plugin.rs:7`;
+  `PROJECTION_PROTOCOL_VERSION = 1` at `projection/caps.rs:27`;
+  `REMOTE_TUI_PROTOCOL_VERSION = 5` at `tui.rs:14`; `UiLimits`' 10 fields and
+  the `balanced()` / `text_only()` presets; `validate_ui_effect()`,
+  `validate_ui_effects()`, `validate_ui_node()`, `degrade_effect()`,
+  `degrade_node_to_text()`, and `effect_summary()` all exist in `ui.rs`;
+  `is_secret_bearing` matches exactly five variants;
+  the `secret_bearing_variants_are_denied` test exists at `core.rs:4819`;
+  the `CreateProviderConnectionResult` alias;
+  `projection::consumer::HeadlessProjectionConsumer`; and the
+  `MAX_DOCUMENT_TEXT_BYTES` 8 MiB bound.
+

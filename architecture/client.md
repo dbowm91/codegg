@@ -5,15 +5,16 @@
 `crates/codegg-client` is the reusable frontend-side native client. It owns
 `FrontendDescriptor`, bounded `ClientError` classifications, local daemon
 path discovery, typed local endpoint parsing, the multiplexed CoreFrame client,
-and connect/reuse/start orchestration. Its client stream uses Tokio's shared
-byte-stream I/O boundary; Unix uses domain sockets and Windows uses named
-pipes. Windows serving remains unqualified until live security and lifecycle
-evidence is recorded. It depends on `codegg-protocol` and contains no daemon
-authority.
+and connect/reuse/start orchestration. Its client stream uses a `LocalIo`
+trait (`AsyncRead + AsyncWrite + Unpin + Send`) split with `tokio::io::split`;
+Unix uses domain sockets and Windows uses named pipes. Windows serving
+remains unqualified until live security and lifecycle evidence is recorded.
+It depends on `codegg-protocol` and contains no daemon authority.
 `FrontendDescriptor` fields are private and selected by trusted composition
-code. The root `SocketCoreClient` and `connect_or_start_daemon` APIs remain
-compatibility adapters for the existing `CoreClient` and daemon lifecycle
-types; both delegate to the shared implementation.
+code. The root `SocketCoreClient` (`src/core/transport/socket.rs`) and
+`connect_or_start_daemon` APIs remain compatibility adapters for the existing
+`CoreClient` and daemon lifecycle types; both delegate to the shared
+implementation.
 
 The optional Tauri shell is another trusted GUI composition and consumes only
 this crate. Its JavaScript renderer receives a narrow bridge and never opens
@@ -40,28 +41,33 @@ adapter wraps this controller and stores only presentation placeholders.
 
 ## Loss-aware events and the session projection driver (M004)
 
-`ClientEvent` (`crates/codegg-client/src/event.rs`) is the only
+`ClientEvent` (`crates/codegg-client/src/local.rs:39`) is the only
 loss-aware consumption surface beside the untouched `subscribe()`:
-`Event` (an in-window live event), `Lagged` (receiver lag forced a
+`Event` (an in-window live event), `Lagged { dropped }` (receiver lag forced a
 typed resync, never log-only loss), and `Closed` (transport shutdown
-publishes disconnected state). `is_closed()` polls shutdown with a 25ms
-liveness budget.
+publishes disconnected state). `LocalSocketClient::is_closed()`
+(`local.rs:157`) is a plain atomic read of the reader task's terminal state.
 
-`SessionProjectionDriver` (same crate) owns one session projection
-around `HeadlessProjectionConsumer`: pre-request receiver install,
-exact subscription filtering, ack cadence, resume/replay/resync with a
-fresh-subscribe fallback, stop with unsubscribe plus cursor retention,
+`SessionProjectionDriver` (`crates/codegg-client/src/driver.rs:483`) owns one
+session projection around `HeadlessProjectionConsumer`: pre-request receiver
+install, exact subscription filtering, ack cadence, resume/replay/resync with
+a fresh-subscribe fallback, stop with unsubscribe plus cursor retention,
 and connection-owned, session-authorized subscription. `StoppedDriver`
-resumes with a fresh subscription id (ids are never reused).
-`artifact_excerpt` reads through a driver task command channel against
-the consumer-validated registry (opaque handle, project binding,
-revision, 64 KiB window); unknown handles and over-range reads are
-typed bounded errors, never paths.
+(`driver.rs:705`) resumes with a fresh subscription id (ids are never
+reused). `artifact_excerpt` (`driver.rs:625`) reads through a driver task
+command channel against the consumer-validated registry (opaque handle,
+project binding, revision, 64 KiB window); unknown handles and over-range
+reads are typed bounded errors, never paths. The driver also exposes
+`node_telemetry` (`driver.rs`), a read-only operator view of the configured
+remote Eggwork nodes that never creates, mutates, or releases a job.
 
 `compose_turn_submit` / `PromptIntent`
 (`crates/codegg-client/src/compose.rs`) is the shared prompt composer:
 the desktop submits opaque text and the daemon resolves durable model,
 agents, and messages. The desktop never composes `TurnSubmit` itself.
+`PromptIntent` (`compose.rs:123`) is the state machine that tracks that
+submission across `PromptIntentState` (`compose.rs:110`): `Captured`,
+`CreatingSession`, `Submitting`, `Accepted`, `Failed`.
 
 ## Purpose
 
@@ -76,6 +82,16 @@ capability negotiation, and bidirectional TuiMessage event loop.
 | `src/client/mod.rs` | Re-exports `run_attach` |
 | `src/client/attach.rs` | Main entry: health check, WS connect, event loop |
 | `src/client/sdk.rs` | `RemoteClient` — HTTP client for health/API |
+| `src/core/transport/socket.rs` | Root `SocketCoreClient` compatibility adapter |
+| `src/core/instance.rs` | `connect_or_start_daemon` singleton entry point |
+| `crates/codegg-client/src/lib.rs` | `FrontendDescriptor`, `codegg_client::ClientError` |
+| `crates/codegg-client/src/local.rs` | `LocalSocketClient`, `ClientEvent` |
+| `crates/codegg-client/src/connect.rs` | `connect_or_start_local_daemon` |
+| `crates/codegg-client/src/paths.rs` | `LocalDaemonPaths`, `LocalEndpoint` |
+| `crates/codegg-client/src/driver.rs` | `SessionProjectionDriver`, `StoppedDriver` |
+| `crates/codegg-client/src/document.rs` | `DocumentController` |
+| `crates/codegg-client/src/compose.rs` | `compose_turn_submit`, `PromptIntent` |
+| `crates/codegg-client/src/lsp.rs` | `LspReadClient`, `DiagnosticsReconciler` |
 | `crates/codegg-protocol/src/tui.rs` | `TuiMessage`, `REMOTE_TUI_PROTOCOL_VERSION` |
 
 ## How It Works
@@ -108,7 +124,6 @@ pub async fn run_attach(
    - 30-second timeout per attempt.
    - Up to 3 retries with exponential backoff (1s, 2s, 4s).
    - Uses `tokio_tungstenite::connect_async()`.
-
 4. **Capability Handshake** (`attach.rs:82-91`)
    - Sends `TuiMessage::ProjectionCapabilities` with current capabilities
      first.
@@ -164,8 +179,11 @@ impl RemoteClient {
 
 ### ClientError
 
+There are **two** `ClientError` types; do not confuse them.
+
 ```rust
-// src/error.rs
+// crates/codegg-core/src/error.rs:428
+// (re-exported by the root crate as `codegg::error::ClientError`)
 pub enum ClientError {
     Connection(String),
     Unreachable(String),
@@ -174,6 +192,17 @@ pub enum ClientError {
     Auth(String),
 }
 ```
+
+The remote TUI client (`src/client/sdk.rs`, `src/client/attach.rs`) uses
+this one — it is the error type of the `codegg` root crate's
+`src/error.rs`, which re-exports `codegg_core::error::*`.
+
+The native client crate owns a **separate, bounded** classification
+(`crates/codegg-client/src/lib.rs:89`) with 13 variants:
+`InvalidEndpoint`, `Connect`, `Handshake`, `Protocol`, `PeerClosed`,
+`Transport`, `WaiterCancelled`, `RequestConflict`,
+`RequestCapacityClosed`, `StartupTimeout`, `InconsistentSingleton`,
+`ChildExited` — plus the `Connect`/`Transport` `io::Error` sources.
 
 ### Protocol
 
@@ -192,25 +221,26 @@ pub enum TuiMessage { ... }
 | Variant | Fields | Purpose |
 |---------|--------|---------|
 | `Input` | `text: String` | User text input |
-| `KeyDown` | `key, modifiers` | Keyboard events |
-| `MouseClick` | `x, y` | Mouse clicks |
-| `Resize` | `w, h` | Terminal resize |
+| `KeyDown` | `key: String, modifiers: Vec<String>` | Keyboard events |
+| `MouseClick` | `x: u16, y: u16` | Mouse clicks |
+| `Resize` | `w: u16, h: u16` | Terminal resize |
 | `Resume` | `from_event_seq: u64` | Resume handshake |
-| `RequestSnapshot` | — | Request full state snapshot |
-| `PermissionResponse` | `id, choice` | Permission answer |
-| `QuestionResponse` | `id, answers` | Question answer |
-| `SessionInfo` | `id, model` | Session metadata |
+| `RequestSnapshot` | `reason: Option<String>` | Request full state snapshot |
+| `PermissionResponse` | `id: String, choice: String` | Permission answer |
+| `QuestionResponse` | `id: String, answers: serde_json::Value` | Question answer |
 | `ProjectionCapabilities` | `capabilities` | Negotiate projection mode |
 | `ProjectionSubscribe` | `request` | Subscribe to projection |
 | `ProjectionResume` | `cursor, include_snapshot_if_resync` | Resume with cursor |
 | `ProjectionAck` | `ack` | Acknowledge events |
 | `ProjectionUnsubscribe` | `subscription_id` | Release a subscription |
 
+`SessionInfo` is server-to-client only and is listed in the next table.
+
 ### Server → Client Messages
 
 | Variant | Fields | Purpose |
 |---------|--------|---------|
-| `EventEnvelope` | `event_seq, payload` | Sequence-tagged for replay |
+| `EventEnvelope` | `event_seq: u64, payload: Box<TuiMessage>` | Sequence-tagged for replay |
 | `TextDelta` | `delta` | Streaming text output |
 | `StateSnapshot` | `sequence, snapshot` | Full state for remote rendering |
 | `ToolCallStarted` | `tool_name, tool_id, arguments` | Tool started |
@@ -219,10 +249,11 @@ pub enum TuiMessage { ... }
 | `QuestionPending` | `id, questions` | Question request |
 | `SessionInfo` | `id, model` | Session metadata |
 | `SessionEnded` | `stop_reason` | Session termination |
+| `PluginUiEffect` | `envelope: UiEffectEnvelope` | Plugin UI effect |
 | `Error` | `message` | Error message |
 | `ResyncRequired` | `reason, pending_permissions, pending_questions` | Re-sync needed |
 
-`App::handle_remote_event()` (`src/tui/app/mod.rs`) unwraps
+`App::handle_remote_event()` (`src/tui/app/mod.rs:3432`) unwraps
 `EventEnvelope` first, then dispatches the inner payload. Replayed and
 live events share the same handler path.
 
@@ -236,9 +267,9 @@ passed via CLI arguments.
 | Timeout | Value | Location |
 |---------|-------|----------|
 | Health check (HTTP) | 10s | `sdk.rs:33` |
-| Health check (connect) | 10s | `sdk.rs:12` |
+| Health check (client build) | 10s | `sdk.rs:12` |
 | WebSocket connect | 30s | `attach.rs:46` |
-| Max retry attempts | 3 | `attach.rs:38` |
+| Max retry attempts | 3 | `attach.rs:39` |
 | Backoff (1st retry) | 1s | `attach.rs:41` |
 | Backoff (2nd retry) | 2s | `attach.rs:41` |
 | Backoff (3rd retry) | 4s | `attach.rs:41` |
@@ -251,8 +282,11 @@ passed via CLI arguments.
   Remote rendering uses `StateSnapshot` instead. Note `StateSnapshot` is
   answered by the TUI's remote-mode handler (`src/tui/app/mod.rs`), not by
   `src/server/ws.rs`.
-- **`catch_unwind`** on event task (`attach.rs:103`): Panics in the
-  spawned event task do not crash the connection.
+- **No panic net in the client tasks**: `src/client/attach.rs` contains no
+  `catch_unwind`. The panic net lives in the TUI event loop
+  (`src/tui/runtime/event_loop.rs:217`) and in the render path
+  (`src/tui/app/render.rs`). A panic inside the client's spawned
+  `event_task`/`send_task` therefore aborts that task, not the process.
 - **Channel capacity 256**: Both event and outbound channels are bounded
   at 256 (`attach.rs:14-15`). Full channels drop messages silently.
 - **Projection-first handshake**: Client sends `ProjectionCapabilities`
@@ -260,22 +294,33 @@ passed via CLI arguments.
   projection-primary mode; the legacy marker is a raw-compat fallback.
 - **No reconnection logic**: If the WebSocket drops, `run_attach`
   returns. The caller must re-invoke.
-- **URL normalization is lenient**: Missing scheme defaults to HTTP.
-  Trailing slashes are stripped. The `/tui` path is appended regardless
-  of input format.
+- **URL normalization is lenient**: Trailing slashes are stripped and the
+  `/tui` path is appended regardless of input format. A missing scheme is
+  passed through unchanged (it is *not* upgraded to HTTP), so
+  `example:8080` yields a schemeless `example:8080/tui`.
 
 ## Testing
 
 ```bash
-# Client crate (no special features needed)
+# Root package (the remote TUI client lives here)
 cargo test -p codegg
 
-# TUI remote integration
-cargo test --test tui_render
+# Native client crate
+cargo test -p codegg-client
 
-# Full remote TUI scenario
-cargo test --test tui -- --test-threads=1
+# TUI render family (one executable per subject area)
+cargo test --test tui_render -- tui
+
+# Session projection driver (native client)
+cargo test -p codegg-client --test session_projection_driver
+
+# Projection replay family (daemon ↔ client wire contract)
+cargo test --test projection_replay
 ```
+
+The root package's integration tests are **families** — one executable per
+subject area under `tests/<family>/`. `cargo test --test <family>` no longer
+selects a single member; use `cargo test --test <family> -- <member>`.
 
 ## Related Docs
 
@@ -286,23 +331,73 @@ cargo test --test tui -- --test-threads=1
 
 ## Source verification
 
-Verified 2026-10-06 against `src/client/attach.rs`, `src/client/sdk.rs`,
-and `crates/codegg-protocol/src/tui.rs`. Corrected nine stale
-`file.rs:line` refs in the connection-flow steps and timing table:
-`build_tui_ws_url` `attach.rs:148` → `:154`, `build_http_url` `:161` →
-`:167`, the health-check step `sdk.rs:35` → `:27`, channel setup
-`attach.rs:95-101` → `:101-104`, background tasks `:103-138` →
-`:109-144`, TUI initialization `:93` → `:99`, cleanup `:142-143` →
-`:148-149`, the `RemoteClient` decl `sdk.rs:7` → `:5`, and the two
-health-check timeout refs (`sdk.rs:40` → `:33`, `sdk.rs:26` → `:12`).
-Retargeted the retry/backoff refs to their real declarations —
-`max_attempts` at `attach.rs:38` and the `2^(attempt-1)` backoff at
-`:41`, replacing the repeated `:42`. Verified accurate: `run_attach` at
-`attach.rs:17`, the 30s connect timeout at `:46`, both 256-entry channel
-capacities (`REMOTE_EVENT_CHANNEL_CAPACITY` / `REMOTE_OUTBOUND_CHANNEL_CAPACITY`),
-3 max retry attempts with 1s/2s/4s backoff,
-`REMOTE_TUI_PROTOCOL_VERSION` = 5 at `tui.rs:14`, `TuiMessage` at
-`tui.rs:19`, and the five `ClientError` variants.
+Verified 2026-10-23 against `src/client/attach.rs`, `src/client/sdk.rs`,
+`src/client/mod.rs`, `src/core/instance.rs`, `src/core/transport/socket.rs`,
+`src/tui/app/mod.rs`, `src/tui/runtime/event_loop.rs`,
+`crates/codegg-client/src/` (`lib.rs`, `local.rs`, `driver.rs`,
+`document.rs`, `compose.rs`, `connect.rs`, `paths.rs`, `lsp.rs`),
+`crates/codegg-core/src/error.rs`, and
+`crates/codegg-protocol/src/tui.rs`.
+- **Removed a dead reference**: `ClientEvent` was documented at
+  `crates/codegg-client/src/event.rs`. No such file exists; the type lives
+  in `crates/codegg-client/src/local.rs:39`. Retargeted the reference and
+  the doc's `Lagged` description to the real `Lagged { dropped: u64 }`
+  shape.
+- **Corrected a wrong invariant**: the doc claimed a `catch_unwind` net on
+  the client's spawned event task (`attach.rs:103`). `src/client/attach.rs`
+  contains no `catch_unwind` at all. The panic net is in the TUI event loop
+  (`src/tui/runtime/event_loop.rs:217`) and the render path
+  (`src/tui/app/render.rs`); a panic in a client task aborts that task.
+- **Corrected the `is_closed()` liveness claim**: the doc said `is_closed()`
+  "polls shutdown with a 25ms liveness budget". `is_closed()`
+  (`crates/codegg-client/src/local.rs:157`) is a plain `AtomicBool` load.
+  The 25 ms interval is the `SessionProjectionDriver`'s peer-death liveness
+  tick (`crates/codegg-client/src/driver.rs:417`), a different component.
+- **Disambiguated `ClientError`**: the doc pointed at `src/error.rs`, which
+  only re-exports `codegg_core::error::*`. The five-variant enum the remote
+  TUI client uses is `codegg_core::error::ClientError`
+  (`crates/codegg-core/src/error.rs:428`); the native client crate owns a
+  *different*, 13-variant `codegg_client::ClientError`
+  (`crates/codegg-client/src/lib.rs:89`), which the doc had not mentioned
+  despite naming it in the opening section.
+- **Corrected the URL-normalization invariant**: a missing scheme is *not*
+  upgraded to HTTP — `build_tui_ws_url` (`attach.rs:154`) passes the
+  schemeless base through and only appends `/tui`.
+- Corrected the message-table field cells against `tui.rs:19-220`:
+  `RequestSnapshot` carries `reason: Option<String>` (not "—"),
+  `KeyDown`/`MouseClick`/`Resize`/`PermissionResponse`/`QuestionResponse`
+  now show their real field types, `PluginUiEffect { envelope }` was added
+  to the server→client table, and `SessionInfo` was removed from the
+  client→server table (it is server→client only).
+- Corrected the `StateSnapshot` production-site reference: the doc cited
+  `src/tui/app/mod.rs:1855`; the `RemoteTuiMessage::StateSnapshot`
+  constructions are at `src/tui/app/mod.rs:3591` and `:3601`, and
+  `handle_remote_event` is at `:3432`.
+- Corrected `max_attempts` `attach.rs:38` -> `:39`.
+- Rebuilt the "Where It Lives" table: it listed only the three `src/client/`
+  files and `tui.rs`, omitting the `codegg-client` crate's own modules
+  (`local.rs`, `connect.rs`, `paths.rs`, `driver.rs`, `document.rs`,
+  `compose.rs`, `lsp.rs`) and the root `SocketCoreClient` /
+  `connect_or_start_daemon` adapters.
+- Replaced the dead test command `cargo test --test tui` (no such target;
+  `tests/tui` does not exist) with the family form
+  `cargo test --test tui_render -- tui`, and added the native client's own
+  test targets.
+- Verified accurate, no change: `run_attach` at `attach.rs:17`;
+  `build_tui_ws_url` at `:154` and `build_http_url` at `:167`; the 30s
+  connect timeout at `:46`; the `2^(attempt-1)` backoff at `:41`; the
+  projection-first handshake (`ProjectionCapabilities` at `:82`,
+  `TuiMessage::Resume` at `:92`); `tui::App::new_remote` at `:99`; channel
+  setup at `:101-104`; the two background tasks at `:109`/`:136` and their
+  abort at `:148-149`; both 256-entry channel capacities
+  (`REMOTE_EVENT_CHANNEL_CAPACITY` / `REMOTE_OUTBOUND_CHANNEL_CAPACITY` at
+  `attach.rs:14-15`); `RemoteClient` at `sdk.rs:5` with `health()` at `:27`
+  and both 10s timeouts at `:12`/`:33`; `REMOTE_TUI_PROTOCOL_VERSION = 5`
+  at `tui.rs:14`; `TuiMessage` at `tui.rs:19`; the five
+  `codegg_core::error::ClientError` variants; `SnapshotDaemon`'s
+  `daemon_id` / `uptime_secs` / `active_sessions` / `connected_clients`
+  fields; and the `daemon status` CLI printing `generation` and `started_at`
+  (`src/main.rs:1993-1996`).
 
 Re-verified 2026-10-06 against `crates/codegg-protocol/src/tui.rs` and
 `src/server/ws.rs`. Corrected three field cells in the Client → Server /

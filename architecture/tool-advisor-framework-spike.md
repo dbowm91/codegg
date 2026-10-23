@@ -200,6 +200,37 @@ offline research infrastructure; no live-primary-model wiring is enabled.
 
 ## Source Verification
 
+Verified 2026-10-23 against source. Corrected:
+
+- The root `Cargo.toml` `[features]` table listed in the note above was
+  incomplete: it omitted `windows-sandbox-test-support` and
+  `linux-git-test-support`. Both are test-only features that compile a
+  capability's constructor into existence in a test-only build and in no
+  shipped build. The complete table is now `default`, `arboard`,
+  `windows-sandbox-test-support`, `linux-git-test-support`, `plugins`,
+  `debug-logging`, `server`, `image`, `lsp-test-support`,
+  `lsp-real-server-tests`, and `decision-runtime-sdm`.
+
+Verified accurate: `Cargo.toml` still has **no** `candle` entry, and the
+`candle-core` / `candle-nn` / `candle-transformers` pins at
+`Cargo.toml:313-315` and the two experiment features at `Cargo.toml:346-354`
+remain historical (those lines no longer carry those entries); the
+`tool-advisor-encoder-experiment` / `tool-advisor-encoder-training` feature
+names no longer exist; `src/tool_advisor/sequence_encoder.rs` is deleted, as
+the M001B section records; the MiniLM reference manifest
+`assets/tool-advisor/reference-models/all-minilm-l6-v2.json`,
+`assets/tool-advisor/sequence-encoder-m005-preregistration.json`,
+`assets/tool-advisor/sequence-qualification-result.json`, the closure
+records `plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`
+and `008-status.md`, and the subsystem roadmap
+`plans/subsystems/tool-selection-advisor-sequence-encoder-experiment-roadmap.md`
+are all present.
+
+This document is historical evidence: its dated sections describe an
+experiment and a feature graph that M006 retired. Nothing in it describes
+the current backend-selection contract — see `architecture/tool-advisor.md`
+for that.
+
 Verified 2026-10-06 against source. Corrected: the Candle pins were stated as
 exact `= 0.11.0` requirements, but `Cargo.toml:313-315` declares them as
 `version = "0.11"` with `default-features = false, optional = true`; added the
@@ -223,8 +254,10 @@ are now historical rather than live: `Cargo.toml:313-315` no longer declares
 git dependency), and the `tool-advisor-encoder-experiment` /
 `tool-advisor-encoder-training` features previously at `Cargo.toml:346-354` no
 longer exist. `Cargo.toml` has no `candle` entry at all, and its `[features]`
-table is now `default`, `arboard`, `plugins`, `debug-logging`, `server`,
-`image`, `lsp-test-support`, `lsp-real-server-tests`, and `decision-runtime-sdm`.
+table is now `default`, `arboard`, `windows-sandbox-test-support`,
+`linux-git-test-support`, `plugins`, `debug-logging`, `server`,
+`image`, `lsp-test-support`, `lsp-real-server-tests`, and
+`decision-runtime-sdm`.
 The dated M001/M001A/M001B/M003-M005 sections above are retained deliberately as
 evidence, and the `sequence_encoder.rs` reference at the M001B section records
 the file as it existed for that experiment; that module was deleted by the same

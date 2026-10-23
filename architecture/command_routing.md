@@ -26,7 +26,8 @@ that carries the executor-specific data needed for actual dispatch.
 - `src/tool/bash/process.rs` — dispatch methods that consume the canonical
   target (`dispatch_command_target`, `execute_via_raw_shell`,
   `submit_test_job`, `dispatch_to_managed_process`, `dispatch_to_git`,
-  `dispatch_to_python_script`, `dispatch_python_via_scheduler`)
+  `dispatch_to_python_script`, `dispatch_python_via_scheduler`,
+  `dispatch_to_shell`, `dispatch_to_native_tool`)
 
 ## How It Works
 
@@ -43,10 +44,15 @@ that carries the executor-specific data needed for actual dispatch.
         ├── RouteToGit        → dispatch_to_git()
         ├── RouteToPythonScripting → dispatch_to_python_script()
         ├── RouteToManagedProcess  → dispatch_to_managed_process()
-        ├── RouteToShell      → execute_via_raw_shell()
-        ├── RouteToNativeTool → (legacy, rarely used)
+        ├── RouteToShell      → dispatch_to_shell()
+        ├── RouteToNativeTool → dispatch_to_native_tool() (legacy, rarely used)
         └── Rejected          → error
 ```
+
+`dispatch_to_shell()` is the **active-routing** raw-shell path; it submits a
+scheduler-backed `JobKind::Shell`. The separate `execute_via_raw_shell()` helper
+serves the **observe-mode** path (and tests) — it is not what
+`RouteToShell` resolves to.
 
 ## Key Types & APIs
 
@@ -138,7 +144,7 @@ Active routing is controlled by `CommandIntentMode::Active`. When active:
   `RouteLevel::Off` disables routing for that family
 - Default mode is `Observe` — no active routing unless explicitly enabled
 
-The kill switch check is at `src/tool/bash/policy.rs:318`:
+The kill switch check is `check_kill_switches()` in `src/tool/bash/policy.rs`:
 ```rust
 fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
     let env_disabled = self.routing_disabled_override
@@ -194,7 +200,7 @@ the scheduler invokes the canonical subsystem and returns a `run_id` proving
 the delegated record was begun. Python and Git retain their domain-specific
 canonical adapters.
 
-### DispatchOutcome (`src/tool/bash/process.rs:61`)
+### DispatchOutcome (`src/tool/bash/process.rs`)
 
 ```rust
 pub struct DispatchOutcome {
@@ -215,22 +221,22 @@ pub struct DispatchOutcome {
 ### TestRunner delegation flow
 
 ```
-classify → plan → submit_test_job (bash/process.rs:246)
+classify → plan → submit_test_job (src/tool/bash/process.rs)
   → JobSubmissionService → JobKind::Test
   → JobScheduler admission + TestJobExecutor
-  → TestScope::BashDispatch(argv) (types.rs:18)
-  → resolve_and_run_test (runner.rs:749)
+  → TestScope::BashDispatch(argv) (src/test_runner/types.rs)
+  → resolve_and_run_test (src/test_runner/runner.rs)
       [bypasses allowlist re-validation — argv already validated by planner]
-  → DelegatedTestRun { report, run_id } (runner.rs:356-359)
+  → DelegatedTestRun { report, run_id } (src/test_runner/runner.rs)
   → DispatchOutcome { ..., delegated_run_id }
   → caller suppresses persistence when run_id is Some
 ```
 
 Key points:
-- `TestScope::BashDispatch` (`src/test_runner/types.rs:18`) is a dedicated
+- `TestScope::BashDispatch` (`src/test_runner/types.rs`) is a dedicated
   bypass variant: argv is consumed directly without the strict allowlist
   re-validation that `TestScope::CustomCommand` performs.
-- `DelegatedTestRun` (`src/test_runner/runner.rs:356`) carries
+- `DelegatedTestRun` (`src/test_runner/runner.rs`) carries
   `report: TestReport` and `run_id: Option<RunId>`. Callers use
   `.into_report()` for display output.
 - BashTool synthesizes a `std::process::Output`-shaped value from the report
@@ -239,11 +245,11 @@ Key points:
 ### Python delegation flow
 
 ```
-classify → plan → dispatch_to_python_script (bash/process.rs:417)
+classify → plan → dispatch_to_python_script (src/tool/bash/process.rs)
   → PythonScriptRequest { code, mode, cwd, ... }
-  → dispatch_python_via_scheduler (bash/process.rs:467)
+  → dispatch_python_via_scheduler (src/tool/bash/process.rs)
       [scheduler admission required — production path]
-  → DelegatedPythonRun { result, run_id } (tool.rs:16-19)
+  → DelegatedPythonRun { result, run_id } (src/python_script/tool.rs)
   → DispatchOutcome { ..., delegated_run_id }
   → caller suppresses persistence when run_id is Some
 ```
@@ -251,28 +257,40 @@ classify → plan → dispatch_to_python_script (bash/process.rs:417)
 Key points:
 - Production Python execution requires scheduler admission
   (`JobSubmissionService`). Without it, an error is returned.
-- `DelegatedPythonRun` (`src/python_script/tool.rs:16`) carries
+- `DelegatedPythonRun` (`src/python_script/tool.rs`) carries
   `result: PythonRunResult` and `run_id: Option<RunId>`.
-- The legacy `persist_python_run` helper (`src/python_script/tool.rs:232`) is
+- The legacy `persist_python_run` helper (`src/python_script/tool.rs`) is
   best-effort; errors are logged, and `run_id` is `None` only when `run_store`
   is `None` or `begin_run` failed.
 
-### Raw-shell run-kind mapping (`src/command_outcome.rs:158-181`)
+### Raw-shell run-kind mapping (`src/command_outcome.rs`)
 
 `run_kind_for_outcome()` maps `ActualExecutor::RawShell` → `"raw_shell"`
 **unconditionally**. Semantic intent (git, search, test, python) is never used
 to label raw-shell executions. Intent remains available through
 `planned_backend`, routing metadata, and intent kind fields.
 
-### Persistence gating (`src/tool/bash/output.rs:367`)
+### Persistence gating (`src/tool/bash/output.rs`)
 
 ```rust
-let persist_run = match (delegated_executor, delegated_run_id.as_ref()) {
-    (true, Some(_))  => false,   // subsystem owns persistence
-    (true, None)     => self.run_store.is_some(), // caller persists once
-    (false, _)       => true,    // caller-owned
+let delegated_executor =
+    matches!(
+        &execution_outcome.actual,
+        ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }
+    ) || matches!(&execution_outcome.actual, ActualExecutor::Git { .. })
+        && delegated_run_id.is_some();
+
+let persist_run = match (delegated_executor, delegated_run_id) {
+    (true, Some(_)) => false,                 // subsystem owns persistence
+    (true, None) => self.run_store.is_some(), // caller persists once
+    (false, _) => true,                       // caller-owned
 };
 ```
+
+A `Git` outcome counts as delegated **only when it also has a
+`delegated_run_id`**; a git execution without one stays caller-owned. The
+`(true, None)` arm logs a warning, because delegated ownership without a
+`run_id` is the "the subsystem ran but no canonical record exists" case.
 
 One logical execution is never retried merely because persistence is
 unavailable. A delegated backend without a `run_id` is treated as caller-owned
@@ -306,13 +324,18 @@ cargo test -p codegg --lib command_routing
 ### Adversarial Test Coverage
 
 ```bash
-cargo test --test command_routing_adversarial
+cargo test --test command_git -- command_routing_adversarial
 ```
+
+`command_routing_adversarial` is a member of the `command_git` integration-test
+family (`tests/command_git/`); the family is the single Cargo test target
+declared in the root `Cargo.toml`, so the member name must be passed as a
+filter after `--`.
 
 Adversarial tests covering: command smuggling, workspace escape, kill switches,
 Observe/Active modes, per-family RouteLevel overrides, validation failures,
 safe/dangerous git mutation routing, and full pipeline integration. These tests
-exercise the classify → plan → route pipeline end-to-end with adversarial
+exercise the classify → plan → dispatch pipeline end-to-end with adversarial
 inputs.
 
 ### Track U unified dispatch
@@ -346,3 +369,39 @@ execution-origin matrix 19 → 12 tests; `check_kill_switches`
 `RawShell → "raw_shell"`, `TestScope::BashDispatch` (`types.rs:18`),
 `DelegatedTestRun` (`runner.rs:356`), `DelegatedPythonRun`
 (`src/python_script/tool.rs:16`), `persist_python_run` (`tool.rs:232`).
+
+Verified 2026-10-23 against `src/command_intent/plan.rs`,
+`src/command_routing.rs`, `src/tool/bash/process.rs`,
+`src/tool/bash/policy.rs`, `src/tool/bash/output.rs`,
+`src/command_outcome.rs`, `src/test_runner/types.rs`,
+`src/test_runner/runner.rs`, `src/python_script/tool.rs`, the root
+`Cargo.toml` test targets, and `tests/command_git/mod.rs`. Corrected:
+
+- **Stale line refs replaced by symbol names** across the document: every
+  `bash/process.rs:NNN`, `policy.rs:NNN`, `runner.rs:NNN`, `tool.rs:NNN`,
+  `output.rs:NNN`, and `command_outcome.rs:NNN` reference had drifted past its
+  stated line (e.g. `DispatchOutcome` was cited at `process.rs:61` and is at
+  `:123`; `check_kill_switches` was cited at `policy.rs:318` and is at `:531`).
+  They are now referenced by symbol and file, because these files move.
+- **`RouteToShell` dispatch fixed.** The pipeline diagram claimed
+  `RouteToShell → execute_via_raw_shell()`. The active-routing arm actually
+  calls `dispatch_to_shell()` (a scheduler-backed `JobKind::Shell` submit);
+  `execute_via_raw_shell()` serves the observe-mode path. Both are now named,
+  and `dispatch_to_native_tool()` is named for the `RouteToNativeTool` arm.
+- **Persistence gating snippet corrected.** The quoted `persist_run` match used
+  `delegated_run_id.as_ref()`; the real code matches on `delegated_run_id` by
+  value and derives `delegated_executor` from `ActualExecutor` — including the
+  `Git` arm, which is delegated **only** when a `delegated_run_id` is present.
+- **Test command corrected.** `cargo test --test command_routing_adversarial`
+  selected zero tests: the member lives in the `command_git` family. It is now
+  `cargo test --test command_git -- command_routing_adversarial`.
+- **Execution-origin matrix bullets extended** to name the `row_5b`/`row_5c`
+  active-mode rows.
+
+Verified accurate: `src/command_routing.rs` is still a 30-line zero-logic
+facade with exactly one public function (`resolve_routing`) plus the
+`RoutingDecision` alias; the 7-variant `CommandDispatchTarget` and the 7-row
+backend mapping table; the 7 `validate_for_active_routing()` checks; the
+4-field `DispatchOutcome`; the unconditional `RawShell → "raw_shell"` mapping in
+`run_kind_for_outcome()`; `TestScope::BashDispatch`'s allowlist bypass; and the
+`delegated_run_id` ownership contract.

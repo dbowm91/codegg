@@ -19,7 +19,7 @@ from internal/diagnostic surfaces only.
 |------|------|
 | `crates/codegg-core/src/project_catalog.rs` | Catalog service (list/get/register/archive/restore/delete, locators, health, hydration, legacy association) |
 | `crates/codegg-core/src/project_storage.rs` | `ProjectStorage` layer above which the catalog sits |
-| `crates/codegg-core/src/project_discovery.rs` | Bounded metadata-only scanner (deterministic, no I/O) |
+| `crates/codegg-core/src/project_discovery.rs` | Bounded metadata-only scanner (deterministic, read-only) |
 | `crates/codegg-core/src/project_discovery_service.rs` | Daemon coordinator for discovery (persistence, reconciliation) |
 
 ## How It Works
@@ -138,12 +138,18 @@ only explicitly configured local roots and produces bounded metadata
 candidates. It does not activate workspace services, run LSP/index/
 build/provider work, or write inside candidate repositories.
 
-The scanner is deterministic, does not follow symlinks by default,
-skips heavy directories, and stops at finite depth, entry, candidate,
-elapsed-time, diagnostic, and Git-probe limits.
+The scanner is deterministic, never follows symlinks (a symlinked root is
+refused and a symlinked entry is ignored with a diagnostic), skips heavy
+directories, and stops at finite depth, entry, candidate, elapsed-time,
+diagnostic, and Git-probe limits.
 
-Default limits: depth 4, 10,000 visited entries, 1,000 candidates,
-5 seconds, stat concurrency 4, Git-probe concurrency 2.
+`ScanLimits::default()`: depth 4, 10,000 visited entries, 1,000 candidates,
+5 seconds, 256 KiB retained report bytes, 128 retained diagnostics, stat
+concurrency 4, Git-probe concurrency 2. The current scanner performs the
+work serially, which is stricter than the two concurrency bounds (they are
+persisted for a future parallel backend). `ScanLimits::validate()` refuses
+`max_entries == 0`, `max_output_bytes == 0`, `max_diagnostics == 0`, and a
+`stat_concurrency` of 0 or above 256.
 
 Reconciliation uses exact/canonical workspace evidence first, then
 unique local Git lineage key. Remote-only, fork-like, ambiguous, and
@@ -170,9 +176,10 @@ coordinator starts.
 
 Project activation is explicit and scoped by `(ProjectId, WorkspaceId)`
 plus a bounded owner identifier. `CoreDaemon::activate_project_workspace`
-resolves the typed catalog binding, then acquires an owner-scoped
-`ProjectActivationLease`. The lease has a finite lifetime and releases
-the underlying `WorkspaceServicesLease` on drop, explicit release,
+(root crate, `src/core/daemon_refresh.rs`) resolves the typed catalog
+binding, then acquires an owner-scoped `ProjectActivationLease`
+(`src/core/project_activation.rs`). The lease has a finite lifetime and
+releases the underlying `WorkspaceServicesLease` on drop, explicit release,
 or bounded expiry eviction.
 
 Activation never creates a second service authority. Workspace bundle
@@ -196,7 +203,7 @@ before delegating to `ProjectCatalog::register_local_project`.
 
 | Type | File:line | Purpose |
 |------|-----------|---------|
-| `ProjectCatalog` | `project_catalog.rs:432` | Service struct |
+| `ProjectCatalog` | `project_catalog.rs:451` | Service struct |
 | `ProjectCatalogRecord` | `project_catalog.rs:292` | Extended project row |
 | `Locator` | `project_catalog.rs:69` | Typed reference enum (Local/Ssh/LinkedNode) |
 | `CatalogLocatorRecord` | `project_catalog.rs:90` | Stored locator row |
@@ -260,14 +267,18 @@ Safe defaults: disabled, depth 4, 10,000 entries, 1,000 candidates,
 # Catalog unit tests
 cargo test -p codegg-core -- project_catalog
 
+# Catalog integration tests (crates/codegg-core/tests/project_catalog.rs)
+cargo test -p codegg-core --test project_catalog
+
 # Discovery unit tests
 cargo test -p codegg-core -- project_discovery
 
 # Discovery service integration tests
 cargo test -p codegg-core -- project_discovery_service
 
-# Adversarial tests
-cargo test --test command_routing_adversarial
+# Adversarial tests — `command_routing_adversarial` is a member of the
+# root package's `command_git` family, not a standalone target.
+cargo test --test command_git -- command_routing_adversarial
 ```
 
 ## Static Guards
@@ -307,22 +318,59 @@ Idempotent re-runs accept `duplicate column name` errors for
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-core/src/project_catalog.rs`,
+Verified 2026-10-23 against `crates/codegg-core/src/project_catalog.rs`,
 `crates/codegg-core/src/project_discovery.rs`,
-`crates/codegg-core/src/project_discovery_service.rs`, and
-`crates/codegg-core/src/session/schema.rs`. Corrected eleven stale
-`file.rs:line` refs in the Key Types table: `Locator` `:67` → `:69`,
-`CatalogLocatorRecord` `:89` → `:90`, `ProjectCatalogRecord` `:291` →
-`:292`, `WorkspaceSummary` `:317` → `:318`, `LifecycleCounts` `:329` →
-`:330`, `HydrationReport` `:342` → `:343`, `LegacyAssociationReport`
-`:355` → `:356`, `RegisterLocalProject` `:377` → `:378`,
-`DiscoveryRoot` `project_discovery.rs:99` → `:100`, `ScanLimits` `:144`
-→ `:145`, `DiscoveryCandidate` `:231` → `:232`,
-`ReconciliationOutcome` `:348` → `:350`, and `DiscoveryCoordinator`
-`project_discovery_service.rs:191` → `:194`. Verified accurate: the five
-`CatalogError` variants (Database/NotFound/InvalidValue/Conflict/
-AlreadyExists), the v28 tables (`project_locator`, `project_health`,
+`crates/codegg-core/src/project_discovery_service.rs`,
+`crates/codegg-core/src/session/schema.rs`,
+`crates/codegg-config/src/schema.rs`, `src/core/daemon_refresh.rs`,
+`src/core/project_activation.rs`, and
+`crates/codegg-core/src/workspace_services.rs`.
+
+Corrections made in this pass:
+
+- **`ProjectCatalog` line reference `:432` → `:451`** (the only stale ref in
+  the Key Types table; the other twelve refs — `Locator` `:69`,
+  `CatalogLocatorRecord` `:90`, `ProjectCatalogRecord` `:292`,
+  `HealthStatus` `:238`, `ProjectHealthRecord` `:276`,
+  `WorkspaceSummary` `:318`, `LifecycleCounts` `:330`,
+  `HydrationReport` `:343`, `LegacyAssociationReport` `:356`,
+  `RegisterLocalProject` `:378`, `CatalogError` `:406`, `Scanner`
+  `project_discovery.rs:406`, `DiscoveryRoot` `:100`, `ScanLimits` `:145`,
+  `DiscoveryCandidate` `:232`, `ReconciliationOutcome` `:350`,
+  `DiscoveryCoordinator` `project_discovery_service.rs:194` — were
+  re-checked and are still exact).
+- **Test target fix.** `cargo test --test command_routing_adversarial`
+  selects nothing: `command_routing_adversarial` is a member of the root
+  package's `command_git` family
+  (`tests/command_git/command_routing_adversarial.inc`). Corrected to
+  `cargo test --test command_git -- command_routing_adversarial`, and the
+  `crates/codegg-core/tests/project_catalog.rs` integration target was
+  added.
+- **Scanner limits completed.** `ScanLimits::default()` also bounds
+  `max_output_bytes` (256 KiB) and `max_diagnostics` (128); the previous
+  pass listed only six of the eight bounds, and the doc's phrase "does not
+  follow symlinks by default" was wrong — the scanner never follows
+  symlinks at all (a symlinked root is refused, a symlinked entry is
+  ignored with a diagnostic).
+- **"no I/O" corrected to "read-only"** for `project_discovery.rs` in the
+  Where It Lives table: the scanner *does* read filesystem metadata and
+  probe Git lineage; what it never does is write, register, or activate.
+- **Module paths added** for `activate_project_workspace` /
+  `project_health` (`src/core/daemon_refresh.rs`),
+  `ProjectActivationLease` (`src/core/project_activation.rs`), and
+  `WorkspaceServiceRegistry`
+  (`crates/codegg-core/src/workspace_services.rs`).
+
+Verified accurate, no change: the five `CatalogError` variants
+(Database/NotFound/InvalidValue/Conflict/AlreadyExists), the v28 tables
+(`project_locator`, `project_health`,
 `legacy_catalog_association_marker`), the v29 tables (`discovery_root`,
 `discovery_scan`, `discovery_observation`), the five added
-`logical_project` columns, and the `ProjectCatalog` / `HealthStatus` /
-`ProjectHealthRecord` / `Scanner` refs.
+`logical_project` columns, `MAX_LOCATOR_FIELD_LENGTH = 512`,
+`HydrationReport`'s four fields, `ScanLimits::default()`'s depth/entries/
+candidates/elapsed/stat-concurrency/git-probe-concurrency values, the
+`DISCOVERY_GENERATION_RETENTION = 20` scan-generation retention, the
+`discovery` config root field names (`max_visited_entries`,
+`max_elapsed_ms`, `stat_concurrency`, `git_probe_concurrency`,
+`include_hidden`, `directory_markers`, `direct_child_only`), and the
+`register_local_project` / `delete_project` / `update_project` signatures.

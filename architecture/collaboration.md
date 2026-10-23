@@ -52,8 +52,8 @@ crates/codegg-core/src/authorization/policy.rs
                                           # chat_* operation descriptors (project.chat),
                                           # re-exported by the authorization facade
 crates/codegg-core/src/projection_replay/safe_publication.rs  # chat events classify Safe
-crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 19 Chat CoreRequests,
-                                          # 12 Chat CoreResponses, 6 Chat CoreEvents
+crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 20 Chat CoreRequests,
+                                          # 13 Chat CoreResponses, 6 Chat CoreEvents
                                           # (CHAT_CAPABILITY, CHAT_PROTOCOL_VERSION)
 src/core/daemon.rs                        # daemon-owned CollaborationService, channel->project
                                           # resolver, privacy denials, dedicated chat handler
@@ -166,10 +166,11 @@ active membership: project principal overrides, channel mode
 (`inherit_project` | `restricted`), channel principal overrides
 (`codegg-core::collaboration::policy::effective_chat_access` and
 `effective_chat_access_for`). Channel-scoped requests carry only the
-channel locator; both the gate (`authorize_chat_request` via
-`channel_project`) and dispatch (`resolve_chat_channel` plus
-`chat_access_allows` rechecks) resolve the owning project
-server-side, and unknown or foreign channels fail closed. Channel
+channel locator; both the gate (the `R::Chat*` `operation_descriptor` arms
+in `crates/codegg-core/src/authorization/policy.rs`, which require
+`Capability::ProjectChat` under `ScopeKind::DirectProject`) and dispatch
+(`resolve_chat_channel` plus `chat_access_allows` rechecks) resolve the
+owning project server-side, and unknown or foreign channels fail closed. Channel
 listing filters through the same resolver. Gate denials use
 `project_not_found` and handler denials use `chat_channel_not_found`,
 both indistinguishable from absent — including for members probing
@@ -200,13 +201,13 @@ M003 `/team` surface and M005 selected-project rendering.
 
 ```bash
 cargo test -p codegg-core --lib collaboration  # resolver truth table + domain
-cargo test --test collaboration_m002_chat_policy # 13 policy boundary tests
-cargo test --test collaboration_m002_chat_tui # 11 chat policy TUI tests
-cargo test --test collaboration_m001_chat       # 12 default-behavior tests
-cargo test --test collaboration_m003_chat_actions  # 10 non-escalation tests
-cargo test --test team_m003_membership_admin  # 12 membership/token/chat-override tests (M003)
-cargo test --test session_family                       # 91 default-feature session tests (M004 consolidated)
-cargo test --test workspace_m005_selected_project_chat  # 9 Workspace selected-project routing tests (M005)
+cargo test --test core_daemon -- collaboration_m002_chat_policy  # 13 policy boundary tests
+cargo test --test tui_render -- collaboration_m002_chat_tui  # 11 chat policy TUI tests
+cargo test --test core_daemon -- collaboration_m001_chat  # 12 default-behavior tests
+cargo test --test core_daemon -- collaboration_m003_chat_actions  # 10 non-escalation tests
+cargo test --test core_daemon -- team_m003_membership_admin  # 12 membership/token/chat-override tests (M003)
+cargo test --test session_family --                   # 97 default-feature session tests (M004 consolidated)
+cargo test --test tui_render -- workspace_m005_selected_project_chat  # 9 Workspace selected-project routing tests (M005)
 python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops + 11 team ops + 5 control ops
 ```
 
@@ -316,11 +317,11 @@ chat body or secret material.
 ## Testing
 
 ```bash
-cargo test -p codegg-core collaboration       # 19 unit tests (domain/store/policy/actions)
-cargo test --test collaboration_m001_chat     # 12 daemon boundary tests
-cargo test -p codegg --lib tui::app::state::chat  # 16 chat reducer tests (M002)
-cargo test --test collaboration_m002_chat_tui # 11 TUI boundary tests (M002)
-python3 scripts/check_authorization_matrix.py # matrix covers all 19 chat_* operations
+cargo test -p codegg-core collaboration       # 22 unit tests (20 in collaboration.rs + 2 in collaboration/policy.rs)
+cargo test --test core_daemon -- collaboration_m001_chat  # 12 daemon boundary tests
+cargo test -p codegg --lib tui::app::state::chat  # 23 chat reducer tests (M002)
+cargo test --test tui_render -- collaboration_m002_chat_tui  # 11 TUI boundary tests (M002)
+python3 scripts/check_authorization_matrix.py # matrix covers all 20 chat_* operations
 bash scripts/check-core-boundary.sh           # collaboration stays UI/server/plugin/auth-free
 ```
 
@@ -411,12 +412,12 @@ an idempotency key) can create work.
 ## Testing
 
 ```bash
-cargo test -p codegg-core --lib collaboration  # 19 unit tests (17 in collaboration.rs + 2 in collaboration/policy.rs)
-cargo test --test collaboration_m001_chat      # 12 daemon boundary tests
-cargo test --test collaboration_m003_chat_actions  # 10 action boundary tests
-cargo test -p codegg --lib tui::app::state::chat  # 16 chat reducer tests (M002)
-cargo test --test collaboration_m002_chat_tui # 11 TUI boundary tests (M002)
-python3 scripts/check_authorization_matrix.py # matrix covers all 19 chat_* operations
+cargo test -p codegg-core --lib collaboration  # 22 unit tests (20 in collaboration.rs + 2 in collaboration/policy.rs)
+cargo test --test core_daemon -- collaboration_m001_chat  # 12 daemon boundary tests
+cargo test --test core_daemon -- collaboration_m003_chat_actions  # 10 action boundary tests
+cargo test -p codegg --lib tui::app::state::chat  # 23 chat reducer tests (M002)
+cargo test --test tui_render -- collaboration_m002_chat_tui  # 11 TUI boundary tests (M002)
+python3 scripts/check_authorization_matrix.py # matrix covers all 20 chat_* operations
 bash scripts/check-core-boundary.sh           # collaboration stays UI/server/plugin/auth-free
 ```
 
@@ -432,6 +433,72 @@ bash scripts/check-core-boundary.sh           # collaboration stays UI/server/pl
 - `architecture/presence.md` — ephemeral-state design precedent
 
 ## Source verification
+
+Verified 2026-10-23 against `crates/codegg-core/src/collaboration.rs`,
+`crates/codegg-core/src/collaboration/{store,validation,policy}.rs`,
+`crates/codegg-protocol/src/core.rs`,
+`crates/codegg-core/src/authorization/policy.rs`,
+`crates/codegg-core/src/authorization/authority.rs`,
+`crates/codegg-core/src/team.rs`, `crates/codegg-core/src/audit.rs`,
+`crates/codegg-core/src/audit_instrumentation.rs`,
+`crates/codegg-core/src/session/schema.rs`,
+`crates/codegg-core/src/storage/mod.rs`, `src/core/daemon.rs`,
+`src/tui/app/state/chat.rs`, and the 10 collaboration/team/chat integration
+test files.
+- **Corrected the protocol-surface counts**: the doc said 19 Chat
+  `CoreRequests` and 12 Chat `CoreResponses`. The live enum has **20**
+  Chat `CoreRequest` variants (the missing one is `ChatChannelPolicySet`)
+  and **13** Chat `CoreResponse` variants (the missing one is
+  `ChatPolicyList`). The 6 Chat `CoreEvent` variants were correct.
+- **Corrected the authorization-matrix count**: the doc said 19 `R::Chat*`
+  operation descriptors; there are **20** (one per Chat `CoreRequest`).
+  Both `## Testing` sections now say 20.
+- **Corrected the unit-test counts**: `crates/codegg-core/src/collaboration.rs`
+  holds **20** unit tests (the doc said 17) and
+  `crates/codegg-core/src/collaboration/policy.rs` holds 2, for **22** in
+  total (the doc said 19). The TUI chat reducer
+  (`src/tui/app/state/chat.rs`) holds **23** tests (the doc said 16).
+- **Corrected `session_family`**: 88 → 91 → **97** tests.
+- **Removed a dead reference**: the doc named a gate function
+  `authorize_chat_request`. No such function exists. The gate is the
+  `R::Chat*` `operation_descriptor` arms in
+  `crates/codegg-core/src/authorization/policy.rs` (each requiring
+  `Capability::ProjectChat` under `ScopeKind::DirectProject`, with
+  `chat_capabilities` global), plus the daemon-side
+  `resolve_chat_channel` / `chat_access_allows` rechecks in
+  `src/core/daemon.rs`.
+- **Corrected the `chat.v1` constant reference**: `CHAT_CAPABILITY` and
+  `CHAT_PROTOCOL_VERSION` are at `crates/codegg-protocol/src/core.rs:379-380`,
+  not `:333-334`.
+- **Corrected the migration line references**: `migrate_v55`
+  `schema.rs:2458` → `:2535`, `migrate_v56` `:2474` → `:2551`,
+  `migrate_v64` `:2684` → `:2761`, `migrate_v65` `:2702` → `:2779`.
+- **Converted every test command to the family form**. The root package's
+  integration tests are families under `tests/<family>/`, so
+  `cargo test --test collaboration_m001_chat` named no target. The commands
+  are now `cargo test --test core_daemon -- collaboration_m001_chat` and
+  `cargo test --test tui_render -- collaboration_m002_chat_tui`.
+- Verified accurate, no change: the 6 `CoreEvent` Chat variants; every
+  cited integration test count (`collaboration_m001_chat` 12,
+  `collaboration_m002_chat_policy` 13, `collaboration_m002_chat_tui` 11,
+  `collaboration_m003_chat_actions` 10, `team_m003_membership_admin` 12,
+  `workspace_m005_selected_project_chat` 9); the `project.chat` role
+  baseline (Contributor and Maintainer allow, Viewer denies —
+  `crates/codegg-core/src/team.rs:195-225`); the M002 overlay functions
+  `effective_chat_access` (`collaboration/policy.rs:187`) and
+  `effective_chat_access_for` (`:656`); `channel_project`
+  (`collaboration/store.rs:129`); the `ChatActionKind` variants
+  `AgentTask` / `ReviewRequest` / `JobSubmit` / `JobReference`
+  (`collaboration.rs:522`); the five M001 tables (`chat_channel`,
+  `chat_message`, `chat_revision`, `chat_read_marker`) plus `chat_action`
+  and the four policy tables; `audit_metadata_for_message`
+  (`collaboration/validation.rs:336`) and the `chat_triggered_action` audit
+  mapping (`audit.rs:172`, `audit_instrumentation.rs:399,761`);
+  `ChatCapabilitiesDto::backward_paging`
+  (`crates/codegg-protocol/src/core.rs:469`); the daemon chat handlers
+  `handle_chat_request` (`src/core/daemon.rs:1790`) and
+  `handle_chat_action_submit` (`:2795`); and the storage-layout pointer
+  (`storage::STORAGE_LAYOUT_VERSION` is currently **87**).
 
 Verified 2026-10-06 against `crates/codegg-core/src/collaboration.rs`,
 `crates/codegg-core/src/collaboration/{store,validation,policy}.rs`,
@@ -451,12 +518,3 @@ Added the two previously undocumented module paths
 and noted that v56 adds `chat_action` and v64 adds the chat policy tables;
 scoped the "storage layout 64" claim to M002 time with a pointer to
 `storage::STORAGE_LAYOUT_VERSION` for the current value.
-Confirmed correct as written: the 6 `CoreEvent` Chat variants, the
-`chat.v1` capability/version constants (`core.rs:333-334`), every cited
-integration test count (`collaboration_m001_chat` 12,
-`collaboration_m002_chat_policy` 13, `collaboration_m002_chat_tui` 11,
-`collaboration_m003_chat_actions` 10, `team_m003_membership_admin` 12,
-`workspace_m005_selected_project_chat` 9), the 16 TUI chat reducer tests
-(`src/tui/app/state/chat.rs`), and every migration claim
-(`migrate_v55` `schema.rs:2458`, `migrate_v56` `:2474`, `migrate_v64`
-`:2684`, `migrate_v65` `:2702`).

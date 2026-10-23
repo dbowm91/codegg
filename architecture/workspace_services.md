@@ -61,8 +61,9 @@ and as the source for the migration tooling.
 - `WorkspaceServices` — the per-workspace bundle, with these ten
   fields: `workspace`, `config_snapshot`, `run_store`, `path_policy`,
   `locks`, `artifact_root`, `activated_at`, `last_used_at`,
-  `active_leases`, and `shutdown` (see `workspace_services.rs:241` for the
-  authoritative declaration).
+  `active_leases`, and `shutdown` (see the `WorkspaceServices`
+  declaration in `crates/codegg-core/src/workspace_services.rs` for the
+  authoritative list).
 - `WorkspaceServicesLease` — RAII handle returned by
   `WorkspaceServiceRegistry::acquire`. On drop the registry decrements
   the bundle's active-lease counter, marking it eligible for idle
@@ -78,6 +79,11 @@ and as the source for the migration tooling.
   in-process standalone root turn use it because neither holds a lease, and a
   tool call whose execution context carries no path policy is refused
   outright — see [`architecture/agent.md`](agent.md).
+- `WorkspacePathPolicy::authority_fingerprint()` — a stable fingerprint over
+  the policy's effective read/write roots. The scheduler's submission path
+  uses it (`workspace_path_policy_fingerprint_for_root` in
+  `src/scheduler/submission.rs`) to key admission on the *effective* policy
+  rather than on the workspace id alone.
 
 ### Registry and policy
 
@@ -94,8 +100,10 @@ and as the source for the migration tooling.
   - `peek(workspace_id) -> Option<WorkspaceServiceSnapshot>` — snapshot
     of the bundle's state.
   - `list_active() -> Vec<WorkspaceServiceSnapshot>`.
-  - `reload_config(workspace_id) -> ReloadResult` — bumps the bundle's
-    `WorkspaceConfigSnapshot.revision` and returns any diagnostics.
+  - `reload_config(workspace_id) -> Result<ReloadResult, WorkspaceServiceError>`
+    — bumps the bundle's `WorkspaceConfigSnapshot.revision` and returns any
+    diagnostics. Fails with `WorkspaceServiceError::NotFound` when the
+    workspace has no active bundle.
   - `evict_idle(now) -> EvictionReport` — evicts bundles whose
     `last_used_at` is past `idle_evict_after` AND whose lease count is
     zero. Returns the workspaces it considered, skipped (because they
@@ -104,6 +112,10 @@ and as the source for the migration tooling.
     bundle, force-terminating those with outstanding leases past the
     deadline. Returns the drained and force-terminated workspace ids
     plus a `deadline_hit` flag.
+  - `acquire_for_root(workspace_root) -> Result<WorkspaceServicesLease, _>`
+    — registers the root if unseen, then acquires the bundle.
+  - `active_count() -> usize` and `workspaces() -> &Arc<WorkspaceRegistry>`
+    — the registry's own view of the workspace catalog.
 
 ### Factory
 
@@ -183,12 +195,15 @@ into two entry points:
 | Entry point | Location | Purpose |
 |-------------|----------|---------|
 | `init_daemon_catalog(&DaemonPaths)` | user-scoped, e.g. `~/Library/Application Support/codegg/codegg.db` | Workspace records, session catalog and messages, notification history, durable jobs (Phase 4+), daemon-global metadata. |
+| `init_migrated_daemon_catalog(&DaemonPaths)` | user-scoped | Same path, but applies every schema migration first on a single-connection pool, closes it, then opens the runtime pool. |
 | `init_legacy_project_store(project_root)` | `<root>/.codegg/sessions.db` | Backward compat with pre-Phase 3 installs; source for migration. |
+| `init_migrated_legacy_project_store(project_root)` | `<root>/.codegg/sessions.db` | Legacy path, migrated first on a single-connection pool. |
 | `init_pool_at(db_path)` | arbitrary | Test-friendly escape hatch used by integration tests. |
+| `init_pool_at_for_migration(db_path)` | arbitrary | One-connection pool, so the schema migrator's explicit transaction stays on a single connection and cannot self-deadlock. |
 | `init(project_dir)` *(deprecated)* | ambiguous | Routes to one of the above based on whether `project_dir` is empty or a real directory. New code MUST NOT use this. |
 
 The current layout version is defined by `storage::STORAGE_LAYOUT_VERSION`
-and is referenced from
+(currently **87**) and is referenced from
 `MigrationMarker.storage_layout_version` so the migration tooling can
 report which layout a legacy database was imported under.
 
@@ -207,8 +222,8 @@ report which layout a legacy database was imported under.
 
 - `find_legacy_project_db(project_root) -> Option<PathBuf>` — locates the
   legacy database at `<project_root>/.codegg/sessions.db` if present.
-- `verify_session_schema(pool) -> Result<bool, _>` — confirms the source
-  pool has a recognizable `session` table.
+- `verify_session_schema(pool) -> Result<bool, _>` *(crate-private)* —
+  confirms the source pool has a recognizable `session` table.
 - `ensure_migration_marker_table(pool)` — creates the catalog's
   `migration_marker` table idempotently.
 - `fetch_marker(pool, source_path) -> Option<MigrationMarker>`.
@@ -335,12 +350,18 @@ introduce any UI-, server-, plugin-, or auth-crate dependencies. The
 Run the narrowest scope that covers your change:
 
 ```bash
-cargo test --test workspace_services_isolation
+cargo test --test agent_loop -- workspace_services_isolation
+cargo test --test core_daemon -- project_activation
 cargo test -p codegg-core workspace_services
 cargo test -p codegg-core migration
 bash scripts/check-core-boundary.sh
 python3 scripts/check_daemon_cwd_usage.py
 ```
+
+`tests/agent_loop/` and `tests/core_daemon/` are **families**: one
+executable per subject area, selected with `--test <family> -- <member>`.
+A bare `cargo test --test workspace_services_isolation` selects zero tests
+and still exits 0.
 
 ## Discovery boundary
 
@@ -365,15 +386,80 @@ workspace.
 
 ## Source verification
 
-Verified 2026-10-06 against
-`crates/codegg-core/src/workspace_services.rs` and
-`crates/codegg-core/src/storage/mod.rs`. The `WorkspaceServices` entry
-listed 5 of the struct's 10 public fields; replaced it with the complete
-field list and anchored the declaration at
-`workspace_services.rs:241`. Verified accurate: the storage entry-point
-table (`init_daemon_catalog` at `storage/mod.rs:117`,
-`init_legacy_project_store` at `:142`, `init_pool_at` at `:149`), the
-`max_active_workspaces` default of 16, the `WorkspaceServiceError` /
-`WorkspaceServicePolicy` / `WorkspaceLockTable` /
-`WorkspaceServicesLease` / `ProductionWorkspaceServicesFactory` types,
-and the macOS / Linux user-scoped catalog paths.
+Verified 2026-10-23 against
+`crates/codegg-core/src/workspace_services.rs`,
+`crates/codegg-core/src/storage/{mod,paths}.rs`,
+`crates/codegg-core/src/migration.rs`,
+`crates/codegg-core/src/run_store.rs`,
+`crates/codegg-core/src/workspace.rs`,
+`crates/codegg-protocol/src/{core,dto}.rs`, `src/core/runtime_deps.rs`,
+`src/scheduler/submission.rs`, `tests/agent_loop/mod.rs`,
+`tests/core_daemon/mod.rs`, and `Cargo.toml`.
+
+A 2026-10-06 pass had corrected a set of line references; those
+references have since drifted, so every line-number reference in the body
+has been replaced with a **symbol name** — the durable fix. Current
+locations of the previously-cited symbols:
+`WorkspaceServices` (`crates/codegg-core/src/workspace_services.rs:289`),
+`WorkspaceServicePolicy` (`:59`, `Default` at `:69`),
+`WorkspacePathPolicy` (`:91`, `for_workspace` at `:102`, `for_root` at
+`:121`, `authority_fingerprint` at `:158`),
+`WorkspaceConfigSnapshot` (`:191`), `ConfigDiagnostic` (`:200`),
+`ConfigDiagnosticSeverity` (`:208`), `WorkspaceLockTable` (`:223`),
+`WorkspaceRepositoryGuard` (`:268`), `WorkspaceServiceSnapshot` (`:276`),
+`WorkspaceServicesLease` (`:365`), `WorkspaceServicesFactory` (`:413`),
+`ProductionWorkspaceServicesFactory` (`:420`), `EvictionReport` (`:457`),
+`ShutdownReport` (`:465`), `ReloadResult` (`:473`),
+`WorkspaceServiceRegistry` (`:483`), `init_daemon_catalog`
+(`crates/codegg-core/src/storage/mod.rs:126`),
+`init_migrated_daemon_catalog` (`:137`),
+`init_legacy_project_store` (`:151`),
+`init_migrated_legacy_project_store` (`:170`), `init_pool_at` (`:182`),
+`init_pool_at_for_migration` (`:233`), the deprecated `init` (`:304`),
+`STORAGE_LAYOUT_VERSION` (`:48`, currently **87**),
+`find_legacy_project_db` (`crates/codegg-core/src/migration.rs:48`),
+`MigrationOutcome` (`:33`), `MigrationMarker` (`:114`),
+`migrate_legacy_project_database` (`:128`),
+`WorkspaceServiceHealthDto` (`crates/codegg-protocol/src/dto.rs:1041`),
+`ConfigDiagnosticDto` (`:1079`), and `RunQueryDto` (`:1088`).
+
+Substantive corrections made in this pass:
+
+- **Three storage entry points were missing** from the table, and their
+  roles are load-bearing: `init_migrated_daemon_catalog`,
+  `init_migrated_legacy_project_store`, and `init_pool_at_for_migration`.
+  The migrator runs its statements inside an explicit transaction, so it
+  needs a **single-connection** pool; the migrated pool is closed before
+  the normal runtime pool is opened.
+- **`STORAGE_LAYOUT_VERSION` now carries its value** (87), matching
+  `architecture/overview.md`'s verified count.
+- **`reload_config` returns a `Result`.** The old text said
+  `reload_config(workspace_id) -> ReloadResult`; the real signature is
+  `-> Result<ReloadResult, WorkspaceServiceError>`, and an unknown or
+  inactive workspace fails with `WorkspaceServiceError::NotFound`.
+- **The registry method list was incomplete.** Added `acquire_for_root`,
+  `active_count`, and `workspaces`.
+- **`verify_session_schema` is crate-private**, not a public entry
+  point; it is now marked as such.
+- **`WorkspacePathPolicy::authority_fingerprint()` was undocumented.** It
+  is the effective-policy key the scheduler's submission path uses
+  (`workspace_path_policy_fingerprint_for_root`,
+  `src/scheduler/submission.rs`).
+- **The test commands were wrong.** `cargo test --test
+  workspace_services_isolation` selects zero tests: the root package's
+  integration tests are families. The commands now use
+  `--test <family> -- <member>` for both `agent_loop` and `core_daemon`.
+
+Confirmed accurate and left unchanged: the ten `WorkspaceServices`
+fields, the `max_active_workspaces` default of 16 and the 30-minute
+`idle_evict_after`, the `WorkspaceLockTable` keying and the
+`WorkspaceRepositoryGuard` RAII contract, the `EvictionReport` /
+`ShutdownReport` / `ReloadResult` field sets, the
+`WorkspaceConfigSnapshot` fields, the `WorkspaceServicesFactory::build`
+signature and the `ProductionWorkspaceServicesFactory` wiring
+(`<workspace>/.codegg/runs/`), the four `MigrationOutcome` variants,
+the five `MigrationMarker` fields, the `DaemonPaths` accessor list, the
+protocol request/response variants and DTOs, `CoreRuntimeDeps`' two
+workspace-service fields, the macOS / Linux user-scoped catalog paths,
+and the eleven-test count in
+`tests/agent_loop/workspace_services_isolation.inc`.
