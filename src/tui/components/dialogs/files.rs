@@ -154,19 +154,15 @@ impl FilesDialog {
         rows.get(next).map(|row| row.path.clone())
     }
 
-    /// Name the row `delta` rows from the cursor.
-    ///
-    /// The box knows its own filtered rows, so it can say which row it wants
-    /// and the command layer records it on the authority.
+    /// Name the row `delta` rows from the cursor. The box knows its own
+    /// filtered rows; the command layer records the choice on the authority.
     fn move_by(&self, delta: isize) -> Option<TuiMsg> {
         let path = self.path_at_offset(delta)?;
         Some(TuiMsg::FilesSelect { path })
     }
 
-    /// Rows one page moves: two thirds of **this box's** viewport.
-    ///
-    /// The box measures its own height during its render, so a page is a
-    /// page of this box.
+    /// Rows one page moves: two thirds of **this box's** viewport, which the
+    /// box measures during its own render.
     fn page_step(&self) -> isize {
         ((self.visible_height * 2) / 3).max(1) as isize
     }
@@ -176,10 +172,8 @@ impl FilesDialog {
         let path = self.path_at_offset(direction * self.page_step())?;
         Some(TuiMsg::FilesSelect { path })
     }
-    /// Keep the cursor on a row the filter still shows.
-    ///
-    /// The selection is the authority's, so a filter that hides it names the
-    /// row the cursor belongs on.
+    /// Keep the cursor on a row the filter still shows: the selection is the
+    /// authority's, so a filter that hides it names the row it belongs on.
     fn reanchor(&self) -> Option<TuiMsg> {
         let rows = self.rows();
         let first = rows.first()?;
@@ -202,10 +196,8 @@ impl FilesDialog {
         self.scroll.clamp(index, total, self.visible_height);
     }
 
-    /// Activate the selected row.
-    ///
-    /// A directory is **peeked into** — the same motion `l` makes. A file
-    /// asks the command layer to open it; only a file can become a document.
+    /// Activate the selected row. A directory is **peeked into** — the same
+    /// motion `l` makes; a file asks the command layer to open it.
     fn activate(&self) -> Option<TuiMsg> {
         let row = self.selected_row()?;
         match row.kind {

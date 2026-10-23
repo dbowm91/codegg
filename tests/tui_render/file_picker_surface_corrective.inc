@@ -22,11 +22,24 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn ctrl(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
 fn workspace() -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(root.path().join("dir")).expect("mkdir");
     std::fs::write(root.path().join("dir/child.txt"), b"x").expect("write");
     std::fs::write(root.path().join("top.txt"), b"x").expect("write");
+    root
+}
+
+/// A workspace with enough rows for a page to land somewhere else.
+fn workspace_with_files(count: usize) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("tempdir");
+    for index in 0..count {
+        std::fs::write(root.path().join(format!("file{index:02}.txt")), b"x").expect("write");
+    }
     root
 }
 
@@ -208,6 +221,30 @@ fn the_docked_panels_cursor_moves_with_j_and_k() {
         app.file_tree_state.selected.as_deref(),
         Some("dir"),
         "`k` moves it back"
+    );
+}
+
+/// The page verbs move the **authority's** selection, not a private cursor.
+#[test]
+fn the_page_verbs_move_the_authorities_selection() {
+    let root = workspace_with_files(40);
+    let mut app = app_with_listing(root.path());
+    open_and_dock(&mut app);
+
+    let first = app.file_tree_state.selected.clone();
+    assert!(first.is_some(), "the listing has a selection");
+
+    press(&mut app, ctrl(KeyCode::Char('d')));
+    let paged = app.file_tree_state.selected.clone();
+    assert_ne!(
+        paged, first,
+        "`Ctrl+d` moves the authority's selection, not a cursor in the panel"
+    );
+
+    press(&mut app, ctrl(KeyCode::Char('u')));
+    assert_eq!(
+        app.file_tree_state.selected, first,
+        "`Ctrl+u` moves the authority's selection back"
     );
 }
 
