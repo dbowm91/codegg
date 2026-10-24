@@ -1,9 +1,9 @@
 # Delegated Run Observability and Recovery Corrective Milestone C003 — Closure Status
 
-Status: **conditionally closed** — the production capability is complete and every
-test passes; the one outstanding item is the **comment-budget ratchet**, which
-`docs/comment-budget.toml` records centrally and the orchestrator re-banks after
-all workers land. Named below, with its exact measured numbers.
+Status: closed — the production capability is complete, every test passes, and
+the one outstanding item this record named — the **comment-budget ratchet**,
+which `docs/comment-budget.toml` records centrally — was discharged by the
+orchestrator on the merged tree (§15).
 
 Source implementation plan:
 
