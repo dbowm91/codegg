@@ -45,7 +45,7 @@ registered in both `scripts/verify.sh` and `.github/workflows/ci.yml`.
 | 2 | `q` in the docked Files panel does nothing: the panel stays mounted and focused, and `Shift+Q` remains its exit | `q_in_the_docked_files_panel_does_nothing` — panel still focused, still `PanelPlacement::Left`, no modal popped, no quit armed, `Shift+Q` still leaves it. Unit test in `src/tui/commands/file_tree.rs` proves the intent never pops an unrelated modal: a `Tree` modal stacked on the box survives `close_files_box` |
 | 3 | `q` outside a `/files` box is still the program's quit key | `q_outside_the_files_box_is_still_the_programs_quit_key` — the first press arms `exit_armed_at`, the second within the window sets `ui_state.running = false` |
 | 4 | Opening a file from any `/files` surface — with `Enter` or with `l` — opens the editor, releases the keyboard from the side panel and the tree pane, and leaves the editor in Normal mode | `enter_and_l_on_a_file_arm_the_same_editor_handoff`; `the_editor_handoff_releases_the_docked_panel` (panel blurred, tree focus cleared, `EditorMode::Normal`); `open_file` is now the single path both verbs take; `hand_off_to_editor` calls `super::panels::blur_panel` |
-| 5 | The hint, `architecture/tui.md` and `docs/tui.md` describe one set of verbs, and a static guard with a non-vacuous `--self-test` keeps them from drifting | `scripts/check_tui_files_keymap_drift.py` — 10 self-test cases pass; two injected divergences were each rejected by the rule that owns them (see §4) |
+| 5 | The hint, `architecture/tui.md` and `docs/tui.md` describe one set of verbs, and a static guard with a non-vacuous `--self-test` keeps them from drifting | `scripts/check_tui_files_keymap_drift.py` — 11 self-test cases pass; three injected divergences were each rejected by the rule that owns them (see §4) |
 | 6 | `scripts/verify.sh quick` is green and workspace clippy is clean | See §4 |
 
 ## 3. Production implementation evidence
@@ -122,23 +122,47 @@ hint rewording broke:
 
 The corrective keeps the milestone's resolution and repairs what it broke:
 
-- `l` stays a **peek** in the hint, and the stale copy is now a **named** list —
-  `ADVERTISED_VERBS` in `src/tui/panels/mod.rs` — rather than an inline literal.
+- `l` stays a **peek** in the hint.
 - `h` is **up** one level in the hint and in both published tables, because `up` is
   the navigator's word and `back` is the chrome's. The tables' `h` rows read
   `**up one level**` and `go up one level`.
 - The listing's own recovery line, `h to go back`, became `h to go up`: a panel that
   says `h/← up` in its status line must not say `h to go back` in its body. This is a
   **user-visible string** and it is recorded here rather than changed silently.
+- **The panel's own copy of the vocabulary is gone.** Its test asserted three verbs
+  written out inline, and that list was the copy that drifted — the hint moved to
+  `peek` and the copy did not. The test now derives its verbs from the widget's own
+  `HINT`, so there is no independent specification left to go stale, and no guard
+  rule is needed to police one.
 
-The guard gained the two rules that would have caught this without a 22-minute CI
+Three doc comments and one prose section named the `h` motion with the old word and
+were corrected with them: the `FilesAscend` intent's doc (`src/tui/app/types.rs`), the
+`h` verb's doc (`src/tui/commands/file_tree.rs`), the in-scope half of the motion's
+doc (`src/tui/app/state/file_tree.rs`), and `architecture/tui.md`'s *Project-scoped
+file tree* section, which describes **the same navigator** — `docs/tui.md` says the
+Ctrl+T pane and `/files` "read the same navigation and the same selection — one
+cursor, shared" — and still claimed that `l` "make[s] the selected directory the
+pane's root". That claim has been false since the peek motion replaced re-rooting,
+and the section is prose rather than a table, so the guard does not read it.
+
+The guard gained the one rule that would have caught this without a 22-minute CI
 cycle:
 
-- **Rule 9** — the panel's advertised verbs are a fourth copy of the vocabulary, and
-  every verb in it must be one the hint publishes. The drift that reached CI is
-  rejected statically now.
-- **Rule 10** — the hint may not spend a word the panel chrome owns
+- **Rule 9** — the hint may not spend a word the panel chrome owns
   (`CHROME_OWNED_WORDS`). `h/← back` is rejected even if every table agrees with it.
+
+### The independent review
+
+An independent verifier reviewed the corrective against the milestone's acceptance
+criteria and found three things worth fixing, all now fixed: the stale
+`architecture/tui.md` section above; the guard rule that was going to police the
+panel's copy of the vocabulary — which was **one-directional**, so an emptied list
+passed and would have made the panel test assert nothing (the copy is gone instead,
+which closes it by construction rather than by a rule); and a self-contradictory row
+in this record (§2 still said ten self-test cases while §4 said twelve). The
+verifier's other claims were checked and are recorded in §4: the closure's numbers
+reproduce exactly, and the `verify.sh quick` premise — that it runs no Rust test at
+all — is confirmed from `scripts/verify.sh`'s `run_quick()`.
 
 ## 4. Verification executed
 
@@ -158,7 +182,7 @@ re-entry condition is still a green hosted `CI / verify` run.
 | `cargo test --lib -- tui::components::dialogs::files` | 26 passed |
 | `cargo fmt --all` | clean |
 | `python3 scripts/check_tui_files_keymap_drift.py` | pass |
-| `python3 scripts/check_tui_files_keymap_drift.py --self-test` | 12 cases passed |
+| `python3 scripts/check_tui_files_keymap_drift.py --self-test` | 11 cases passed |
 | `python3 scripts/rust_test_scan.py --validate` | pass |
 | `python3 scripts/check_comment_budget.py` | pass |
 | `python3 scripts/check_test_assertion_quality.py` | pass |
@@ -185,17 +209,14 @@ local `cargo test` run reported seven failures and nextest reported three.
 
 ### The guard is not vacuous
 
-Twelve synthetic self-test cases pass, each tripping exactly its own rule. In the
-**real** tree, four divergences were injected and reverted:
+Eleven synthetic self-test cases pass, each tripping exactly its own rule. In the
+**real** tree, three divergences were injected and reverted:
 
 - `docs/tui.md`'s `l` row changed back to "open" → rejected by rule 5 (*the hint calls
   `l` a peek and `docs/tui.md` does not say so*).
 - `architecture/tui.md` losing its `q` row → rejected by rules 1 and 2 (*only
   `docs/tui.md` has `q`* / *the hint names `q` and no published table does*).
-- `src/tui/panels/mod.rs`'s `ADVERTISED_VERBS` changed back to `l/→ open` — **the
-  drift that reached CI** → rejected by rule 9 (*the panel advertises `l/→ open` and
-  the hint does not publish it*).
-- the hint changed back to `h/← back` → rejected by rules 5 and 10 (*the hint says
+- the hint changed back to `h/← back` → rejected by rules 5 and 9 (*the hint says
   `back`, which the panel chrome owns*).
 
 ### The counts were re-measured, not estimated
@@ -254,14 +275,15 @@ introduced.
   unambiguously.
 - `architecture/overview.md` and `AGENTS.md`'s guard counts were re-measured, and the
   reconciliation is recorded in `architecture/count_audit_history.md`.
-- The comment-budget ratchet was re-banked three times and holds **down**: 122,455 →
-  122,454 → 122,449 lines and 1,078,132 → 1,078,129 → 1,078,060 words. The corrective
-  added comments and paid for them by trimming the two files it touched. Three
-  passages went: one comment stated the same fact **twice with different words**
-  (`activate`'s doc said "peeked into" while the line under it said "entered"); and
-  two passages of *narrative* were cut — a past `Workspace` panel removal, and a note
-  about what a second column would cost. No rule, contract or invariant lost a
-  sentence, and the published tables remain the statement of the `h` motion.
+- The comment-budget ratchet was re-banked four times and holds **down**: 122,455 →
+  122,454 → 122,449 lines and 1,078,132 → 1,078,129 → 1,078,060 → 1,078,055 words.
+  The corrective added comments and paid for them by trimming the two files it
+  touched. Three passages went: one comment stated the same fact **twice with
+  different words** (`activate`'s doc said "peeked into" while the line under it said
+  "entered"); and two passages of *narrative* were cut — a past `Workspace` panel
+  removal, and a note about what a second column would cost. No rule, contract or
+  invariant lost a sentence, and the published tables remain the statement of the `h`
+  motion.
 
 ## 10. Unresolved findings
 
