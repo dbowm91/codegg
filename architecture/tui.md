@@ -3310,8 +3310,39 @@ dialog cancels the task that reports it, so the result would be lost.
 `/files` opens a **navigator** box over the workspace root, and `Files` is a
 hosted panel so the same box docks into the side column with `Shift+L`. It is
 one implementation: the box, the hosted panel, and the editor-side Ctrl+T
-pane all run the *same* `FileTreeState` navigation, so a fix in one is a fix
-in all three.
+pane all read the *same* navigation, so a fix in one is a fix in all three.
+
+### The `/files` navigator: the ownership split
+
+`App::file_tree_state` is the single **authority** for the navigator's tree
+*structure*: its nodes, its expansion set, its scope, its selection and its
+pending cursor. A surface may hold a read-only `FileTreeStructure` of that
+structure — a distinct type, so a surface structurally cannot hold a
+field it might mutate — and may not hold a second mutable copy of it.
+
+The authority also owns the **Ctrl+T tree pane's** own state, because that
+pane *is* this value's surface: the pane's live filter, its insert mode, its
+scroll offset and its measured viewport. Every *other* surface owns its own:
+the `/files` box keeps a **box-local** filter, its own insert mode and its own
+scroll offset, and pages against its **own** measured viewport height. Two
+filters and two scroll offsets, one structure, one selection.
+
+The selection is a **path**, not an index, so it does not depend on a filter
+or on two copies agreeing about a row number. Every verb is a path-bearing
+intent — `FilesDescend`, `FilesAscend`, `FilesSelect` — resolved against the
+authority by `commands::file_tree`. `h` resolves "the parent of this row"
+against the **unfiltered** row set, because that is a structural question and
+the surface's own filtered view cannot answer it.
+
+The structure reaches every mounted surface through one refresh, in
+`App::render`, ahead of the tree pane, the side panel and the modal dialog.
+The refresh is gated on `FileTreeState::revision`, which every
+render-changing mutation bumps: an unchanged frame costs no copy, and a
+mutation cannot be forgotten — which is exactly how the listing mirror used to
+go stale. The refresh reaches the **docked** panel as well as the modal box,
+through a typed seam on the panel host: a docked box is owned by the panel
+host, not by the focus manager, and a refresh that only knew about the modal
+stack left the docked panel showing a frozen copy of the tree.
 
 | Key | Meaning |
 |---|---|
@@ -3319,11 +3350,12 @@ in all three.
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
 | `Enter` | **the same motion as `l`**: a directory is entered, a file is opened in the editor |
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
-| `h` / `←` | **back one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
+| `h` / `←` | **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
-| `r` | re-walk the current root |
+| `r` | **refresh**: re-walk the current root |
 | `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
-| `Shift+Q` | close the box |
+| `q` | close the **box** — in the side panel it does **nothing** |
+| `Shift+Q` | close the box; **leave** the side panel |
 
 `Enter` and `l` are **one** verb. `Enter` used to reveal a directory's contents
 in place and leave the cursor alone, which at the listing window's edge
@@ -6008,12 +6040,12 @@ never acceptable is the two disagreeing invisibly.
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
 focused it claims a strict subset of keys — `j`/`k` to move, `Ctrl+d`/`Ctrl+u`
-to page, `l`/`→` to make the selected directory the pane's root, `h`/`←` to go
-back one level, `Enter` to open a file or expand a directory, `r` to re-walk,
-`Esc` to leave the tree — and every other key falls through unchanged, so a
-focused tree never swallows composer or editor input. `Esc` returns focus to
-the editor buffer without changing the route, preserving the non-modal
-composer contract.
+to page, `l`/`→` to **peek into** that directory, `h`/`←` to go **up** one
+level, `Enter` to open a file or enter a directory, `r` to re-walk, `Esc` to
+leave the tree — and every other key falls through unchanged, so a focused
+tree never swallows composer or editor input. `Esc` returns focus to the
+editor buffer without changing the route, preserving the non-modal composer
+contract.
 
 `Ctrl+d`/`Ctrl+u` carry `Char('d')`/`Char('u')` codes, so the tree's modifier
 check runs before its character arms; the editor's own half-page motions are

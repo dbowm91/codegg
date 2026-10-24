@@ -991,24 +991,28 @@ impl App {
             TuiMsg::FilesOpenSelected { path } => {
                 // The `/files` box is a navigator: it names a workspace-relative
                 // row and `open_editor` owns everything that must be true
-                // before it becomes an attachment (lexical validation, the
-                // already-open short-circuit, the daemon-authorized open).
-                // Routing it here rather than opening from the widget is what
-                // keeps the box from inventing a second path into a document.
-                crate::tui::commands::editor::open_editor(self, &path);
+                // before it becomes an attachment.
+                crate::tui::commands::file_tree::open_file(self, &path);
+            }
+            TuiMsg::FilesClose => {
+                crate::tui::commands::file_tree::close_files_box(self);
             }
             TuiMsg::FilesRefresh => {
                 crate::tui::commands::file_tree::rebuild(self);
             }
             TuiMsg::FilesDescend { path } => {
-                // The pane's root moves and the walk follows. One command,
-                // because a scope change without a listing would leave the
-                // box showing the directory the user just walked out of
-                // under the new root's title.
+                // The pane's root moves and the walk follows: a scope change
+                // without a listing would leave the box showing the directory
+                // the user just walked out of.
                 crate::tui::commands::file_tree::descend_to(self, &path);
             }
-            TuiMsg::FilesAscend => {
-                crate::tui::commands::file_tree::ascend_one_level(self);
+            TuiMsg::FilesAscend { path } => {
+                // The authority resolves "one level up" against the unfiltered rows.
+                crate::tui::commands::file_tree::ascend_one_level(self, &path);
+            }
+            TuiMsg::FilesSelect { path } => {
+                // The surface names the row; the authority records it.
+                crate::tui::commands::file_tree::select_path(self, &path);
             }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {

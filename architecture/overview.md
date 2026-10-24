@@ -429,6 +429,14 @@ six new guards plus the repaired broker guard, each wired into
 No row's **measure** changed. The remaining 21 rows were **confirmed
 unchanged** by measurement, not by assumption.
 
+One row moved once more on **2026-10-23**, when the file picker surface
+corrective's M001 landed: **integration test files 334 → 335**
+(`tests/tui_render/file_picker_surface_corrective.inc`). The new file is a
+member of the **existing** `tui_render` family, so the root package's
+**test-target** count did not move, and no row's **measure** changed. The
+count was re-measured against its own listed `Source` with
+`python3 scripts/measure_overview_counts.py`.
+
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
 increment. Merging them lost one increment per row in `architecture/overview.md`
@@ -463,9 +471,9 @@ top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 334 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 86 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 47 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 335 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 87 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 48 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 
@@ -665,7 +673,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (334 files)
+├── tests/                      # Integration tests (335 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates

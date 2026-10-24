@@ -260,16 +260,10 @@ pub enum TuiMsg {
     /// Put the manager's highlighted panel on `placement`.
     ///
     /// The Normal-mode directional inside the manager, so *where* a panel lives
-    /// is the same gesture everywhere else in the TUI rather than a manager-only
-    /// verb. Separate from [`SelectPanel`](Self::SelectPanel) for the reason
-    /// [`SetPanelPlacement`](Self::SetPanelPlacement) is: this one positions
-    /// and leaves the panel unloaded, so arriving on an edge and filling it are
-    /// two deliberate acts rather than one gesture that silently starts a load.
-    ///
-    /// Deliberately not [`MoveDirection`](Self::MoveDirection): that resolves
-    /// the keyboard position between the edges already in use, which is the
-    /// wrong question while the manager is modal — there is no panel focused to
-    /// move.
+    /// is the same gesture everywhere else in the TUI. Separate from
+    /// [`SelectPanel`](Self::SelectPanel): this one positions and leaves the
+    /// panel unloaded, so arriving on an edge and filling it are two
+    /// deliberate acts rather than one gesture that silently starts a load.
     MovePanelTo {
         panel: crate::tui::panels::SidePanelId,
         placement: crate::tui::panels::PanelPlacement,
@@ -760,11 +754,12 @@ pub enum TuiMsg {
     /// The `/files` box is a navigator and never holds a document itself, so
     /// this intent is what turns a selected row into an attachment. The path
     /// is workspace-relative and reaches `open_editor`, which owns the
-    /// lexical validation and the daemon-authorized attach — the box cannot
-    /// name a path the editor would not have accepted.
+    /// lexical validation and the daemon-authorized attach.
     FilesOpenSelected {
         path: String,
     },
+    /// `/files`: close the `/files` box (`q`) — inert in the docked panel.
+    FilesClose,
     /// `/files`: re-walk the workspace root.
     ///
     /// An intent, not a walk. The command layer owns the async read and the
@@ -774,20 +769,29 @@ pub enum TuiMsg {
     FilesRefresh,
     /// `/files`: open `path` (`l`, and `Enter` on a directory).
     ///
-    /// The box holds a *copy* of the shared tree state and cannot reach `App`
-    /// from `render`, so the motion is an intent like opening a file: the
-    /// command layer decides whether the directory opens in place, the scope
-    /// slides, or — for a file, which has nothing to enter — the document
-    /// opens, and issues the walk. The path is workspace-relative, exactly as
-    /// the listing reported it.
+    /// The box holds a *view* of the shared tree structure and cannot reach
+    /// `App` from `render`, so the motion is an intent like opening a file:
+    /// the command layer decides whether the directory opens in place, the
+    /// scope slides, or — for a file, which has nothing to enter — the
+    /// document opens, and issues the walk. The path is workspace-relative,
+    /// exactly as the listing reported it.
     FilesDescend {
         path: String,
     },
-    /// `/files`: go back one level (`h`).
+    /// `/files`: go up one level (`h`).
     ///
-    /// Carries no path — "one level up" is a relation, not a location, and
-    /// the box cannot compute a parent of a root it does not own.
-    FilesAscend,
+    /// Carries the path of the row the cursor is on: the **authority**
+    /// resolves the relation, against the unfiltered row set.
+    FilesAscend {
+        path: String,
+    },
+    /// `/files`: make `path` the selection (`j`, `k`, `Ctrl+d`, `Ctrl+u`).
+    ///
+    /// The surface names the row it wants; the authority records it. The
+    /// selection is a **path**, so it does not depend on a filter.
+    FilesSelect {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
