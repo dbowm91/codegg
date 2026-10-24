@@ -673,3 +673,30 @@ The two `core_daemon` failures observed during this milestone are
 workspace root, and `canonicalize_workspace_root` refuses a symlinked root
 while `/tmp` is a symlink on macOS. The orchestrator confirmed the same call
 is present at the pre-change commit `220b763a0`.
+
+**This milestone's second trait tripped the same hosted clippy.** The hosted
+`verify` job failed at the `Workspace Clippy` step with 11
+`clippy::double_must_use` errors, half of them at
+`crates/codegg-core/src/agent_run_attempt.rs:415` — the
+`AgentRunAttemptStore` trait this milestone added. The cause is toolchain
+drift: CI resolves the unpinned `dtolnay/rust-toolchain@stable` (**1.99.0**)
+while the repository's floor is **1.89.0**, and Clippy 1.99 flags the
+`#[must_use]` that `async-trait` injects into every desugared trait method
+(`async-trait` 0.1.89, `expand.rs:69`). The repository already carries this
+suppression at **28** other trait definitions, established by the
+**Stable-toolchain Clippy-drift corrective**
+(`plans/closure/toolchain-clippy-drift-corrective/001-status.md`); this line
+added two new `#[async_trait]` traits after that corrective landed and did not
+carry the suppression forward.
+
+The fix is the established house pattern and nothing else: one
+`#[allow(clippy::double_must_use)]` with the same three-line drift comment
+directly above the trait definition, **no behavior change**. It was applied to
+both traits this line added — `agent_run_attempt.rs` and
+`agent_run_transcript.rs` — and the tree was then verified against **both**
+toolchains: `cargo +1.99.0 clippy --workspace --all-targets --locked -- -D
+warnings` exits 0 on the CI toolchain (the command CI itself runs), and the
+1.89.0 floor is still clean. The failure was **reproduced locally before the
+fix** with the matching toolchain — the same 11 errors, at the same two lines
+— so the fix is proven against the real condition. The audit of every
+`#[async_trait]` trait definition is in the C002 closure record's §15.

@@ -413,6 +413,10 @@ pub enum ContinuationClaimOutcome {
 
 /// The durable store of a delegated run's attempts and continuations.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait AgentRunAttemptStore: Send + Sync {
     /// Claim a continuation. The compare-and-swap is the unique key of the
     /// attempt row: exactly one request wins, and every other request is told

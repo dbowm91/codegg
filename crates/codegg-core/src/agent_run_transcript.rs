@@ -191,6 +191,10 @@ fn now_ms() -> i64 {
 
 /// The durable store of delegated-run transcripts.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait AgentRunTranscriptStore: Send + Sync {
     /// Append one row for `run_id`. The body is the **unredacted** text;
     /// redaction and both bounds are applied here, at write, before anything

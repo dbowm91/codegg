@@ -1,9 +1,8 @@
 # Delegated Run Observability and Recovery Corrective Milestone 002 — Closure Status
 
-Status: **conditionally closed** — the implementation and its evidence are
-complete; the canonical gate's remaining failures are the shared
-comment-budget ratchet and the `cargo fmt` drift in files this milestone does
-not own. Both are named in §10 with the exact outstanding action.
+Status: closed — the implementation and its evidence are complete, and the two
+outstanding items this record named in §10 were discharged by the orchestrator
+on the merged tree (§15).
 
 Source implementation plan:
 
@@ -878,3 +877,60 @@ orchestrator (§9.2, D7).
 Nothing in the outstanding list is a gap in the **capability**. Every
 requirement the plan states about the delegated transcript is satisfied by
 the evidence in §4.
+
+---
+
+## 15. Discharge of the outstanding items (orchestrator, 2026-10-24)
+
+This milestone was written as *conditionally closed* on two centrally-owned
+records. The orchestrator discharged both on the merged tree after every
+round-2 worker had landed.
+
+| # | Outstanding item | Discharge |
+|---|---|---|
+| 1 | **The shared comment-budget ratchet** (the bank file is the orchestrator's; this milestone was instructed not to edit it). | Re-banked on the merged tree; the bank diff is confined to the touched files plus the global block. The guard and its `--self-test` both pass. |
+| 2 | **The `cargo fmt` drift in files this milestone does not own.** | Resolved — `cargo fmt --all -- --check` exits 0, under both the local rustfmt 1.89 and the hosted runner's rustfmt 1.99. |
+
+With those two discharged, `bash scripts/verify.sh quick` exits **0** on the
+merged tree, and this milestone is **closed**.
+
+### The hosted runner's clippy is newer than the repository's floor
+
+A third finding arrived from the hosted `verify` job and is recorded here
+because **this milestone's file is the site that trips it**. The job failed at
+the `Workspace Clippy` step with **11 `clippy::double_must_use` errors**, all
+of them at `crates/codegg-core/src/agent_run_transcript.rs:193` — the
+`AgentRunTranscriptStore` trait this milestone added.
+
+The cause is toolchain drift, not a defect in the store. CI resolves
+`dtolnay/rust-toolchain@stable`, which is now **1.99.0**, while the
+repository's floor is **1.89.0** and the local toolchain is the floor.
+Clippy 1.99 flags the `#[must_use]` that `async-trait` injects into every
+desugared trait method (`async-trait` 0.1.89, `expand.rs:69`) because the
+desugared future type is already `#[must_use]`. The repository already carries
+this suppression at **28** other trait definitions, established by the
+**Stable-toolchain Clippy-drift corrective** (`plans/closure/toolchain-clippy-drift-corrective/001-status.md`);
+this line added two new `#[async_trait]` traits *after* that corrective landed
+and did not carry the suppression forward.
+
+The fix is the established house pattern and nothing else: one
+`#[allow(clippy::double_must_use)]` with the same three-line drift comment
+directly above the trait definition, **no behavior change**. It was applied to
+both traits this line added — `agent_run_transcript.rs` and
+`agent_run_attempt.rs` — and the tree was then verified against **both**
+toolchains: `cargo +1.99.0 clippy --workspace --all-targets --locked -- -D
+warnings` exits 0 on the CI toolchain (the command CI itself runs), and the
+1.89.0 floor is still clean.
+
+The failure was **reproduced locally before the fix** with the matching
+toolchain: the same 11 errors, at the same two lines, with the same message —
+so the fix is proven against the real condition and not merely asserted.
+
+An audit of **every** `#[async_trait]` trait definition in the workspace
+confirms nothing else is outstanding. Three cases that a naive scan reports as
+missing the suppression are not: three place the allow *before* `#[async_trait]`
+(`codegg-client/src/document.rs`, `egglsp/src/launch.rs`,
+`git_publication/staging.rs`), `DecisionEngine` gives its async method a
+`#[must_use = "reason"]`, which the lint accepts in place of the allow, and
+`tool_program/content_store.rs` declares no module and is therefore **never
+compiled** — which is why it never trips anything.
