@@ -2147,6 +2147,21 @@ pub enum CoreResponse {
     ScratchReclaim {
         result: crate::scratch::ScratchReclaimResultDto,
     },
+    /// The result of one read-only git read (Phase 3).
+    ///
+    /// Carries repository facts only: branch and dirtiness, a bounded
+    /// count-and-name diff summary, or a bounded branch list. Never patch
+    /// text, never a repository path.
+    GitRead {
+        result: crate::git::GitReadResultDto,
+    },
+    /// The skill catalogue discovered for one project (Phase 3).
+    ///
+    /// Carries skill metadata only: name, description, namespace, digest,
+    /// and resource count. Never a skill body, never a filesystem path.
+    SkillCatalogueList {
+        result: crate::skill::SkillCatalogueDto,
+    },
 }
 
 /// Bounded projection metadata returned by the durable session promotion
@@ -2402,6 +2417,25 @@ pub enum CoreRequest {
     /// `Unsupported`; clients must never fall back to a local `read_dir`.
     WorkspaceDirectoryList {
         request: document::WorkspaceDirectoryListRequestDto,
+    },
+    /// Phase 3: one read-only git read — status, diff summary, or branch
+    /// list (`direct_project` + `git.read`).
+    ///
+    /// The daemon resolves the repository root from its own durable project
+    /// binding, so this request carries a `project_id` and never a
+    /// filesystem path. The read is served by the read-only git fact layer
+    /// and mutates nothing: there is no write path here to reach.
+    GitRead {
+        request: crate::git::GitReadRequestDto,
+    },
+    /// Phase 3: the skill catalogue for one project (`direct_project` +
+    /// `project.read`).
+    ///
+    /// The daemon builds the catalogue with the canonical skill registry, so
+    /// discovery is never re-implemented on the request path. The response
+    /// is metadata only — no skill body, no filesystem path.
+    SkillCatalogueList {
+        request: crate::skill::SkillCatalogueRequestDto,
     },
     AssetRefresh {
         request: AssetRefreshRequestDto,

@@ -4,6 +4,8 @@ import type {
   ConnectionSnapshot,
   ControllerSummaryView,
   DesktopEvent,
+  GitReadKind,
+  GitReadView,
   ProjectDetailView,
   PromptSubmitView,
   ProjectSummary,
@@ -11,6 +13,7 @@ import type {
   SessionListView,
   SessionPresentationView,
   SessionView,
+  SkillCatalogueView,
   SubscriptionHandle,
   SubscriptionInfo,
 } from './bridge-types';
@@ -43,6 +46,21 @@ export const bridge = {
     invoke<SessionPresentationView>('desktop_projection_start', { sessionId, routeGeneration }),
   projectionStop: () => invoke<RouteTokenView>('desktop_projection_stop'),
   projectionCurrent: () => invoke<SessionPresentationView>('desktop_projection_current'),
+  // Task state: the route-selected session's todo list, carried into
+  // the presentation view. The host reads it from the daemon and fences
+  // the read on the route generation, so the renderer never asks the
+  // daemon for todos itself and never fabricates one.
+  todoRefresh: (routeGeneration: number) =>
+    invoke<SessionPresentationView>('desktop_todo_refresh', { routeGeneration }),
+  // Phase 3 read-only project facts. The renderer names the git fact
+  // set it wants and nothing else: the host reads it for the
+  // route-selected project and the daemon resolves the repository root
+  // server-side, so no path ever crosses the bridge. Each read is
+  // fenced on the route generation.
+  gitRead: (operation: GitReadKind, routeGeneration: number) =>
+    invoke<GitReadView>('desktop_git_read', { operation, routeGeneration }),
+  skillCatalogue: (routeGeneration: number) =>
+    invoke<SkillCatalogueView>('desktop_skill_catalogue', { routeGeneration }),
   disconnect: () => invoke<void>('desktop_disconnect'),
   unsubscribe: (subscriptionId: string) =>
     invoke<void>('desktop_unsubscribe_events', { subscriptionId }),
