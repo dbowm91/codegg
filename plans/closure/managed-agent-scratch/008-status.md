@@ -239,20 +239,50 @@ of the implementation itself. Following the M007 precedent, the run is
 cited against the head that carries the implementation; a closure-record-only
 follow-up commit is a documentation delta, not a second implementation.
 
-**Merged-head run — the merge happened; the run is in flight.** Pull request
-#187 was merged by the repository owner at `2026-10-24T20:44:41Z` with the
-pull-request head `7ad3fabb658248a38e7e624f5b59363695f1327c` still current,
-producing merge commit `c4fa30aeba439894b048768d4829dea0cfa0b84b` on `main`.
-The hosted `CI` run on that merged head is run `40131159586`; it was
-`in_progress` when this record was written, so **no conclusion is claimed
-for it here and none is invented**. It is recorded in this section when it
-reports.
+**Merged-head run — observed and green.** Pull request #187 was merged by the
+repository owner at `2026-10-24T20:44:41Z` with the pull-request head
+`7ad3fabb658248a38e7e624f5b59363695f1327c` still current, producing merge
+commit `c4fa30aeba439894b048768d4829dea0cfa0b84b` on `main`. The hosted `CI`
+run on that merged head is run **`40131159586`**, and it completed
+**success**. The plan's §15.2 asks for a run on the merged head as well as on
+the pull-request head; both exist, and both are green for the `CI / verify`
+job.
 
-The two commits that followed the merge — this closure's anchor correction
+**Pull-request head, after the Windows fix — observed and green.** The
+follow-up pull request that carries this milestone's §3 anchor correction, the
+§4.2 run record and the §4.4 test-gate fix has its own head
+`5f9f9bc7d`. On that head:
+
+| Lane | Run | Conclusion |
+|------|-----|------------|
+| `CI` / `verify` | `40133330663` (attempt 2) | **success** |
+| `Windows process launcher` | `40133330825` | **success** |
+
+The Windows lane is green there because the fix in that head is the one that
+makes it green. The `CI / verify` run's **first attempt failed on a
+`codegg-client` timing flake**, not on anything this milestone changed:
+
+```
+codegg-client::session_projection_driver::attach_applies_live_events_and_acks_cadence
+panicked at crates/codegg-client/tests/session_projection_driver.rs:197:
+timed out after 10s waiting for the next event
+test result: FAILED. 16 passed; 1 failed
+```
+
+The evidence that it is a flake and not a regression: `codegg-client`
+depends only on `codegg-protocol` and `codegg-document`
+(`crates/codegg-client/Cargo.toml:12-13`) and **not** on the root `codegg`
+package, so a change to `src/scratch.rs` cannot reach it; the merged-head run
+`40131159586`, which does **not** contain this milestone's change, passed the
+same suite; and the test passes locally, repeatedly. The run was re-run and
+attempt 2 completed **success** with every step green, including the
+workspace test sweep.
+
+**The two commits that followed the merge** — this closure's anchor correction
 and this section's pull-request run record — were pushed to the branch after
-the merge, so they are **not** ancestors of the merged head. They are
-carried by a follow-up pull request, and the merged-head run identifier
-recorded there is the one that belongs to the merged implementation.
+the merge, so they are **not** ancestors of the merged head. They are carried
+by a follow-up pull request, and the runs recorded above are the ones that
+belong to the implementation.
 
 **The anchor correction is a follow-up commit.** A later commit corrects the
 §3 line anchors against the committed source; it is documentation only, and
@@ -304,20 +334,31 @@ pull-request-head run and a merged-head run. The `CI / verify` job — the
 job `AGENTS.md` names — was green on both. The *Windows* lane is a
 **separate qualification workflow**, not the `verify` job, and it was red
 on the pull-request head (`40129287318`) and is red on the merged head
-(`40131159604`) for the same reason. The milestone is therefore **not**
-claimed to have a fully green hosted qualification; only the `verify` job
-is claimed green, and the Windows lane is claimed red-until-fixed. The
-Windows half of this subsystem's native qualification remains outstanding
-in any case — it was already outstanding under M007, and M008 does not
-discharge it.
+(`40131159604`) for the same reason, because neither of those heads carries
+the fix. The fix's own head does carry it, and there the lane is green
+(`40133330825`).
+
+So the honest statement of the hosted qualification is: **the `verify` job
+is green on the pull-request head and on the merged head; the Windows lane
+is green on the head that carries the fix, and red on the two heads that
+predate it.** The milestone is not claimed to have been fully green hosted
+before the fix — it was not, and the record says so.
+
+The Windows half of this subsystem's native qualification remains
+outstanding in any case — it was already outstanding under M007, and M008
+does not discharge it. What M008's fix discharges is the *specific* defect
+this milestone's own test introduced.
 
 | Lane | Run id | Head | Conclusion |
 |------|--------|------|------------|
-| `CI` / `verify` | `40129287199` | `7ad3fabb6` (pull-request head) | **success** |
-| `CI` / `verify` | `40131159586` | `c4fa30aeb` (merged head) | *in flight when written* |
-| `Windows process launcher` | `40129287318` | `7ad3fabb6` (pull-request head) | **failure** — the mis-gated test |
+| `CI` / `verify` | `40129287199` | `7ad3fabb6` (pull-request head, pre-fix) | **success** |
+| `CI` / `verify` | `40131159586` | `c4fa30aeb` (merged head) | **success** |
+| `CI` / `verify` | `40133330663` attempt 2 | `5f9f9bc7d` (pull-request head, post-fix) | **success** |
+| `Windows process launcher` | `40129287318` | `7ad3fabb6` (pull-request head, pre-fix) | **failure** — the mis-gated test |
 | `Windows process launcher` | `40131159604` | `c4fa30aeb` (merged head) | **failure** — the same test |
+| `Windows process launcher` | `40133330825` | `5f9f9bc7d` (pull-request head, post-fix) | **success** |
 | `Shared checkout macOS qualification` | `40131159646` | `c4fa30aeb` (merged head) | **success** |
+| `Linux M004 process and IPC qualification` | `40131159627` | `c4fa30aeb` (merged head) | **success** |
 
 ### 4.3 The record-less residue on this host — the before observation
 
@@ -585,6 +626,23 @@ unrelated to M008 and is not discharged by it.
   `#[cfg(unix)]`; the product's behaviour is unchanged, because the owner
   check it exercises was already `#[cfg(unix)]` before this milestone. §4.4
   records the finding in full.
+- **The Windows lane is green on the head that carries the fix**
+  (`40133330825` at `5f9f9bc7d`), which is the direct evidence that the fix
+  addresses the cause and not the symptom. The two heads that predate the
+  fix stay red for the same test, and the record says so rather than
+  rounding them up to "the lane was red at some point and is green now".
+- **The `CI / verify` run on that head failed its first attempt on an
+  unrelated flake, and that is recorded rather than smoothed over.**
+  `codegg-client::session_projection_driver::attach_applies_live_events_and_acks_cadence`
+  timed out after 10 seconds waiting for an event. It is not a regression
+  from this milestone: `codegg-client` depends only on `codegg-protocol` and
+  `codegg-document` (`crates/codegg-client/Cargo.toml:12-13`) and not on the
+  root `codegg` package, so a change to `src/scratch.rs` cannot reach it; the
+  merged-head run `40131159586`, which does **not** contain this milestone's
+  change, passed the same suite; and the test passes locally on repeated
+  runs. Attempt 2 of the same run completed **success** with every step
+  green. The failure is recorded here so the closure does not claim a
+  first-attempt green that did not happen.
 
 ## 14. Handoff notes
 
