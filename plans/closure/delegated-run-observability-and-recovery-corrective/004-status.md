@@ -648,6 +648,21 @@ With those four discharged, `bash scripts/verify.sh quick` exits **0** on the
 merged tree (119 steps, "==> Quick verification passed."), the whole-workspace
 clippy is clean with `-D warnings`, and this milestone is **closed**.
 
+**The guard wiring in item 3 needed a second pass.** The first push of this
+line failed the hosted `verify` job at `check_projection_disclosure.sh
+--self-test`, while passing locally, because **the hosted runner does not
+carry ripgrep** and these two projection guards used `rg` unguarded. Both are
+now `grep`-based, matching `check-core-boundary.sh`, so ripgrep is no longer
+an undeclared dependency of the CI surface or of `verify.sh quick`; the
+conversion is armed (removing the population site still makes the guard
+reject the tree). The redaction fixtures this milestone's tests use were
+changed for the same reason — the published AWS documentation example secret
+access key that GitGuardian flagged is now `AKIAIOSFODNN7EXAMPLE`, the
+credential-shaped fixture this repository already uses elsewhere — and the
+literal was removed from the branch's **history**, because GitGuardian scans
+each commit in a pull request rather than only the final tree. `main`'s own
+history is untouched.
+
 **The `src/tool/factory.rs` edit (D9) stands** and is recorded here: one
 additive `with_transcript_store(...)` call in a file C001 owns, made because
 the continuation reads the transcript back from the durable store and the

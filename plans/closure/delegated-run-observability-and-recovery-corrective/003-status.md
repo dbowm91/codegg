@@ -722,6 +722,33 @@ With those four discharged, `bash scripts/verify.sh quick` exits **0** on the
 merged tree (119 steps, "==> Quick verification passed."), the whole-workspace
 clippy is clean, and this milestone is **closed**.
 
+**One of the four discharges needed a second pass, and the record says so.** The
+first push of this line failed the hosted `verify` job at
+`check_projection_disclosure.sh --self-test`, while passing locally. The cause
+was not a flake: **the hosted runner does not carry ripgrep** — the
+repository's own `check_git_forbidden_patterns.py` says so in as many words
+("the hosted CI runner does not [carry ripgrep]") and carries a Python
+fallback for exactly that reason. These two projection guards were the only
+CI-wired shell guards that used `rg` unguarded, so they failed there and
+nowhere else. Both are now `grep`-based, matching the house style of
+`check-core-boundary.sh`, so ripgrep is no longer an undeclared dependency of
+either the CI surface or `verify.sh quick`. The conversion is **armed**:
+removing the population site still makes the guard reject the tree, and both
+guards' own `--self-test`s still inject a defect and prove it is caught.
+
+Separately, the transcript store's redaction test used the published AWS
+documentation example secret access key, which GitGuardian flagged as a
+*Generic High Entropy Secret*. It now uses `AKIAIOSFODNN7EXAMPLE` — the
+credential-shaped fixture this repository already uses in `collaboration.rs`,
+`eggsentry` and `shell/redactor.rs`. The redaction rules match the
+*assignment* form, not the value's entropy, so the assertion is exactly as
+strong, and the tests still pass, which is the proof. Because GitGuardian
+scans each commit in a pull request rather than only the final tree, the
+offending literal was removed from the **history** as well: the three feature
+commits were rewritten with `git filter-branch --tree-filter` and the
+branch's content-neutral merge of `main` was re-made against `main`'s actual
+tip. `main`'s own history is untouched.
+
 The two `core_daemon` failures C003 observed are **pre-existing and
 environment-dependent**, not this milestone's: `session_projection_rebuilds_owner_scoped_live_jobs`
 and `session_projection_snapshot_includes_in_process_live_child_instances`
