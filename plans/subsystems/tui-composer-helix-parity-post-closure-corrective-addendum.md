@@ -1,6 +1,6 @@
 # TUI Composer Helix Keybinding Parity — Second Post-Closure Corrective Addendum
 
-Status: proposed — C001, C002 and C003 planned; none started
+Status: closed — C001, C002 and C003 closed (2026-10-24)
 
 Baseline: `c2d781319` (`origin/main`, the merge of pull request #182)
 
@@ -455,9 +455,9 @@ This addendum is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | **ready** | `plans/implementation/tui-composer-helix-parity-post-closure-corrective/001-the-caret-tells-the-truth.md` | `plans/closure/tui-composer-helix-parity-post-closure-corrective/001-status.md` | none |
-| C002 | **ready** | `plans/implementation/tui-composer-helix-parity-post-closure-corrective/002-the-composer-selects-like-the-editor.md` | `plans/closure/tui-composer-helix-parity-post-closure-corrective/002-status.md` | none — lands after C001 for a separable diff, not for a dependency |
-| C003 | **ready** | `plans/implementation/tui-composer-helix-parity-post-closure-corrective/003-the-vertical-keys-follow-a-multiline-composer.md` | `plans/closure/tui-composer-helix-parity-post-closure-corrective/003-status.md` | none — lands after C002, whose published `v` wording is the guard's input |
+| C001 | **closed** | `plans/implementation/tui-composer-helix-parity-post-closure-corrective/001-the-caret-tells-the-truth.md` | `plans/closure/tui-composer-helix-parity-post-closure-corrective/001-status.md` | none — closed 2026-10-24 |
+| C002 | **closed** | `plans/implementation/tui-composer-helix-parity-post-closure-corrective/002-the-composer-selects-like-the-editor.md` | `plans/closure/tui-composer-helix-parity-post-closure-corrective/002-status.md` | none — closed 2026-10-24 |
+| C003 | **closed** | `plans/implementation/tui-composer-helix-parity-post-closure-corrective/003-the-vertical-keys-follow-a-multiline-composer.md` | `plans/closure/tui-composer-helix-parity-post-closure-corrective/003-status.md` | none — closed 2026-10-24 |
 
 **Reading this table.** `closed` means a closure record was accepted. `ready` means the
 implementation plan is written and its dependencies are discharged. `not started` means the

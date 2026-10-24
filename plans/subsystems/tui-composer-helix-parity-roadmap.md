@@ -245,6 +245,16 @@ the system clipboard; neither has a paste verb.
 > *implementation* to "does not fit its box" and left the architecture table describing a rule the
 > code no longer implemented. C001–C003 correct all four. **No milestone in this workstream is
 > reopened**, and the closed closure records are not rewritten.
+>
+> **Closed 2026-10-24.** C001, C002 and C003 are closed; the closure records are
+> `plans/closure/tui-composer-helix-parity-post-closure-corrective/001-status.md`,
+> `.../002-status.md` and `.../003-status.md`. The caret's column counts the source, so a space
+> advances it; the Normal-mode block is visible again; the composer selects the way the editor
+> selects; and `j`/`k` and `Ctrl+u`/`Ctrl+d` follow a **multiline** composer — measured by the
+> **rendered** row count, so a composer holding three lines that fit keeps the vertical keys. The
+> published condition is now one string across the implementation, `architecture/tui.md` and
+> `docs/tui.md`, and the new guard `scripts/check_tui_composer_keymap_drift.py` proves it. ADR-0042
+> carries a **second** dated amendment; its Decision text is unchanged.
 
 ## 5. Target architecture
 
