@@ -418,7 +418,7 @@ These are **stop conditions**, not deferrals to be quietly absorbed later:
 
 | Non-goal | Why | Anchor |
 |---|---|---|
-| The `/` command surface and the command palette's **command contents** | M007-D, blocked on ADR-0052 (not in the baseline tree). M007-C may **reserve** the palette's chord but must not implement command execution. | roadmap §7 M007 decomposition table; `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` (proposed, not accepted) |
+| The `/` command surface and the command palette's **command contents** | M007-D's (not in the baseline tree). ADR-0052, the decision that owns the command surface, was **accepted 2026-10-24**, so M007-D is no longer blocked — it is simply not this milestone's scope. M007-C may **reserve** the palette's chord but must not implement command execution. | roadmap §7 M007 decomposition table; `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` (accepted 2026-10-24) |
 | The editor's own key handling and Helix motion | M007-E's concern for the editor surface; the TUI's Helix parity workstream already owns the TUI side. | `plans/registry.md:131`; `plans/subsystems/tui-editor-correctness-usability-roadmap.md` |
 | Any change to the TUI's keymap or behaviour | I4. | §3.6 |
 | Any Tauri global-shortcut capability in the renderer | `scripts/check-desktop-boundary.sh:19` forbids `global-shortcut` in the capability. The desktop's shortcuts are **in-window**, not OS-global. | I7 |
@@ -588,7 +588,7 @@ can bind them without a conflict and they are not shadowed by accident:
 | Chord | Reserved for | Why not bound now |
 |---|---|---|
 | `mod+s` | M007-E (editor save) | No editor in M007-C; binding it would capture the WebView's save accelerator with no target (I6). |
-| `mod+shift+p` | M007-D (command palette) | The palette's command contents are M007-D's, blocked on ADR-0052. Binding the chord to an empty surface would be a dead chord. |
+| `mod+shift+p` | M007-D (command palette) | The palette's command contents are M007-D's, and ADR-0052's acceptance on 2026-10-24 cleared M007-D's only blocker. Binding the chord to an empty surface would be a dead chord. |
 | `mod+f` | a future in-app find | No find surface. |
 | `mod+q`, `mod+w` | **never** — the OS | Quitting and closing the window are OS-owned. |
 | `mod+c`, `mod+x`, `mod+v`, `mod+a` | **never** — the OS | Copy/cut/paste/select-all are OS-owned and must stay so, including for the keymap export surface. |
@@ -914,8 +914,8 @@ in the real-server tests. Storage tests use `isolated_pool()`; this milestone ad
 **Documents this milestone must not edit.** `plans/000-long-term-specification.md`,
 `plans/001-terminology-and-domain-model.md` and `plans/002-long-term-roadmap.md` — the canonical
 documents (I9). Any **accepted** ADR, including
-`plans/adrs/ADR-0010-desktop-frontend-and-shared-client-boundary.md`. ADR-0052 is *proposed*, not
-accepted, and is not this milestone's to edit either. The TUI editor roadmap and the registry's TUI
+`plans/adrs/ADR-0010-desktop-frontend-and-shared-client-boundary.md`. ADR-0052 was *accepted* on
+2026-10-24, and an accepted ADR is not this milestone's to edit either. The TUI editor roadmap and the registry's TUI
 rows (§3.6).
 
 **Terminology amendment — a separate, owner-directed step.**

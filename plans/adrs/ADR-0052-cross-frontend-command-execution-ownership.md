@@ -1,8 +1,21 @@
 # ADR-0052: Cross-Frontend Command Execution Ownership
 
-Status: proposed
+Status: accepted
 
 Date: 2026-10-24
+
+Accepted: 2026-10-24, by the project maintainer, selecting Option B: the daemon
+owns the command catalog and executes daemon-effect commands; each frontend
+dispatches frontend-effect commands from a bounded, declared set. Accepted as
+written, without amendment, and authorized for implementation across the
+`desktop-frontend-ide-foundation` roadmap's M007 line. The acceptance also
+discharges the canonical amendments this ADR's Decision items 7 and 8 make
+contingent on acceptance: `plans/001-terminology-and-domain-model.md` gains the
+cross-frontend `Command` definition, `plans/000-long-term-specification.md`
+gains the desktop-frontend clause, and `plans/002-long-term-roadmap.md` names
+the desktop GUI as a consumer of Phase 5's canonical session view. Those
+amendments landed in the same change as this acceptance, in that order, per
+`plans/002-long-term-roadmap.md:899`.
 
 Decision owners: project maintainers
 
@@ -11,8 +24,8 @@ Related specification sections:
 - `plans/000-long-term-specification.md#4-architectural-principles`
 - `plans/000-long-term-specification.md#44-frontends-render-projections`
 - `plans/000-long-term-specification.md#87-project-authorization`
-- `plans/000-long-term-specification.md#88-daemon-owned-provider-connections`
-- `plans/000-long-term-specification.md#124-protocol-and-storage-requirements`
+- `plans/000-long-term-specification.md#11-daemon-owned-provider-connections-and-eggpool`
+- `plans/000-long-term-specification.md#24-protocol-and-storage-requirements`
 - `plans/000-long-term-specification.md#21-project-communication`
 - `plans/000-long-term-specification.md#25-tui-target-behavior`
 - `plans/001-terminology-and-domain-model.md`
@@ -239,9 +252,15 @@ which is precisely what this ADR exists to avoid.
    `Command` definition — the catalog entry, its two kinds, its identity, its
    relationship to `Run` and to the `command.execute` capability, and the
    rule that "command" and "Run" are not interchangeable
-   (`plans/001-terminology-and-domain-model.md:759`). The amendment follows
+   (`plans/001-terminology-and-domain-model.md:779`). The amendment follows
    `plans/002-long-term-roadmap.md:897-899`, which requires terminology and
    the long-term specification to be updated before the roadmap is adjusted.
+   **Landed 2026-10-24**, with this ADR's acceptance and before any protocol
+   variant: the `### Command` entry is at
+   `plans/001-terminology-and-domain-model.md:702`, the §15 `"command"` bullet
+   is at `plans/001-terminology-and-domain-model.md:779`, and the `Capability`
+   entry's examples now name `command.execute`
+   (`plans/001-terminology-and-domain-model.md:157`).
 
 8. **The canonical long-term documents gain a desktop-frontend clause.** The
    canonical set is presently silent on a desktop GUI: `desktop` as a
@@ -258,6 +277,13 @@ which is precisely what this ADR exists to avoid.
    session view. These amendments are **contingent on this ADR's
    acceptance** and are the owner-directed amendment that
    `plans/003-planning-process.md:29-36` permits.
+   **Landed 2026-10-24**, with this ADR's acceptance: §4.4 names the desktop
+   client as a first-class frontend
+   (`plans/000-long-term-specification.md:95`), §24 carries the command-catalog
+   ownership clause (`plans/000-long-term-specification.md:534`), invariant 24
+   states it in one line (`plans/000-long-term-specification.md:623`), and
+   Phase 5's consumer list names the desktop GUI
+   (`plans/002-long-term-roadmap.md:243`).
 
 ## Consequences
 

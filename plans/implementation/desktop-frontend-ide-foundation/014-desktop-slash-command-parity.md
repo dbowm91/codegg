@@ -1,13 +1,16 @@
 # Desktop Frontend and IDE Foundation Milestone M007-D — Cross-Frontend Command Surface and Slash-Command Parity
 
-Status: blocked
+Status: ready for handoff
 
-**Blocked on the acceptance of `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md`.**
-ADR-0052 is the controlling decision for this milestone and is **not yet accepted**; its owner is
-the repository owner. This plan is written in advance of that acceptance **on purpose**: the
-registry must record the planned milestone and its named blocker, and the plan must be executable
-the moment ADR-0052 is accepted, without a second round of design. Nothing here may be executed
-before ADR-0052 is accepted.
+**Unblocked — `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` was accepted on
+2026-10-24.**
+ADR-0052 is the controlling decision for this milestone and is now **accepted**. This plan was
+written in advance of that acceptance **on purpose**, so it is executable without a second round of
+design. The canonical amendments ADR-0052's acceptance made contingent — the cross-frontend
+`Command` definition in `plans/001-terminology-and-domain-model.md`, the desktop-frontend clause in
+`plans/000-long-term-specification.md` §4.4, the command-catalog clause in §24, invariant 24, and
+the desktop consumer named in Phase 5 — landed with the acceptance, before the protocol variant this
+milestone adds.
 
 Repository baseline: `c4fa30aeba439894b048768d4829dea0cfa0b84b`
 
@@ -120,8 +123,8 @@ Hard dependencies on other milestones (not yet satisfied):
   (`plans/implementation/desktop-frontend-ide-foundation/013-desktop-keyboard-first-input.md`,
   landing concurrently). M007-C **reserves** the palette chord without implementing command
   execution — `mod+shift+p` is recorded as reserved for M007-D, and M007-C states that "the
-  palette's command contents are M007-D's, blocked on ADR-0052" and that "binding the chord to an
-  empty surface would be a dead chord"
+  palette's command contents are M007-D's, and ADR-0052's acceptance cleared M007-D's blocker" and
+  that "binding the chord to an empty surface would be a dead chord"
   (`plans/implementation/desktop-frontend-ide-foundation/013-desktop-keyboard-first-input.md:421`,
   `:591`). This milestone owns the command **contents** and **execution**; M007-C owns the chord.
   The palette must therefore land with this milestone's catalog, not before it.
@@ -1021,11 +1024,12 @@ amendment, sequenced per `plans/002-long-term-roadmap.md:897-899`):
 - `plans/000-long-term-specification.md` — the desktop-frontend clause: a desktop client is a
   first-class frontend under §4.4's constraints, rendering frontend-neutral snapshots and owning
   no durable state (ADR-0052 item 8). This follows the owner-directed amendment path of
-  `plans/003-planning-process.md:29-36` and is contingent on ADR-0052's acceptance.
+  `plans/003-planning-process.md:29-36`. ADR-0052 was accepted on 2026-10-24, and these amendments
+  landed with that acceptance, before this milestone's protocol variant.
 - `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` — the M007-D row only: the
   milestone's status and its decomposition. The roadmap is adjusted **after** terminology and the
   long-term specification.
-- `plans/registry.md` — register this plan and record its blocked state and its named blocker.
+- `plans/registry.md` — record this plan's readiness and, at closure, its disposition.
 
 **Required by this milestone** (ordinary architecture documentation):
 

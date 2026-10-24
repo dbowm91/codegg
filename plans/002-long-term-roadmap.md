@@ -240,7 +240,7 @@ Phases 1 and 3.
 
 ### Objective
 
-Create one canonical session view usable by local TUI, remote TUI, observer mode, ACP, web, and future clients.
+Create one canonical session view usable by local TUI, remote TUI, observer mode, ACP, web, desktop, and future clients.
 
 ### Deliverables
 
