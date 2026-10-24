@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery Corrective Milestone 002 — A Durable Transcript for a Delegated Run
 
-Status: blocked — ADR-0051 is proposed, not accepted
+Status: ready for handoff
 
 Repository baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before editing.
 
@@ -14,7 +14,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **proposed; this milestone's gate.** C002 implements option B of that ADR: a dedicated durable store keyed by run id, redacted at write, bounded per row and per run.
+- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **accepted (option B) on 2026-10-24; this milestone's gate, now discharged.** C002 implements option B of that ADR: a dedicated durable store keyed by run id, redacted at write, bounded per row and per run.
 - `plans/adrs/ADR-0031-authenticated-idle-continuation-delegated-turn-admission.md` (accepted) — unchanged.
 - `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` (accepted) — unchanged; C002 adds a store, not a projection.
 
@@ -30,9 +30,9 @@ This milestone delivers **infrastructure**. It is not a user-visible capability:
 
 ## 2. Why this milestone is ready
 
-**It is not.** This milestone is **blocked** on the acceptance of ADR-0051. The blocker is named, and the owning document is `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md`.
+**It is.** ADR-0051 was **accepted on 2026-10-24 as option B** — a dedicated store keyed by `AgentRunId`, redacted at write, bounded per row and per run. The gate this plan was blocked on is discharged.
 
-- **The dependency is a decision, not an implementation.** ADR-0051's §"Proposed decision" fixes the ownership boundary (a delegated transcript is owned by `codegg-core` and keyed by `AgentRunId`; a delegated run is not a session), the redaction point (at write, never at read), the bounds (per row and per run, with a recorded truncation marker), and what may cross the frontend seam. Without that decision, the implementation would have to invent a storage identity and a redaction contract, and would do so without a maintainer's agreement on whether a delegated run may become a session.
+- **The dependency was a decision, not an implementation, and it is now made.** ADR-0051's §"Decision" fixes the ownership boundary (a delegated transcript is owned by `codegg-core` and keyed by `AgentRunId`; a delegated run is not a session), the redaction point (at write, never at read), the bounds (per row and per run, with a recorded truncation marker), and what may cross the frontend seam. Option C (a real `session` row) was rejected, so §4's catalog invariant and §9's compatibility statement hold exactly as written.
 - **Everything else is in place.** The storage layer, the migration mechanism, the redaction utilities the rest of the repository already uses, the projection seam and the session store's read path all exist.
 - **The prerequisite implementation milestone, C001, is not a hard dependency of C002.** C002 may be implemented before or after C001; the two touch different files (`src/tool/task.rs` and `src/scheduler/` versus the store and the child's message path). C001 must nevertheless close before C003, because C003's user-visible claim depends on the orchestrator being told what happened.
 
@@ -285,8 +285,7 @@ bash scripts/verify.sh quick
 
 The implementing agent must stop and report rather than improvise when:
 
-- **ADR-0051 has not been accepted.** This is the milestone's gate; the whole plan is blocked on it.
-- ADR-0051 was accepted as option C (a real `session` row), because §4's catalog invariant and §9's compatibility statement are written for option B and must be renegotiated rather than bent.
+- **ADR-0051 was accepted as something other than option B** — the whole plan is written for option B and must be renegotiated rather than bent. (Discharged: accepted as option B on 2026-10-24.)
 - the redaction rule cannot be expressed against the shapes the repository already recognises without inventing a second secret recogniser;
 - the per-run bound cannot be enforced without rewriting existing rows — the store is append-only;
 - capturing the transcript would require the child to hold a different conversation than the one it acted on;

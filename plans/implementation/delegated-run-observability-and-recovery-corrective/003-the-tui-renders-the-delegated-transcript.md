@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery Corrective Milestone 003 — The TUI Renders the Delegated Transcript
 
-Status: blocked — C002 is not closed, and ADR-0051 is proposed, not accepted
+Status: blocked — C002 is not closed
 
 Repository baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before editing.
 
@@ -15,7 +15,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **proposed; this milestone's gate.** §"What may cross the frontend" fixes the projection contract: a bounded, redacted transcript DTO, delivered only to a client bound to the owning session, with the bound declared and a refusal rather than a silent truncation.
+- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **accepted (option B) on 2026-10-24.** §"What may cross the frontend" fixes the projection contract this milestone implements: a bounded, redacted transcript DTO, delivered only to a client bound to the owning session, with the bound declared and a refusal rather than a silent truncation.
 - `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` (accepted) — the delegated lifecycle projection this milestone extends. Its Decision text is unchanged.
 - `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md` (accepted) — unchanged; this milestone makes a child's transcript *visible* and gives the human no new channel to the child.
 
@@ -31,10 +31,11 @@ This is the milestone that answers the reported symptom directly: *"we can not s
 
 ## 2. Why this milestone is ready
 
-**It is not.** This milestone is **blocked** on two named dependencies:
+**It is not yet.** This milestone is **blocked** on one named dependency:
 
 1. **C002 is not closed** — `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md`. There is no transcript to render until the store, the redaction and the bounds exist.
-2. **ADR-0051 is not accepted** — `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md`. Its §"What may cross the frontend" is the contract this milestone implements: a bounded, redacted DTO, delivered only to a bound client, with the bound declared and a refusal rather than a silent truncation. Without it, the implementer would have to invent what may cross the seam.
+
+ADR-0051 was **accepted on 2026-10-24 as option B**, so the second former blocker is discharged: §"What may cross the frontend" is now the accepted contract this milestone implements — a bounded, redacted DTO, delivered only to a bound client, with the bound declared and a refusal rather than a silent truncation.
 
 **Interface dependency (stable, but not sufficient):** the delegated lifecycle projection and the tab's own structure exist. `src/tui/app/render.rs:1563-1697` renders the run inspector today; `src/tui/app/state/subagent_tabs.rs` owns the tab state; `crates/codegg-protocol/src/projection/dto.rs:545-548` defines the delegated summary that carries no transcript.
 
@@ -288,7 +289,7 @@ bash scripts/verify.sh quick
 
 The implementing agent must stop and report rather than improvise when:
 
-- **C002 is not closed**, or **ADR-0051 is not accepted** — the milestone's gate.
+- **C002 is not closed** — the milestone's remaining gate. (ADR-0051's gate is discharged: accepted as option B on 2026-10-24.)
 - the store's redaction cannot be relied on, so that the seam would have to redact — a second recogniser is out of scope and a defect.
 - the bound cannot be declared on the DTO — an undeclared bound is not a bound.
 - the transcript would need a live-streaming path to be useful — that is a new projection capability with its own bounds, and it is out of scope.

@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery — Corrective Addendum
 
-Status: active — C001 ready for handoff; C002–C004 blocked on ADR-0051
+Status: active — ADR-0051 accepted (option B) on 2026-10-24; C001 and C002 ready for handoff; C003–C004 blocked on C002
 
 Planning baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before any code change.
 
@@ -18,7 +18,7 @@ Related ADRs:
 - `plans/adrs/ADR-0031-authenticated-idle-continuation-delegated-turn-admission.md` — accepted; the durable notification and continuation machinery this line reuses.
 - `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md` — accepted; the human steers the parent, not the child.
 - `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` — accepted; the delegated lifecycle projection this line extends.
-- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **proposed**; gates C002–C004.
+- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **accepted** (option B) on 2026-10-24; gates C002–C004.
 
 Predecessors (history retained; not reopened): `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md`; `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md`; `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md`; `plans/subsystems/async-background-jobs-and-ci-watch-roadmap.md`; `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md`; `plans/subsystems/agent-loop-operational-reliability-roadmap.md`. Their closure records stay closed and unaltered; this addendum opens a **new** workstream rather than reopening any of them.
 
@@ -193,7 +193,7 @@ Exit conditions: every denial case fails closed before any provider entry; the c
 
 ### Decision points
 
-- **D1 — the durable identity of a delegated transcript (ADR-0051).** Options A (status quo), B (a dedicated store keyed by run id, proposed) and C (a real `session` row reusing the message store) are set out in the ADR. **Acceptance gates C002, C003 and C004.** Until it is accepted, this addendum records no authority.
+- **D1 — the durable identity of a delegated transcript (ADR-0051).** **Decided 2026-10-24: option B**, accepted explicitly by the user. Options A (status quo) and C (a real `session` row reusing the message store) are rejected; C is rejected because it would change what the user's session catalog means. The decision gates C002, C003 and C004.
 - **D2 — the disposition of a delegated run's terminal notice.** Fixed to `NotifyOnly` in C001. `ResumeOwner` is **not** proposed for delegated runs and is not authorized by this addendum.
 - **D3 — the provider-failure retryability taxonomy.** Whether a provider or upstream failure should be classified `Retryability::RequiresRecovery` rather than `Retryable` is deferred to C004. It is a classification question, not an authority question, and ADR-0051 explicitly defers it.
 - **D4 — the legacy, non-durable delegated path.** Whether it is retired, or given the same notification guarantee as the durable path, is out of scope here. C001 must state which path is live in production and must not claim a guarantee for a path it did not change.
@@ -207,6 +207,6 @@ This addendum is complete when C001–C004 each have an accepted closure record,
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | C001 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/001-the-orchestrator-always-hears-about-its-child.md` | — | none |
-| C002 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md` | — | ADR-0051 not accepted |
-| C003 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/003-the-tui-renders-the-delegated-transcript.md` | — | ADR-0051 not accepted; C002 not closed |
-| C004 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/004-a-delegated-run-can-be-continued.md` | — | ADR-0051 not accepted; C002 not closed |
+| C002 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md` | — | none — ADR-0051 accepted (option B) 2026-10-24 |
+| C003 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/003-the-tui-renders-the-delegated-transcript.md` | — | C002 not closed |
+| C004 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/004-a-delegated-run-can-be-continued.md` | — | C002 not closed |

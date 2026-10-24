@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery Corrective Milestone 004 — A Delegated Run Can Be Continued
 
-Status: blocked — C002 is not closed, and ADR-0051 is proposed, not accepted
+Status: blocked — C002 is not closed
 
 Repository baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before editing.
 
@@ -14,7 +14,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **proposed; this milestone's gate.** §4 fixes the continuation authority: the spawning principal only, under the parent's authority and ceiling, one continuation per terminal failure, a new attempt of the same run, and no provider entry until the recorded transcript has been read back and redaction re-verified.
+- `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md` — **accepted (option B) on 2026-10-24.** §4 fixes the continuation authority: the spawning principal only, under the parent's authority and ceiling, one continuation per terminal failure, a new attempt of the same run, and no provider entry until the recorded transcript has been read back and redaction re-verified.
 - `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md` (accepted) — the agent loop's evidence-gated recovery; this milestone adds a *delegated-run-level* continuation and does not change the loop's own ladder.
 - `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md` (accepted) — unchanged; a continuation is initiated by the **orchestrator**, not the human.
 
@@ -28,10 +28,11 @@ One bounded outcome: when a delegated run fails for a recoverable reason, the or
 
 ## 2. Why this milestone is ready
 
-**It is not.** This milestone is **blocked** on two named dependencies:
+**It is not yet.** This milestone is **blocked** on one named dependency:
 
 1. **C002 is not closed** — `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md`. A continuation is a continuation *of a conversation*; without the durable transcript there is nothing to continue from, and a "continuation" that starts from nothing is a re-dispatch with a different name.
-2. **ADR-0051 is not accepted** — `plans/adrs/ADR-0051-durable-delegated-run-transcript-and-continuation-authority.md`. Its §4 is the authority contract this milestone implements, and its §"Neutral or deferred" explicitly defers the provider-failure **retryability taxonomy** to this milestone (roadmap D3), which is a decision this milestone must make and record.
+
+ADR-0051 was **accepted on 2026-10-24 as option B**, so the second former blocker is discharged: its §4 is now the authority contract this milestone implements, and its §"Neutral or deferred" defers the provider-failure **retryability taxonomy** to this milestone (roadmap D3), which is a decision this milestone must make and record.
 
 **Soft dependency:** C001. C001 gives the orchestrator the durable notice that tells it the child failed. Without it the orchestrator may never learn that a continuation is warranted. C001 must close before this milestone's closure.
 
@@ -308,7 +309,7 @@ bash scripts/verify.sh quick
 
 The implementing agent must stop and report rather than improvise when:
 
-- **C002 is not closed**, or **ADR-0051 is not accepted** — the milestone's gate.
+- **C002 is not closed** — the milestone's remaining gate. (ADR-0051's gate is discharged: accepted as option B on 2026-10-24.)
 - the continuation cannot be authorized without relaxing `src/agent/run_control.rs:183-218`'s rule;
 - the seeded context cannot be re-verified against the stored transcript — seeding an unreviewed context is a smuggling path, not a trade-off;
 - making the continuation work would require changing the delegated job's `RetryPolicy` or `IdempotencyClass`, or would require the scheduler to retry a `no_retry` job;
