@@ -578,8 +578,8 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 340 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 93 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 56 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 94 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 57 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -610,6 +610,22 @@ work adds no guard), *CI guard scripts* is **56** (the `ci.yml` list, unchanged)
 and the quick-only difference is unchanged at **14**. The *quick* guard count
 is **70**. Every other code-count row was re-checked against its own listed
 `Source` and is unchanged.
+
+### Count reconciliation — M007-A desktop gate guard (2026-10-24)
+
+Two code-count rows moved when the desktop build and hosted gate line added the
+guard that keeps the desktop tree inside an automated gate. *Guard scripts
+(all)* is **94** (`ls scripts/check_*` — the new
+`scripts/check_desktop_gate_wiring.py`, which fails closed when the hosted
+desktop qualification stops covering the desktop tree: a dispatch-only
+trigger, a path filter that no longer names `apps/desktop/**`, a missing
+`clippy` step for the desktop host, or a missing local entry point).
+*CI guard scripts* is **57** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained the same guard and its self-test). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
+entry. The *quick* guard count is **71**. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
 
 
 ## Feature gates

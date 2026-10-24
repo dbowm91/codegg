@@ -6,7 +6,7 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 70 guard scripts, and a workspace check
+                          # checks, 71 guard scripts, and a workspace check
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
@@ -109,9 +109,9 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 70 guard scripts, and a workspace `cargo check`. CI
+checks, 71 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 56 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 57 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
 As measured on 2026-10-24, quick runs **14 guards CI omits**: the client and
@@ -256,6 +256,15 @@ injects the defect and proves the guard rejects it:
   daemon code; the root is threaded through `ExecutionContext`. It covers
   `src/core/**`, the turn-code surfaces and the `codegg-core` crate. It was
   wired into neither `quick` nor CI before the C008 corrective extended it.
+- `check_desktop_gate_wiring.py` — the desktop tree is a separate Cargo
+  workspace that the root check never compiles, so the hosted desktop
+  qualification is the only automated gate it has. The guard fails closed when
+  that gate stops covering the desktop: a dispatch-only trigger, a path filter
+  that no longer names `apps/desktop/**`, a missing `clippy` step for the
+  desktop host, or a missing local entry point. The hosted lane was paused
+  while it was red, and for that period the desktop Rust tree was compiled by
+  no automated gate at all — a whole subsystem could fall out of CI without
+  anything turning red.
 
 Re-derive the **automatic** set — every guard that runs in *both* `quick` and
 CI — rather than trusting a hand-copied list:
@@ -265,8 +274,9 @@ comm -12 <(awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -oE 'scripts/ch
          <(grep -oE 'scripts/check[-_][a-z0-9_.-]+\.(py|sh)' .github/workflows/ci.yml | sort -u)
 ```
 
-The six named above are the guards whose classification was **decided** in this
-line's work; the derived set is larger, and the command is what says which.
+The seven named above are the guards whose classification was **decided** in
+the work that added each of them; the derived set is larger, and the command
+is what says which.
 
 ## Gotchas
 
