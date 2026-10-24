@@ -168,9 +168,6 @@ pub struct PendingSelectionUpdate {
 }
 
 /// Number of leading connection-id characters shown on a row.
-///
-/// Eight is enough to separate two rows that are otherwise identical while
-/// staying short enough to leave room for the credential hint.
 const CONNECTION_ID_PREVIEW_LEN: usize = 8;
 
 /// Short, stable discriminator for one connection id.
@@ -199,19 +196,12 @@ fn column_title(
     }
 }
 
-/// Render one connection row.
-///
 /// A display name is not an identity: two connections can legitimately share
 /// one (`eggstackmain` twice on the same provider, differing only by id and
 /// bound key), and `R`/`d`/`e` act on whichever row is highlighted. The row
 /// therefore carries three discriminators — a short id, the masked credential
 /// tail when one is bound, and the current state — so the user can always say
 /// which key they are about to replace.
-///
-/// They come *before* the descriptive tail on purpose. The connections pane is
-/// half a narrow terminal, and a discriminator pushed behind the provider kind
-/// and model count is exactly the part that gets truncated away at 120 columns
-/// — reintroducing the ambiguity this row exists to remove.
 ///
 /// The hint is exactly the four trailing characters the daemon computed; the
 /// dialog never sees, derives, or widens it. Connections with no binding simply
@@ -584,8 +574,6 @@ mod tests {
         dialog
     }
 
-    /// The model pane must be reachable without `Tab`.
-    ///
     /// `Tab` was the only model-navigation binding this dialog had and it never
     /// fired: `FocusManager::handle_key` consumes `Tab`/`Shift+Tab` for dialog
     /// focus traversal before dispatching to the component, so `move_model` was

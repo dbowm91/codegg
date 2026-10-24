@@ -1,13 +1,5 @@
 //! Shared word and line geometry over a text buffer.
 //!
-//! The editor and the composer are two surfaces over the same idea: a text
-//! buffer with a caret in it, and Helix's motions over that caret. Before this
-//! module they each had their own idea of where a word ends, and the two
-//! could disagree — the composer had no word motions at all, so "disagree"
-//! meant "the composer had nothing". The first time a motion lands on both
-//! surfaces, the rule has to be one rule, or the surfaces drift the moment
-//! the policy changes.
-//!
 //! So the geometry lives here, over a [`TextSource`], and each surface
 //! supplies an adapter:
 //!
@@ -15,10 +7,6 @@
 //!   reads on demand;
 //! - the composer adapts its own `String`, which is a frontend-local buffer
 //!   that is delivered only on submit.
-//!
-//! The adapters differ in every respect that matters — one is a replica with
-//! revisions, the other is a plain string — and agree on the one thing that
-//! matters: where the words are.
 //!
 //! ## The word policy
 //!
@@ -83,9 +71,6 @@ pub trait TextSource {
     }
 
     /// Byte offset of the end of `line`'s content, excluding its terminator.
-    ///
-    /// The terminator, if any, is `\n`, `\r`, or `\r\n` at the very end of the
-    /// line.
     fn line_content_end(&self, line: usize) -> Option<usize> {
         let start = self.line_start(line)?;
         let end = self.line_end(line)?;
@@ -251,10 +236,6 @@ pub fn buffer_content_end<S: TextSource + ?Sized>(source: &S) -> usize {
 }
 
 /// The run of one class that contains `offset`.
-///
-/// The run is expanded on both sides, so the answer is the same for every
-/// offset inside it — which is what lets a word motion ask "which word am I
-/// in" without also asking "where exactly am I".
 fn category_run_at<S: TextSource + ?Sized>(source: &S, offset: usize) -> WordRun {
     let offset = clamp_offset(source, offset);
     let len = source.len_bytes();
@@ -269,12 +250,6 @@ fn category_run_at<S: TextSource + ?Sized>(source: &S, offset: usize) -> WordRun
         start = previous;
     }
     // Expand right over the same class, remembering the last character's start.
-    //
-    // `end` is the start of the first character **after** the run, so the
-    // character that starts there is the one to test next. Advancing `end` to
-    // the *end* of the last matching character instead would step over the
-    // character that ends the run — on `日本語 text` that swallowed the space
-    // and merged the two words into one run.
     let mut last = offset;
     let mut end = next_char_boundary(source, offset).unwrap_or(len);
     while end < len {
@@ -726,8 +701,6 @@ mod tests {
         }
     }
 
-    /// A multi-byte character is **word content**, not a separator.
-    ///
     /// `w` from the start of `日本語 text` must land on `text`, not on the end
     /// of the document: the classifier reads the character's *first* byte,
     /// which is `>= 0x80` and therefore word content.

@@ -6,13 +6,6 @@
 //! dialog therefore pre-wrap their content with these helpers: the same
 //! algorithm decides both how many rows a string occupies and which rows to
 //! draw, which is what keeps scroll offsets aligned with what is on screen.
-//!
-//! Two engines live here. [`wrap_to_strings`] wraps plain text by words and
-//! returns plain strings. [`wrap_styled_spans_by_word`] wraps **styled**
-//! spans by the same rule and additionally reports the **byte range** of the
-//! source behind every row, so a consumer can map a byte offset back to the
-//! row and column it came from. Both engines exclude terminal escape
-//! sequences from word segmentation and from width measurement.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -129,7 +122,11 @@ pub fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
 }
 
 /// The ASCII escape that introduces a terminal control sequence.
-const ESC: u8 = 0x1b;
+///
+/// `pub(crate)` because the visual-row geometry measures the same sequences
+/// when it lays out the composer's cells, and it must skip them the same way
+/// this module does — one atomic token, never a printable byte.
+pub(crate) const ESC: u8 = 0x1b;
 /// The ASCII bell that terminates an OSC control sequence.
 const BEL: u8 = 0x07;
 
@@ -215,7 +212,11 @@ pub fn visible_width(s: &str) -> usize {
 /// sequence runs to the end of the input, so a truncated sequence is still
 /// treated as one atomic token rather than leaking printable bytes into the
 /// width measurement.
-fn escape_sequence_len(bytes: &[u8]) -> usize {
+///
+/// `pub(crate)` because the visual-row geometry skips the same sequences when
+/// it measures a composer's cells, and a second parser there would be a
+/// second answer to "how wide is this sequence".
+pub(crate) fn escape_sequence_len(bytes: &[u8]) -> usize {
     let Some(&second) = bytes.get(1) else {
         return 1;
     };
@@ -831,10 +832,6 @@ mod tests {
 
     /// The complete escape sequences in `text`, and the printable text
     /// between them.
-    ///
-    /// A sequence that was cut in half still starts with ESC, so it shows up
-    /// here as a *different* sequence than the one that was written — which
-    /// is exactly what the integrity test looks for.
     fn scan_escapes(text: &str) -> (Vec<String>, String) {
         let mut sequences = Vec::new();
         let mut visible = String::new();

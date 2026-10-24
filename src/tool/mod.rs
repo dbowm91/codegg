@@ -1,9 +1,4 @@
 //! Tool registry and built-in tools.
-//!
-//! This module provides the Tool trait and ToolRegistry for managing available tools.
-//! Tools are the primary way Codegg interacts with the filesystem, terminal, and external
-//! services. Each tool implements the Tool trait with name, description, parameters,
-//! and execution logic.
 
 pub mod apply_patch;
 pub mod authorization;
@@ -2188,10 +2183,6 @@ mod bash_workdir_wiring_tests {
     /// a session rooted at one repository asked to read a relative path, and
     /// the tool resolved it against the daemon process cwd instead. The
     /// workspace root here is a tempdir, so any cwd-based resolution misses.
-    ///
-    /// The failure was self-contradicting — the hint joined the workspace root
-    /// and so suggested the very file the lookup claimed was missing — which is
-    /// why it read as "file not found" for a file that plainly existed.
     #[tokio::test]
     async fn a_relative_read_resolves_under_the_workspace_root() {
         let root = tempfile::tempdir().expect("workspace tempdir");

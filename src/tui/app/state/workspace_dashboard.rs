@@ -354,7 +354,7 @@ impl WorkspaceDashboardState {
         true
     }
 
-    /// Total attention badges across visible rows (for tests/badges).
+    /// Total attention badges across visible rows.
     pub fn total_attention(&self) -> u64 {
         self.rows.iter().map(|row| row.attention_count()).sum()
     }

@@ -6,10 +6,6 @@
 //!
 //! # Pipeline
 //!
-//! ```text
-//! source bytes → parse → normalized AST → validate → static bounds → compile IR → verify IR
-//! ```
-//!
 //! # Invariants
 //!
 //! - Parsing never executes source or spawns subprocesses.

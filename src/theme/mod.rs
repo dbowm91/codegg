@@ -13,12 +13,6 @@
 //!
 //! ## Pipeline
 //!
-//! ```text
-//! native codegg TOML  ┐
-//! Halloy TOML         ├─►  SemanticTheme  ──►  ratatui::Theme
-//! future Base16       ┘
-//! ```
-//!
 //! When a future iced GUI is added, add a new file under `target/` that
 //! projects `SemanticTheme` into the GUI's style system. Do not parse Halloy
 //! themes directly into frontend-specific types.

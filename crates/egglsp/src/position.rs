@@ -1,13 +1,5 @@
 //! Position encoding conversion helpers shared across LSP operations.
 //!
-//! LSP `Position::character` offsets use a *negotiated* position
-//! encoding. Per the LSP specification, the encoding is negotiated
-//! during the `initialize` handshake via the
-//! `PositionEncodingKind` capability (`utf-8`, `utf-16`, or
-//! `utf-32`). The vast majority of servers negotiate UTF-16
-//! because that is what the protocol was originally designed
-//! for (and what VS Code negotiates by default).
-//!
 //! Rust source code is UTF-8. Converting a UTF-16 offset into
 //! a Rust byte offset requires walking the string one character
 //! at a time and accumulating `len_utf16()` until the requested

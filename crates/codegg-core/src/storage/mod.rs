@@ -1,8 +1,5 @@
 //! SQLite database storage layer.
 //!
-//! This module provides the Database wrapper around SQLite for persistent storage
-//! of sessions, messages, and analytics. It uses sqlx for async database operations.
-//!
 //! ## Storage ownership (Phase 3)
 //!
 //! The daemon's SQLite database is split into two distinct concerns:
@@ -16,9 +13,6 @@
 //!    [`init_migrated_legacy_project_store`]; the un-migrated
 //!    [`init_legacy_project_store`] is reserved for the legacy import
 //!    tooling, which must be able to inspect a file before trusting it.
-//!
-//! The legacy [`init`] entry point remains as a deprecated wrapper so
-//! callers that have not yet been migrated continue to work.
 
 pub mod immediate;
 pub mod paths;

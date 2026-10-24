@@ -17,11 +17,6 @@
 //! loop/queue, never fabricates speculative sessions, never copies
 //! directories ad hoc as "isolation", and never silently falls back to
 //! another model or widens approval/sandbox policy.
-//!
-//! Storage truth stays in `codegg-core::work_order::WorkOrderService`; this
-//! module owns daemon-side orchestration (wakes, resolution, side-effect
-//! ordering, reconciliation, events/audit). Pure gate/policy helpers live
-//! in `codegg-core::work_order::coordinator`.
 
 use codegg_core::jobs::ExecutionTarget;
 use std::collections::HashSet;

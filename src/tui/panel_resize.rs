@@ -5,13 +5,6 @@
 //! never pull one in. The border it drags is shared with whatever sits on the
 //! other side, so the neighbour shrinks:
 //!
-//! | subject | `h` | `j` | `k` | `l` |
-//! |---|---|---|---|---|
-//! | chat on the **right** | its left border out → chat grows | frame edge | frame edge | frame edge |
-//! | panel on the **left** | frame edge | frame edge | frame edge | its right border out → grows |
-//! | panel on the **bottom** | frame edge | frame edge | its top border up → grows | frame edge |
-//! | main **buffer** | left panel's right border → left panel shrinks | bottom panel's top border → bottom panel shrinks | nothing is ever above | right panel's left border → right panel shrinks |
-//!
 //! Two properties make this the rule rather than a set of special cases:
 //!
 //! 1. **Only shared borders move.** A column already owns its left edge to the

@@ -7,13 +7,6 @@
 //! the `RunStore`, the `WorkspacePathPolicy`, the `WorkspaceLockTable`,
 //! and the resolved `WorkspaceConfigSnapshot`.
 //!
-//! The bundle is keyed by [`WorkspaceId`] so that every session and
-//! frontend attached to the same workspace shares one in-process service
-//! instance. Bundles are activated lazily through
-//! [`WorkspaceServiceRegistry::acquire`], which uses a single-flight
-//! activation mutex per workspace to ensure that concurrent first
-//! acquisitions produce exactly one bundle.
-//!
 //! The module is UI-, server-, and plugin-free: it only owns types
 //! the daemon can reason about in isolation. Higher-level services
 //! (LSP, Git mutation, search, plugins, providers) live in the root

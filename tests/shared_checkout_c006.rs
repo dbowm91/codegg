@@ -803,7 +803,6 @@ async fn a_run_outside_the_group_may_not_write_the_shared_checkout() {
     );
 }
 
-/// A process effect is refused on a shared checkout. The shared profile
 /// admits no unqualified process, and the fence is one of the places that
 /// says so.
 #[tokio::test]
@@ -830,7 +829,6 @@ async fn a_process_effect_is_refused_on_a_shared_checkout() {
 // The C005 preflight
 // ---------------------------------------------------------------------------
 
-/// A live persistent process refuses the placement, and the placement
 /// succeeds once the process is drained. The process's lifetime belongs to
 /// its own owner: the refusal never kills it.
 #[tokio::test]
@@ -960,7 +958,6 @@ async fn a_run_without_a_managed_checkout_has_no_fence() {
 // The profile and the platform
 // ---------------------------------------------------------------------------
 
-/// The shared profile denies every tool that starts a process in the
 /// checkout and every tool that uses a persistent process the host owns.
 #[test]
 fn the_shared_profile_denies_every_process_capable_tool() {

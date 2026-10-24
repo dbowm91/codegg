@@ -6,11 +6,6 @@
 //! (review-diff, repair-local, impact-analysis, test-failure repair,
 //! call-neighborhood), cold/warm startup behavior, and cache
 //! hit/miss/stale rates under realistic access patterns.
-//!
-//! Run with:
-//! ```bash
-//! cargo test -p egglsp --test lsp_cache_benchmark -- --nocapture
-//! ```
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

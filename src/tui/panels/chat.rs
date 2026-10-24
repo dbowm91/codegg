@@ -125,19 +125,6 @@ impl ChatPanel {
     // ── Key routing ───────────────────────────────────────────────────
 
     /// Map a browser action onto the host's key contract.
-    ///
-    /// The one interesting case is `Compose`. A bare `i`/`a`/`Enter` carries
-    /// no text and no target — it means "let me type" — so it returns
-    /// [`PanelKey::PassThrough`] and the shared composer's own `FocusPrompt`
-    /// binding opens Insert mode. That is what makes "type anywhere, land in
-    /// the armed target" true: the same key that enters the agent prompt
-    /// enters chat compose.
-    ///
-    /// `r`/`e` are different: they arrive pre-seeded with an author mention,
-    /// a reply target, or the body being replaced. Falling through would
-    /// strand that context, so they emit an intent that arms the composer
-    /// *and* switches it to Insert, which is the dialog's behaviour reached
-    /// by a different route.
     fn route(&self, action: ChatKeyAction, ctx: &PanelCtx<'_>) -> PanelKey {
         match action {
             ChatKeyAction::Consumed => PanelKey::Consumed,

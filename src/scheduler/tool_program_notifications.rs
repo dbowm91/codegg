@@ -1,10 +1,5 @@
 //! Durable parent notification for background Tool Programs.
 //!
-//! When a tool program is submitted in background mode, the parent
-//! agent continues immediately. When the program reaches a terminal
-//! state, exactly one logical notification is created and delivered
-//! to the parent session's notification inbox.
-//!
 //! # Invariants
 //!
 //! - Every background program produces at most one actionable terminal

@@ -1,15 +1,5 @@
 //! Row index for the chat viewport.
 //!
-//! The cache holds the rows the renderer actually emits and derives the
-//! scroll offsets from them. Row counts used to be re-derived by
-//! `estimate_msg_lines`, a second implementation of the same rules that had
-//! drifted out of agreement with the emit loops: it counted wrapped rows for
-//! collapsed tool output but only logical rows for `read` output, which is
-//! rendered as pre-numbered code. Because the disagreement is per message it
-//! accumulated down the buffer, so the further back you scrolled the further
-//! the cached offset sat from the row actually drawn — long transcripts
-//! clipped off the edge and most of the history became unreachable.
-//!
 //! Rows are cached flat rather than per message so that a partial rebuild
 //! (streaming appends to the last message) can splice the rebuilt suffix in
 //! place instead of re-emitting every earlier message.

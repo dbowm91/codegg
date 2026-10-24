@@ -7,7 +7,7 @@
 //! provides the single explicit bridge so the registry and wrappers
 //! never have to consult config-time types directly.
 //!
-//! See `plans/native_tool_crates_hardening.md` Phase 2 for context.
+//! See `architecture/native_crates.md` for the config-to-runtime bridge.
 
 use crate::config::schema::{
     ExternalToolBackendConfigSchema, ToolBackendConfigSchema, ToolImplementationBackendSchema,

@@ -878,12 +878,6 @@ mod tests {
 
     /// A project the catalog has NOT reported yet, but for which a
     /// `ProjectGet` detail landed, must restore.
-    ///
-    /// The TUI issues `ProjectGet` precisely for projects missing from
-    /// the catalog, so gating the detail lookup on a catalog match made
-    /// the freshly fetched evidence unusable: the entry was classified
-    /// `project_missing` and the tab was dropped even though the daemon
-    /// had just confirmed the project exists.
     #[test]
     fn project_detail_resolves_a_project_absent_from_the_catalog() {
         let mut snap = snapshot();

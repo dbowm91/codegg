@@ -28,18 +28,15 @@ enum Chrome {
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
 /// `handle_key` below is the implementation and this is the advertisement.
-/// `↑/↓` are deliberately absent even though `handle_key` answers
-/// them: a focused panel never sees them, because `SidePanelHost::handle_key`
-/// answers the arrow keys as panel directions before consulting the widget.
-/// `Esc` is absent for a different reason — it is the mode switch, so it means
-/// "close" in the modal box and something else in a column.
-/// `Enter` is absent for a second
-/// reason — it returns `TuiMsg::CloseDialog`, and docking popped this box off
-/// the modal stack before the panel adopted it, so that close has an empty
-/// stack to run against and does nothing. **A `/diff` in a column therefore has
-/// no close verb at all**, which is why this line is the whole keymap of the
-/// docked box and why the old footer's `Esc close` was a lie in it. `Home`,
-/// `End` and `^d`/`^u` survive: none of them is a panel direction.
+/// `↑/↓` are deliberately absent even though `handle_key` answers them: a
+/// focused panel never sees them, because `SidePanelHost::handle_key` answers
+/// the arrow keys as panel directions before consulting the widget. `Esc` is
+/// absent for a different reason — it is the mode switch, so it means "close"
+/// in the modal box and something else in a column. `Enter` is absent for a
+/// second reason — it returns `TuiMsg::CloseDialog`, and docking popped this
+/// box off the modal stack before the panel adopted it, so that close has an
+/// empty stack to run against and does nothing. `Home`, `End` and `^d`/`^u`
+/// survive: none of them is a panel direction.
 const HINT: &str = "j/k scroll · ^d/^u page · s side-by-side · Home/End jump";
 
 #[derive(Clone)]

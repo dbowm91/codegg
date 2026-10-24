@@ -4,25 +4,7 @@
 //! subprocess via stdio. Must run serially (`--test-threads=1`).
 //! Do not broaden coverage here if a mock/in-process test can cover the behavior.
 //!
-//! These tests use the fake LSP server (scenario engine) to drive the
-//! [`LspService`] process-supervisor, restart coordinator, and
-//! per-client generation safety. They are gated behind the
-//! `lsp-test-support` feature and run without external network access.
-//!
-//! Each test is self-contained: it builds a fresh `LspService` with
-//! the fake server binary, drives a scripted scenario, and asserts
-//! on operational state, generation tracking, and process spawn
-//! counts (derived from the transcript file written by the fake
-//! server).
-//!
 //! ## Restart design notes
-//!
-//! The fake server reads its scenario JSON file exactly once at
-//! startup. To switch behavior between restart attempts the test
-//! overwrites the scenario file between process spawns. The
-//! service uses the SAME scenario file path for each restart (via
-//! the launch-spec env var); the fake server reads the latest
-//! content each time a new process is spawned.
 //!
 //! Process start counts are derived from the start-counter file
 //! the fake server appends to on startup. (The transcript file is
@@ -318,13 +300,6 @@ fn path_to_uri(path: &Path) -> String {
 }
 
 /// Return the service-computed key for `root` + `server_id`.
-///
-/// The service's `find_project_root` canonicalizes the path
-/// before deriving the key. On macOS, `tempfile::tempdir()`
-/// returns paths under `/var/folders/...` that canonicalize to
-/// `/private/var/folders/...`, so a test key built directly from
-/// `tempdir.path()` will not match. This helper does the same
-/// canonicalization the service performs.
 fn canonical_root_key(root: &Path, server_id: &str) -> String {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     format!("{}:{}", canonical.display(), server_id)
@@ -1599,10 +1574,6 @@ fn hover_crash_scenario(
 /// - Phase 1: gen 1 crashes on didOpen → coordinator restarts → gen 2
 /// - Phase 2: gen 2 crashes on hover → coordinator restarts → gen 3
 /// - Phase 3: gen 3 is healthy
-///
-/// Phase 2 crashes on hover (not didOpen) so the coordinator's
-/// document replay succeeds and gen 2 reaches Ready before the
-/// user-triggered crash.
 #[tokio::test]
 async fn two_consecutive_restarts_use_monotonic_generations() {
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -1972,7 +1943,6 @@ fn make_test_descriptor(
 // Suppress unused-import warning for `LspProcessRuntime` re-export.
 // ── Pass 9 — Final race tests ────────────────────────────────────────
 
-/// Pass 9 — `manual_waits_for_cancelled_automatic_completion`.
 /// A manual restart MUST wait for an in-flight automatic restart
 /// owner to complete before touching the live client. We seed
 /// the service with a descriptor that auto-restarts on exit,
@@ -2196,7 +2166,6 @@ edition = "2021"
 
 // ── Pass 4 — Manual supersession revalidates after auto publishes ───
 
-/// Pass 4 — `manual_waits_for_published_replacement_completion_then_revalidates`.
 /// A manual restart MUST wait for an in-flight automatic restart
 /// owner to complete its full coordinator cycle (including
 /// publishing the replacement into the live clients map)
@@ -2290,9 +2259,6 @@ edition = "2021"
     // successful) and publish gen 2. The manual flow must
     // wait for the auto to complete, then detect the
     // generation advance and return ServerRestarted.
-    //
-    // We give the auto restart a moment to begin by sleeping
-    // before issuing the manual call.
     tokio::time::sleep(Duration::from_millis(150)).await;
     let manual_result = service.manual_restart_client(&key).await;
 

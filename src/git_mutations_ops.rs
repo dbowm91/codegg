@@ -1,9 +1,5 @@
 //! Typed mutation operations (stage, commit, branch, stash, ...).
 //!
-//! These functions wrap [`GitMutationExecutor::execute`] with operation-
-//! specific validation. They are the canonical entry points for native
-//! tools and the command-routing backend.
-//!
 //! Phase D invariants:
 //!
 //! * argv is rendered without a shell.

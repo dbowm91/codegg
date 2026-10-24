@@ -1,14 +1,6 @@
 //! M006-A: document editor widget.
 //!
-//! Renders one document from a scoped borrow of the controller's replica:
-//! a line-number gutter, the current-line highlight, a horizontally
-//! scrolled viewport, and a state banner.
-//!
 //! ## Hard wrap
-//!
-//! One logical line is exactly one screen row. That one-to-one mapping is
-//! what keeps the gutter, the current-line highlight, and cursor arithmetic
-//! deterministic; soft wrap is deferred to a later milestone.
 //!
 //! ## Bounded work (C002)
 //!
@@ -112,14 +104,6 @@ impl<'a> ClusterGroup<'a> {
 /// from one end would take the scope badge before the "line too long"
 /// footnote, or the armed prefix before the note that explains it, and both
 /// are worse than the other.
-///
-/// A group that is still too wide on its own is **cut from the right** rather
-/// than dropped: "3 matches · partial · n/N next/prev" is worth more as
-/// "3 matches · partial…" than as nothing at all, because the head of a
-/// sentence is the part that answers the question.
-///
-/// The armed prefix is the highest rank, so it is the last thing to go and
-/// the first thing to survive.
 fn fit_cluster(mut groups: Vec<ClusterGroup<'_>>, budget: usize) -> Vec<Span<'_>> {
     let width = |groups: &[ClusterGroup<'_>]| groups.iter().map(ClusterGroup::width).sum::<usize>();
     while groups.len() > 1 && width(&groups) > budget {
@@ -143,10 +127,6 @@ fn fit_cluster(mut groups: Vec<ClusterGroup<'_>>, budget: usize) -> Vec<Span<'_>
 }
 
 /// Cut a group down to `budget` columns, keeping the head of it.
-///
-/// The head is the part that answers the question: the count of a search, the
-/// bound of a find, the wording of an error. The tail is the part that can
-/// be guessed.
 fn cut_group<'a>(group: &ClusterGroup<'a>, budget: usize) -> Vec<Span<'a>> {
     let mut out: Vec<Span<'_>> = Vec::new();
     let mut used = 0usize;
@@ -243,10 +223,6 @@ pub struct EditorWidget<'a> {
 /// The editor's **own** verbs, not the whole application's: the box answers
 /// "what can I press *in here*", and a list that also carried the composer's
 /// and the panels' keys would answer a different question.
-///
-/// The descriptions are short on purpose. The box is a corner overlay, and a
-/// box whose rows are wide enough to need truncating names some of the keys
-/// and not others — which is worse than no box at all.
 const EDITOR_KEYMAP: &[(&str, &str)] = &[
     ("e / b", "word end / start — selects the word"),
     ("w", "next word start"),
@@ -367,11 +343,6 @@ impl EditorWidget<'_> {
     /// The editor's single bottom row: the path on the left, the status
     /// cluster on the right.
     ///
-    /// The left slot is the **input** slot. When the `:` or `/` line is open
-    /// it holds that line and the path is erased: the reader is looking at
-    /// what they are typing, and a path beside it is a second answer to a
-    /// question nobody asked.
-    ///
     /// The right slot is the **cluster**: the persistent signals, then the
     /// transient disclosure, then the notice, then the armed prefix. It is
     /// right-aligned rather than wrapped, so the row is always exactly one
@@ -459,23 +430,11 @@ impl EditorWidget<'_> {
 
     /// The right slot of the bottom row, in the order it is read.
     ///
-    /// The row is one story, left to right: **where am I** (the persistent
-    /// signals), **what just happened** (the transient disclosure), **what is
-    /// wrong** (the notice), **what am I about to press** (the armed prefix).
-    ///
     /// The persistent signals come first because they never move: the
     /// **modified** state, the scope the document is confined to, writable or
     /// read-only, the LSP semantic coverage, and the "line too long" marker.
     /// The line number and the column are gone — they restated the cursor,
     /// which is already on screen.
-    ///
-    /// The armed prefix comes **last**, at the far right of the row. It is the
-    /// one element that appears and disappears on its own, so it gets a home
-    /// nothing else competes for: the reader's eye arrives at the end of the
-    /// row after reading the state, and the prefix is what they are waiting
-    /// to see. A prefix in the middle of the cluster would have to be looked
-    /// for among the words around it, and "did my `g` register?" is a question
-    /// that has to be answered at a glance.
     fn chrome_cluster(&self, theme: &Theme) -> Vec<ClusterGroup<'_>> {
         // A modal line **owns** the row. The reader is looking at what they
         // are typing, and a cluster of status beside it is a second answer to
@@ -827,11 +786,6 @@ impl EditorWidget<'_> {
     /// the field doc has always said "after the gutter and scrollbar" — and
     /// nothing ever drew in it. The editor therefore looked like it had no
     /// scrollbar at all, and "how far down am I" had no answer on screen.
-    ///
-    /// The thumb is sized by how much of the document is visible and placed
-    /// by where the view starts, so it is a **map** of the document rather
-    /// than an indicator of the cursor: a reader who has scrolled away from
-    /// the cursor still sees where they are.
     fn render_scrollbar(&self, frame: &mut Frame, area: Rect, viewport: &EditorViewport) {
         if area.width == 0 || area.height == 0 {
             return;
@@ -1852,9 +1806,6 @@ impl EditorWidget<'_> {
     /// down. Swapping the theme's own foreground and background guarantees
     /// contrast for every token color, every theme, without the renderer
     /// having to know which of them is light.
-    ///
-    /// **Insert** is a thin bar. A block there would cover the character
-    /// being typed over — the one thing Insert mode exists to show.
     fn cursor_style(&self) -> Style {
         if self.buffer_focused {
             Style::default()
@@ -1964,10 +1915,6 @@ mod tests {
         search_matches: Vec<usize>,
         /// The history cursor's position and the history's length, as
         /// `(position, length)`.
-        ///
-        /// The entries themselves are built through the real history API, so
-        /// a test that asks for a position gets a history that could have
-        /// produced it.
         history: (usize, usize),
         writable: bool,
         busy: bool,
@@ -2093,10 +2040,6 @@ mod tests {
     }
 
     /// The rendered rows of a painted frame, as plain text.
-    ///
-    /// The same view [`render`] returns, read back from a buffer a test also
-    /// wants the **styles** of — so a test can assert on the glyphs and on the
-    /// paint at the same time.
     fn lines_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
         (0..buffer.area.height)
             .map(|y| {
@@ -2191,10 +2134,6 @@ mod tests {
     }
 
     /// The painted style of a body cell.
-    ///
-    /// Row 0 is the block's top border and the two `CHROME_ROWS` sit at the
-    /// *bottom*, so body row 0 is buffer row 1 and the banner is
-    /// `height - 3`. Text starts at `inner.x + gutter` = 1 + 3 = 4.
     fn body_style(buffer: &ratatui::buffer::Buffer, row: u16, column: u16) -> CellStyle {
         let cell = &buffer[(4 + column, row + 1)];
         CellStyle {
@@ -2312,9 +2251,6 @@ mod tests {
         );
         // The selection background runs to the end of the text area, so the
         // blank row reads as selected instead of untouched.
-        //
-        // `body_style` counts rows **within the text area**, so the editor's
-        // second line is row 1 and its first is row 0.
         let row = 1;
         let painted = (0..20)
             .map(|column| body_style(&buffer, row, column))
@@ -2949,10 +2885,6 @@ mod tests {
         // `[composer]`/`[buffer]`, so the editor carried a second way of
         // naming the same fact — and `[composer]` named an axis that no
         // longer exists.
-        //
-        // It carries **nothing** now. The path and the status moved to the
-        // single bottom row, and the mode is the badge above the input box's
-        // job: one vocabulary, one surface, one copy.
         let joined = render("content", 60, 8, 0, defaults()).join("\n");
         let title = joined.lines().next().unwrap_or_default();
         assert!(!title.contains("NOR"), "{title}");
@@ -3932,10 +3864,6 @@ mod tests {
     // ── The history cursor's position ───────────────────────────────────
 
     /// A time cursor nobody can see is a rename.
-    ///
-    /// The position is disclosed when the reader is standing somewhere other
-    /// than the newest change, and says nothing at the tip — so the ordinary
-    /// case draws exactly what it drew before the cursor existed.
     #[test]
     fn the_history_position_is_disclosed_only_when_the_cursor_is_not_at_the_tip() {
         let height = 8;
@@ -3972,7 +3900,6 @@ mod tests {
         );
     }
 
-    /// The rename preview names the files that would change, and says that
     /// nothing is applied.
     ///
     /// The rendering is M013's, but a rendering nobody exercises is a
@@ -4019,7 +3946,6 @@ mod tests {
         );
     }
 
-    /// The format preview shows the diff, and says that nothing is applied.
     #[test]
     fn the_format_preview_shows_the_diff_and_says_it_is_not_applied() {
         use codegg_protocol::lsp::{
@@ -4133,11 +4059,6 @@ mod tests {
 
     /// The code-action panel shows the **selected** action, even when the
     /// server offered more actions than the panel is tall.
-    ///
-    /// A code action is a choice, and the panel is where the choice is made.
-    /// If the selection could move off the visible rows, `Enter` would offer
-    /// to apply a change the reader could not see — so the window follows
-    /// the selection.
     #[test]
     fn the_code_action_panel_keeps_the_selected_action_visible() {
         use codegg_protocol::lsp::{
@@ -4191,11 +4112,6 @@ mod tests {
     }
 
     /// A preview that became a candidate is not "not applied" any more.
-    ///
-    /// The chords stopped showing what *would* change and started doing it,
-    /// so the panel's disposition line has to say so. A panel still claiming
-    /// "not applied" for a candidate would be a status row lying about the
-    /// last keystroke.
     #[test]
     fn a_preview_with_a_candidate_says_it_is_ready_to_apply() {
         use codegg_protocol::lsp::{
@@ -4242,7 +4158,6 @@ mod tests {
         );
     }
 
-    /// A truncated preview says why it cannot be applied.
     #[test]
     fn a_truncated_preview_says_it_cannot_be_applied() {
         use codegg_protocol::lsp::{

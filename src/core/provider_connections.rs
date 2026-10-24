@@ -1,9 +1,4 @@
 //! Daemon-owned lazy provider-connection runtime resolution.
-//!
-//! Durable metadata is owned by `codegg_core::provider_connections`, while
-//! credential lookup and provider construction are owned by the public
-//! `codegg_providers::connection` compatibility APIs. This module supplies
-//! the daemon lifecycle, cache, and invalidation boundary around them.
 
 use async_trait::async_trait;
 use codegg_core::identity::ProviderConnectionId;
@@ -51,10 +46,6 @@ pub enum ConnectionError {
 }
 
 /// Narrow daemon-facing view of the durable core store.
-///
-/// The implementation for the public SQLite store is supplied below. Keeping
-/// this small trait also permits daemon tests to use an in-memory store
-/// without creating a second persistence model.
 #[async_trait]
 // Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
 // (the desugared future is already must_use). Suppressed at the macro site;

@@ -543,7 +543,8 @@ measured on the branch tip `8225f42dd`, where the quick lane's `==>` lines were
 83 in `run_guards` plus 3 in `run_quick`. Reconciling with `origin/main`
 `3b29c5b88` adds **nine** — `origin/main`'s four reasoning-control guards
 (eight lines: each runs once with `--self-test` and once for real) and the
-harness-lab unittest step (one) — so the merged tree's quick lane runs **95**
+harness-lab unittest step (one) — so the tree merged at `d5b7efc02` runs
+**95**
 `==>` lines. The count is measured, not incremented:
 
 ```bash
@@ -551,11 +552,26 @@ awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 91
 awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
 ```
 
-The merged tree's quick lane was re-run after the merge: **green**, 95 steps.
+That tree's quick lane was re-run after the merge: **green**, 95 steps.
 
 The named test targets moved with the review pass, so §4.4's table keeps the
 closing-commit numbers and the live ones are: `shared_checkout_c006` is
 **20** (the review added the lease-release regression test) and
 `writer_fence_c009` is **5** (the fence factory's unreadable-store refusal).
-`core_daemon` is **507** with `--features server` and **498** without it, both
+`core_daemon` is **508** with `--features server` and **499** without it, both
 re-measured on the merged tree.
+
+**A9 — the fourth reconciliation with `main`.** `origin/main` advanced again
+while this line was open: the **repository audit corrective** workstream landed
+at `6e097dd3a`, and the branch tip `d5b7efc02` had to be reconciled with it.
+The quick lane's `==>` lines moved again, from 95 to **109** — `run_guards` is
+**105** and `run_quick` is **4** — because `origin/main` added its own guards
+and its own generated-asset checks. The count is measured, not incremented:
+
+```bash
+awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 105
+awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
+```
+
+The merged tree's quick lane was re-run after this merge: **green**, 109
+steps.

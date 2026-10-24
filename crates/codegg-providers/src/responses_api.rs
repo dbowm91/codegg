@@ -1,12 +1,5 @@
 //! OpenAI Responses API transport and hosted-program adapter.
 //!
-//! This module provides the wire types for the Responses API, a
-//! transport abstraction for streaming response items, and a
-//! [`HostedProgramAdapter`] that normalizes provider-hosted program
-//! items and nested client-owned function calls into CodeGG's
-//! existing Tool Program, Tool Broker, scheduler, call-ledger,
-//! artifact, cancellation, and projection contracts.
-//!
 //! # Design principles
 //!
 //! - Hosted execution is an optimization/backend choice, not a second

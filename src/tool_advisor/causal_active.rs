@@ -17,12 +17,6 @@
 //!   set only; the [`ResolvedToolSurface`] stays the only capability
 //!   ceiling.
 //!
-//! Selection is deterministic: greedy canonical-name order over the
-//! admissible contracted candidates inside the resolved deferred universe,
-//! skipping candidates that would exceed the remaining byte budget. No
-//! scores, no ranking model, no threshold tuning (frozen in
-//! `assets/tool-advisor/causal-frontier-m005-freeze.json`).
-//!
 //! Hard guarantees (graded by the M005 qualification suite):
 //!
 //! - no promotion outside the resolved deferred universe passed by the

@@ -471,35 +471,51 @@ contract on a platform that does not provide it. When a *new* failure appears
 next to these, it is real: check it against the baseline before assuming the
 same class.
 
-### Known macOS-local gate failures
+### The lint gate's platform matrix
 
-The **clippy gate** is also red on macOS, and for `origin/main`'s own reasons
-rather than for anything the test layout did. The gate's command is the one
-`scripts/verify.sh full` runs:
+The gate's command is the one `scripts/verify.sh full` runs, and the one the
+CI `verify` job runs:
 
 ```bash
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-On macOS it reports **nine** distinct findings across two targets — the **lib**
-(7) and the **lib test** (2: `new` and `new_with_network_intent` at
-`src/lsp/m004.rs:106`, and `spec_with` at `src/managed_process.rs:2715`) —
-because the lib's failure stops the build before the **bin** is reached. A run
-**without** `-D warnings` reaches the bin and reports a **tenth**: `unused
-import: Seek` at `src/bin/codegg-sandbox-helper.rs:30`, whose only use is the
-`file.seek(…)` at line 594 inside a `#[cfg(target_os = "linux")]` function.
-Every one of the ten is code that no macOS path calls, so the hosted Linux
-runner — where the code *is* called — sees no finding at all.
+| Platform | Runs the gate? | Expectation | Authority |
+|----------|----------------|-------------|-----------|
+| Linux (hosted CI) | yes | green | authoritative for the Linux-only code the gate compiles |
+| macOS (local) | yes | green | authoritative for the macOS build; a failure here is a real finding, not a platform excuse |
 
-**So `scripts/verify.sh full` is red on macOS on `origin/main` today, for this
-reason and no other; `scripts/verify.sh quick` is green there.** The affected
-files are `origin/main`'s, byte-identical to the ones the CI/test-throughput
-line recorded, and the disposition is recorded in
-`plans/closure/ci-test-throughput-recovery/008-merge-and-absorption-status.md`
-§7. The local consequence worth stating is the one the line's own §2.9 repair
-showed: a dead-code finding in a **test target** is invisible to local macOS
-clippy, because the lib fails first, so the hosted Linux runner is the only
-authority for that class.
+**The macOS result is clean.** The gate was red on macOS for `origin/main`'s
+own reasons: ten findings, all of them code no macOS path calls — the lib
+(7), the lib test (2: `new` and `new_with_network_intent` at
+`src/lsp/m004.rs:106`, and `spec_with` at `src/managed_process.rs:2715`), and
+the bin test (1: `unused import: Seek` at
+`src/bin/codegg-sandbox-helper.rs:30`, whose only use is the `file.seek(…)`
+inside a `#[cfg(target_os = "linux")]` function). The lib's failure stopped
+the build before the bin was reached, so the tenth was invisible to a
+`-D warnings` run until the lib was fixed.
+
+Each was fixed by **narrowing the `cfg`**, never by a lint suppression:
+Linux-only production code is now gated `#[cfg(target_os = "linux")]` where
+its callers are Linux-only, and the two parameters that only the Linux path
+reads are cfg-split by name (the pattern `run_inner` already used for
+`helper_override`). The Linux build is unchanged — every finding was a
+site the Linux build compiles and the macOS build does not.
+
+The platform policy is therefore: **both platforms are gated, and the
+macOS result is expected to be green.** A macOS clippy failure is a real
+finding about the macOS build, not a known platform divergence. Adding a
+macOS CI lane is *not* in scope for this decision: the gate runs locally on
+macOS, the same command, with the same `-D warnings`, so the macOS result is
+enforced by whoever runs it locally. What a macOS lane would add is
+*hosted* evidence that the macOS result is green on a clean machine; that
+remains an open request, recorded rather than claimed.
+
+The consequence worth stating is the one the CI/test-throughput line's own
+§2.9 repair showed: a dead-code finding in a **test target** is invisible to
+local macOS clippy when the lib fails first, so the hosted Linux runner was
+the only authority for that class. Fixing the lib first is what surfaced the
+bin-target finding.
 
 ### Root integration-test families
 The root package's integration tests are **families**: a directory under

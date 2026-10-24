@@ -149,10 +149,6 @@ impl SubagentNameRegistry {
 }
 
 /// Draw a name that does not collide with anything in `active`.
-///
-/// The pool is walked in a randomly chosen order so that concurrent spawns do
-/// not march in lockstep through the same prefix. The selection itself is in
-/// [`draw_from`].
 fn draw(active: &HashMap<u64, String>) -> String {
     draw_from(active, random_index(SUBAGENT_NAMES.len()))
 }
@@ -374,8 +370,6 @@ mod tests {
         assert_eq!(lease.entry().map(|e| e.usefulness), Some(entry.usefulness));
     }
 
-    /// A suffixed lease resolves to the **same** entry as its base name.
-    ///
     /// The suffix is a disambiguator for concurrent leases, not a different
     /// agent: `Sally-2` must not acquire a second personality, and the numeric
     /// suffix must never appear in the descriptor.
@@ -409,10 +403,6 @@ mod tests {
     }
 
     /// Every curated entry's descriptor must fit the projection's named cap.
-    ///
-    /// Without this, someone could author a longer profile and the projection
-    /// would silently truncate it in production — a descriptor that reads as a
-    /// sentence ending mid-word on some machines and not others.
     #[test]
     fn no_curated_descriptor_exceeds_the_projection_cap() {
         use codegg_protocol::projection::limits::MAX_PROJECTION_DESCRIPTOR_BYTES;

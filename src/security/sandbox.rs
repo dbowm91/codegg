@@ -777,7 +777,12 @@ pub struct SandboxPathIdentity {
 }
 
 impl SandboxPathIdentity {
-    #[cfg(unix)]
+    /// Snapshot the device/inode identity of a sandbox path.
+    ///
+    /// Only the Linux protected-mount view reads these identities back, so
+    /// the snapshot is compiled on Linux alone: the macOS build carries no
+    /// dead method, and the `MetadataExt` import stays behind the same gate.
+    #[cfg(target_os = "linux")]
     fn capture(path: &Path) -> Result<Self, ToolError> {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(path).map_err(|error| {
@@ -788,14 +793,6 @@ impl SandboxPathIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
         })
-    }
-
-    #[cfg(not(unix))]
-    fn capture(path: &Path) -> Result<Self, ToolError> {
-        let _ = path;
-        Err(ToolError::Permission(
-            "path identity snapshots are unavailable on this platform".into(),
-        ))
     }
 }
 

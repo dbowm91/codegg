@@ -108,11 +108,6 @@ impl App {
                 self.close_dialog();
             }
             // ── Project chat window intents ──────────────────────────
-            //
-            // The dialog emits these; every one routes into the existing
-            // `commands/chat.rs` seam so the daemon round-trip, the
-            // authorization decision, and the stale-completion guards
-            // stay in one place. Nothing here writes chat state directly.
             TuiMsg::ChatSend { body, reply_to } => {
                 if let Some(project_id) = self.chat_panel_project.clone() {
                     crate::tui::commands::chat::start_chat_send(self, project_id, body, reply_to);
@@ -479,10 +474,6 @@ impl App {
                 }
             }
             // M006: launch a session into an isolated checkout.
-            //
-            // The dialog stays open: the launch runs in the background
-            // and reports itself when it lands, and closing the dialog
-            // would cancel the very task that reports it.
             TuiMsg::LaunchSession {
                 parent_session_id,
                 worktree_id,

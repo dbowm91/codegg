@@ -93,13 +93,6 @@ pub struct HelpDialog {
     theme: Arc<Theme>,
     scroll: usize,
     /// Whether the filter currently has the keyboard.
-    ///
-    /// **Insert is the default**, so `/help` opens ready to type: the box is
-    /// opened to look something up, and a mode switch before every query
-    /// would tax the common case. Normal exists for the gestures that need a
-    /// non-typable key — above all the directional that docks this box into
-    /// the side panel — because in Insert mode `Shift+L` is the letter `L`
-    /// and has to stay typeable so it can be searched for.
     mode: InputMode,
     /// How this box was opened.
     ///

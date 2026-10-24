@@ -864,7 +864,7 @@ impl JobNotificationService {
             ));
         }
         let kind = job.kind.as_str().to_string();
-        let status = terminal_status_str(&job.state).to_string();
+        let status = job_status_projection(&job.state).to_string();
         let bounded_summary = bound_summary(summary, self.policy.max_summary_chars);
         let payload = format!("{}|{}|{}|{}", job_id_str, status, bounded_summary, kind);
         let payload_digest = format!("sha256:{:x}", Sha256::digest(payload.as_bytes()));
@@ -999,7 +999,7 @@ impl JobNotificationService {
                 continue;
             }
             let kind = t.kind.clone();
-            let status = terminal_status_str(&t.state).to_string();
+            let status = job_status_projection(&t.state).to_string();
             let bounded_summary = bound_summary(&t.summary, self.policy.max_summary_chars);
             let payload = format!("{}|{}|{}|{}", t.job_id, status, bounded_summary, kind);
             let payload_digest = format!("sha256:{:x}", Sha256::digest(payload.as_bytes()));
@@ -1043,13 +1043,8 @@ impl JobNotificationService {
         use codegg_core::jobs::store::JobStoreQuery;
         let records = store
             .list_job_records(JobStoreQuery {
-                states: vec![
-                    JobState::Completed,
-                    JobState::Failed,
-                    JobState::Cancelled,
-                    JobState::TimedOut,
-                    JobState::Expired,
-                ],
+                // The domain's own terminal states, not a hand-written list.
+                states: JobState::terminal_states(),
                 kinds: vec![],
                 workspace_id: None,
                 session_id: None,
@@ -1728,21 +1723,31 @@ impl Default for JobNotificationService {
     }
 }
 
-/// Truly final job states produce terminal notices. `Interrupted` means an
-/// eligible attempt may still be requeued and must never be announced as
-/// final. Running/progress are never terminal.
+/// Whether the job is finished, and therefore whether it produces a terminal
+/// notice.
+///
+/// The domain's terminality is the authority: this is
+/// [`codegg_core::jobs::JobState::is_terminal`] and nothing else.
+/// `Interrupted` is not terminal, because an eligible attempt may still be
+/// requeued and must never be announced as final. Running/progress are never
+/// terminal.
 pub fn is_final_job_state(state: &JobState) -> bool {
-    matches!(
-        state,
-        JobState::Completed
-            | JobState::Failed
-            | JobState::Cancelled
-            | JobState::TimedOut
-            | JobState::Expired
-    )
+    state.is_terminal()
 }
 
-pub fn terminal_status_str(state: &JobState) -> &'static str {
+/// The status string for one job state.
+///
+/// This is a **status projection**, not a terminality predicate: it is
+/// defined for every state, terminal or not, and each state gets its own
+/// value. The four states in which a job has not started yet — `Scheduled`,
+/// `Queued`, `Running` and `Blocked` — are distinguishable, so a caller
+/// asking "why has my job not started?" is told which of them it is in
+/// instead of being told "running" for all four.
+///
+/// The terminal values are the ones a terminal notice carries, and they are
+/// unchanged: a notice is only ever created for a state the domain calls
+/// terminal.
+pub fn job_status_projection(state: &JobState) -> &'static str {
     match state {
         JobState::Completed => "completed",
         JobState::Failed => "failed",
@@ -1750,7 +1755,10 @@ pub fn terminal_status_str(state: &JobState) -> &'static str {
         JobState::TimedOut => "timed_out",
         JobState::Expired => "expired",
         JobState::Interrupted => "interrupted",
-        JobState::Scheduled | JobState::Queued | JobState::Running | JobState::Blocked => "running",
+        JobState::Scheduled => "scheduled",
+        JobState::Queued => "queued",
+        JobState::Running => "running",
+        JobState::Blocked => "blocked",
     }
 }
 

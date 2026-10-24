@@ -31,11 +31,17 @@ pub mod connect_dialog_input;
 #[path = "connect_tui_restoration.inc"]
 pub mod connect_tui_restoration;
 
+#[path = "dialog_dispatch_coverage.inc"]
+pub mod dialog_dispatch_coverage;
+
 #[path = "file_tree_trajectory.inc"]
 pub mod file_tree_trajectory;
 
 #[path = "modifier_chords.inc"]
 pub mod modifier_chords;
+
+#[path = "nested_runtime_command_dispatch.inc"]
+pub mod nested_runtime_command_dispatch;
 
 #[path = "presence_m002_collaborators.inc"]
 pub mod presence_m002_collaborators;
@@ -135,6 +141,9 @@ pub mod tui_project_routing;
 
 #[path = "tui_project_tabs.inc"]
 pub mod tui_project_tabs;
+
+#[path = "tui_render_cost.inc"]
+pub mod tui_render_cost;
 
 #[path = "tui_render.inc"]
 pub mod tui_render;

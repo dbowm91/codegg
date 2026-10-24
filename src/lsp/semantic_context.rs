@@ -484,10 +484,6 @@ impl SemanticContextCollector {
     ///   `LspOperationalState::context_note()` — which returns
     ///   `Some` for the notable states and `None` for `Ready`
     ///   (the silent default).
-    ///
-    /// Returns `Ok(None)` if no key exists for the file (the
-    /// service will discover one on demand and no operational
-    /// state has been recorded yet).
     async fn operational_state_note(&self, file: &Path) -> Result<Option<String>, String> {
         let key_result = self.service.get_or_create_client(file).await;
         let key = match key_result {

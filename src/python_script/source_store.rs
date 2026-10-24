@@ -4,8 +4,6 @@
 //! into this store. The job payload carries the SHA-256 digest and
 //! optional inline source (below a documented threshold), while the
 //! store retains the actual bytes for restart-recovery.
-//!
-//! The store is workspace-local: `<workspace>/.codegg/python_sources/`.
 
 use std::path::{Path, PathBuf};
 

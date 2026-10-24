@@ -154,6 +154,42 @@ This ensures existing tools work without modification.
    or grant strings. See `architecture/audit.md` "Trusted execution
    audit seam".
 
+## The broker boundary guard
+
+`scripts/check_tool_broker_boundary.py` is the static guard for this
+boundary, and it runs in both `scripts/verify.sh quick` and the CI guard
+step. The guard distinguishes two call shapes rather than matching method
+names everywhere:
+
+- a **registry dispatch** (`ToolRegistry::execute_capture`) is a boundary
+  crossing in any production file outside the registry's own module;
+- a **tool-instance dispatch** (`Tool::execute` / `Tool::execute_structured`)
+  is intra-tool delegation inside `src/tool/` — one tool calling itself, or
+  a wrapper delegating to the inner tool it owns — and a boundary crossing
+  everywhere else.
+
+**Recorded exception.** One production caller reaches the registry outside
+the broker, and it has to: `src/permission/reviewer.rs`, the M006 Automatic
+approval reviewer. The reviewer adjudicates an approval request and must
+investigate it *without* re-entering the approval path; `ToolBroker::execute`
+requires a verified authority grant, which is the product of the very
+`ApprovalRouter` the reviewer is servicing, so routing the reviewer through
+the broker would make the reviewer approve its own investigation. The
+isolation guard `scripts/check_approval_reviewer.py` forbids the reviewer
+module from naming `ApprovalRouter` at all, so the two contracts agree.
+
+The exception is scoped to one call in one function of one file and is
+recorded **in the guard**, with its owner and reason, so it is visible where
+the rule lives and cannot widen without someone editing the guard on
+purpose. The reviewer's authority ceiling is unchanged by the exception: the
+same read-only effect class, the same native-only backend policy, the same
+15-second timeout, and the same output truncation. See
+`architecture/approval_reviewer.md` and the milestone closure record
+`plans/closure/repository-audit-corrective/005-status.md`.
+
+The guard's `--self-test` injects a violating call and shows it is
+rejected, and shows a compliant tree accepted.
+
 ## Testing
 
 ```bash

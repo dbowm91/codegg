@@ -1,7 +1,4 @@
 //! UI state module.
-//!
-//! Contains [`UiState`] which manages UI-specific state that doesn't belong
-//! to other state domains (session, prompt, messages, dialogs, agent).
 
 use std::collections::HashMap;
 use std::sync::Arc;

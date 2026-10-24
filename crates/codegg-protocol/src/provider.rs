@@ -1054,7 +1054,6 @@ mod tests {
             .any(|option| matches!(option, ReasoningMode::Budget(_))));
     }
 
-    /// An established capability offers the model's own labels, in the
     /// capability's order.
     #[test]
     fn established_capability_offers_the_capabilitys_labels_in_its_order() {

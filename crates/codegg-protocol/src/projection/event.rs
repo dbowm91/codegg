@@ -1,11 +1,5 @@
 //! Projection event surface.
 //!
-//! A projection event is a typed mutation the reducer can apply on
-//! top of an existing [`crate::projection::SessionProjectionSnapshot`].
-//! Events carry a [`ProjectionEnvelope`] that mirrors the existing
-//! [`crate::core::EventEnvelope`] shape: monotonic `event_seq`,
-//! timestamp, optional session id, and a [`ProjectionStreamScope`].
-//!
 //! Events that arrive with a session id other than the snapshot's
 //! primary session id are ignored unless the snapshot has a wildcard
 //! multi-session [`ProjectionStreamScope::Project`] scope. Out-of-order

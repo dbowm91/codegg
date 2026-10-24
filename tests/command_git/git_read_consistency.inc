@@ -19,7 +19,7 @@
 //!   producer/consumer mismatch that must be refused *before* any mutation, and
 //!   the provenance of a failure.
 //!
-//! The fixture follows `tests/git_index_publication.rs`: a `tempfile::tempdir()`
+//! The fixture follows `tests/command_git/git_index_publication.inc`: a `tempfile::tempdir()`
 //! root, a real `git` binary resolved once, and `GIT_CONFIG_NOSYSTEM` /
 //! `GIT_CONFIG_GLOBAL` pinned so the host's own Git configuration cannot
 //! influence a fixture.

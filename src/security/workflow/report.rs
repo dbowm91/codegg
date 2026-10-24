@@ -1919,7 +1919,6 @@ mod tests {
     use egglsp::lsp_types::DiagnosticSeverity;
     use egglsp::semantic_context::SemanticSymbolSummary;
 
-    /// Fixture executor for `HunkSourceContextExecutor` that returns
     /// pre-configured responses keyed by file path.
     struct FixtureHunkSourceContextExecutor {
         responses: Mutex<HashMap<String, Result<HunkSourceNavigationResponse, String>>>,

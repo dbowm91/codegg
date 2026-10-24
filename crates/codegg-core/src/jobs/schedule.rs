@@ -395,11 +395,6 @@ pub struct ClaimedOccurrence {
 /// store does not own the executor; this callback lets the daemon
 /// translate a `JobTemplate` into a `JobId` exactly once per
 /// occurrence.
-///
-/// The whole [`ScheduleRecord`] is passed, not just the template: the
-/// materialized job belongs to the schedule's workspace and session,
-/// and a materializer that had to look those up would need the store it
-/// is being called from.
 #[async_trait]
 // Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
 // (the desugared future is already must_use). Suppressed at the macro site;

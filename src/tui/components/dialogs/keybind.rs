@@ -296,13 +296,12 @@ impl KeybindDialog {
 
     /// One listing routine for both render paths.
     ///
-    /// The three per-mode footers below used to be unconditional. A docked
-    /// column never saw the key they named: `Esc` — the only verb either the
-    /// Export or the Import footer offered — is the mode switch, so in a
-    /// column it means something else, and those two footers
-    /// spent a row in a column too narrow to wrap them onto a panel that
-    /// taught a dead key. They are now `Chrome::Owned`, where they are still
-    /// the way a modal tells a human what Esc does.
+    /// A docked column never saw the key they named: `Esc` — the only verb
+    /// either the Export or the Import footer offered — is the mode switch,
+    /// so in a column it means something else, and those two footers spent a
+    /// row in a column too narrow to wrap them onto a panel that taught a
+    /// dead key. They are now `Chrome::Owned`, where they are still the way a
+    /// modal tells a human what Esc does.
     fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
         let mut lines: Vec<Line> = Vec::new();
 

@@ -1263,11 +1263,6 @@ impl GitExecutionService {
 
     /// Run a git command and capture stdout/stderr as raw strings, together
     /// with the consistency class the read was obtained under.
-    ///
-    /// The class comes from the command itself: `egggit` prepares the
-    /// private object view before the child is spawned and reports the class
-    /// of the bytes that view serves, so the class describes this read rather
-    /// than the caller's guess about it.
     async fn run_git_raw(
         &self,
         argv: &[String],
@@ -1420,9 +1415,6 @@ fn parse_log_output(stdout: &str) -> Vec<CommitInfoPayload> {
 }
 
 /// Parse unified diff output into a structured [`DiffResultPayload`].
-///
-/// Handles `diff --git` headers, rename/copy detection, binary files,
-/// `@@` hunk headers, and +/- line counting.
 fn parse_diff_output(stdout: &str) -> Result<DiffResultPayload, DiffParseError> {
     let mut files: Vec<DiffFilePayload> = Vec::new();
     let mut total_insertions: usize = 0;

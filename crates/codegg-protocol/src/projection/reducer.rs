@@ -2087,12 +2087,6 @@ mod tests {
     }
 
     /// C004: the reducer must not re-draw a subagent's name.
-    ///
-    /// The name is chosen once at spawn and travels in the event. If the
-    /// reducer invented one, replay of a durable event log would produce a
-    /// different name than the live view showed, and the two would disagree
-    /// about what a given subagent was called — which is precisely the bug the
-    /// field was moved into the event to prevent.
     #[test]
     fn a_subagent_node_keeps_the_name_it_arrived_with() {
         use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
@@ -2188,9 +2182,6 @@ mod tests {
     ///   and then immediately `SubagentFailed`, after `active_turn` is `None`;
     /// - `specialized_runtime.rs` wraps `send_and_wait` in `MAX_CHILD_TIMEOUT`,
     ///   so expiry drops the awaiting future while the worker keeps running.
-    ///
-    /// Session-owned identity lets this lifecycle survive its parent turn;
-    /// this test pins the reducer behavior when the event arrives late.
     #[test]
     fn a_subagent_started_without_an_active_turn_is_session_owned() {
         use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};

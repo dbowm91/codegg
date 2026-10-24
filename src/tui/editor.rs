@@ -4,19 +4,7 @@
 //! viewport, buffer mode, and a bounded undo/redo history. It holds **no
 //! document text**.
 //!
-//! Every offset recorded here is a position into the replica owned by
-//! [`DocumentController`]. Text is read on demand through
-//! `DocumentController::try_snapshot()` and dropped at the end of the
-//! call that needed it; nothing in this module, in
-//! [`TuiDocumentPresentation`](super::document_session::TuiDocumentPresentation),
-//! or in [`EditorState`](super::app::state::EditorState) may store it.
-//!
-//! `scripts/check_tui_editor_text_authority.py` enforces that statically.
-//!
 //! ## One keyboard axis
-//!
-//! Which region of the editor route owns keyboard input is **not** a question
-//! this module answers, and that is the fix.
 //!
 //! This used to be a second axis beside [`EditorMode`], and the two could
 //! disagree: opening a file defaulted to `Composer`, which made
@@ -24,12 +12,6 @@
 //! swallowed every printable character. The file rendered and no key reached
 //! it, which read as "the editor does not work" rather than as two
 //! independent toggles.
-//!
-//! One axis now answers it, and it is the one every other surface already
-//! shows as `NOR`/`INS`: [`crate::tui::input::InputMode`]. Insert puts the
-//! keyboard in the document; Normal leaves the Helix verbs the buffer and
-//! hands everything else to the bottom input box — the same contract
-//! `/terminal` already runs on. See `commands::editor::handle_editor_key`.
 //!
 //! ## Hard wrap
 //!
@@ -125,10 +107,6 @@ pub enum EditorPrefix {
     /// Helix `T` — waiting for the character to find.
     FindTillPrevious,
     /// Helix `r` — waiting for the character to replace with.
-    ///
-    /// The second capture grammar, and it is here for exactly the reason the
-    /// four find prefixes are: `r` has no single-key spelling, and the key it
-    /// takes next is **data**. See [`Self::is_capture`] and [`Self::leaves`].
     ReplaceChar,
     /// Helix `m` — the match-mode prefix. Leaves: [`MATCH_LEAVES`].
     ///
@@ -143,11 +121,6 @@ pub enum EditorPrefix {
     /// A **capture**: the next key is the argument as *data*, not a command.
     /// The payload rides in the variant, so the presentation still has
     /// exactly one prefix field and the prefix-state guard stays green.
-    ///
-    /// [`MatchArg::SurroundReplaceTo`] is the one variant that carries a
-    /// character, and it is there because `m r` takes **two**: the first
-    /// character is held while the second is waited for, and a single
-    /// `EditorPrefix` value has to be able to say which half is pending.
     MatchArg(MatchArg),
 }
 
@@ -164,9 +137,6 @@ pub enum MatchArg {
     /// `m d` — remove the captured character's pair around the selection.
     SurroundDelete,
     /// `m r` — waiting for the **first** character of the replacement pair.
-    ///
-    /// On capture it arms [`Self::SurroundReplaceTo`], which takes the
-    /// second.
     SurroundReplaceFrom,
     /// `m r` — the first character is captured; waiting for the second.
     SurroundReplaceTo(char),
@@ -451,10 +421,6 @@ pub enum PrefixAction {
     /// A fifth arm rather than a bool on [`Self::Motion`], because the
     /// difference is a whole second level: the motion arm promises to move
     /// the cursor, and arming a capture moves nothing.
-    ///
-    /// The payload is a `Copy` enum, so this arm does **not** cost
-    /// [`PrefixAction`] its `Copy` — which is what keeps the leaf tables
-    /// `const`, and every future leaf payload const-constructible.
     Capture(MatchArg),
 }
 
@@ -1572,9 +1538,6 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
     // hands the left half to the registry, and "50" is not in it. So the
     // number is recognised as a number first, and the registry answer is
     // reached only for the spellings that are names.
-    //
-    // This is Helix's own spelling — `:123` and `:goto 123` are the same
-    // intent — and the bare one is the one a reader reaches for.
     if let Ok(line_number) = trimmed.parse::<usize>() {
         return Some((EditorCommandName::GotoLine, Some(line_number.to_string())));
     }
@@ -1624,9 +1587,6 @@ pub fn complete_editor_command(query: &str) -> Vec<EditorCommandMatch> {
     // fuzzy matcher would say so in the wrong words: "5" is a subsequence of
     // "split-regex" and of "complete", so `:5` would offer those two ahead of
     // the line jump the reader asked for.
-    //
-    // So the numeric path short-circuits the matcher entirely. There is one
-    // answer to "which command is `:50`?", and it is the line jump.
     if !query.is_empty() && query.chars().all(|ch| ch.is_ascii_digit()) {
         return vec![EditorCommandMatch {
             command: EditorCommandName::GotoLine,
@@ -1703,11 +1663,6 @@ pub enum EditorMode {
     Normal,
     Insert,
     /// Helix select mode — `v` arms it, `Esc` leaves it.
-    ///
-    /// While it is held, a movement grows the selection. Outside it, a
-    /// movement drops the selection: a selection that outlives the movement
-    /// that made it reads as "something is still selected" long after the
-    /// reader thought it was gone.
     Select,
 }
 
@@ -1802,9 +1757,6 @@ pub struct InsertSession {
 
 /// The word a word motion landed on, and therefore the word it selects.
 ///
-/// `None` for every other motion, which is what makes the difference between
-/// "this motion selects" and "this motion moves".
-///
 /// Only `e` and `b` select. `w` is a *positioning* motion — Helix's "move next
 /// word start" — and a reader who pressed it wanted to be somewhere, not to
 /// have a word highlighted. The two word motions that jump to a word's
@@ -1824,12 +1776,6 @@ fn selected_word_bounds(
 }
 
 /// Apply the selection consequences of a deliberate cursor movement.
-///
-/// One sentence is the whole rule: **outside select mode a movement drops the
-/// selection, and inside it the movement grows it.** A selection that
-/// outlives the movement that made it reads as "something is still selected"
-/// long after the reader thought it was gone — so `x` on a line, then `j`,
-/// leaves nothing highlighted.
 ///
 /// The word motions are the exception that creates rather than destroys: `e`
 /// and `b` land on a word and select it, which is what makes a held `e`
@@ -1948,10 +1894,6 @@ pub enum EditorCommand {
     /// where it is.
     ViewScroll(isize),
     /// Helix `gt` — the cursor to the **top** of the screen.
-    ///
-    /// The other way round from [`Self::ViewAlign`]: the screen moves to the
-    /// cursor there, and here the cursor moves to the screen. It needs the
-    /// real viewport, which the renderer measures and publishes.
     ScreenTop,
     /// Helix `gc` — the cursor to the **middle** of the screen.
     ScreenCenter,
@@ -2723,19 +2665,12 @@ pub fn editor_point(snapshot: &DocumentSnapshot, byte: usize) -> EditorPoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
     /// `w` — the word under the cursor.
-    ///
-    /// The byte classification is [`is_word_byte`]'s, so a CJK run is one
-    /// word and the object agrees with the `w` motion the reader just used
-    /// to get there.
     Word,
     /// `W` — the whitespace-delimited run under the cursor.
     LongWord,
     /// `p` — the paragraph under the cursor.
     Paragraph,
     /// A **delimiter pair**, named by either of its delimiters.
-    ///
-    /// The pair is the one in the delimiter table — see the `editor_match`
-    /// module — so `(` and `)` name the same pair.
     Pair(char),
     /// `m` — the **innermost** pair enclosing the cursor.
     ClosestPair,
@@ -2826,24 +2761,12 @@ pub enum HelixVerb {
     /// `Alt-K` — remove the members whose text matches a regex.
     RemoveSelections { pattern: String },
     /// `m a` / `m i` — select **around** or **inside** a text object.
-    ///
-    /// A selection-shaping verb: it sets the selection set and edits no
-    /// byte, so it goes through the plain verb path and pushes no undo
-    /// entry.
     SelectObject { kind: ObjectKind, around: bool },
     /// `m s` — surround the held selection with a character.
-    ///
-    /// The character is the delimiter to add *as a pair*: `(` adds `(` and
-    /// `)`, and a character that is both an opening and a closing delimiter
-    /// (a quote) adds itself twice.
     SurroundAdd { ch: char },
     /// `m d` — remove a character's pair around the held selection.
     SurroundDelete { ch: char },
     /// `m r` — replace a character's pair around the held selection.
-    ///
-    /// The **outermost** enclosing pair of `from` is replaced, so the
-    /// replaced text keeps its inner pairs intact: `(a(b))` with `m r ([`
-    /// becomes `[a(b)]`.
     SurroundReplace { from: char, to: char },
 }
 
@@ -3083,12 +3006,6 @@ pub fn apply_helix_verb(
         // A **set**, because Helix's `d` deletes every selection at once, and
         // merging happens in `selection_ranges` rather than here so the
         // overlap rule lives in one place.
-        //
-        // The selection is **left in place** for the caller to consume. That
-        // is what lets the undo entry record the set the reader actually had:
-        // clearing here would mean `u` after a multi-cursor delete restored the
-        // text and dropped the cursors on the floor. The caller owns clearing
-        // because the caller is the layer that knows whether an edit landed.
         HelixVerb::DeleteSelection => {
             let ranges = selection_ranges(presentation, snapshot);
             return if ranges.is_empty() {
@@ -3161,14 +3078,6 @@ pub fn apply_helix_verb(
             match_record = Some(probe.match_note);
         }
         // ── Set verbs ────────────────────────────────────────────────────
-        //
-        // All of them are answered against `state`, so each runs through the
-        // same restore/write-back pair this function already does and none of
-        // them can leave the presentation holding a set the rules would not
-        // have produced. The mutating three return before the write-back: an
-        // edit invalidates every stored offset, so writing the set back and
-        // then replacing the text would leave members pointing at a document
-        // that no longer has those bytes. `submit_edit` clears them instead.
         HelixVerb::CollapseSelection => {
             if !state.collapse_to_primary() {
                 return SetVerbOutcome::NothingToDo("nothing selected".to_string()).into();
@@ -3309,12 +3218,6 @@ pub fn apply_helix_verb(
             };
         }
         // ── The `m` grammar ──────────────────────────────────────────────
-        //
-        // A text object is a **selection**, so it goes through the plain verb
-        // path: it sets the set and edits no byte, and it pushes no undo
-        // entry. The three surround verbs are the opposite — they edit, so
-        // they return their transaction to the caller and the caller submits
-        // it through the shared funnel.
         HelixVerb::SelectObject { kind, around } => {
             let cursor = presentation.cursor_byte;
             let range = match resolve_object(snapshot, kind, around, cursor) {
@@ -3450,11 +3353,6 @@ fn members_are_adjacent(
 const NOMINAL_HELIX_PAGES: usize = 20;
 
 /// The height a page motion should use.
-///
-/// The **measured** pane height when there is one, and the nominal fallback
-/// otherwise. A half page in a twelve-row pane is six rows, and the ten a
-/// fixed guess would give is most of the pane — which is why `Ctrl+d` used to
-/// overshoot a short editor by half a screen.
 fn motion_height(presentation: &TuiDocumentPresentation) -> usize {
     if presentation.visible_lines > 0 {
         presentation.visible_lines
@@ -3520,8 +3418,6 @@ pub enum HelixVerbOutcome {
     /// longer exists — so a verb that *means* to leave a selection behind
     /// has to say which one, and the caller has to apply it after the
     /// submission.
-    ///
-    /// The members are in **post-edit** coordinates.
     EditAndSelect(EditorEdit, Option<String>, Vec<Selection<EditorPoint>>),
     /// The verb had nothing to act on, carrying the reader-facing reason.
     ///
@@ -3627,10 +3523,6 @@ fn set_edit_outcome(edit: RangeSetEdit) -> HelixVerbOutcome {
 /// empties the file, which is what a reader who pressed `%` then `d` is asking
 /// for. Stopping short of the terminator would instead leave a bare `\n` and
 /// make the buffer *look* emptied while still having a byte in it.
-///
-/// A member that resolves to an empty range — an empty document — is still
-/// *held*. It is the honest description of "everything is selected", and
-/// `d` on it correctly does nothing.
 fn select_all(snapshot: &DocumentSnapshot, state: &mut SelectionState<EditorPoint>) {
     let first = line_start(snapshot, 0).unwrap_or(0);
     let last = buffer_content_end(snapshot);
@@ -3708,10 +3600,6 @@ fn copy_selection_on_line(
 }
 
 /// The point on `target_line` at the same byte column as `from_byte`.
-///
-/// Column, not byte: a shorter target line clamps to its content end rather
-/// than running off into the next one, which is what makes `C` onto a one
-/// character line land at that character.
 fn point_on_line_like(
     snapshot: &DocumentSnapshot,
     from_byte: usize,
@@ -3798,20 +3686,11 @@ fn rotate_selection_contents(
 
 /// `&` — pad every member out to the widest member's **display** width.
 ///
-/// Display width, not bytes, is the whole content of the verb: a tab is one
-/// column and a CJK ideograph is two, so byte-aligning them would produce
-/// output that lines up in the source and not on the screen.
-///
 /// Measured through [`bounded_display_width`] so a member wider than the
 /// 32 KiB line budget costs the budget and not the line — and when that
 /// happens the truncation is **disclosed** rather than papered over, because
 /// a member padded to a width that was measured over a prefix of it is
 /// genuinely misaligned and the reader deserves to know that.
-///
-/// Padding is appended after each member, so equal-width members end in the
-/// same column. That is the reading that makes the verb useful for the case it
-/// exists for — lining up a trailing `|`, a comment marker, or a comma
-/// across several edited lines.
 fn align_selections(
     snapshot: &DocumentSnapshot,
     state: &SelectionState<EditorPoint>,
@@ -3989,10 +3868,6 @@ fn bounded_regex_window(
 }
 
 /// Byte offset of the last character that ends at `end`.
-///
-/// A character selection's range runs to `char_end(head)`, so a member built
-/// to cover `start..end` has to name the **last character's** start as its
-/// head — pointing it at `end` would cover one character too many.
 fn last_char_start(snapshot: &DocumentSnapshot, end: usize) -> Option<usize> {
     let end = clamp_offset(snapshot, end);
     if end == 0 {
@@ -4465,9 +4340,6 @@ enum CaseMode {
 
 /// Apply one case verb to every target, in one transaction.
 ///
-/// Per character, not per-range: `~` on `abC` yields `Abc`, which is what
-/// "flip the case" means.
-///
 /// The mapping is Unicode-aware and **expands**: `ß` uppercases to `SS`, and
 /// `İ` lowercases to `i` plus a combining dot. `Lower` and `Upper` use the
 /// whole expansion, because they name the whole thing. `Flip` cannot use one
@@ -4476,11 +4348,6 @@ enum CaseMode {
 /// a case. Half-converting it would also mean `~ ~` never returns to the
 /// original text, so `~` would stop being a toggle. Reporting "nothing to
 /// flip" is the answer that stays true.
-///
-/// Either way the inserted text may be longer than the range it replaces,
-/// which is safe because `EditorEdit` carries an arbitrary transaction/inverse
-/// pair and the caller's cursor clamp runs against the **post**-edit
-/// snapshot.
 ///
 /// An identity mapping — text that is already lower case under `` ` ``, or
 /// already upper case under `Alt-` `, or unmappable under any of them — is
@@ -4752,15 +4619,6 @@ pub fn apply_motion(
 
 /// The desired column left behind by a motion, or `None` to forget the run.
 ///
-/// A **column** is a thing you can aim at vertically, so the motions that move
-/// along a column keep one. Everything else clears it. That is the vi-family
-/// rule and it is the safe direction: `gg`, `G`, `w`, `e`, `$`, `gs`, a find, a
-/// page, a search jump — none of those say "I am part of a vertical run", and a
-/// remembered column across them would make the next `j` aim at a column
-/// chosen for a line the cursor no longer sits on. A cleared column costs one
-/// `j` to re-establish; a wrongly remembered one silently sends the cursor to
-/// an unrelated place.
-///
 /// The asymmetry between horizontal and vertical is the whole feature. A
 /// horizontal move **re-seeds** the column from where it landed, because that
 /// is the column the reader has chosen. A vertical move **keeps** the column it
@@ -4912,11 +4770,6 @@ fn apply_motion_inner(
 ///   visibly do nothing.
 /// - Every **other** motion scrolls the minimum amount needed to reveal the
 ///   cursor, so `j` does not reframe the document under the reader.
-///
-/// The widget still resolves the exact window at render time; this keeps the
-/// motion arithmetic independent of render cadence, which is what made
-/// paging behave differently depending on whether a frame happened to land
-/// between two presses.
 fn viewport_after_motion(
     presentation: &TuiDocumentPresentation,
     snapshot: &DocumentSnapshot,
@@ -5076,10 +4929,6 @@ pub fn move_cursor_to(
 /// Resolve an editing command into a local transaction plus the cursor and
 /// mode the editor should adopt if the controller accepts it.
 ///
-/// Pure: reads the snapshot, mutates nothing. Returns `None` when the
-/// command is a no-op at the current position, or when the request needs a
-/// pending prefix the caller has not supplied.
-///
 /// **Scope: document-only verbs.** A command whose entire input is the
 /// snapshot plus the cursor belongs here. `r`, `R`, `~`, `p`, and `P` do
 /// not: they take their target from the held *selection* and their payload
@@ -5093,10 +4942,6 @@ pub fn move_cursor_to(
 /// `EditorEdit`, and differs only in clearing the selection it consumed.
 /// The newline `o` opens below `line` with, cursor placed on it in Insert.
 ///
-/// Split the existing line terminator: the new line inherits it and the
-/// current line gets a fresh one. With no terminator to split (last line of
-/// the buffer), append a full blank line.
-///
 /// The cursor goes to the **start of the opened line**, and the two cases
 /// reach it by different arithmetic, because the opened line is bounded by
 /// different newlines:
@@ -5107,9 +4952,6 @@ pub fn move_cursor_to(
 /// - With no terminator to split, the insertion is a full blank line — two
 ///   newlines — and the first ends the current line while the second ends the
 ///   opened one. The opened line therefore starts one byte further on.
-///
-/// Getting this wrong is invisible until the reader types: the cursor lands
-/// on the line *after* the opened one, so the text they type goes there.
 fn open_line_below(snapshot: &DocumentSnapshot, line: usize) -> Option<EditorEdit> {
     let end = line_content_end(snapshot, line).unwrap_or_default();
     let insert_at = next_char_boundary(snapshot, end).unwrap_or(end);
@@ -5170,11 +5012,6 @@ fn add_newline_below(
 }
 
 /// Helix `[Space`: a newline above the cursor's line, and the cursor stays.
-///
-/// `build_edit`'s cursor is an offset in the buffer **after** the edit, so
-/// staying put means `cursor + 1`: the newline lands at or before the cursor,
-/// pushing everything the cursor was pointing at one byte along. Every byte up
-/// to the insertion point is unchanged, so `+ 1` is the whole correction.
 fn add_newline_above(
     snapshot: &DocumentSnapshot,
     line: usize,
@@ -5598,11 +5435,6 @@ pub fn discard_insert_session(presentation: &mut TuiDocumentPresentation) {
 }
 
 /// Evict the oldest entries until the history is inside **one** cap.
-///
-/// **One cap, not one per stack.** The two-stack model enforced the depth
-/// and byte bounds twice — once per stack — so the worst case was twice the
-/// bound `architecture/tui.md` documents. A single history restores the
-/// documented reading and *tightens* the bound.
 fn trim_history(presentation: &mut TuiDocumentPresentation) {
     while presentation.history.len() > MAX_EDITOR_UNDO_DEPTH
         || presentation.history_bytes > MAX_EDITOR_UNDO_BYTES
@@ -5965,11 +5797,6 @@ pub fn offset_for_position(snapshot: &DocumentSnapshot, position: BytePosition) 
 
 /// A bounded slice of the document, centred on a byte offset.
 ///
-/// Every pair scan and every text-object resolver in this milestone needs the
-/// same thing: a window of the document it is allowed to look at, whose
-/// offsets are **window-relative** and have to be mapped back to document
-/// offsets before they are used for anything.
-///
 /// The window is **centred** on the cursor rather than starting at it,
 /// because a bracket's mate is as often behind the cursor as in front of it.
 /// The budget is [`MAX_SET_VERB_READ_BYTES`], so one keystroke costs no more
@@ -6023,11 +5850,6 @@ impl ScanWindow {
 ///
 /// `None` at the end of the document, and at any offset that is not a
 /// character boundary.
-///
-/// [`char_end`], not [`next_char_boundary`]: the latter is `None` for the
-/// **last** character of a document as well as for the end of one, and a
-/// bracket at the end of a line is a bracket. `char_end` is the helper that
-/// already draws that distinction.
 fn char_at(snapshot: &DocumentSnapshot, offset: usize) -> Option<char> {
     let offset = clamp_offset(snapshot, offset);
     let end = char_end(snapshot, offset);
@@ -6097,9 +5919,6 @@ fn bracket_mate(snapshot: &DocumentSnapshot, cursor: usize) -> BracketOutcome {
 
 /// The byte range one text object covers, or why it covers nothing.
 ///
-/// `around` selects the object **with** its boundary — Helix's `a` — and
-/// `inside` selects it **without** it — Helix's `i`.
-///
 /// The cursor is the only anchor: a text object is a thing *under* the
 /// cursor, and there is no selection-shaped variant of it.
 fn resolve_object(
@@ -6133,10 +5952,6 @@ fn resolve_object(
 }
 
 /// The word under the cursor.
-///
-/// The byte classification is [`is_word_byte`]'s, so a CJK run is one word
-/// and the object agrees with the `w` motion the reader just used to get
-/// there.
 ///
 /// The object's word is **word content only**, which is not the motion's
 /// word: the motion treats a punctuation run as a word in its own right
@@ -6197,11 +6012,6 @@ fn long_word_start_at(snapshot: &DocumentSnapshot, cursor: usize) -> usize {
 
 /// Extend `range` over the whitespace that follows it.
 ///
-/// Helix's "around word" is the word **plus the whitespace after it**: the
-/// difference between `a w` and `i w` is that trailing boundary, and a reader
-/// who selects a word to replace it usually wants the space that separated
-/// it from the next one to go with it.
-///
 /// The run stops at a line terminator: a paragraph break is not the word's
 /// trailing whitespace, and swallowing it would make `a w` select across a
 /// blank line.
@@ -6230,14 +6040,6 @@ fn extend_over_trailing_space(
 }
 
 /// The paragraph under the cursor.
-///
-/// A paragraph is a run of **content** lines; a blank line ends it. The
-/// "inside" form is the paragraph's own bytes, and the "around" form adds
-/// the blank run that follows it — Helix's `a p`, which takes the separator
-/// with the paragraph so that replacing one replaces the break too.
-///
-/// A cursor on a blank line has no paragraph under it, and says so rather
-/// than guessing which of the two neighbours was meant.
 fn paragraph_object(
     snapshot: &DocumentSnapshot,
     cursor: usize,
@@ -6275,10 +6077,6 @@ fn paragraph_object(
 }
 
 /// The pair named by `ch`, and the cursor's place in it.
-///
-/// `ch` names the **kind** of pair: `(` and `)` name the same one. A cursor
-/// sitting on one of the pair's delimiters names that pair; a cursor inside
-/// one names the innermost pair of that kind that encloses it.
 fn pair_object(
     snapshot: &DocumentSnapshot,
     cursor: usize,
@@ -6372,8 +6170,6 @@ fn closest_pair_object(
     Ok(range)
 }
 
-/// The one member that covers `range`.
-///
 /// A character selection's range runs to `char_end(head)`, so a member built
 /// to cover `start..end` must name the **last character's start** as its head
 /// — pointing `head` at `end` would cover one character too many.
@@ -6388,9 +6184,6 @@ fn member_for_range(
 }
 
 /// The member that covers the content, moved by `shift` in the post-edit text.
-///
-/// `range` is in **pre-edit** coordinates and the head is the content's last
-/// character, so the post-edit head is that character moved by `shift`.
 ///
 /// The shift is applied to a **pre-edit** offset on purpose. A post-edit
 /// offset past the old end of the document cannot be read from the pre-edit
@@ -6420,10 +6213,6 @@ fn member_shifted(
 
 /// The range a surround verb acts on: the held selection, or the character
 /// under the cursor when nothing is selected.
-///
-/// Helix's surround applies to the selection; with nothing selected it
-/// applies to the character under the cursor, which is the same gesture with
-/// the smallest possible target.
 ///
 /// The **primary** member only. A surround that rewrites several members at
 /// once is a different gesture, and Helix's is not offered here.
@@ -6456,10 +6245,6 @@ fn surround_delimiters(ch: char) -> (char, char) {
 }
 
 /// `m s` — surround the held selection with a character's pair.
-///
-/// The selection **grows** to cover the new delimiters: Helix's `m s`
-/// selects the surrounded text, so the reader can go on to delete or replace
-/// it as one thing.
 fn surround_add(
     snapshot: &DocumentSnapshot,
     state: &SelectionState<EditorPoint>,
@@ -6514,10 +6299,6 @@ fn surround_add(
 
 /// `m d` — remove a character's pair around the held selection, keeping the
 /// contents.
-///
-/// The **innermost** enclosing pair is the one removed: those are the
-/// delimiters immediately around the selected text, and removing them
-/// unwraps it in place. The contents stay selected.
 fn surround_delete(
     snapshot: &DocumentSnapshot,
     state: &SelectionState<EditorPoint>,
@@ -6579,10 +6360,6 @@ fn surround_delete(
 
 /// `m r` — replace a character's pair around the held selection with another
 /// character's pair.
-///
-/// The **outermost** enclosing pair of `from` is the one replaced, so the
-/// replaced text keeps its inner pairs intact: `(a(b))` with `m r ([` becomes
-/// `[a(b)]`, not `[a(b])`.
 fn surround_replace(
     snapshot: &DocumentSnapshot,
     state: &SelectionState<EditorPoint>,
@@ -8424,7 +8201,6 @@ mod tests {
         );
     }
 
-    /// A multi-byte target matches whole characters, never a byte of a
     /// neighbour — and the scan advances across multi-byte characters.
     ///
     /// The load-bearing case is the *interior* byte. The second byte of `é` is
@@ -8493,12 +8269,6 @@ mod tests {
     }
 
     /// A target past the bound is disclosed, not reported as absent.
-    ///
-    /// Both mean "the cursor did not move", and they call for opposite
-    /// answers from the reader — type something else, or reach for `/`. A
-    /// scan that stopped at the bound and said "not found" would be a search
-    /// that lies by omission, which is the `search_partial` defect one layer
-    /// down.
     #[test]
     fn a_find_beyond_the_scan_bound_is_disclosed_rather_than_called_absent() {
         // A target well past the window, and none within it at all.
@@ -8656,17 +8426,15 @@ mod tests {
     /// key, and merging them while picking one answer would have changed a
     /// gesture.
     ///
-    /// The leaf column is a **set** where it used to be a single `Option<char>`:
-    /// M005 gave goto mode seven leaves, and a one-glyph accessor would have
-    /// meant a special case per prefix. M013 grew four of those seven rows and
-    /// two bracket rows into LSP gestures, which is the point of this table: a
-    /// new leaf is an edit to a row here, not a new branch in the dispatcher.
-    /// Every other column is unchanged, and
-    /// the facts M002 asserted about `gg` and `space y` — `Goto` accepts `g`,
-    /// `Space` accepts `y`, and the four find prefixes accept no leaf at all —
-    /// are still asserted here, against the new shape. The four find prefixes
-    /// accept nothing on purpose: their next key is a target *character*, not a
-    /// leaf, so there is no glyph that could complete them.
+    /// M013 grew four of those seven rows and two bracket rows into LSP
+    /// gestures, which is the point of this table: a new leaf is an edit to a
+    /// row here, not a new branch in the dispatcher. Every other column is
+    /// unchanged, and the facts M002 asserted about `gg` and `space y` —
+    /// `Goto` accepts `g`, `Space` accepts `y`, and the four find prefixes
+    /// accept no leaf at all — are still asserted here, against the new
+    /// shape. The four find prefixes accept nothing on purpose: their next
+    /// key is a target *character*, not a leaf, so there is no glyph that
+    /// could complete them.
     #[test]
     fn each_prefix_declares_its_leaf_and_its_unmatched_key_policy() {
         // Named because the tuple is otherwise unreadable inline, and

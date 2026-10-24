@@ -277,15 +277,9 @@ mod tests {
             .any(|i| i.contains("outside allowed root")));
     }
 
-    // -----------------------------------------------------------------------
-    // Phase 9 hardening: root diagnosis edge cases
-    // (Workstream 3 of plans/lsp_phase_9_12_hardening_plan.md)
-    //
-    // Verifies nested-root preference (nearest marker wins), unknown
-    // language handling, and relative-path handling. None of these
-    // cases start any LSP server — `diagnose_root` is a pure,
-    // read-only function that only walks the file system.
-    // -----------------------------------------------------------------------
+    // Root-diagnosis edge cases: nested-root preference (nearest marker
+    // wins), unknown language handling, and relative-path handling.
+    // `diagnose_root` is pure and read-only — it never starts a server.
 
     #[test]
     fn test_diagnose_root_prefers_nearest_root_marker() {

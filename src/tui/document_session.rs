@@ -443,10 +443,6 @@ impl TuiDocumentPresentation {
     }
 
     // ── `/` search ──────────────────────────────────────────────────────────
-    //
-    // Mirrors the `:` command line's shape on purpose: both are modal input
-    // lines owned by the editor that appear in the status row, so a reader
-    // who learned where to look for `:` already knows where to look for `/`.
 
     /// Open the `/` search line, seeded with `seed`.
     ///

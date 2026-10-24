@@ -540,11 +540,6 @@ pub struct InteractiveTerminalView {
     /// events rather than one chord, so the prefix has to be remembered.
     pending_prefix: bool,
     /// Whether the box prints the full diagnostics dump above the output.
-    ///
-    /// Off by default. The dump is six lines of handle, workspace, attachment
-    /// id and sequence cursors, which is what a bug report needs but is the
-    /// first thing on screen for someone who just asked for a shell — and it
-    /// pushed the actual terminal rows off a small dialog. `D` restores it.
     diagnostics: bool,
     /// This attachment's cadence-read slot. Never shared with
     /// `dialog_state.terminal_request`.
@@ -725,10 +720,6 @@ impl TerminalScreen {
     }
 
     /// Cell text of one viewport row restricted to columns `[from, to)`.
-    ///
-    /// `Screen::rows` takes a *column* start and a width, and yields every
-    /// visible row — so the row is selected with `nth`, not by passing it as
-    /// the start.
     fn row_range_text(&self, row: u16, from: u16, to: u16) -> String {
         let (_, cols) = self.0.screen().size();
         let to = to.min(cols);
@@ -842,12 +833,6 @@ impl TerminalScreen {
     }
 
     /// Where the child process's own cursor is, in screen coordinates.
-    ///
-    /// This is the *program's* cursor — where the shell is accepting the next
-    /// character — as opposed to the reader's selection cursor. In insert
-    /// mode this is the cell that has to be highlighted: drawing the nav
-    /// cursor there instead showed a block at the bottom-left of the output
-    /// while the user typed at a prompt somewhere else entirely.
     fn program_cursor(&self) -> TerminalPoint {
         let (row, col) = self.0.screen().cursor_position();
         (row, col)
@@ -859,9 +844,6 @@ impl TerminalScreen {
     }
 
     /// Trimmed text of every visible row, in viewport order.
-    ///
-    /// The `d` overlay is keyed on row text, so it needs this snapshot to match
-    /// remembered redactions against what is actually on screen.
     fn viewport_row_text(&self) -> Vec<String> {
         (0..self.row_count())
             .map(|row| self.row_text(row))
@@ -870,12 +852,6 @@ impl TerminalScreen {
 
     /// Render the visible viewport as styled lines, honouring the current
     /// scrollback offset plus any active selection, scrub and cursor.
-    ///
-    /// `selection` carries its own head, so one `contains` test drives the
-    /// highlight whether the reader built the selection with `x` (where the
-    /// head is pinned and the cursor is free to wander) or `v` (where the head
-    /// tracks the cursor). `redactions` is the resolved `d` scrub, one entry
-    /// per viewport row.
     ///
     /// `cursor_visible` is the *blink* phase, and it changes the modifier only
     /// — never the caret's position. The cell stays painted while the caret is
@@ -2580,10 +2556,6 @@ mod tests {
     }
 
     /// Typing must not be affected by any prior escape.
-    ///
-    /// The old classifier cleared a latch on every printable key; the whole
-    /// point of removing it is that ordinary input no longer has to be checked
-    /// against a remembered flag at all.
     #[test]
     fn typing_between_escapes_is_unaffected() {
         let mut controller = live_attached();
@@ -3047,11 +3019,6 @@ mod tests {
     // ── Scrollback, viewport, and Helix selection ────────────────────
 
     /// A controller whose live screen holds `lines`, one per row.
-    ///
-    /// Lines are joined CRLF with **no trailing newline**, so the cursor comes to
-    /// rest on the last line and the visible rows are exactly `lines` in order —
-    /// row index `n` is `lines[n]`. Callers that want history pass more lines than
-    /// the screen has rows; the extra ones become retained scrollback.
     ///
     /// Tests below index rows against this rather than counting CRLFs, because a
     /// trailing newline would scroll the screen by one and silently shift every

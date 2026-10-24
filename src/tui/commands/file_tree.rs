@@ -726,10 +726,6 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
 }
 
 /// Handle one key while the panel's filter is being typed.
-///
-/// The filter is panel state, so it survives the mode change: `Esc` leaves
-/// insert mode and **keeps** the filter, and the rows stay filtered so the
-/// user can navigate them.
 fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
     match key.code {
@@ -1091,11 +1087,6 @@ mod tests {
     }
 
     /// The daemon's answer for the `src` scope: `tui` and its children.
-    ///
-    /// This is the scope the slide lands in, so it has to carry the target's
-    /// own children — the window is three levels deep and `src/tui/app` is
-    /// the third, so `src/tui/app/mod.rs` is the fourth and is exactly what
-    /// the slide exists to bring back into view.
     fn worked_example_src_scope() -> WorkspaceDirectoryListResultDto {
         WorkspaceDirectoryListResultDto {
             prefix: "src".to_string(),

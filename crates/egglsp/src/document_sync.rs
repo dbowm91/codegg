@@ -1,9 +1,4 @@
 //! Open document tracking for LSP file synchronization.
-//!
-//! Maintains authoritative state of currently open documents per client
-//! key. Used for document replay after server restart and for health
-//! snapshots. The registry reflects successful service-level
-//! open/update/save/close operations.
 
 use std::collections::HashMap;
 use std::sync::Arc;

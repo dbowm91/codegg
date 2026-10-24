@@ -25,11 +25,6 @@ pub struct TestTool {
     job_notifications: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     /// The session's workspace root. This is the default test `workdir`, and
     /// the base a relative `workdir` resolves against.
-    ///
-    /// Without it the tool fell back to `std::env::current_dir()`, which in a
-    /// daemon is the directory the daemon was launched from — so a session
-    /// rooted at one repository ran that repository's tests inside whatever
-    /// unrelated tree the user happened to start the daemon from.
     workspace_root: Option<PathBuf>,
 }
 
@@ -630,10 +625,6 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
 }
 
 /// Parse JSON input, resolving `workdir` against `workspace_root`.
-///
-/// An omitted `workdir` defaults to the workspace root, and a relative
-/// `workdir` resolves against it. Neither falls back to the process working
-/// directory, which in a daemon is unrelated to the session.
 fn parse_test_request_in(
     input: &serde_json::Value,
     workspace_root: Option<&std::path::Path>,
@@ -696,11 +687,6 @@ fn parse_test_request_in(
     // relative `workdir` resolves against that same root under the same
     // containment rule every file path obeys, because `Command::current_dir`
     // would otherwise have the OS resolve it against the daemon's cwd.
-    //
-    // Both branches go through the shared resolver so an omitted and an
-    // explicit root produce the *same* canonical spelling. Two spellings of
-    // one directory would let the job's derived `workspace_id` differ between
-    // two calls that mean the same thing.
     let workdir = match (input["workdir"].as_str(), workspace_root) {
         (Some(raw), Some(root)) => crate::tool::util::resolve_workdir(Path::new(raw), root)?,
         (Some(raw), None) => PathBuf::from(raw),
@@ -1092,12 +1078,11 @@ mod tests {
     /// An explicit absolute `workdir` is honored when it is inside the
     /// workspace.
     ///
-    /// This test previously accepted `/some/dir` — a path outside any
-    /// workspace — because the tool had no containment at all. It is now
-    /// refused, which is the intended change: `bash` already rejects a
-    /// `workdir` outside `allowed_paths`, and the job's `workspace_id` is
-    /// derived from this very directory, so an out-of-workspace test run would
-    /// register a workspace the session does not own.
+    /// It is now refused, which is the intended change: `bash` already
+    /// rejects a `workdir` outside `allowed_paths`, and the job's
+    /// `workspace_id` is derived from this very directory, so an
+    /// out-of-workspace test run would register a workspace the session does
+    /// not own.
     #[test]
     fn an_explicit_workdir_inside_the_workspace_is_honored() {
         let root = tempfile::tempdir().expect("workspace fixture");

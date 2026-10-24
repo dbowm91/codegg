@@ -282,9 +282,6 @@ impl DiffViewer {
 /// the cache — which is the defect. An inherent method takes the theme it is
 /// handed and renders byte-identically, so `ChangeReview` keeps its layout and
 /// the cache goes away.
-///
-/// It is **not** the same layout as [`DiffViewer::render`], which draws three
-/// bordered blocks. Both are live; collapsing them is a separate cleanup.
 impl DiffViewer {
     pub fn render_in(&self, area: Rect, buf: &mut ratatui::prelude::Buffer, theme: &Theme) {
         if area.height < 7 {

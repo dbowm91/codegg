@@ -13,10 +13,6 @@
 //!   must never be reported as contention: the user reads the code to decide
 //!   between "wait for the turn" and "check the connection".
 //!
-//! Classification happens once, at the single point where the daemon response
-//! or transport error is interpreted, and the resulting value travels to the
-//! completion arm as data. The completion arm no longer parses strings.
-//!
 //! ## Why an unknown code is a rejection, not "unexpected"
 //!
 //! [`classify`] is total: every possible result maps to exactly one variant.
@@ -59,9 +55,6 @@ pub enum TurnSubmitOutcome {
     /// The daemon accepted the submission (receipt or plain acknowledgement).
     Accepted,
     /// A turn is already active for this session; this submit was refused.
-    ///
-    /// The running turn is untouched. The submission is recoverable: the user
-    /// can resubmit once the active turn ends.
     Contended { code: String, message: String },
     /// The daemon refused for some reason other than an active turn: a bad
     /// agent index, an unresolvable provider, a controller-lease conflict, an
@@ -389,10 +382,6 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // Completion-arm behaviour.
-    //
-    // The classification tests above prove the mapping. These prove what the
-    // event loop does with it, which is where the state corruption lived.
-    // ---------------------------------------------------------------------
 
     use crate::tui::app::state::AppMode;
     use crate::tui::app::types::SessionStatus;

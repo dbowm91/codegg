@@ -1,7 +1,4 @@
 //! Agent management commands for the TUI.
-//!
-//! Handles `/agents` (list, show, diff, validate, reload) and
-//! `/agent <name>` (select active agent).
 
 use crate::agent::asset_context::{AssetContext, AssetContextBuilder, ProjectId};
 use crate::agent::registry::{AgentRegistry, AgentSourceKind};

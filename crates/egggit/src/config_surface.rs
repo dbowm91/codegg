@@ -1,50 +1,37 @@
 //! Bounded, read-only detection of a repository's hostile Git configuration.
 //!
-//! A Git *read* can execute code. `git status` consults the clean/smudge
-//! filter machinery, and a repository that declares
-//! `filter.<name>.process` selects a **long-running filter process** whenever
-//! an attribute in the worktree names that filter. The same is true for a
-//! user-level `core.attributesFile`, which can select a filter without the
-//! repository having to name it.
+//! A Git *read* can execute code: `git status` consults the clean/smudge
+//! filter machinery, and a repository that declares `filter.<name>.process`
+//! selects a **long-running filter process** whenever an attribute in the
+//! worktree names that filter.
 //!
 //! The trusted read route in [`crate::process`] neutralises a *list* of
 //! repository-controlled config surfaces by injecting `-c key=value` overrides
 //! that beat every config file, and by scrubbing `GIT_*` environment
-//! variables. That list is not general: an override beats the keys it names
-//! and nothing else. Two gaps follow, and this module exists to close them:
+//! variables. An override beats the keys it names and nothing else, so two
+//! gaps follow and this module closes them:
 //!
-//! 1. **The content of an included file is still parsed by Git.** A
+//! 1. **The content of an included file is still parsed by Git.** An
 //!    `include.path` or `includeIf.<condition>.path` directive names another
-//!    config file whose keys Git honours. A dangerous key hidden inside such a
-//!    file applies, and the override list does not name it.
+//!    config file whose keys Git honours, and the override list does not name
+//!    them.
 //! 2. **The override list is a property of the publisher's private gitdir,
-//!    not of a live read of the repository's own configuration.** The
-//!    mediation must be derived from the repository's own config files,
-//!    whatever they contain.
+//!    not of a live read of the repository's own configuration.**
 //!
 //! This module is a **detector**, not an enforcer: it reads the repository's
 //! configuration, follows the include graph, and reports which dangerous
-//! surfaces the repository declares. The caller decides what to do with the
-//! report.
+//! surfaces the repository declares.
 //!
 //! ## What this module guarantees
 //!
 //! * **It never executes anything.** The configuration is parsed here, in
-//!   Rust. It does not shell out to `git config` — that command would honour
-//!   includes and could consult helpers — and it never runs a filter, driver,
-//!   pager, editor, or helper of any kind.
+//!   Rust; it never runs a filter, driver, pager, editor, or helper.
 //! * **It never leaks a value.** The report carries *surface names*, not
-//!   values. A `credential.<url>.helper` value can contain a password and an
-//!   `url.<base>.insteadOf` base can contain a URL with credentials, so the
-//!   summary only ever names the key **template** (`credential.<url>.helper`)
-//!   and never the resolved subsection or the value.
+//!   values, so the summary only ever names the key **template**.
 //! * **It never panics on a hostile file.** A malformed configuration is
-//!   reported as [`HostileConfigSurface::InspectionTruncated`]: the file
-//!   could not be vouched for, so the inspection is incomplete.
+//!   reported as [`HostileConfigSurface::InspectionTruncated`].
 //! * **It is bounded.** See [`MAX_INCLUDE_DEPTH`], [`MAX_CONFIG_FILES`],
-//!   [`MAX_CONFIG_FILE_BYTES`] and [`MAX_TOTAL_CONFIG_BYTES`]. A bound that
-//!   is exceeded stops the walk and is reported; it never turns into an
-//!   unbounded read.
+//!   [`MAX_CONFIG_FILE_BYTES`] and [`MAX_TOTAL_CONFIG_BYTES`].
 //!
 //! ## What this module does not guarantee
 //!
@@ -53,8 +40,7 @@
 //!
 //! * **Time-of-check to time-of-use.** The repository's configuration can
 //!   change between the inspection and the Git invocation it was meant to
-//!   guard. A detector cannot close that window on its own; the caller has to
-//!   treat the report as advisory or re-check.
+//!   guard; treat the report as advisory or re-check.
 //! * **Includes outside the bounded root set.** An `include.path` that
 //!   resolves outside the bounded root set is reported as
 //!   [`HostileConfigSurface::OutOfBoundsInclude`]. Its content is still
@@ -65,6 +51,8 @@
 //! The report therefore distinguishes "the repository declares no dangerous
 //! surface" from "the repository's configuration could not be fully
 //! inspected". [`HostileConfigReport::is_clean`] is true only for the former.
+//!
+//! See `architecture/git.md` for the full contract.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -115,14 +103,6 @@ pub enum HostileConfigSurface {
     /// `filter.<name>.process`, `filter.<name>.clean` or
     /// `filter.<name>.smudge` — the filter commands Git runs to convert
     /// content to and from its object form.
-    ///
-    /// This is the surface that matters most for a *read*. `git status` and
-    /// `git diff` are on the trusted read route, and both compare the working
-    /// tree against the index *through the clean filter*, so a repository
-    /// that declares a filter command and ships an attribute that selects it
-    /// gets that command executed by an ordinary status read. The
-    /// `process` form is worse still: it is a long-running filter process
-    /// that Git starts and speaks a protocol to.
     FilterCommand,
     /// `core.attributesFile` — a user-level attributes file that can select
     /// a filter or a diff driver.
@@ -162,10 +142,6 @@ pub enum HostileConfigSurface {
     /// truncated.
     OutOfBoundsInclude,
     /// The config was not fully inspected because a bound was exceeded.
-    ///
-    /// A malformed configuration file also produces this surface: the file
-    /// could not be vouched for, so the inspection is incomplete. The
-    /// truncated flag of the report is set at the same time.
     InspectionTruncated,
 }
 
@@ -297,11 +273,6 @@ struct RepositoryLayout {
 
 impl RepositoryLayout {
     /// Locate the repository's own configuration files without running Git.
-    ///
-    /// The git directory is found from the `.git` entry of the root: a
-    /// directory for an ordinary repository, a `gitdir:` pointer file for a
-    /// linked worktree or a submodule. A bare repository is recognised by
-    /// its own `HEAD` and `objects`.
     fn discover(repository_root: &Path) -> Option<Self> {
         let root = fs::canonicalize(repository_root).ok()?;
         let dot_git = root.join(".git");
@@ -483,9 +454,6 @@ impl Inspector {
     }
 
     /// Resolve and follow one include directive.
-    ///
-    /// `including_file` is the file that names the include: Git resolves a
-    /// relative include against the directory of that file.
     fn follow_include(
         &mut self,
         include: &ParsedInclude,
@@ -840,7 +808,6 @@ fn ends_with_continuation(line: &str) -> bool {
     trailing % 2 == 1
 }
 
-/// Parse a `[section]`, `[section "subsection"]` or `[section.subsection]`
 /// header.
 fn parse_section_header(line: &str) -> Result<(String, Option<String>), ()> {
     let rest = &line[1..];
@@ -897,10 +864,6 @@ fn parse_key_value(line: &str) -> Result<(String, String), ()> {
     Ok((key.to_ascii_lowercase(), value))
 }
 
-/// Parse a configuration value.
-///
-/// A quoted value keeps its content verbatim; an unquoted value ends at the
-/// first `#` or `;`, which Git treats as the start of an inline comment.
 fn parse_value(text: &str) -> Result<String, ()> {
     let trimmed = text.trim_start();
     if let Some(tail) = trimmed.strip_prefix('"') {

@@ -1,5 +1,6 @@
 use crate::lsp::language::extension_to_language_id;
 use crate::session::message::ToolStatus;
+use crate::tui::render_cost;
 use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{parse_document, Arena, Options};
 use once_cell::sync::Lazy;
@@ -390,7 +391,28 @@ pub struct MessagesWidget {
     /// is actually available rather than a dead "waiting" label.
     pending_permission_tools: std::collections::BTreeSet<String>,
     pub undo_stack: VecDeque<UIMessage>,
-    pub streaming_tokens: String,
+    /// The response received so far, while it is streaming.
+    ///
+    /// Private because the tail's rendered rows are cached against it, and
+    /// the cache's key is "this text only ever grows". A public field could
+    /// be written without that being true, and the cache would then answer
+    /// with the rows of text that is no longer there.
+    streaming_tokens: String,
+    /// The epoch the streaming tail's cache belongs to.
+    ///
+    /// An epoch moves when the tail's text was **replaced** rather than
+    /// extended, when the width it is rendered at changed, and when the theme
+    /// changed. The tail's cached rows describe one text, one width and one
+    /// palette, and none of the three may be reused across an epoch.
+    streaming_epoch: u64,
+    /// The streaming tail's rendered Markdown, kept block by block.
+    streaming_tail: RefCell<StreamingTailCache>,
+    /// The rendered Markdown of each message part, keyed by message and part.
+    ///
+    /// A message's parts are appended and never rewritten, so the rows of a
+    /// part that is already there cannot have changed. The cache is dropped
+    /// whenever the transcript changes in a way that is not an append.
+    markdown_parts: RefCell<std::collections::BTreeMap<(usize, usize), CachedMarkdown>>,
     pub assistant_is_thinking: bool,
     /// Live "what the model is doing" line, or `None` when idle.
     pub activity: Option<ActivityIndicator>,
@@ -600,14 +622,71 @@ impl MessagesWidget {
                 Style::default().fg(self.theme.muted),
             )));
             let tail_width = self.width.saturating_sub(2);
-            rows.extend(render_markdown(
-                &self.streaming_tokens,
-                &self.theme,
-                self.theme.muted,
-                tail_width,
-            ));
+            rows.extend(self.render_streaming_tail(tail_width));
         }
         (rows, spans)
+    }
+
+    /// The streaming tail's rendered Markdown.
+    ///
+    /// The tail is the whole response received so far, and it grows a token
+    /// at a time. Parsing all of it on every token is quadratic in the
+    /// response's length, so the tail is parsed **incrementally**: the blocks
+    /// the new text cannot change keep the rows they were rendered to.
+    fn render_streaming_tail(&self, width: u16) -> Vec<Line<'static>> {
+        let mut cache = self.streaming_tail.borrow_mut();
+        cache.render(
+            &self.streaming_tokens,
+            self.streaming_epoch,
+            &self.theme,
+            self.theme.muted,
+            width,
+        )
+    }
+
+    /// The streaming tail's rendered rows.
+    ///
+    /// The tail as the renderer draws it: the rows of the response received
+    /// so far, through the tail's cache.
+    pub fn streaming_tail_rows(&self) -> Vec<Line<'static>> {
+        let width = self.width.saturating_sub(2);
+        self.render_streaming_tail(width)
+    }
+
+    /// The rendered rows of one message part's Markdown.
+    ///
+    /// A message's parts are **appended**, never rewritten: a streaming
+    /// response grows the last message by adding parts to it. So the rows of
+    /// a part that is already there cannot have changed, and re-parsing every
+    /// part of the message on every token is quadratic in the response's
+    /// length.
+    ///
+    /// The cache is keyed by the message and the part, and it is dropped
+    /// whenever the transcript changes in a way that is not an append — an
+    /// undo, a width change, a display-option change.
+    fn markdown_part_rows(
+        &self,
+        msg_idx: usize,
+        part_idx: usize,
+        content: &str,
+        width: u16,
+    ) -> Vec<Line<'static>> {
+        let mut cache = self.markdown_parts.borrow_mut();
+        if let Some(entry) = cache.get(&(msg_idx, part_idx)) {
+            if entry.content_len == content.len() && entry.width == width {
+                return entry.rows.clone();
+            }
+        }
+        let rows = render_markdown(content, &self.theme, self.theme.muted, width);
+        cache.insert(
+            (msg_idx, part_idx),
+            CachedMarkdown {
+                content_len: content.len(),
+                width,
+                rows: rows.clone(),
+            },
+        );
+        rows
     }
 
     pub fn new(theme: Arc<Theme>) -> Self {
@@ -622,6 +701,9 @@ impl MessagesWidget {
             pending_permission_tools: std::collections::BTreeSet::new(),
             undo_stack: VecDeque::new(),
             streaming_tokens: String::new(),
+            streaming_epoch: 0,
+            streaming_tail: RefCell::new(StreamingTailCache::default()),
+            markdown_parts: RefCell::new(std::collections::BTreeMap::new()),
             assistant_is_thinking: false,
             activity: None,
             reasoning_durations: std::collections::HashMap::new(),
@@ -638,6 +720,11 @@ impl MessagesWidget {
     }
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {
+        if !Arc::ptr_eq(&self.theme, theme) {
+            // A different palette is a different rendering: the tail's cached
+            // rows carry the old one's colours.
+            self.streaming_epoch = self.streaming_epoch.wrapping_add(1);
+        }
         self.theme = Arc::clone(theme);
     }
 
@@ -656,6 +743,9 @@ impl MessagesWidget {
     pub fn set_width(&mut self, width: u16) {
         if self.width != width {
             self.width = width;
+            // A different width wraps the tail differently, so the tail's
+            // cached rows are rows of the old width.
+            self.streaming_epoch = self.streaming_epoch.wrapping_add(1);
             self.invalidate_layout_cache();
         }
     }
@@ -1344,6 +1434,10 @@ impl MessagesWidget {
     fn invalidate_layout_cache(&self) {
         self.rows_dirty_from.set(0);
         *self.message_layout_cache.borrow_mut() = None;
+        // The transcript changed in a way that is not an append — an undo, a
+        // width change, a display-option change — so the parts' cached rows
+        // may belong to parts that are no longer there.
+        self.markdown_parts.borrow_mut().clear();
     }
 
     /// Mark every row stale, so the next read rebuilds them.
@@ -1627,6 +1721,21 @@ impl MessagesWidget {
 
     pub fn scroll_right(&mut self) {}
 
+    /// The response received so far, while it is streaming.
+    pub fn streaming_tokens(&self) -> &str {
+        &self.streaming_tokens
+    }
+
+    /// Replace the streaming tail's text.
+    ///
+    /// The tail is **replaced**, not extended, so the tail's cached rows are
+    /// dropped: they belong to the text that was there before.
+    pub fn set_streaming_tokens(&mut self, tokens: String) {
+        self.streaming_tokens = tokens;
+        self.streaming_epoch = self.streaming_epoch.wrapping_add(1);
+        self.invalidate_tail_rows();
+    }
+
     pub fn add_streaming_token(&mut self, token: &str) {
         const MAX_STREAMING_TOKENS_SIZE: usize = 1024 * 1024;
         let was_at_bottom = self.is_at_bottom();
@@ -1667,6 +1776,9 @@ impl MessagesWidget {
             next.push_str(DROPPED_MARKER);
             next.push_str(&self.streaming_tokens[tail_start..]);
             self.streaming_tokens = next;
+            // The tail was **replaced**, not extended, so the cached rows
+            // describe text that is no longer there.
+            self.streaming_epoch = self.streaming_epoch.wrapping_add(1);
         }
         self.streaming_tokens.push_str(token);
         self.invalidate_tail_rows();
@@ -1680,12 +1792,16 @@ impl MessagesWidget {
         if !self.streaming_tokens.is_empty() {
             self.add_assistant_text(self.streaming_tokens.clone());
             self.streaming_tokens.clear();
+            // The tail was emptied: the cached rows belong to the text that
+            // was just turned into a message.
+            self.streaming_epoch = self.streaming_epoch.wrapping_add(1);
             self.invalidate_tail_rows();
         }
     }
 
     pub fn clear_streaming(&mut self) {
         self.streaming_tokens.clear();
+        self.streaming_epoch = self.streaming_epoch.wrapping_add(1);
         self.invalidate_tail_rows();
     }
 
@@ -2128,8 +2244,7 @@ impl MessagesWidget {
         for (part_idx, part) in msg.parts.iter().enumerate() {
             match part {
                 MsgPart::Text { content } => {
-                    let rendered =
-                        render_markdown(content, &self.theme, self.theme.muted, self.width);
+                    let rendered = self.markdown_part_rows(msg_idx, part_idx, content, self.width);
                     if let Some(m) = current_match {
                         if m.part_idx == part_idx {
                             lines.extend(highlight_match_in_rendered(
@@ -2176,7 +2291,7 @@ impl MessagesWidget {
                     if self.show_thinking && !*collapsed {
                         let tail_width = self.width.saturating_sub(2);
                         let rendered =
-                            render_markdown(content, &self.theme, self.theme.muted, tail_width);
+                            self.markdown_part_rows(msg_idx, part_idx, content, tail_width);
                         lines.extend(prefix_rendered_lines(rendered, "  ", Style::default()));
                     }
                     spans.push(PartSpan {
@@ -2767,6 +2882,201 @@ fn highlight_match_in_rendered(
     out
 }
 
+// ── The streaming tail ───────────────────────────────────────────────────
+
+/// One top-level block of the streaming tail.
+///
+/// A block is the unit the tail is re-parsed in: the blocks that the new
+/// text cannot change keep the rows they were rendered to, and only the ones
+/// that can are parsed again.
+#[derive(Debug)]
+struct TailBlock {
+    /// The 1-based line the block starts on, in the tail's text.
+    start_line: usize,
+    /// The rows the block renders to.
+    rows: Vec<Line<'static>>,
+    /// Whether the block's source carries a bracket.
+    ///
+    /// A link reference in the block can be **resolved** by a definition that
+    /// arrives in a later token, so such a block has to be parsed again when
+    /// the tail grows. A block without a bracket cannot be changed by
+    /// anything that comes after it.
+    has_reference: bool,
+}
+
+/// The rendered rows of one message part, cached against its content.
+///
+/// The cache answers "what does this part render to" for a part that is
+/// already there. A message's parts are appended and never rewritten, so a
+/// part's **length** identifies its content: a part whose length changed is
+/// a different part, and a part that is gone is not in the cache at all.
+#[derive(Debug)]
+struct CachedMarkdown {
+    /// The length of the part's content.
+    content_len: usize,
+    /// The width the rows were rendered at.
+    width: u16,
+    /// The rows the content renders to.
+    rows: Vec<Line<'static>>,
+}
+
+/// The streaming tail's rendered Markdown, kept block by block.
+///
+/// The tail is the whole response received so far, and it grows a token at a
+/// time. Parsing all of it on every token is quadratic in the response's
+/// length, so the tail is parsed **incrementally**: the blocks the new text
+/// cannot change keep the rows they were rendered to.
+///
+/// The cache belongs to one **epoch** — one text, one width and one palette.
+/// See [`MessagesWidget::streaming_epoch`].
+#[derive(Debug, Default)]
+struct StreamingTailCache {
+    /// The epoch the blocks were rendered for.
+    epoch: u64,
+    /// The length of the text the blocks were rendered from.
+    text_len: usize,
+    /// The blocks, in document order.
+    blocks: Vec<TailBlock>,
+    /// The byte offset of each line's start, in the tail's text.
+    line_offsets: Vec<usize>,
+}
+
+impl StreamingTailCache {
+    /// Render `text` as Markdown, reusing the blocks the new text cannot
+    /// change.
+    fn render(
+        &mut self,
+        text: &str,
+        epoch: u64,
+        theme: &Arc<Theme>,
+        default_color: ratatui::style::Color,
+        width: u16,
+    ) -> Vec<Line<'static>> {
+        if text.is_empty() {
+            self.epoch = epoch;
+            self.text_len = 0;
+            self.blocks.clear();
+            self.line_offsets.clear();
+            return vec![Line::from("")];
+        }
+
+        // The tail did not change: the rows are already rendered.
+        if self.epoch == epoch && self.text_len == text.len() && !self.blocks.is_empty() {
+            return self.assemble();
+        }
+
+        // The tail grew. The blocks the new text cannot change keep their
+        // rows, and only the rest are parsed again.
+        let extendable =
+            self.epoch == epoch && !self.blocks.is_empty() && text.len() > self.text_len;
+        if extendable {
+            self.extend_line_offsets(text);
+            let start_line = self.reparse_start_line();
+            let base = self.line_offsets[start_line - 1];
+            let suffix = &text[base..];
+            let mut blocks = parse_markdown_blocks(
+                suffix,
+                &self.line_offsets[start_line - 1..],
+                base,
+                theme,
+                default_color,
+                width,
+            );
+            // The suffix must open with the block the cache said was there.
+            // If the split moved, the two parses disagree about the document,
+            // and the whole tail is parsed again rather than trusted.
+            let opens_where_expected = blocks
+                .first()
+                .map(|block| block.start_line == 1)
+                .unwrap_or(false);
+            if opens_where_expected {
+                let kept = self
+                    .blocks
+                    .iter()
+                    .position(|block| block.start_line >= start_line)
+                    .unwrap_or(self.blocks.len());
+                self.blocks.truncate(kept);
+                for block in blocks.iter_mut() {
+                    block.start_line += start_line - 1;
+                }
+                self.blocks.extend(blocks);
+                self.epoch = epoch;
+                return self.assemble();
+            }
+        }
+
+        // The whole tail: a fresh parse of everything.
+        self.epoch = epoch;
+        self.set_line_offsets(text);
+        self.blocks =
+            parse_markdown_blocks(text, &self.line_offsets, 0, theme, default_color, width);
+        self.assemble()
+    }
+
+    /// The rows the blocks assemble to.
+    ///
+    /// The assembly is the render's own rule — a blank line between two
+    /// blocks, and none where the block before it already ended with one —
+    /// so the rows a cached tail produces are the rows a fresh parse of the
+    /// same text produces.
+    fn assemble(&self) -> Vec<Line<'static>> {
+        assemble_markdown_blocks(&self.blocks)
+    }
+
+    /// The first line that has to be parsed again for the tail's new text.
+    ///
+    /// Only the tail's **last** block can be continued by new text — a
+    /// paragraph, a list, a block quote or a code fence that the new text
+    /// extends. A block before it cannot change, except when it carries a
+    /// link reference: a definition that arrives later resolves the
+    /// reference and changes how the block renders.
+    fn reparse_start_line(&self) -> usize {
+        let last = self
+            .blocks
+            .last()
+            .map(|block| block.start_line)
+            .unwrap_or(1);
+        self.blocks
+            .iter()
+            .find(|block| block.has_reference)
+            .map(|block| block.start_line)
+            .unwrap_or(last)
+            .min(last)
+    }
+
+    /// Rebuild the line offsets from the whole text.
+    fn set_line_offsets(&mut self, text: &str) {
+        self.line_offsets.clear();
+        self.line_offsets.push(0);
+        for (index, byte) in text.as_bytes().iter().enumerate() {
+            if *byte == b'\n' {
+                self.line_offsets.push(index + 1);
+            }
+        }
+        self.text_len = text.len();
+    }
+
+    /// Extend the line offsets with the lines the appended text opened.
+    ///
+    /// The text only grows, so the lines that were already there keep their
+    /// offsets and only the new bytes are scanned.
+    fn extend_line_offsets(&mut self, text: &str) {
+        let start = self.text_len;
+        for (index, byte) in text.as_bytes()[start..].iter().enumerate() {
+            if *byte == b'\n' {
+                self.line_offsets.push(start + index + 1);
+            }
+        }
+        self.text_len = text.len();
+    }
+}
+
+/// Render `text` as Markdown.
+///
+/// The **one** way a body of Markdown is rendered: the blocks are parsed and
+/// rendered one at a time, and the rows are assembled from the blocks. The
+/// streaming tail's cache reuses the same blocks, so a cached tail and a
+/// fresh render of the same text produce the same rows.
 fn render_markdown(
     text: &str,
     theme: &Arc<Theme>,
@@ -2776,15 +3086,100 @@ fn render_markdown(
     if text.is_empty() {
         return vec![Line::from("")];
     }
-    let arena = Arena::new();
-    let root = parse_document(&arena, text, &MARKDOWN_OPTIONS);
+    let offsets = markdown_line_offsets(text);
+    let blocks = parse_markdown_blocks(text, &offsets, 0, theme, default_color, width);
+    assemble_markdown_blocks(&blocks)
+}
+
+/// The byte offset of each line's start in `text`.
+fn markdown_line_offsets(text: &str) -> Vec<usize> {
+    let mut offsets = vec![0usize];
+    for (index, byte) in text.as_bytes().iter().enumerate() {
+        if *byte == b'\n' {
+            offsets.push(index + 1);
+        }
+    }
+    offsets
+}
+
+/// The rows a run of Markdown blocks assembles to.
+///
+/// The rule is the render's own: a blank line between two blocks, and none
+/// where the block before it already ended with one. A block that renders to
+/// nothing but a blank line is dropped again.
+fn assemble_markdown_blocks(blocks: &[TailBlock]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    render_markdown_blocks(root, &mut lines, theme, default_color, width);
+    for block in blocks {
+        let before_len = lines.len();
+        if before_len > 0 && !is_blank_line(&lines[before_len - 1]) {
+            lines.push(Line::from(""));
+        }
+        lines.extend(block.rows.iter().cloned());
+        if lines.len() == before_len + 1 && is_blank_line(&lines[before_len]) {
+            lines.pop();
+        }
+    }
     if lines.is_empty() {
         vec![Line::from("")]
     } else {
         lines
     }
+}
+
+/// Parse `text` as Markdown and render its top-level blocks.
+///
+/// The **one** place the tail's Markdown is parsed. `line_offsets` holds the
+/// byte offset of each line's start, `base` is the offset the text starts
+/// at, and the line numbers the blocks carry are relative to the text.
+fn parse_markdown_blocks(
+    text: &str,
+    line_offsets: &[usize],
+    base: usize,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+    width: u16,
+) -> Vec<TailBlock> {
+    render_cost::count_markdown_parse();
+    let arena = Arena::new();
+    let root = parse_document(&arena, text, &MARKDOWN_OPTIONS);
+    let mut blocks = Vec::new();
+    for child in root.children() {
+        let (start_line, end_line) = {
+            let node = child.data.borrow();
+            (node.sourcepos.start.line, node.sourcepos.end.line)
+        };
+        let mut rows = Vec::new();
+        render_markdown_block(child, &mut rows, theme, default_color, width);
+        let source = block_source(text, line_offsets, base, start_line, end_line);
+        blocks.push(TailBlock {
+            start_line,
+            rows,
+            has_reference: source.contains('[') || source.contains(']'),
+        });
+    }
+    blocks
+}
+
+/// The source of the lines a block covers.
+fn block_source<'a>(
+    text: &'a str,
+    line_offsets: &[usize],
+    base: usize,
+    start_line: usize,
+    end_line: usize,
+) -> &'a str {
+    let start = line_offsets
+        .get(start_line.saturating_sub(1))
+        .copied()
+        .unwrap_or(base)
+        .saturating_sub(base);
+    let end = line_offsets
+        .get(end_line)
+        .copied()
+        .unwrap_or(text.len() + base)
+        .saturating_sub(base)
+        .min(text.len());
+    &text[start..end]
 }
 
 fn render_markdown_blocks<'a>(

@@ -1,10 +1,5 @@
 //! Saved panel hotkeys.
 //!
-//! A tiny user-saved map from digit to panel type, persisted through
-//! `codegg.json`. It exists because the panel list is short but the *switch*
-//! is frequent, and the alternative — re-opening a picker — costs two keys
-//! every time.
-//!
 //! ## Why `Ctrl`, not `Cmd`
 //!
 //! The obvious spelling for this is `Cmd+1`, and it cannot work in a
@@ -96,10 +91,6 @@ impl PanelHotkeys {
 }
 
 /// Stable config spelling for a panel type.
-///
-/// A label (`"Chat"`) would drift the moment the title bar is reworded, so
-/// the persisted form is the enum name in snake_case — the same vocabulary
-/// `SidePanelId` already uses.
 fn panel_key(panel: SidePanelId) -> String {
     // Derived from the registry so a new panel is persisted without touching
     // this file; `SidePanelId::config_key` owns the stable spelling.

@@ -71,11 +71,6 @@ impl SidePanel for HelpPanel {
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         // Built on first paint and rebuilt only when vim mode changes, so
         // the common path does no allocation at all.
-        //
-        // Normal, not Insert: a docked panel is *read* before it is
-        // filtered, and in Insert `j`/`k` are filter text — which is exactly
-        // the "the panel won't scroll" report. `i`/`a`/`Enter` reach the
-        // filter in one keystroke whenever the user actually wants to type.
         if ctx.vim_mode != self.vim_mode || self.dialog.rows_len() == 0 {
             self.vim_mode = ctx.vim_mode;
             self.dialog = HelpDialog::new_with_mode(

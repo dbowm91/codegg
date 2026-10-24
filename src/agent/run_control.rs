@@ -1,8 +1,4 @@
 //! Daemon-side bridge between durable run control and a live `AgentLoop`.
-//!
-//! Every control is written to the core mailbox before this module touches a
-//! live channel.  The live channels are an optimization; the mailbox and run
-//! store remain authoritative across disconnects and restarts.
 
 use codegg_core::agent_run::{AgentRunRecord, AgentRunStatus, AgentRunStore};
 use codegg_core::agent_run_control::{

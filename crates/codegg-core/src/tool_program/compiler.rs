@@ -1,7 +1,4 @@
 //! IR compiler for the restricted-Python Tool Program language.
-//!
-//! Compiles a validated, bounds-analyzed AST into a deterministic,
-//! versioned IR with source-span mapping.
 
 use sha2::{Digest, Sha256};
 

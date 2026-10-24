@@ -72,6 +72,9 @@ pub mod identity_m004_audit_foundation;
 #[path = "identity_m005_audit_instrumentation.inc"]
 pub mod identity_m005_audit_instrumentation;
 
+#[path = "job_state_terminality_c004.inc"]
+pub mod job_state_terminality_c004;
+
 #[path = "launch_directory_bootstrap.inc"]
 pub mod launch_directory_bootstrap;
 

@@ -1,10 +1,5 @@
 //! Typed child-job request/result types for Tool Programs.
 //!
-//! Programs submit scheduler-owned build, test, lint, and format jobs
-//! through the [`BrokerCallback::submit_child_job`] method. The broker
-//! adapter translates these typed requests into canonical [`NewJob`]
-//! submissions and waits for completion.
-//!
 //! # Invariants
 //!
 //! - Raw shell commands and arbitrary argv are never accepted.

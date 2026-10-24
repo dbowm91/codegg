@@ -1,18 +1,15 @@
 //! Consolidated projection-replay integration test family (M003 pilot).
 //!
-//! History: each module lives at `tests/projection_replay/<name>.inc`
-//! and was previously a separate `tests/projection_replay_<name>.rs`
-//! file (11 binaries total). The `.inc` extension is the M003 trick
-//! that prevents Cargo's "tests/<dir>/*.rs" auto-discovery from
-//! generating per-file test executables; the
-//! `tests/projection_replay/mod.rs` parent is auto-discovered by Cargo
-//! as the single integration target named `projection_replay`. Each
-//! `<name>.inc` is included via `#[path]` so the convention stays
-//! explicit. Consolidation replaces 11 separate Cargo test executables
-//! with 1, preserving every test body, every assertion, and every
-//! Nextest-visible module path. The M003 pilot proves that the
-//! repository's link-count bottleneck is removable for one compatible
-//! family; M004 conditionally broadens the pattern.
+//! The `.inc` extension is the M003 trick that prevents Cargo's
+//! "tests/<dir>/*.rs" auto-discovery from generating per-file test
+//! executables; the `tests/projection_replay/mod.rs` parent is
+//! auto-discovered by Cargo as the single integration target named
+//! `projection_replay`. Each `<name>.inc` is included via `#[path]` so the
+//! convention stays explicit. Consolidation replaces 11 separate Cargo test
+//! executables with 1, preserving every test body, every assertion, and every
+//! Nextest-visible module path. The M003 pilot proves that the repository's
+//! link-count bottleneck is removable for one compatible family; M004
+//! conditionally broadens the pattern.
 //!
 //! Per the M003 plan, this entry is the only file at
 //! `tests/projection_replay/`'s top level. `common` (the conventional

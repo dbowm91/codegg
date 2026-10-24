@@ -111,6 +111,11 @@ jobs:
       - name: Execution ownership guard
         run: python3 scripts/check_execution_ownership.py
 
+      - name: Tool broker boundary self-test
+        run: python3 scripts/check_tool_broker_boundary.py --self-test
+
+      - name: Tool broker boundary guard
+        run: python3 scripts/check_tool_broker_boundary.py
       # The daemon's turn code resolves its workspace root from the
       # execution context, never from the process working directory. The
       # guard covers `src/core/**` and the turn-code surfaces, plus the
@@ -184,6 +189,12 @@ jobs:
       - name: TUI editor doc-drift guard
         run: python3 scripts/check_tui_editor_doc_drift.py
 
+      - name: Comment budget guard self-test
+        run: python3 scripts/check_comment_budget.py --self-test
+
+      - name: Comment budget guard
+        run: python3 scripts/check_comment_budget.py
+
       - name: TUI transport-authority guard
         run: python3 scripts/check_tui_transport_authority.py
 
@@ -198,6 +209,23 @@ jobs:
 
       - name: Composer key-ownership guard
         run: python3 scripts/check_tui_composer_key_authority.py
+
+      - name: Nested runtime block_on self-test
+        run: python3 scripts/check_no_nested_runtime_block_on.py --self-test
+
+      - name: Nested runtime block_on guard
+        run: python3 scripts/check_no_nested_runtime_block_on.py
+      - name: Command argument contract self-test
+        run: python3 scripts/check_command_argument_contract.py --self-test
+
+      - name: Command argument contract guard
+        run: python3 scripts/check_command_argument_contract.py
+
+      - name: TUI render cost self-test
+        run: python3 scripts/check_tui_render_cost.py --self-test
+
+      - name: TUI render cost guard
+        run: python3 scripts/check_tui_render_cost.py
 
       - name: HTTP route disposition guard
         run: python3 scripts/check_http_route_disposition.py
@@ -296,8 +324,22 @@ jobs:
       - name: Tool Program parse-only guard self-test
         run: python3 scripts/check_tool_program_parse_only.py --self-test
 
+      # `JobState::is_terminal()` is the terminality authority; every
+      # projection of a job state has to agree with it.
+      - name: Job-state terminality agreement guard
+        run: python3 scripts/check_job_state_terminality_agreement.py
+
+      - name: Job-state terminality agreement guard self-test
+        run: python3 scripts/check_job_state_terminality_agreement.py --self-test
+
       - name: Shell policy test-safety guard
         run: python3 scripts/check_shell_policy_test_safety.py
+
+      - name: Destructive risk signal coverage guard
+        run: python3 scripts/check_destructive_risk_signal_coverage.py
+
+      - name: Destructive risk signal coverage guard self-test
+        run: python3 scripts/check_destructive_risk_signal_coverage.py --self-test
 
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py

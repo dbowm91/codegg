@@ -1,11 +1,5 @@
 //! The global `JobScheduler`.
 //!
-//! This is the daemon-owned orchestrator. It owns the
-//! `FairJobQueue`, `AdmissionController`, `ExecutorRegistry`, and
-//! the running-attempts map. It loops, claiming newly-queued jobs
-//! from `JobStore`, walking the fair queue, asking the admission
-//! controller for permits, and dispatching to typed executors.
-//!
 //! Lifecycle invariants (enforced here, validated by tests):
 //!
 //! 1. **One executor invocation per attempt.** The scheduler records
@@ -159,11 +153,6 @@ impl CompletionCache {
 /// single permit and `notify_one` wakes one arbitrary waiter, so with several
 /// jobs in flight the waiter whose job actually finished could be the one left
 /// asleep for the whole bound.
-///
-/// A `watch` receiver also replays the "value changed" fact to a receiver that
-/// subscribes later, which is what makes the ordering in `wait_for_completion`
-/// safe: the receiver is created *before* the first completion-cache read, so a
-/// publish that lands between that read and the park is still delivered.
 struct CompletionSignals {
     entries: HashMap<JobId, watch::Sender<u64>>,
     /// Insertion order for oldest-first eviction, mirroring `CompletionCache`.
@@ -1056,14 +1045,13 @@ impl JobScheduler {
     async fn cleanup_python_source_orphans(&self) -> Result<(), JobSchedulerError> {
         use codegg_core::jobs::JobKind;
 
-        // Query for active Python jobs (all states except terminal)
+        // Query for the Python jobs that are not finished (the domain's own
+        // complement of terminality). An interrupted job is included on
+        // purpose: the recovery path requeues an interrupted job through the
+        // `Interrupted -> Queued` edge, so its source file is still the
+        // source of a job that may run again and must not be deleted.
         let query = codegg_core::jobs::store::JobStoreQuery {
-            states: vec![
-                JobState::Scheduled,
-                JobState::Queued,
-                JobState::Running,
-                JobState::Blocked,
-            ],
+            states: JobState::non_terminal_states(),
             workspace_id: None,
             kinds: vec![JobKind::Python],
             limit: Some(1000),

@@ -1116,7 +1116,7 @@ impl AgentLoop {
         // already checked above; re-check before persistence below.
         let pool_opt = self.continuation_pool();
         let Some(pool) = pool_opt else {
-            // No durable store (tests/harness without a pool): install the
+            // No durable store (a test harness without a pool): install the
             // verified in-memory history without a checkpoint row. This keeps
             // short sessions and pool-less harnesses operable with minimal
             // persistence cost.

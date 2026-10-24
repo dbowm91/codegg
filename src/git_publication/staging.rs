@@ -1,9 +1,5 @@
 //! The staging step of a C007 publication.
 //!
-//! Staging is the half of the publication that runs Git: it produces the
-//! **private index** (and the private object database that goes with it) for
-//! a set of repository-relative paths, without touching the repository.
-//!
 //! It is a trait because the two halves of the vertical have different
 //! evidence requirements:
 //!
@@ -15,10 +11,6 @@
 //! * a test may substitute its own implementation to drive the publication
 //!   half — the compare-and-swap, the lock, the atomic replacement, and the
 //!   crash recovery — on a host that cannot provide the M004/M005 tier.
-//!
-//! The trait boundary is where the trust boundary is: everything above it
-//! (the journal, the compare-and-swap, the atomic publication) is the same
-//! code in both cases.
 
 use async_trait::async_trait;
 use egggit::GitReadConsistency;
@@ -78,13 +70,6 @@ pub trait GitIndexStaging: Send + Sync {
     ) -> Result<crate::git_publication::ObtainedNetworkBoundary, String>;
 
     /// The consistency class of the repository state this staging observed.
-    ///
-    /// The default is the class of a staging step that reads the repository's
-    /// **captured** index — the private gitdir's index was seeded byte for
-    /// byte from the repository's own index, so the generation the staging
-    /// worked from was immutable when it was taken and may now be stale. The
-    /// publisher's compare-and-swap is what makes a captured generation safe
-    /// to publish.
     ///
     /// A staging step that reads the repository's index **live**, from a
     /// concurrently mutable repository, must override this with

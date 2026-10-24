@@ -5,9 +5,7 @@
 //! This module is the smallest trustworthy substrate for causal tool-menu
 //! experiments. It changes **no runtime disclosure behavior**: nothing here
 //! filters provider definitions, alters broker authorization, or widens
-//! execution authority. The causal frontier is a visibility-only planning
-//! layer evaluated offline in M002 against the frozen benchmark preregistered
-//! in M001.
+//! execution authority.
 //!
 //! # Closed ontology
 //!
@@ -40,8 +38,7 @@
 //!
 //! [`CausalStateSnapshot`] stores booleans, capped counts, and bounded typed
 //! ids only. It never copies raw tool output, prompts, file content, secrets,
-//! or transcript history. Counts are capped and ids truncated so the
-//! snapshot is bounded by construction.
+//! or transcript history.
 //!
 //! # Contract integrity
 //!
@@ -5210,12 +5207,6 @@ mod tests {
     /// file with no further ceremony. The write path is gated on an
     /// explicit opt-in:
     ///
-    /// ```text
-    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
-    ///     tool_advisor::causal_frontier::tests::m002_regenerate_checked_in_receipt \
-    ///     --ignored --nocapture
-    /// ```
-    ///
     /// Without the opt-in the test asserts that the checked-in receipt is
     /// still present and writes nothing.
     #[test]
@@ -6386,12 +6377,6 @@ mod tests {
     /// The receipt is a checked-in repository asset, so a routine
     /// `cargo test -- --ignored` must not rewrite it. The write path is
     /// gated on an explicit opt-in:
-    ///
-    /// ```text
-    /// CODEGG_REGENERATE_ASSETS=1 cargo test --locked -p codegg --lib -- \
-    ///     tool_advisor::causal_frontier::tests::m003_regenerate_checked_in_receipt \
-    ///     --ignored --nocapture
-    /// ```
     ///
     /// Without the opt-in the test asserts that the checked-in receipt is
     /// still present and writes nothing.

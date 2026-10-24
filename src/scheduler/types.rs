@@ -2,12 +2,6 @@
 //!
 //! The fair queue is a three-level hierarchy:
 //!
-//! ```text
-//! Priority class
-//!   -> workspace lane
-//!       -> ordered entries
-//! ```
-//!
 //! Aging elevates an entry's effective priority without mutating the
 //! persisted `JobPriority` on the durable record. Entries carry
 //! `submitted_at` and an `enqueued_at` so the queue can compute age

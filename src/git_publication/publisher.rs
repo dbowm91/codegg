@@ -1,7 +1,4 @@
 //! The C007 publisher: private staging, compare-and-swap, atomic publication.
-//!
-//! See the module documentation in [`crate::git_publication`] for the
-//! contract this implements.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -517,10 +514,6 @@ impl GitIndexPublisher {
     /// wrote — the real one is reachable read-only through
     /// `objects/info/alternates` — so enumerating it is exactly the set of
     /// objects the published index needs and does not yet have.
-    ///
-    /// The copy is content-addressed and therefore idempotent: the object's
-    /// name *is* its content hash, so an object that is already present has
-    /// identical content and is left alone.
     async fn import_objects(
         &self,
         gitdir: &Path,

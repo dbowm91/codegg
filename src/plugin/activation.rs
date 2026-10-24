@@ -1,9 +1,4 @@
 //! Durable, context-aware plugin activation.
-//!
-//! Installation remains owned by [`PluginRegistry`]. This module owns the
-//! separate user-scoped selection state used to decide which installed
-//! plugins are visible for a global or workspace context. Resolved views are
-//! immutable so a turn can pin activation for its lifetime.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;

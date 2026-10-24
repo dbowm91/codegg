@@ -10,10 +10,6 @@
 //! domain-agnostic.
 //!
 //! # Indexing conventions
-//!
-//! All line and column values in these DTOs are **1-indexed** for
-//! consistency with the presentation layer. The tool adapter may
-//! convert to/from LSP-native 0-indexed positions as needed.
 
 use serde::{Deserialize, Serialize};
 

@@ -1,9 +1,4 @@
 //! Shared async request state for TUI dialogs.
-//!
-//! Provides [`AsyncUiRequestState`], a small reusable state machine for
-//! tracking the lifecycle of async operations in dialogs. This replaces
-//! ad-hoc generation counters and boolean in-flight flags with a single
-//! consistent type.
 
 /// A shared request-state machine for async dialog operations.
 ///

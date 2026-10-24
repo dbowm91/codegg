@@ -1,7 +1,4 @@
 //! Hooks system for codegg.
-//!
-//! This module provides a hooks system that allows users to run custom
-//! commands or scripts at specific points in the agent loop execution.
 
 use crate::config::schema::{HookConfig as ConfigHookConfig, HookConfigEntry};
 use crate::error::AppError;

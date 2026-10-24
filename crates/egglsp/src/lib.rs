@@ -1,9 +1,5 @@
 //! Language Server Protocol client crate.
 //!
-//! This crate owns the LSP client, server registry, file sync, and
-//! diagnostics collection. Codegg wires this behind its native `lsp`
-//! tool and config types via `From` impls at the boundary.
-//!
 //! # Capability, Cache, and Semantic Context
 //!
 //! Beyond the core LSP client, this crate provides:

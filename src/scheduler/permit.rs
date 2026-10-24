@@ -1,11 +1,4 @@
 //! Resource permits and RAII guards.
-//!
-//! A `ResourcePermit` is the abstract right to consume some
-//! multidimensional resources (CPU weight, memory hint, process slot,
-//! I/O weight, network slot) and one or more exclusivity keys. The
-//! scheduler's admission controller hands out `ResourcePermitGuard`s;
-//! when the guard is dropped (or explicitly released), the
-//! reservation is released atomically.
 
 use std::sync::Arc;
 

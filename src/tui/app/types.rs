@@ -90,6 +90,13 @@ pub enum Dialog {
 }
 
 impl Dialog {
+    /// True when a dialog of any variant is on screen.
+    ///
+    /// The predicate covers **every** variant of the enum. An earlier
+    /// version matched 50 of 53 and omitted `PanelManager` and `Control`,
+    /// so a caller asking "is a dialog open?" was told "no" while the
+    /// panel manager was on screen. `scripts/check_command_argument_contract.py`
+    /// fails when a variant is missing from this list.
     pub fn is_open(&self) -> bool {
         matches!(
             self,
@@ -102,6 +109,7 @@ impl Dialog {
                 | Self::Theme
                 | Self::Question
                 | Self::Permission
+                | Self::PanelManager
                 | Self::Mcp
                 | Self::Keybind
                 | Self::Share
@@ -136,6 +144,7 @@ impl Dialog {
                 | Self::Collaborators
                 | Self::ProjectChat
                 | Self::Team
+                | Self::Control
                 | Self::TeamTokenSecret
                 | Self::TaskSchedule
                 | Self::TaskView
@@ -192,20 +201,8 @@ pub enum TuiMsg {
     ProjectInitApprove,
     ToggleSidebar,
     /// A directional pane gesture, resolved contextually.
-    ///
-    /// Emitted by a box's own Normal-mode handler, because a modal
-    /// short-circuits key routing before the binding map is consulted — the
-    /// box has to recognise the gesture itself. Routed into the same
-    /// dispatcher the main buffer's `InputAction` arms reach, so both halves
-    /// of a box/panel pair resolve it identically.
     MoveDirection(crate::tui::panels::PanelDirection),
     /// Put the keyboard on the panel docked at `placement`.
-    ///
-    /// The pointer answer to `Shift+H/J/K/L`. Kept as its own message rather
-    /// than folded into [`MoveDirection`](Self::MoveDirection) because those
-    /// resolve the keyboard position *between* edges, while a click names an
-    /// edge outright — and because focus has to go through the app to
-    /// park/restore the composer mode that `focus_panel` owns.
     FocusPanelAt {
         placement: crate::tui::panels::PanelPlacement,
     },
@@ -544,12 +541,6 @@ pub enum TuiMsg {
     /// served. Surfaced as a hint rather than a silent no-op.
     ChatPagingUnsupported,
     /// A chat surface asked the shared composer to open an editor for it.
-    ///
-    /// The `/chat` window owns a composer of its own, so `i`/`r`/`e` are
-    /// handled inside the dialog. The side panel holds no text buffer — there
-    /// is one input surface, at the bottom — so it resolves those verbs to
-    /// this seed instead. `App::process_msg` puts the text in the prompt and
-    /// records the context; nothing here is a daemon request.
     ChatComposerSeed(crate::tui::chat_browser::ChatComposeSeed),
     /// The chat panel's `Esc`: drop the armed reply/edit context and keep the
     /// text.

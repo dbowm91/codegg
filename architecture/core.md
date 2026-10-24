@@ -913,6 +913,25 @@ violation present. Use `--self-test` to confirm the guard still discriminates.
 
 See `crates/codegg-core/src/workspace.rs` for the full contract.
 
+### Tool-call boundary (the broker)
+
+Every daemon-owned path that reaches a tool goes through `ToolBroker`
+(`src/tool/broker.rs`), which owns the caller policy, the authority-grant
+scope check, the input bounds and the deadline precheck. The daemon never
+dispatches a tool itself.
+
+**Static guard**: `scripts/check_tool_broker_boundary.py` enforces that
+boundary in `scripts/verify.sh quick` and in CI. It distinguishes a registry
+dispatch (`ToolRegistry::execute_capture`) — always a crossing outside the
+registry's own module — from a tool-instance dispatch
+(`Tool::execute`/`Tool::execute_structured`), which is intra-tool delegation
+inside `src/tool/` and a crossing outside it. One recorded exception exists,
+the M006 Automatic approval reviewer's investigation call, scoped to one call
+in one function with a named owner; see
+[tool_broker.md](tool_broker.md) §"The broker boundary guard" and
+`architecture/approval_reviewer.md`. The guard's `--self-test` injects a
+violating call and shows it is rejected.
+
 ### Scheduler-owned execution (Phase 5 cutover)
 
 Daemon-owned heavy work crosses `JobSubmissionService` before admission. The
@@ -1054,6 +1073,44 @@ The launch directory is the frontend's own cwd, which is why this is safe in
 `AppMode::RemoteCore`. The project picker's "register by path" remains gated to
 `AppMode::Embedded` because there the path is user-supplied text that a remote
 attach must not be able to place on a daemon with a different filesystem.
+
+## Job-state terminality and its three projections
+
+`JobState::is_terminal()` in `crates/codegg-core/src/jobs/mod.rs` is the
+**single authority** on whether a job is finished. It names exactly
+`Completed`, `Failed`, `Cancelled`, `TimedOut` and `Expired`. `Interrupted`
+is **not** terminal: the scheduler's recovery path requeues an interrupted
+job through the `Interrupted -> Queued` edge
+(`crates/codegg-core/src/jobs/store.rs`), so an interrupted job may still
+run. The domain exposes the two sets derived from that predicate —
+`JobState::terminal_states()` and `JobState::non_terminal_states()` — and a
+query that wants "the jobs that are finished", or "the jobs that may still
+run", asks for one of them instead of writing a list out.
+
+Three projections answer three different questions, and they are not
+interchangeable:
+
+- **The session projection** (`src/core/daemon_refresh.rs`) splits a
+  session's jobs into live and finished with the two derived sets. It asks
+  "may this job still run?", so an interrupted job is projected with the live
+  jobs.
+- **The host-evidence projection**
+  (`codegg_core::jobs::evidence::job_success_evidence`) asks whether a job
+  counts as **evidence that the work succeeded** — not whether it is
+  finished. It is deliberately fail-closed: only `Completed` passes; every
+  other finished state, and `Interrupted`, fail closed; the states in which a
+  job has not started are in progress. The goal verifier, the goal
+  continuation assessor and the work-plan assessor all project through it,
+  so there is one answer rather than three hand-written matches.
+- **The model-facing status** (`codegg::scheduler::job_notifications`) is a
+  status projection, defined for every state, terminal or not. `Scheduled`,
+  `Queued`, `Running` and `Blocked` have their own values, so a caller asking
+  "why has my job not started?" is told which of the four it is in.
+
+`scripts/check_job_state_terminality_agreement.py` holds the tree to that
+split: no hand-written job-state terminality list in production code outside
+the domain, and no new `JobState` variant that the projections do not
+cover.
 
 ## Source verification
 

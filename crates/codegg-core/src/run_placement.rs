@@ -79,7 +79,8 @@ impl RunPlacement {
 /// is off, and it is reported as such rather than silently degrading to
 /// "probably fine".
 ///
-/// * `linux` — Landlock. Qualified by `tests/linux_native_scratch_containment.rs`.
+/// * `linux` — Landlock. Qualified by
+///   `tests/security_permission/linux_native_scratch_containment.inc`.
 /// * `macos` — Seatbelt. Qualified by
 ///   `tests/macos_native_shared_checkout_containment.rs`, on a native macOS
 ///   runner: the backend is obtained and a confined process cannot write

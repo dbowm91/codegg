@@ -4,9 +4,6 @@
 //! outlive config-file edits (e.g. the user's chosen theme and last-used
 //! model). Kept intentionally tiny: two columns (`key`, `value`) plus an
 //! `updated_at` epoch-millis timestamp for diagnostics.
-//!
-//! The keys used elsewhere in the codebase are exposed as public
-//! constants so callers don't have to remember string literals.
 
 use sqlx::SqlitePool;
 use std::time::{SystemTime, UNIX_EPOCH};

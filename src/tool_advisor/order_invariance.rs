@@ -2,7 +2,7 @@
 //!
 //! M001 of the order-invariance experiment. This module makes the
 //! historical candidate-position shortcut measurable and gives later
-//! architecture/training milestones one deterministic permutation contract.
+//! training milestones one deterministic permutation contract.
 //!
 //! It never trains a model, never changes historical corpora, and never
 //! selects hyperparameters. Training views produced here are in-memory or

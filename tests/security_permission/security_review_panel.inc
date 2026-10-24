@@ -62,7 +62,7 @@ fn sample_output() -> SecurityReviewOutput {
         targets: vec![target("src/lib.rs", 10)],
         findings: vec![
             finding("src/lib.rs", 10, SecuritySeverity::High),
-            finding("src/auth.rs", 42, SecuritySeverity::Medium),
+            finding("src/auth/mod.rs", 42, SecuritySeverity::Medium),
         ],
         review_prompts: vec![prompt("src/db.rs", 15)],
         preflight_results: Vec::new(),
@@ -830,10 +830,10 @@ fn security_review_panel_item_includes_hunk_for_finding_line_inside_hunk() {
 #[test]
 fn security_review_panel_item_without_matching_hunk_has_none() {
     let output = SecurityReviewOutput {
-        targets: vec![target("src/auth.rs", 50)],
-        findings: vec![finding("src/auth.rs", 50, SecuritySeverity::High)],
+        targets: vec![target("src/auth/mod.rs", 50)],
+        findings: vec![finding("src/auth/mod.rs", 50, SecuritySeverity::High)],
         review_prompts: vec![SecurityReviewPrompt {
-            file_path: PathBuf::from("src/auth.rs"),
+            file_path: PathBuf::from("src/auth/mod.rs"),
             line: Some(50),
             preset: "web_backend".to_string(),
             category: Some("auth".to_string()),
@@ -843,7 +843,7 @@ fn security_review_panel_item_without_matching_hunk_has_none() {
         }],
         preflight_results: vec![],
         notes: vec![],
-        hunks: vec![sample_hunk_ref()], // hunk is for src/lib.rs, not src/auth.rs
+        hunks: vec![sample_hunk_ref()], // hunk is for src/lib.rs, not src/auth/mod.rs
     };
     let receipt = SecurityReviewReceipt::now(
         "sr-panel-no-match".to_string(),
@@ -863,24 +863,24 @@ fn security_review_panel_item_without_matching_hunk_has_none() {
 
     let items = project_receipt_to_panel_items(&receipt);
 
-    // Finding at line 50 in src/auth.rs — no matching hunk (hunk is for src/lib.rs)
+    // Finding at line 50 in src/auth/mod.rs — no matching hunk (hunk is for src/lib.rs)
     let finding_item = items
         .iter()
         .find(|i| i.kind == SecurityReviewPanelItemKind::Finding)
         .expect("should have a finding");
     assert!(
         finding_item.hunk.is_none(),
-        "finding in src/auth.rs should not have hunk from src/lib.rs"
+        "finding in src/auth/mod.rs should not have hunk from src/lib.rs"
     );
 
-    // Prompt at line 50 in src/auth.rs — same
+    // Prompt at line 50 in src/auth/mod.rs — same
     let prompt_item = items
         .iter()
         .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
         .expect("should have a prompt");
     assert!(
         prompt_item.hunk.is_none(),
-        "prompt in src/auth.rs should not have hunk from src/lib.rs"
+        "prompt in src/auth/mod.rs should not have hunk from src/lib.rs"
     );
 }
 

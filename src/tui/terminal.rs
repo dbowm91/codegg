@@ -1,9 +1,4 @@
 //! Terminal lifecycle guard for robust setup/teardown.
-//!
-//! [`TerminalGuard`] tracks each terminal feature that was successfully
-//! enabled and restores exactly once in reverse order on drop or explicit
-//! shutdown. This prevents partial-setup leaks and removes the need for
-//! manual escape-sequence printing in teardown.
 
 use std::io::{self, stdout};
 

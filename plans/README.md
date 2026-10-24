@@ -45,7 +45,7 @@ Closure records and archive
 - `closure/` — verification, evidence, residual-risk, and completion records for implemented milestones.
 - `validation/` — measurement records kept apart from closure evidence: a pre-registered measurement design and the record of what was actually measured, for work whose value rests on a number rather than on a milestone's exit conditions.
 - `archive/` — completed or superseded interim planning retained for traceability.
-- `registry.md` — compact index of active subsystem roadmaps, implementation plans, closure work, and dependencies.
+- `registry.md` — compact index of active subsystem roadmaps, implementation plans, closure work, and dependencies. It is an **index**: a row states a status and points at the record that holds the narrative. A row whose narrative outgrew the index moves that narrative into the closure record the row already cites, and the row keeps an exact pointer to it — nothing is deleted. (C007, the repository audit corrective milestone, reduced the registry this way on 2026-10-23.)
 
 ## Status vocabulary
 

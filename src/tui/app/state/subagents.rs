@@ -1,11 +1,5 @@
 //! Active-subagent state for the main buffer's working strip.
 //!
-//! The main buffer previously advertised delegated work only through a
-//! `[...3]` badge in the header. That states *how many* subagents exist and
-//! nothing about *who* they are or what they are doing, so a turn that fans
-//! out to several agents reads as one opaque spinner. This module owns the
-//! rows that make that work legible, plus the tab set opened by selecting one.
-//!
 //! Two rules shape the design:
 //!
 //! - The strip is **projection-derived, never synthesized**. Rows come from
@@ -24,9 +18,6 @@ use crate::tui::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, Sub
 use crate::tui::wrap::ellipsize_to_width;
 
 /// Hard-truncate to `width` chars, with no ellipsis.
-///
-/// Used where the budget can legitimately be 0: `ellipsize_to_width`
-/// returns its input unchanged in that case, which would defeat the bound.
 fn take_chars(s: &str, width: usize) -> String {
     s.chars().take(width).collect()
 }

@@ -85,10 +85,6 @@ impl TestJobExecutor {
 /// reserved checkout, but a job can be admitted while the checkout is free
 /// and dispatched after it became reserved. The final executor is the
 /// last point before a process exists, so it re-checks.
-///
-/// The check is on the **execution's** workspace root — the one the
-/// scheduler captured from the workspace lease — and not on the job
-/// payload's working directory.
 async fn admit_process_class(
     ctx: &JobExecutionContext,
     kind: codegg_core::process_admission::ProcessKind,

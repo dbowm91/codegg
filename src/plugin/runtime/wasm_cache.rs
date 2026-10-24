@@ -1,7 +1,4 @@
 //! Module cache for WASM plugin compilation results.
-//!
-//! Extracted from the legacy `loader.rs` module cache. Provides mtime-based
-//! invalidation, compilation caching, and per-plugin fuel budget tracking.
 
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

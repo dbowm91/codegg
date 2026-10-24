@@ -27,11 +27,6 @@
 //! 2. The checkout's worktree record names the **lease owner run**.
 //! 3. The owner run belongs to a **live** (non-terminal) agent-run group.
 //!
-//! A checkout with a live group behind it is *reserved*: it is a shared
-//! checkout, and the restricted profile forbids every unqualified process
-//! surface there. A checkout with no live group behind it is ordinary: shells
-//! keep working exactly as they did before this milestone.
-//!
 //! # What this module is not
 //!
 //! It is **not** a process supervisor, a sandbox, or a promise that a
@@ -41,10 +36,6 @@
 //! authority it had, which is why
 //! [`ProcessAdmissionService::preflight_reservation`] refuses a reservation
 //! over a checkout that still has a live persistent process.
-//!
-//! Ownership: this crate owns the typed state machine. The root crate's
-//! daemon adapter supplies the scope and decides what a refusal means for the
-//! caller.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

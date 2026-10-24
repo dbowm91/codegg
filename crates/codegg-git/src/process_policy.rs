@@ -1,7 +1,4 @@
 //! Compatibility re-exports for the canonical Git process policy.
-//!
-//! Generic process construction belongs to `egggit`; these names remain at
-//! their historical `codegg_git` paths for downstream compatibility.
 
 pub use egggit::process::{GitEnvPolicy, ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_VARS};
 

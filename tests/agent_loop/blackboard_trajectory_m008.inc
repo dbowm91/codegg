@@ -24,7 +24,7 @@
 //!
 //! The **peer-observation** clauses of the contract — attribution, the
 //! untrusted-data trust class, and the no-blackboard path — are pinned in
-//! `tests/agent_loop_harness.rs`, which owns the scripted-provider harness
+//! `tests/agent_loop/agent_loop_harness.inc`, which owns the scripted-provider harness
 //! that the peer path needs.
 //!
 //! What this suite does **not** claim:

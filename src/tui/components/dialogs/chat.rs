@@ -243,11 +243,6 @@ impl ChatDialog {
         self.open_seed(ChatComposeSeed::say());
     }
 
-    /// Open the composer for `seed`.
-    ///
-    /// The seed comes from the shared browser, so `r` and `e` behave
-    /// identically here and in the side panel: same author prefill, same
-    /// reply target, same captured revision.
     fn open_seed(&mut self, seed: ChatComposeSeed) {
         if seed.edit_target.is_some() {
             self.mode = ChatMode::Edit;
@@ -357,11 +352,6 @@ impl ChatDialog {
     }
 
     /// The body shown in the viewport, including status branches.
-    ///
-    /// `height`/`width` come from the real render area, so the message
-    /// window is sized to what actually fits. Sizing it by message count
-    /// instead would emit up to 100 lines into a ~30-row viewport, and the
-    /// cursor would scroll out of sight in the middle of the window.
     fn body_lines(&self, height: usize, width: usize, theme: &Arc<Theme>) -> Vec<Line<'static>> {
         let dim = Style::default().fg(theme.muted);
         let view = Self::view_of(&self.snapshot);

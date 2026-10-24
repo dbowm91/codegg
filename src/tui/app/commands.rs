@@ -1,8 +1,4 @@
 //! TUI effect requests and asynchronous completions.
-//!
-//! TuiCommand is the app/runtime boundary: component and user input enters
-//! through TuiMsg, while this enum carries effect requests to the runtime and
-//! typed completions back to the synchronous App state owner.
 
 use super::types::{ConnectionLifecycleAction, TodoEntry};
 use crate::config::schema::SessionTemplate;
@@ -113,12 +109,6 @@ pub enum TuiCommand {
         error: Option<String>,
     },
     /// Completion of a permission or question response round trip.
-    ///
-    /// The reply is sent from a detached task, so a daemon-side refusal
-    /// (`CoreResponse::Error`) is otherwise invisible: the dialog closes,
-    /// nothing is logged, and the waiter — whose human wait is unbounded by
-    /// default — blocks the tool forever. This variant surfaces the refusal
-    /// so the user learns the tool did **not** resume.
     PermissionResponseFinished {
         /// Human-readable cause. `None` on a successful `Ack`.
         error: Option<String>,
@@ -152,9 +142,6 @@ pub enum TuiCommand {
         state: codegg_client::DocumentState,
     },
     /// Completion of a daemon-owned workspace file delete.
-    ///
-    /// Carries the path so the completion can decide whether the delete
-    /// belonged to an agent config and therefore needs an asset refresh.
     DocumentDeleted {
         path: String,
         /// Authority root the delete ran under, so the completion knows which
@@ -443,13 +430,6 @@ pub enum TuiCommand {
     /// Provider Connections Milestone 3: trigger the connection
     /// selection dialog refresh flow. Emitted when the dialog opens or
     /// when the user requests an explicit reload.
-    ///
-    /// `focus_connection_id` names the connection whose catalog the user is
-    /// looking at. It is set when the highlight moves, because the model
-    /// pane is per-connection: without it the dialog would keep rendering
-    /// the previously focused connection's models under a different
-    /// highlighted row, and Enter would bind that model to the wrong
-    /// connection.
     SessionSelectionRefresh {
         focus_connection_id: Option<String>,
     },
@@ -566,7 +546,7 @@ pub enum TuiCommand {
     /// enrichment run. The handler in `src/tui/mod.rs` awaits
     /// `run_security_review_background` and surfaces the result via the
     /// message timeline + a toast. See
-    /// `plans/security_review_async_dispatch.md`.
+    /// `architecture/security.md`.
     ///
     /// Kept for backward compatibility with any older dispatchers; new
     /// code should use the spawn-and-finished path via
@@ -1517,11 +1497,6 @@ pub enum TuiCommand {
     },
     /// Provider reasoning control M004: completion of a
     /// `ReasoningPreferenceSet` round-trip.
-    ///
-    /// `previous` is the selection the frontend displayed before the write,
-    /// so a refusal can put the daemon's last known value back. The daemon's
-    /// response wins over the local display; `preference` carries the
-    /// daemon-owned selection.
     ReasoningPreferenceUpdated {
         request_id: u64,
         preference: Option<crate::protocol::core::RuntimePreferenceDto>,

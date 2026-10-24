@@ -573,10 +573,6 @@ mod tests {
 
     /// A diff read on an ordinary repository must report a class a
     /// generation-bound consumer can admit.
-    ///
-    /// A diff consults the object store through the private object view, so
-    /// the bytes it served came from one captured generation: the carried
-    /// class is generation-consistent.
     #[tokio::test(flavor = "current_thread")]
     async fn diff_reads_carry_a_generation_consistent_class() {
         let dir = TempDir::new().unwrap();

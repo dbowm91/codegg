@@ -1,9 +1,4 @@
 //! Git sidebar background refresh.
-//!
-//! The sidebar shows git status (root, branch, dirty) but render is
-//! strictly a pure read from the cached `GitSidebarState`. All
-//! filesystem/git probing happens here, in spawned background tasks,
-//! and results are committed via a typed completion command.
 
 use crate::tui::app::state::session::GitSidebarInfo;
 use crate::tui::app::App;
@@ -22,14 +17,6 @@ pub(crate) fn start_refresh_git_sidebar(app: &mut App) {
     // it could never find `.git`, so the sidebar reported "not a git repo"
     // even inside a repository. Prefer the session's own workspace root, then
     // the active tab's root, and only then the legacy directory projection.
-    //
-    // The last resort used to apply to *every* session whose DTO carried no
-    // directory. That is missing authority, not permission to display someone
-    // else's checkout: a TUI launched in ~/projects/codegg rendered codegg's
-    // branch for a session bound to a different workspace. It also returned
-    // early without touching the cache, so the previously displayed branch
-    // stayed on screen across a session switch — which is how a stale branch
-    // outlived the session it belonged to.
     let start_dir = match app.session_state.session.as_ref() {
         Some(session) => {
             let directory = session.directory.clone();

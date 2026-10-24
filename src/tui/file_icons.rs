@@ -11,11 +11,6 @@
 //!
 //! ## Font support
 //!
-//! The default style is Nerd Font glyphs (`seti-`/`dev-`/`fa-`/`oct-` code
-//! points), which is what makes the listing scannable the way a Yazi listing
-//! is: `src` is a folder, `main.rs` is Rust, `README.md` is prose, and the eye
-//! can find the file it wants without reading every extension.
-//!
 //! A terminal without a patched font renders those code points as tofu, so
 //! [`FileIconStyle::Plain`] exists and is a complete, readable fallback — the
 //! exact markers that shipped before. Select it with `CODEGG_FILE_ICONS=plain`
@@ -129,10 +124,6 @@ mod glyph {
 }
 
 /// How a glyph is coloured, independent of any one theme.
-///
-/// The tone is resolved here and mapped to a theme color by [`icon_style`], so
-/// both navigators agree on what "a code file looks like" without either of
-/// them owning the mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tone {
     Directory,

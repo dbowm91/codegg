@@ -19,9 +19,6 @@
 //! a document change discards it. That contract is M013's and is preserved
 //! exactly. What changed is the *type* of the thing being parked: it was an
 //! LSP fact, and it is now an editor fact.
-//!
-//! [`EditorState::pending_effect`]:
-//!     crate::tui::app::state::editor::EditorState::pending_effect
 
 use codegg_protocol::lsp::LspReadOperation;
 
@@ -108,11 +105,6 @@ pub enum EditorPendingEffect {
     OpenCommandPalette,
     /// Toggle the editor's **keymap box** — its own catalogue of its keys,
     /// in the bottom-right corner of the editor.
-    ///
-    /// `space ?` asks "what can I press here?", and the `:` line answers a
-    /// different question ("what can I *do* here?"). They used to be the same
-    /// surface, which made the keymap undiscoverable from the keymap's own
-    /// gesture.
     OpenKeymap,
     /// Open the **rename prompt** — the `:` line, pre-filled with the rename
     /// command, waiting for the new name.

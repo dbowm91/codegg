@@ -1,12 +1,5 @@
 //! M004: the `/queue` box's three operations — open, refresh, and delete.
 //!
-//! Everything the box needs already exists daemon-side. `UserPromptQueueList`
-//! is a `ViaSession` + `Capability::SessionRead` read, and
-//! `UserPromptQueueDelete` is `ViaSession` + `Capability::AgentInvoke` **plus**
-//! the durable queue owner, enforced by `ControllerScope::QueueMutation`. This
-//! module issues those requests and applies their answers; it decides nothing
-//! about whether a delete is allowed.
-//!
 //! Two properties are load-bearing and both are about not lying to the user:
 //!
 //! * **A delete applies the projection that delete produced.**
