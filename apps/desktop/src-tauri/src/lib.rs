@@ -1,16 +1,23 @@
 mod artifact;
-mod bridge;
 mod control;
 mod lifecycle;
-mod present;
 mod projection;
 mod prompt;
 mod route;
+mod todos;
+
+// The host's view API is public so a cross-frontend test can compare what
+// the desktop reconstructs from the canonical projection snapshot against
+// what the TUI reconstructs from the same snapshot. It is the same
+// function the Tauri commands serve, so the comparison is against the
+// shipped path, not a test-only re-implementation.
+pub mod bridge;
+pub mod present;
 
 use bridge::{
-    ArtifactExcerptView, ConnectionSnapshot, ControllerSummaryView, DesktopEvent,
-    ProjectDetailView, ProjectSummary, PromptSubmitView, RouteTokenView, SessionListView,
-    SessionPresentationView, SessionView, SubscriptionInfo,
+    ArtifactExcerptView, ConnectionSnapshot, ControllerSummaryView, DesktopEvent, GitReadOperation,
+    GitReadView, ProjectDetailView, ProjectSummary, PromptSubmitView, RouteTokenView,
+    SessionListView, SessionPresentationView, SessionView, SkillCatalogueView, SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -947,6 +954,44 @@ async fn desktop_question_respond(
         .await
 }
 
+/// Task-state command: the route-selected session's todo list, carried
+/// into the presentation view. The renderer never asks the daemon for
+/// todos itself and never fabricates one: the host reads the list,
+/// fences the read on the route/connection generation, and fails closed
+/// when the daemon does not answer with a list.
+#[tauri::command]
+async fn desktop_todo_refresh(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<SessionPresentationView, String> {
+    state.route_todo_refresh(route_generation).await
+}
+
+/// Phase 3 read-only project facts. Narrow capability classes only: the
+/// renderer names the git fact set it wants, and the route names the
+/// project. No path ever crosses the bridge — the daemon resolves the
+/// repository root from its own durable project binding.
+#[tauri::command]
+async fn desktop_git_read(
+    state: State<'_, Arc<HostState>>,
+    operation: String,
+    route_generation: u64,
+) -> Result<GitReadView, String> {
+    let operation = GitReadOperation::parse(&operation)?;
+    state.route_git_read(operation, route_generation).await
+}
+
+/// Phase 3 read-only project facts: the route-selected project's skill
+/// catalogue. The renderer never names a project or a root; the route
+/// names the project and the daemon resolves the roots to search.
+#[tauri::command]
+async fn desktop_skill_catalogue(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<SkillCatalogueView, String> {
+    state.route_skill_catalogue(route_generation).await
+}
+
 /// M004 WP C projection commands. Narrow capability classes only:
 /// projection start/stop/current/subscribe for the route-selected
 /// session. No generic `CoreRequest` bridge, no filesystem paths.
@@ -1024,6 +1069,9 @@ pub fn run() {
             desktop_control_refresh,
             desktop_permission_respond,
             desktop_question_respond,
+            desktop_todo_refresh,
+            desktop_git_read,
+            desktop_skill_catalogue,
             desktop_projection_start,
             desktop_projection_stop,
             desktop_projection_current,

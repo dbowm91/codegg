@@ -1,13 +1,26 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ArtifactExcerptView, ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
+import { ActivityPanel } from './panels/ActivityPanel';
+import { GitPanel } from './panels/GitPanel';
+import { SkillsPanel } from './panels/SkillsPanel';
+import { SubagentPanel } from './panels/SubagentPanel';
+import { TaskPanel } from './panels/TaskPanel';
+import { ToolDetail } from './panels/ToolDetail';
+import { TranscriptPanel } from './panels/TranscriptPanel';
+import { TurnSummary } from './panels/TurnSummary';
 import type {
   ConnectionSnapshot,
+  GitBranchListView,
+  GitDiffView,
+  GitReadKind,
+  GitStatusView,
   ProjectDetailView,
   ProjectSummary,
   RouteTokenView,
   SessionPresentationView,
   SessionSummaryView,
+  SkillCatalogueView,
 } from './bridge-types';
 
 const initial: ConnectionSnapshot = { state: 'starting', daemonId: null, protocolVersion: null, uptimeSeconds: null, activeSessions: null, error: null, connectionGeneration: 0 };
@@ -44,8 +57,153 @@ export function App() {
   const [planMode, setPlanMode] = useState(false);
   const [promptBusy, setPromptBusy] = useState(false);
   const routeRequest = useRef(0);
+  const todoRequest = useRef(0);
+  const [todoBusy, setTodoBusy] = useState(false);
+  const [todoError, setTodoError] = useState<string | null>(null);
+  // Phase 3 project facts: the route-selected project's git facts and
+  // skill catalogue. Both are project-scoped reads, not projection
+  // data, so the renderer asks the host for them and keeps what the
+  // host last gave it.
+  const gitRequest = useRef(0);
+  const [gitFacts, setGitFacts] = useState<{
+    status: GitStatusView | null;
+    diff: GitDiffView | null;
+    branches: GitBranchListView | null;
+  }>({ status: null, diff: null, branches: null });
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const skillsRequest = useRef(0);
+  const [skills, setSkills] = useState<SkillCatalogueView | null>(null);
+  const [skillsBusy, setSkillsBusy] = useState(false);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
 
   const currentToken: RouteTokenView | null = detail?.routeToken ?? null;
+  // The route's own state, readable from the connection effect without
+  // making that effect depend on `detail` (which would re-run it on
+  // every route change).
+  const detailRef = useRef<ProjectDetailView | null>(null);
+  detailRef.current = detail;
+
+  // A projection push carries no todo list — todos live behind their
+  // own daemon read — so the last list the host gave us is kept rather
+  // than blanked by a push. The list belongs to one session, so it is
+  // dropped when the session changes.
+  const applyProjection = useCallback((view: SessionPresentationView) => {
+    setProjection((previous) =>
+      view.todos
+        ? view
+        : {
+            ...view,
+            todos:
+              previous && previous.sessionId === view.sessionId ? previous.todos : null,
+          },
+    );
+  }, []);
+
+  // Task state: the host reads the route-selected session's todo list
+  // from the daemon and carries it into the presented view. The
+  // renderer asks for it when the attached session changes and when the
+  // turn's state changes (a todo list is written during a turn and
+  // settles when it finishes). The host fences each read on the route
+  // generation, so a stale read is discarded by the host rather than
+  // merged here.
+  const refreshTodos = useCallback(
+    async (routeGeneration: number, sessionId: string) => {
+      const request = ++todoRequest.current;
+      setTodoBusy(true);
+      setTodoError(null);
+      try {
+        const view = await bridge.todoRefresh(routeGeneration);
+        if (request !== todoRequest.current) return;
+        if (view.sessionId !== sessionId) return;
+        // Only the list is taken from the reply: the rest of it is the
+        // host's snapshot at read time, and the renderer's own snapshot
+        // may already be newer.
+        if (view.todos) {
+          setProjection((previous) => (previous ? { ...previous, todos: view.todos } : view));
+        }
+      } catch (error) {
+        if (request !== todoRequest.current) return;
+        // A failed read is not an empty list: the task panel keeps the
+        // last list it was given and says the read failed.
+        setTodoError(String(error));
+      } finally {
+        if (request === todoRequest.current) setTodoBusy(false);
+      }
+    },
+    [],
+  );
+
+  // Phase 3 project facts. The host reads the route-selected project's
+  // git facts and skill catalogue from the daemon; the renderer only
+  // names the fact set it wants and renders what comes back. The host
+  // fences each read on the route generation, and the renderer fences
+  // on its own request counter, so a read that answers for a route
+  // that has moved on is never merged in.
+  const refreshGit = useCallback(async (routeGeneration: number) => {
+    const request = ++gitRequest.current;
+    setGitBusy(true);
+    setGitError(null);
+    const read = async (operation: GitReadKind) => {
+      try {
+        const view = await bridge.gitRead(operation, routeGeneration);
+        return { ok: true as const, operation, view };
+      } catch (error) {
+        return { ok: false as const, operation, error: String(error) };
+      }
+    };
+    const results = await Promise.all([
+      read('status'),
+      read('diff'),
+      read('branches'),
+    ]);
+    if (request !== gitRequest.current) return;
+    const failures: string[] = [];
+    const facts = { status: null, diff: null, branches: null } as {
+      status: GitStatusView | null;
+      diff: GitDiffView | null;
+      branches: GitBranchListView | null;
+    };
+    for (const result of results) {
+      if (!result.ok) {
+        // The three reads can fail the same way; report each distinct
+        // failure once.
+        if (!failures.includes(result.error)) failures.push(result.error);
+        continue;
+      }
+      const view = result.view;
+      if (view.kind === 'status') facts.status = view.status;
+      if (view.kind === 'diff') facts.diff = view.diff;
+      if (view.kind === 'branches') facts.branches = view.branches;
+    }
+    // A failed read is not an empty answer: the panel keeps the facts it
+    // already has and says which read failed.
+    setGitFacts((previous) => ({
+      status: facts.status ?? previous.status,
+      diff: facts.diff ?? previous.diff,
+      branches: facts.branches ?? previous.branches,
+    }));
+    if (failures.length) setGitError(failures.join('; '));
+    setGitBusy(false);
+  }, []);
+
+  const refreshSkills = useCallback(async (routeGeneration: number) => {
+    const request = ++skillsRequest.current;
+    setSkillsBusy(true);
+    setSkillsError(null);
+    try {
+      const catalogue = await bridge.skillCatalogue(routeGeneration);
+      if (request !== skillsRequest.current) return;
+      setSkills(catalogue);
+    } catch (error) {
+      if (request !== skillsRequest.current) return;
+      // A failed read is not an empty catalogue: the panel keeps the one
+      // it already has and says the read failed.
+      setSkillsError(String(error));
+    } finally {
+      if (request === skillsRequest.current) setSkillsBusy(false);
+    }
+  }, []);
 
   const refreshProjects = async (forGeneration = generation.current, forConnection = connectionRef.current.connectionGeneration) => {
     try {
@@ -102,13 +260,50 @@ export function App() {
   // any session attach can resume.
   useEffect(() => {
     if (connection.state !== 'connected') return;
-    routeRequest.current += 1;
+    // Only an *established* route is invalidated. The first connect
+    // establishes the route rather than replacing one, and bumping the
+    // request counter there dropped a selection the user made after the
+    // connection landed — the selection's own connection-generation
+    // check is what fences work across a real reconnect.
+    if (detailRef.current) routeRequest.current += 1;
     setDetail(null);
     setSessions([]);
     setProjection(null);
     setRouteError(null);
     setNewTitle('');
   }, [connection.state, connection.connectionGeneration]);
+
+  // The project facts belong to one project: a different project starts
+  // from "not read yet" rather than from the previous project's facts.
+  // The read effect below resets them when the project changes.
+  const factsProject = useRef<string | undefined>(undefined);
+
+  // Read the route-selected project's git facts and skill catalogue.
+  // They are project-scoped reads, not projection data, so the host
+  // reads them for the route's project and fences each read on the
+  // route generation. A route change re-reads them; a read that answers
+  // for a superseded route is discarded by the host.
+  useEffect(() => {
+    const projectId = detail?.projectId;
+    const routeGeneration = detail?.routeToken.routeGeneration;
+    if (factsProject.current !== projectId) {
+      factsProject.current = projectId;
+      // The in-flight reads are for the previous project: drop them and
+      // stop claiming to be busy.
+      gitRequest.current += 1;
+      skillsRequest.current += 1;
+      setGitFacts({ status: null, diff: null, branches: null });
+      setGitError(null);
+      setGitBusy(false);
+      setSkills(null);
+      setSkillsError(null);
+      setSkillsBusy(false);
+    }
+    if (!detail || routeGeneration === undefined || connection.state !== 'connected') return;
+    void refreshGit(routeGeneration);
+    void refreshSkills(routeGeneration);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection.state, connection.connectionGeneration, detail?.projectId, detail?.routeToken.routeGeneration]);
 
   // Projection push subscription for the attached session. Latest-only:
   // each pushed view atomically replaces the previous one. The host
@@ -142,7 +337,7 @@ export function App() {
           if (cancelled) return;
           if (connectionRef.current.connectionGeneration !== expectedConnection) return;
           if (view.sessionId !== expectedSession) return;
-          setProjection(view);
+          applyProjection(view);
         });
         if (!current()) {
           subscription.unsubscribe();
@@ -168,6 +363,23 @@ export function App() {
     // generations change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.state, connection.connectionGeneration, currentToken?.sessionId, currentToken?.routeGeneration, projection?.sessionId]);
+
+  // Read the attached session's todo list. The list is not in the
+  // projection, so it is read on its own: once when the session is
+  // attached, and again whenever the turn's identity or state changes
+  // (a todo list is written during a turn and settles when the turn
+  // finishes). The host fences each read on the route generation.
+  useEffect(() => {
+    const sessionId = currentToken?.sessionId;
+    if (!sessionId || connection.state !== 'connected') return;
+    if (!projection || projection.sessionId !== sessionId) return;
+    const routeGeneration = currentToken?.routeGeneration;
+    if (routeGeneration === undefined) return;
+    void refreshTodos(routeGeneration, sessionId);
+    // Re-read when the attached session, its route generation, or the
+    // turn's identity/state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection.state, connection.connectionGeneration, currentToken?.sessionId, currentToken?.routeGeneration, projection?.sessionId, projection?.turn?.turnId, projection?.turn?.status]);
 
   const selectProject = async (projectId: string) => {
     const request = ++routeRequest.current;
@@ -223,7 +435,7 @@ export function App() {
       setDetail((previous) => (previous ? { ...previous, routeToken: opened.routeToken } : previous));
       const view = await bridge.projectionStart(sessionId, opened.routeToken.routeGeneration);
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
-      setProjection(view);
+      applyProjection(view);
       await refreshControl(opened.routeToken.routeGeneration);
     } catch (error) {
       if (request !== routeRequest.current) return;
@@ -246,7 +458,7 @@ export function App() {
       setSessions((previous) => [created.session, ...previous].slice(0, 50));
       const view = await bridge.projectionStart(created.session.sessionId, created.routeToken.routeGeneration);
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
-      setProjection(view);
+      applyProjection(view);
       setNewTitle('');
       await refreshControl(created.routeToken.routeGeneration);
     } catch (error) {
@@ -278,11 +490,11 @@ export function App() {
       if (sessionId && (!projection || projection.sessionId !== sessionId)) {
         const view = await bridge.projectionStart(sessionId, accepted.routeToken.routeGeneration);
         if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
-        setProjection(view);
+        applyProjection(view);
       } else {
         const view = await bridge.projectionCurrent();
         if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
-        setProjection(view);
+        applyProjection(view);
       }
       await refreshControl(accepted.routeToken.routeGeneration);
     } catch (error) {
@@ -313,7 +525,7 @@ export function App() {
       setController(summary);
       const view = await bridge.projectionCurrent();
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
-      setProjection(view);
+      applyProjection(view);
     } catch (error) {
       if (request !== routeRequest.current) return;
       setRouteError(String(error));
@@ -341,7 +553,7 @@ export function App() {
       setController(summary);
       const view = await bridge.projectionCurrent();
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
-      setProjection(view);
+      applyProjection(view);
     } catch (error) {
       if (request !== routeRequest.current) return;
       setRouteError(String(error));
@@ -392,6 +604,10 @@ export function App() {
       {detail.routeToken.workspaceId && <div><h3>Prompt</h3><textarea data-testid="prompt-input" value={promptDraft} placeholder="Ask the session" onChange={(event) => setPromptDraft(event.target.value)} /><label><input type="checkbox" data-testid="plan-mode-checkbox" checked={planMode} onChange={(event) => setPlanMode(event.target.checked)} /> Plan mode</label><button data-testid="prompt-submit-button" disabled={promptBusy || !promptDraft.trim()} onClick={() => void submitPrompt()}>Submit prompt</button></div>}
     </section>}
     {routeError && <p role="alert" data-testid="route-error">{routeError}</p>}
+    {detail && <>
+      <GitPanel status={gitFacts.status} diff={gitFacts.diff} branches={gitFacts.branches} busy={gitBusy} error={gitError} onRefresh={currentToken ? () => void refreshGit(currentToken.routeGeneration) : undefined} />
+      <SkillsPanel catalogue={skills} busy={skillsBusy} error={skillsError} onRefresh={currentToken ? () => void refreshSkills(currentToken.routeGeneration) : undefined} />
+    </>}
     {projection && <section className="panel"><h2>Session</h2><dl><dt>Projection</dt><dd data-testid="projection-state">{projection.state}</dd><dt>Turn</dt><dd data-testid="turn-status">{projection.turn ? `${projection.turn.turnId} / ${projection.turn.status}` : 'idle'}</dd>{projection.truncatedMessages > 0 && <><dt>Omitted</dt><dd data-testid="truncated-messages">{projection.truncatedMessages} older message(s)</dd></>}<dt>Cursor</dt><dd data-testid="projection-cursor">seq {projection.cursor.eventSeq}</dd></dl>
       {projection.state === 'resyncing' && <p data-testid="resync-banner" role="status">Resuming projection — live updates paused.</p>}
       <h3>Messages</h3>{projection.messages.length ? <ul data-testid="message-list">{projection.messages.map((message) => <li key={message.messageId} data-testid="message-item"><strong>{message.role}</strong><p>{message.text}{message.truncated && ' …'}</p></li>)}</ul> : <p className="muted">No visible messages yet.</p>}
@@ -403,5 +619,13 @@ export function App() {
       {excerpt && <div><h3>Excerpt</h3><p data-testid="artifact-excerpt">{excerpt.content}</p><p data-testid="artifact-excerpt-meta">{excerpt.handle} bytes {excerpt.start}-{excerpt.end}{excerpt.truncated ? ' (truncated)' : ''}{excerpt.redacted ? ' (redacted)' : ''}</p></div>}
       <button data-testid="projection-stop-button" onClick={() => void stopProjection()}>Detach projection</button>
     </section>}
+    {projection && <>
+      <TurnSummary turn={projection.turn} />
+      <TranscriptPanel messages={projection.transcript} truncatedMessages={projection.truncatedTranscriptMessages} />
+      <ToolDetail tools={projection.tools} />
+      <SubagentPanel subagents={projection.subagents} agentTree={projection.agentTree} />
+      <ActivityPanel agentRuns={projection.agentRuns} toolPrograms={projection.toolPrograms} worktrees={projection.worktrees} runGroups={projection.runGroups} convergences={projection.convergences} />
+      <TaskPanel todos={projection.todos} jobs={projection.jobs} busy={todoBusy} error={todoError} onRefresh={currentToken ? () => void refreshTodos(currentToken.routeGeneration, projection.sessionId) : undefined} />
+    </>}
   </main>;
 }

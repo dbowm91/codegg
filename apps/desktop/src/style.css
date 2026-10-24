@@ -1,11 +1,145 @@
-:root { color: #e9edf3; background: #10141b; font: 15px system-ui, sans-serif; }
-body { margin: 0; } main { max-width: 760px; margin: 8vh auto; padding: 0 24px; }
+/*
+ * CodeGG desktop stylesheet.
+ *
+ * WebKitGTK baseline (Linux is a supported target and is the least
+ * capable renderer this app ships to). The rules below are the feature
+ * set every rule in this file is allowed to use:
+ *
+ *   - flexbox and grid basics only;
+ *   - NO `subgrid`, NO `:has()` used for layout, NO `text-wrap: balance`,
+ *     NO CSS container queries (`@container` / `container-type`) for
+ *     layout;
+ *   - explicit `overflow` on every scroll container (the transcript
+ *     virtualiser measures its own scroll box, so an implicit overflow
+ *     would break the window);
+ *   - NO `content-visibility` on correctness-critical rows (the
+ *     transcript's rendered window is exactly the set of rows the
+ *     virtualiser decided to mount);
+ *   - vendor-prefixed properties where a prefix is needed for the
+ *     baseline (`-webkit-overflow-scrolling`, `-webkit-user-select`);
+ *   - colours come from the theme tokens declared on `:root` — no
+ *     hardcoded selection colours anywhere in this file.
+ *
+ * Layout rules that depend on a feature outside that set are avoided
+ * rather than polyfilled: the desktop is a single-column shell, so
+ * nothing here needs a query, a `:has()` selector or a subgrid.
+ */
+
+:root {
+  color-scheme: dark;
+  --surface-fg: #e9edf3;
+  --surface-bg: #10141b;
+  --surface-panel: #191f29;
+  --surface-border: #293342;
+  --surface-muted: #8996a8;
+  --surface-muted-strong: #9ba8b9;
+  --surface-accent: #91b7ff;
+  --surface-accent-fg: #10141b;
+  --surface-status-neutral: #303744;
+  --surface-status-ok-bg: #173d31;
+  --surface-status-ok-fg: #8de2bb;
+  --surface-status-bad-bg: #48252b;
+  --surface-status-bad-fg: #ffabb4;
+  /* The one selection surface. Every selectable surface uses it, so the
+   * app never hardcodes a selection colour of its own. */
+  --surface-selection-bg: #26456f;
+  --surface-selection-fg: #e9edf3;
+  --surface-row-hover-bg: #202836;
+  color: var(--surface-fg);
+  background: var(--surface-bg);
+  font: 15px system-ui, sans-serif;
+}
+
+body { margin: 0; }
+
+main { max-width: 760px; margin: 8vh auto; padding: 0 24px; }
+
 header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
-h1 { margin: 3px 0; font-size: 34px; } h2 { margin-top: 0; font-size: 18px; }
-.eyebrow, .muted { color: #8996a8; } .eyebrow { font-size: 11px; letter-spacing: .14em; }
-.panel { background: #191f29; border: 1px solid #293342; border-radius: 12px; padding: 22px; margin: 16px 0; }
-.status { border-radius: 99px; padding: 7px 12px; background: #303744; text-transform: capitalize; }
-.status.connected { background: #173d31; color: #8de2bb; } .status.disconnected, .status.incompatible { background: #48252b; color: #ffabb4; }
-dl { display: grid; grid-template-columns: 1fr 2fr; gap: 11px; } dt, small { color: #9ba8b9; } dd { margin: 0; overflow-wrap: anywhere; }
-button { background: #91b7ff; border: 0; border-radius: 7px; color: #10141b; padding: 9px 14px; font-weight: 650; cursor: pointer; } button:disabled { opacity: .6; }
-ul { list-style: none; padding: 0; margin: 0; } li { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid #293342; }
+
+h1 { margin: 3px 0; font-size: 34px; }
+h2 { margin-top: 0; font-size: 18px; }
+h3 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: baseline; gap: 10px; }
+h4 { font-size: 13px; margin: 14px 0 6px; color: var(--surface-muted); }
+
+.eyebrow, .muted { color: var(--surface-muted); }
+.eyebrow { font-size: 11px; letter-spacing: .14em; }
+
+.panel { background: var(--surface-panel); border: 1px solid var(--surface-border); border-radius: 12px; padding: 22px; margin: 16px 0; }
+
+.status { border-radius: 99px; padding: 7px 12px; background: var(--surface-status-neutral); text-transform: capitalize; }
+.status.connected { background: var(--surface-status-ok-bg); color: var(--surface-status-ok-fg); }
+.status.disconnected, .status.incompatible { background: var(--surface-status-bad-bg); color: var(--surface-status-bad-fg); }
+
+dl { display: grid; grid-template-columns: 1fr 2fr; gap: 11px; }
+dt, small { color: var(--surface-muted-strong); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+button { background: var(--surface-accent); border: 0; border-radius: 7px; color: var(--surface-accent-fg); padding: 9px 14px; font-weight: 650; cursor: pointer; }
+button:disabled { opacity: .6; }
+
+ul { list-style: none; padding: 0; margin: 0; }
+li { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--surface-border); }
+
+::selection { background: var(--surface-selection-bg); color: var(--surface-selection-fg); }
+li::selection, p::selection, pre::selection { background: var(--surface-selection-bg); color: var(--surface-selection-fg); }
+
+/*
+ * The presenter surfaces. Each is its own block so a reader can scan
+ * one surface without wading through the others.
+ */
+.surface {
+  background: var(--surface-panel);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  padding: 22px;
+  margin: 16px 0;
+}
+
+.surface li { gap: 12px; align-items: baseline; flex-wrap: wrap; justify-content: flex-start; }
+.surface li > * { overflow-wrap: anywhere; }
+
+/* A row of facts (the branch and the working tree's state, the diff
+ * counts). Flexbox only: the baseline has no grid and no queries, and
+ * a row that wraps is still readable. */
+.fact-row { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.fact-row > * { overflow-wrap: anywhere; }
+
+/* The virtualised transcript. The scroll box is explicit: the
+ * virtualiser measures it, so its overflow must not be implied. */
+.transcript-scroll {
+  height: 420px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.transcript-canvas { position: relative; width: 100%; }
+
+.transcript-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding-bottom: 10px;
+  box-sizing: border-box;
+}
+
+.transcript-turn { margin: 0 0 6px; color: var(--surface-muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+
+.transcript-message { border-left: 2px solid var(--surface-border); padding-left: 10px; }
+.transcript-message p { margin: 4px 0 0; white-space: pre-wrap; }
+
+pre {
+  background: var(--surface-bg);
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 6px 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.tool-detail-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }

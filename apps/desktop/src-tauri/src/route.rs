@@ -24,11 +24,15 @@ use codegg_client::StoppedDriver;
 use codegg_protocol::{
     core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
     dto::Session,
+    git::{GitChangeKindDto, GitReadOperationDto, GitReadRequestDto, GitReadResultDto},
+    skill::{SkillCatalogueRequestDto, SkillSourceDto},
 };
 
 use super::bridge::{
-    ProjectDetailView, RouteTokenView, SessionListView, SessionSummaryView, SessionView,
-    WorkspaceView,
+    GitBranchListView, GitBranchView, GitChangeKind, GitChangedFileView, GitDiffView, GitReadKind,
+    GitReadOperation, GitReadView, GitStatusView, ProjectDetailView, RouteTokenView,
+    SessionListView, SessionSummaryView, SessionView, SkillCatalogueView, SkillSource,
+    SkillSummaryView, WorkspaceView,
 };
 use super::projection::ProjectionOwner;
 use super::HostState;
@@ -118,6 +122,108 @@ pub(crate) fn session_summary_view(session: &Session) -> SessionSummaryView {
             .map(|binding| binding.project_id.clone())
             .unwrap_or_else(|| session.project_id.clone()),
         workspace_id,
+    }
+}
+
+/// The protocol operation a desktop git operation names.
+///
+/// The mapping is total and closed in both directions: the renderer can
+/// only name an operation the daemon already knows how to read.
+fn git_read_operation(operation: GitReadOperation) -> GitReadOperationDto {
+    match operation {
+        GitReadOperation::Status => GitReadOperationDto::Status,
+        GitReadOperation::Diff => GitReadOperationDto::Diff,
+        GitReadOperation::Branches => GitReadOperationDto::Branches,
+    }
+}
+
+/// How a file changed, in the bridge's own vocabulary.
+fn git_change_kind(kind: GitChangeKindDto) -> GitChangeKind {
+    match kind {
+        GitChangeKindDto::Added => GitChangeKind::Added,
+        GitChangeKindDto::Modified => GitChangeKind::Modified,
+        GitChangeKindDto::Deleted => GitChangeKind::Deleted,
+        GitChangeKindDto::Renamed => GitChangeKind::Renamed,
+        GitChangeKindDto::Copied => GitChangeKind::Copied,
+        GitChangeKindDto::Other => GitChangeKind::Other,
+    }
+}
+
+/// The namespace a skill was discovered in, in the bridge's own
+/// vocabulary.
+fn skill_source(source: SkillSourceDto) -> SkillSource {
+    match source {
+        SkillSourceDto::Project => SkillSource::Project,
+        SkillSourceDto::Global => SkillSource::Global,
+        SkillSourceDto::Plugin => SkillSource::Plugin,
+        SkillSourceDto::Configured => SkillSource::Configured,
+        SkillSourceDto::Native => SkillSource::Native,
+    }
+}
+
+/// Build the renderer view for one git read.
+///
+/// The daemon tags its answer by the operation that produced it, so a
+/// payload for another operation is a failed read, never an empty one.
+fn git_read_view(
+    result: GitReadResultDto,
+    operation: GitReadOperation,
+) -> Result<GitReadView, String> {
+    match (operation, result) {
+        (GitReadOperation::Status, GitReadResultDto::Status(status)) => Ok(GitReadView {
+            kind: GitReadKind::Status,
+            status: Some(GitStatusView {
+                branch: status.branch,
+                is_dirty: status.is_dirty,
+                commit_hash: status.commit_hash,
+                stash_count: status.stash_count,
+            }),
+            diff: None,
+            branches: None,
+        }),
+        (GitReadOperation::Diff, GitReadResultDto::Diff(diff)) => Ok(GitReadView {
+            kind: GitReadKind::Diff,
+            status: None,
+            diff: Some(GitDiffView {
+                files_changed: diff.files_changed,
+                insertions: diff.insertions,
+                deletions: diff.deletions,
+                files: diff
+                    .files
+                    .into_iter()
+                    .map(|file| GitChangedFileView {
+                        path: file.path,
+                        kind: git_change_kind(file.kind),
+                    })
+                    .collect(),
+                total_files: diff.total_files,
+                truncated: diff.truncated,
+            }),
+            branches: None,
+        }),
+        (GitReadOperation::Branches, GitReadResultDto::Branches(branches)) => Ok(GitReadView {
+            kind: GitReadKind::Branches,
+            status: None,
+            diff: None,
+            branches: Some(GitBranchListView {
+                branches: branches
+                    .branches
+                    .into_iter()
+                    .map(|branch| GitBranchView {
+                        name: branch.name,
+                        is_current: branch.is_current,
+                        is_detached: branch.is_detached,
+                        upstream: branch.upstream,
+                        ahead: branch.ahead,
+                        behind: branch.behind,
+                        head: branch.head,
+                    })
+                    .collect(),
+                total: branches.total,
+                truncated: branches.truncated,
+            }),
+        }),
+        _ => Err("daemon returned a git read result for another operation".into()),
     }
 }
 
@@ -406,6 +512,121 @@ impl HostState {
         })
     }
 
+    /// Read one read-only git fact set for the route-selected project.
+    ///
+    /// The project identity comes from the route, never from the
+    /// renderer: the request carries a project id and no path, and the
+    /// daemon resolves the repository root from its own durable binding
+    /// (`crates/codegg-protocol/src/git.rs:40-56`). The renderer chooses
+    /// only *which* fact set to read.
+    ///
+    /// The read is fenced exactly like the control-plane refresh
+    /// (`apps/desktop/src-tauri/src/control.rs:90-124`): a completion for
+    /// a superseded route or connection generation is discarded, never
+    /// published. A reply that is not a git read — or that carries
+    /// another operation's facts — is a failed read, not an empty one.
+    pub(crate) async fn route_git_read(
+        &self,
+        operation: GitReadOperation,
+        expected_generation: u64,
+    ) -> Result<GitReadView, String> {
+        let (project_id, _workspace_id, connection_generation) =
+            self.route_selection(expected_generation, false).await?;
+        let (client, _) = self.route_request().await?;
+        let response = client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::GitRead {
+                    request: GitReadRequestDto {
+                        project_id: project_id.clone(),
+                        operation: git_read_operation(operation),
+                        max_rows: None,
+                    },
+                },
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let CoreResponse::GitRead { result } = response else {
+            return Err(unexpected_daemon_response(&response));
+        };
+        let view = git_read_view(result, operation)?;
+        {
+            let route = self.route.lock().await;
+            if self.current_generation() != connection_generation
+                || route.connection_generation != connection_generation
+                || route.route_generation != expected_generation
+                || route.project_id.as_deref() != Some(project_id.as_str())
+            {
+                return Err("stale route; git read discarded".into());
+            }
+        }
+        Ok(view)
+    }
+
+    /// Read the route-selected project's skill catalogue.
+    ///
+    /// Project-scoped like the git read: the project identity comes from
+    /// the route and the daemon resolves the roots to search from its own
+    /// durable binding. The response is metadata only — never a skill
+    /// body and never a path — and it stays inside the daemon's own entry
+    /// bound, so the view keeps the daemon's `total`/`truncated` pair
+    /// rather than implying the list is complete.
+    pub(crate) async fn route_skill_catalogue(
+        &self,
+        expected_generation: u64,
+    ) -> Result<SkillCatalogueView, String> {
+        let (project_id, _workspace_id, connection_generation) =
+            self.route_selection(expected_generation, false).await?;
+        let (client, _) = self.route_request().await?;
+        let response = client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::SkillCatalogueList {
+                    request: SkillCatalogueRequestDto {
+                        project_id: project_id.clone(),
+                        max_entries: None,
+                    },
+                },
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let CoreResponse::SkillCatalogueList { result } = response else {
+            return Err(unexpected_daemon_response(&response));
+        };
+        if result.project_id != project_id {
+            return Err("daemon returned a skill catalogue for another project".into());
+        }
+        let view = SkillCatalogueView {
+            project_id: result.project_id,
+            skills: result
+                .skills
+                .into_iter()
+                .map(|skill| SkillSummaryView {
+                    name: skill.name,
+                    description: skill.description,
+                    source: skill_source(skill.source),
+                    content_digest: skill.content_digest,
+                    resource_count: skill.resource_count,
+                })
+                .collect(),
+            total: result.total,
+            truncated: result.truncated,
+        };
+        {
+            let route = self.route.lock().await;
+            if self.current_generation() != connection_generation
+                || route.connection_generation != connection_generation
+                || route.route_generation != expected_generation
+                || route.project_id.as_deref() != Some(project_id.as_str())
+            {
+                return Err("stale route; skill catalogue read discarded".into());
+            }
+        }
+        Ok(view)
+    }
+
     /// Snapshot the current project/workspace selection, requiring a
     /// live connection, a matching route generation, and (optionally) a
     /// selected workspace.
@@ -437,6 +658,10 @@ mod tests {
     use super::*;
     use codegg_protocol::dto::{ProjectDetailsDto, ProjectSummaryDto, ProjectWorkspaceSummaryDto};
     use codegg_protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
+    use codegg_protocol::git::{
+        GitBranchListDto, GitChangedFileDto, GitDiffSummaryDto, GitRepoStatusDto,
+    };
+    use codegg_protocol::skill::{SkillCatalogueDto, SkillSummaryDto};
 
     fn detail_response(
         project_id: &str,
@@ -1767,6 +1992,388 @@ mod tests {
             error.contains("discarded")
                 || error.contains("not connected")
                 || error.contains("no current route"),
+            "unexpected error: {error}"
+        );
+        server.await.expect("server");
+    }
+
+    // ---- Phase 3: read-only project facts (git facts, skill catalogue) ----
+
+    #[test]
+    fn the_git_operation_set_is_closed() {
+        // The renderer names which facts to read; an unknown name is
+        // refused rather than defaulted, so a read can never be widened.
+        assert_eq!(
+            GitReadOperation::parse("status").expect("status"),
+            GitReadOperation::Status
+        );
+        assert_eq!(
+            GitReadOperation::parse("diff").expect("diff"),
+            GitReadOperation::Diff
+        );
+        assert_eq!(
+            GitReadOperation::parse("branches").expect("branches"),
+            GitReadOperation::Branches
+        );
+        assert!(GitReadOperation::parse("commit").is_err());
+        assert!(GitReadOperation::parse("").is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_read_carries_the_routes_project_id() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            let request = match payload {
+                CoreRequest::GitRead { request } => request,
+                other => panic!("expected a git read, got {other:?}"),
+            };
+            // The renderer named only the operation: the project comes
+            // from the route, and the request carries no path at all.
+            assert_eq!(request.project_id, "proj-a");
+            assert_eq!(request.operation, GitReadOperationDto::Status);
+            assert_eq!(request.max_rows, None);
+            let rendered = serde_json::to_value(&request).expect("request renders");
+            assert!(
+                rendered.get("path").is_none() && rendered.get("repository_root").is_none(),
+                "a client-supplied path must not survive into the request: {rendered}"
+            );
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::GitRead {
+                        result: GitReadResultDto::Status(GitRepoStatusDto {
+                            branch: "main".into(),
+                            is_dirty: true,
+                            commit_hash: Some("abc123".into()),
+                            stash_count: 2,
+                        }),
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let view = state
+            .route_git_read(
+                GitReadOperation::Status,
+                detail.route_token.route_generation,
+            )
+            .await
+            .expect("git read");
+        assert_eq!(view.kind, GitReadKind::Status);
+        let status = view.status.expect("status facts");
+        assert_eq!(status.branch, "main");
+        assert!(status.is_dirty);
+        assert_eq!(status.commit_hash.as_deref(), Some("abc123"));
+        assert_eq!(status.stash_count, 2);
+        // The view carries one fact set; the others stay absent.
+        assert!(view.diff.is_none());
+        assert!(view.branches.is_none());
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_read_keeps_the_daemons_bound_and_its_change_kinds() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::GitRead { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::GitRead {
+                        result: GitReadResultDto::Diff(GitDiffSummaryDto {
+                            files_changed: 900,
+                            insertions: 12,
+                            deletions: 3,
+                            files: vec![GitChangedFileDto {
+                                path: "src/lib.rs".into(),
+                                kind: GitChangeKindDto::Modified,
+                            }],
+                            total_files: 900,
+                            truncated: true,
+                        }),
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let view = state
+            .route_git_read(GitReadOperation::Diff, detail.route_token.route_generation)
+            .await
+            .expect("git read");
+        assert_eq!(view.kind, GitReadKind::Diff);
+        let diff = view.diff.expect("diff facts");
+        assert_eq!(diff.files_changed, 900);
+        assert_eq!(diff.total_files, 900);
+        // The daemon capped the list: the renderer must be able to say so.
+        assert!(diff.truncated);
+        assert_eq!(diff.files.len(), 1);
+        assert_eq!(diff.files[0].path, "src/lib.rs");
+        assert_eq!(diff.files[0].kind, GitChangeKind::Modified);
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_read_is_discarded_when_the_route_moves_on() {
+        let (endpoint, listener) = short_endpoint();
+        let seen = std::sync::Arc::new(tokio::sync::Notify::new());
+        let seen_server = seen.clone();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (git_id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::GitRead { .. }));
+            seen_server.notify_one();
+            // The route moves on while the read is in flight.
+            let (detail_id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    detail_id,
+                    detail_response("proj-b", vec![("ws-b", "Two", None)], 0),
+                )
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            daemon
+                .respond(
+                    git_id,
+                    CoreResponse::GitRead {
+                        result: GitReadResultDto::Status(GitRepoStatusDto {
+                            branch: "stale".into(),
+                            is_dirty: false,
+                            commit_hash: None,
+                            stash_count: 0,
+                        }),
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let generation = detail.route_token.route_generation;
+        let reading = state.clone();
+        let read = tokio::spawn(async move {
+            reading
+                .route_git_read(GitReadOperation::Status, generation)
+                .await
+        });
+        seen.notified().await;
+        state
+            .route_project_detail("proj-b".into())
+            .await
+            .expect("second detail");
+        let error = read
+            .await
+            .expect("join")
+            .expect_err("a stale read must not publish");
+        assert!(error.contains("discarded"), "unexpected error: {error}");
+        let route = state.route.lock().await;
+        assert_eq!(route.project_id.as_deref(), Some("proj-b"));
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_read_rejects_facts_for_another_operation() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::GitRead { .. }));
+            // The daemon answered a different fact set than the one asked
+            // for: a failed read, not an empty one.
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::GitRead {
+                        result: GitReadResultDto::Branches(GitBranchListDto {
+                            branches: Vec::new(),
+                            total: 0,
+                            truncated: false,
+                        }),
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let error = state
+            .route_git_read(
+                GitReadOperation::Status,
+                detail.route_token.route_generation,
+            )
+            .await
+            .expect_err("a mismatched payload must not read as an empty answer");
+        assert!(
+            error.contains("another operation"),
+            "unexpected error: {error}"
+        );
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn skill_catalogue_read_carries_the_routes_project_id() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            let request = match payload {
+                CoreRequest::SkillCatalogueList { request } => request,
+                other => panic!("expected a skill catalogue read, got {other:?}"),
+            };
+            // The project comes from the route, and the request carries no
+            // root for the daemon to be pointed at.
+            assert_eq!(request.project_id, "proj-a");
+            assert_eq!(request.max_entries, None);
+            let rendered = serde_json::to_value(&request).expect("request renders");
+            assert!(
+                rendered.get("path").is_none() && rendered.get("skills_root").is_none(),
+                "a client-supplied root must not survive into the request: {rendered}"
+            );
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::SkillCatalogueList {
+                        result: SkillCatalogueDto {
+                            project_id: "proj-a".into(),
+                            skills: vec![SkillSummaryDto {
+                                name: "testing-ci".into(),
+                                description: "Select focused verification.".into(),
+                                source: SkillSourceDto::Project,
+                                content_digest: "sha256:abc".into(),
+                                resource_count: 2,
+                            }],
+                            total: 300,
+                            truncated: true,
+                        },
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let catalogue = state
+            .route_skill_catalogue(detail.route_token.route_generation)
+            .await
+            .expect("catalogue");
+        assert_eq!(catalogue.project_id, "proj-a");
+        assert_eq!(catalogue.skills.len(), 1);
+        assert_eq!(catalogue.skills[0].name, "testing-ci");
+        assert_eq!(catalogue.skills[0].source, SkillSource::Project);
+        assert_eq!(catalogue.skills[0].resource_count, 2);
+        // The daemon capped the catalogue: the renderer must be able to
+        // say so rather than implying the list is complete.
+        assert_eq!(catalogue.total, 300);
+        assert!(catalogue.truncated);
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn skill_catalogue_fails_closed_on_a_daemon_error() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectGet { .. }));
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", None)], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SkillCatalogueList { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Error {
+                        code: "skill_catalogue_unavailable".into(),
+                        message: "project workspace is unavailable".into(),
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        let error = state
+            .route_skill_catalogue(detail.route_token.route_generation)
+            .await
+            .expect_err("a rejected read must not read as an empty catalogue");
+        assert!(
+            error.contains("skill_catalogue_unavailable"),
             "unexpected error: {error}"
         );
         server.await.expect("server");

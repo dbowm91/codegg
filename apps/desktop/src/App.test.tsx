@@ -21,6 +21,9 @@ vi.mock('./bridge', () => ({
     projectionStart: vi.fn(),
     projectionStop: vi.fn(),
     projectionCurrent: vi.fn(),
+    todoRefresh: vi.fn(),
+    gitRead: vi.fn(),
+    skillCatalogue: vi.fn(),
     subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),
@@ -270,14 +273,38 @@ describe('session route flow', () => {
     projectId: 'p0',
     workspaceId: 'w0',
     state,
-    turn: { turnId: 'turn-1', status: 'active', updatedAt: 7, stopReason: null, error: null, messageCount: 1, toolCount: 0, pendingPermissions: 0, pendingQuestions: 0, inputTokens: 10, outputTokens: 20 },
+    turn: {
+      turnId: 'turn-1',
+      status: 'active',
+      updatedAt: 7,
+      stopReason: null,
+      error: null,
+      messageCount: 1,
+      toolCount: 0,
+      pendingPermissions: 0,
+      pendingQuestions: 0,
+      inputTokens: 10,
+      outputTokens: 20,
+      cachedTokens: 0,
+      contextLimit: 200000,
+      reasoningTokens: 0,
+    },
     messages: [{ messageId: 'm-1', role: 'assistant', text: 'on it', truncated: false }],
     truncatedMessages: 0,
+    transcript: [],
+    truncatedTranscriptMessages: 0,
     tools: [],
     runs: [],
     jobs: [],
     subagents: [],
+    agentTree: [],
+    agentRuns: [],
+    toolPrograms: [],
+    worktrees: [],
+    runGroups: [],
+    convergences: [],
     recentTurns: [],
+    todos: null,
     pendingPermissions: [],
     pendingQuestions: [],
     controller: null,
@@ -298,6 +325,7 @@ describe('session route flow', () => {
       routeToken: token(routeGeneration, sessionId),
     }));
     vi.mocked(bridge.projectionStart).mockImplementation(async (sessionId: string) => presentation(sessionId));
+    vi.mocked(bridge.todoRefresh).mockImplementation(async () => presentation('s-1'));
     vi.mocked(bridge.promptSubmit).mockImplementation(async (_text: string, _planMode: boolean, routeGeneration: number) => ({
       intentId: 'intent-1',
       routeToken: token(routeGeneration, 's-1'),
@@ -316,6 +344,65 @@ describe('session route flow', () => {
       redacted: false,
     }));
     vi.mocked(bridge.subscribeProjection).mockImplementation(async () => ({ unsubscribe: vi.fn() }));
+    vi.mocked(bridge.gitRead).mockImplementation(async (operation: string) => {
+      if (operation === 'status') {
+        return {
+          kind: 'status' as const,
+          status: { branch: 'main', isDirty: true, commitHash: 'abc123', stashCount: 0 },
+          diff: null,
+          branches: null,
+        };
+      }
+      if (operation === 'diff') {
+        return {
+          kind: 'diff' as const,
+          status: null,
+          diff: {
+            filesChanged: 1,
+            insertions: 4,
+            deletions: 2,
+            files: [{ path: 'src/lib.rs', kind: 'modified' as const }],
+            totalFiles: 1,
+            truncated: false,
+          },
+          branches: null,
+        };
+      }
+      return {
+        kind: 'branches' as const,
+        status: null,
+        diff: null,
+        branches: {
+          branches: [
+            {
+              name: 'main',
+              isCurrent: true,
+              isDetached: false,
+              upstream: 'origin/main',
+              ahead: 0,
+              behind: 0,
+              head: 'abc123',
+            },
+          ],
+          total: 1,
+          truncated: false,
+        },
+      };
+    });
+    vi.mocked(bridge.skillCatalogue).mockImplementation(async () => ({
+      projectId: 'p0',
+      skills: [
+        {
+          name: 'testing-ci',
+          description: 'Select focused verification.',
+          source: 'project' as const,
+          contentDigest: 'sha256:abc',
+          resourceCount: 0,
+        },
+      ],
+      total: 1,
+      truncated: false,
+    }));
   });
 
   it('drives projectdetail to workspaceselect to session open and projection', async () => {
@@ -338,6 +425,41 @@ describe('session route flow', () => {
     expect(bridge.projectionStart).toHaveBeenCalledWith('s-1', 2);
     expect(await screen.findByText('on it')).toBeInTheDocument();
     expect(screen.getByTestId('turn-status')).toHaveTextContent('turn-1 / active');
+  });
+
+  it('reads the project facts for the route-selected project', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
+    // The facts are read for the route's project, with the route's own
+    // generation: the renderer names the fact set, never the project.
+    await waitFor(() => expect(bridge.gitRead).toHaveBeenCalledWith('status', 1));
+    expect(bridge.gitRead).toHaveBeenCalledWith('diff', 1);
+    expect(bridge.gitRead).toHaveBeenCalledWith('branches', 1);
+    await waitFor(() => expect(bridge.skillCatalogue).toHaveBeenCalledWith(1));
+    expect(await screen.findByTestId('git-branch')).toHaveTextContent('main');
+    expect(screen.getByTestId('git-state')).toHaveTextContent('dirty');
+    expect(screen.getByTestId('git-file-path')).toHaveTextContent('src/lib.rs');
+    expect(screen.getByTestId('git-branch-current')).toHaveTextContent('current');
+    expect(screen.getByTestId('skill-name')).toHaveTextContent('testing-ci');
+  });
+
+  it('reports a failed project-fact read without clobbering the route error', async () => {
+    vi.mocked(bridge.gitRead).mockRejectedValue(new Error('git_facts_unavailable: unavailable'));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
+    // A failed read is a git-surface condition, not a route failure.
+    expect(await screen.findByTestId('git-error')).toHaveTextContent(
+      'Git read failed: Error: git_facts_unavailable: unavailable',
+    );
+    expect(screen.queryByTestId('route-error')).not.toBeInTheDocument();
   });
 
   it('drops a late session list after a newer route wins', async () => {
@@ -617,5 +739,66 @@ describe('session route flow', () => {
     // Denial never clears the pending item; the button re-enables.
     expect(screen.getByTestId('permission-item')).toBeInTheDocument();
     expect(screen.getByTestId('permission-deny-perm:s-1:turn-1:p-1')).not.toBeDisabled();
+  });
+
+  it('reads the session todo list through the host and renders it', async () => {
+    vi.mocked(bridge.todoRefresh).mockImplementation(async () => ({
+      ...presentation('s-1'),
+      todos: {
+        sessionId: 's-1',
+        items: [
+          { id: 'todo-1', content: 'Ship the presenter', status: 'in_progress', priority: 'high' },
+        ],
+      },
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    // The host owns the read: the renderer asks for the route's
+    // generation and never talks to the daemon itself.
+    await waitFor(() => expect(bridge.todoRefresh).toHaveBeenCalledWith(2));
+    expect(await screen.findByTestId('task-item')).toHaveTextContent('Ship the presenter');
+    expect(screen.getByTestId('task-glyph')).toHaveTextContent('[>]');
+  });
+
+  it('keeps the last todo list when a projection push carries none', async () => {
+    vi.mocked(bridge.todoRefresh).mockImplementation(async () => ({
+      ...presentation('s-1'),
+      todos: {
+        sessionId: 's-1',
+        items: [{ id: 'todo-1', content: 'Ship the presenter', status: 'pending', priority: 'low' }],
+      },
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await screen.findByTestId('task-item');
+    // A projection push carries no todo list (todos live behind their
+    // own daemon read), so the list must survive the push rather than
+    // be blanked by it.
+    await act(async () => {
+      vi.mocked(bridge.subscribeProjection).mock.calls[0][0](presentation('s-1'));
+    });
+    expect(screen.getByTestId('task-item')).toHaveTextContent('Ship the presenter');
   });
 });
