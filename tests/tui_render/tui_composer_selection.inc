@@ -17,10 +17,22 @@
 //! the case the mode cannot: a `/help` box that `Esc` has moved into Normal
 //! mode.
 
+use codegg::core::CoreClient;
+use codegg::error::AppError;
+use codegg::protocol::core::{
+    CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope,
+};
 use codegg::tui::app::{App, Dialog};
 use codegg::tui::components::dialogs::help::HelpRoute;
+use codegg::tui::document_session::TuiDocumentSession;
+use codegg::tui::editor::EditorMode;
 use codegg::tui::input::{InputAction, InputMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::Terminal;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 fn test_app() -> App {
     App::new_for_testing("/tmp".into())
@@ -54,9 +66,376 @@ fn toasts(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// Draw the app and hand back the frame's buffer.
+fn render(app: &mut App, width: u16, height: u16) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("render the app");
+    terminal.backend().buffer().clone()
+}
+
+/// The text the frame painted, row by row.
+fn frame_text(buffer: &Buffer) -> String {
+    let area = buffer.area;
+    let mut text = String::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// The characters the frame painted with the selection's own colours.
+///
+/// The caret block is painted **over** the selection's head — the caret
+/// sits on the head — so the head character is the one character of a
+/// selection the frame does not paint with the selection's colours.
+fn painted_selection(app: &App, buffer: &Buffer) -> String {
+    let theme = &app.ui_state.theme;
+    let area = buffer.area;
+    let mut painted = String::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &buffer[(x, y)];
+            if cell.bg == theme.selection && cell.fg == theme.selection_text {
+                painted.push_str(cell.symbol());
+            }
+        }
+    }
+    painted
+}
+
+/// The characters the frame painted with the caret block's colours.
+///
+/// The block is the caret's cell, and the caret is the selection's head, so
+/// this is the one character of a selection the selection's own colours do
+/// not reach.
+fn painted_caret(app: &App, buffer: &Buffer) -> String {
+    let theme = &app.ui_state.theme;
+    let area = buffer.area;
+    let mut painted = String::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &buffer[(x, y)];
+            if cell.bg == theme.primary && cell.fg == theme.background {
+                painted.push_str(cell.symbol());
+            }
+        }
+    }
+    painted
+}
+
+/// A core client that answers nothing.
+///
+/// The editor's mode is read off an open document, and the test only needs
+/// the document to exist: nothing in this file talks to a daemon.
+struct SilentClient;
+
+#[async_trait::async_trait]
+impl CoreClient for SilentClient {
+    async fn request(
+        &self,
+        _request: RequestEnvelope<CoreRequest>,
+    ) -> Result<CoreResponse, AppError> {
+        Err(AppError::Other(anyhow::anyhow!(
+            "the composer selection tests never reach the daemon"
+        )))
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (_tx, rx) = mpsc::channel(8);
+        rx
+    }
+}
+
+/// Open an editor document whose mode is `mode`.
+///
+/// The badge describes the surface that holds the keyboard, so a test that
+/// wants the editor's side of that rule needs an editor in a mode the
+/// composer is not in.
+fn open_editor_in(app: &mut App, mode: EditorMode) {
+    app.editor_state.session = Some(TuiDocumentSession::new(Arc::new(SilentClient)));
+    app.editor_state
+        .session
+        .as_mut()
+        .expect("the document is open")
+        .presentation_mut()
+        .mode = mode;
+}
+
 // ---------------------------------------------------------------------------
 // The selection verbs
 // ---------------------------------------------------------------------------
+
+/// `v` is a **mode**: it enters the composer's select mode and leaves it.
+///
+/// The badge reads the mode, so the accessor the badge uses is the one the
+/// test reads.
+#[test]
+fn v_is_a_mode_the_badge_can_read() {
+    let mut app = test_app();
+    compose(&mut app, "hello world", 2);
+
+    press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    assert!(
+        app.prompt_state.prompt.is_selecting(),
+        "`v` did not enter the composer's select mode"
+    );
+
+    press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    assert!(
+        !app.prompt_state.prompt.is_selecting(),
+        "`v` did not leave the composer's select mode"
+    );
+}
+
+/// The badge reads `[SEL]` while the composer holds the keyboard in its
+/// select mode, and `[NOR]` outside it.
+///
+/// The badge describes the surface that holds the keyboard, and here that
+/// surface is the composer.
+#[test]
+fn the_composer_badge_shows_select_while_it_is_selecting() {
+    let mut app = test_app();
+    compose(&mut app, "hello", 0);
+
+    press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    let text = frame_text(&render(&mut app, 100, 30));
+    assert!(
+        text.contains("[SEL]"),
+        "the badge does not read [SEL] while the composer is selecting: {text}"
+    );
+
+    press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    let text = frame_text(&render(&mut app, 100, 30));
+    assert!(
+        text.contains("[NOR]"),
+        "the badge does not read [NOR] outside the select mode: {text}"
+    );
+}
+
+/// The badge describes the surface that holds the keyboard, from both sides.
+///
+/// With the **editor** in select mode and the **composer** holding the
+/// keyboard, the badge reads the composer's mode. It used to read the
+/// editor's, so an editor in select mode showed `[SEL]` above a composer
+/// that was in Normal mode.
+#[test]
+fn the_composer_badge_describes_the_surface_that_holds_the_keyboard() {
+    let mut app = test_app();
+    compose(&mut app, "hello", 0);
+    open_editor_in(&mut app, EditorMode::Select);
+
+    let text = frame_text(&render(&mut app, 100, 30));
+    assert!(
+        text.contains("[NOR]"),
+        "the badge does not read the composer's own mode: {text}"
+    );
+    assert!(
+        !text.contains("[SEL]"),
+        "the badge read the editor's mode over the composer: {text}"
+    );
+}
+
+/// A surface that holds the keyboard is not the editor's.
+///
+/// The badge describes the surface that holds the keys, and "not the
+/// composer" is not the same thing as "the editor": the timeline overlay
+/// takes the composer out without the editor taking over. The badge then
+/// reads the composer's own **resolved** mode — and reading the editor's
+/// mode there would name a surface the reader is not in, which is the
+/// symptom the badge had once already: a panel holding a live PTY claimed
+/// the Insert keys and the row said `[NOR]` while the reader typed.
+#[test]
+fn the_badge_reads_the_composer_while_another_surface_holds_the_keys() {
+    let mut app = test_app();
+    compose(&mut app, "hello", 0);
+    app.ui_state.input_mode = InputMode::Insert;
+    app.ui_state.timeline_visible = true;
+
+    let text = frame_text(&render(&mut app, 100, 30));
+    assert!(
+        text.contains("[INS]"),
+        "the badge did not read the composer's resolved mode: {text}"
+    );
+    assert!(
+        !text.contains("[NOR]"),
+        "the badge read the editor's mode over the composer: {text}"
+    );
+}
+
+/// `e` in Normal mode selects the word the caret landed on.
+///
+/// The rendered selection is what the reader sees, so the test reads the
+/// frame rather than the model. The frame paints the word's characters with
+/// the selection's colours and the word's last one with the caret block's,
+/// because the caret sits on the head of the selection.
+#[test]
+fn a_word_motion_selects_the_word_in_normal_mode() {
+    let mut app = test_app();
+    compose(&mut app, "hello world", 0);
+
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+
+    let buffer = render(&mut app, 100, 30);
+    assert_eq!(
+        format!(
+            "{}{}",
+            painted_selection(&app, &buffer),
+            painted_caret(&app, &buffer)
+        ),
+        "hello",
+        "`e` did not paint the word the caret landed on"
+    );
+}
+
+/// A movement outside the select mode drops the held selection.
+///
+/// The selection the word motion held is gone from the frame, not merely
+/// from the model.
+#[test]
+fn a_movement_outside_select_mode_drops_the_selection() {
+    let mut app = test_app();
+    compose(&mut app, "hello world", 0);
+
+    press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+
+    let buffer = render(&mut app, 100, 30);
+    assert_eq!(
+        painted_selection(&app, &buffer),
+        "",
+        "the movement in Normal mode kept the selection on screen"
+    );
+}
+
+/// A movement in the select mode grows the held selection.
+#[test]
+fn a_movement_in_select_mode_grows_the_selection() {
+    let mut app = test_app();
+    compose(&mut app, "hello world", 0);
+
+    press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+
+    let buffer = render(&mut app, 100, 30);
+    assert_eq!(
+        format!(
+            "{}{}",
+            painted_selection(&app, &buffer),
+            painted_caret(&app, &buffer)
+        ),
+        "he",
+        "the movement in the select mode did not grow the selection"
+    );
+}
+
+/// Every path that moves the caret reaches the same rule.
+///
+/// The claim table's verbs, `h`/`l`, the arrows and `Home`/`End` all have to
+/// answer "what does this movement do to the selection" the same way. The
+/// rule says a movement in the select mode **grows** the selection, so a
+/// path that reached a different rule would drop it instead.
+#[test]
+fn every_caret_moving_path_resolves_the_same_rule() {
+    let paths: Vec<(&str, KeyEvent)> = vec![
+        (
+            "the claim table's `e`",
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        ),
+        (
+            "the claim table's `b`",
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+        ),
+        ("`h`", KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+        ("`l`", KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+        (
+            "the left arrow",
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        ),
+        (
+            "the right arrow",
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        ),
+        ("`Home`", KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        ("`End`", KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+    ];
+
+    for (description, key) in paths {
+        let mut app = test_app();
+        compose(&mut app, "hello world", 4);
+        press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+        let armed = app
+            .prompt_state
+            .prompt
+            .selection_range()
+            .expect("`v` did not arm a selection");
+
+        press(&mut app, key.code, key.modifiers);
+
+        let grown = app
+            .prompt_state
+            .prompt
+            .selection_range()
+            .unwrap_or_else(|| panic!("{description}: the movement dropped the selection"));
+        assert!(
+            grown.0 <= armed.0 && grown.1 >= armed.1,
+            "{description}: the selection did not grow — {armed:?} became {grown:?}"
+        );
+    }
+}
+
+/// A composer that loses the keyboard does not come back holding a select
+/// mode.
+///
+/// The select mode belongs to the surface that holds the keyboard, so it
+/// cannot survive the keyboard's leaving.
+#[test]
+fn the_composer_loses_its_select_mode_when_the_keyboard_leaves_it() {
+    let mut app = test_app();
+    compose(&mut app, "hello", 0);
+    press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    assert!(
+        app.prompt_state.prompt.is_selecting(),
+        "`v` did not enter the select mode"
+    );
+
+    // A side panel takes the keyboard.
+    assert!(app.panel_host.focus(), "the side panel took the keyboard");
+
+    // The next key is dispatched while the panel holds the keyboard, and the
+    // composer's mode is brought back in step with the surface that now
+    // holds it.
+    press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+
+    assert!(
+        !app.prompt_state.prompt.is_selecting(),
+        "the composer kept its select mode across the panel"
+    );
+}
+
+/// The `w` verb moves to the next word's start and selects nothing.
+///
+/// Only `e` and `b` — the movements that land on a word's **edge** — select a
+/// word.
+#[test]
+fn w_does_not_select_a_word() {
+    let mut app = test_app();
+    compose(&mut app, "hello world", 0);
+
+    press(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
+
+    assert_eq!(caret(&app), 6, "`w` did not reach the next word");
+    assert_eq!(
+        app.prompt_state.prompt.selection_range(),
+        None,
+        "`w` selected a word"
+    );
+}
 
 // ---------------------------------------------------------------------------
 // The copy gesture, and the route that owns it

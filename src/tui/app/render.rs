@@ -1907,34 +1907,92 @@ impl App {
                 .unwrap_or_default(),
         };
         let input_mode = self.composer_input_mode();
-        // The editor's **select** mode is a third state the two input modes do
-        // not cover: the keyboard is still in the Helix verbs, but a movement
-        // now *grows* the held selection instead of dropping it.
+        // The badge describes the **surface that holds the keyboard**.
         //
-        // The reader has to be able to see it, because the difference is
-        // invisible until a movement goes the other way — and it is the
-        // difference between "my selection vanished" and "my selection grew".
-        let selecting = self.editor_state.mode() == crate::tui::editor::EditorMode::Select;
-        let mode_span_style = if selecting {
-            Style::default()
-                .fg(self.ui_state.theme.warning)
-                .add_modifier(Modifier::BOLD)
-        } else {
+        // It used to read the editor's *select* mode over the composer, so
+        // an editor in select mode showed `[SEL]` above a composer that was
+        // in Normal mode — and the composer had no select mode of its own
+        // to report, so the row was describing a surface that was not the
+        // one the reader was typing into.
+        //
+        // The composer is a surface with a mode of its own now, so the badge
+        // asks the surface that holds the keyboard: the composer's
+        // Insert/Normal half from the app's own resolution, and its select
+        // half from the widget, because the select mode is the composer's
+        // own and the app has no word for it.
+        //
+        // **Three** surfaces can hold the keys, and the third is the one
+        // that must not be mistaken for the editor: a focused **panel** or
+        // the timeline overlay takes the composer out without the editor
+        // taking over. The badge then reads the composer's own resolved
+        // mode, which is what it read before it learned to ask the surface
+        // — a terminal panel holding a live PTY claims the Insert keys, and
+        // the row said `[NOR]` while the reader was typing into a shell.
+        let composer_holds_keyboard = self.composer_holds_keyboard();
+        let (mode_label, mode_span_style) = if composer_holds_keyboard {
             match input_mode {
-                InputMode::Insert => Style::default()
-                    .fg(self.ui_state.theme.secondary)
-                    .add_modifier(Modifier::BOLD),
-                InputMode::Normal => Style::default()
-                    .fg(self.ui_state.theme.primary)
-                    .add_modifier(Modifier::BOLD),
+                InputMode::Insert => (
+                    "[INS]",
+                    Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                InputMode::Normal if self.prompt_state.prompt.is_selecting() => (
+                    "[SEL]",
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                InputMode::Normal => (
+                    "[NOR]",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
             }
-        };
-        let mode_label = if selecting {
-            "[SEL]"
+        } else if self.editor_buffer_owns_keyboard() {
+            // The editor's buffer holds the keyboard, so the badge describes
+            // the editor.
+            match self.editor_state.mode() {
+                crate::tui::editor::EditorMode::Select => (
+                    "[SEL]",
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                crate::tui::editor::EditorMode::Insert => (
+                    "[INS]",
+                    Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                crate::tui::editor::EditorMode::Normal => (
+                    "[NOR]",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            }
         } else {
+            // Neither the composer nor the editor holds the keys: a focused
+            // panel, the timeline overlay or a modal does. The fact that is
+            // true about the composer here is its own **resolved** mode — a
+            // panel that claims the Insert keys puts the composer in Insert
+            // — and that is the answer the badge gave before it learned to
+            // ask which surface holds the keyboard.
             match input_mode {
-                InputMode::Insert => "[INS]",
-                InputMode::Normal => "[NOR]",
+                InputMode::Insert => (
+                    "[INS]",
+                    Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                InputMode::Normal => (
+                    "[NOR]",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
             }
         };
         // An armed chat reply/edit is a *third* state neither badge covers:

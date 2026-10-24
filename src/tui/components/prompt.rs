@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use std::cell::{Ref, RefCell};
@@ -32,6 +32,49 @@ pub enum ComposerCursor {
     Block,
 }
 
+/// The composer's **surface-local** mode.
+///
+/// The editor's counterpart is `EditorMode`, and the shape is the same
+/// because the two surfaces are peers: the app's `InputMode` is two-valued
+/// and says only Insert-or-Normal, while the **select** mode belongs to the
+/// surface that holds the keyboard — the composer has one the app has no
+/// word for, exactly as the editor has an `EditorMode::Select` the app has
+/// no word for.
+///
+/// The select mode is what makes a movement grow the selection instead of
+/// dropping it, and the badge is what tells the reader which of the two a
+/// movement will do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComposerMode {
+    /// The composer is being typed into.
+    ///
+    /// A movement behaves as it always did, and an edit replaces the
+    /// selection.
+    Insert,
+    /// The composer is in Normal mode: a movement **drops** the held
+    /// selection, and the word movements `e` and `b` create one over the
+    /// word they land on.
+    #[default]
+    Normal,
+    /// The composer is in select mode: a movement **grows** the held
+    /// selection.
+    Select,
+}
+
+/// What kind of movement a verb performs.
+///
+/// Only `e` and `b` — the two movements that land on a word's **edge** —
+/// select a word. `w` lands on a word's *start*, which does not identify a
+/// word unambiguously, so it never selects one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMotion {
+    /// A plain movement: a character, a visual row, the start or the end of
+    /// the text.
+    Plain,
+    /// A word movement: `e` (the word's end) or `b` (the word's start).
+    Word,
+}
+
 pub struct PromptWidget {
     /// The composer's text model: the buffer, the caret, the selection, and
     /// the bounded undo history.
@@ -45,6 +88,16 @@ pub struct PromptWidget {
     /// "is focused" flag — a stored copy can disagree with the badge, which
     /// is the defect class the mode resolution was written to kill.
     pub cursor_style: ComposerCursor,
+    /// The composer's surface-local mode.
+    ///
+    /// The app pushes its own half of the mode (Insert or Normal) at key
+    /// dispatch, and the composer's third mode — select — is the widget's
+    /// own: `v` enters it and leaving the keyboard ends it.
+    ///
+    /// It lives here rather than in the app because the **rule** that gives
+    /// a movement its meaning lives here too, and the rule has to know the
+    /// mode at the moment the movement is dispatched.
+    mode: ComposerMode,
     pub theme: Arc<Theme>,
     pub prefix: Span<'static>,
     pub mode_indicator: Line<'static>,
@@ -117,6 +170,7 @@ impl PromptWidget {
         Self {
             buffer: super::super::composer_text::ComposerText::new(),
             cursor_style: ComposerCursor::None,
+            mode: ComposerMode::default(),
             theme,
             prefix: Span::raw("❯ "),
             mode_indicator: Line::default(),
@@ -180,6 +234,70 @@ impl PromptWidget {
         self.cursor_style = style;
     }
 
+    /// The composer's mode, as the badge reads it.
+    ///
+    /// The badge asks the surface that holds the keyboard, and the
+    /// composer's answer is this.
+    pub fn mode(&self) -> ComposerMode {
+        self.mode
+    }
+
+    /// Whether the composer is in its select mode.
+    ///
+    /// The half of the mode the app has no word for: the app's `InputMode`
+    /// is two-valued, and select is the composer's own.
+    pub fn is_selecting(&self) -> bool {
+        self.mode == ComposerMode::Select
+    }
+
+    /// Push the app's resolved Insert/Normal mode into the composer.
+    ///
+    /// The app's mode is two-valued and the composer's is three, and the
+    /// third one — select — is the composer's own. So the push carries the
+    /// app's half only, and the composer's half survives it: a select mode
+    /// is not something the app can grant or revoke.
+    ///
+    /// Insert ends it, because a select mode is a Normal-mode thing and
+    /// Insert is not Normal.
+    pub fn set_app_mode(&mut self, mode: crate::tui::input::InputMode) {
+        use crate::tui::input::InputMode;
+        match mode {
+            InputMode::Insert => self.mode = ComposerMode::Insert,
+            InputMode::Normal => {
+                if self.mode != ComposerMode::Select {
+                    self.mode = ComposerMode::Normal;
+                }
+            }
+        }
+    }
+
+    /// Leave the select mode and drop the held selection.
+    ///
+    /// The editor's rule for leaving select mode: the mode ends and the
+    /// selection goes with it. A composer that was **not** selecting keeps
+    /// its selection — leaving the keyboard is not the same thing as
+    /// leaving select mode.
+    ///
+    /// A composer that loses the keyboard calls this, so it cannot come
+    /// back holding a select mode the reader never left.
+    pub fn leave_select_mode(&mut self) {
+        if self.mode == ComposerMode::Select {
+            self.mode = ComposerMode::Normal;
+            self.buffer.clear_selection();
+        }
+    }
+
+    /// End the select mode, if it is on.
+    ///
+    /// An edit destroys the held selection, so the mode that exists to
+    /// grow it ends with it. The mode is the composer's own, so this is
+    /// the widget's business and not the model's.
+    fn end_select_mode(&mut self) {
+        if self.mode == ComposerMode::Select {
+            self.mode = ComposerMode::Normal;
+        }
+    }
+
     pub fn get_text(&self) -> String {
         self.buffer.text().to_string()
     }
@@ -198,6 +316,10 @@ impl PromptWidget {
     pub fn set_text(&mut self, text: String) {
         self.buffer.set_text(text);
         self.horizontal_scroll = 0;
+        // The text was replaced from outside, so the selection that pointed
+        // into the old text is gone — and the select mode that exists to
+        // grow it goes with it.
+        self.end_select_mode();
     }
 
     pub fn set_cursor(&mut self, pos: usize) {
@@ -270,26 +392,31 @@ impl PromptWidget {
         self.buffer.clear();
         self.scroll = 0;
         self.horizontal_scroll = 0;
+        self.end_select_mode();
     }
 
     pub fn insert_char(&mut self, c: char) {
         let mut encoded = [0u8; 4];
         let text = c.encode_utf8(&mut encoded);
         self.buffer.insert(text);
+        self.end_select_mode();
     }
 
     pub fn insert_newline(&mut self) {
         self.buffer.insert_newline();
+        self.end_select_mode();
     }
 
     /// Move the caret after the character it sits on, for insert-after.
     pub fn insert_after(&mut self) {
         self.buffer.insert_after();
+        self.end_select_mode();
     }
 
     /// Open an empty line below the caret's line.
     pub fn open_line_below(&mut self) {
         self.buffer.open_line_below();
+        self.end_select_mode();
     }
 
     /// The composer's line count — an empty buffer is one line.
@@ -299,51 +426,71 @@ impl PromptWidget {
 
     /// Undo the newest edit. Returns whether anything was undone.
     pub fn undo(&mut self) -> bool {
-        self.buffer.undo()
+        let undone = self.buffer.undo();
+        self.end_select_mode();
+        undone
     }
 
     /// Redo the newest undone edit. Returns whether anything was redone.
     pub fn redo(&mut self) -> bool {
-        self.buffer.redo()
+        let redone = self.buffer.redo();
+        self.end_select_mode();
+        redone
     }
 
     pub fn backspace(&mut self) {
         self.buffer.backspace();
+        self.end_select_mode();
     }
 
     pub fn delete(&mut self) {
         self.buffer.delete_forward();
+        self.end_select_mode();
     }
 
     pub fn cursor_left(&mut self) {
-        self.buffer.move_left();
+        let target = self.buffer.left_target();
+        self.apply_motion(target, ComposerMotion::Plain);
     }
 
     pub fn cursor_right(&mut self) {
-        self.buffer.move_right();
+        let target = self.buffer.right_target();
+        self.apply_motion(target, ComposerMotion::Plain);
     }
 
     pub fn cursor_home(&mut self) {
-        self.buffer.move_home();
+        self.apply_motion(0, ComposerMotion::Plain);
     }
 
     pub fn cursor_end(&mut self) {
-        self.buffer.move_end();
+        let target = self.buffer.text().len();
+        self.apply_motion(target, ComposerMotion::Plain);
     }
 
     /// Move the caret to the start of the next word.
+    ///
+    /// `w` is a **positioning** movement: it lands on a word's *start*,
+    /// which does not identify a word unambiguously, so it never selects
+    /// one. Only `e` and `b` do.
     pub fn cursor_word_forward(&mut self) {
-        self.buffer.move_word_forward();
+        let target = self.buffer.word_forward();
+        self.apply_motion(target, ComposerMotion::Plain);
     }
 
     /// Move the caret to the start of the previous word.
+    ///
+    /// `b` lands on a word's first byte, so it **selects** that word.
     pub fn cursor_word_backward(&mut self) {
-        self.buffer.move_word_backward();
+        let target = self.buffer.word_backward();
+        self.apply_motion(target, ComposerMotion::Word);
     }
 
     /// Move the caret to the last character of the word at the caret.
+    ///
+    /// `e` lands on a word's last byte, so it **selects** that word.
     pub fn cursor_word_end(&mut self) {
-        self.buffer.move_word_end();
+        let target = self.buffer.word_end();
+        self.apply_motion(target, ComposerMotion::Word);
     }
 
     /// Move the caret one line down.
@@ -361,13 +508,122 @@ impl PromptWidget {
     /// A visual row is one row of the wrapped text, not one newline-separated
     /// line of the buffer: after the wrap a long line is several rows, and a
     /// row is what the user sees.
+    ///
+    /// A movement that has nowhere to go still resolves the rule: the editor
+    /// clears a held selection for a motion that does not move, and the
+    /// composer's rule is the editor's. The target is the caret's own
+    /// position, so the caret stays and the selection does not.
     pub fn cursor_visual_row_down(&mut self) {
-        self.move_visual_row(1);
+        let target = self
+            .visual_row_target(1)
+            .unwrap_or_else(|| self.buffer.caret());
+        self.apply_motion(target, ComposerMotion::Plain);
     }
 
     /// Move the caret one **visual row** up.
     pub fn cursor_visual_row_up(&mut self) {
-        self.move_visual_row(-1);
+        let target = self
+            .visual_row_target(-1)
+            .unwrap_or_else(|| self.buffer.caret());
+        self.apply_motion(target, ComposerMotion::Plain);
+    }
+
+    /// Apply the mode-dependent consequence of a deliberate movement.
+    ///
+    /// This is the composer's copy of the editor's `apply_motion_selection`,
+    /// and it is the **only** place a movement is given its meaning. Every
+    /// path that moves the caret — the claim table's verbs, `h`/`l`, the
+    /// arrows, `Home`/`End` — comes through here, so a path that reached
+    /// the rule by a different road could not answer differently.
+    ///
+    /// | Situation | The rule |
+    /// |---|---|
+    /// | Select mode, nothing held | arm a selection at the caret, then move — for a word movement, arm the **word** instead |
+    /// | Select mode, a selection held | move — the selection grows; for a word movement it grows to the word's end |
+    /// | Normal mode, a word movement (`e`, `b`) | drop the held selection, then select the word the caret lands on |
+    /// | Normal mode, any other movement | drop the held selection, then move |
+    ///
+    /// Insert mode is not in the table because it is not a movement mode: an
+    /// edit replaces the selection and a movement behaves as it always did.
+    fn apply_motion(&mut self, target: usize, motion: ComposerMotion) {
+        if self.mode == ComposerMode::Insert {
+            // Insert mode is untouched: a movement behaves exactly as it did
+            // before the rule existed.
+            self.buffer.move_caret(target);
+            return;
+        }
+        let word = match motion {
+            ComposerMotion::Word => {
+                super::super::composer_text::selected_word_bounds(self.buffer.text(), target)
+            }
+            ComposerMotion::Plain => None,
+        };
+        if self.mode == ComposerMode::Select {
+            // Select mode: the selection follows the caret.
+            if !self.buffer.is_selected() {
+                // Nothing held. A word movement still selects the word it
+                // landed on — `v` then `e` selects a word, not one
+                // character — and any other movement starts a selection at
+                // the caret and grows it, so `v` then `l` selects two
+                // characters.
+                match word {
+                    Some((start, last)) => {
+                        self.buffer.select_char_range(start, last);
+                        self.buffer.set_caret(target);
+                        return;
+                    }
+                    None => self.buffer.select_char(),
+                }
+            }
+            self.buffer.move_caret(target);
+            return;
+        }
+        // Normal mode: a movement drops the selection, and the word
+        // movements are the ones that create one.
+        self.buffer.clear_selection();
+        match word {
+            Some((start, last)) => {
+                self.buffer.select_char_range(start, last);
+                self.buffer.set_caret(target);
+            }
+            None => self.buffer.move_caret(target),
+        }
+    }
+
+    /// The byte the caret would land on after a visual-row movement.
+    ///
+    /// `None` when the movement has nowhere to go: the caret is already on
+    /// the first or the last visual row, and a clamped movement is not a
+    /// movement at all.
+    fn visual_row_target(&self, delta: isize) -> Option<usize> {
+        if self.wrap_width == 0 {
+            // No wrap: a row is a line of the buffer.
+            let text = self.buffer.text();
+            let caret = self.buffer.caret();
+            let target = if delta.is_negative() {
+                super::super::text_geometry::move_vertical(text, caret, -1, None)
+            } else {
+                super::super::text_geometry::move_vertical(text, caret, 1, None)
+            };
+            return Some(target);
+        }
+        let byte = {
+            let layout = self.layout_at(self.wrap_width);
+            let position = layout.caret_position(self.buffer.caret())?;
+            let last_row = layout.row_count().saturating_sub(1);
+            let target = if delta.is_negative() {
+                position.row.saturating_sub(delta.unsigned_abs())
+            } else {
+                position.row.saturating_add(delta as usize).min(last_row)
+            };
+            if target == position.row {
+                // Clamped at the first or the last visual row: there is
+                // nowhere to go, and the caret stays on the byte it names.
+                return None;
+            }
+            byte_at_visual(&layout, target, position.column)
+        };
+        Some(byte)
     }
 
     /// Page the composer down by one page of visual rows.
@@ -384,9 +640,24 @@ impl PromptWidget {
         self.page(-1);
     }
 
-    /// Arm a character selection at the caret, or discard the held one.
+    /// Enter or leave the composer's select mode.
+    ///
+    /// `v` is a **mode**, the way it is in the editor: the first press arms
+    /// a character selection at the caret and enters select mode, so the
+    /// next movement grows it, and the next press leaves the mode and drops
+    /// the selection.
+    ///
+    /// The arming is the shared machine's, so the composer and the editor
+    /// agree about what a selection anchored at the caret is.
     pub fn toggle_select_chars(&mut self) {
-        self.buffer.toggle_select_chars();
+        if self.mode == ComposerMode::Select {
+            // Leaving the mode drops the selection — the editor's rule.
+            self.mode = ComposerMode::Normal;
+            self.buffer.clear_selection();
+            return;
+        }
+        self.mode = ComposerMode::Select;
+        self.buffer.select_char();
     }
 
     /// Select the caret's line, or extend the held line selection by one line.
@@ -398,7 +669,11 @@ impl PromptWidget {
     ///
     /// Returns whether anything was deleted.
     pub fn delete_selection(&mut self) -> bool {
-        self.buffer.delete_selection()
+        let deleted = self.buffer.delete_selection();
+        // The deletion destroyed the selection, so the mode that exists to
+        // grow it ends with it.
+        self.end_select_mode();
+        deleted
     }
 
     /// The byte range the held selection covers, if there is one.
@@ -416,6 +691,7 @@ impl PromptWidget {
 
     pub fn paste(&mut self, text: String) {
         self.buffer.insert(&text);
+        self.end_select_mode();
     }
 
     /// The number of **logical** lines in the buffer — an empty buffer is one.
@@ -474,14 +750,17 @@ impl PromptWidget {
         self.fit
     }
 
-    /// Whether the composer's content does not fit its box.
+    /// Whether the composer's content spans more than one rendered row.
     ///
-    /// The wrapped row count against the visible row count, as the last layout
-    /// pass measured them. A composer that has never been laid out has no
-    /// measurement, and an unmeasured composer does not overflow: the claim
-    /// that depends on this must not fire in a state the user cannot see.
-    pub fn content_overflows(&self) -> bool {
-        self.fit.overflows()
+    /// The measure is the **rendered row count**, as the last layout pass
+    /// measured it: a composer holding three rows is multiline even when its
+    /// box shows all three, and a composer holding a single logical line that
+    /// wraps onto four rows is multiline too. A composer that has never been
+    /// laid out has no measurement, and an unmeasured composer is not
+    /// multiline: the claim that depends on this must not fire in a state the
+    /// user cannot see.
+    pub fn is_multiline(&self) -> bool {
+        self.fit.is_multiline()
     }
 
     /// The height the composer needs for its text at `width`.
@@ -718,33 +997,9 @@ impl PromptWidget {
     /// A composer that does not wrap yet — `wrap_width` is zero — keeps the
     /// logical line model, because then a row *is* a line.
     fn move_visual_row(&mut self, delta: isize) {
-        if self.wrap_width == 0 {
-            if delta.is_negative() {
-                self.buffer.move_line_up();
-            } else {
-                self.buffer.move_line_down();
-            }
-            return;
+        if let Some(target) = self.visual_row_target(delta) {
+            self.apply_motion(target, ComposerMotion::Plain);
         }
-        let byte = {
-            let layout = self.layout_at(self.wrap_width);
-            let Some(position) = layout.caret_position(self.buffer.caret()) else {
-                return;
-            };
-            let last_row = layout.row_count().saturating_sub(1);
-            let target = if delta.is_negative() {
-                position.row.saturating_sub(delta.unsigned_abs())
-            } else {
-                position.row.saturating_add(delta as usize).min(last_row)
-            };
-            if target == position.row {
-                // Clamped at the first or the last visual row: there is nowhere
-                // to go, and the caret stays on the byte it names.
-                return;
-            }
-            byte_at_visual(&layout, target, position.column)
-        };
-        self.buffer.set_caret(byte);
     }
 
     /// Page the composer by one page of visual rows.
@@ -1004,14 +1259,19 @@ impl Widget for &PromptWidget {
         // the two are mutually exclusive by construction — painting both
         // would show two carets, and painting neither in Insert mode would
         // leave the user with no caret at all.
+        //
+        // The block carries **no** `REVERSED` modifier: that modifier is
+        // SGR 7, which swaps the cell's foreground and background. The
+        // colours below already say "inverted", and the swap cancelled them
+        // — the block was drawn in the composer's own background colour and
+        // was invisible.
         if self.paints_block_cursor() {
             if let Some((cursor_x, cursor_y)) = self.caret_cell_in(area, &layout) {
                 if let Some(cell) = buf.cell_mut((cursor_x, cursor_y)) {
                     cell.set_style(
                         Style::default()
                             .fg(self.theme.background)
-                            .bg(self.theme.primary)
-                            .add_modifier(Modifier::REVERSED),
+                            .bg(self.theme.primary),
                     );
                 }
             }
@@ -1023,7 +1283,7 @@ impl Widget for &PromptWidget {
 mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
 
     /// Render the composer into a buffer.
     ///
@@ -1251,6 +1511,47 @@ mod tests {
         }
     }
 
+    /// The Normal-mode block is painted with the theme's own colours: the
+    /// theme's primary as the cell's background and the theme's background as
+    /// its foreground.
+    ///
+    /// The cell carries **no** `REVERSED` modifier: that modifier is SGR 7,
+    /// which swaps the cell's two colours — and the swap cancelled the block,
+    /// because the colours below already say "inverted".
+    #[test]
+    fn the_composer_paints_a_block_in_normal_mode() {
+        let mut widget = composer("hello");
+        widget.set_cursor_style(ComposerCursor::Block);
+
+        let buffer = render(&widget, 20, 4);
+
+        // The caret is at the end of the text, so the block is on a blank cell.
+        let cell = &buffer[(5, 1)];
+        assert_eq!(cell.symbol(), " ", "the block is on a blank cell");
+        assert_eq!(cell.bg, widget.theme.primary, "the block's background");
+        assert_eq!(cell.fg, widget.theme.background, "the block's foreground");
+        assert!(
+            !cell.modifier.contains(Modifier::REVERSED),
+            "the block carries no REVERSED modifier: it would swap the colours"
+        );
+    }
+
+    /// A space moves the caret one column: the caret's cell follows the
+    /// caret's byte, even though the wrap drops the space.
+    #[test]
+    fn the_caret_cell_moves_one_column_when_a_space_is_typed() {
+        let mut widget = composer("hello");
+        let area = Rect::new(0, 0, 20, 4);
+        let before = widget.caret_cell(area).expect("the caret has a cell");
+
+        widget.insert_char(' ');
+
+        let after = widget.caret_cell(area).expect("the caret has a cell");
+        assert_eq!(widget.get_text(), "hello ", "the space was typed");
+        assert_eq!(after.0, before.0 + 1, "the caret moved one column right");
+        assert_eq!(after.1, before.1, "the caret stayed on its row");
+    }
+
     // -----------------------------------------------------------------------
     // The fit fact
     // -----------------------------------------------------------------------
@@ -1263,8 +1564,8 @@ mod tests {
     /// The fit is unknown until the layout pass measures it.
     ///
     /// The gate runs before the render pass, so a composer that has never
-    /// been drawn has no measurement — and an unmeasured composer does not
-    /// overflow. The key falls through rather than being swallowed in a state
+    /// been drawn has no measurement — and an unmeasured composer is not
+    /// multiline. The key falls through rather than being swallowed in a state
     /// the user cannot see.
     #[test]
     fn the_fit_is_unknown_until_the_layout_measures_it() {
@@ -1276,17 +1577,20 @@ mod tests {
             "an unlaid-out composer has no measurement"
         );
         assert!(
-            !widget.content_overflows(),
-            "an unmeasured composer does not overflow"
+            !widget.is_multiline(),
+            "an unmeasured composer is not multiline"
         );
     }
 
-    /// A composer whose content wraps to **exactly** the box's height fits.
+    /// A composer whose content wraps to **exactly** the box's height is
+    /// multiline, even though it fits.
     ///
     /// The exact-fit case is the one that is easy to get backwards: three rows
-    /// in a three-row box is not an overflow, and the key must fall through.
+    /// in a three-row box is not an overflow, and the rule is not "fits" but
+    /// "spans more than one row" — so the vertical keys are the composer's
+    /// here.
     #[test]
-    fn a_composer_whose_content_wraps_to_exactly_the_box_height_fits() {
+    fn a_composer_whose_content_wraps_to_exactly_the_box_height_is_multiline() {
         let mut widget = composer(&long_text(24));
         widget.set_wrap_width(10);
         let rows = widget.layout_at(10).row_count();
@@ -1296,14 +1600,22 @@ mod tests {
         widget.ensure_cursor_visible_with_width(rows, 10);
 
         assert!(
-            !widget.content_overflows(),
-            "{rows} rows in a {rows}-row box fits: the content is not cut off"
+            widget.is_multiline(),
+            "{rows} rows in a {rows}-row box spans more than one row"
+        );
+        assert_eq!(
+            widget.content_fit(),
+            ComposerFit::Measured {
+                row_count: rows,
+                visible_rows: rows,
+            },
+            "the fit still records that the content fits its box"
         );
     }
 
-    /// One row more than the box shows does not fit.
+    /// One row more than the box shows is multiline too.
     #[test]
-    fn a_composer_whose_content_overflows_its_box_overflows() {
+    fn a_composer_whose_content_overflows_its_box_is_multiline() {
         let mut widget = composer(&long_text(24));
         widget.set_wrap_width(10);
         let rows = widget.layout_at(10).row_count();
@@ -1311,8 +1623,8 @@ mod tests {
         widget.ensure_cursor_visible_with_width(rows - 1, 10);
 
         assert!(
-            widget.content_overflows(),
-            "{rows} rows in a {}-row box does not fit",
+            widget.is_multiline(),
+            "{rows} rows in a {}-row box spans more than one row",
             rows - 1
         );
     }
@@ -1394,6 +1706,38 @@ mod tests {
             widget.cursor_pos(),
             before,
             "the caret stays on the last visual row: there is nowhere to go"
+        );
+    }
+
+    /// A clamped movement still resolves the rule.
+    ///
+    /// The editor clears a held selection for a motion that does not move,
+    /// and the composer's rule is the editor's: `j` on the last visual row
+    /// drops the selection rather than leaving it behind for the next
+    /// movement to drop.
+    #[test]
+    fn a_clamped_vertical_motion_drops_the_held_selection() {
+        let mut widget = composer("alpha beta");
+        widget.set_wrap_width(10);
+        let layout = widget.layout_at(10).clone();
+        let last_row = layout.row_count() - 1;
+        widget.set_cursor(
+            layout
+                .byte_at(last_row, 0)
+                .expect("the last row has a cell"),
+        );
+        widget.cursor_word_end();
+        assert!(
+            widget.selection_range().is_some(),
+            "the word motion did not select anything to drop"
+        );
+
+        widget.cursor_visual_row_down();
+
+        assert_eq!(
+            widget.selection_range(),
+            None,
+            "the clamped movement in Normal mode kept the selection"
         );
     }
 
@@ -1488,8 +1832,8 @@ mod tests {
         let visible_rows = 6;
         widget.ensure_cursor_visible_with_width(visible_rows, 10);
         assert!(
-            widget.content_overflows(),
-            "{rows} rows of content do not fit in a {visible_rows}-row box"
+            widget.is_multiline(),
+            "{rows} rows of content span more than one row"
         );
         let first_cell = widget.layout_at(10).byte_at(0, 0).expect("a first cell");
         widget.set_cursor(first_cell);
@@ -1525,6 +1869,215 @@ mod tests {
             widget.cursor_pos(),
             0,
             "a composer that fits does not move its caret"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The mode-dependent movement rule
+    // -----------------------------------------------------------------------
+
+    /// `e` in Normal mode selects the word the caret landed on.
+    ///
+    /// The editor's rule: the word movements `e` and `b` land on a word's
+    /// **edge**, which identifies the word unambiguously, so they select it.
+    #[test]
+    fn a_word_motion_in_normal_mode_selects_the_word_it_lands_on() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+
+        widget.cursor_word_end();
+
+        assert_eq!(
+            widget.selected_text().as_deref(),
+            Some("hello"),
+            "`e` did not select the word it landed on"
+        );
+        assert_eq!(widget.cursor_pos(), 4, "`e` did not land on the word's end");
+    }
+
+    /// `b` in Normal mode selects the word it lands on, too.
+    ///
+    /// `b` lands on a word's **first** byte, so the selection runs backwards
+    /// from the caret — and the highlighted span is the word either way.
+    #[test]
+    fn a_backward_word_motion_in_normal_mode_selects_the_word_it_lands_on() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(7);
+
+        widget.cursor_word_backward();
+
+        assert_eq!(
+            widget.selected_text().as_deref(),
+            Some("world"),
+            "`b` did not select the word it landed on"
+        );
+        assert_eq!(
+            widget.cursor_pos(),
+            6,
+            "`b` did not land on the word's start"
+        );
+    }
+
+    /// A word motion in select mode grows the held selection.
+    ///
+    /// `v` arms a character at the caret, and `e` grows the selection to the
+    /// word's end — the selection spans from the armed character to the word's
+    /// end, not the word alone.
+    #[test]
+    fn a_word_motion_in_select_mode_grows_the_held_selection() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+
+        widget.cursor_word_end();
+
+        assert_eq!(
+            widget.selected_text().as_deref(),
+            Some("hello"),
+            "`e` did not grow the selection to the word's end"
+        );
+    }
+
+    /// A movement in Normal mode drops the held selection.
+    ///
+    /// The word motion held a selection; the movement after it throws that
+    /// selection away rather than dragging it along.
+    #[test]
+    fn a_movement_in_normal_mode_drops_the_held_selection() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.cursor_word_end();
+        assert!(
+            widget.selection_range().is_some(),
+            "the word motion did not select anything to drop"
+        );
+
+        widget.cursor_right();
+
+        assert_eq!(
+            widget.selection_range(),
+            None,
+            "the movement in Normal mode kept the selection"
+        );
+    }
+
+    /// A movement in select mode grows the held selection.
+    #[test]
+    fn a_movement_in_select_mode_grows_the_held_selection() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+
+        widget.cursor_right();
+
+        assert_eq!(
+            widget.selection_range(),
+            Some((0, 2)),
+            "the movement in select mode did not grow the selection"
+        );
+    }
+
+    /// `w` moves to the next word's start and selects nothing.
+    ///
+    /// `w` is a **positioning** movement: it lands on a word's *start*, which
+    /// does not identify a word unambiguously, so it never selects one. Only
+    /// `e` and `b` do.
+    #[test]
+    fn a_word_forward_motion_does_not_select_a_word() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+
+        widget.cursor_word_forward();
+
+        assert_eq!(widget.cursor_pos(), 6, "`w` did not reach the next word");
+        assert_eq!(
+            widget.selection_range(),
+            None,
+            "`w` selected a word, which only `e` and `b` do"
+        );
+    }
+
+    /// `v` enters the select mode and `v` again leaves it.
+    ///
+    /// The mode is the composer's own, and the badge reads it — so the
+    /// accessor the badge uses is the one the test reads.
+    #[test]
+    fn the_select_verb_toggles_the_select_mode() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        assert!(!widget.is_selecting(), "the composer starts in Normal mode");
+
+        widget.toggle_select_chars();
+        assert!(widget.is_selecting(), "`v` did not enter the select mode");
+
+        widget.toggle_select_chars();
+        assert!(!widget.is_selecting(), "`v` did not leave the select mode");
+        assert_eq!(
+            widget.selection_range(),
+            None,
+            "leaving the select mode did not drop the selection"
+        );
+    }
+
+    /// A composer that loses the keyboard is in Normal mode when it gets it
+    /// back.
+    ///
+    /// The select mode belongs to the surface that holds the keyboard, so it
+    /// cannot survive the keyboard's leaving.
+    #[test]
+    fn the_composer_returns_to_normal_mode_when_it_loses_the_keyboard() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+        assert!(widget.is_selecting(), "`v` did not enter the select mode");
+
+        widget.leave_select_mode();
+
+        assert_eq!(
+            widget.mode(),
+            ComposerMode::Normal,
+            "the composer came back holding a select mode"
+        );
+        assert_eq!(
+            widget.selection_range(),
+            None,
+            "the composer came back holding the selection"
+        );
+    }
+
+    /// An edit ends the select mode.
+    ///
+    /// The mode exists to grow the selection, and an edit destroys it.
+    #[test]
+    fn an_edit_ends_the_select_mode() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+
+        widget.insert_char('x');
+
+        assert_eq!(
+            widget.mode(),
+            ComposerMode::Normal,
+            "the edit left the composer in the select mode"
+        );
+    }
+
+    /// The app's Insert mode ends the select mode too.
+    ///
+    /// A select mode is a Normal-mode thing, and Insert is not Normal.
+    #[test]
+    fn the_apps_insert_mode_ends_the_select_mode() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+
+        widget.set_app_mode(crate::tui::input::InputMode::Insert);
+
+        assert_eq!(
+            widget.mode(),
+            ComposerMode::Insert,
+            "the app's Insert mode did not reach the composer"
         );
     }
 }

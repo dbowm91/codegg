@@ -398,3 +398,34 @@ recorded in `architecture/overview.md` and
 `architecture/count_audit_history.md`, and the comment budget was re-banked
 on the merged tree at **123,685** lines, still below the 124,865
 pre-reduction baseline.
+
+**A8 — the sixth reconciliation with `main`.** `origin/main` advanced again
+while this line was open: the **composer's second post-closure corrective**
+workstream landed at `a4bbba81e` (PR #183), and the branch tip `28ebe7163` had
+to be reconciled with it. The quick lane's `==>` lines moved again, from 111 to
+**113** — `run_guards` is **109** and `run_quick` is **4** — because
+`origin/main` added its own composer keymap-drift guard, which runs twice
+(once with `--self-test` and once for real). The count is measured, not
+incremented:
+
+```bash
+awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 109
+awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
+```
+
+The merged tree's quick lane was re-run after this merge: **green**, 113
+steps.
+
+The merge's only code-level interaction was additive: `main` changed no file
+outside `src/tui/`, and this branch changed no file under `src/tui/`, so the
+two sides' code is disjoint and `main`'s composer changes are orthogonal to
+every corrective on this line. The counts that moved — *Guard scripts (all)*
+**92** and *CI guard scripts* **55** — are recorded in
+`architecture/overview.md` and `architecture/count_audit_history.md`.
+*Integration test files* is **338** and did **not** move: `main`'s composer
+corrective extended the existing members `tests/tui_render/tui_composer_claims.inc`
+and `tests/tui_render/tui_composer_motions.inc` and rewrote the already-existing
+`tests/tui_render/tui_composer_selection.inc`, so it added no new integration
+test file. The comment budget was re-banked on the merged tree at **124,310**
+lines / **1,095,646** words / ratio **0.1330**, still below the 124,865
+pre-reduction baseline.

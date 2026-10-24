@@ -29,6 +29,15 @@
 //! after a line break sits at the start of the next row, and a caret after
 //! the last rendered character sits one column past it.
 //!
+//! The caret's column counts the **source**, not the cells the wrap drew. A
+//! whitespace run the wrap dropped is one column wide — the same width a
+//! drawn run has, because a run is one column wherever it is drawn — so a
+//! caret in the middle of a dropped run still advances one column per
+//! keystroke. The gap a row break leaves is read off its ends: the gap's
+//! first byte is the previous row's own end, a byte inside the gap belongs to
+//! the next row, whose text continues there, and a byte past the last row's
+//! end is one column past that row's drawn text.
+//!
 //! ## The trailing row
 
 use crate::tui::wrap::{escape_sequence_len, visible_width, WrappedRow, ESC};
@@ -172,7 +181,10 @@ impl VisualLayout {
     ///
     /// - a byte a rendered character starts on is that character's cell;
     /// - a byte just after a line break is the start of the next row;
-    /// - any other byte is one column past the last character before it.
+    /// - a byte **inside** a rendered cell — a multi-byte character, or a
+    ///   drawn collapsed whitespace run — is one column past that cell;
+    /// - a byte the wrap **dropped** is at the column it occupies in the
+    ///   source, and a dropped whitespace run is one column wide.
     pub fn caret_position(&self, byte: usize) -> Option<VisualPosition> {
         if let Some(cell) = self.cell_starting_at(byte) {
             return Some(VisualPosition {
@@ -186,13 +198,13 @@ impl VisualLayout {
                 column: 0,
             });
         }
-        if let Some(cell) = self.last_cell_before(byte) {
+        if let Some(cell) = self.cell_of_byte(byte) {
             return Some(VisualPosition {
                 row: cell.row,
                 column: cell.column + cell.width,
             });
         }
-        Some(VisualPosition { row: 0, column: 0 })
+        self.no_cell_position(byte)
     }
 
     /// The cell whose first byte is exactly `byte`.
@@ -232,6 +244,70 @@ impl VisualLayout {
             }
             row_index -= 1;
         }
+    }
+
+    /// Where a caret at a byte that is on **no** cell is drawn.
+    ///
+    /// Two kinds of byte are on no cell. A byte **inside** a row's source
+    /// range that no cell draws — a zero-width character, or a terminal
+    /// control sequence — keeps the answer it always had: one column past the
+    /// last cell before it.
+    ///
+    /// The other kind is the byte the wrap **dropped**: the whitespace a row
+    /// break swallowed, and the whitespace the buffer ends with. Those are
+    /// read off the **source**, because the caret's column counts the source
+    /// and not the cells the wrap drew. A dropped whitespace run is one
+    /// column wide — the same width a drawn run has — so the gap a row break
+    /// leaves is read off its ends: the gap's first byte is the previous row's
+    /// own end, a byte inside the gap belongs to the next row, whose text
+    /// continues there, and a byte past the last row's end is one column past
+    /// that row's drawn text.
+    fn no_cell_position(&self, byte: usize) -> Option<VisualPosition> {
+        if self.row_containing(byte).is_some() {
+            return Some(match self.last_cell_before(byte) {
+                Some(cell) => VisualPosition {
+                    row: cell.row,
+                    column: cell.column + cell.width,
+                },
+                None => VisualPosition { row: 0, column: 0 },
+            });
+        }
+        let Some(row) = self.row_ending_at_or_before(byte) else {
+            return Some(VisualPosition { row: 0, column: 0 });
+        };
+        if byte == self.ranges[row].1 {
+            // The byte is exactly a row's end: the caret sits at the end of
+            // that row's drawn text.
+            return Some(VisualPosition {
+                row,
+                column: self.row_width(row),
+            });
+        }
+        if row + 1 >= self.ranges.len() {
+            // Past the last row's end: the dropped run is one column, and the
+            // row's own drawn text ends one column earlier.
+            return Some(VisualPosition {
+                row,
+                column: self.row_width(row) + 1,
+            });
+        }
+        // Strictly inside the gap: the text continues on the next row.
+        Some(VisualPosition {
+            row: row + 1,
+            column: 0,
+        })
+    }
+
+    /// The row whose source range holds `byte`.
+    fn row_containing(&self, byte: usize) -> Option<usize> {
+        self.ranges
+            .iter()
+            .position(|(start, end)| *start <= byte && byte < *end)
+    }
+
+    /// The last row whose source range ends at or before `byte`.
+    fn row_ending_at_or_before(&self, byte: usize) -> Option<usize> {
+        self.ranges.iter().rposition(|(_, end)| *end <= byte)
     }
 
     /// The row that follows the line break at `newline`.
@@ -498,6 +574,77 @@ mod tests {
         assert_eq!(
             layout.caret_position(3),
             Some(VisualPosition { row: 0, column: 3 })
+        );
+    }
+
+    /// A caret at the end of the text is at the row's end, not past it.
+    #[test]
+    fn a_caret_at_the_end_of_the_text_is_one_past_the_last_character() {
+        let layout = layout("hello", 10);
+        assert_eq!(
+            layout.caret_position(5),
+            Some(VisualPosition { row: 0, column: 5 })
+        );
+    }
+
+    /// A space the wrap dropped is still a column: the caret's column counts
+    /// the source, so the caret after the space is one column past the text
+    /// the space follows.
+    #[test]
+    fn a_caret_after_dropped_whitespace_is_one_column_past_the_text() {
+        let layout = layout("hello ", 10);
+        assert_eq!(
+            layout.caret_position(5),
+            Some(VisualPosition { row: 0, column: 5 })
+        );
+        assert_eq!(
+            layout.caret_position(6),
+            Some(VisualPosition { row: 0, column: 6 })
+        );
+    }
+
+    /// A dropped whitespace run is one column, the same width a drawn run has,
+    /// so the bytes past the run's first share that one column.
+    #[test]
+    fn a_dropped_whitespace_run_is_one_column() {
+        let layout = layout("hello  ", 10);
+        assert_eq!(
+            layout.caret_position(6),
+            Some(VisualPosition { row: 0, column: 6 })
+        );
+        assert_eq!(
+            layout.caret_position(7),
+            Some(VisualPosition { row: 0, column: 6 })
+        );
+    }
+
+    /// A row break leaves a gap: the gap's first byte is the previous row's
+    /// own end, and the next row's text starts after the gap.
+    #[test]
+    fn a_caret_at_a_row_break_sits_at_the_row_end_and_then_moves_to_the_next_row() {
+        let layout = layout("hello world", 6);
+        assert_eq!(
+            layout.caret_position(5),
+            Some(VisualPosition { row: 0, column: 5 })
+        );
+        assert_eq!(
+            layout.caret_position(6),
+            Some(VisualPosition { row: 1, column: 0 })
+        );
+    }
+
+    /// A gap of more than one byte belongs to the next row: the text
+    /// continues there, and the gap itself is one column wide.
+    #[test]
+    fn a_caret_inside_a_multi_byte_gap_is_on_the_next_row() {
+        let layout = layout("hello   world", 6);
+        assert_eq!(
+            layout.caret_position(6),
+            Some(VisualPosition { row: 1, column: 0 })
+        );
+        assert_eq!(
+            layout.caret_position(7),
+            Some(VisualPosition { row: 1, column: 0 })
         );
     }
 }

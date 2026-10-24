@@ -297,7 +297,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-23**, each against its own listed `Source`, in the merged tree that carries `origin/main` `c2d781319` together with the five post-closure corrective milestones' branch tip `a5c00ef10`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `a4bbba81e` together with the M005 writer-containment line's branch tip `28ebe7163`. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -474,6 +474,47 @@ statements / 91 tables**, storage layout version **88**, Git operation variants
 **54**, Git risk classes **11**, and workspace member crates **11** (+ root).
 The full reconciliation is in `architecture/count_audit_history.md`.
 
+Three rows moved again on **2026-10-24**, when this line was reconciled with
+`main` for the **sixth** time, merging `origin/main` `a4bbba81e` (PR #183, the
+composer's second post-closure corrective) with the writer-containment line's
+branch tip `28ebe7163`. Each moved row was re-measured against its own listed
+`Source` in the merged tree, with `python3 scripts/measure_overview_counts.py`,
+and **not** incremented from either parent. *Guard scripts (all)* is **92**
+(`ls scripts/check_*` — the union of the two guard sets: `main` added
+`scripts/check_tui_composer_keymap_drift.py`). *CI guard scripts* is **55**
+(the distinct `scripts/check_*` names in `.github/workflows/ci.yml` — it
+remains a strict subset of `quick`, which runs **69** guards and runs **14**
+guards CI does not). *Integration test files* is **338**, and it did **not**
+move: `main`'s composer corrective extended the existing members
+`tests/tui_render/tui_composer_claims.inc` and
+`tests/tui_render/tui_composer_motions.inc` and rewrote the already-existing
+`tests/tui_render/tui_composer_selection.inc`, so it added no new integration
+test file — a new-file line in a diff stat is not a new file. The two sides'
+test-file sets were differenced to confirm the union rather than inferred from
+the diff stat. `AGENTS.md`'s published counts were corrected to the merged
+tree's measured **69 quick / 55 CI**; the *quick runs 14 guards CI does not*
+difference is unchanged at 14, re-derived by differencing the guards
+`run_guards()` names against the guards `.github/workflows/ci.yml` names.
+Every other row was **confirmed unchanged** by measurement, not by assumption:
+architecture docs **92**, distinct production tool names **75**, tool source
+files **83**, LSP server definitions **39**, `codegg-core` modules **54**,
+`AppEvent` variants **61**, `CoreRequest` variants **266** (240 struct + 26
+unit), `CoreResponse` variants **174** (173 struct + 1 unit), `CoreEvent`
+variants **92**, `ProjectionEvent` variants **47**, authorized operations
+**260**, identity newtypes **19**, built-in slash commands **169**, built-in
+agents **10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files
+incl. `mod.rs`), database tables **95 statements / 91 tables**, storage layout
+version **88**, Git operation variants **54**, Git risk classes **11**, and
+workspace member crates **11** (+ root). The **Tool registrations** row is
+unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** —
+and it is named here rather than left implicit, because it is the row the
+fourth reconciliation had to qualify with a split note. The comment budget was
+re-banked on the merged tree: **124,310** comment lines, **1,095,646** words, a
+**0.1330** ratio — over the branch's prior ceiling of 123,805 and still
+**below** the 124,865 pre-reduction baseline, the same relation the fourth and
+fifth reconciliations recorded. The full reconciliation is in
+`architecture/count_audit_history.md`.
+
 
 | Item | Count | Source |
 |------|-------|--------|
@@ -500,8 +541,8 @@ The full reconciliation is in `architecture/count_audit_history.md`.
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 338 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 91 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 54 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 92 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 55 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 

@@ -281,6 +281,21 @@ impl Default for ComposerText {
     }
 }
 
+/// The extent of the word a word motion landed on.
+///
+/// The composer's analogue of the editor's `selected_word_bounds`: the word
+/// the caret's **new** position names, as the run's first and last byte.
+///
+/// `None` when the position names no word — whitespace, or past the end of
+/// the text — and a motion that lands there selects nothing.
+///
+/// The word is the run of word content **or punctuation** the shared
+/// geometry recognises, so the composer and the editor answer "which word
+/// did that motion land on" identically.
+pub fn selected_word_bounds(text: &str, offset: usize) -> Option<(usize, usize)> {
+    text_geometry::word_run_at(text, offset).map(|run| (run.start, run.last))
+}
+
 impl ComposerText {
     /// An empty buffer with the caret at the start.
     pub fn new() -> Self {
@@ -394,6 +409,23 @@ impl ComposerText {
         let current = self.caret();
         let previous = text_geometry::prev_char_boundary(self.text.as_str(), current);
         self.move_caret(previous);
+    }
+
+    /// The offset one character to the left of the caret.
+    ///
+    /// The **target** of a leftward movement, without the movement: the rule
+    /// that decides what a movement means has to know where the caret would
+    /// land before it can say what the selection should do.
+    pub fn left_target(&self) -> usize {
+        text_geometry::prev_char_boundary(self.text.as_str(), self.caret())
+    }
+
+    /// The offset one character to the right of the caret.
+    ///
+    /// The target of a rightward movement, without the movement.
+    pub fn right_target(&self) -> usize {
+        text_geometry::next_char_boundary(self.text.as_str(), self.caret())
+            .unwrap_or(self.text.len())
     }
 
     /// Move the caret one character right.
@@ -604,8 +636,17 @@ impl ComposerText {
             SelectionMode::Char => {
                 let start = self.aligned(first.offset);
                 let last = last.offset.min(self.text.len());
-                let end =
-                    text_geometry::next_char_boundary(self.text.as_str(), last).unwrap_or(last);
+                // The editor's rule, term for term: the end of a character
+                // selection is the byte **past** the head character, and at
+                // the very end of the text there is no next character — so
+                // the fallback is the text's length, not the head's own
+                // offset. The bare fallback left `end == last`, which
+                // **dropped the head character** from a selection that
+                // reached it: `v` on the last character resolved to an
+                // empty range, and a word motion that landed on the last
+                // word of the buffer selected all but its last letter.
+                let end = text_geometry::next_char_boundary(self.text.as_str(), last)
+                    .unwrap_or(self.text.len());
                 (start, end)
             }
             SelectionMode::Line => {
@@ -646,6 +687,42 @@ impl ComposerText {
     /// a second `v` means.
     pub fn toggle_select_chars(&mut self) {
         self.state.toggle_char();
+    }
+
+    /// Drop the held selection, leaving the caret alone.
+    ///
+    /// The movement rule's "drop the selection" half. It is the editor's
+    /// rule too: outside select mode a movement throws the selection away
+    /// rather than dragging it along.
+    pub fn clear_selection(&mut self) {
+        self.state.clear();
+    }
+
+    /// Arm a character selection at the caret.
+    ///
+    /// The editor's `select_char`, term for term: on an empty set it is
+    /// one member at the caret, and on a held set every member re-anchors
+    /// on the caret.
+    pub fn select_char(&mut self) {
+        self.state.select_char();
+    }
+
+    /// Select the bytes `start..=head`, replacing the held selection.
+    ///
+    /// The word movement's half: the movement knows which word it landed
+    /// on, and this is that word's extent. It **replaces** the held
+    /// selection rather than adding to it, because the word is the whole
+    /// of what the reader asked for — a selection that also covered the
+    /// previous word would be a different thing every time the key was
+    /// held.
+    ///
+    /// The caret is left alone: the caller that knows where the caret
+    /// belongs sets it with [`Self::set_caret`], the one relocation that
+    /// does not drag the selection's head along with it.
+    pub fn select_char_range(&mut self, start: usize, head: usize) {
+        let anchor = self.point_at(start);
+        let head = self.point_at(head);
+        self.state.select_char_range(anchor, head);
     }
 
     /// Select the caret's line, or extend the held line selection by one line.
@@ -1038,6 +1115,31 @@ mod tests {
         }
     }
 
+    /// The word a word motion landed on: its first and its last byte.
+    ///
+    /// The composer's analogue of the editor's `selected_word_bounds`. `e`
+    /// lands on a word's **last** byte and `b` on its **first**, and both
+    /// name the same run — which is why the selection covers the word either
+    /// way.
+    #[test]
+    fn the_word_bounds_name_the_run_the_motion_landed_on() {
+        assert_eq!(
+            selected_word_bounds("hello world", 4),
+            Some((0, 4)),
+            "`e` at the end of a word did not name the word"
+        );
+        assert_eq!(
+            selected_word_bounds("hello world", 6),
+            Some((6, 10)),
+            "`b` at the start of a word did not name the word"
+        );
+        assert_eq!(
+            selected_word_bounds("hello world", 5),
+            None,
+            "whitespace named a word"
+        );
+    }
+
     #[test]
     fn a_word_motion_moves_the_caret_to_the_geometrys_answer() {
         let text = "one two three";
@@ -1281,7 +1383,12 @@ mod tests {
         buffer.set_caret(6);
         buffer.toggle_select_chars();
         buffer.move_caret(10);
-        assert_eq!(buffer.selection_range(), Some((6, 10)));
+        // The range is **inclusive of the head character**, and the head is
+        // the last character of the text — so the range reaches the end of
+        // the buffer rather than stopping one character short. The editor's
+        // rule, term for term: at the very end there is no next character,
+        // and the end of a character selection is the byte *past* it.
+        assert_eq!(buffer.selection_range(), Some((6, 11)));
 
         // Delete the text in front of the selection.
         buffer.set_caret(6);
@@ -1292,6 +1399,26 @@ mod tests {
         assert!(
             !buffer.is_selected(),
             "the edit kept a selection recorded against the old text"
+        );
+    }
+
+    /// A selection that reaches the last character of the text covers it.
+    ///
+    /// At the very end there is no **next** character, so the range has to
+    /// end at the text's length rather than one character short. Otherwise
+    /// `v` on the last character selects nothing, and a word motion that
+    /// landed on the last word of the buffer selected all but its last
+    /// letter. The editor's rule, term for term.
+    #[test]
+    fn a_selection_that_reaches_the_end_covers_the_last_character() {
+        let mut buffer = typed("hello");
+        buffer.set_caret(4);
+        buffer.toggle_select_chars();
+
+        assert_eq!(
+            buffer.selection_range(),
+            Some((4, 5)),
+            "the selection did not reach the last character"
         );
     }
 

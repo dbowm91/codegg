@@ -197,6 +197,14 @@ run_guards() {
     echo "==> python3 scripts/check_tui_composer_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py)
 
+    # The published composer keymap and the implemented claim table must state
+    # one rule in one wording: the guard reads the condition's label out of the
+    # implementation and requires the published tables to carry it verbatim.
+    echo "==> python3 scripts/check_tui_composer_keymap_drift.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_keymap_drift.py --self-test)
+    echo "==> python3 scripts/check_tui_composer_keymap_drift.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_keymap_drift.py)
+
     # A command handler may not block on a runtime handle from inside the
     # runtime: the TUI event loop and the MCP CLI both run with the runtime
     # context entered, so a nested `Handle::block_on` panics and takes the
