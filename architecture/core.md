@@ -544,7 +544,7 @@ intentionally live outside it.
 ### Next Likely Extraction Target
 
 The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
-the `CoreDaemon` request dispatch into `core::daemon_family` plus 16
+the `CoreDaemon` request dispatch into `core::daemon_family` plus 17
 `core::daemon_*` family handler modules (and the sub-handler modules
 `daemon_control` / `daemon_workspace_dashboard` / `daemon_queue_delivery` /
 `daemon_continuation` / `daemon_lsp_completion`); Residual M003 has separated
@@ -596,6 +596,7 @@ transport from the underlying agent and session logic.
 | `core::daemon_turns` | `handle_turns_request` | Turn submit/cancel/steer, agent/model selection writes, permission/question responses, transport lifecycle. |
 | `core::daemon_jobs` | `handle_jobs_request` | Durable jobs, schedules, run records, tool-program inspection, legacy task shims over scheduler/job stores. |
 | `core::daemon_projects` | `handle_projects_request` | Project catalog, workspace registry/services, managed worktrees, daemon/workspace snapshots. |
+| `core::daemon_reads` | `handle_git_request`, `handle_skill_catalogue_request` | The desktop capability ceiling (Phase 3): read-only git facts (status, diff summary, branch list) for the project's bound repository, and the skill catalogue a project can discover. The repository root is resolved server-side from the request's `project_id` — the request DTO carries no path. |
 | `core::daemon_goals` | `handle_goals_request` | Session goals, todos, edit checkpoints, LSP preview apply over daemon-owned domain stores. |
 | `core::daemon_projection` | `handle_projection_request` | Projection replay subscribe/resume/ack/snapshot/artifacts plus ephemeral presence leases. |
 | `core::daemon_ops` | `handle_ops_request` | Audit query/export, memory, notification routing over daemon-owned stores. |
@@ -961,9 +962,9 @@ compatibility boundary.
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in
   `crates/codegg-protocol/src/core.rs`).
-- `CoreDaemon` spans `~7,300` lines in `daemon.rs` plus 16 `daemon_*`
-  family handler modules totaling ~17,700 lines, plus `daemon_family.rs`
-  (~560 lines), plus four `daemon_*` lifecycle modules totaling ~3,600
+- `CoreDaemon` spans `~7,300` lines in `daemon.rs` plus 17 `daemon_*`
+  family handler modules totaling ~19,500 lines, plus `daemon_family.rs`
+  (~580 lines), plus four `daemon_*` lifecycle modules totaling ~3,600
   lines. It holds daemon identity, runtime deps, event log, session/client
   registries, notification router, workspace registry,
   workspace services, eggpool provisioner, selection service, asset refresh
