@@ -26,6 +26,10 @@ record, the roadmap rows and the registry rows are the commit that follows
 it, so the milestone's status and the surface that records it never
 disagree.
 
+Pull request: #187 (`https://github.com/dbowm91/codegg/pull/187`), base
+`main`, head `plans/managed-agent-scratch-m008`. The hosted CI run on that
+pull-request head is recorded in §4.2.
+
 ## 1. Executive finding
 
 M008 delivered the disposition the milestone was scoped to deliver, and it
@@ -202,12 +206,48 @@ nor invalidates an output.
 
 ### 4.2 Hosted CI on the pull-request head
 
-**Outstanding at this commit.** The branch was not pushed when this record
-was written, so there is no pull-request head, no hosted run to cite, and
-no merged-head run to cite. The plan's §15.2 asks for both run
-identifiers; neither is claimed here, and neither is invented. Both are
-recorded in this section when the pull request is opened and when it
-merges.
+**Pull-request head run — observed and green.** The milestone was carried on
+its own branch `plans/managed-agent-scratch-m008` and opened as pull request
+#187 against `main`. The hosted run on that pull-request head is:
+
+| Field | Value |
+|-------|-------|
+| Run id | `40129287199` |
+| Workflow | `CI` |
+| Trigger | `pull_request` |
+| Head commit | `7ad3fabb658248a38e7e624f5b59363695f1327c` |
+| Job | `verify` |
+| Conclusion | **success** |
+| Started | `2026-10-24T20:19:53Z` |
+| Completed | `2026-10-24T20:53:17Z` |
+| URL | https://github.com/dbowm91/codegg/actions/runs/40129287199 |
+
+The `verify` job is the job the plan's §15.2 asks for, and the one
+`AGENTS.md` names as the canonical bounded job. Every step in it reported
+green, including the two generated-asset checks, the guard sweep with its
+self-tests, `cargo fmt --check`, `cargo clippy --workspace --all-targets
+--locked -- -D warnings`, and the workspace test sweep. This is the
+hosted counterpart of the local table in §4.1: the same sources, built and
+tested on GitHub's runner rather than on the developer's machine.
+
+**The head this run covers.** The run's head commit is the closure-and-
+registry commit, which is the commit *after* the implementation head
+`67498d4620000a697c7319d5add20413f50030f6`. It therefore carries the
+implementation unchanged — the closure record, the roadmap rows and the
+registry rows are the only difference — so the run is a hosted verification
+of the implementation itself. Following the M007 precedent, the run is
+cited against the head that carries the implementation; a closure-record-only
+follow-up commit is a documentation delta, not a second implementation.
+
+**Merged-head run — still outstanding.** The plan's §15.2 asks for a run on
+the merged head as well. That run cannot exist before the merge, so no
+merged-head identifier is claimed here and none is invented. It is recorded
+in this section when the pull request merges.
+
+**The anchor correction is a follow-up commit.** A later commit corrects the
+§3 line anchors against the committed source; it is documentation only, and
+it triggers one further hosted run on the final pull-request head. That run's
+identifier is recorded here as well when it reports.
 
 ### 4.3 The record-less residue on this host — the before observation
 
@@ -459,6 +499,13 @@ unrelated to M008 and is not discharged by it.
   in place; the claims they support were re-read against the same lines and
   stand unchanged. Nothing about the implementation moved — the citations
   were the only thing wrong.
+- **The hosted CI run was recorded after the fact, not predicted.** When this
+  record was first written the branch had not been pushed, so §4.2 claimed no
+  run identifier at all. The branch was then pushed and pull request #187 was
+  opened; the hosted run `40129287199` on that pull-request head completed
+  **success** on 2026-10-24T20:53:17Z, and §4.2 now carries that identifier
+  with its head commit, job and timestamps. The run identifier was read back
+  from the hosted service; it was not written in advance of the run.
 
 ## 14. Handoff notes
 
