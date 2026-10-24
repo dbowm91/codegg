@@ -994,6 +994,9 @@ impl App {
                 // before it becomes an attachment.
                 crate::tui::commands::editor::open_editor(self, &path);
             }
+            TuiMsg::FilesClose => {
+                crate::tui::commands::file_tree::close_files_box(self);
+            }
             TuiMsg::FilesRefresh => {
                 crate::tui::commands::file_tree::rebuild(self);
             }

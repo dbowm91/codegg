@@ -45,7 +45,6 @@ use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 
 /// Hints rendered under the listing. Kept in one place so the box, its
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
-///
 /// [`Component::keymap_hint`] hands this exact string to the panel host.
 pub const HINT: &str =
     "j/k move · ^d/^u page · l/→ open · h/← up · enter open · i filter · r refresh · ⇧Q close";
@@ -313,11 +312,9 @@ impl FilesDialog {
         }
     }
 
-    /// The title is a breadcrumb of the scope, not a flat path.
-    ///
-    /// A pane scoped with `l` is not showing the workspace root, and a title
-    /// that still read the workspace name would be telling the user the wrong
-    /// thing about every row under it.
+    /// The title is a breadcrumb of the scope: a pane scoped with `l` is not
+    /// showing the workspace root, and a flat title would be wrong about
+    /// every row under it.
     pub(crate) fn title(&self) -> String {
         let total = self.rows().len();
         let workspace = self
@@ -418,10 +415,12 @@ impl Component for FilesDialog {
             // keeps the keyboard and the selection.
             KeyCode::Esc => None,
             // `Shift+Q` closes the box, the same gesture that exits a
-            // docked panel. The plain `q` stays the program's quit key.
+            // docked panel.
             KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 Some(TuiMsg::CloseDialog)
             }
+            // `q` closes the **box**; it is inert in the docked panel.
+            KeyCode::Char('q') if key.modifiers.is_empty() => Some(TuiMsg::FilesClose),
             // `i` opens the panel's filter field. The filter narrows the rows
             // the panel shows; it never re-scopes the listing.
             KeyCode::Char('i') => {
@@ -777,6 +776,35 @@ mod tests {
             "Shift+Q is the box's exit"
         );
         assert!(fixture.dialog.handle_key(key(KeyCode::Char('z'))).is_none());
+    }
+
+    /// `q` is the box's exit verb, and the filter still owns printable keys.
+    #[test]
+    fn q_closes_the_box_and_the_filter_still_owns_printable_keys() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+
+        let mut fixture = Fixture::new(root.path());
+        assert_eq!(
+            fixture.dialog.handle_key(key(KeyCode::Char('q'))),
+            Some(TuiMsg::FilesClose),
+            "`q` is the box's exit verb"
+        );
+        assert_eq!(
+            fixture
+                .dialog
+                .handle_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT,)),
+            Some(TuiMsg::CloseDialog),
+            "`Shift+Q` still closes the box"
+        );
+
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('i'))).is_none());
+        assert_eq!(fixture.dialog.panel_mode, TreePanelMode::Insert);
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('q'))).is_none());
+        assert_eq!(
+            fixture.dialog.filter, "q",
+            "the filter types `q`; the exit verb does not fire in insert mode"
+        );
     }
 
     /// `i` opens the panel's filter, and `Esc` leaves insert mode **keeping**

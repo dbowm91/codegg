@@ -18,6 +18,10 @@ fn plain(character: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
 }
 
+fn shifted(character: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(character), KeyModifiers::SHIFT)
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -79,7 +83,7 @@ fn frame(app: &mut App) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
-/// Press a key the way the event loop does: it draws a frame after every key.
+/// Press a key the way the event loop does: a frame after every key.
 fn press(app: &mut App, event: KeyEvent) {
     let _ = frame(app);
     app.on_key(event);
@@ -287,8 +291,8 @@ fn the_docked_panel_repaints_after_r_refreshes_the_authority() {
         "the panel lists the directory: {before:?}"
     );
 
-    // `r` re-walks. There is no daemon behind this app, so the walk fails
-    // and says so — but it fails *in the authority*.
+    // `r` re-walks. There is no daemon behind this app, so the walk fails —
+    // in the authority.
     press(&mut app, plain('r'));
     let after = panel_text(&mut app);
     assert!(
@@ -495,5 +499,85 @@ fn a_surface_unmounted_before_the_refresh_is_not_reached() {
     assert!(
         !text.contains("child.txt"),
         "the refresh did not paint the listing into a surface it does not own: {text:?}"
+    );
+}
+
+#[test]
+fn q_closes_the_files_box() {
+    let root = workspace();
+    let mut app = app_with_listing(root.path());
+    app.open_dialog(Dialog::Files);
+    assert!(
+        app.focus_manager.has_dialog(DialogType::Files),
+        "the box is open"
+    );
+
+    press(&mut app, plain('q'));
+
+    assert!(
+        !app.focus_manager.has_dialog(DialogType::Files),
+        "`q` closes the box: {:?}",
+        frame_text(&mut app)
+    );
+    assert!(
+        app.prompt_state.exit_armed_at.is_none(),
+        "`q` in the box is the box's exit, not the program's quit"
+    );
+    assert!(
+        app.ui_state.running,
+        "`q` in the box did not quit the program"
+    );
+}
+
+#[test]
+fn q_in_the_docked_files_panel_does_nothing() {
+    let root = workspace();
+    let mut app = app_with_listing(root.path());
+    open_and_dock(&mut app);
+
+    press(&mut app, plain('q'));
+
+    assert!(
+        app.panel_host.is_focused(),
+        "the panel keeps the keyboard: `q` is inert in the docked panel"
+    );
+    assert_eq!(
+        app.panel_host.placement(),
+        PanelPlacement::Left,
+        "the panel stays docked"
+    );
+    assert!(
+        app.prompt_state.exit_armed_at.is_none(),
+        "`q` in the panel is not the program's quit key either"
+    );
+    assert!(
+        app.focus_manager.is_empty(),
+        "`q` in the panel popped no modal"
+    );
+
+    press(&mut app, shifted('Q'));
+    assert!(
+        !app.panel_host.is_focused(),
+        "`Shift+Q` remains the panel's exit"
+    );
+}
+
+#[test]
+fn q_outside_the_files_box_is_still_the_programs_quit_key() {
+    let root = workspace();
+    let mut app = app_with_listing(root.path());
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+
+    press(&mut app, plain('q'));
+    assert!(
+        app.prompt_state.exit_armed_at.is_some(),
+        "`q` outside a `/files` box arms the program's quit"
+    );
+    assert!(app.ui_state.running, "the first `q` only arms the exit");
+
+    press(&mut app, plain('q'));
+    assert!(
+        !app.ui_state.running,
+        "the second `q` inside the arm window quits"
     );
 }

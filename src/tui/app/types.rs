@@ -754,11 +754,12 @@ pub enum TuiMsg {
     /// The `/files` box is a navigator and never holds a document itself, so
     /// this intent is what turns a selected row into an attachment. The path
     /// is workspace-relative and reaches `open_editor`, which owns the
-    /// lexical validation and the daemon-authorized attach — the box cannot
-    /// name a path the editor would not have accepted.
+    /// lexical validation and the daemon-authorized attach.
     FilesOpenSelected {
         path: String,
     },
+    /// `/files`: close the `/files` box (`q`) — inert in the docked panel.
+    FilesClose,
     /// `/files`: re-walk the workspace root.
     ///
     /// An intent, not a walk. The command layer owns the async read and the

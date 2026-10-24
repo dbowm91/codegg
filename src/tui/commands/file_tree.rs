@@ -10,31 +10,26 @@
 //! fallback in any mode, including standalone — an unavailable daemon
 //! listing is an explicit error, never a silent local walk.
 //!
-//! Opening a listed entry still hands its workspace-relative path to the
-//! existing [`crate::tui::commands::editor::open_editor`]. This module
-//! deliberately has no path-to-document code of its own: the tree is a
-//! navigator, and `open_editor` is the only thing that turns a path into a
-//! document attachment (and reauthorizes it via `DocumentOpen`).
+//! Opening a listed entry hands its workspace-relative path to the existing
+//! [`crate::tui::commands::editor::open_editor`], the only thing that turns a
+//! path into a document attachment (and reauthorizes it via `DocumentOpen`).
 //!
 //! ## The keymap
 //!
-//! [`handle_panel_key`] owns every key the tree pane claims, and it is the
-//! whole of the tree's keymap: navigation, the **peek** motion (`l`/`h`),
-//! the panel-local **live filter**, paging and the refresh. The editor
-//! command module calls it while the tree holds the focus; it is not
-//! called from anywhere else, so the tree's verbs and the editor's verbs
-//! cannot both claim the same key.
+//! [`handle_panel_key`] owns every key the tree pane claims: navigation, the
+//! **peek** motion (`l`/`h`), the panel-local **live filter**, paging and the
+//! refresh. The editor command module calls it while the tree holds the
+//! focus, so the tree's verbs and the editor's verbs cannot both claim the
+//! same key.
 //!
 //! ## Peek, not re-root
 //!
 //! `l` expands the selected directory *in place* and moves the cursor into
-//! it; `h` moves the cursor back out to the parent row and collapses it.
-//! The daemon's listing window is three levels deep, so a directory at the
-//! window's edge cannot show its children — the **scope** slides instead:
-//! the scope becomes that directory's parent and the directory is expanded
-//! there. A scope slide is a daemon round-trip (the scope travels with the
-//! request); everything else is local navigation over the listing the
-//! daemon already answered.
+//! it; `h` moves the cursor back out to the parent row and collapses it. The
+//! daemon's listing window is three levels deep, so a directory at the
+//! window's edge cannot show its children — the **scope** slides instead,
+//! and a scope slide is a daemon round-trip. Everything else is local
+//! navigation over the listing the daemon already answered.
 
 use std::path::PathBuf;
 
@@ -507,6 +502,19 @@ pub fn descend_to(app: &mut App, path: &str) {
     }
 }
 
+/// Close the `/files` box, and nothing else.
+///
+/// Resolved against a mounted `/files` **dialog**: a docked panel is not
+/// one, so the key is inert there.
+pub fn close_files_box(app: &mut App) {
+    if app.focus_manager.active_dialog_type()
+        != crate::tui::components::component::DialogType::Files
+    {
+        return;
+    }
+    app.close_dialog();
+}
+
 /// Make `path` the pane's selection.
 ///
 /// The path-bearing half of every movement verb: a surface names the row it
@@ -613,11 +621,9 @@ pub fn set_focus(app: &mut App, focused: bool) {
 /// | `Shift+Q` | leave the tree and return the keyboard to the editor |
 ///
 /// The panel's mode is **panel-local**: the composer badge reports the
-/// app-level mode, so a filter being typed is never reported as the
-/// composer being in Insert.
+/// app-level mode, so a filter being typed is never reported as Insert.
 // The editor-side keymap is the caller; until that call lands the crate has
-// no live user of this function, and the lint is about the wiring rather
-// than about the code.
+// no live user of this function, and the lint is about the wiring.
 pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
     // Paging is checked before the character arms below: `Ctrl+d`/`Ctrl+u`
@@ -2361,5 +2367,41 @@ mod tests {
             "a failed open does not move the keyboard"
         );
         assert!(app.file_tree_state.pending_editor_handoff.is_none());
+    }
+
+    /// The exit verb never pops an unrelated modal.
+    #[test]
+    fn the_files_exit_verb_leaves_an_unrelated_modal_alone() {
+        use crate::tui::components::component::DialogType;
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut app = app_with_root(root.path());
+
+        app.focus_manager.push(Box::new(
+            crate::tui::components::dialogs::files::FilesDialog::new(std::sync::Arc::clone(
+                &app.ui_state.theme,
+            )),
+        ));
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::Files,
+            "the box is mounted"
+        );
+
+        // An unrelated modal opens on top of the box.
+        app.open_dialog(crate::tui::app::Dialog::Tree);
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::Tree,
+            "the unrelated modal is on top"
+        );
+
+        close_files_box(&mut app);
+
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::Tree,
+            "the exit verb popped nothing: the unrelated modal is still mounted"
+        );
+        assert_eq!(app.focus_manager.len(), 2, "both modals are still mounted");
     }
 }
