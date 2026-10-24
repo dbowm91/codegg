@@ -992,7 +992,7 @@ impl App {
                 // The `/files` box is a navigator: it names a workspace-relative
                 // row and `open_editor` owns everything that must be true
                 // before it becomes an attachment.
-                crate::tui::commands::editor::open_editor(self, &path);
+                crate::tui::commands::file_tree::open_file(self, &path);
             }
             TuiMsg::FilesClose => {
                 crate::tui::commands::file_tree::close_files_box(self);

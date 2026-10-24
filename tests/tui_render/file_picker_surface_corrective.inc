@@ -581,3 +581,35 @@ fn q_outside_the_files_box_is_still_the_programs_quit_key() {
         "the second `q` inside the arm window quits"
     );
 }
+
+#[test]
+fn enter_and_l_on_a_file_arm_the_same_editor_handoff() {
+    let root = workspace();
+    let mut app = app_with_listing(root.path());
+    app.open_dialog(Dialog::Files);
+
+    press(&mut app, plain('j'));
+    assert_eq!(
+        app.file_tree_state.selected.as_deref(),
+        Some("top.txt"),
+        "the cursor is on the file"
+    );
+
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(
+        app.file_tree_state.pending_editor_handoff.as_deref(),
+        Some("top.txt"),
+        "`Enter` on a file arms the editor handoff"
+    );
+
+    let mut app = app_with_listing(root.path());
+    app.open_dialog(Dialog::Files);
+
+    press(&mut app, plain('j'));
+    press(&mut app, plain('l'));
+    assert_eq!(
+        app.file_tree_state.pending_editor_handoff.as_deref(),
+        Some("top.txt"),
+        "`l` on a file arms the same editor handoff"
+    );
+}

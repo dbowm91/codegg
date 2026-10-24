@@ -491,15 +491,19 @@ pub fn descend_to(app: &mut App, path: &str) {
             rebuild(app);
         }
         PeekStep::Open { path } => {
-            // The open path is `open_editor` verbatim, so the tree inherits
-            // its lexical validation, its already-open short-circuit, its
-            // daemon-authorized attachment, and its request/generation
-            // discipline without duplicating any of them.
-            app.file_tree_state.set_pending_editor_handoff(&path);
-            open_editor(app, &path);
+            open_file(app, &path);
         }
         PeekStep::None => {}
     }
+}
+
+/// Open a file from a `/files` surface and hand the keyboard to the editor.
+///
+/// **One** path for both open verbs: `Enter` and `l` on a file are the same
+/// verb, and the handoff is armed *before* the open.
+pub fn open_file(app: &mut App, path: &str) {
+    app.file_tree_state.set_pending_editor_handoff(path);
+    open_editor(app, path);
 }
 
 /// Close the `/files` box, and nothing else.
@@ -780,8 +784,8 @@ pub fn complete_editor_open_handoff(app: &mut App, succeeded: bool) {
     hand_off_to_editor(app);
 }
 
-/// Give the keyboard to the editor: the tree loses the focus, and the
-/// editor is put in **Normal**.
+/// Give the keyboard to the editor: the tree and the **side panel** lose the
+/// focus, and the editor is put in **Normal**.
 ///
 /// Normal, and not merely "not Insert": an editor left in Select would keep
 /// extending a selection that no longer means anything once the tree moved
@@ -789,6 +793,7 @@ pub fn complete_editor_open_handoff(app: &mut App, succeeded: bool) {
 /// read yet.
 pub fn hand_off_to_editor(app: &mut App) {
     set_focus(app, false);
+    super::panels::blur_panel(app);
     super::editor::enter_editor_normal(app);
 }
 
@@ -2367,6 +2372,60 @@ mod tests {
             "a failed open does not move the keyboard"
         );
         assert!(app.file_tree_state.pending_editor_handoff.is_none());
+    }
+
+    /// The side panel is a **second** holder of the keyboard.
+    #[tokio::test]
+    async fn the_editor_handoff_releases_the_docked_panel() {
+        use crate::tui::editor::EditorMode;
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, _client) = app_with_listing_client(
+            root.path(),
+            FakeListingClient::ready_listing("workspace-test", &["lib.rs"]),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        apply_listing_to_tree(
+            &mut app,
+            root.path(),
+            vec![node("lib.rs", 1, TreeNodeKind::File, None)],
+        );
+        app.file_tree_state.visible = true;
+        set_focus(&mut app, true);
+        app.file_tree_state.selected = Some("lib.rs".to_string());
+        app.panel_host.adopt(
+            crate::tui::panels::SidePanelId::Files,
+            Box::new(crate::tui::components::dialogs::files::FilesDialog::new(
+                std::sync::Arc::clone(&app.ui_state.theme),
+            )),
+        );
+        assert!(
+            app.panel_host.focus(),
+            "the docked panel takes the keyboard"
+        );
+        assert!(app.panel_host.is_focused(), "the panel holds it");
+
+        activate_selected(&mut app);
+        complete_editor_open_handoff(&mut app, true);
+
+        assert!(
+            !app.panel_host.is_focused(),
+            "the handoff released the docked panel: the editor has the keyboard"
+        );
+        assert!(
+            !app.ui_state.tree_focused,
+            "the handoff released the tree pane too"
+        );
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("the session is still there")
+                .presentation()
+                .mode,
+            EditorMode::Normal,
+            "the editor is in Normal, not merely out of Insert"
+        );
     }
 
     /// The exit verb never pops an unrelated modal.
