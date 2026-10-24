@@ -47,7 +47,7 @@ use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
 /// [`Component::keymap_hint`] hands this exact string to the panel host.
 pub const HINT: &str =
-    "j/k move · ^d/^u page · l/→ open · h/← up · enter open · i filter · r refresh · ⇧Q close";
+    "j/k move · ^d/^u page · l/→ peek · h/← back · enter open · i filter · r refresh · q/⇧Q close";
 /// Separator between breadcrumb components. A `›` reads as "down one level".
 const BREADCRUMB_SEP: &str = " › ";
 

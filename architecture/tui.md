@@ -3312,7 +3312,7 @@ hosted panel so the same box docks into the side column with `Shift+L`. It is
 one implementation: the box, the hosted panel, and the editor-side Ctrl+T
 pane all read the *same* navigation, so a fix in one is a fix in all three.
 
-### The ownership split
+### The `/files` navigator: the ownership split
 
 `App::file_tree_state` is the single **authority** for the navigator's tree
 *structure*: its nodes, its expansion set, its scope, its selection and its
@@ -3352,9 +3352,10 @@ stack left the docked panel showing a frozen copy of the tree.
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
 | `h` / `←` | **back one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
-| `r` | re-walk the current root |
+| `r` | **refresh**: re-walk the current root |
 | `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
-| `Shift+Q` | close the box |
+| `q` | close the **box** — in the side panel it does **nothing** |
+| `Shift+Q` | close the box; **leave** the side panel |
 
 `Enter` and `l` are **one** verb. `Enter` used to reveal a directory's contents
 in place and leave the cursor alone, which at the listing window's edge
