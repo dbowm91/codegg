@@ -80,7 +80,7 @@ The hint is the single source the panel host's composer status line and the help
 read, and it now reads:
 
 ```
-j/k move · ^d/^u page · l/→ peek · h/← back · enter open · i filter · r refresh · q/⇧Q close
+j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close
 ```
 
 `architecture/tui.md` and `docs/tui.md` carry the same verbs, with the scope
@@ -97,34 +97,106 @@ hint cannot (one hint string serves both the box and the panel). It is registere
 `scripts/verify.sh`'s `run_guards()` — both the guard and its `--self-test` — **and**
 in `.github/workflows/ci.yml`'s `verify` job.
 
+### 3.5 The hosted-CI corrective
+
+The first hosted `verify` run against this milestone's head **failed**, and it failed
+for a reason no local gate had covered. Every guard, the formatter and workspace clippy
+passed; the `Workspace tests` step failed on
+`tui::panels::tests::a_docked_files_panel_advertises_its_own_keymap_without_the_keyboard`,
+and nextest's fail-fast cancelled the remaining 8,893 tests, so the failure hid a
+second one behind it.
+
+Both failures were **pre-existing invariants on `origin/main`** that the milestone's
+hint rewording broke:
+
+1. `a_docked_files_panel_advertises_its_own_keymap_without_the_keyboard` asserts the
+   docked panel's line advertises `l/→ open`. The milestone changed the hint's word
+   for `l` to `peek`, to agree with the published tables — and left this **fourth
+   copy** of the vocabulary behind. The tables were right and the copy was stale.
+2. `an_unfocused_panel_names_the_placement_correct_entry_gesture` asserts an unfocused
+   panel's line does **not** say `back`: the panel chrome mints `Shift+← back` for a
+   *focused* panel — the way out to the composer — so `back` in a panel line means that
+   and nothing else, and an unfocused panel has not been entered and has nothing to go
+   back from. The milestone's hint used `h/← back`, so the navigator's own motion
+   spent the chrome's word.
+
+The corrective keeps the milestone's resolution and repairs what it broke:
+
+- `l` stays a **peek** in the hint, and the stale copy is now a **named** list —
+  `ADVERTISED_VERBS` in `src/tui/panels/mod.rs` — rather than an inline literal.
+- `h` is **up** one level in the hint and in both published tables, because `up` is
+  the navigator's word and `back` is the chrome's. The tables' `h` rows read
+  `**up one level**` and `go up one level`.
+- The listing's own recovery line, `h to go back`, became `h to go up`: a panel that
+  says `h/← up` in its status line must not say `h to go back` in its body. This is a
+  **user-visible string** and it is recorded here rather than changed silently.
+
+The guard gained the two rules that would have caught this without a 22-minute CI
+cycle:
+
+- **Rule 9** — the panel's advertised verbs are a fourth copy of the vocabulary, and
+  every verb in it must be one the hint publishes. The drift that reached CI is
+  rejected statically now.
+- **Rule 10** — the hint may not spend a word the panel chrome owns
+  (`CHROME_OWNED_WORDS`). `h/← back` is rejected even if every table agrees with it.
+
 ## 4. Verification executed
 
-**All of it was run locally. No hosted CI lane has run against these commits.**
+**The first hosted `verify` run against this milestone's head failed** (§3.5 records
+what it found). Everything below was re-run locally against the corrective; the named
+re-entry condition is still a green hosted `CI / verify` run.
 
 | Command | Result |
 |---|---|
 | `bash scripts/verify.sh quick` | exit 0 — "==> Quick verification passed." |
-| `CARGO_BUILD_JOBS=3 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 — 0 warnings |
+| `CARGO_BUILD_JOBS=8 cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 — 0 warnings |
+| `cargo nextest run -p codegg --lib --profile ci --no-fail-fast` | 7441 run, 7438 passed, 3 failed — all three pre-existing and environmental (see below) |
+| `cargo test --test tui_render` | 1082 passed |
 | `cargo test --test tui_render -- file_picker_surface_corrective` | 14 passed |
+| `cargo test -p codegg --lib -- tui::panels::` | 43 passed |
 | `cargo test --lib -- tui::commands::file_tree` | 25 passed |
 | `cargo test --lib -- tui::components::dialogs::files` | 26 passed |
 | `cargo fmt --all` | clean |
 | `python3 scripts/check_tui_files_keymap_drift.py` | pass |
-| `python3 scripts/check_tui_files_keymap_drift.py --self-test` | 10 cases passed |
+| `python3 scripts/check_tui_files_keymap_drift.py --self-test` | 12 cases passed |
 | `python3 scripts/rust_test_scan.py --validate` | pass |
 | `python3 scripts/check_comment_budget.py` | pass |
 | `python3 scripts/check_test_assertion_quality.py` | pass |
 | `python3 scripts/check_test_duplication.py` | pass |
 
+### The three remaining failures are not this milestone's
+
+`cargo nextest run -p codegg --lib` leaves exactly three failures, all of which
+reproduce on the baseline `6e097dd3a` and none of which is in a file this milestone
+touched:
+
+- `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs` and
+  `core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances`
+  — `register workspace: InvalidRootPath("/tmp")`; macOS resolves `/tmp` to
+  `/private/tmp`, so the workspace root is rejected.
+- `managed_process::tests::offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn`
+  — `OfflineRequired` has no backend on this platform.
+
+Two further `tui::commands::interactive_terminal` failures appeared under
+`cargo test` and **do not appear under nextest**: `cargo test` runs the suite in one
+process, and those fixtures mutate process-global state. CI runs nextest, so they are
+not CI failures. This is recorded rather than hidden, because it is the reason the
+local `cargo test` run reported seven failures and nextest reported three.
+
 ### The guard is not vacuous
 
-Ten synthetic self-test cases pass, each tripping exactly its own rule. In the **real**
-tree, two divergences were injected and reverted:
+Twelve synthetic self-test cases pass, each tripping exactly its own rule. In the
+**real** tree, four divergences were injected and reverted:
 
 - `docs/tui.md`'s `l` row changed back to "open" → rejected by rule 5 (*the hint calls
   `l` a peek and `docs/tui.md` does not say so*).
 - `architecture/tui.md` losing its `q` row → rejected by rules 1 and 2 (*only
   `docs/tui.md` has `q`* / *the hint names `q` and no published table does*).
+- `src/tui/panels/mod.rs`'s `ADVERTISED_VERBS` changed back to `l/→ open` — **the
+  drift that reached CI** → rejected by rule 9 (*the panel advertises `l/→ open` and
+  the hint does not publish it*).
+- the hint changed back to `h/← back` → rejected by rules 5 and 10 (*the hint says
+  `back`, which the panel chrome owns*).
 
 ### The counts were re-measured, not estimated
 
@@ -161,8 +233,9 @@ There is no concurrency: the TUI is single-threaded.
 ## 7. Migration and compatibility review
 
 - No persistence, no migration, no protocol, no configuration.
-- The user-visible changes are two: `q` now closes the `/files` box, and opening a
-  file now moves the keyboard to the editor from every `/files` surface.
+- The user-visible changes are three: `q` now closes the `/files` box, opening a
+  file now moves the keyboard to the editor from every `/files` surface, and the
+  listing's recovery line says `h to go up` rather than `h to go back`.
 - `Shift+Q` is retained everywhere it already worked, so nothing that muscle memory
   already knows breaks.
 
@@ -181,14 +254,24 @@ introduced.
   unambiguously.
 - `architecture/overview.md` and `AGENTS.md`'s guard counts were re-measured, and the
   reconciliation is recorded in `architecture/count_audit_history.md`.
-- The comment-budget ratchet was re-banked twice and holds **down**: 122,455 → 122,454
-  lines and 1,078,132 → 1,078,129 words.
+- The comment-budget ratchet was re-banked three times and holds **down**: 122,455 →
+  122,454 → 122,449 lines and 1,078,132 → 1,078,129 → 1,078,060 words. The corrective
+  added comments and paid for them by trimming the two files it touched. Three
+  passages went: one comment stated the same fact **twice with different words**
+  (`activate`'s doc said "peeked into" while the line under it said "entered"); and
+  two passages of *narrative* were cut — a past `Workspace` panel removal, and a note
+  about what a second column would cost. No rule, contract or invariant lost a
+  sentence, and the published tables remain the statement of the `h` motion.
 
 ## 10. Unresolved findings
 
-- **medium — the hosted CI lane has not run against these commits.** Every gate above
-  is local. The named re-entry condition is a green `CI / verify` run on the milestone's
-  final head.
+- **medium — the hosted `verify` lane has not yet run green against this milestone's
+  head.** The first run **failed**, and it failed for the reason §3.5 records: the
+  milestone's hint rewording broke two pre-existing invariants and nothing local
+  compared the four published surfaces. That is now corrected and covered by the
+  guard's rules 9 and 10, but the re-entry condition is unchanged: a green
+  `CI / verify` run on the milestone's final head. Until then, every gate in §4 is
+  local.
 - **low — the guard reads the hint's string literal out of the Rust source with an
   anchored regex.** The implementation flagged this rather than hiding it: the plan's
   §6 said the guard "reads the code's own model rather than re-parsing it", and the
