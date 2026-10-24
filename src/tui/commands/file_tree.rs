@@ -528,7 +528,7 @@ pub fn select_path(app: &mut App, path: &str) {
     app.file_tree_state.select(path);
 }
 
-/// Go back one level: the `h`/left-arrow verb.
+/// Go up one level: the `h`/left-arrow verb.
 ///
 /// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
 /// enters a directory, `h` leaves the one the cursor is in. The cursor

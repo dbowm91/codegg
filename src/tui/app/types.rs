@@ -778,7 +778,7 @@ pub enum TuiMsg {
     FilesDescend {
         path: String,
     },
-    /// `/files`: go back one level (`h`).
+    /// `/files`: go up one level (`h`).
     ///
     /// Carries the path of the row the cursor is on: the **authority**
     /// resolves the relation, against the unfiltered row set.

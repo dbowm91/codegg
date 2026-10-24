@@ -814,7 +814,7 @@ impl FileTreeState {
         self.bump();
     }
 
-    /// Go back one level *within* the current scope.
+    /// Go up one level *within* the current scope.
     ///
     /// The in-scope half of the `h` motion ([`Self::peek_up`]): the cursor
     /// inside a directory moves to its parent row and that directory

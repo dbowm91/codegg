@@ -2431,15 +2431,13 @@ mod tests {
         Box::new(dialog)
     }
 
-    /// The verbs a docked `/files` panel's line must advertise. Named rather
-    /// than inline, because it is a fourth copy of the navigator's vocabulary
-    /// and the keymap guard compares it with the hint.
-    const ADVERTISED_VERBS: &[&str] = &["enter open", "l/→ peek", "^d/^u page"];
-
     /// The reported defect, as an assertion: a `/files` box docked in a side
     /// panel showed no keymap anywhere until the user had already guessed the
     /// keys correctly. The line must appear the moment the box is docked,
     /// keyboard or no keyboard.
+    ///
+    /// The verbs come from the widget's own hint, not from a list written here:
+    /// such a list was a second copy of the vocabulary, and it drifted.
     #[test]
     fn a_docked_files_panel_advertises_its_own_keymap_without_the_keyboard() {
         let mut host = host_showing(SidePanelId::Files, PanelPlacement::Right);
@@ -2460,7 +2458,7 @@ mod tests {
             !hint.contains("i act"),
             "the host's generic line describes a verb `/files` does not have, got {hint:?}"
         );
-        for &verb in ADVERTISED_VERBS {
+        for verb in crate::tui::components::dialogs::files::HINT.split(" · ") {
             assert!(hint.contains(verb), "missing {verb:?} in {hint:?}");
         }
     }

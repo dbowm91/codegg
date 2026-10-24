@@ -6040,12 +6040,12 @@ never acceptable is the two disagreeing invisibly.
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
 focused it claims a strict subset of keys — `j`/`k` to move, `Ctrl+d`/`Ctrl+u`
-to page, `l`/`→` to make the selected directory the pane's root, `h`/`←` to go
-back one level, `Enter` to open a file or expand a directory, `r` to re-walk,
-`Esc` to leave the tree — and every other key falls through unchanged, so a
-focused tree never swallows composer or editor input. `Esc` returns focus to
-the editor buffer without changing the route, preserving the non-modal
-composer contract.
+to page, `l`/`→` to **peek into** that directory, `h`/`←` to go **up** one
+level, `Enter` to open a file or enter a directory, `r` to re-walk, `Esc` to
+leave the tree — and every other key falls through unchanged, so a focused
+tree never swallows composer or editor input. `Esc` returns focus to the
+editor buffer without changing the route, preserving the non-modal composer
+contract.
 
 `Ctrl+d`/`Ctrl+u` carry `Char('d')`/`Char('u')` codes, so the tree's modifier
 check runs before its character arms; the editor's own half-page motions are
