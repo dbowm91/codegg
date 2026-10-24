@@ -13,8 +13,17 @@ use codegg_core::workspace_services::{
 };
 use tokio::sync::Mutex;
 
+use super::common::isolated_env::IsolatedEnv;
+
 #[tokio::test(flavor = "current_thread")]
 async fn task_spawn_persists_explicit_scratch_grant_in_admitted_job() {
+    // The scratch tree is rooted at the user's cache directory, so the test
+    // isolates the environment before it allocates one: the developer's real
+    // scratch root is not this test's fixture.
+    let scratch_env = tempfile::tempdir().expect("scratch environment");
+    let scratch_env_root =
+        std::fs::canonicalize(scratch_env.path()).expect("canonical scratch environment");
+    let _env = IsolatedEnv::new(&scratch_env_root);
     let workspace = tempfile::tempdir().expect("workspace");
     let registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
         .await

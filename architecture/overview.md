@@ -540,9 +540,39 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 346 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 95 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 61 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 347 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 96 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 62 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+
+### Count reconciliation — M008 (2026-10-24)
+
+Three code-count rows moved when the managed-agent-scratch M008 line landed its
+corrective pass. *Integration test files* moved to **339** (`tests/*.rs` +
+`tests/*/*.inc`, with the `tests/common/` helper tree excluded — by one, the
+new `tests/scheduler_jobs/scratch_record_less_tree.inc`, which drives a full
+sweep pass over a tree whose owner record is missing). *Guard scripts (all)*
+moved to **93** (`ls scripts/check_*` — the new
+`scripts/check_scratch_reclaim_invariants.py`, which enforces the reclaim
+path's error taxonomy, its single removal routine, the emptiness proof that
+authorises a removal, and the one shared rule the census and the validator
+both use). *CI guard scripts* moved to **56** (the `ci.yml` list, which gained
+the same guard and its self-test). The quick-only difference was unchanged at
+**14** guards CI does not run: the new guard runs in **both** `verify.sh quick`
+and CI, so it adds no quick-only entry. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — delegated-run corrective, merge with `main` (2026-10-24)
+
+Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
+the delegated-run corrective branch moved the same three rows again, because
+both lines added a test module and a guard. The measured values on the merged
+tree are *Integration test files* **347**, *Guard scripts (all)* **96** and
+*CI guard scripts* **62** — each the sum of the two lines' own deltas. The
+quick-only difference is **unchanged at 14**: the delegated-run corrective's
+six new guards all run in **both** `verify.sh quick` and CI, and M008's one new
+guard does too, so neither line adds a quick-only entry. `AGENTS.md`'s
+published counts were corrected at the source to **76** for `quick` and **62**
+for CI. The full record is in `architecture/count_audit_history.md`.
 
 ## Feature gates
 

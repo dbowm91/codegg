@@ -12,16 +12,16 @@
 //!   no session identity;
 //! - `codegg daemon status` shows the same usage in one line.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::OnceLock;
 
-use parking_lot::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use codegg::core::instance::{connect_or_start_daemon, ConnectOrStartOptions, DaemonPaths};
 use tokio::process::Command;
 use tokio::time::sleep;
+
+use super::common::isolated_env::IsolatedEnv;
 
 fn temp_root(label: &str) -> PathBuf {
     // The scratch root refuses a symlinked path component, and on macOS the
@@ -56,55 +56,6 @@ fn codegg_binary() -> PathBuf {
         }
     }
     PathBuf::from("./target/debug/codegg")
-}
-
-/// An isolated environment: its own `HOME` (so the scratch cache root is
-/// isolated), its own daemon home, and its own data home.
-struct IsolatedEnv {
-    _lock: MutexGuard<'static, ()>,
-    old_home: Option<std::ffi::OsString>,
-    old_daemon_home: Option<std::ffi::OsString>,
-    old_data_home: Option<std::ffi::OsString>,
-    old_xdg_cache: Option<std::ffi::OsString>,
-}
-
-impl IsolatedEnv {
-    fn new(root: &Path) -> Self {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock();
-        let old_home = std::env::var_os("HOME");
-        let old_daemon_home = std::env::var_os("CODEGG_DAEMON_HOME");
-        let old_data_home = std::env::var_os("CODEGG_DATA_HOME");
-        let old_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
-        std::env::set_var("HOME", root.join("home"));
-        std::env::set_var("CODEGG_DAEMON_HOME", root.join("daemon"));
-        std::env::set_var("CODEGG_DATA_HOME", root.join("data"));
-        std::env::remove_var("XDG_CACHE_HOME");
-        std::fs::create_dir_all(root.join("home")).ok();
-        Self {
-            _lock: lock,
-            old_home,
-            old_daemon_home,
-            old_data_home,
-            old_xdg_cache,
-        }
-    }
-}
-
-impl Drop for IsolatedEnv {
-    fn drop(&mut self) {
-        for (key, value) in [
-            ("HOME", self.old_home.take()),
-            ("CODEGG_DAEMON_HOME", self.old_daemon_home.take()),
-            ("CODEGG_DATA_HOME", self.old_data_home.take()),
-            ("XDG_CACHE_HOME", self.old_xdg_cache.take()),
-        ] {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
 }
 
 /// The sessions root the daemon will census, under the isolated `HOME`.
@@ -143,11 +94,20 @@ async fn scratch_usage_reports_the_daemon_s_own_tree_without_leaking_it() {
     let _env = IsolatedEnv::new(&root);
 
     // Plant one scratch tree, named by its digest, with one file in it.
+    //
+    // The tree is planted through the product's own allocator, so it carries
+    // the owner record a daemon-owned tree carries. A hand-made directory
+    // without that record is a shape the allocator never produces, and the
+    // census's verdict for it answers a different question.
     let session_id = "scratch-usage-integration-session";
     let digest = codegg::scratch::session_scratch_digest_hex(session_id);
-    let tree = sessions_root().join(&digest);
-    std::fs::create_dir_all(&tree).expect("plant scratch tree");
+    let tree = codegg::scratch::session_scratch_dir(session_id).expect("plant scratch tree");
     std::fs::write(tree.join("artifact.bin"), b"census-secret-content").expect("plant artifact");
+    // The census measures every regular file in the tree, and the daemon's
+    // own owner record is one of them.
+    let record_bytes = std::fs::metadata(tree.join(codegg::scratch::OWNER_RECORD_NAME))
+        .expect("owner record")
+        .len();
 
     let paths = DaemonPaths::resolve();
     let result = connect_or_start_daemon(ConnectOrStartOptions {
@@ -198,7 +158,7 @@ async fn scratch_usage_reports_the_daemon_s_own_tree_without_leaking_it() {
     );
     assert_eq!(
         entry["total_bytes"].as_u64(),
-        Some("census-secret-content".len() as u64),
+        Some("census-secret-content".len() as u64 + record_bytes),
         "report: {json_text}"
     );
     assert_eq!(

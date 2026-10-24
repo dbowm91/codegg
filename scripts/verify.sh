@@ -101,6 +101,19 @@ run_guards() {
     echo "==> python3 scripts/check_daemon_cwd_usage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py)
 
+    # The scratch reclaim path decides on four facts — containment, real
+    # directory, ownership, and the owner record — and it removes a tree only
+    # when it holds no entries at all. A reclaim failure that wears the
+    # provisioning text, a removal that skips the owner-record check, and a
+    # report that disagrees with the validator are all silent: they are wrong
+    # answers, not crashes. A guard which is not run automatically cannot
+    # protect anything, so it runs here with its self-test.
+    echo "==> python3 scripts/check_scratch_reclaim_invariants.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_scratch_reclaim_invariants.py --self-test)
+
+    echo "==> python3 scripts/check_scratch_reclaim_invariants.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_scratch_reclaim_invariants.py)
+
     # The trusted Git route owns every CodeGG-owned Git child, and the
     # hostile-metadata detector is the mediation that refuses a repository
     # which declares a configuration surface the route cannot neutralise.

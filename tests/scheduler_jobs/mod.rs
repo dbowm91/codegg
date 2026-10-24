@@ -120,6 +120,9 @@ pub mod scheduler_submission_idempotency;
 #[path = "scratch_cache_root_contract.inc"]
 pub mod scratch_cache_root_contract;
 
+#[path = "scratch_record_less_tree.inc"]
+pub mod scratch_record_less_tree;
+
 #[path = "scratch_retention_sweep.inc"]
 pub mod scratch_retention_sweep;
 

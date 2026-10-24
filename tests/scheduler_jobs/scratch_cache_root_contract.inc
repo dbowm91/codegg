@@ -14,20 +14,8 @@
 //! the allocator rather than of the environment.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
-/// Serializes the process-global environment moves.
-///
-/// `nextest` runs one process per test, but plain `cargo test` runs the tests
-/// of one binary as threads inside one process, where environment mutation is
-/// process-global. The lock keeps the resolved cache root stable for the
-/// duration of each test.
-fn cache_root_env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+use super::common::isolated_env::env_lock;
 
 /// Restores the environment entries it replaced.
 struct EnvGuard(Vec<(&'static str, Option<String>)>);
@@ -70,7 +58,7 @@ fn codegg_scratch_root(cache_root: &Path) -> PathBuf {
 
 #[test]
 fn the_default_cache_root_is_the_home_directory_cache() {
-    let _guard = cache_root_env_lock();
+    let _guard = env_lock();
     let home = tempfile::tempdir().expect("isolated home");
     // The allocator refuses a path with a symlinked component, and a temporary
     // directory's ancestors can contain one (`/tmp` is a symlink on macOS), so
@@ -93,7 +81,7 @@ fn the_default_cache_root_is_the_home_directory_cache() {
 
 #[test]
 fn an_explicit_cache_home_is_the_root_the_allocator_uses() {
-    let _guard = cache_root_env_lock();
+    let _guard = env_lock();
     let cache = tempfile::tempdir().expect("isolated cache");
     // The allocator refuses a cache root another user could write to, and
     // `tempfile` creates its directories with the *default* permissions — so

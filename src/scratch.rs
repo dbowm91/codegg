@@ -81,7 +81,11 @@ use thiserror::Error;
 
 const SCRATCH_VENDOR_NAME: &str = "codegg";
 const SCRATCH_ROOT_NAME: &str = "scratch";
-const OWNER_RECORD_NAME: &str = ".codegg-owner";
+/// The name of the owner record inside a scratch tree.
+///
+/// The record is the daemon's proof that it owns the tree. It is part of the
+/// on-disk contract, so the name is public.
+pub const OWNER_RECORD_NAME: &str = ".codegg-owner";
 
 #[derive(Debug, Error)]
 pub enum ScratchError {
@@ -89,8 +93,21 @@ pub enum ScratchError {
     MissingSession,
     #[error("could not determine the current user's cache directory")]
     CacheUnavailable,
+    /// An I/O failure while **allocating** a scratch tree.
+    ///
+    /// The blanket `From<io::Error>` is deliberately absent: every I/O
+    /// failure in this module is mapped **explicitly**, so a reclaim failure
+    /// can never be reported as a provisioning failure. The compiler
+    /// enforces it — a `?` on an `io::Result` does not compile here.
     #[error("failed to provision managed scratch: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[source] std::io::Error),
+    /// An I/O failure while **reclaiming** a scratch tree.
+    ///
+    /// A reclaim failure is never reported as a provisioning failure:
+    /// nothing was provisioned, and an operator reading the message must be
+    /// able to tell which of the two operations failed.
+    #[error("failed to reclaim managed scratch: {0}")]
+    ReclaimIo(#[source] std::io::Error),
     #[error("managed scratch path is not a real directory: {0}")]
     InvalidPath(PathBuf),
     #[error("managed scratch path is owned by a different user: {0}")]
@@ -156,6 +173,7 @@ fn test_scratch_root() -> Option<PathBuf> {
 /// Dropping the guard restores the previous root.
 #[cfg(test)]
 pub(crate) struct TestScratchRoot {
+    root: PathBuf,
     previous: Option<PathBuf>,
 }
 
@@ -176,8 +194,17 @@ impl TestScratchRoot {
             std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
                 .expect("make the test scratch root private");
         }
-        let previous = test_scratch_root_override::install(root);
-        Self { previous }
+        let previous = test_scratch_root_override::install(root.clone());
+        Self { root, previous }
+    }
+
+    /// The redirected root.
+    ///
+    /// A thread that the test spawns does not inherit the redirect — it is
+    /// thread-local — so a test that allocates from a worker thread installs
+    /// the guard there with this path.
+    pub(crate) fn path(&self) -> &Path {
+        &self.root
     }
 }
 
@@ -187,6 +214,26 @@ impl Drop for TestScratchRoot {
         let previous = self.previous.take();
         test_scratch_root_override::restore(previous);
     }
+}
+
+/// A private scratch root for one test.
+///
+/// The scratch tests allocate real trees, and the reclaim tests **delete**
+/// them. A test that ran against the developer's real cache root would write
+/// into it and remove the developer's own scratch, so every test that
+/// touches the scratch tree installs one of these first.
+///
+/// The redirect is thread-local, so concurrent tests never see each other's
+/// tree. A thread the test spawns does not inherit it: the guard is
+/// installed there with [`TestScratchRoot::path`].
+#[cfg(test)]
+pub(crate) fn isolated_scratch_root(label: &str) -> TestScratchRoot {
+    let base = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir().to_path_buf());
+    TestScratchRoot::install(base.join(format!(
+        "cg-scratch-{label}-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    )))
 }
 
 /// Resolve and securely create the persistent scratch root for one session.
@@ -216,7 +263,7 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     let session_root = sessions_root.join(name);
     ensure_private_directory(&session_root, expected_uid)?;
     ensure_owner_record(&session_root, &digest)?;
-    Ok(std::fs::canonicalize(session_root)?)
+    std::fs::canonicalize(session_root).map_err(ScratchError::Io)
 }
 
 /// Resolve the private scratch root for one durable delegated agent run.
@@ -257,10 +304,10 @@ pub(crate) fn reclaim_shared_scratch_dir(
         .get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let session_root = session_scratch_dir(session_id)?;
+    let session_root = session_scratch_dir(session_id).map_err(reclaim_failure)?;
     let shared_root = session_root.join("shared");
     let owner = directory_owner(&session_root)?;
-    ensure_private_directory(&shared_root, owner)?;
+    ensure_private_directory(&shared_root, owner).map_err(reclaim_failure)?;
     reclaim_owned_resource_dir(
         &shared_root,
         &resource_digest("shared-scratch", scratch_id.as_str()),
@@ -384,9 +431,11 @@ fn existing_session_scratch_dir(session_id: &str) -> Result<Option<PathBuf>, Scr
         .join("sessions")
         .join(name);
     match std::fs::symlink_metadata(&path) {
-        Ok(_) => session_scratch_dir(session_id).map(Some),
+        Ok(_) => session_scratch_dir(session_id)
+            .map(Some)
+            .map_err(reclaim_failure),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(ScratchError::ReclaimIo(error)),
     }
 }
 
@@ -424,16 +473,39 @@ fn reclaim_owned_resource_dir(
 ) -> Result<bool, ScratchError> {
     let name = hex_digest(digest);
     let path = parent.join(&name);
-    let canonical_parent = std::fs::canonicalize(parent)?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(reclaim_io)?;
     let recovered = recover_reclaim_tombstones(parent, digest, owner, strictness)?;
     let tombstone = parent.join(format!(".reclaim-{name}-{}", uuid::Uuid::new_v4()));
     match std::fs::rename(&path, &tombstone) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(recovered),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(reclaim_io(error)),
     }
     validate_and_remove_tombstone(&tombstone, &canonical_parent, digest, owner, strictness)?;
     Ok(true)
+}
+
+/// Map an I/O failure in the reclaim path onto the reclaim-named variant.
+///
+/// The reclaim path never reports an I/O failure as a provisioning failure:
+/// nothing was provisioned, and an operator reading the message must be able
+/// to tell the two apart.
+#[cfg(any(unix, windows))]
+fn reclaim_io(error: std::io::Error) -> ScratchError {
+    ScratchError::ReclaimIo(error)
+}
+
+/// Map an error that escapes a reclaim operation onto the reclaim naming.
+///
+/// A provisioning failure that happens *inside* a reclaim is still a reclaim
+/// failure to the caller: the operation that failed is the reclaim, and the
+/// operator has to be able to tell that from a failure to allocate.
+#[cfg(any(unix, windows))]
+fn reclaim_failure(error: ScratchError) -> ScratchError {
+    match error {
+        ScratchError::Io(error) => ScratchError::ReclaimIo(error),
+        other => other,
+    }
 }
 
 /// Other platforms stay fail-closed until their filesystem metadata and
@@ -446,6 +518,17 @@ pub(crate) fn reclaim_shared_scratch_dir(
     Err(ScratchError::CleanupUnavailable)
 }
 
+/// Recover the tombstones a previous reclaim pass left behind.
+///
+/// A tombstone is a **generation** of one resource: its name already carries
+/// the digest and a uuid, and it is not the resource's live name. The
+/// tombstone is therefore validated **in place** — a pass that ends in a
+/// refusal must leave the sessions root's set of tombstone names unchanged,
+/// so the next pass reaches the same tree instead of a renamed copy of it.
+///
+/// The claim that protects a tombstone is its name itself. Two reclaimers
+/// that reach the same tombstone both try to remove it; the loser sees the
+/// tree gone and skips it, which is a race rather than a failure.
 #[cfg(any(unix, windows))]
 fn recover_reclaim_tombstones(
     shared_root: &Path,
@@ -454,7 +537,8 @@ fn recover_reclaim_tombstones(
     strictness: ReclaimStrictness,
 ) -> Result<bool, ScratchError> {
     let prefix = format!(".reclaim-{}-", hex_digest(digest));
-    let tombstones = std::fs::read_dir(shared_root)?
+    let tombstones = std::fs::read_dir(shared_root)
+        .map_err(reclaim_io)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
@@ -463,31 +547,41 @@ fn recover_reclaim_tombstones(
                 .is_some_and(|name| name.starts_with(&prefix))
         })
         .collect::<Vec<_>>();
-    let canonical_shared_root = std::fs::canonicalize(shared_root)?;
+    let canonical_shared_root = std::fs::canonicalize(shared_root).map_err(reclaim_io)?;
     let mut recovered = false;
-    for previous in tombstones {
-        // Claim an orphaned tombstone under a fresh opaque name. A concurrent
-        // retry can claim it first; either claimant removes only this revoked
-        // resource generation, never a directory recreated at its live name.
-        let claimed = shared_root.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
-        match std::fs::rename(&previous, &claimed) {
-            Ok(()) => {
-                validate_and_remove_tombstone(
-                    &claimed,
-                    &canonical_shared_root,
-                    digest,
-                    owner,
-                    strictness,
-                )?;
-                recovered = true;
+    for tombstone in tombstones {
+        match validate_and_remove_tombstone(
+            &tombstone,
+            &canonical_shared_root,
+            digest,
+            owner,
+            strictness,
+        ) {
+            Ok(()) => recovered = true,
+            // A concurrent reclaimer removed the tombstone first. There is
+            // nothing left to reclaim, and the race is not a failure.
+            Err(ScratchError::ReclaimIo(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            // A refusal is the validator's verdict, not a failure: the tree
+            // stays where it is, and the operator disposition owns it.
+            Err(error) => return Err(error),
         }
     }
     Ok(recovered)
 }
 
+/// Validate one claimed tree and remove it.
+///
+/// The four checks that authorise a removal are the containment check, the
+/// real-directory check, the ownership check, and the owner-record check.
+/// A tree that holds **content** must present its owner record: a record
+/// that is missing, malformed, or owned by another user is refused, and
+/// nothing is removed.
+///
+/// The one exception is a tree that holds **no entries at all**: there is
+/// nothing left to dispose of, and the removal happens inside the owner-only
+/// sessions root. That is the shape a daemon killed mid-`remove_dir_all`
+/// leaves behind, and it is what makes the reclaim path resumable.
 #[cfg(any(unix, windows))]
 fn validate_and_remove_tombstone(
     tombstone: &Path,
@@ -496,7 +590,7 @@ fn validate_and_remove_tombstone(
     owner: impl OwnerCheck,
     strictness: ReclaimStrictness,
 ) -> Result<(), ScratchError> {
-    let metadata = std::fs::symlink_metadata(tombstone)?;
+    let metadata = std::fs::symlink_metadata(tombstone).map_err(reclaim_io)?;
     if is_symlink_or_reparse_point(&metadata) || !metadata.is_dir() {
         return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
     }
@@ -505,36 +599,102 @@ fn validate_and_remove_tombstone(
             .file_name()
             .ok_or_else(|| ScratchError::InvalidPath(tombstone.to_path_buf()))?,
     );
-    if std::fs::canonicalize(tombstone)? != expected_tombstone {
+    if std::fs::canonicalize(tombstone).map_err(reclaim_io)? != expected_tombstone {
         return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
     }
     let owner_record = tombstone.join(OWNER_RECORD_NAME);
-    let owner_metadata = std::fs::symlink_metadata(&owner_record)?;
-    if is_symlink_or_reparse_point(&owner_metadata) || !owner_metadata.is_file() {
-        return Err(ScratchError::InvalidPath(owner_record));
+    // The record's metadata is read before the record's path is moved into
+    // an error, so the borrow of the path does not outlive the read.
+    let owner_metadata = std::fs::symlink_metadata(&owner_record);
+    let owner_metadata = match owner_metadata {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // The owner record is gone. The tree may still be removed when it
+            // holds nothing at all; a tree that holds content cannot be
+            // proven owned, so it is refused — by the automatic path and by
+            // the operator path alike.
+            let empty = tree_is_empty(tombstone, owner)?;
+            match reclaim_verdict(OwnerRecordState::Missing, None, u64::from(!empty)) {
+                ReclaimVerdict::Acceptable => None,
+                ReclaimVerdict::Refused(reason) => {
+                    return Err(ScratchError::Unreclaimable {
+                        reason,
+                        path: tombstone.to_path_buf(),
+                    })
+                }
+                ReclaimVerdict::Invalid => {
+                    return Err(ScratchError::InvalidPath(tombstone.to_path_buf()))
+                }
+            }
+        }
+        Err(error) => return Err(reclaim_io(error)),
+    };
+    if let Some(owner_metadata) = owner_metadata {
+        if is_symlink_or_reparse_point(&owner_metadata) || !owner_metadata.is_file() {
+            return Err(ScratchError::InvalidPath(owner_record));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if owner_metadata.uid() != owner.uid() || owner_metadata.mode() & 0o077 != 0 {
+                return Err(ScratchError::WrongOwner(owner_record));
+            }
+        }
+        let record = std::fs::read(&owner_record).map_err(reclaim_io)?;
+        let mut expected_record = b"codegg-session-scratch-v1\n".to_vec();
+        expected_record.extend_from_slice(hex_digest(digest).as_bytes());
+        expected_record.push(b'\n');
+        if record != expected_record {
+            return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
+        }
+    }
+    validate_reclaim_tree(tombstone, strictness)?;
+    std::fs::remove_dir_all(tombstone).map_err(reclaim_io)?;
+    Ok(())
+}
+
+/// Whether a tree holds no entries at all.
+///
+/// This is the one predicate that lets the reclaim path remove a tree whose
+/// owner record is missing: a tree with nothing in it is already reclaimed,
+/// and removing it removes nothing.
+///
+/// The predicate is a **single read** of the tree's own entry list. It does
+/// not recurse, it does not follow a link, and it does not open a file. It
+/// also confirms that the tree is a real directory owned by the sessions
+/// root's owner, and that its mode is owner-only. A read that fails is
+/// treated as "not empty": the predicate fails closed.
+#[cfg(any(unix, windows))]
+fn tree_is_empty(tree: &Path, owner: impl OwnerCheck) -> Result<bool, ScratchError> {
+    let metadata = std::fs::symlink_metadata(tree).map_err(reclaim_io)?;
+    if is_symlink_or_reparse_point(&metadata) || !metadata.is_dir() {
+        return Ok(false);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if owner_metadata.uid() != owner.uid() || owner_metadata.mode() & 0o077 != 0 {
-            return Err(ScratchError::WrongOwner(owner_record));
+        if metadata.uid() != owner.uid() || metadata.mode() & 0o077 != 0 {
+            return Ok(false);
         }
     }
-    let record = std::fs::read(&owner_record)?;
-    let mut expected_record = b"codegg-session-scratch-v1\n".to_vec();
-    expected_record.extend_from_slice(hex_digest(digest).as_bytes());
-    expected_record.push(b'\n');
-    if record != expected_record {
-        return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
+    let mut entries = match std::fs::read_dir(tree) {
+        Ok(entries) => entries,
+        // A directory whose entry list cannot be read is **not** empty: the
+        // predicate fails closed, and nothing is removed.
+        Err(_) => return Ok(false),
+    };
+    match entries.next() {
+        None => Ok(true),
+        Some(Ok(_)) => Ok(false),
+        // An entry that could not be read is still an entry. The predicate
+        // fails closed.
+        Some(Err(_)) => Ok(false),
     }
-    validate_reclaim_tree(tombstone, strictness)?;
-    std::fs::remove_dir_all(tombstone)?;
-    Ok(())
 }
 
 #[cfg(any(unix, windows))]
 fn validate_reclaim_tree(path: &Path, strictness: ReclaimStrictness) -> Result<(), ScratchError> {
-    let metadata = std::fs::symlink_metadata(path)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(reclaim_io)?;
     if let Some(reason) = classify_reclaim_entry(&metadata) {
         if strictness == ReclaimStrictness::Automatic {
             return Err(ScratchError::Unreclaimable {
@@ -547,11 +707,103 @@ fn validate_reclaim_tree(path: &Path, strictness: ReclaimStrictness) -> Result<(
         return Ok(());
     }
     if metadata.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            validate_reclaim_tree(&entry?.path(), strictness)?;
+        for entry in std::fs::read_dir(path).map_err(reclaim_io)? {
+            validate_reclaim_tree(&entry.map_err(reclaim_io)?.path(), strictness)?;
         }
     }
     Ok(())
+}
+
+/// How a tree's owner record stands.
+///
+/// The census and the reclaim validator both ask this question, so a report
+/// cannot claim a tree is reclaimable when the validator would refuse it.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerRecordState {
+    /// The record is present and is a regular file.
+    Present,
+    /// The record is absent.
+    Missing,
+    /// The record is present but is not a usable owner record: it is a
+    /// symbolic link, or it is not a regular file.
+    Unusable,
+}
+
+/// Read a tree's owner record state.
+///
+/// The census never opens a file for reading, so it cannot inspect the
+/// record's *content*; it can only establish whether the record is there
+/// and what kind of entry it is.
+#[cfg(any(unix, windows))]
+fn owner_record_state(tree: &Path) -> OwnerRecordState {
+    match std::fs::symlink_metadata(tree.join(OWNER_RECORD_NAME)) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                OwnerRecordState::Unusable
+            } else {
+                OwnerRecordState::Present
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => OwnerRecordState::Missing,
+        // A record that cannot be read is not a usable record.
+        Err(_) => OwnerRecordState::Unusable,
+    }
+}
+
+/// The reclaim validator's verdict for one tree.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReclaimVerdict {
+    /// The validator would remove the tree.
+    Acceptable,
+    /// The validator would refuse the tree, for this reason.
+    Refused(ReclaimRefusal),
+    /// The validator would refuse the tree with a typed error that is not a
+    /// refusal rule — an owner record that is present but unusable.
+    Invalid,
+}
+
+/// The reclaim validator's verdict, derived from a tree's owner record and
+/// its entries.
+///
+/// The validator and the census both derive their answer from this, so the
+/// report cannot claim a tree is reclaimable when the validator would
+/// refuse it.
+///
+/// `entry_count` is the number of entries the tree holds. A tree whose
+/// owner record is missing may only be removed when that count is zero:
+/// there is nothing left to dispose of. A tree that holds content cannot be
+/// proven owned, so it is refused.
+#[cfg(any(unix, windows))]
+fn reclaim_verdict(
+    owner_record: OwnerRecordState,
+    entry_refusal: Option<ReclaimRefusal>,
+    entry_count: u64,
+) -> ReclaimVerdict {
+    match owner_record {
+        // The record is missing. An empty tree is already reclaimed; a tree
+        // that holds content cannot be proven owned.
+        OwnerRecordState::Missing => {
+            if entry_count == 0 {
+                match entry_refusal {
+                    Some(reason) => ReclaimVerdict::Refused(reason),
+                    None => ReclaimVerdict::Acceptable,
+                }
+            } else {
+                ReclaimVerdict::Refused(ReclaimRefusal::OwnershipUnverifiable)
+            }
+        }
+        // The record is present: the tree's contents decide.
+        OwnerRecordState::Present => match entry_refusal {
+            Some(reason) => ReclaimVerdict::Refused(reason),
+            None => ReclaimVerdict::Acceptable,
+        },
+        // The record is present but unusable. The validator refuses it with a
+        // typed error rather than a refusal rule, so the census reports the
+        // tree as not reclaimable and names no refusal.
+        OwnerRecordState::Unusable => ReclaimVerdict::Invalid,
+    }
 }
 
 /// Why the automatic reclaim path refuses a tree.
@@ -564,6 +816,14 @@ pub enum ReclaimRefusal {
     Symlink,
     /// An entry that is neither a regular file nor a directory.
     NonRegular,
+    /// The tree's owner record is missing and the tree holds content, so the
+    /// daemon cannot prove that it owns the tree.
+    ///
+    /// A tree that holds **no** entries at all is already reclaimed: there is
+    /// nothing left to dispose of, and the removal happens inside the
+    /// owner-only sessions root. A tree that holds content has no such
+    /// proof, so it is refused and nothing is removed.
+    OwnershipUnverifiable,
 }
 
 impl ReclaimRefusal {
@@ -572,6 +832,7 @@ impl ReclaimRefusal {
         match self {
             Self::Symlink => "symbolic_link",
             Self::NonRegular => "non_regular_entry",
+            Self::OwnershipUnverifiable => "ownership_unverifiable",
         }
     }
 }
@@ -710,7 +971,7 @@ fn scoped_resource_dir(
     let path = root.join(digest_hex);
     ensure_private_directory(&path, owner)?;
     ensure_owner_record(&path, &digest)?;
-    Ok(std::fs::canonicalize(path)?)
+    std::fs::canonicalize(path).map_err(ScratchError::Io)
 }
 
 /// The uid every directory the scratch allocator owns must carry.
@@ -799,19 +1060,22 @@ fn ensure_owner_record(session_root: &Path, digest: &[u8]) -> Result<(), Scratch
     }
     match options.open(&record_path) {
         Ok(mut file) => {
-            file.write_all(&record)?;
-            file.sync_all()?;
+            file.write_all(&record).map_err(ScratchError::Io)?;
+            file.sync_all().map_err(ScratchError::Io)?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let mut matches = false;
             let mut observed = Vec::new();
             for attempt in 0..20 {
-                let metadata = std::fs::symlink_metadata(&record_path)?;
+                let metadata = std::fs::symlink_metadata(&record_path).map_err(ScratchError::Io)?;
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
                     return Err(ScratchError::InvalidPath(record_path));
                 }
                 observed.clear();
-                std::fs::File::open(&record_path)?.read_to_end(&mut observed)?;
+                std::fs::File::open(&record_path)
+                    .map_err(ScratchError::Io)?
+                    .read_to_end(&mut observed)
+                    .map_err(ScratchError::Io)?;
                 if observed == record {
                     matches = true;
                     break;
@@ -828,7 +1092,7 @@ fn ensure_owner_record(session_root: &Path, digest: &[u8]) -> Result<(), Scratch
                 if !record.starts_with(&observed) || observed.len() >= record.len() {
                     return Err(ScratchError::InvalidPath(record_path));
                 }
-                std::fs::remove_file(&record_path)?;
+                std::fs::remove_file(&record_path).map_err(ScratchError::Io)?;
                 let mut options = std::fs::OpenOptions::new();
                 options.write(true).create_new(true);
                 #[cfg(unix)]
@@ -836,12 +1100,12 @@ fn ensure_owner_record(session_root: &Path, digest: &[u8]) -> Result<(), Scratch
                     use std::os::unix::fs::OpenOptionsExt;
                     options.mode(0o600);
                 }
-                let mut file = options.open(&record_path)?;
-                file.write_all(&record)?;
-                file.sync_all()?;
+                let mut file = options.open(&record_path).map_err(ScratchError::Io)?;
+                file.write_all(&record).map_err(ScratchError::Io)?;
+                file.sync_all().map_err(ScratchError::Io)?;
             }
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(ScratchError::Io(error)),
     }
     Ok(())
 }
@@ -858,14 +1122,18 @@ fn ensure_private_directory(
     match std::fs::create_dir(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(ScratchError::Io(error)),
     }
-    let metadata = std::fs::symlink_metadata(path)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(ScratchError::Io)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(ScratchError::InvalidPath(path.to_path_buf()));
     }
-    let canonical = std::fs::canonicalize(path)?;
-    if canonical != path.canonicalize_parent_and_self()? {
+    let canonical = std::fs::canonicalize(path).map_err(ScratchError::Io)?;
+    if canonical
+        != path
+            .canonicalize_parent_and_self()
+            .map_err(ScratchError::Io)?
+    {
         return Err(ScratchError::InvalidPath(path.to_path_buf()));
     }
     #[cfg(unix)]
@@ -874,7 +1142,8 @@ fn ensure_private_directory(
         if metadata.uid() != expected_uid.uid() {
             return Err(ScratchError::WrongOwner(path.to_path_buf()));
         }
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(ScratchError::Io)?;
     }
     Ok(())
 }
@@ -1055,10 +1324,13 @@ fn existing_sessions_root() -> Result<Option<PathBuf>, ScratchError> {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Ok(None);
             }
-            Ok(Some(path.canonicalize_parent_and_self()?))
+            Ok(Some(
+                path.canonicalize_parent_and_self()
+                    .map_err(ScratchError::Io)?,
+            ))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(ScratchError::Io(error)),
     }
 }
 
@@ -1163,9 +1435,8 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
         return usage;
     }
     note_modified(&mut usage, &metadata);
-    usage.owner_record_present = std::fs::symlink_metadata(path.join(OWNER_RECORD_NAME))
-        .map(|record| record.is_file() && !record.file_type().is_symlink())
-        .unwrap_or(false);
+    let owner_record = owner_record_state(path);
+    usage.owner_record_present = owner_record == OwnerRecordState::Present;
 
     let mut stack: Vec<(PathBuf, usize)> = vec![(path.to_path_buf(), 0)];
     let mut visited = 0usize;
@@ -1233,10 +1504,23 @@ fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTr
     // the tree the walk actually read. A truncated walk leaves the verdict
     // unknown: an unread entry could be one the validator would refuse, so
     // claiming reclaimability here would be a claim the census cannot make.
+    //
+    // The rule itself is the validator's: a tree whose owner record is
+    // missing may only be removed when it holds nothing, so a tree that
+    // holds content is refused with `ownership_unverifiable`.
+    let entry_count = usage
+        .file_count
+        .saturating_add(usage.directory_count)
+        .saturating_add(usage.symlink_count)
+        .saturating_add(usage.non_regular_count);
+    let verdict = reclaim_verdict(owner_record, usage.refusal, entry_count);
+    if let ReclaimVerdict::Refused(reason) = verdict {
+        usage.refusal = Some(reason);
+    }
     usage.reclaimable = if usage.truncated {
         None
     } else {
-        Some(usage.refusal.is_none())
+        Some(matches!(verdict, ReclaimVerdict::Acceptable))
     };
     usage
 }
@@ -1354,7 +1638,7 @@ pub fn find_session_scratch_tree(digest_hex: &str) -> Result<Option<ScratchTreeR
     let entries = match std::fs::read_dir(&sessions_root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(ScratchError::Io(error)),
     };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -1421,11 +1705,431 @@ mod tests {
     use super::*;
 
     /// A scratch tree in a temporary sessions root, named by its digest.
+    ///
+    /// The tree carries its owner record, so it is a tree the reclaim
+    /// validator would accept. A tree with **no** record is a different
+    /// shape, and it has its own verdict.
     #[cfg(any(unix, windows))]
     fn census_tree_fixture(root: &Path, session_id: &str) -> PathBuf {
-        let tree = root.join(hex_digest(&session_scratch_digest(session_id)));
+        let digest = session_scratch_digest(session_id);
+        let tree = root.join(hex_digest(&digest));
         std::fs::create_dir_all(&tree).unwrap();
+        let mut record = b"codegg-session-scratch-v1\n".to_vec();
+        record.extend_from_slice(hex_digest(&digest).as_bytes());
+        record.push(b'\n');
+        std::fs::write(tree.join(OWNER_RECORD_NAME), &record).unwrap();
         tree
+    }
+
+    // ── The record-less tree (M008) ───────────────────────────────────
+    //
+    // A daemon killed between `create_new` and the owner record reaching
+    // disk leaves a tree with no record. A daemon killed mid-`remove_dir_all`
+    // leaves a tree with no record and no entries. The two are different
+    // shapes, and the reclaim path must treat them differently: the first is
+    // already reclaimed, the second cannot be proven owned.
+
+    /// The sessions root the allocator owns, under the current redirect.
+    ///
+    /// The root is created through the product's own path, so it carries the
+    /// mode and the owner the reclaim validator checks.
+    #[cfg(any(unix, windows))]
+    fn sessions_root() -> PathBuf {
+        let session_id = format!("scratch-sessions-root-{}", uuid::Uuid::new_v4());
+        let root = session_scratch_dir(&session_id).unwrap();
+        root.parent()
+            .expect("the sessions root has a parent")
+            .to_path_buf()
+    }
+
+    /// Plant a tree in the sessions root, with no owner record.
+    ///
+    /// The tree is created directly, because the allocator would never
+    /// produce these shapes: it writes the record itself.
+    #[cfg(any(unix, windows))]
+    fn plant_record_less_tree(digest_hex: &str) -> PathBuf {
+        let tree = sessions_root().join(digest_hex);
+        std::fs::create_dir_all(&tree).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        tree
+    }
+
+    /// The tombstone names the sessions root holds for one digest.
+    #[cfg(any(unix, windows))]
+    fn tombstone_names(digest_hex: &str) -> Vec<String> {
+        let prefix = format!(".reclaim-{digest_hex}-");
+        let Ok(entries) = std::fs::read_dir(sessions_root()) else {
+            return Vec::new();
+        };
+        let mut names = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// The digest of a session id, as the tree's own name.
+    #[cfg(any(unix, windows))]
+    fn digest_of(session_id: &str) -> String {
+        hex_digest(&session_scratch_digest(session_id))
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn an_empty_tree_with_no_owner_record_is_reclaimed() {
+        let _root = isolated_scratch_root("empty-record-less");
+        let digest_hex = digest_of("empty-record-less");
+        let tree = plant_record_less_tree(&digest_hex);
+        assert!(!tree.join(OWNER_RECORD_NAME).exists());
+
+        let reclaimed = reclaim_session_scratch_by_digest(&digest_hex).unwrap();
+
+        assert!(
+            reclaimed,
+            "an empty tree with no owner record is already reclaimed"
+        );
+        assert!(
+            tombstone_names(&digest_hex).is_empty(),
+            "the reclaimed tree must leave no tombstone behind"
+        );
+        assert!(!tree.exists(), "the tree must be gone: {tree:?}");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_content_bearing_tree_with_no_owner_record_is_refused() {
+        let _root = isolated_scratch_root("content-record-less");
+        let digest_hex = digest_of("content-record-less");
+        let tree = plant_record_less_tree(&digest_hex);
+        std::fs::write(tree.join("artifact.txt"), "disposable").unwrap();
+
+        let error = reclaim_session_scratch_by_digest(&digest_hex).unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                ScratchError::Unreclaimable { reason, .. }
+                    if *reason == ReclaimRefusal::OwnershipUnverifiable
+            ),
+            "a content-bearing tree with no owner record must be refused as \
+             ownership-unverifiable: {error:?}"
+        );
+        assert_eq!(
+            tombstone_names(&digest_hex).len(),
+            1,
+            "the refused tree must stay on disk under its tombstone"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_tree_with_a_malformed_owner_record_is_refused() {
+        let _root = isolated_scratch_root("malformed-record");
+        let digest_hex = digest_of("malformed-record");
+        let tree = plant_record_less_tree(&digest_hex);
+        let record = tree.join(OWNER_RECORD_NAME);
+        std::fs::write(&record, b"not-a-record\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let error = reclaim_session_scratch_by_digest(&digest_hex).unwrap_err();
+
+        assert!(
+            matches!(&error, ScratchError::InvalidPath(_)),
+            "a malformed owner record must be refused, not repaired: {error:?}"
+        );
+        assert_eq!(
+            tombstone_names(&digest_hex).len(),
+            1,
+            "the refused tree must stay on disk under its tombstone"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_tree_with_an_owner_record_that_is_not_owner_only_is_refused() {
+        let _root = isolated_scratch_root("foreign-record");
+        let digest_hex = digest_of("foreign-record");
+        let tree = plant_record_less_tree(&digest_hex);
+        let record = tree.join(OWNER_RECORD_NAME);
+        let mut expected = b"codegg-session-scratch-v1\n".to_vec();
+        expected.extend_from_slice(digest_hex.as_bytes());
+        expected.push(b'\n');
+        std::fs::write(&record, &expected).unwrap();
+        #[cfg(unix)]
+        {
+            // The ownership check has two halves: the record must be owned by
+            // the sessions root's owner, and it must be owner-only. A record
+            // another user can read is the same refusal — `WrongOwner` — and
+            // it is the half a test can produce without root.
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let error = reclaim_session_scratch_by_digest(&digest_hex).unwrap_err();
+
+        assert!(
+            matches!(&error, ScratchError::WrongOwner(_)),
+            "an owner record that is not owner-only must be refused: {error:?}"
+        );
+        assert_eq!(
+            tombstone_names(&digest_hex).len(),
+            1,
+            "the refused tree must stay on disk under its tombstone"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_tree_whose_owner_record_names_a_different_digest_is_refused() {
+        let _root = isolated_scratch_root("foreign-digest-record");
+        let digest_hex = digest_of("foreign-digest-record");
+        let tree = plant_record_less_tree(&digest_hex);
+        // The record vouches for a different generation: this tree is not
+        // the one the record speaks for.
+        let mut record = b"codegg-session-scratch-v1\n".to_vec();
+        record.extend_from_slice(digest_of("a-different-digest").as_bytes());
+        record.push(b'\n');
+        let record_path = tree.join(OWNER_RECORD_NAME);
+        std::fs::write(&record_path, &record).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&record_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let error = reclaim_session_scratch_by_digest(&digest_hex).unwrap_err();
+
+        assert!(
+            matches!(&error, ScratchError::InvalidPath(_)),
+            "a record that names a different digest must be refused: {error:?}"
+        );
+        assert_eq!(
+            tombstone_names(&digest_hex).len(),
+            1,
+            "the refused tree must stay on disk under its tombstone"
+        );
+    }
+
+    /// The emptiness predicate fails closed.
+    ///
+    /// A directory whose entry list cannot be read is **not** empty: the
+    /// predicate must not report "empty" for a tree it could not look at,
+    /// because "empty" is what authorises the removal.
+    #[cfg(unix)]
+    #[test]
+    fn the_emptiness_predicate_fails_closed_on_an_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _root = isolated_scratch_root("unreadable-predicate");
+        let uid = current_owner_uid().unwrap();
+        let tree = sessions_root().join("unreadable-predicate");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let empty = tree_is_empty(&tree, uid).unwrap();
+
+        std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if uid == 0 {
+            // Root bypasses the permission bits, so the entry list *is*
+            // readable and the tree really is empty. The refusal the
+            // predicate exists to prevent is not reachable as root.
+            assert!(empty, "as root the entry list is readable");
+            return;
+        }
+        assert!(
+            !empty,
+            "a directory whose entry list cannot be read is not empty"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_operator_path_agrees_with_the_automatic_path_about_a_record_less_tree() {
+        let _root = isolated_scratch_root("operator-record-less");
+        let empty_digest = digest_of("operator-empty");
+        plant_record_less_tree(&empty_digest);
+        let content_digest = digest_of("operator-content");
+        let content_tree = plant_record_less_tree(&content_digest);
+        std::fs::write(content_tree.join("artifact.txt"), "disposable").unwrap();
+
+        assert!(
+            reclaim_session_scratch_for_operator(&empty_digest).unwrap(),
+            "the operator path removes an empty record-less tree"
+        );
+        assert!(tombstone_names(&empty_digest).is_empty());
+
+        let error = reclaim_session_scratch_for_operator(&content_digest).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ScratchError::Unreclaimable { reason, .. }
+                    if *reason == ReclaimRefusal::OwnershipUnverifiable
+            ),
+            "the operator path refuses a content-bearing record-less tree too: {error:?}"
+        );
+        assert_eq!(
+            tombstone_names(&content_digest).len(),
+            1,
+            "the refused tree must stay on disk under its tombstone"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_reclaim_failure_is_not_reported_as_a_provisioning_failure() {
+        let _root = isolated_scratch_root("reclaim-error-text");
+        let digest_hex = digest_of("reclaim-error-text");
+        let tree = plant_record_less_tree(&digest_hex);
+        std::fs::write(tree.join("artifact.txt"), "disposable").unwrap();
+
+        let error = reclaim_session_scratch_by_digest(&digest_hex).unwrap_err();
+        let rendered = error.to_string();
+
+        assert!(
+            !rendered.contains("failed to provision managed scratch"),
+            "a reclaim failure must not wear the provisioning text: {rendered}"
+        );
+        assert!(
+            rendered.contains("ownership_unverifiable"),
+            "a reclaim failure must name the rule that refused it: {rendered}"
+        );
+
+        // The I/O variant carries the same rule: a reclaim failure says so.
+        let io = ScratchError::ReclaimIo(std::io::Error::other("boom"));
+        assert!(
+            io.to_string().contains("failed to reclaim managed scratch"),
+            "a reclaim I/O failure must name reclamation: {io}"
+        );
+        assert!(
+            !io.to_string()
+                .contains("failed to provision managed scratch"),
+            "a reclaim I/O failure must not wear the provisioning text: {io}"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_census_agrees_with_the_reclaim_path_about_a_record_less_tree() {
+        let _root = isolated_scratch_root("census-record-less");
+        let empty_digest = digest_of("census-empty");
+        plant_record_less_tree(&empty_digest);
+        let content_digest = digest_of("census-content");
+        let content_tree = plant_record_less_tree(&content_digest);
+        std::fs::write(content_tree.join("artifact.txt"), "disposable").unwrap();
+
+        let empty_usage = preview_session_scratch(&empty_digest).unwrap();
+        assert_eq!(
+            empty_usage.reclaimable,
+            Some(true),
+            "an empty record-less tree is reclaimable: the automatic path \
+             would remove it"
+        );
+        assert_eq!(empty_usage.refusal, None);
+
+        let content_usage = preview_session_scratch(&content_digest).unwrap();
+        assert_eq!(
+            content_usage.reclaimable,
+            Some(false),
+            "a content-bearing record-less tree is not reclaimable"
+        );
+        assert_eq!(
+            content_usage.refusal,
+            Some(ReclaimRefusal::OwnershipUnverifiable),
+            "the census must name the rule the validator would apply"
+        );
+
+        // The verdict is not a separate opinion: it agrees with what the
+        // reclaim path actually does, in both directions.
+        assert!(reclaim_session_scratch_by_digest(&empty_digest).unwrap());
+        assert!(reclaim_session_scratch_by_digest(&content_digest).is_err());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_test_redirect_leaves_the_real_scratch_root_untouched() {
+        let real_root = dirs::cache_dir()
+            .expect("resolved cache root")
+            .join(SCRATCH_VENDOR_NAME)
+            .join(SCRATCH_ROOT_NAME)
+            .join("sessions");
+        let before = scratch_root_manifest(&real_root);
+
+        let root = isolated_scratch_root("redirect-proof");
+        let session_id = format!("scratch-redirect-{}", uuid::Uuid::new_v4());
+        let tree = session_scratch_dir(&session_id).unwrap();
+
+        assert!(
+            tree.starts_with(root.path()),
+            "the tree must be allocated under the redirected root: {tree:?}"
+        );
+        assert!(
+            !tree.starts_with(&real_root),
+            "the tree must not be allocated in the real scratch root: {tree:?}"
+        );
+        assert!(
+            !scratch_root_manifest(
+                &root
+                    .path()
+                    .join(SCRATCH_VENDOR_NAME)
+                    .join(SCRATCH_ROOT_NAME)
+                    .join("sessions")
+            )
+            .is_empty(),
+            "the redirected root must hold the tree the test allocated"
+        );
+
+        let after = scratch_root_manifest(&real_root);
+        let digest = session_scratch_digest_hex(&session_id);
+        assert!(
+            !after.iter().any(|name| name.contains(&digest)),
+            "the real scratch root must hold nothing for the tree the test \
+             allocated: {after:?}"
+        );
+        assert_eq!(
+            before, after,
+            "the redirect must leave the real scratch root byte-identical"
+        );
+    }
+
+    /// The product resolves the scratch cache root to the user's cache
+    /// directory.
+    ///
+    /// No redirect is installed on this test's thread, so this reads the
+    /// product's own resolution. It allocates nothing, so it writes nothing.
+    #[test]
+    fn the_scratch_root_resolves_under_the_user_cache_directory() {
+        assert_eq!(
+            scratch_cache_root().unwrap(),
+            dirs::cache_dir().expect("resolved cache root")
+        );
+    }
+
+    /// The names of the entries in a scratch sessions root.
+    ///
+    /// The manifest is the *name set*: a test that wrote into the real root
+    /// would add an entry, and a test that reclaimed into it would remove
+    /// one.
+    #[cfg(any(unix, windows))]
+    fn scratch_root_manifest(root: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut names = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     #[test]
@@ -1450,15 +2154,22 @@ mod tests {
 
         let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
 
+        // The census measures every regular file in the tree, and the
+        // daemon's own owner record is one of them — in production it is
+        // there too, so the measurement a test reads is the measurement the
+        // product produces.
+        let record_bytes = std::fs::metadata(tree.join(OWNER_RECORD_NAME))
+            .unwrap()
+            .len();
         assert_eq!(report.tree_count, 1);
-        assert_eq!(report.total_bytes, 11);
+        assert_eq!(report.total_bytes, 11 + record_bytes);
         assert!(!report.truncated);
         let usage = &report.trees[0];
         assert_eq!(
             usage.digest,
             hex_digest(&session_scratch_digest("census-measure"))
         );
-        assert_eq!(usage.file_count, 2);
+        assert_eq!(usage.file_count, 3);
         assert_eq!(usage.directory_count, 1);
         assert_eq!(usage.reclaimable, Some(true));
         assert_eq!(usage.refusal, None);
@@ -1692,6 +2403,7 @@ mod tests {
 
     #[test]
     fn session_paths_are_stable_and_separate() {
+        let _root = isolated_scratch_root("session-paths");
         let first = session_scratch_dir("scratch-test-session-a").unwrap();
         let same = session_scratch_dir("scratch-test-session-a").unwrap();
         let other = session_scratch_dir("scratch-test-session-b").unwrap();
@@ -1714,11 +2426,19 @@ mod tests {
 
     #[test]
     fn concurrent_allocations_converge_on_one_owned_directory() {
+        let root = isolated_scratch_root("concurrent");
+        let root_path = root.path().to_path_buf();
         let session_id = format!("scratch-concurrent-{}", uuid::Uuid::new_v4());
         let workers = (0..8)
             .map(|_| {
                 let session_id = session_id.clone();
-                std::thread::spawn(move || session_scratch_dir(&session_id).unwrap())
+                let root_path = root_path.clone();
+                std::thread::spawn(move || {
+                    // The redirect is thread-local, so the worker installs it
+                    // for itself rather than inheriting it.
+                    let _root = TestScratchRoot::install(root_path);
+                    session_scratch_dir(&session_id).unwrap()
+                })
             })
             .collect::<Vec<_>>();
         let paths = workers
@@ -1747,6 +2467,7 @@ mod tests {
 
     #[test]
     fn delegated_private_and_shared_roots_are_distinct_and_stable() {
+        let _root = isolated_scratch_root("delegated-roots");
         let session_id = format!("scratch-run-session-{}", uuid::Uuid::new_v4());
         let first_run = codegg_core::identity::AgentRunId::new();
         let second_run = codegg_core::identity::AgentRunId::new();
@@ -1780,6 +2501,7 @@ mod tests {
 
     #[test]
     fn terminal_run_cleanup_removes_only_its_private_root() {
+        let _root = isolated_scratch_root("run-cleanup");
         let session_id = format!("scratch-run-cleanup-{}", uuid::Uuid::new_v4());
         let run_id = codegg_core::identity::AgentRunId::new();
         let other_run = codegg_core::identity::AgentRunId::new();
@@ -1803,6 +2525,7 @@ mod tests {
 
     #[test]
     fn deleted_session_cleanup_reclaims_nested_private_and_shared_roots() {
+        let _root = isolated_scratch_root("session-cleanup");
         let session_id = format!("scratch-session-cleanup-{}", uuid::Uuid::new_v4());
         let run_id = codegg_core::identity::AgentRunId::new();
         let scratch_id = codegg_core::identity::ScratchId::new();
@@ -1820,6 +2543,7 @@ mod tests {
     #[cfg(any(unix, windows))]
     #[test]
     fn revoked_cleanup_recovers_an_orphaned_tombstone_after_restart() {
+        let _root = isolated_scratch_root("orphaned-tombstone");
         let session_id = format!("scratch-orphaned-reclaim-{}", uuid::Uuid::new_v4());
         let scratch_id = codegg_core::identity::ScratchId::new();
         let root = shared_scratch_dir(&session_id, &scratch_id).unwrap();
@@ -1839,6 +2563,8 @@ mod tests {
     #[cfg(any(unix, windows))]
     #[test]
     fn concurrent_revocation_cleanup_reclaims_one_resource_once() {
+        let scratch_root = isolated_scratch_root("concurrent-reclaim");
+        let root_path = scratch_root.path().to_path_buf();
         let session_id = format!("scratch-concurrent-reclaim-{}", uuid::Uuid::new_v4());
         let scratch_id = codegg_core::identity::ScratchId::new();
         let root = shared_scratch_dir(&session_id, &scratch_id).unwrap();
@@ -1847,7 +2573,13 @@ mod tests {
             .map(|_| {
                 let session_id = session_id.clone();
                 let scratch_id = scratch_id.clone();
-                std::thread::spawn(move || reclaim_shared_scratch_dir(&session_id, &scratch_id))
+                let root_path = root_path.clone();
+                std::thread::spawn(move || {
+                    // The redirect is thread-local, so the worker installs it
+                    // for itself rather than inheriting it.
+                    let _root = TestScratchRoot::install(root_path);
+                    reclaim_shared_scratch_dir(&session_id, &scratch_id)
+                })
             })
             .collect::<Vec<_>>();
         let reclaimed = workers
@@ -1863,6 +2595,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn revoked_shared_cleanup_quarantines_symlinks_and_reclaims_hardlinks() {
+        let _root = isolated_scratch_root("symlink-cleanup");
         let session_id = format!("scratch-cleanup-session-{}", uuid::Uuid::new_v4());
         let scratch_id = codegg_core::identity::ScratchId::new();
         let external = tempfile::tempdir().unwrap();
@@ -1916,6 +2649,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn revoked_shared_cleanup_quarantines_reparse_points_and_unlinks_hardlinks_safely() {
+        let _root = isolated_scratch_root("reparse-cleanup");
         let session_id = format!("scratch-windows-cleanup-session-{}", uuid::Uuid::new_v4());
         let external = tempfile::tempdir().unwrap();
         let external_file = external.path().join("external.txt");
@@ -2053,9 +2787,14 @@ mod tests {
 
     #[test]
     fn the_session_root_lives_under_the_resolved_cache_root() {
+        let redirect = isolated_scratch_root("cache-root");
         let session_id = format!("scratch-cache-root-{}", uuid::Uuid::new_v4());
         let root = session_scratch_dir(&session_id).unwrap();
-        let cache_root = dirs::cache_dir().expect("resolved cache root");
+        // The resolved cache root is the one the allocator resolved — the
+        // redirect, in a test. The property under test is the containment,
+        // not the value; `the_scratch_root_resolves_under_the_user_cache_directory`
+        // pins the value.
+        let cache_root = redirect.path().to_path_buf();
         // `session_scratch_dir` returns a **canonicalized** path, and on
         // Windows `canonicalize` yields the extended-length (`\\?\`) device
         // form while `dirs::cache_dir()` yields the plain drive form. The two
@@ -2088,6 +2827,8 @@ mod tests {
     #[tokio::test]
     async fn structured_file_tools_are_scoped_to_the_host_session() {
         use crate::tool::Tool;
+
+        let _root = isolated_scratch_root("structured-tools");
 
         let owner = format!("scratch-file-owner-{}", uuid::Uuid::new_v4());
         let other = format!("scratch-file-other-{}", uuid::Uuid::new_v4());
