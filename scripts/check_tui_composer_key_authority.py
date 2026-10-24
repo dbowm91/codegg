@@ -158,16 +158,16 @@ BARE = ("NONE",)
 BARE_PLUS_SHIFT = ("NONE", "SHIFT")
 
 # The conditions a claim may carry. `Always` is the ordinary case;
-# `ContentOverflowsBox` is the one conditional ADR-0042's amendment defines,
-# for `j`/`k`: the composer claims them when its **content does not fit its
-# box** — the wrapped row count exceeds the visible row count.
+# `ContentSpansMultipleRows` is the one conditional ADR-0042's amendments define,
+# for `j`/`k`: the composer claims them while its **content spans more than one
+# row** — the rendered row count exceeds one.
 #
 # The set mirrors the claim table's `ClaimCondition` variants, so a condition
 # the table cannot carry is not a condition the guard knows. That is what makes
 # G3 meaningful in both directions: an unknown condition is rejected, and a
 # condition the table dropped cannot linger here as knowledge of a name no
 # claim can carry.
-KNOWN_CONDITIONS = {"Always", "ContentOverflowsBox"}
+KNOWN_CONDITIONS = {"Always", "ContentSpansMultipleRows"}
 
 
 @dataclass(frozen=True)
@@ -1337,7 +1337,12 @@ def self_test() -> int:
         "a conditional claim's fall-through row",
         _baseline(
             claims=[
-                _claim("j", verb="LineDown", status="Live", condition="ContentOverflowsBox")
+                _claim(
+                    "j",
+                    verb="LineDown",
+                    status="Live",
+                    condition="ContentSpansMultipleRows",
+                )
             ],
             verb_labels={"LineDown": "line down"},
             help_entries=_chord_rows()

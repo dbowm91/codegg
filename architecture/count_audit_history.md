@@ -518,3 +518,39 @@ them. The count in `AGENTS.md` is now the measured one (**62** for `quick`,
 holds (62 − 48 = 14). The *method* did not change — the count is still the
 number of distinct `scripts/check_*` files the two files name — only the
 value had drifted.
+
+## C003 — the composer's keymap drift guard (2026-10-24)
+
+| Row | Before | After | Why it moved |
+|---|---|---|---|
+| Guard scripts (all) | 87 | **88** | `scripts/check_tui_composer_keymap_drift.py` is a new guard. It is wired into `scripts/verify.sh quick` and into the CI guard step. |
+| CI guard scripts | 48 | **49** | The new guard's two CI steps (the `--self-test` and the guard itself) are one guard script, so the *CI guard scripts* row counts the script once, not the steps. |
+
+Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
+against this tree, each against its own listed `Source`: **88** for
+`scripts/check_*` and **49** for the distinct guard scripts `.github/workflows/ci.yml`
+names. The guard script itself was written before this milestone and was already
+present in the tree, so the *Guard scripts (all)* row had already moved to 88
+before the milestone's production change; what this milestone adds is the
+registration that makes the row's CI half move with it.
+
+No other row moved: this milestone changed no schema, no tool registration, no
+module and no storage layout, and it added **no** integration test file — the
+new tests extend the existing members `tests/tui_render/tui_composer_claims.inc`
+and `tests/tui_render/tui_composer_motions.inc`, which the *Integration test
+files* row already counted at 335. The *Architecture docs* row stays at 92: this
+milestone edits existing documents and adds no new one under `architecture/`.
+
+The *quick runs 14 guards CI does not* note in the `CI guard scripts` row is
+unchanged: the new guard is in **both** `quick` and CI, so it adds one guard to
+each and does not change the size of the quick-only set. The set was re-derived
+rather than carried over, by differencing the guards `run_guards()` names
+against the guards `.github/workflows/ci.yml` names: **63** in `quick`, **49**
+in CI, and the same 14 quick-only guards as before.
+
+**A stale number outside this table.** `AGENTS.md` publishes "62 guard scripts"
+for `quick` and "48 guard scripts" for CI. The measured values are now **63**
+and **49**. The *method* did not change — the count is still the number of
+distinct `scripts/check_*` files the two files name — only the value moved, and
+`AGENTS.md` is outside the milestone's file ownership, so the correction is
+recorded here rather than made there.
