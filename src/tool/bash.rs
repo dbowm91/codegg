@@ -1920,6 +1920,9 @@ mod timeout_execution_tests {
 
     #[tokio::test]
     async fn session_scratch_is_shared_across_bash_invocations() {
+        // The test allocates a real scratch tree, so it must not do that in
+        // the developer's own scratch root.
+        let _scratch_root = crate::scratch::isolated_scratch_root("bash-scratch");
         let session_id = format!("scratch-trajectory-{}", uuid::Uuid::new_v4());
         let scratch = crate::scratch::session_scratch_dir(&session_id).unwrap();
         let mut ctx =

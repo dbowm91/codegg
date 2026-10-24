@@ -540,9 +540,26 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 338 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 92 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 55 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 339 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 93 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 56 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+
+### Count reconciliation — M008 (2026-10-24)
+
+Three code-count rows moved when the managed-agent-scratch M008 line landed its
+corrective pass. *Integration test files* is **339** (`tests/*.rs` +
+`tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved
+by one, the new `tests/scheduler_jobs/scratch_record_less_tree.inc`, which
+drives a full sweep pass over a tree whose owner record is missing). *Guard
+scripts (all)* is **93** (`ls scripts/check_*` — the new
+`scripts/check_scratch_reclaim_invariants.py`, which enforces the reclaim
+path's error taxonomy, its single removal routine, the emptiness proof that
+authorises a removal, and the one shared rule the census and the validator
+both use). *CI guard scripts* is **56** (the `ci.yml` list, which gained the
+same guard and its self-test). The quick-only difference is unchanged at
+**14** guards CI does not run: the new guard runs in **both** `verify.sh quick`
+and CI, so it adds no quick-only entry. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
 
 ## Feature gates
 

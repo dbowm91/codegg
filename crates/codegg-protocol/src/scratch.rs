@@ -21,12 +21,19 @@ use serde::{Deserialize, Serialize};
 
 /// Version of the scratch protocol surface.
 ///
-/// Version 2 made the per-tree reclaim verdict tri-state: `reclaimable` is
-/// now `Option<bool>`, where `None` means the verdict could not be
-/// established because the walk was truncated or the tree vanished. Version
-/// 1 carried a plain `bool`, which could not express "unknown" and so let a
-/// partially-read tree report itself as reclaimable.
-pub const SCRATCH_PROTOCOL_VERSION: u32 = 2;
+/// Version 3 adds the `ownership_unverifiable` refusal: a tree whose owner
+/// record is missing and that holds content cannot be proven owned, so the
+/// validator refuses it. Version 2 made the per-tree reclaim verdict
+/// tri-state: `reclaimable` is now `Option<bool>`, where `None` means the
+/// verdict could not be established because the walk was truncated or the
+/// tree vanished. Version 1 carried a plain `bool`, which could not express
+/// "unknown" and so let a partially-read tree report itself as reclaimable.
+///
+/// The version is **additive**: an older client that does not know the new
+/// refusal reads it as an unknown value, and the refusal it cannot name is
+/// a refusal either way. A newer client that receives the older surface
+/// still understands every refusal it can receive.
+pub const SCRATCH_PROTOCOL_VERSION: u32 = 3;
 
 // ── Refusal taxonomy ───────────────────────────────────────────────────
 
@@ -41,6 +48,13 @@ pub enum ScratchReclaimRefusalDto {
     SymbolicLink,
     /// An entry that is neither a regular file nor a directory.
     NonRegularEntry,
+    /// The tree's owner record is missing and the tree holds content, so the
+    /// daemon cannot prove that it owns the tree.
+    ///
+    /// A tree that holds **no** entries at all is already reclaimed: there is
+    /// nothing left to dispose of. A tree that holds content has no such
+    /// proof, so it is refused and nothing is removed.
+    OwnershipUnverifiable,
 }
 
 // ── Usage census ───────────────────────────────────────────────────────
