@@ -151,31 +151,59 @@ coexistence, explicit-path autostart, and daemon survival
 (`apps/desktop/e2e/specs/`, entry point `apps/desktop/e2e/run-e2e.sh`,
 hosted in `.github/workflows/desktop-e2e.yml` on Linux/WebKitGTK/xvfb).
 
-### The hosted qualification is paused (2026-10-23)
+### The hosted qualification is un-paused (2026-10-24)
 
-Development on the desktop foundation line is paused, so the hosted
-qualification **no longer runs on push or on pull requests**:
-`.github/workflows/desktop-e2e.yml` is **manual dispatch only** until that
-line resumes, and its name carries the "(paused)" marker so the state is
-visible in the Actions list rather than inferred.
-
-The pause is not a claim that the trajectory passes. It had already been red
-on `main`: `main`'s own most recent run (`39679968444` at `53d9fc9fd`) fails
-with `element ("[data-testid="permission-list"]") still not existing after
+The lane was paused on 2026-10-23 because it was red on `main`: `main`'s own
+most recent run (`39679968444` at `53d9fc9fd`) fails with
+`element ("[data-testid="permission-list"]") still not existing after
 120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5` — the same
 file, the same line and the same timeout — and the nine runs behind it are
-consecutive failures. The defect is the desktop line's own, so a hosted run
-on every desktop-tree change bought no signal.
+consecutive failures.
 
-Everything else on this page is unchanged. The trajectory, the spec files,
-the `desktop-e2e` Cargo feature and its authority boundary, and the
-`check-desktop-boundary.sh` guard all stand; what is paused is the *hosted
-qualification*, not the capability and not its boundary. The workflow's path
-filters are preserved in its own header so that restoring the triggers is a
-copy-paste.
+The cause was **the spec's premise, not the product**. The spec expected the
+mock model's *first* response — a `write` to a path outside the probe
+workspace — to raise a human permission. Since `39e1445b6` the daemon answers
+a recognised-temp-root `write` with an actionable redirect sent to the
+**model**, and the offer is issued once per `(session, tool, canonical
+target)` (`src/permission/mod.rs:1365-1411`, `:1393-1409`), so only a
+*second* identical attempt reaches the human. The mock answered the second
+request with final text, so the human was never asked and the spec waited out
+its full timeout for a permission that was never going to arrive.
 
-Until the lane resumes, the desktop foundation's hosted evidence is the
-`CI / verify` lane plus the local `apps/desktop` host and renderer checks —
+The fix is in the fixture and the spec, not the product:
+
+- the mock **insists** on the same path on request #2 (a different tool-call
+  id, the same target — the shape the product's own
+  `temp_root_write_offers_a_redirect_before_asking_the_human` test uses), which
+  restores the `permission-list` assertion and pins the one-offer-per-target
+  rule;
+- the spec answers **every** permission the desktop surfaces, because the
+  number of human rounds is platform-dependent: on Linux the phase home is
+  under `/tmp` and the redirect fires; on macOS it is under `$TMPDIR` → `/var`,
+  which `crates/eggsentry/src/command.rs:161` classifies as a system path, so
+  the write escalates as a security finding and the human is asked on the
+  *first* attempt (`src/agent/tool_batch.rs:829` consults the redirect offer
+  only in the `Ask` arm);
+- the harness resolves the phase's fake `HOME` **physically**. The daemon's
+  managed-scratch allocator refuses any path with a symlinked component
+  (`src/scratch.rs:911-918`) and derives the scratch root from the cache
+  directory under `HOME`; on macOS `$TMPDIR` is under the `/var` →
+  `private/var` symlink, so an unresolved fake home failed **every** turn with
+  "managed scratch path is not a real directory" before any provider was
+  called.
+
+`.github/workflows/desktop-e2e.yml` therefore runs on `push` to `main` and on
+pull requests again, with the path filters the pause preserved verbatim in the
+workflow's own header. The workflow name no longer carries the "(paused)"
+marker.
+
+The trajectory, the spec files, the `desktop-e2e` Cargo feature and its
+authority boundary, and the `check-desktop-boundary.sh` guard all stand; what
+changed is the *hosted qualification*, which now runs again against a lane
+whose premise matches the product's behaviour.
+
+Until the lane produces hosted evidence, the desktop foundation's evidence is
+the `CI / verify` lane plus the local `apps/desktop` host and renderer checks —
 which the root workspace's gate does not compile, so they are run by hand.
 
 Test instrumentation never widens production authority:

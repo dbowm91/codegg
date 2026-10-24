@@ -47,7 +47,23 @@ async function clickProjectByName(displayName: string): Promise<void> {
       return;
     }
   }
-  throw new Error(`no project row matched ${displayName}`);
+  // Name the rows that DID render and the error the renderer is showing.
+  // "no project row matched X" alone cannot distinguish an empty catalogue
+  // from a wrong-name row from a failed fetch, and that distinction is the
+  // whole diagnosis when this assertion fails.
+  const rendered: string[] = [];
+  for (const item of items) {
+    rendered.push((await item.getText()).replace(/\s+/g, ' ').trim());
+  }
+  let routeError = '';
+  try {
+    routeError = (await $('[data-testid="route-error"]').getText()).replace(/\s+/g, ' ').trim();
+  } catch {
+    routeError = '(no route-error element)';
+  }
+  throw new Error(
+    `no project row matched ${displayName}; rendered ${rendered.length} row(s): ${JSON.stringify(rendered.slice(0, 10))}; route-error: ${routeError}`,
+  );
 }
 
 async function waitForWorkspaceSelected(): Promise<void> {
@@ -162,24 +178,58 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
     expect(selected.model_id).toBe('gpt-4o');
     await $('[data-testid="prompt-input"]').setValue('e2e deterministic turn');
     await $('[data-testid="prompt-submit-button"]').click();
-    // The mock's first response raises PermissionPending for its
+    // The mock's first response raises a PermissionPending for its
     // out-of-workspace `write`. Resolve the permission before checking the
     // rendered transcript because the assistant tool-call message may not be
     // committed to the session projection until the tool result is recorded.
     await $('[data-testid="permission-list"]').waitForExist({ timeout: 120_000 });
-    let denied = false;
-    for (const button of await $$('[data-testid^="permission-deny-"]')) {
-      await button.click();
-      denied = true;
-      break;
+    // Answer EVERY permission the desktop surfaces, not just the first.
+    //
+    // How many rounds the human sees is platform-dependent, and that is
+    // product behaviour, not a fixture artefact:
+    //
+    // - On Linux the phase home is under /tmp, so the write is not a system
+    //   path (`crates/eggsentry/src/command.rs:161`), the permission layer's
+    //   implicit Ask is reached, and the daemon answers the write with a
+    //   redirect sent to the MODEL (`src/permission/mod.rs:1365-1411`). The
+    //   offer is issued once per (session, tool, canonical target)
+    //   (`:1393-1409`), so only a SECOND identical attempt reaches the human.
+    // - On macOS the phase home is under $TMPDIR, which is under /var, and
+    //   /var IS a system path (`command.rs:161-162`). The write is then a
+    //   High-severity DestructiveFilesystem finding, the security hint
+    //   escalates, and the escalate branch answers the human directly —
+    //   the redirect offer is never consulted (`src/agent/tool_batch.rs:829`
+    //   consults it only in the Ask arm).
+    //
+    // The mock insists on the same path either way
+    // (`desktop_e2e_fixture.rs`), so the loop converges on both platforms
+    // and asserts what the trajectory actually means: a pending permission
+    // is rendered, it can be answered from the desktop, and the turn
+    // converges afterwards.
+    const answered = new Set<string>();
+    const turnDeadline = Date.now() + 180_000;
+    let denied = 0;
+    let completed = false;
+    while (Date.now() < turnDeadline) {
+      for (const button of await $$('[data-testid^="permission-deny-"]')) {
+        const testId = await button.getAttribute('data-testid');
+        if (!testId || answered.has(testId)) continue;
+        answered.add(testId);
+        await button.click();
+        denied += 1;
+        break;
+      }
+      const status = (await $('[data-testid="turn-status"]').getText()).toLowerCase();
+      if (status.includes('completed')) {
+        completed = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    expect(denied).toBe(true);
-    // Denial feeds back as a tool result; the mock's second response
-    // finishes the turn. Both converge through canonical projection.
-    await browser.waitUntil(
-      async () => (await $('[data-testid="turn-status"]').getText()).toLowerCase().includes('completed'),
-      { timeout: 180_000, timeoutMsg: 'deterministic turn never completed after denial' },
-    );
+    expect(denied).toBeGreaterThan(0);
+    expect(completed).toBe(true);
+    // Denial feeds back as a tool result; the mock's next response finishes
+    // the turn. Both converge through canonical projection.
     await browser.waitUntil(
       async () => {
         try {
