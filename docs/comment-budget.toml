@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 125409
-max_comment_words = 1106274
+max_comment_lines = 125417
+max_comment_words = 1106353
 max_ratio = 0.1331
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -549,7 +549,7 @@ max_ratio = 0.1331
 "src/tool/write.rs" = { max_comment_lines = 29, max_ratio = 0.0666 }
 "src/tool/writer_fence.rs" = { max_comment_lines = 247, max_ratio = 0.6622 }
 "src/tool_advisor/causal_active.rs" = { max_comment_lines = 79, max_ratio = 0.3225 }
-"src/tool_advisor/causal_frontier.rs" = { max_comment_lines = 767, max_ratio = 0.1426 }
+"src/tool_advisor/causal_frontier.rs" = { max_comment_lines = 775, max_ratio = 0.1436 }
 "src/tool_advisor/causal_observe.rs" = { max_comment_lines = 104, max_ratio = 0.2702 }
 "src/tool_advisor/mod.rs" = { max_comment_lines = 130, max_ratio = 0.0545 }
 "src/tool_advisor/order_invariance.rs" = { max_comment_lines = 115, max_ratio = 0.1056 }

@@ -700,3 +700,30 @@ warnings` exits 0 on the CI toolchain (the command CI itself runs), and the
 fix** with the matching toolchain — the same 11 errors, at the same two lines
 — so the fix is proven against the real condition. The audit of every
 `#[async_trait]` trait definition is in the C002 closure record's §15.
+
+**This milestone's schema change broke a frozen receipt, and the hosted CI
+found it.** Adding the `continue` action changed the `task` tool's **input
+schema**, and `src/tool_advisor/causal_frontier.rs` freezes a M003 receipt
+that pins that schema. The receipt is immutable by design: the test
+reconstructs the pre-M003 schema from the live one and compares the
+reconstruction against the receipt, stripping every post-M003 addition as it
+goes — `placement`, `scratch_alias`, `scratch_id`, `shared_scratch`, the
+`run_id`/`group_id`/`task_id` rewording, and the scratch and workstream
+actions. C004's `continue` action and its description sentence are post-M003
+additions like the rest, so the reconstruction now strips them the same way,
+**asserting each is present first** so that a further change still fails
+loudly rather than silently ceasing to strip anything.
+
+The frozen receipt itself is **not** touched: `assets/tool-advisor/causal-frontier-m003-result.json`
+is byte-identical, and the fix is confined to the reconstruction inside the
+test. The test passes after it.
+
+This is a finding about the **evidence**, not about the capability. The
+milestone's scoped test runs covered the delegated families; the failure lives
+in the root crate's **lib** unit tests, which none of them executed. The
+hosted `Workspace tests` step found it, after the hosted runner cancelled the
+remaining 11 710 tests on the first failure. The root crate's lib suite is
+therefore now part of this line's evidence, and the two `core_daemon`
+failures and the one macOS-only `managed_process` refusal it reports are the
+pre-existing, environment-dependent ones — each reproduced at `origin/main`,
+not inherited from this line.
