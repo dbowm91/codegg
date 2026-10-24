@@ -1,4 +1,4 @@
-name: Desktop E2E (paused)
+name: Desktop E2E
 
 # Built-app visible-window qualification for the desktop foundation (C003).
 # Runs the real Tauri window (embedded WebDriver provider) against an
@@ -11,45 +11,54 @@ name: Desktop E2E (paused)
 # (WebKitGTK + xvfb) is the routine hosted qualification. Windows remains
 # M002-gated; macOS runs stay valuable local evidence.
 #
-# ── PAUSED 2026-10-23 ───────────────────────────────────────────────────────
-# Development on the desktop foundation line is paused, so this qualification
-# no longer runs on push or on pull requests. It is **manual dispatch only**
-# until that line resumes.
-#
-# The pause is recorded in evidence, not asserted. The lane had already been
-# red on `main` for days: `main`'s own most recent run, 39679968444 at
-# 53d9fc9fd, fails with
+# ── RESTORED 2026-10-24 ─────────────────────────────────────────────────────
+# The lane was paused on 2026-10-23 because it was red on `main`: run
+# 39679968444 at 53d9fc9fd failed with
 #
 #   element ("[data-testid="permission-list"]") still not existing after 120000ms
 #   at apps/desktop/e2e/specs/m004-session.e2e.ts:169:5
 #
-# — the same file, the same line and the same timeout, and `main`'s history
-# behind it is nine consecutive failures with one older success. The defect
-# belongs to the desktop line and is not repairable from another line, so
-# continuing to spend a hosted run on it every time the desktop tree changes
-# buys no signal.
+# The cause was a stale *fixture* premise, not a product defect. The desktop
+# fixture's mock model answered the first `write` call with its final text,
+# but since 39e1445b6 the daemon answers a temp-root write with an actionable
+# scratch-path redirect *before* asking the human, and only reaches the human
+# when the model repeats the same restricted path. The fixture therefore never
+# produced the `PermissionPending` the spec asserts, so the spec waited out
+# its timeout on a permission that was never going to arrive.
 #
-# To restore the qualification when development resumes: re-add the `push`
-# and `pull_request` triggers with the path filters preserved below, and drop
-# the "(paused)" from this workflow's name. Nothing else in this file changes.
+# The fixture now repeats the same denied write on its second request, which
+# exercises the intended one-offer-per-target rule: the first attempt is
+# answered with the redirect, the repeat reaches the human, and the spec's
+# `permission-list` assertion holds. The product behaviour is unchanged.
 #
-# The path filters, preserved for that restoration:
-#
-#   push (branches: [main]):
-#     apps/desktop/**
-#     crates/codegg-client/**
-#     crates/codegg-protocol/**
-#     crates/codegg-core/src/projection_replay/**
-#     crates/codegg-core/src/storage/**
-#     src/core/transport/**
-#     src/core/daemon_turns.rs
-#     src/core/daemon_projects.rs
-#     src/core/daemon.rs
-#     .github/workflows/desktop-e2e.yml
-#
-#   pull_request (any branch): the same list.
+# The triggers are restored with the path filters preserved at the pause.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/codegg-client/**'
+      - 'crates/codegg-protocol/**'
+      - 'crates/codegg-core/src/projection_replay/**'
+      - 'crates/codegg-core/src/storage/**'
+      - 'src/core/transport/**'
+      - 'src/core/daemon_turns.rs'
+      - 'src/core/daemon_projects.rs'
+      - 'src/core/daemon.rs'
+      - '.github/workflows/desktop-e2e.yml'
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/codegg-client/**'
+      - 'crates/codegg-protocol/**'
+      - 'crates/codegg-core/src/projection_replay/**'
+      - 'crates/codegg-core/src/storage/**'
+      - 'src/core/transport/**'
+      - 'src/core/daemon_turns.rs'
+      - 'src/core/daemon_projects.rs'
+      - 'src/core/daemon.rs'
+      - '.github/workflows/desktop-e2e.yml'
   workflow_dispatch:
 
 # Pinned to 24.04: Tauri 2.12 documents WebKitGTK 4.1 system dependencies

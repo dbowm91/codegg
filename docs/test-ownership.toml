@@ -365,6 +365,24 @@ paths = [
 ]
 targets = ["tui_render"]
 
+# Cross-frontend parity: the terminal UI's reconstruction of the canonical
+# projection snapshot, compared against the shared golden the desktop host
+# also reads (`apps/desktop/src-tauri/tests/frontend_parity.rs`). The desktop
+# crate is excluded from this workspace, so the two halves of the proof live
+# in two crates and meet at one fixture. A change to the TUI's
+# projection-derived read model — the per-tab summary, the session-work
+# selector, and the sidebar's projection-fed sections — has to select this
+# family too.
+[[groups]]
+id = "frontend_parity"
+member = "codegg"
+paths = [
+  "src/tui/app/state/projection_client.rs",
+  "src/tui/app/state/session_work.rs",
+  "src/tui/app/render.rs",
+]
+targets = ["frontend_parity"]
+
 # The agent loop, its context ledger, skills, plugins, and work-plan surface.
 [[groups]]
 id = "agent_loop"

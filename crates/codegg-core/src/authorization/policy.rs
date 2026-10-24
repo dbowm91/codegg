@@ -123,6 +123,31 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
+        // Phase 3: a read-only git read discloses the repository's own
+        // state — branch, dirtiness, changed file names — and nothing else.
+        // It carries a `project_id` locator, so it resolves through
+        // `DirectProject` exactly like the document read above, and it
+        // carries the dedicated `git.read` capability rather than a
+        // generic file/project grant: a principal allowed to read a
+        // project's files is not thereby allowed to read its git state,
+        // and `git.write` is a different capability that this operation
+        // never asks for. There is no write path behind this variant.
+        R::GitRead { .. } => OperationDescriptor::new(
+            "git_read",
+            ScopeKind::DirectProject,
+            Some(Capability::GitRead),
+        ),
+        // Phase 3: the skill catalogue discloses a project's discoverable
+        // skill metadata — names and descriptions, never bodies and never
+        // paths. It is project-scoped inert metadata, so it takes the
+        // `project.read` grant the asset refresh status read uses: the
+        // catalogue says which skills a project *has*, not what they
+        // contain. Activating a skill's body remains an agent-tool action.
+        R::SkillCatalogueList { .. } => OperationDescriptor::new(
+            "skill_catalogue_list",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectRead),
+        ),
         R::DocumentWriterAcquire { .. }
         | R::DocumentChange { .. }
         | R::DocumentSave { .. }
@@ -2513,6 +2538,22 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
                 apply: false,
             },
         },
+        // Phase 3: the read-only git read and the skill catalogue. Both are
+        // project-scoped reads; the payload values are inert placeholders and
+        // only the variant matters here.
+        R::GitRead {
+            request: codegg_protocol::git::GitReadRequestDto {
+                project_id: String::new(),
+                operation: codegg_protocol::git::GitReadOperationDto::Status,
+                max_rows: None,
+            },
+        },
+        R::SkillCatalogueList {
+            request: codegg_protocol::skill::SkillCatalogueRequestDto {
+                project_id: String::new(),
+                max_entries: None,
+            },
+        },
     ]
 }
 
@@ -2697,5 +2738,47 @@ fn dummy_lsp_diagnostics_get() -> codegg_protocol::lsp::LspDiagnosticsGetRequest
     codegg_protocol::lsp::LspDiagnosticsGetRequestDto {
         project_id: String::new(),
         session_id: String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codegg_protocol::core::CoreRequest;
+
+    /// The Phase 3 git read is a project-scoped read of git facts, and it
+    /// asks for the dedicated `git.read` capability — never `git.write`.
+    ///
+    /// The scope has to be `DirectProject` because the request carries a
+    /// `project_id` locator: that is the only way the daemon can resolve
+    /// the read to the project whose repository it may read.
+    #[test]
+    fn git_read_is_a_direct_project_git_read() {
+        let descriptor = operation_descriptor(&CoreRequest::GitRead {
+            request: codegg_protocol::git::GitReadRequestDto {
+                project_id: "project-1".to_string(),
+                operation: codegg_protocol::git::GitReadOperationDto::Status,
+                max_rows: None,
+            },
+        });
+        assert_eq!(descriptor.operation, "git_read");
+        assert_eq!(descriptor.scope_kind, ScopeKind::DirectProject);
+        assert_eq!(descriptor.capability_name(), "git.read");
+    }
+
+    /// The Phase 3 skill catalogue is project-scoped inert metadata, so it
+    /// asks for `project.read` — never a file grant (it carries no body)
+    /// and never a write grant.
+    #[test]
+    fn skill_catalogue_list_is_a_direct_project_metadata_read() {
+        let descriptor = operation_descriptor(&CoreRequest::SkillCatalogueList {
+            request: codegg_protocol::skill::SkillCatalogueRequestDto {
+                project_id: "project-1".to_string(),
+                max_entries: None,
+            },
+        });
+        assert_eq!(descriptor.operation, "skill_catalogue_list");
+        assert_eq!(descriptor.scope_kind, ScopeKind::DirectProject);
+        assert_eq!(descriptor.capability_name(), "project.read");
     }
 }

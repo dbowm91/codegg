@@ -847,6 +847,16 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // shares the reads' classification rather than emitting per-refresh
     // audit events. Denial *is* audited upstream by `authorize_request`.
     "workspace_directory_list",
+    // Phase 3: a read-only git read. It discloses the repository's own
+    // state — branch, dirtiness, changed file names — through the read-only
+    // git fact layer, and mutates nothing: there is no write path behind it
+    // to audit. Denial *is* audited upstream by `authorize_request`.
+    "git_read",
+    // Phase 3: the skill catalogue. It discloses a project's discoverable
+    // skill metadata — names and descriptions, never bodies, never paths —
+    // and mutates nothing. Denial *is* audited upstream by
+    // `authorize_request`.
+    "skill_catalogue_list",
     // `/init` is a bounded, explicitly authorized project-file preview;
     // the publication operation below is structurally audited.
     "project_init_draft",
@@ -2276,6 +2286,32 @@ mod tests {
             assert!(
                 instrumented.contains(op.as_str()) || uninstrumented.contains(op.as_str()),
                 "unclassified canonical operation: {op}"
+            );
+        }
+    }
+
+    /// The Phase 3 reads are classified, and classified as *uninstrumented*
+    /// reads.
+    ///
+    /// They disclose inert metadata (git state, skill names) and mutate
+    /// nothing, so there is no action to instrument: the audit that matters
+    /// is the denial, and `authorize_request` records that upstream. They
+    /// must not claim an instrumented action either — an instrumented entry
+    /// would claim the operation emits an audit event, which it does not.
+    #[test]
+    fn phase_three_reads_are_classified_as_uninstrumented_reads() {
+        let instrumented: std::collections::HashSet<&str> =
+            INSTRUMENTED_OPERATIONS.iter().map(|(op, _)| *op).collect();
+        let uninstrumented: std::collections::HashSet<&str> =
+            UNINSTRUMENTED_OPERATIONS.iter().copied().collect();
+        for operation in ["git_read", "skill_catalogue_list"] {
+            assert!(
+                uninstrumented.contains(operation),
+                "{operation} is a read and must be classified"
+            );
+            assert!(
+                !instrumented.contains(operation),
+                "{operation} mutates nothing, so it must not claim an instrumented action"
             );
         }
     }

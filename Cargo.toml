@@ -498,6 +498,15 @@ path = "tests/projection_replay/mod.rs"
 name = "session_family"
 path = "tests/session_family/mod.rs"
 
+# Desktop-GUI parity: the terminal UI's reconstruction of the canonical
+# projection snapshot, compared against the shared golden the desktop host
+# also reads (`apps/desktop/src-tauri/tests/frontend_parity.rs`). The desktop
+# crate is excluded from this workspace, so the two halves of the proof live
+# in two crates and meet at one fixture.
+[[test]]
+name = "frontend_parity"
+path = "tests/frontend_parity/mod.rs"
+
 [profile.release]
 lto = "thin"
 strip = true

@@ -71,14 +71,37 @@ mod server {
 
     /// Deterministic mock OpenAI-compatible model server (M004 §15 live-turn
     /// leg). Test-only: loopback-bound on an ephemeral port, serves ONLY
-    /// `POST */chat/completions` with two canned SSE scripts selected by
-    /// request count — the first POST emits assistant text plus one
-    /// out-of-workspace `write` tool call (`finish_reason: tool_calls`), so
-    /// the turn deterministically raises `PermissionPending`; every later
-    /// POST emits final text (`finish_reason: stop`), so denial/follow-up
-    /// iterations always converge. Anything else gets 404. Request bodies
-    /// are never logged (only the counted index); the dummy credential
-    /// lives in a temp-scoped config file and is never a real secret.
+    /// `POST */chat/completions` with canned SSE scripts selected by request
+    /// count:
+    ///
+    /// - request #1 emits assistant text plus one out-of-workspace `write`
+    ///   tool call (`finish_reason: tool_calls`);
+    /// - request #2 **repeats that same write** — the model insisting;
+    /// - every later POST emits final text (`finish_reason: stop`), so
+    ///   denial/follow-up iterations always converge.
+    ///
+    /// The insist is what makes the human permission appear, and it is the
+    /// product's own rule, not a fixture workaround. Since 39e1445b6 the
+    /// daemon answers a temp-root `write` with an actionable scratch-path
+    /// redirect **to the model** and never asks the human on the first
+    /// attempt (`src/permission/mod.rs:1365-1411`). The redirect offer is
+    /// issued once per `(session, tool, canonical target)`, so the *second*
+    /// identical attempt reaches the human and publishes `PermissionPending`
+    /// — the event the M004 spec asserts. A mock that answered with final
+    /// text on request #2 would leave the human never asked, and the spec
+    /// would wait out its full timeout for a permission that was never
+    /// going to arrive.
+    ///
+    /// The insist is harmless where the redirect never fires: on macOS the
+    /// phase home is under `$TMPDIR`, which is under `/var`, and `/var` is
+    /// a system path (`crates/eggsentry/src/command.rs:161`), so the write
+    /// escalates as a security finding and the human is asked on the FIRST
+    /// attempt. The M004 spec therefore answers EVERY permission the desktop
+    /// surfaces, which converges the turn identically on both platforms.
+    ///
+    /// Anything else gets 404. Request bodies are never logged (only the
+    /// counted index); the dummy credential lives in a temp-scoped config
+    /// file and is never a real secret.
     ///
     /// No production code is involved: the daemon consumes this through its
     /// ordinary config-registered `openai` provider (the fixture writes a
@@ -100,8 +123,10 @@ mod server {
 
         pub const MOCK_MODEL_ID: &str = "gpt-4o";
         const FIRST_TEXT: &str = "Examining your request. ";
+        const INSIST_TEXT: &str = "Writing to the requested path. ";
         pub const FINAL_TEXT: &str = "E2E deterministic turn complete.";
         const TOOL_CALL_ID: &str = "call_e2e_write_1";
+        const INSIST_TOOL_CALL_ID: &str = "call_e2e_write_2";
         const COMPLETION_ID: &str = "chatcmpl-e2e-mock-1";
         const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -116,7 +141,16 @@ mod server {
             )
         }
 
-        fn first_response(denied_write_path: &str) -> Vec<u8> {
+        /// One assistant turn that calls `write` at `denied_write_path`.
+        ///
+        /// `tool_call_id` distinguishes the attempts: the daemon keys a tool
+        /// call by its id, so the insisting attempt needs its own id while
+        /// keeping the *same* target path. That is what makes the second
+        /// attempt the same restricted target for the permission layer's
+        /// one-offer-per-target rule, and it is the shape the product's own
+        /// `temp_root_write_offers_a_redirect_before_asking_the_human` test
+        /// uses.
+        fn write_turn(tool_call_id: &str, text: &str, denied_write_path: &str) -> Vec<u8> {
             let arguments = serde_json::to_string(&json!({
                 "path": denied_write_path,
                 "content": "e2e deterministic mock write (denied in-spec)",
@@ -125,7 +159,7 @@ mod server {
             let mut body = String::new();
             body.push_str(&sse_chunk(&json!({
                 "id": COMPLETION_ID, "object": "chat.completion.chunk",
-                "choices": [{"index": 0, "delta": {"role": "assistant", "content": FIRST_TEXT}}],
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}}],
             })));
             // Name and arguments ride separate chunks: the opener carries
             // id+name (emits ToolCallStart), the continuation carries
@@ -135,7 +169,7 @@ mod server {
             body.push_str(&sse_chunk(&json!({
                 "id": COMPLETION_ID, "object": "chat.completion.chunk",
                 "choices": [{"index": 0, "delta": {"tool_calls": [
-                    {"index": 0, "id": TOOL_CALL_ID,
+                    {"index": 0, "id": tool_call_id,
                      "function": {"name": "write", "arguments": ""}},
                 ]}}],
             })));
@@ -151,6 +185,23 @@ mod server {
             })));
             body.push_str("data: [DONE]\n\n");
             body.into_bytes()
+        }
+
+        fn first_response(denied_write_path: &str) -> Vec<u8> {
+            write_turn(TOOL_CALL_ID, FIRST_TEXT, denied_write_path)
+        }
+
+        /// The model insisting on the same restricted path.
+        ///
+        /// Where the daemon answers the first attempt with the temp-root
+        /// redirect guidance *to the model* (no human is asked), this second,
+        /// identical attempt is what the product's one-offer-per-target rule
+        /// sends to the human, and it is the attempt that publishes
+        /// `PermissionPending` for the M004 spec to assert. Where the
+        /// redirect never fires, this attempt simply raises a second
+        /// permission the spec also answers.
+        fn insist_response(denied_write_path: &str) -> Vec<u8> {
+            write_turn(INSIST_TOOL_CALL_ID, INSIST_TEXT, denied_write_path)
         }
 
         fn final_response() -> Vec<u8> {
@@ -224,10 +275,15 @@ mod server {
             } else if method == "POST" && path.ends_with("/chat/completions") {
                 let index = count.fetch_add(1, Ordering::SeqCst);
                 eprintln!("mock-model: chat completions request #{index}");
-                let body = if index == 0 {
-                    first_response(&denied_write_path)
-                } else {
-                    final_response()
+                // Request #1 writes once (answered by the daemon with the
+                // temp-root redirect, no human), request #2 insists on the
+                // same path (this is the attempt that reaches the human and
+                // publishes `PermissionPending`), and every later request
+                // converges on final text so the turn always terminates.
+                let body = match index {
+                    0 => first_response(&denied_write_path),
+                    1 => insist_response(&denied_write_path),
+                    _ => final_response(),
                 };
                 http_response("200 OK", "text/event-stream", &body)
             } else {

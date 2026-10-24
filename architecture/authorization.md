@@ -585,6 +585,7 @@ approval preferences and never project-keyed):
 | `human_shell_run_capabilities` | global | `none` |
 | `human_shell_run_create` | direct_project | `command.execute` |
 | `human_shell_run_read` | direct_project | `command.execute` |
+| `git_read` | direct_project | `git.read` |
 | `initialize` | global | `none` |
 | `interactive_process_attach` | global | `none` |
 | `interactive_process_capabilities` | global | `none` |
@@ -695,6 +696,7 @@ approval preferences and never project-keyed):
 | `session_selection_update` | via_session | `agent.invoke` |
 | `session_share` | via_session | `project.configure` |
 | `session_unshare` | via_session | `project.configure` |
+| `skill_catalogue_list` | direct_project | `project.read` |
 | `snapshot_daemon` | global | `none` |
 | `snapshot_models` | global | `none` |
 | `snapshot_session` | via_session | `session.read` |

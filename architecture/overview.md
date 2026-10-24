@@ -297,7 +297,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `a4bbba81e` together with the M005 writer-containment line's branch tip `28ebe7163`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `ffb7bbe8b` together with the desktop-GUI parity phase's branch tip. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -437,6 +437,43 @@ member of the **existing** `tui_render` family, so the root package's
 count was re-measured against its own listed `Source` with
 `python3 scripts/measure_overview_counts.py`.
 
+One row moved again on **2026-10-24**, when the desktop-GUI parity phase
+added its root-side half: **integration test files 335 → 336**
+(`tests/frontend_parity/tui_reconstruction.inc`). The new file is a member of
+the **new** `frontend_parity` family, so the root package's **test-target**
+count moved by one with it; no row's **measure** changed. The count was
+re-measured against its own listed `Source` with
+`python3 scripts/measure_overview_counts.py`.
+
+That measurement was taken before this line was reconciled with `main`, and
+`main` had moved the same row on its own side, so the merged tree's count is
+neither parent's: `main` measured **338** and this line adds
+`tests/frontend_parity/tui_reconstruction.inc`, for a merged **339**. The
+merged value was **measured** in the merged tree with
+`python3 scripts/measure_overview_counts.py` — not incremented from either
+parent — and `scripts/check_test_target_references.py` checks the recorded row
+against the tree, so the two cannot drift.
+
+Three further rows moved on this line's side of the merge, each by the same
+two-request delta: the desktop-GUI phase adds `CoreRequest::GitRead` and
+`CoreRequest::SkillCatalogueList`, so `CoreRequest` variants are **268**
+(242 struct + 26 unit), `CoreResponse` variants are **176** (175 struct + 1
+unit), and authorized operations are **262** — with the
+`representative_requests()` list holding **252**. Every other row was
+**confirmed unchanged** by measurement, not by assumption: architecture docs
+**92**, distinct production tool names **75**, tool source files **83**, LSP
+server definitions **39**, `codegg-core` modules **54**, `AppEvent` variants
+**61**, `CoreEvent` variants **92**, `ProjectionEvent` variants **47**,
+identity newtypes **19**, built-in slash commands **169**, built-in agents
+**10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
+`mod.rs`), database tables **95 statements / 91 tables**, storage layout
+version **88**, Git operation variants **54**, Git risk classes **11**, and
+workspace member crates **11** (+ root). The *Guard scripts (all)* row is
+**92** and the *CI guard scripts* row is **55**, both carried unchanged from
+`main`, which added the writer-fence, contained-worktree-grant,
+checkout-mediation, daemon-cwd, Git-forbidden-pattern and
+Git-consistency-consumer guards.
+
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
 increment. Merging them lost one increment per row in `architecture/overview.md`
@@ -525,11 +562,11 @@ fifth reconciliations recorded. The full reconciliation is in
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 54 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 266 (240 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 174 (173 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 268 (242 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 176 (175 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 260 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 260 arms carrying 260 distinct operation names, covering all 266 `CoreRequest` variants; the `representative_requests()` list holds 250 of them |
+| Authorized operations | 262 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 262 arms carrying 262 distinct operation names, covering all 268 `CoreRequest` variants; the `representative_requests()` list holds 252 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -540,7 +577,7 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 339 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 340 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 93 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 56 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
@@ -560,6 +597,20 @@ same guard and its self-test). The quick-only difference is unchanged at
 **14** guards CI does not run: the new guard runs in **both** `verify.sh quick`
 and CI, so it adds no quick-only entry. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — desktop parity merge (2026-10-24)
+
+One code-count row moved when the desktop parity work merged into `main`.
+*Integration test files* is **340** (`tests/*.rs` + `tests/*/*.inc`, with the
+`tests/common/` helper tree excluded — the count moved by one, the new
+`tests/frontend_parity/tui_reconstruction.inc`, which reconstructs a session
+from the TUI's own projection and compares it against the desktop's). *Guard
+scripts (all)* is **93** (`ls scripts/check_*` — unchanged: the desktop parity
+work adds no guard), *CI guard scripts* is **56** (the `ci.yml` list, unchanged),
+and the quick-only difference is unchanged at **14**. The *quick* guard count
+is **70**. Every other code-count row was re-checked against its own listed
+`Source` and is unchanged.
+
 
 ## Feature gates
 
@@ -759,7 +810,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (335 files)
+├── tests/                      # Integration tests (339 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
