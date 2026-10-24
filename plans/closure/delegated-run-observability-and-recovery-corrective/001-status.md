@@ -802,3 +802,20 @@ The guarantee this milestone closed with was "a delegated run that terminates
 inside its own subscribe window is silently lost". It is now "a delegated
 run that terminates is never lost". The durable notice remains the receipt;
 the in-band `try_send` push remains the non-authoritative fast path.
+
+### Hosted-CI outcome
+
+The hosted `verify` job passed on the fixed head (`408d39e16`, run
+`40138994361`, 24m21s): the delegated notice is no longer lost, and the
+family's six notice assertions and its injection pass now measure the
+durable receipt instead of racing it. The `Linux M004 process and IPC
+qualification` workflow passed on the same head (run `40138994354`:
+`process-ipc` and `restricted-userns-fails-closed` green).
+
+The `Windows process launcher` job is still red, on
+`scratch::tests::a_tree_with_an_owner_record_that_is_not_owner_only_is_refused`
+at `src\scratch.rs:1878` (30 passed, 1 failed). That is **main's** failure,
+inherited through the M008 merge: `origin/main`'s own `Windows process
+launcher` job on the M008 merge commit `c4fa30aeb` (run `40131159604`)
+fails at the identical test and line, while main's `CI` job passes. This
+branch changes no scratch code.
