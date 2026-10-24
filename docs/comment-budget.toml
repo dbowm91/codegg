@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 122454
-max_comment_words = 1078129
+max_comment_lines = 122449
+max_comment_words = 1078060
 max_ratio = 0.1316
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -628,7 +628,7 @@ max_ratio = 0.1316
 "src/tui/components/dialogs/connection_selection.rs" = { max_comment_lines = 104, max_ratio = 0.1748 }
 "src/tui/components/dialogs/device_secret.rs" = { max_comment_lines = 26, max_ratio = 0.1414 }
 "src/tui/components/dialogs/diff.rs" = { max_comment_lines = 97, max_ratio = 0.1845 }
-"src/tui/components/dialogs/files.rs" = { max_comment_lines = 168, max_ratio = 0.1687 }
+"src/tui/components/dialogs/files.rs" = { max_comment_lines = 166, max_ratio = 0.1667 }
 "src/tui/components/dialogs/help.rs" = { max_comment_lines = 213, max_ratio = 0.2742 }
 "src/tui/components/dialogs/info.rs" = { max_comment_lines = 163, max_ratio = 0.2997 }
 "src/tui/components/dialogs/keybind.rs" = { max_comment_lines = 50, max_ratio = 0.0759 }
@@ -685,7 +685,7 @@ max_ratio = 0.1316
 "src/tui/panels/chat.rs" = { max_comment_lines = 126, max_ratio = 0.4566 }
 "src/tui/panels/help.rs" = { max_comment_lines = 38, max_ratio = 0.5672 }
 "src/tui/panels/hosted.rs" = { max_comment_lines = 131, max_ratio = 0.5118 }
-"src/tui/panels/mod.rs" = { max_comment_lines = 932, max_ratio = 0.6152 }
+"src/tui/panels/mod.rs" = { max_comment_lines = 929, max_ratio = 0.6128 }
 "src/tui/panels/session.rs" = { max_comment_lines = 30, max_ratio = 0.411 }
 "src/tui/panels/terminal.rs" = { max_comment_lines = 191, max_ratio = 0.5149 }
 "src/tui/render_cost.rs" = { max_comment_lines = 39, max_ratio = 0.8864 }
