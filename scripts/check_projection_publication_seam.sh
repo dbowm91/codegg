@@ -81,7 +81,8 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 violations=0
-publication_sites=$(rg -l --type rust "ProjectionReplayHandle::publish_core_event" "$ROOT/src" "$ROOT/crates" || true)
+publication_sites=$(grep -rlE "ProjectionReplayHandle::publish_core_event" \
+  --include='*.rs' "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
 
 if [ -n "$publication_sites" ]; then
   for f in $publication_sites; do
@@ -102,7 +103,8 @@ if [ -n "$publication_sites" ]; then
 fi
 
 # ── The delegated run transcript's routing ─────────────────────────────
-producers=$(rg -l --type rust "agent_run_summary_with_transcript" "$ROOT/src" 2>/dev/null || true)
+producers=$(grep -rlE "agent_run_summary_with_transcript" --include='*.rs' \
+  "$ROOT/src" 2>/dev/null || true)
 if [ -z "$producers" ]; then
   echo "ERROR: no production site populates the delegated run transcript."
   echo "  The transcript must be attached by the session projection snapshot builder."
@@ -118,14 +120,14 @@ else
       violations=1
     fi
   done
-  if ! rg -q "projection_snapshot_for_session" "$ROOT/$PRODUCER" 2>/dev/null; then
+  if ! grep -q "projection_snapshot_for_session" "$ROOT/$PRODUCER" 2>/dev/null; then
     echo "ERROR: $PRODUCER does not define projection_snapshot_for_session."
     echo "  The transcript must be attached by the session-scoped snapshot builder."
     violations=1
   fi
 fi
 
-if ! rg -q "agent_run_summary_with_transcript" "$ROOT/$ADAPTER" 2>/dev/null; then
+if ! grep -q "agent_run_summary_with_transcript" "$ROOT/$ADAPTER" 2>/dev/null; then
   echo "ERROR: $ADAPTER does not populate the delegated run transcript field."
   echo "  The projection adapter is the populator; the daemon only supplies it."
   violations=1

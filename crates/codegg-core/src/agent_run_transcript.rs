@@ -912,6 +912,12 @@ mod tests {
         let store = SqliteAgentRunTranscriptStore::new(pool.clone());
         let api_secret = "fixture-api-key-value";
         let bearer_secret = "fixture-bearer-token-0123456789";
+        // The AWS documentation example key. It is the repository's existing
+        // fixture for a credential-shaped value (`AKIAIOSFODNN7EXAMPLE` is
+        // used the same way in `collaboration.rs`, `eggsentry` and
+        // `shell/redactor.rs`), and it is not a live credential. The
+        // redaction rules match the *assignment* form, not the value's
+        // entropy, so the assertion below is exactly as strong with it.
         let env_secret = "AKIAIOSFODNN7EXAMPLE";
         let body = format!(
             "api_key={api_secret}\nAuthorization: Bearer {bearer_secret}\n\

@@ -70,15 +70,15 @@ fi
 
 # ── 5. Declared-and-populated delegated run transcript ────────────────
 # The field's declaration.
-if ! rg -q "pub transcript: Option<AgentRunTranscriptProjection>" "$DTO" 2>/dev/null; then
+if ! grep -q "pub transcript: Option<AgentRunTranscriptProjection>" "$DTO" 2>/dev/null; then
   echo "ERROR: $DTO does not declare the delegated run transcript field."
   echo "  The transcript payload must be a declared field on the run DTO."
   violations=1
 fi
 # Its population. The protocol crate may only *declare* it; a production
 # site outside the protocol crate must put a payload on a run summary.
-populate_matches=$(rg -n --type rust "\.transcript\s*=\s*Some\(" \
-  "$ROOT/src" "$ROOT/crates/codegg-core/src" 2>/dev/null || true)
+populate_matches=$(grep -rEn "\.transcript[[:space:]]*=[[:space:]]*Some\(" \
+  --include='*.rs' "$ROOT/src" "$ROOT/crates/codegg-core/src" 2>/dev/null || true)
 if [ -z "$populate_matches" ]; then
   echo "ERROR: no production site populates the delegated run transcript field."
   echo "  The field is declared but nothing puts a transcript on a run summary,"
@@ -91,7 +91,7 @@ fi
 # SafePublicationClass::Internal / Sensitive are not referenced
 # outside the replay module boundary.
 for variant in "SafePublicationClass::Internal" "SafePublicationClass::Sensitive"; do
-  matches=$(rg -n --type rust "$variant" "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
+  matches=$(grep -rEn "$variant" --include='*.rs' "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
   if [ -n "$matches" ]; then
     while IFS= read -r line; do
       file=$(echo "$line" | cut -d: -f1)
@@ -109,19 +109,20 @@ done
 
 # ── 2. Path-unsafe source_record_id in ProjectionArtifactHandle ──────
 # Look for struct literal construction with source_record_id: "/" or ".."
-path_matches=$(rg -n --type rust 'source_record_id\s*:\s*"' "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
+path_matches=$(grep -rEn 'source_record_id[[:space:]]*:[[:space:]]*"' \
+  --include='*.rs' "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
 if [ -n "$path_matches" ]; then
   while IFS= read -r line; do
     file=$(echo "$line" | cut -d: -f1)
     lineno=$(echo "$line" | cut -d: -f2)
     content=$(echo "$line" | cut -d: -f3-)
     # Check if the value starts with / or contains ..
-    if echo "$content" | rg -q 'source_record_id\s*:\s*"/' 2>/dev/null; then
+    if echo "$content" | grep -qE 'source_record_id[[:space:]]*:[[:space:]]*"/' 2>/dev/null; then
       echo "ERROR: $file:$lineno — source_record_id starts with '/'"
       echo "  ProjectionArtifactHandle source_record_id must not be a filesystem path."
       violations=1
     fi
-    if echo "$content" | rg -q 'source_record_id\s*:\s*"[^"]*\.\.' 2>/dev/null; then
+    if echo "$content" | grep -qE 'source_record_id[[:space:]]*:[[:space:]]*"[^"]*\.\.' 2>/dev/null; then
       echo "ERROR: $file:$lineno — source_record_id contains '..'"
       echo "  ProjectionArtifactHandle source_record_id must not contain path traversal."
       violations=1
@@ -130,7 +131,8 @@ if [ -n "$path_matches" ]; then
 fi
 
 # ── 3. HandleRegistry::mint_id outside replay dir ────────────────────
-mint_matches=$(rg -n --type rust "HandleRegistry::mint_id" "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
+mint_matches=$(grep -rEn "HandleRegistry::mint_id" --include='*.rs' \
+  "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
 if [ -n "$mint_matches" ]; then
   while IFS= read -r line; do
     file=$(echo "$line" | cut -d: -f1)
@@ -144,7 +146,8 @@ if [ -n "$mint_matches" ]; then
 fi
 
 # ── 4. Oversized marker outside redactor.rs ──────────────────────────
-oversized_matches=$(rg -n --type rust '\[REDACTED:oversized:' "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
+oversized_matches=$(grep -rEn '\[REDACTED:oversized:' --include='*.rs' \
+  "$ROOT/src" "$ROOT/crates" 2>/dev/null || true)
 if [ -n "$oversized_matches" ]; then
   while IFS= read -r line; do
     file=$(echo "$line" | cut -d: -f1)

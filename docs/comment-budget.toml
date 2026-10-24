@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 125397
-max_comment_words = 1106160
+max_comment_lines = 125403
+max_comment_words = 1106220
 max_ratio = 0.1331
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -33,7 +33,7 @@ max_ratio = 0.1331
 "crates/codegg-core/src/agent_run.rs" = { max_comment_lines = 42, max_ratio = 0.0162 }
 "crates/codegg-core/src/agent_run_attempt.rs" = { max_comment_lines = 159, max_ratio = 0.1555 }
 "crates/codegg-core/src/agent_run_group.rs" = { max_comment_lines = 32, max_ratio = 0.0233 }
-"crates/codegg-core/src/agent_run_transcript.rs" = { max_comment_lines = 105, max_ratio = 0.1003 }
+"crates/codegg-core/src/agent_run_transcript.rs" = { max_comment_lines = 111, max_ratio = 0.1061 }
 "crates/codegg-core/src/approval.rs" = { max_comment_lines = 384, max_ratio = 0.1764 }
 "crates/codegg-core/src/audit.rs" = { max_comment_lines = 190, max_ratio = 0.125 }
 "crates/codegg-core/src/audit_instrumentation.rs" = { max_comment_lines = 498, max_ratio = 0.2502 }
