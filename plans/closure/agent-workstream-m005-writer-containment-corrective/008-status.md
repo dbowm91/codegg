@@ -570,3 +570,29 @@ awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
 
 The merged tree's quick lane was re-run after this merge: **green**, 109
 steps.
+
+**A9 — the fifth reconciliation with `main`.** `origin/main` advanced again
+while this line was open: the **file-picker surface corrective** workstream
+landed at `c2d781319` (PR #182), and the branch tip `a5c00ef10` had to be
+reconciled with it. The quick lane's `==>` lines moved again, from 109 to
+**111** — `run_guards` is **107** and `run_quick` is **4** — because
+`origin/main` added its own `/files` keymap-drift guard, which runs twice
+(once with `--self-test` and once for real). The count is measured, not
+incremented:
+
+```bash
+awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'   # 107
+awk '/^run_quick\(\)/,/^}/' scripts/verify.sh | grep -c 'echo "==>'    # 4
+```
+
+The merged tree's quick lane was re-run after this merge: **green**, 111
+steps.
+
+The merge's only code-level interaction was additive: this branch touched
+no `src/tui/` source, so `main`'s file-picker changes are orthogonal to
+every corrective on this line. The counts that moved — *Integration test
+files* **338**, *Guard scripts (all)* **91**, *CI guard scripts* **54** — are
+recorded in `architecture/overview.md` and
+`architecture/count_audit_history.md`, and the comment budget was re-banked
+on the merged tree at **123,685** lines, still below the 124,865
+pre-reduction baseline.
