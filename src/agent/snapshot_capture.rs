@@ -183,6 +183,9 @@ impl AgentLoop {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            // M005 corrective C009: this fallback path binds no actor, so the
+            // child's write stays unattributed.
+            execution_audit: None,
         };
         tokio::spawn(async move {
             // scheduler-audit: standalone-compat

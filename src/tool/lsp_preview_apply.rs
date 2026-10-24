@@ -253,6 +253,33 @@ impl LspPreviewApplyTool {
             self.pool.clone(),
             self.document_service.clone(),
             Some(self.lsp_service.clone()),
+            // M005 corrective C008 §6.5: the under-lock checkout-reservation
+            // re-check is a **daemon** mediation — it needs the transport
+            // authority and the authorization decision to record a refusal.
+            // This tool path holds no transport authority, so it cannot
+            // perform the re-check.
+            //
+            // M005 corrective C008 (implementation review): the writer
+            // permit taken above is **not** a substitute for it, and the
+            // earlier claim that it was is withdrawn. The permit answers
+            // "may this run write to the checkout it is bound to" — the
+            // fence resolves the checkout from the run's own durable
+            // record, checks containment, and requires the run to be the
+            // lease holder or a member of the lease holder's live group.
+            // The reservation authority answers a different question: it
+            // resolves the **target path** to a reserved checkout. A run
+            // that is not bound to the reserved checkout is invisible to
+            // the fence's scope and visible to the reservation, so the two
+            // authorities are not interchangeable and the permit is not
+            // the stronger claim.
+            //
+            // The residual gap is recorded in the C008 closure record
+            // (unresolved items): the daemon-mediated LSP apply
+            // (`CoreRequest::LspPreviewApply`) performs the under-lock
+            // re-check, and this model-facing tool path relies on the
+            // fence instead. Closing it needs the tool to hold the
+            // transport authority, which it does not.
+            None,
         )
         .await;
 

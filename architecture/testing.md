@@ -464,7 +464,7 @@ own copy of the file instead; it is recorded in
 | `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace` | The standalone shell's output does not arrive within the test's own wait. |
 | `scratch_cache_root_contract::the_default_cache_root_is_the_home_directory_cache` | The test expects `$HOME/.cache`; macOS's cache directory is `$HOME/Library/Caches`. |
 | `scratch_cache_root_contract::an_explicit_cache_home_is_the_root_the_allocator_uses` | Same convention mismatch. |
-| `contained_worktree_c008::the_grant_names_only_the_administration_directory` | The test needs the Linux protected-mount view, so the containment grant cannot be built here: `the worktree child could not be contained: permission denied: protected mount view is available only on Linux`. The target is Linux-targeted and is exercised by the hosted `Linux M004 process and IPC qualification` lane, not by a local gate. |
+| `contained_worktree_c008::the_grant_names_only_the_shared_administration_root` | The test needs the Linux protected-mount view, so the containment grant cannot be built here: `the worktree child could not be contained: permission denied: protected mount view is available only on Linux`. The target is Linux-targeted and is exercised by the hosted `Linux M004 process and IPC qualification` lane, not by a local gate. |
 
 Do not "fix" these by editing the assertions — they are testing the Linux
 contract on a platform that does not provide it. When a *new* failure appears

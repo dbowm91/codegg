@@ -6,7 +6,7 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 63 guard scripts, and a workspace check
+                          # checks, 69 guard scripts, and a workspace check
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
@@ -109,9 +109,9 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 63 guard scripts, and a workspace `cargo check`. CI
+checks, 69 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 49 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 55 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
 As measured on 2026-10-24, quick runs **14 guards CI omits**: the client and
@@ -153,8 +153,7 @@ list):
   `scripts/verify.sh quick` and CI.
 - Process spawning / execution surfaces → `python3 scripts/check_execution_ownership.py`
   and keep `docs/execution-ownership.toml` in sync; scheduler changes also need
-  `check_scheduler_bypass.py`; daemon path handling needs `check_daemon_cwd_usage.py`
-  (no `std::env::current_dir()` in workspace-bound daemon code — thread `ExecutionContext`)
+  `check_scheduler_bypass.py`
 - `assets/agents/*.toml` or `assets/prompts/` → `python3 scripts/generate_builtin_agents.py`
   to regenerate `src/agent/builtins/generated.rs` (never edit it); `--check` in CI.
   That generator owns `src/agent/builtins/mod.rs` **outright** — it rewrites the
@@ -162,7 +161,7 @@ list):
   `python3 scripts/generate_subagent_names.py` into
   `src/agent/subagent_names/generated.rs`, whose sibling `mod.rs` is hand-written
   and must not be handed to the builtins generator.
-- Git risk/policy → `check_git_forbidden_patterns.py`; storage layout →
+- Storage layout →
   `check_project_catalog_invariants.py` (`STORAGE_LAYOUT_VERSION` must track the
   highest migration in `crates/codegg-core/src/session/schema.rs`); adding or
   changing any model list → `check_no_hardcoded_models.py` (CodeGG ships **no**
@@ -215,6 +214,59 @@ list):
   have a `` | `name` | `` entry in the **Skills index** below — dropping that
   row fails the guard). `testing-ci`, `tool-execution`, `security-hardening`, and
   `lsp-ide` must always exist. In `quick`; **not** in CI.
+
+
+## Automatic guards
+
+A guard that runs only when somebody remembers it protects nothing, so the
+guards whose defects fail **silently** are wired into `scripts/verify.sh quick`
+and CI rather than left change-triggered. Each carries a `--self-test` that
+injects the defect and proves the guard rejects it:
+
+- `check_git_forbidden_patterns.py` — hostile Git metadata: the pinned override
+  table, the route obligations, and the bounded hostile-config detector's *call*
+  from both trusted child-construction paths. It was change-triggered, and the
+  review that mutation-tested it found that deleting **both** detector call sites
+  produced **zero** findings, because the guard did not assert the calls in the
+  first place.
+- `check_git_consistency_consumers.py` — every diff consumer fences its read
+  through `admit_generation_bound`, so no consumer discards the consistency class
+  with a bare `.into_value()`.
+- `check_contained_worktree_grant.py` — the contained worktree child's writable
+  grant is the **shared** administration root `<common-gitdir>/worktrees/`, and
+  ADR-0048, the code comments and the containment test must all name that same
+  single path. The guard derives the expected path from the ADR's own text, so
+  it cannot drift from it.
+- `check_writer_fence_completeness.py` — every mutating tool has a `None` arm
+  that **refuses** (the `commit` tool was the one that did not), the daemon's
+  team-policy principal fallback is derived from the team state rather than a
+  literal `true`, the nested-subagent dispatch forwards the parent's fence
+  instead of silently downgrading to a containment-only one, and the fence's
+  **durable authority reads** are never answered with "absent" — an unreadable
+  run store is an unresolved lease, not a missing one, and answering it with
+  "absent" produced a writer with no fence at all.
+- `check_checkout_mediation_authority.py` — the reservation authority must not
+  resolve a path through a **capped** list (a 512-row oldest-first list fails
+  open once the catalog grows), the HTTP routes must refuse rather than skip the
+  gate when no daemon is attached, and the gate's workspace-identifier rule must
+  be at least as permissive as **every** effect family's — a gate stricter than
+  an effect refuses identifiers the effect would accept, so the mediation never
+  engages.
+- `check_daemon_cwd_usage.py` — no `std::env::current_dir()` in workspace-bound
+  daemon code; the root is threaded through `ExecutionContext`. It covers
+  `src/core/**`, the turn-code surfaces and the `codegg-core` crate. It was
+  wired into neither `quick` nor CI before the C008 corrective extended it.
+
+Re-derive the **automatic** set — every guard that runs in *both* `quick` and
+CI — rather than trusting a hand-copied list:
+
+```bash
+comm -12 <(awk '/^run_guards\(\)/,/^}/' scripts/verify.sh | grep -oE 'scripts/check[-_][a-z0-9_.-]+\.(py|sh)' | sort -u) \
+         <(grep -oE 'scripts/check[-_][a-z0-9_.-]+\.(py|sh)' .github/workflows/ci.yml | sort -u)
+```
+
+The six named above are the guards whose classification was **decided** in this
+line's work; the derived set is larger, and the command is what says which.
 
 ## Gotchas
 

@@ -227,8 +227,12 @@ request payload. `WorktreePermitAuthority` enforces:
 4. the group reservation, when one is named, is still live — a group that has
    finished no longer covers this checkout;
 5. the principal is authorized for the worktree's project, checked through the
-   daemon's authorization service with the `file.modify` capability when one
-   is configured.
+   daemon's authorization service with the `file.modify` capability. The daemon
+   **always** configures that service, so the check is live on every permit: a
+   team member is admitted by the membership that grants `file.modify` in the
+   checkout's project, and a principal with no such grant is refused. The local
+   owner keeps the daemon's broad local policy, so the check narrows the team
+   without narrowing the daemon's own user.
 
 ## Redaction
 
@@ -298,6 +302,23 @@ A **shared** checkout takes the permit. On that profile an effect class with
 no qualified profile is refused: there is no raw fallback and no best effort.
 A shared write with no bound actor is refused too — mutual exclusion without
 an attributed writer is an anonymous writer.
+
+### Whose actor is the writer
+
+The actor on a shared write is the one the **dispatching turn** admitted. The
+daemon binds a turn's transport-bound principal at the admission boundary and
+records it as a durable turn-scope origin attribution; the delegated child
+carries that record in, because a delegated run has no turn of its own to
+resolve an actor from. A child's write is therefore attributed to the actor
+that dispatched it, and a child dispatched by a turn with no recorded actor
+stays anonymous — which a daemon with a team policy refuses.
+
+The attribution is **restored**, never synthesized: the child reuses the
+decision and provenance the dispatching turn already admitted, and no
+principal is ever built from a request payload, a tool argument, or model
+output. The authorization behind it is re-evaluated at the permit, so a
+revoked membership is refused at the moment of the write rather than at the
+moment of the dispatch.
 
 ### Where it is not yet
 

@@ -66,6 +66,14 @@ pub enum SharedCheckoutError {
     /// The group's checkout exists but cannot be used.
     #[error("the group's managed checkout is not usable: {0}")]
     CheckoutUnusable(String),
+    /// A durable store the resolution depends on failed.
+    ///
+    /// This is deliberately distinct from "the group has no checkout". A
+    /// transient read failure must never be mistaken for an absent
+    /// checkout, or the coordinator would allocate a **second** checkout
+    /// for a group that already holds one.
+    #[error("the group's managed checkout could not be resolved: {0}")]
+    Lookup(String),
     /// The checkout could not be allocated.
     #[error("the shared checkout could not be allocated: {0}")]
     Allocation(String),
@@ -186,6 +194,76 @@ impl SharedCheckoutCoordinator {
         self.resolve_with_group(&group, member_run_id).await
     }
 
+    /// Whether the group is still live.
+    ///
+    /// M005 corrective C007 §6.2: a shared checkout's lease belongs to the
+    /// **group**, not to the run that happened to allocate it. The executor
+    /// asks this before it releases a lease — a live group keeps the lease,
+    /// so a surviving member keeps its write authority and the group's
+    /// reservation stays derived; a terminal group releases it, so the
+    /// checkout returns to `ready`.
+    ///
+    /// This is a read-only snapshot seam: it neither admits work nor alters
+    /// group state.
+    ///
+    /// M005 corrective C007 (implementation review): the liveness is
+    /// derived from the group's **members' durable run statuses**, not from
+    /// the group's stored status. The stored status is recomputed by a
+    /// separate notification path, so a reader that consults it alone can
+    /// see a group as live after its last member has finished — and the
+    /// lease would then never be released.
+    ///
+    /// A member whose durable record is **gone** cannot be running, so it
+    /// does not keep the group alive. A member whose record cannot be
+    /// **read** is an unresolved liveness, not an absent one: the answer is
+    /// an error, and the caller keeps the lease. Keeping the lease is the
+    /// safe direction — a lease released too early strips the group of its
+    /// write authority, while a lease held too long costs a checkout until
+    /// the reconcile path releases it.
+    pub async fn group_is_live(
+        &self,
+        group_id: &AgentRunGroupId,
+    ) -> Result<bool, SharedCheckoutError> {
+        let groups = self
+            .groups
+            .as_ref()
+            .ok_or(SharedCheckoutError::MissingStore("agent-run group"))?;
+        let group = groups
+            .group_record(group_id)
+            .await
+            .map_err(|error| SharedCheckoutError::Lookup(error.to_string()))?
+            .ok_or(SharedCheckoutError::UnknownGroup)?;
+        let Some(runs) = self.runs.as_ref() else {
+            // Without the run store the members' statuses cannot be read, so
+            // the group's own stored status is the only answer available.
+            return Ok(!group.status.is_terminal());
+        };
+        let mut members = group.member_run_ids.clone();
+        if !members.contains(&group.owner_run_id) {
+            members.push(group.owner_run_id.clone());
+        }
+        if members.is_empty() {
+            return Ok(!group.status.is_terminal());
+        }
+        for member in members {
+            match runs.get_run(&member).await {
+                Ok(Some(run)) => {
+                    if !run.status.is_terminal() {
+                        return Ok(true);
+                    }
+                }
+                // The member's durable record is gone: it cannot be running.
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(SharedCheckoutError::Lookup(format!(
+                        "the agent-run store failed while reading the group's liveness: {error}"
+                    )));
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// The group's checkout, given the group record.
     async fn resolve_with_group(
         &self,
@@ -217,15 +295,34 @@ impl SharedCheckoutCoordinator {
             candidates.push(group.owner_run_id.clone());
         }
         for member in candidates {
-            let Ok(Some(run)) = runs.get_run(&member).await else {
-                continue;
+            // M005 corrective C007 §6.3: a store **error** is not "this
+            // candidate has no checkout". The resolution used to collapse
+            // `Err` into "skip this candidate", so a transient read failure
+            // fell through the whole candidate list, returned `Ok(None)`,
+            // and `acquire` allocated a SECOND checkout for a group that
+            // already held one. A failed lookup now surfaces as a typed
+            // error and the coordinator refuses.
+            //
+            // A candidate that simply does not exist — a member run that has
+            // no durable record yet, or no worktree bound to it — is still
+            // skipped: absence is a fact, an error is not.
+            let run = match runs.get_run(&member).await {
+                Ok(Some(run)) => run,
+                Ok(None) => continue,
+                Err(error) => {
+                    return Err(SharedCheckoutError::Lookup(format!(
+                        "the agent-run store failed while resolving the group's checkout: {error}"
+                    )))
+                }
             };
             let Some(worktree_id) = run.worktree_id.clone() else {
                 continue;
             };
-            let Ok(record) = worktrees.get(&worktree_id).await else {
-                continue;
-            };
+            let record = worktrees.get(&worktree_id).await.map_err(|error| {
+                SharedCheckoutError::Lookup(format!(
+                    "the managed-worktree store failed while resolving the group's checkout: {error}"
+                ))
+            })?;
             let Some(owner) = record.owner_run_id.clone() else {
                 continue;
             };
@@ -257,6 +354,56 @@ impl SharedCheckoutCoordinator {
             }));
         }
         Ok(None)
+    }
+
+    /// Release the group's shared checkout lease, if the group has finished.
+    ///
+    /// M005 corrective C007 §6.2. The lease belongs to the **group**, not to
+    /// the run that happened to allocate it. It is released only when the
+    /// group is no longer **live**, so a surviving member keeps its write
+    /// authority — the fence reads `managed_worktree.owner_run_id`, and a
+    /// released lease clears it — and the group's reservation stays derived.
+    ///
+    /// M005 corrective C007 (implementation review): "no longer live" is
+    /// decided from the group's **members' durable run statuses**, not from
+    /// the group's stored status. The stored status is recomputed by a
+    /// separate notification path and may still say `running` when every
+    /// member has finished, so a release decided from it would retain the
+    /// lease for good.
+    ///
+    /// Returns `true` when the lease was released.
+    pub async fn release_group_lease(
+        &self,
+        checkout: &SharedCheckout,
+    ) -> Result<bool, SharedCheckoutError> {
+        if self.group_is_live(&checkout.group_id).await? {
+            return Ok(false);
+        }
+        let worktrees = self
+            .worktrees
+            .as_ref()
+            .ok_or(SharedCheckoutError::MissingStore("managed worktree"))?;
+        let _ = worktrees.refresh(&checkout.worktree_id).await;
+        // M005 corrective C007 (implementation review): the release is
+        // **verified**, not assumed. `release_lease` fails on an owner
+        // mismatch, a generation mismatch, a missing row and a store error,
+        // and a discarded error turned a failed release into a success log:
+        // the checkout silently stayed leased with the group already
+        // finished. The error is surfaced so the caller retains the lease
+        // and the reconcile path can release it.
+        worktrees
+            .release_lease(
+                &checkout.worktree_id,
+                &checkout.owner_run_id,
+                checkout.lease_generation,
+            )
+            .await
+            .map_err(|error| {
+                SharedCheckoutError::Lookup(format!(
+                    "the group's checkout lease could not be released: {error}"
+                ))
+            })?;
+        Ok(true)
     }
 
     /// Join the group's checkout, allocating it when the group has none.

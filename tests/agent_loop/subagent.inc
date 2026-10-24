@@ -241,6 +241,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -370,6 +371,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -446,6 +448,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -526,6 +529,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let result = spawner.send_async(request.clone()).await;
@@ -572,6 +576,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let result2 = spawner.send_async(request2).await;
@@ -635,6 +640,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
         assert!(spawner.send_async(request.clone()).await.is_ok());
         let mut duplicate = request;
@@ -757,6 +763,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -970,6 +977,7 @@ mod tests {
                 sandbox_profile: None,
                 process_admission: None,
                 writer_fence: None,
+                execution_audit: None,
             };
             let result = spawner.send_async(request).await;
             assert!(result.is_ok(), "send_async should succeed for task {}", i);
@@ -1066,6 +1074,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
         assert_eq!(request.task_id, 123);
         assert_eq!(request.agent, "test");
@@ -1114,6 +1123,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let request_depth_2 = SubAgentRequest {
@@ -1138,6 +1148,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         assert_eq!(request_depth_0.depth, 0);
@@ -1176,6 +1187,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
         let cloned = request.clone();
         assert_eq!(cloned.task_id, request.task_id);
@@ -1240,6 +1252,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let result = spawner.send_async(request).await;
@@ -1311,6 +1324,7 @@ mod tests {
                     sandbox_profile: None,
                     process_admission: None,
                     writer_fence: None,
+                    execution_audit: None,
                 };
                 let _ = spawner.send_async(req).await;
                 barrier.wait().await;
@@ -1343,6 +1357,7 @@ mod tests {
                     sandbox_profile: None,
                     process_admission: None,
                     writer_fence: None,
+                    execution_audit: None,
                 };
                 let _ = spawner.send_async(req).await;
                 barrier.wait().await;
@@ -1485,6 +1500,7 @@ mod tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request).await;

@@ -10,6 +10,87 @@ use crate::tool::{ToolRegistry, ToolRegistryOptions};
 
 use codegg_core::workspace::ExecutionContext;
 
+/// The daemon-issued connection identity used when a durable origin
+/// attribution is restored into a principal.
+///
+/// M005 corrective C009. The attribution row carries the principal, kind,
+/// auth method, and transport class; it does not carry the connection that
+/// owned the binding, because the restored principal outlives that
+/// connection. A fixed daemon-owned id records that the restoration was
+/// performed by the daemon rather than by a live transport.
+pub const RESTORED_ORIGIN_CLIENT_ID: &str = "codegg-daemon-origin";
+
+/// Restore the transport-bound principal recorded in a durable origin
+/// attribution.
+///
+/// M005 corrective C009. The attribution row was written by the daemon at
+/// the request admission boundary with [`codegg_core::authorization::OriginAttribution::from_authority`],
+/// from the transport-bound principal and its authorization decision. This
+/// is therefore lossless restoration of already-admitted durable
+/// attribution — not synthesis from a request payload, a tool argument, or
+/// model output. The caller must supply the row it read from the durable
+/// store.
+pub fn principal_from_origin_attribution(
+    attribution: &codegg_core::authorization::OriginAttribution,
+) -> codegg_core::transport_auth::AuthenticatedPrincipal {
+    codegg_core::transport_auth::AuthenticatedPrincipal::reconstructed(
+        attribution.origin_principal.clone(),
+        attribution.origin_kind,
+        attribution.auth_method,
+        attribution.transport_class,
+        RESTORED_ORIGIN_CLIENT_ID,
+    )
+}
+
+/// Read the durable origin attribution for a scope and restore it as a
+/// trusted execution-audit context.
+///
+/// M005 corrective C009. The daemon writes the transport-bound principal and
+/// its authorization decision into the durable origin-attribution store at
+/// the admission boundary. This reads that row back and rebuilds the trusted
+/// context from it — lossless restoration of already-admitted attribution,
+/// never synthesis from a request payload, a tool argument, or model output.
+///
+/// `Ok(None)` means the scope named no actor: there is no row, or the row
+/// carries the explicit legacy marker, which names no team identity and must
+/// not be promoted into one.
+pub async fn resolve_origin_execution_audit(
+    pool: &SqlitePool,
+    scope_kind: &str,
+    scope_id: &str,
+    chain: codegg_core::audit_instrumentation::AuditChainContext,
+) -> Result<
+    Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+    codegg_core::error::StorageError,
+> {
+    let store = codegg_core::authorization::OriginAttributionStore::new(pool.clone());
+    let attribution = store.get(scope_kind, scope_id).await?;
+    let Some(attribution) = attribution else {
+        return Ok(None);
+    };
+    if attribution.is_legacy() {
+        return Ok(None);
+    }
+    let principal = principal_from_origin_attribution(&attribution);
+    let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+        attribution.decision_id.clone(),
+        attribution.correlation_id.clone(),
+        attribution.policy.as_str(),
+        None,
+    );
+    // The attribution owns the correlation id: the chain names the scope the
+    // attribution was recorded for, and the two must not drift apart.
+    let mut chain = chain;
+    chain.correlation_id = Some(attribution.correlation_id.clone());
+    Ok(Some(
+        codegg_core::audit_instrumentation::TrustedExecutionAuditContext::new(
+            &principal,
+            &provenance,
+            chain,
+        ),
+    ))
+}
+
 /// Immutable runtime-asset context captured for one session/turn tool
 /// registry. The snapshot is fixed for the turn; the pin records only
 /// path-free activation digests.

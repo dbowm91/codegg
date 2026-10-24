@@ -60,7 +60,7 @@ than drift.
 ### Tool registrations
 
 The measure is the `registry.register(..)` / `registry.register_boxed(..)`
-calls inside `ToolRegistry::with_options()`'s **body** (54 + 13 = 67) — not
+calls inside `ToolRegistry::with_options()`'s **body** (53 + 14 = 67) — not
 the number of lines that merely mention `with_options`. The old measure counted
 unrelated methods whose names end in `with_options` — `subscribe_with_options`,
 `probe_with_options`, `new_with_options` — which is why it read 63 on one
@@ -229,12 +229,74 @@ code-count rows moved only when the advance actually changed code.
   not widen, no code-count row moved, and no new module, variant, tool or
   guard was added.
 
+- **2026-10-23 — merge with `main` at `6e097dd3a` (fourth reconciliation).**
+  Four rows moved, each re-measured against its own listed `Source` in the
+  merged tree rather than incremented from either parent. *Integration test
+  files* 334 (main) / 330 (branch) → **337**, the union of the two sides'
+  members. *Guard scripts (all)* 86 (main) / 84 (branch) → **90**. *CI guard
+  scripts* 47 (main) / 46 (branch) → **53**, the union of the two workflow
+  files' guard steps — CI remains a strict subset of `quick`, which runs **67**
+  guards and runs **14** guards CI does not. *Tool registrations* kept its
+  total (67) but changed its **split**, 54 `register` + 13 `register_boxed` →
+  **53 `register` + 14 `register_boxed`**, because C009 moved the `commit`
+  tool onto the fail-closed `UnrootedTool` wrapper, which registers boxed
+  rather than in place. Every other row was confirmed unchanged by
+  measurement: architecture docs 92, distinct production tool names 75, tool
+  source files 83, LSP server definitions 39, `codegg-core` modules 54,
+  `AppEvent` variants 61, `CoreRequest` variants 266, `CoreResponse` variants
+  174, `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized
+  operations 260, identity newtypes 19, built-in slash commands 169, built-in
+  agents 10, bundled themes 50, TUI state modules 33, database tables 95
+  statements / 91 tables, storage layout version 88, Git operation variants 54,
+  Git risk classes 11, workspace member crates 11 (+ root).
+
+- **2026-10-23 — merge with `main` at `c2d781319` (fifth reconciliation).**
+  `main` advanced again, to the file-picker surface corrective (PR #182).
+  Four rows moved, each re-measured against its own listed `Source` in the
+  merged tree rather than incremented from either parent. *Integration test
+  files* 335 (main) / 337 (branch) → **338**, the union of the two sides'
+  members — `main` added `tests/tui_render/file_picker_surface_corrective.inc`.
+  *Guard scripts (all)* 87 (main) / 90 (branch) → **91**, the union of the two
+  guard sets — `main` added `scripts/check_tui_files_keymap_drift.py`. *CI
+  guard scripts* 48 (main) / 53 (branch) → **54**, the union of the two
+  workflow files' guard steps — CI remains a strict subset of `quick`, which
+  runs **68** guards and runs **14** guards CI does not. `AGENTS.md`'s
+  published counts moved with them, 67 quick / 53 CI → **68 quick / 54 CI**.
+  Every other row was confirmed unchanged by measurement: architecture docs 92,
+  distinct production tool names 75, tool source files 83, LSP server
+  definitions 39, `codegg-core` modules 54, `AppEvent` variants 61,
+  `CoreRequest` variants 266, `CoreResponse` variants 174, `CoreEvent`
+  variants 92, `ProjectionEvent` variants 47, authorized operations 260,
+  identity newtypes 19, built-in slash commands 169, built-in agents 10,
+  bundled themes 50, TUI state modules 33, database tables 95 statements / 91
+  tables, storage layout version 88, Git operation variants 54, Git risk
+  classes 11, workspace member crates 11 (+ root). The comment budget was
+  re-banked on the merged tree: **123,685** lines, **1,089,562** words, ratio
+  **0.1325** — over `main`'s newly banked 122,449 and still below the 124,865
+  pre-reduction baseline.
+
 ## Source verification
 
 Verified 2026-10-23 against the tree at `12999178a`, by running
 `scripts/measure_overview_counts.py` and comparing every row's output to the
 `## Verified counts` table in `overview.md`. All 24 rows agree, including the
 rows whose methods were pinned above.
+
+Verified 2026-10-23 **again** against the merged tree — `origin/main`
+`6e097dd3a` merged with the five post-closure corrective milestones' branch
+tip `d5b7efc02` — by running the same script and comparing every row's output
+to the same table. All **25** rows agree. The four rows that moved are the
+four named in the reconciliation entry above; the other 21 were confirmed
+unchanged by measurement rather than by assumption.
+
+Verified 2026-10-23 a **third** time against the merged tree — `origin/main`
+`c2d781319` merged with the five post-closure corrective milestones' branch
+tip `a5c00ef10` — by running the same script and comparing every row's output
+to the same table. All **25** rows agree. The four rows that moved are the
+four named in the eighth amendment; the other 21 were confirmed unchanged by
+measurement rather than by assumption. The `AGENTS.md` counts were derived the
+same way, from `scripts/verify.sh quick`'s `run_guards` block and the CI
+workflow's distinct `scripts/check_*` names.
 
 One row's **measure** changed in this pass, and the row's value moved with
 it: *Production tool names* was corrected from 61 to **62** after the
@@ -492,6 +554,35 @@ on their own trees, so this row set is expected to conflict at merge time; the
 reconciliation is the union of each side's contribution, re-measured in the
 merged tree rather than carried over from either side.
 
+### Seventh amendment — 2026-10-23, M005 writer containment corrective, fourth reconciliation with `main`
+
+Four rows moved, each re-measured against its own listed `Source` in the
+merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 334 | **337** | The union of `main`'s and the corrective branch's `.inc` members. The measure (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded) is unchanged. |
+| Guard scripts (all) | 86 | **90** | The union of the two guard sets. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 47 | **53** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
+| Tool registrations | 67 (54 + 13) | **67 (53 + 14)** | The **split** moved; the total did not. C009 moved the `commit` tool onto the fail-closed `UnrootedTool` wrapper, which registers boxed rather than in place. The measure is unchanged. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, distinct production tool names 75, tool
+source files 83, LSP server definitions 39, `codegg-core` modules 54,
+`AppEvent` 61, `CoreRequest` 266, `CoreResponse` 174, `CoreEvent` 92,
+`ProjectionEvent` 47, authorized operations 260, identity newtypes 19,
+built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state
+modules 33, database tables 95 statements / 91 tables, storage layout version
+88, Git operation variants 54, Git risk classes 11, and workspace member
+crates 11 (+ root).
+
+The *quick runs 14 guards CI does not* note in the `CI guard scripts` row is
+unchanged: the merged tree's `quick` runs **67** guards, CI runs **53**, and
+the difference is the same 14 — the client and desktop boundaries, the
+daemon-listing authority, the first-party skills, the network-intent owner,
+the selection colours, the Eggwork target routing, the OpenAI endpoint
+composition, and the six provider guards.
+
 ## M002 — the `/files` keymap drift guard (2026-10-23)
 
 | Row | Before | After | Why it moved |
@@ -519,6 +610,35 @@ holds (62 − 48 = 14). The *method* did not change — the count is still the
 number of distinct `scripts/check_*` files the two files name — only the
 value had drifted.
 
+### Eighth amendment — 2026-10-23, M005 writer containment corrective, fifth reconciliation with `main`
+
+`origin/main` advanced again, to `c2d781319` (PR #182, the file-picker
+surface corrective). Four rows moved, each re-measured against its own listed
+`Source` in the merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 337 | **338** | The union of the two sides' `.inc` members: `main` added `tests/tui_render/file_picker_surface_corrective.inc`. The measure (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded) is unchanged. |
+| Guard scripts (all) | 90 | **91** | The union of the two guard sets: `main` added `scripts/check_tui_files_keymap_drift.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 53 | **54** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
+| `AGENTS.md`'s published counts | 67 quick / 53 CI | **68 quick / 54 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. The *quick runs 14 guards CI does not* difference is unchanged at 14. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, distinct production tool names 75, tool
+source files 83, LSP server definitions 39, `codegg-core` modules 54,
+`AppEvent` 61, `CoreRequest` 266, `CoreResponse` 174, `CoreEvent` 92,
+`ProjectionEvent` 47, authorized operations 260, identity newtypes 19,
+built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state
+modules 33, database tables 95 statements / 91 tables, storage layout version
+88, Git operation variants 54, Git risk classes 11, and workspace member
+crates 11 (+ root).
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: `main`'s file-picker corrective freed comment lines and the branch
+spends its own. The merged tree measures **123,685** comment lines, **1,089,562**
+words and a **0.1325** ratio — over `main`'s newly banked ceiling of 122,449
+and still **below** the 124,865 pre-reduction baseline, which is the same
+relation the fourth reconciliation recorded.
 ## C003 — the composer's keymap drift guard (2026-10-24)
 
 | Row | Before | After | Why it moved |
@@ -554,3 +674,54 @@ and **49**. The *method* did not change — the count is still the number of
 distinct `scripts/check_*` files the two files name — only the value moved, and
 `AGENTS.md` is outside the milestone's file ownership, so the correction is
 recorded here rather than made there.
+
+### Ninth amendment — 2026-10-24, M005 writer containment corrective, sixth reconciliation with `main`
+
+`origin/main` advanced again, to `a4bbba81e` (PR #183, the composer's second
+post-closure corrective). Four rows moved, each re-measured against its own
+listed `Source` in the merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Guard scripts (all) | 91 | **92** | The union of the two guard sets: `main` added `scripts/check_tui_composer_keymap_drift.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 54 | **55** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
+| `AGENTS.md`'s published counts | 68 quick / 54 CI | **69 quick / 55 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. The *quick runs 14 guards CI does not* difference is unchanged at 14. |
+| Integration test files | 338 | **338** | Unchanged, and this is worth stating rather than leaving implicit: `main`'s composer corrective added **no** integration test file. It extended the existing members `tests/tui_render/tui_composer_claims.inc` and `tests/tui_render/tui_composer_motions.inc`, and it **rewrote** `tests/tui_render/tui_composer_selection.inc`, which already existed at the merge base — a new-file line in a diff stat is not a new file. The row was re-measured at 338 in the merged tree, not carried over from either parent, and the two sides' file sets were differenced to confirm the union. |
+
+The remaining 21 rows were **confirmed unchanged** by measurement, not by
+assumption: architecture docs 92, distinct production tool names 75, tool
+source files 83, LSP server definitions 39, `codegg-core` modules 54,
+`AppEvent` 61, `CoreRequest` 266, `CoreResponse` 174, `CoreEvent` 92,
+`ProjectionEvent` 47, authorized operations 260, identity newtypes 19,
+built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state
+modules 33, database tables 95 statements / 91 tables, storage layout version
+88, Git operation variants 54, Git risk classes 11, and workspace member
+crates 11 (+ root). The **Tool registrations** row is unchanged too — still
+**67**, still **53 `register` + 14 `register_boxed`** — and it is named here
+rather than left implicit, because this is the row the fourth reconciliation
+had to qualify with a split note, and a reader should not have to carry that
+note forward to know the split still holds.
+
+**`AGENTS.md`'s stale count is now corrected at the source.** The C003
+amendment above recorded that `AGENTS.md` published "62 guard scripts" for
+`quick` and "48 guard scripts" for CI while the measured values were 63 and
+49, and deferred the correction because that file was outside that milestone's
+ownership. This reconciliation owns the file, so the correction is made there:
+`AGENTS.md` now publishes the merged tree's measured **69** for `quick` and
+**55** for CI. The *method* is unchanged — the count is still the number of
+distinct `scripts/check_*` files the two files name — and the 14-guard
+difference still holds (69 − 55 = 14). The quick-only set was **re-derived**,
+not carried over, by differencing the guards `run_guards()` names against the
+guards `.github/workflows/ci.yml` names; it is the same 14 as before, because
+the composer's new guard is in **both** surfaces.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: `main`'s composer corrective spent comment lines and the branch spends
+its own. The merged tree measures **124,310** comment lines, **1,095,646**
+words and a **0.1330** ratio — over the branch's prior ceiling of 123,805 and
+still **below** the 124,865 pre-reduction baseline, which is the same relation
+the fourth and fifth reconciliations recorded. The re-bank raised **only** the
+global block: no per-file ceiling moved, because `main` had already banked the
+composer's files and the branch's own files were already banked at their
+current values.
+

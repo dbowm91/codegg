@@ -142,16 +142,26 @@ impl DaemonWriterFence {
     /// checkout than the run actually holds must not be able to bind the
     /// permit. A run with no durable record — a daemon turn — falls back to
     /// the scope the daemon resolved for it.
-    async fn worktree_id(&self) -> Option<WorktreeId> {
+    async fn worktree_id(&self) -> Result<Option<WorktreeId>, WriterFenceError> {
         if let Some(run) = self.run_id.as_ref() {
-            if let Ok(Some(record)) = self.runs.get_run(run).await {
-                return record.worktree_id.clone();
+            // M005 corrective C009 (implementation review): an unreadable
+            // run record is an **unresolved** scope, not an absent one. The
+            // old `if let Ok(Some(record))` swallowed the error and fell
+            // through to the scope's own identifier, so a store failure
+            // quietly answered a different question than the one asked.
+            let record = self
+                .runs
+                .get_run(run)
+                .await
+                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+            if let Some(record) = record {
+                return Ok(record.worktree_id.clone());
             }
         }
         if self.scope.worktree_id.is_empty() {
-            return None;
+            return Ok(None);
         }
-        WorktreeId::parse(&self.scope.worktree_id).ok()
+        Ok(WorktreeId::parse(&self.scope.worktree_id).ok())
     }
 
     /// The live group that shares this checkout, if any.
@@ -160,12 +170,32 @@ impl DaemonWriterFence {
     /// lease are members of the same live group. The group is the bounded
     /// reservation that authorizes the second writer; without it, the lease
     /// owner is the only writer and the checkout is private.
-    async fn shared_group(&self) -> Option<AgentRunGroupId> {
-        let groups = self.groups.as_ref()?;
-        let run = self.run_id.clone()?;
-        let worktree_id = self.worktree_id().await?;
-        let record = self.worktrees.get(&worktree_id).await.ok()?;
-        let owner = record.owner_run_id.clone()?;
+    ///
+    /// M005 corrective C009 (implementation review): a store error is
+    /// **not** "this checkout is private". The old `.ok()?` chain collapsed
+    /// a failed read into `None`, so the shared profile never came into
+    /// force: no writer permit was taken and no principal was required,
+    /// while the sibling that did hold the permit kept writing. The same
+    /// reads fail closed in [`Self::shares_live_group`], and they fail
+    /// closed here.
+    async fn shared_group(&self) -> Result<Option<AgentRunGroupId>, WriterFenceError> {
+        let Some(groups) = self.groups.as_ref() else {
+            return Ok(None);
+        };
+        let Some(run) = self.run_id.clone() else {
+            return Ok(None);
+        };
+        let Some(worktree_id) = self.worktree_id().await? else {
+            return Ok(None);
+        };
+        let record = self
+            .worktrees
+            .get(&worktree_id)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+        let Some(owner) = record.owner_run_id.clone() else {
+            return Ok(None);
+        };
 
         if owner == run {
             // The lease owner is a writer in its own right. It still needs a
@@ -173,10 +203,16 @@ impl DaemonWriterFence {
             // below through the membership overlap.
         }
 
-        let member_groups = groups.groups_for_member(&run).await.ok()?;
-        let owner_groups = groups.groups_for_member(&owner).await.ok()?;
+        let member_groups = groups
+            .groups_for_member(&run)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+        let owner_groups = groups
+            .groups_for_member(&owner)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
 
-        member_groups
+        Ok(member_groups
             .into_iter()
             .find(|member_group| {
                 !codegg_core::agent_run_group::RunGroupStatus::is_terminal(member_group.status)
@@ -184,7 +220,7 @@ impl DaemonWriterFence {
                         .iter()
                         .any(|owner_group| owner_group.group_id == member_group.group_id)
             })
-            .map(|member_group| member_group.group_id)
+            .map(|member_group| member_group.group_id))
     }
 
     /// Record a refusal in the daemon's log.
@@ -264,7 +300,7 @@ impl CheckoutWriterFence for DaemonWriterFence {
         // 2. A run that holds no managed checkout has no lease, so there is
         //    no permit to take. Containment above is the whole of the fence
         //    for such a run, and it costs no durable write.
-        let Some(worktree_id) = self.worktree_id().await else {
+        let Some(worktree_id) = self.worktree_id().await? else {
             return Ok(None);
         };
 
@@ -289,7 +325,12 @@ impl CheckoutWriterFence for DaemonWriterFence {
 
         // 4. The checkout's share is derived from durable state, never
         //    asserted by the caller.
-        let shared_group = self.shared_group().await;
+        //
+        //    M005 corrective C009 (implementation review): the derivation
+        //    fails closed. An unreadable group store is an unresolved
+        //    share, not a private checkout, so the effect is refused
+        //    rather than admitted without a permit.
+        let shared_group = self.shared_group().await?;
 
         // 5. Fail closed on effect classes this milestone has no profile
         //    for, but only where a shared profile is in force: an isolated
@@ -485,11 +526,30 @@ pub struct DaemonWriterFenceFactory {
     /// principal. A daemon with a team policy leaves this off, so a write
     /// that arrives without a bound actor is refused rather than written
     /// anonymously.
+    ///
+    /// M005 corrective C009: this is the *single-user* default. It is only
+    /// the effective answer when the daemon has no team state at all; when a
+    /// team store is bound, the effective answer is derived from that
+    /// durable state — see [`Self::effective_local_principal_fallback`].
     local_principal_fallback: bool,
+    /// M005 corrective C009: the daemon's durable team state.
+    ///
+    /// `None` means the daemon owns no team model, so it is single-user and
+    /// the fallback above stands. `Some` means the daemon owns a durable
+    /// team store, and the effective fallback follows the principals that
+    /// store names — so a daemon that gains a team member stops
+    /// attributing shared-checkout writes to a synthetic local owner
+    /// without needing a restart.
+    team_store: Option<Arc<codegg_core::team::TeamStore>>,
 }
 
 impl DaemonWriterFenceFactory {
-    /// Build the factory.
+    /// Build the factory with the local-principal fallback stated outright.
+    ///
+    /// Prefer [`Self::with_team_state`] in production: it derives the same
+    /// answer from the daemon's durable team state instead of asserting it.
+    /// This constructor exists for the callers that state the daemon's shape
+    /// deliberately (the harness).
     pub fn new(
         permit: Arc<WriterPermitService>,
         worktrees: Arc<WorktreeService>,
@@ -503,7 +563,70 @@ impl DaemonWriterFenceFactory {
             runs,
             groups,
             local_principal_fallback,
+            team_store: None,
         })
+    }
+
+    /// Build the factory bound to the daemon's durable team state.
+    ///
+    /// M005 corrective C009. The local-principal fallback is **derived** from
+    /// that state instead of being asserted by the caller: a daemon whose
+    /// team store names any principal other than the local owner has a team
+    /// policy, installs no fallback, and therefore refuses a shared-checkout
+    /// write that arrives without a bound actor. A daemon with no team store
+    /// at all is single-user and keeps the fallback, so its own writes stay
+    /// attributable and are not refused.
+    ///
+    /// The state is read at fence time rather than at construction time, so
+    /// the answer survives a restart and follows a membership change without
+    /// a restart.
+    pub fn with_team_state(
+        permit: Arc<WriterPermitService>,
+        worktrees: Arc<WorktreeService>,
+        runs: Arc<dyn AgentRunStore>,
+        groups: Option<Arc<AgentRunGroupService>>,
+        team_store: Option<Arc<codegg_core::team::TeamStore>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            permit,
+            worktrees,
+            runs,
+            groups,
+            local_principal_fallback: true,
+            team_store,
+        })
+    }
+
+    /// The effective local-principal fallback for this daemon, right now.
+    ///
+    /// A daemon with no team state is single-user: the fallback stands. A
+    /// daemon with a team store installs the fallback only while that store
+    /// names nothing but the local owner.
+    ///
+    /// An unreadable team state is read as "has a team policy" — that is,
+    /// the fallback is withheld. The failure mode is deliberately the
+    /// refusing one: reading an unreadable team state as "single-user"
+    /// would restore exactly the synthetic attribution this milestone
+    /// removes.
+    async fn effective_local_principal_fallback(&self) -> bool {
+        let Some(store) = self.team_store.as_ref() else {
+            return self.local_principal_fallback;
+        };
+        match store.list_principals().await {
+            // The fallback stands only while every principal the store names
+            // is the local owner — the principal a single-user daemon
+            // bootstraps for itself.
+            Ok(principals) => principals
+                .iter()
+                .all(|principal| principal.kind == codegg_core::team::PrincipalKind::LocalOwner),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "team policy probe failed; unattributed shared-checkout writes are refused"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -522,12 +645,16 @@ impl crate::tool::writer_fence::WriterFenceFactory for DaemonWriterFenceFactory 
         // run holds. Without a record there is no lease, and a run with no
         // lease has nothing to fence.
         let worktree_id = match run_id.as_ref() {
+            // M005 corrective C009 (implementation review): an unreadable
+            // run record is an **unresolved** lease, not an absent one. The
+            // old `.ok().flatten()` turned a store failure into "this run
+            // holds no checkout", so the caller received no fence at all
+            // and the write proceeded with no mediation.
             Some(run) => self
                 .runs
                 .get_run(run)
                 .await
-                .ok()
-                .flatten()
+                .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?
                 .and_then(|record| record.worktree_id),
             None => None,
         };
@@ -551,7 +678,7 @@ impl crate::tool::writer_fence::WriterFenceFactory for DaemonWriterFenceFactory 
             request.attempt_id.clone(),
             request.cancellation.clone(),
         );
-        if self.local_principal_fallback {
+        if self.effective_local_principal_fallback().await {
             fence = fence.with_principal_fallback(local_principal());
         }
         Ok(Some(Arc::new(fence)))

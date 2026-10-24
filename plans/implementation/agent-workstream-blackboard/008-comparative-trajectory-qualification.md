@@ -14,8 +14,9 @@ shared mutation is still unavailable behind its corrective sub-line
 supported OS shared-write containment, mark it unrun rather than substituting
 an unsafe emulation.
 
-Gate status 2026-10-21: the S4 gate was M005, and M005's corrective has now
-closed it — C001–C006 are closed with C006 conditional, the shared checkout is
+Gate status 2026-10-21, updated 2026-10-23: the S4 gate was M005, and M005's corrective has now
+closed it — C001–C009 are closed (C006 was conditional when this note was first
+written; its condition was C007's closure, and C007 closed on 2026-10-23), the shared checkout is
 a real opt-in production path, and the platform table qualifies **Linux and
 macOS** (`crates/codegg-core/src/run_placement.rs`). S4 therefore runs on those
 two platforms and is marked **unrun on Windows**, where the profile is disabled

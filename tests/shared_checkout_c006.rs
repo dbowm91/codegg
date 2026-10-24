@@ -52,7 +52,8 @@ use codegg::tool::writer_fence::{
     WriterFenceFactory, WriterFenceOutcome, WriterFenceRequest, WriterScopeRequest,
 };
 use codegg_core::agent_run::{
-    AgentRunBudget, AgentRunStatus, AgentRunStore, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+    AgentRunBudget, AgentRunStatus, AgentRunStore, AgentTaskStatus, InMemoryAgentRunStore,
+    NewAgentRun, NewAgentTask,
 };
 use codegg_core::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupService, NewAgentRunGroup, RunJoinPolicy,
@@ -71,7 +72,8 @@ use codegg_core::run_placement::{
     shared_checkout_availability, RunPlacement, QUALIFIED_SHARED_CHECKOUT_PLATFORMS,
 };
 use codegg_core::shared_checkout::{
-    SharedCheckoutCoordinator, SharedCheckoutError, SharedCheckoutOutcome, SharedCheckoutRequest,
+    SharedCheckout, SharedCheckoutCoordinator, SharedCheckoutError, SharedCheckoutOutcome,
+    SharedCheckoutRequest,
 };
 use codegg_core::transport_auth::AuthenticatedPrincipal;
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
@@ -425,6 +427,36 @@ impl Shared {
             .await
             .expect("attach the run to the group's checkout");
         outcome
+    }
+
+    /// Advance a member run — and the task that owns it — to the point
+    /// where a terminal outcome is reachable.
+    ///
+    /// The run state machine does **not** allow `Created -> Completed`: a
+    /// run passes through `Queued` and `Preparing`, and its task through
+    /// `Queued`, before either may finish. Finishing a run straight out of
+    /// `Created` is an invalid transition, not a statement about the
+    /// group — so a test that wants to observe a *finished* group has to
+    /// walk the machine the way the executor does.
+    async fn advance_to_running(&self, run_id: &AgentRunId, task_id: &AgentTaskId) {
+        self.runs
+            .transition_task(task_id, AgentTaskStatus::Queued)
+            .await
+            .expect("queue the member's task");
+        for status in [
+            AgentRunStatus::Queued,
+            AgentRunStatus::Preparing,
+            AgentRunStatus::Running,
+        ] {
+            self.runs
+                .transition(run_id, status)
+                .await
+                .expect("advance the member run");
+        }
+        self.runs
+            .transition_task(task_id, AgentTaskStatus::Running)
+            .await
+            .expect("start the member's task");
     }
 
     /// The fence for one run, resolved the way the daemon resolves it.
@@ -1091,6 +1123,7 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
         process_admission: Some(shared.admission.clone()),
         shared_checkout: Some(shared.coordinator.clone()),
         writer_fences: Some(factory.clone() as Arc<dyn WriterFenceFactory>),
+        origin_attribution_pool: Some(shared.pool.clone()),
     };
 
     let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
@@ -1214,6 +1247,29 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
         );
     }
 
+    // M005 corrective C007 (implementation review): the group's shared lease
+    // is released once the group has finished, so the checkout returns to the
+    // pool.
+    //
+    // The release used to be decided **before** the run's terminal transition
+    // was durable, so the group still looked live and the lease was retained
+    // for good — the checkout never returned to the pool and the group held
+    // its reservation forever.
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    assert!(
+        record.owner_run_id.is_none(),
+        "a finished group releases the shared lease: {record:?}"
+    );
+    assert_eq!(
+        record.state,
+        codegg_core::worktree_service::ManagedWorktreeState::Ready,
+        "the released checkout returns to the pool"
+    );
+
     // And the daemon resolves that same checkout for both runs, through the
     // production factory rather than a directly constructed fence.
     let scope_for = |run_id: &AgentRunId, attempt: &str| WriterScopeRequest {
@@ -1238,49 +1294,333 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
         "both runs resolve the same checkout"
     );
 
-    // The first writer takes the checkout.
-    let held = first
+    // The first writer is refused: the group has finished, and a finished
+    // group has no write authority left.
+    //
+    // The group's lease was released above, so the checkout has no lease
+    // holder, and the fence's authorization step — "the run holds the lease,
+    // or shares a live group with the run that holds it" — has nothing to
+    // authorize. This is the correct disposition, and it is the disposition
+    // the milestone's ordering defect concealed: with the lease wrongly
+    // retained, this writer was still authorized to take the permit.
+    //
+    // The serialization of two writers on a **live** group is proven
+    // separately, by `two_writers_on_the_shared_checkout_never_overlap`.
+    let refused = first
         .begin(shared.request(
             shared.repository_root.path(),
             "composed-first",
             NativeEffectClass::FileWrite,
         ))
-        .await
-        .expect("the first writer takes the shared checkout");
+        .await;
     assert!(
-        held.is_some(),
-        "a shared checkout must take a permit: there is a second writer to exclude"
+        matches!(refused, Err(WriterFenceError::NotAuthorized { .. })),
+        "a finished group must not authorize a writer: {refused:?}"
     );
-
-    // The second writer is queued behind it. It cannot take the checkout
-    // while the first holds it, so it proceeds only once the first settles.
-    //
-    // The first settles on a timer rather than on demand: the production
-    // fence's wait bound is thirty seconds, and a proof that waits for it
-    // would make this test a thirty-second test.
-    let settler = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        held.expect("held permit")
-            .settle(WriterFenceOutcome::Settled)
-            .await
-            .expect("the first writer settles its permit");
-    });
-    let queued = second
+    let refused = second
         .begin(shared.request(
             shared.repository_root.path(),
             "composed-second",
             NativeEffectClass::FileWrite,
         ))
-        .await
-        .expect("the second writer takes the checkout once the first settles");
+        .await;
     assert!(
-        queued.is_some(),
-        "the second writer takes the checkout after the first settles"
+        matches!(refused, Err(WriterFenceError::NotAuthorized { .. })),
+        "a finished group must not authorize a writer: {refused:?}"
     );
-    settler.await.expect("the settling writer finished");
-    queued
-        .expect("held permit")
-        .settle(WriterFenceOutcome::Settled)
+}
+
+/// M005 corrective C007 §6.2: the group's shared checkout lease belongs to
+/// the **group**, not to the run that happened to allocate it.
+///
+/// The lease used to be released when the allocating run ended. The fence
+/// reads `managed_worktree.owner_run_id`, so clearing it stripped the
+/// surviving member of its write authority, lapsed the group's reservation,
+/// and let the group split across two checkouts.
+#[tokio::test]
+async fn the_groups_lease_is_held_while_the_group_is_live() {
+    let shared = Shared::new("lease-held").await;
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
         .await
-        .expect("the second writer settles its permit");
+        .expect("the checkout's record");
+    let checkout = SharedCheckout {
+        worktree_id: shared.worktree_id.clone(),
+        path: record.path.clone(),
+        lease_generation: record.lease_generation,
+        owner_run_id: shared.owner_run.clone(),
+        group_id: shared.group_id.clone(),
+    };
+
+    assert!(
+        shared
+            .coordinator
+            .group_is_live(&shared.group_id)
+            .await
+            .expect("the group's state"),
+        "the group is live: two of its members are still running",
+    );
+
+    let released = shared
+        .coordinator
+        .release_group_lease(&checkout)
+        .await
+        .expect("the lease disposition");
+    assert!(
+        !released,
+        "a live group keeps its lease: the surviving members are still writing under it",
+    );
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    assert_eq!(
+        record.owner_run_id.as_ref(),
+        Some(&shared.owner_run),
+        "the lease must survive the allocating run's end while the group is live",
+    );
+}
+
+/// The other side of the same disposition: once the group has finished, its
+/// lease goes back and the checkout returns to the pool.
+#[tokio::test]
+async fn the_groups_lease_is_released_when_the_group_has_finished() {
+    let shared = Shared::new("lease-released").await;
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    let checkout = SharedCheckout {
+        worktree_id: shared.worktree_id.clone(),
+        path: record.path.clone(),
+        lease_generation: record.lease_generation,
+        owner_run_id: shared.owner_run.clone(),
+        group_id: shared.group_id.clone(),
+    };
+
+    // The group's status is derived from its members' statuses: with the
+    // `All` join policy it is terminal only once no member is active.
+    for (run_id, task_id) in [
+        (&shared.owner_run, &shared.owner_task),
+        (&shared.member_run, &shared.member_task),
+    ] {
+        shared.advance_to_running(run_id, task_id).await;
+        shared
+            .runs
+            .finish(
+                run_id,
+                codegg_core::agent_run::AgentRunTerminalOutcome::Completed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("finish the group member");
+        shared
+            .groups
+            .member_changed(run_id)
+            .await
+            .expect("recompute the group");
+    }
+
+    assert!(
+        !shared
+            .coordinator
+            .group_is_live(&shared.group_id)
+            .await
+            .expect("the group's state"),
+        "the group has finished",
+    );
+
+    let released = shared
+        .coordinator
+        .release_group_lease(&checkout)
+        .await
+        .expect("the lease disposition");
+    assert!(released, "a finished group releases its lease");
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    assert!(
+        record.owner_run_id.is_none(),
+        "the lease is released, so the checkout returns to the pool",
+    );
+}
+
+/// M005 corrective C007 (implementation review): the group's liveness is
+/// derived from its **members' durable statuses**, not from the group's
+/// stored status.
+///
+/// The stored status is recomputed by a separate notification path, so a
+/// reader that consults it alone can see a group as live after its last
+/// member has finished. The executor releases the shared lease right after
+/// the run's own terminal transition, and at that moment the group's stored
+/// status may still say `running` — the lease would then be retained for
+/// good and the checkout would never return to the pool.
+#[tokio::test]
+async fn the_groups_lease_is_released_even_when_the_groups_stored_status_is_stale() {
+    let shared = Shared::new("lease-stale-status").await;
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    let checkout = SharedCheckout {
+        worktree_id: shared.worktree_id.clone(),
+        path: record.path.clone(),
+        lease_generation: record.lease_generation,
+        owner_run_id: shared.owner_run.clone(),
+        group_id: shared.group_id.clone(),
+    };
+
+    for (run_id, task_id) in [
+        (&shared.owner_run, &shared.owner_task),
+        (&shared.member_run, &shared.member_task),
+    ] {
+        shared.advance_to_running(run_id, task_id).await;
+        shared
+            .runs
+            .finish(
+                run_id,
+                codegg_core::agent_run::AgentRunTerminalOutcome::Completed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("finish the group member");
+        // The group is deliberately **not** recomputed here: its stored
+        // status stays `running`, which is exactly the state the executor's
+        // release used to consult.
+    }
+
+    let stored = shared
+        .groups
+        .group_record(&shared.group_id)
+        .await
+        .expect("the group's record")
+        .expect("the group has a record");
+    assert!(
+        !stored.status.is_terminal(),
+        "the group's stored status is deliberately stale for this proof"
+    );
+
+    assert!(
+        !shared
+            .coordinator
+            .group_is_live(&shared.group_id)
+            .await
+            .expect("the group's state"),
+        "a group whose members have all finished is not live, whatever its stored status says",
+    );
+
+    let released = shared
+        .coordinator
+        .release_group_lease(&checkout)
+        .await
+        .expect("the lease disposition");
+    assert!(released, "a finished group releases its lease");
+
+    let record = shared
+        .worktrees
+        .get(&shared.worktree_id)
+        .await
+        .expect("the checkout's record");
+    assert!(
+        record.owner_run_id.is_none(),
+        "the lease is released, so the checkout returns to the pool",
+    );
+}
+
+/// M005 corrective C007 §6.3: a failed lookup is not "the group has no
+/// checkout".
+///
+/// The resolution used to collapse a store error into "skip this candidate",
+/// so a transient read failure fell through the whole candidate list,
+/// returned `Ok(None)`, and `acquire` allocated a **second** checkout for a
+/// group that already held one.
+#[tokio::test]
+async fn a_failed_lookup_while_resolving_the_groups_checkout_is_a_typed_error() {
+    let shared = Shared::new("lookup-error").await;
+
+    // A group of one, whose member's durable record names a checkout that is
+    // not in the store.
+    let stray_run = AgentRunId::new();
+    let stray_task = AgentTaskId::new();
+    shared
+        .runs
+        .create_or_get(
+            NewAgentTask {
+                task_id: stray_task.clone(),
+                parent_task_id: None,
+                originating_session_id: shared.session_id.clone(),
+                originating_turn_id: Some(shared.turn_id.clone()),
+                project_id: shared.project_id.clone(),
+                repository_id: Some(shared.repository_id.clone()),
+                workspace_id: shared.workspace_id.clone(),
+                requested_agent: "build".to_owned(),
+                delegation_key: format!("delegation-{}", uuid::Uuid::new_v4().simple()),
+                request_fingerprint: format!("fingerprint-{}", uuid::Uuid::new_v4().simple()),
+                description: "c007 failed lookup".to_owned(),
+            },
+            NewAgentRun {
+                run_id: stray_run.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: shared.workspace_id.clone(),
+                agent_name: "build".to_owned(),
+                agent_digest: None,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+                authority_digest: "authority-c007".to_owned(),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            },
+        )
+        .await
+        .expect("create the stray run");
+    shared
+        .runs
+        .attach_worktree(&stray_run, WorktreeId::new())
+        .await
+        .expect("point the run at a checkout that does not exist");
+
+    let stray_group = AgentRunGroupId::new();
+    shared
+        .groups
+        .create(NewAgentRunGroup {
+            group_id: stray_group.clone(),
+            root_run_id: stray_run.clone(),
+            owner_run_id: stray_run.clone(),
+            owner: AgentRunGroupOwner::Turn {
+                session_id: shared.session_id.clone(),
+                turn_id: shared.turn_id.clone(),
+            },
+            member_run_ids: vec![stray_run.clone()],
+            join_policy: RunJoinPolicy::All,
+            cancel_remaining_on_satisfaction: false,
+            idempotency_key: format!("group-{}", uuid::Uuid::new_v4().simple()),
+        })
+        .await
+        .expect("create the stray group");
+
+    let error = match shared.coordinator.resolve(&stray_group, &stray_run).await {
+        Ok(Some(_)) => panic!("a failed lookup must not resolve to a checkout"),
+        Ok(None) => panic!("a failed lookup must not resolve to 'no checkout'"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SharedCheckoutError::Lookup(_)),
+        "the failure must be a lookup failure, got: {error:?}",
+    );
 }

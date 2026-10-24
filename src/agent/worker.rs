@@ -131,6 +131,17 @@ pub struct SubAgentRequest {
     /// profile it always had. When it is absent the child falls back to
     /// containment over its workspace root.
     pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
+    /// M005 corrective C009: the dispatching turn's transport-bound actor,
+    /// carried so the child's own writes are attributed to it.
+    ///
+    /// A delegated child has no daemon-owned turn of its own, so it cannot
+    /// resolve an actor from a turn-scope attribution. The dispatch site
+    /// carries the dispatching turn's already-admitted attribution in
+    /// instead. `None` means the dispatching turn bound no actor — an
+    /// in-process run, or a turn that was never admitted through the
+    /// daemon — and the child's write then stays unattributed, which the
+    /// shared-checkout fence refuses on a daemon with a team policy.
+    pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1559,12 +1570,30 @@ async fn execute_agent_task(
     // checkout is shared and takes the writer permit when it is. The
     // containment-only fence below is the fallback for a run that holds no
     // managed checkout.
+    //
+    // M005 corrective C009: that fallback is now CONDITIONAL. The
+    // containment-only fence can never take the writer permit, so using it
+    // for a run that holds a managed checkout lets a nested child write
+    // into the shared checkout while a group sibling holds the permit. A
+    // run that holds a managed checkout must therefore receive a real fence
+    // or be REFUSED — never silently downgraded.
     let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> =
-        request.writer_fence.clone().or_else(|| {
-            Some(std::sync::Arc::new(
-                crate::tool::writer_fence::WorkspaceWriterFence::new(workspace_root.clone()),
-            ))
-        });
+        match request.writer_fence.clone() {
+            Some(fence) => Some(fence),
+            None => {
+                let durable_runs = subagent_pool.durable_agent_runs.lock().await.clone();
+                if request_holds_managed_checkout(durable_runs, request).await {
+                    return Err(
+                        "delegated run holds a managed checkout but no writer fence was resolved; \
+                         refusing to downgrade to a containment-only fence"
+                            .into(),
+                    );
+                }
+                Some(std::sync::Arc::new(
+                    crate::tool::writer_fence::WorkspaceWriterFence::new(workspace_root.clone()),
+                ))
+            }
+        };
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
@@ -1580,6 +1609,10 @@ async fn execute_agent_task(
         // M005 corrective C005: the inherited process admission policy.
         request.process_admission.clone(),
     );
+    // M005 corrective C009: the child's writes run on behalf of the actor
+    // that admitted the dispatching turn. The child has no turn of its own,
+    // so the dispatch site's attribution is what resolves its writer.
+    agent_loop.set_inherited_execution_audit(request.execution_audit.clone());
     if let Some(run_id) = request.run_id.as_ref() {
         let runs = subagent_pool
             .durable_agent_runs
@@ -1875,6 +1908,59 @@ fn extract_validation_evidence(
     (validation, artifacts)
 }
 
+/// M005 corrective C009: does this request's workspace root belong to a
+/// managed checkout?
+///
+/// The durable run record is the authority. A run bound to a worktree
+/// executes inside the daemon-managed checkout the scheduler leased for it,
+/// and that checkout may be shared with a group sibling, so a write from
+/// that run has to take the writer permit. A run with no worktree holds no
+/// managed checkout, and the containment-only fence is the correct fallback
+/// for it.
+///
+/// The lookup is best-effort in one direction only: a run store that is
+/// absent answers "no", and a run record that cannot be **read** answers
+/// "managed" — the refusal. The direction is deliberate, and it matches the
+/// team-policy probe in the same change set, which withholds its fallback
+/// on an unreadable store. Reading an unreadable record as "unmanaged" would
+/// substitute a containment-only fence for a run that may in fact hold the
+/// group's shared checkout, which is the anonymous-writer hole this
+/// milestone exists to close.
+///
+/// The question is whether **this run** holds a managed checkout, so the
+/// run's **own** durable record is authoritative. The parent's record is a
+/// fallback for a request that carries no run id at all, and it is not a
+/// second opinion: a delegated child of an isolated (mutating) parent holds
+/// no checkout of its own, and reading the parent's checkout as the child's
+/// would refuse the ordinary "a mutating agent spawns a read-only explorer"
+/// pattern for a run that can never write.
+async fn request_holds_managed_checkout(
+    store: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
+    request: &SubAgentRequest,
+) -> bool {
+    let Some(store) = store else {
+        return false;
+    };
+    let Some(run_id) = request.run_id.as_ref().or(request.parent_run_id.as_ref()) else {
+        return false;
+    };
+    match store.get_run(run_id).await {
+        Ok(Some(run)) => run.worktree_id.is_some(),
+        // The run's durable record is gone: it cannot be running.
+        Ok(None) => false,
+        Err(error) => {
+            // An unreadable run record is an **unresolved** liveness, not an
+            // absent one, and the refusal is the only safe direction.
+            tracing::warn!(
+                error = %error,
+                run_id = %run_id,
+                "managed checkout probe failed; treating the run as managed"
+            );
+            true
+        }
+    }
+}
+
 fn is_read_only_agent(agent: &Agent) -> bool {
     [
         "write",
@@ -1968,6 +2054,7 @@ mod admission_tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         }
     }
 
@@ -2233,6 +2320,192 @@ mod admission_tests {
         assert!(
             pool.requires_isolation("build", &[]),
             "git write authority must still demand isolation"
+        );
+    }
+}
+
+/// M005 corrective C009: the containment-only fence is never substituted for a
+/// run that holds a managed checkout.
+///
+/// The containment-only fence can never take the writer permit, so using it
+/// for a managed checkout lets a nested child write into the shared checkout
+/// while a group sibling holds the permit. The run's durable record is the
+/// authority on whether the run holds one.
+#[cfg(test)]
+mod writer_fence_tests {
+    use super::*;
+    use codegg_core::agent_run::{
+        AgentRunBudget, AgentRunStore, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+    };
+    use codegg_core::identity::{
+        AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorkspaceId, WorktreeId,
+    };
+
+    fn request(run_id: Option<AgentRunId>, parent_run_id: Option<AgentRunId>) -> SubAgentRequest {
+        SubAgentRequest {
+            task_id: 1,
+            child_instance_id: String::new(),
+            originating_turn_id: None,
+            prompt: "test".into(),
+            agent: "build".into(),
+            parent_id: Some("root-a".into()),
+            parent_run_id,
+            run_id,
+            denied_tools: Vec::new(),
+            allowed_paths: Vec::new(),
+            description: "task-1".into(),
+            depth: 0,
+            max_tool_calls: None,
+            parent_model: None,
+            workspace_root: None,
+            workspace_id: None,
+            workspace_locks: None,
+            parent_sandbox_profile: None,
+            sandbox_profile: None,
+            process_admission: None,
+            writer_fence: None,
+            execution_audit: None,
+        }
+    }
+
+    /// A durable run store holding one run, optionally placed on a managed
+    /// checkout.
+    async fn store_with_run(managed: bool) -> (Arc<dyn AgentRunStore>, AgentRunId) {
+        let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+        let run_id = AgentRunId::new();
+        let workspace_id = WorkspaceId::new();
+        let task = NewAgentTask {
+            task_id: AgentTaskId::new(),
+            parent_task_id: None,
+            originating_session_id: "session-c009".into(),
+            originating_turn_id: None,
+            project_id: ProjectId::new(),
+            repository_id: Some(RepositoryId::new()),
+            workspace_id: workspace_id.clone(),
+            requested_agent: "build".into(),
+            delegation_key: format!("delegation-{}", uuid::Uuid::new_v4().simple()),
+            request_fingerprint: "fingerprint-c009".into(),
+            description: "c009 managed checkout probe".into(),
+        };
+        let run = NewAgentRun {
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            depth: 1,
+            workspace_id,
+            agent_name: "build".into(),
+            agent_digest: None,
+            provider: "test".into(),
+            model: "test".into(),
+            authority_digest: "authority-c009".into(),
+            budget: AgentRunBudget::default(),
+            shared_scratch: Vec::new(),
+        };
+        runs.create_or_get(task, run)
+            .await
+            .expect("create the durable run");
+        if managed {
+            runs.attach_worktree(&run_id, WorktreeId::new())
+                .await
+                .expect("place the run on a managed checkout");
+        }
+        (runs, run_id)
+    }
+
+    #[tokio::test]
+    async fn a_run_on_a_managed_checkout_is_never_downgraded_to_containment_only() {
+        let (runs, run_id) = store_with_run(true).await;
+        assert!(
+            request_holds_managed_checkout(
+                Some(runs.clone()),
+                &request(Some(run_id.clone()), None)
+            )
+            .await,
+            "a run bound to a worktree holds a managed checkout"
+        );
+        assert!(
+            request_holds_managed_checkout(Some(runs), &request(None, Some(run_id))).await,
+            "a nested dispatch inherits its parent's managed checkout"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_with_no_managed_checkout_keeps_the_containment_only_fallback() {
+        let (runs, run_id) = store_with_run(false).await;
+        assert!(
+            !request_holds_managed_checkout(Some(runs), &request(Some(run_id), None)).await,
+            "a run with no worktree holds no managed checkout"
+        );
+        assert!(
+            !request_holds_managed_checkout(None, &request(None, None)).await,
+            "a dispatch with no durable run holds no managed checkout"
+        );
+    }
+
+    /// M005 corrective C009 (implementation review): a delegated child is
+    /// judged by its **own** durable record, not by its parent's.
+    ///
+    /// A delegated child of an isolated (mutating) parent holds no checkout
+    /// of its own — the parent's checkout is the parent's — so reading the
+    /// parent's checkout as the child's would refuse the ordinary "a mutating
+    /// agent spawns a read-only explorer" pattern, for a run that can never
+    /// write. The probe answers a question about *this* run, and this run's
+    /// record is the only one that answers it.
+    #[tokio::test]
+    async fn a_delegated_child_is_judged_by_its_own_record_not_its_parents() {
+        let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+        let (parent_run_id, child_run_id) = (AgentRunId::new(), AgentRunId::new());
+        for (index, run_id) in [parent_run_id.clone(), child_run_id.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let workspace_id = WorkspaceId::new();
+            let task = NewAgentTask {
+                task_id: AgentTaskId::new(),
+                parent_task_id: None,
+                originating_session_id: "session-c009-child".into(),
+                originating_turn_id: None,
+                project_id: ProjectId::new(),
+                repository_id: Some(RepositoryId::new()),
+                workspace_id: workspace_id.clone(),
+                requested_agent: "build".into(),
+                delegation_key: format!("delegation-child-{index}"),
+                request_fingerprint: format!("fingerprint-child-{index}"),
+                description: "c009 delegated child probe".into(),
+            };
+            let run = NewAgentRun {
+                run_id,
+                parent_run_id: None,
+                depth: 1,
+                workspace_id,
+                agent_name: "build".into(),
+                agent_digest: None,
+                provider: "test".into(),
+                model: "test".into(),
+                authority_digest: format!("authority-child-{index}"),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            };
+            runs.create_or_get(task, run)
+                .await
+                .expect("create the durable run");
+        }
+        // Only the parent is placed on a managed checkout.
+        runs.attach_worktree(&parent_run_id, WorktreeId::new())
+            .await
+            .expect("place the parent on a managed checkout");
+
+        assert!(
+            !request_holds_managed_checkout(
+                Some(runs.clone()),
+                &request(Some(child_run_id.clone()), Some(parent_run_id.clone()))
+            )
+            .await,
+            "the child's own record is authoritative: a delegated child of a \
+             managed parent holds no managed checkout of its own"
+        );
+        assert!(
+            request_holds_managed_checkout(Some(runs), &request(Some(parent_run_id), None)).await,
+            "the parent still holds a managed checkout"
         );
     }
 }

@@ -1,9 +1,13 @@
 # M005 Writer-Containment Corrective C006 — Closure Status
 
 **Corrective:** C006 — restricted shared-checkout qualification (Q1–Q5).
-**Status:** **Conditionally closed.** The shared profile is implemented,
-wired and qualified on Linux and macOS. Two named gaps keep it from *strict*
-closure, and both are recorded as narrow follow-ups in §9.
+**Status:** **Closed** (2026-10-23). The shared profile is implemented, wired
+and qualified on Linux and macOS. This record was written when C006 was
+**conditionally** closed, with its condition being C007's closure. C007
+closed on 2026-10-23 and the condition is therefore discharged — see §12. The
+**limits** in §9 are not claims of closure and are not withdrawn: each is a
+named non-claim, and the two of them that were follow-ups have since been
+discharged.
 **Predecessors:** C002 (writer permit), C003 (writer fence), C004 (checkout
 reservation and mediation), C005 (process deny contract) — all closed.
 
@@ -688,3 +692,45 @@ The merge reconciliation itself is recorded in §9 of
 Moved verbatim from the `plans/registry.md` row for **Agent workstream M005 writer containment corrective** on 2026-10-23, so that the registry stays an index.
 
 **C004 non-broker sink mediation (Q3) closed**: the authoritative checkout reservation authority in `codegg-core` (`crates/codegg-core/src/checkout_reservation.rs`) derives a checkout's reservation from the managed worktree record, the lease owner and the durable run-group record; the daemon adapter (`src/core/checkout_mediation.rs`) names all fourteen mediated sinks, owns the typed `checkout_reserved` conflict and the live durable deny event; the gate runs after authorization and before dispatch, so a refused writer has no effect at all. Fourteen non-broker sinks are now mediated — document create/save/delete, the human change-review LSP applier, project-init publication, the four checkpoint restore requests, managed-worktree cleanup/archive, and the HTTP file write/delete and workspace-create routes — and the project's local `.codegg/` state and the legacy project-local database each received an explicit, evidenced disposition instead of a false "outside checkout" claim. The durable deny event is the new `AuditAction::CheckoutWriterRefusal` with its own coverage row and a daemon-gate hook table pinned to its owner. **Three defects were found and fixed**: the `commit` tool was an unmediated checkout writer (it staged paths and moved a branch with no writer permit at all) and is now fenced like the typed Git mutations; `CoreRequest::DocumentCreate` self-deadlocked on the workspace repository lock (it held the lock across create-then-open and then re-acquired the same non-reentrant lock in the external-disk refresh), which the C004 qualification surfaced as a hang; and the writer-disposition guard's test-module stripper silently gave up on an unbalanced brace inside a string literal, which turned test-only modules into false-positive writer roots. Closure `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`. C005 is dependency-ready (C004 closed) and owns the process-denial contract; C006 depends on all-sink denial/mediation, process-lifetime and native Q1–Q5 evidence. **The shared profile is a capability, not a product path**: no production placement puts two runs on one checkout — the work-order `shared`/`serialized` policy is still refused and the scheduler still isolates every delegated run — so the shared profile is proved by a direct qualification and no shared-write mode or user-visible selector exists. **C006 closed the shared profile conditionally (2026-10-21)**: the shared checkout is now a real, **opt-in** production path — the durable `RunPlacement` (`Auto` by default, `SerializedShared` only when asked), the `SharedCheckoutCoordinator` that resolves the group's managed checkout under the group's own lock and consults the C005 reservation preflight, the daemon's `DaemonWriterFenceFactory` implementing the tool layer's previously unimplemented `WriterFenceFactory` seam (so the fence a child runs under is the one its own durable run record names), the executor's shared branch, and the task tool's `placement` parameter, which narrows a shared child's effective tool profile to the tools that cannot reach a process. The profile is **platform-gated**: Linux is qualified, macOS and Windows are disabled with a named reason because they have no native containment evidence. Two gaps keep C006 from *strict* closure and were re-measured on 2026-10-21. The **macOS** native containment evidence is **closed**: a hosted macOS lane and a macOS whole-file native fixture were added, the lane run `39616896281` passed on a native macOS runner (native fixture 2/2, C006 suite 16/16, containment matrix 16/16), and `macos` was added to the qualified table on that evidence — the lane was then re-run **on the flip itself** (run `39627440691`, head `2cddbff3c`) and passed again, with `the_shared_profile_is_platform_gated` now asserting *available* on macOS rather than the refusal. The **Windows** native backend remains a *capability* gap rather than an evidence gap — no filesystem-enforcement backend is registered for Windows at all, so no CI run could produce the evidence. The composed two-agent race is now composed at the carrier level: the real scheduler, the real executor carrying the daemon's own coordinator and fence factory, and two real shared-placement jobs place both members on one checkout, and the daemon-resolved fences for them queue behind each other on that checkout's permit. What remains is a *live* two-agent race inside one daemon process, which needs a live model and the contained Git backend that does not exist here (pre-existing; it affects the isolated path identically). Closure `plans/closure/agent-workstream-m005-writer-containment-corrective/006-status.md`. Independent M006/M007 unaffected. The branch was reconciled with `origin/main` **three times**: against `a9f70375` (104 commits ahead of the merge-base) as merge commit `87fb57f7`, against `9c9ffb763` (71 commits of `main`, 77 of the branch) as merge commit `42707515b` — 20 files conflicted in 72 hunks — and, on 2026-10-21, against `2c1953347` (323 commits of `main`, 88 of the branch) as merge commit `35ea128ec`, which conflicted in 8 files and 16 hunks and carried **two identity collisions the auto-merge did not report**: the branch's writer-permit and session-launch migrations were renumbered v84/v85 → **v86/v87** (`main` had already published v84 and v85) and the branch's writer-contract ADR was renumbered ADR-0044 → **ADR-0047** (`main` had already published ADR-0044), so `STORAGE_LAYOUT_VERSION` is now **87**. The writer-fence boundary was untouched by **any** of the three merges. All three reconciliations are recorded in `plans/closure/agent-workstream-m005-writer-containment-corrective/004-merge-reconciliation-status.md` (§1–§8, §9 and §10). |
+
+
+## 12. Amendment: the condition is discharged
+
+**C006's condition was C007's closure, and C007 closed on 2026-10-23.**
+
+The C007 closure record states the transition in its §11: the line moves from
+"C001–C006 closed (C006 conditionally, its condition now C007's closure);
+C007–C009 ready" to "C001–C009 closed". C007's lease-lifetime finding broke
+the lease-holding premise C006's executive finding rests on, so C006's
+conditionality was conditional on the premise being re-established, not on a
+new implementation.
+
+This record's status header named **two gaps** that kept it from *strict*
+closure, and §9 records the limits they sit in. Both are now discharged:
+
+- **The macOS and Windows native containment evidence** (§5.1, §9.1). The
+  macOS half closed on the hosted macOS lane, and `macos` joined
+  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` on that evidence. The Windows half was
+  **discharged by the gate disabling the unqualified platform with a named
+  reason**: no filesystem-enforcement backend is registered for Windows at all,
+  so the evidence cannot be produced by any run, and the gate's design keeps
+  the profile off any platform without native containment evidence. No Windows
+  evidence is required and none is claimed — §5.1's "open and unreachable" is a
+  statement about the evidence, not a closure condition.
+- **A live two-agent race inside one daemon process** (§9.2). It was blocked on
+  the contained Git backend that managed worktree creation needs, which landed
+  under **ADR-0048** (accepted 2026-10-22) through the Linux trusted-Git
+  corrective's C008 (closed 2026-10-22, grant precision closed by
+  `plans/closure/linux-trusted-git-cost-corrective/009-status.md`). The race
+  itself is **M011**, closed on 2026-10-22 —
+  `plans/closure/agent-workstream-blackboard/011-status.md`.
+
+The other §9 limits — descendant quiescence, the profile narrowing the tool
+profile but not the permission, the group owning the reservation, and a
+scheduler-owned child's write being attributed to the daemon — are **named
+non-claims that stand unchanged**. This amendment does not withdraw them and
+does not convert them into closure claims; they were never closure conditions.
+
+The status label therefore moves from **conditionally closed** to **closed**,
+in this record, in the line's roadmap milestone table, and in the registry's
+milestone row. No milestone status changes on any other line.
