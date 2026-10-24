@@ -22,7 +22,9 @@ lands and its evidence is recorded.
 
 ## 2. Why this milestone is ready
 
-- **C008 is conditionally closed** (`plans/closure/linux-trusted-git-cost-corrective/008-status.md`).
+- **C008 is closed** (`plans/closure/linux-trusted-git-cost-corrective/008-status.md`;
+  it was conditionally closed when this plan was written, and the hosted lane
+  obtained the production tiers that discharged it).
   It restores the managed-worktree creation path that used to fail closed on
   every host, and it is the prerequisite for the shared checkout being
   allocated at all.
