@@ -1,6 +1,6 @@
 # File Picker Rework Post-Closure Corrective Addendum
 
-Status: active (M001 active; M002 ready for handoff)
+Status: closed (M001 closed; M002 closed)
 
 Repository baseline audited: `6e097dd3a` (`Merge pull request #180 from dbowm91/fix/repository-audit-corrective-implementation`, 2026-10-23)
 
@@ -377,8 +377,8 @@ This addendum is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | active | `plans/implementation/file-picker-rework-post-closure-corrective/001-one-authority-for-the-navigator-tree.md` | — | none |
-| M002 | ready for handoff | `plans/implementation/file-picker-rework-post-closure-corrective/002-box-exit-verb-and-editor-handoff.md` | — | M001 |
+| M001 | closed | `plans/implementation/file-picker-rework-post-closure-corrective/001-one-authority-for-the-navigator-tree.md` | `plans/closure/file-picker-rework-post-closure-corrective/001-status.md` | none |
+| M002 | closed | `plans/implementation/file-picker-rework-post-closure-corrective/002-box-exit-verb-and-editor-handoff.md` | `plans/closure/file-picker-rework-post-closure-corrective/002-status.md` | none |
 
 ## 13. Relationship to the parent roadmap
 

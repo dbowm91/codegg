@@ -1,6 +1,11 @@
 # File Picker Rework Post-Closure Corrective Milestone M001 — One authority for the navigator's tree
 
-Status: active
+Status: implemented
+
+> **Closed.** Outcome and verification are recorded in
+> `plans/closure/file-picker-rework-post-closure-corrective/001-status.md` — read
+> that first. The one named condition on the closure is that the hosted CI lane has
+> not yet run against these commits; every gate in the closure record is local.
 
 Repository baseline: `6e097dd3a` (`Merge pull request #180 from dbowm91/fix/repository-audit-corrective-implementation`, 2026-10-23)
 

@@ -1,6 +1,13 @@
 # File Picker Rework Post-Closure Corrective Milestone M002 — The box's exit verb and the editor handoff
 
-Status: ready for handoff
+Status: implemented
+
+> **Closed.** Outcome and verification are recorded in
+> `plans/closure/file-picker-rework-post-closure-corrective/002-status.md` — read
+> that first. The one named condition on the closure is that the hosted CI lane has
+> not yet run against these commits; every gate in the closure record is local. The
+> closure also records the guard's use of a regex over the hint's Rust literal as a
+> judgement call a reviewer may overrule.
 
 Repository baseline: `6e097dd3a` (`Merge pull request #180 from dbowm91/fix/repository-audit-corrective-implementation`, 2026-10-23), plus Milestone M001 of this addendum
 
