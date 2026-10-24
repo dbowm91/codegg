@@ -1123,6 +1123,7 @@ async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
         process_admission: Some(shared.admission.clone()),
         shared_checkout: Some(shared.coordinator.clone()),
         writer_fences: Some(factory.clone() as Arc<dyn WriterFenceFactory>),
+        origin_attribution_pool: Some(shared.pool.clone()),
     };
 
     let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());

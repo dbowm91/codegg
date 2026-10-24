@@ -423,49 +423,43 @@ impl AgentLoop {
     /// admitted through the daemon, or a turn with no recorded attribution.
     /// The write then stays unattributed, which the shared-checkout fence
     /// refuses on a daemon with a team policy.
+    ///
+    /// A delegated child is the one case that resolves an actor without a
+    /// turn of its own: it inherits the dispatching turn's attribution, which
+    /// the dispatch site carried in.
     async fn resolve_transport_execution_audit(
         &self,
     ) -> Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
+        // A delegated child has no turn of its own. The actor that admitted
+        // the dispatching turn is the actor its writes run on behalf of, and
+        // the dispatch site carried that already-admitted attribution in.
+        if self.turn_id.is_none() {
+            if let Some(inherited) = self.inherited_execution_audit.as_ref() {
+                return Some(inherited.clone());
+            }
+        }
         let turn_id = self.turn_id.as_deref()?;
         let pool = self.services.todo_pool.clone()?;
-        let store = codegg_core::authorization::OriginAttributionStore::new(pool);
-        let attribution = match store.get("turn", turn_id).await {
-            Ok(Some(attribution)) => attribution,
-            Ok(None) => return None,
+        let chain = codegg_core::audit_instrumentation::AuditChainContext {
+            correlation_id: None,
+            session_id: Some(self.session_id.clone()),
+            turn_id: Some(turn_id.to_owned()),
+            ..Default::default()
+        };
+        match crate::tool::factory::resolve_origin_execution_audit(&pool, "turn", turn_id, chain)
+            .await
+        {
+            Ok(Some(context)) => Some(context),
+            Ok(None) => None,
             Err(error) => {
                 tracing::warn!(
                     error = %error,
                     turn_id = %turn_id,
                     "turn origin attribution lookup failed; writes stay unattributed"
                 );
-                return None;
+                None
             }
-        };
-        // The legacy marker records work that predates attribution. It names
-        // no team identity, so it must not be promoted into one.
-        if attribution.is_legacy() {
-            return None;
         }
-        let principal = crate::tool::factory::principal_from_origin_attribution(&attribution);
-        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
-            attribution.decision_id.clone(),
-            attribution.correlation_id.clone(),
-            attribution.policy.as_str(),
-            None,
-        );
-        let chain = codegg_core::audit_instrumentation::AuditChainContext {
-            correlation_id: Some(attribution.correlation_id.clone()),
-            session_id: Some(self.session_id.clone()),
-            turn_id: Some(turn_id.to_owned()),
-            ..Default::default()
-        };
-        Some(
-            codegg_core::audit_instrumentation::TrustedExecutionAuditContext::new(
-                &principal,
-                &provenance,
-                chain,
-            ),
-        )
     }
 
     pub(super) fn build_tool_execution_context(

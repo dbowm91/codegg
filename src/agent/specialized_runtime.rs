@@ -193,6 +193,9 @@ async fn run_research_child(
         sandbox_profile: None,
         process_admission: None,
         writer_fence: None,
+        // M005 corrective C009: this path binds no actor, so the child's write
+        // stays unattributed.
+        execution_audit: None,
     };
     let result =
         tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;

@@ -562,6 +562,10 @@ impl CoreDaemon {
                 process_admission: Some(process_admission.clone()),
                 shared_checkout: Some(shared_checkout),
                 writer_fences,
+                // M005 corrective C009: the daemon's own pool, so the
+                // executor can restore the dispatching turn's durable origin
+                // attribution for a delegated child.
+                origin_attribution_pool: deps.pool.clone(),
             };
             // Register the default executor set synchronously.
             if let Err(error) = scheduler_arc

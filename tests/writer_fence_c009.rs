@@ -37,11 +37,16 @@
 
 use std::sync::Arc;
 
+use codegg::core::runtime_deps::CoreRuntimeDeps;
 use codegg::core::writer_fence::DaemonWriterFenceFactory;
-use codegg::core::writer_permit::{WorktreePermitAuthority, WriterPermitService};
+use codegg::core::writer_permit::{
+    WorktreePermitAuthority, WriterPermitRequest, WriterPermitService,
+};
+use codegg::tool::backend::{ToolBackendKind, ToolExecutionContext};
+use codegg::tool::factory::resolve_origin_execution_audit;
 use codegg::tool::writer_fence::{
-    CheckoutWriterFence, NativeEffectClass, WriterFenceError, WriterFenceFactory,
-    WriterFenceOutcome, WriterFenceRequest, WriterScopeRequest,
+    acquire_writer_permit, CheckoutWriterFence, NativeEffectClass, WriterFenceError,
+    WriterFenceFactory, WriterFenceOutcome, WriterFenceRequest, WriterScopeRequest,
 };
 use codegg::tool::{Tool, ToolRegistry, ToolRegistryOptions};
 use codegg_core::agent_run::{
@@ -50,13 +55,16 @@ use codegg_core::agent_run::{
 use codegg_core::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupService, NewAgentRunGroup, RunJoinPolicy,
 };
+use codegg_core::authorization::{
+    AuthorizationDecision, OriginAttribution, OriginAttributionStore, PolicyKind,
+};
 use codegg_core::identity::{
     AgentRunGroupId, AgentRunId, AgentTaskId, PrincipalId, ProjectId, RepositoryId, WorkspaceId,
     WorktreeId,
 };
-use codegg_core::team::{PrincipalKind, TeamStore};
+use codegg_core::team::{PrincipalKind, ProjectRole, TeamStore};
 use codegg_core::transport_auth::{AuthMethod, AuthenticatedPrincipal, TransportClass};
-use codegg_core::writer_permit::WriterPermitStore;
+use codegg_core::writer_permit::{WriterPermitOperation, WriterPermitStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
@@ -580,5 +588,245 @@ async fn the_fence_factory_refuses_when_the_run_store_cannot_be_read() {
         Ok(_) => {
             panic!("an unreadable run store must not resolve a fence: it must refuse")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The follow-up corrective: the delegated child's actor, and the permit's
+// authorization seam
+// ---------------------------------------------------------------------------
+
+/// A delegated child writes under the dispatching turn's actor.
+///
+/// M005 corrective C009 (U1). A delegated child has no daemon-owned turn of
+/// its own, so it resolves no actor of its own: its write on a shared
+/// checkout is anonymous, and a daemon with a team policy refuses it. The
+/// dispatch site carries the dispatching turn's durable attribution in, and
+/// the child's write is attributed to that actor.
+///
+/// The daemon records that attribution at the admission boundary. This proves
+/// the restoration, and that the restored actor is the one the shared
+/// checkout admits.
+#[tokio::test]
+async fn a_delegated_child_writes_under_the_dispatching_turns_actor() {
+    let shared = Shared::new("delegated").await;
+    let team_store = Arc::new(TeamStore::new(shared.pool.clone()));
+    let member = team_store
+        .create_principal(PrincipalKind::Human, "Dispatching Member")
+        .await
+        .expect("add a team member");
+
+    // The daemon's own record of the dispatching turn's actor.
+    let principal = AuthenticatedPrincipal::personal_token(&member, "dispatch-client");
+    let decision = AuthorizationDecision {
+        principal_id: member.id.clone(),
+        operation: "turn.submit".to_owned(),
+        capability: None,
+        project_id: None,
+        membership_revision: None,
+        policy: PolicyKind::TeamMembership,
+        decision_id: "decision-dispatch".to_owned(),
+        correlation_id: "corr-dispatch".to_owned(),
+        reason: "team membership".to_owned(),
+        decided_at_ms: 0,
+    };
+    OriginAttributionStore::new(shared.pool.clone())
+        .record(
+            "turn",
+            "turn-dispatch",
+            &OriginAttribution::from_authority(&principal, &decision),
+        )
+        .await
+        .expect("record the dispatching turn's attribution");
+
+    let factory = shared.factory(Some(team_store));
+    let fence = shared.fence(&factory, &shared.owner_run).await;
+
+    // Without the carried attribution the child's write is anonymous, and a
+    // team daemon refuses it.
+    let outcome = fence
+        .begin(shared.request("c009-delegated-anonymous", None))
+        .await;
+    match outcome {
+        Err(WriterFenceError::EffectClassDenied { reason, .. }) => {
+            assert!(
+                reason.contains("no bound actor"),
+                "the refusal must name the missing actor: {reason}"
+            );
+        }
+        other => panic!("a team daemon must refuse an anonymous delegated write: {other:?}"),
+    }
+
+    // With it, the child writes under the dispatching turn's actor.
+    let audit =
+        resolve_origin_execution_audit(&shared.pool, "turn", "turn-dispatch", Default::default())
+            .await
+            .expect("read the dispatching turn's attribution")
+            .expect("the dispatching turn has an attribution");
+    assert_eq!(
+        audit.principal().principal_id().as_str(),
+        member.id.as_str(),
+        "the restored attribution names the dispatching turn's actor"
+    );
+
+    let mut ctx = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+    ctx.apply_execution_audit(&audit);
+    ctx.writer_fence = Some(fence.clone());
+    let permit = acquire_writer_permit(
+        Some(&ctx),
+        NativeEffectClass::FileWrite,
+        vec![shared.checkout.path().join("file.txt")],
+        "c009-delegated",
+    )
+    .await
+    .expect("the attributed delegated write takes the permit");
+    assert!(permit.is_some(), "a shared checkout takes a permit");
+
+    let row = WriterPermitStore::new(shared.pool.clone())
+        .load(&shared.worktree_id)
+        .await
+        .expect("read the permit row")
+        .expect("the shared checkout has a permit row");
+    assert_eq!(
+        row.owner
+            .as_ref()
+            .expect("the permit row names its owner")
+            .principal_id
+            .as_str(),
+        member.id.as_str(),
+        "the delegated child's write is attributed to the dispatching turn's actor"
+    );
+}
+
+/// The production permit service must consult the daemon's authorization
+/// service.
+///
+/// M005 corrective C009 (U2). The permit authority used to be built without
+/// an `AuthorizationService`, so its `file.modify` check never ran: every
+/// writer that reached it held the same blanket authority the local owner
+/// has, so a team member with no `file.modify` in the checkout's project
+/// wrote the checkout exactly as the owner does.
+///
+/// This is the production wiring — the permit service `CoreRuntimeDeps`
+/// installs — not a hand-built authority.
+#[tokio::test]
+async fn the_production_permit_service_checks_the_writers_file_modify_grant() {
+    let pool = isolated_pool().await;
+    let team = TeamStore::new(pool.clone());
+    let deps = CoreRuntimeDeps::with_jobs(pool.clone(), None, None);
+    let permits = deps
+        .writer_permit_service
+        .clone()
+        .expect("the production permit service");
+
+    // One checkout per case, so a case that is admitted never holds the
+    // checkout the next case tries.
+    for (label, role, admitted) in [
+        (
+            "a member holding `file.modify`",
+            Some(ProjectRole::Contributor),
+            true,
+        ),
+        (
+            "a member without `file.modify`",
+            Some(ProjectRole::Viewer),
+            false,
+        ),
+        ("a member with no membership", None, false),
+    ] {
+        let worktree_id = WorktreeId::new();
+        let owner_run = AgentRunId::new();
+        let (project_id, _workspace_id, _repository_id) =
+            leased_worktree(&pool, &worktree_id, &owner_run).await;
+        let member = team
+            .create_principal(PrincipalKind::Human, label)
+            .await
+            .expect("create the member");
+        if let Some(role) = role {
+            team.create_membership(&project_id, &member.id, role)
+                .await
+                .expect("grant the membership");
+        }
+
+        let mut request = permit_request(&worktree_id, label);
+        request.principal = AuthenticatedPrincipal::personal_token(&member, "member-client");
+        request.agent_run_id = Some(owner_run.clone());
+        let outcome = permits.acquire(request).await;
+        assert_eq!(
+            outcome.is_ok(),
+            admitted,
+            "{label} must be {}: {outcome:?}",
+            if admitted { "admitted" } else { "refused" }
+        );
+    }
+
+    // The local owner keeps its broad policy: the seam narrows a team
+    // member's authority, it does not refuse the daemon's own user.
+    let worktree_id = WorktreeId::new();
+    let owner_run = AgentRunId::new();
+    leased_worktree(&pool, &worktree_id, &owner_run).await;
+    let mut request = permit_request(&worktree_id, "the local owner");
+    request.principal = AuthenticatedPrincipal::local_owner("c009-production");
+    request.agent_run_id = Some(owner_run);
+    let outcome = permits.acquire(request).await;
+    assert!(
+        outcome.is_ok(),
+        "the local owner must still be admitted: {outcome:?}"
+    );
+}
+
+/// Insert a managed worktree row and lease it to `owner_run`.
+///
+/// The permit authority reads the checkout and its lease from the daemon's
+/// own records, so a real leased row is what the production wiring resolves.
+async fn leased_worktree(
+    pool: &SqlitePool,
+    worktree_id: &WorktreeId,
+    owner_run: &AgentRunId,
+) -> (ProjectId, WorkspaceId, RepositoryId) {
+    let project_id = ProjectId::new();
+    let workspace_id = WorkspaceId::new();
+    let repository_id = RepositoryId::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query(
+        "INSERT INTO managed_worktree (worktree_id, project_id, repository_id, workspace_id, \
+         repository_root, path, branch, base_commit, managed, state, health, lease_generation, \
+         owner_run_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, '/tmp/repo', '/tmp/repo/wt', 'codegg/worktree/test', 'abc', 1, \
+         'ready', 'clean', 0, NULL, ?, ?)",
+    )
+    .bind(worktree_id.as_str())
+    .bind(project_id.as_str())
+    .bind(repository_id.as_str())
+    .bind(workspace_id.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("insert the managed worktree");
+
+    let worktrees = codegg_core::worktree_service::WorktreeService::sqlite(
+        pool.clone(),
+        std::path::PathBuf::from("/tmp/codegg-managed-worktrees"),
+        Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+    );
+    worktrees
+        .acquire_lease(worktree_id, owner_run)
+        .await
+        .expect("lease the managed worktree");
+    (project_id, workspace_id, repository_id)
+}
+
+/// A permit request for `worktree_id`, with the local owner bound.
+fn permit_request(worktree_id: &WorktreeId, key: &str) -> WriterPermitRequest {
+    WriterPermitRequest {
+        worktree_id: worktree_id.clone(),
+        principal: AuthenticatedPrincipal::local_owner("c009-permit-request"),
+        agent_run_id: None,
+        group_id: None,
+        attempt_id: Some("attempt-1".to_owned()),
+        operation: WriterPermitOperation::NativeFileWrite,
+        idempotency_key: key.to_owned(),
+        wait: None,
     }
 }

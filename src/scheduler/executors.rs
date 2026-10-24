@@ -594,6 +594,14 @@ pub struct SubagentAuthority {
     pub shared_checkout: Option<Arc<codegg_core::shared_checkout::SharedCheckoutCoordinator>>,
     /// M005 C006: the writer-fence factory.
     pub writer_fences: Option<Arc<dyn crate::tool::writer_fence::WriterFenceFactory>>,
+    /// M005 corrective C009: the daemon's session pool.
+    ///
+    /// A delegated child has no turn of its own, so the executor restores the
+    /// dispatching turn's durable origin attribution from the daemon's own
+    /// store and carries it into the child. When this is absent the child's
+    /// write stays unattributed, which the shared-checkout fence refuses on
+    /// a daemon with a team policy.
+    pub origin_attribution_pool: Option<sqlx::SqlitePool>,
 }
 
 /// Canonical executor for `JobKind::Subagent`. Hands the work off to
@@ -1535,6 +1543,38 @@ impl JobExecutor for SubagentJobExecutor {
                 .as_ref()
                 .map(|worktree| worktree.as_str().to_owned()),
         );
+        // M005 corrective C009: the child's writes run on behalf of the actor
+        // that admitted the dispatching turn. The child has no turn of its
+        // own, so the executor restores that turn's durable origin attribution
+        // and carries it in. An unreadable or absent row leaves the child
+        // unattributed, which is the refusal direction.
+        let execution_audit = match (
+            self.authority.origin_attribution_pool.as_ref(),
+            ctx.job.turn_id.as_deref(),
+        ) {
+            (Some(pool), Some(turn_id)) => {
+                let mut chain = codegg_core::audit_instrumentation::AuditChainContext::new();
+                chain.session_id = ctx.job.session_id.clone();
+                chain.turn_id = Some(turn_id.to_owned());
+                chain.job_id = Some(ctx.job.job_id.as_str().to_owned());
+                match crate::tool::factory::resolve_origin_execution_audit(
+                    pool, "turn", turn_id, chain,
+                )
+                .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            turn_id = %turn_id,
+                            "dispatching turn origin attribution lookup failed; the delegated child stays unattributed"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             child_instance_id: String::new(),
@@ -1578,6 +1618,8 @@ impl JobExecutor for SubagentJobExecutor {
             process_admission: child_process_admission,
             // M005 corrective C006: the resolved writer fence.
             writer_fence,
+            // M005 corrective C009: the dispatching turn's actor.
+            execution_audit,
         };
         let effective_workspace_root = request.workspace_root.clone();
 

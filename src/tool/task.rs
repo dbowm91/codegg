@@ -2301,6 +2301,11 @@ impl TaskTool {
                     // taking the writer permit, overlapping the group
                     // sibling that holds it.
                     writer_fence: self.inherited_writer_fence(ctx),
+                    // M005 corrective C009: the nested child runs on behalf of
+                    // the same actor as this execution, so it carries the
+                    // same trusted attribution. The nested child has no turn
+                    // of its own to resolve an actor from.
+                    execution_audit: ctx.and_then(|c| c.execution_audit().cloned()),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

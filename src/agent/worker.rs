@@ -131,6 +131,17 @@ pub struct SubAgentRequest {
     /// profile it always had. When it is absent the child falls back to
     /// containment over its workspace root.
     pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
+    /// M005 corrective C009: the dispatching turn's transport-bound actor,
+    /// carried so the child's own writes are attributed to it.
+    ///
+    /// A delegated child has no daemon-owned turn of its own, so it cannot
+    /// resolve an actor from a turn-scope attribution. The dispatch site
+    /// carries the dispatching turn's already-admitted attribution in
+    /// instead. `None` means the dispatching turn bound no actor — an
+    /// in-process run, or a turn that was never admitted through the
+    /// daemon — and the child's write then stays unattributed, which the
+    /// shared-checkout fence refuses on a daemon with a team policy.
+    pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1598,6 +1609,10 @@ async fn execute_agent_task(
         // M005 corrective C005: the inherited process admission policy.
         request.process_admission.clone(),
     );
+    // M005 corrective C009: the child's writes run on behalf of the actor
+    // that admitted the dispatching turn. The child has no turn of its own,
+    // so the dispatch site's attribution is what resolves its writer.
+    agent_loop.set_inherited_execution_audit(request.execution_audit.clone());
     if let Some(run_id) = request.run_id.as_ref() {
         let runs = subagent_pool
             .durable_agent_runs
@@ -2039,6 +2054,7 @@ mod admission_tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         }
     }
 
@@ -2348,6 +2364,7 @@ mod writer_fence_tests {
             sandbox_profile: None,
             process_admission: None,
             writer_fence: None,
+            execution_audit: None,
         }
     }
 

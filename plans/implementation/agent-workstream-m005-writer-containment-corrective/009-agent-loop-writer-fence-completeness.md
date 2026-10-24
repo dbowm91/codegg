@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective C009 — Agent-Loop Writer Fence Completeness
 
-Status: closed — C009 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/009-status.md`). The commit tool takes the fail-closed `None` arm; the daemon's team-policy principal fallback is derived from durable team state at fence time; and the nested-subagent dispatch forwards the parent's fence. One named item remains open in the closure record: a delegated child's own transport principal is unbound, so its write on a team daemon is refused — the fail-closed direction — rather than attributed to a live principal.
+Status: closed — C009 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/009-status.md`). The commit tool takes the fail-closed `None` arm; the daemon's team-policy principal fallback is derived from durable team state at fence time; and the nested-subagent dispatch forwards the parent's fence. The two items the closure record left open are discharged by a follow-up: a delegated child now carries the dispatching turn's transport principal, and the `AuthorizationService` seam is wired into the production permit authority.
 Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
 Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md`
@@ -300,5 +300,26 @@ Report rather than improvise if:
 - The three defects were found by a 2026-10-23 review of `origin/main` at `f1b83a7a7`. All three are minors; the same review's agent-loop audit returned PASS on the six areas it covered.
 - The tree at `f1b83a7a7` is **green**: `codegg --lib tool::writer_fence` (3), `codegg-core --test writer_permit` (21), `codegg --test shared_checkout_c006` (16), `codegg --test contained_worktree_c008` (5) and `codegg --test composed_two_agent_race_m011` (3) all pass. These defects are latent, not caught.
 - §3.2 is the highest-value item: the `AuthorizationService` seam already exists in the permit authority, and `local_owner` is authorised for *any* capability on *any* project. This milestone does not wire that seam, but it must not leave the fallback in a state where wiring it would be unsafe.
+
+## 17. Amendment: the two open findings are discharged
+
+A follow-up on the same line closed the two items §16 named as open, and this
+plan is amended rather than rewritten — the two statements above stood as
+written when C009 closed.
+
+- **§3.2's seam is wired.** The production permit authority is built with
+  `.with_authorization(...)` (`src/core/runtime_deps.rs`), so the
+  `file.modify` check for the checkout's project runs on every permit. The
+  fallback is in the state §16 required: it is withheld on a daemon with a
+  team policy, so wiring the seam could not let an unattributed write
+  authorize itself as the local owner.
+- **The delegated child is attributed.** A delegated child carries the
+  dispatching turn's already-admitted transport principal, so its write on a
+  team daemon is attributed rather than refused as anonymous. The attribution
+  is restored from the daemon's own durable record, never synthesized.
+
+Both are recorded, with their evidence, in
+`plans/closure/agent-workstream-m005-writer-containment-corrective/009-status.md`
+§14 (A9).
 - C007 and C008 of this line are the sibling corrective milestones for shared-checkout placement and the mediation authority. They are independent and must not be folded in.
 - The shared checkout remains **opt-in** and **platform-gated**. Nothing here enables the WorkOrder `shared`/`serialized` mutation policy, which still fails closed.

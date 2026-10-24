@@ -498,10 +498,25 @@ impl CoreRuntimeDeps {
         // for who may write to a managed checkout. It shares the daemon's pool
         // and the daemon's worktree service, so the scope it resolves is read
         // from the same authoritative records the rest of the daemon uses.
+        //
+        // M005 corrective C009 (U2): the authorization seam is wired here, so
+        // the permit resolves the writer's `file.modify` grant **for the
+        // checkout's own project** through the daemon's authorization
+        // service. Without it every writer that reached the authority held
+        // the same blanket authority the local owner has — a team member with
+        // no membership in the project, or a principal from another project,
+        // wrote the checkout exactly as the owner does. The local owner keeps
+        // its broad policy; every other principal is now decided by its own
+        // grant, and a principal with no grant is refused.
         let writer_permit_service = crate::core::writer_permit::WriterPermitService::new(
             codegg_core::writer_permit::WriterPermitStore::new(pool.clone()),
             crate::core::writer_permit::WorktreePermitAuthority::new(worktree_service.clone())
-                .with_groups(run_group_service.clone()),
+                .with_groups(run_group_service.clone())
+                .with_authorization(Arc::new(
+                    codegg_core::authorization::AuthorizationService::new(
+                        codegg_core::team::TeamStore::new(pool.clone()),
+                    ),
+                )),
         );
         Self {
             pool: Some(pool.clone()),

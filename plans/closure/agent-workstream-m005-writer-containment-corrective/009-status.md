@@ -395,6 +395,12 @@ daemon is not refused by its own fence.
 
 ## 10. Unresolved findings
 
+> **Discharged on 2026-10-24.** U1 and U2 below were closed by a follow-up
+> after this record was written; see §14 (A9). Their text is kept as it stood
+> when the record was closed, because a reader comparing the record with the
+> tree's history needs to see the finding and its discharge, not a rewritten
+> record.
+
 **U1 — a delegated child's own principal is still unbound.** The transport
 principal is bound on the **daemon turn** path, from the durable turn-scope
 origin attribution. A **delegated** child's own loop carries no turn identity,
@@ -480,10 +486,11 @@ follows a membership change. The failure arm refuses, deliberately: reading an
 unreadable team state as "single-user" would restore the synthetic attribution
 this milestone removes.
 
-**The delegated child's principal is the named open item.** U1 is the one gap
-this milestone leaves, and it points at `src/scheduler/executors.rs` — the file
-the C007 corrective owns. The next reader who picks that up has a concrete
-target: carry the dispatching turn's principal on `SubAgentRequest`.
+**The delegated child's principal was the named open item, and is now
+discharged.** U1 was the one gap this milestone left, and it pointed at
+`src/scheduler/executors.rs` — the file the C007 corrective owns. The
+follow-up took exactly that target: carry the dispatching turn's principal on
+`SubAgentRequest`. See §14 (A9).
 
 ## 14. Amendment: implementation review
 
@@ -622,3 +629,134 @@ recorded in `architecture/overview.md` and
 `architecture/count_audit_history.md`, and the comment budget was re-banked
 on the merged tree at **123,685** lines, still below the 124,865
 pre-reduction baseline.
+
+**A9 — the two findings this record left open are discharged.** The record's
+§10 named two unresolved findings when it was written: **U1**, a delegated
+child's own principal was unbound, and **U2**, the `AuthorizationService` seam
+was not wired. Both are closed by implementation in the same tree, and the
+record is **amended rather than rewritten** — the findings stood as written
+until this amendment, and a reader comparing the record with the tree's
+history needs to see that.
+
+### U1 — the delegated child carries the dispatching turn's actor
+
+A delegated child has no daemon-owned turn of its own, so it resolves no actor
+from a turn-scope attribution. The dispatch site now carries the dispatching
+turn's already-admitted attribution in, and the child installs it:
+
+| Site | What it does |
+|---|---|
+| `src/scheduler/executors.rs` | restores the dispatching turn's durable origin attribution from the daemon's own store (`SubagentAuthority::origin_attribution_pool`) and puts it on the `SubAgentRequest` |
+| `src/tool/task.rs` | carries the parent execution's own trusted attribution into a nested in-process dispatch |
+| `src/agent/worker.rs` | installs it on the child's agent loop (`AgentLoop::set_inherited_execution_audit`) |
+| `src/agent/tool_batch.rs` | resolves it for a loop that has no turn of its own |
+
+The attribution is **restored, never synthesized**: the child reuses the
+decision and provenance the dispatching turn already admitted
+(`src/tool/factory.rs::resolve_origin_execution_audit` reads the same durable
+row the daemon turn path reads). No principal is built from a request payload,
+a tool argument, or model output. A dispatch whose turn bound no actor still
+leaves the child unattributed, so the fail-closed direction is unchanged: the
+child is now *attributed* where the dispatching turn was attributed, and
+*refused* where it was not.
+
+The record's §10 wording said the fix "requires `src/scheduler/executors.rs`
+to carry it on `SubAgentRequest`". That was right about the carrier and wrong
+about the blocker: the file was scoped out of C009 because it belonged to the
+C007 corrective, not because the carry was impossible. The carrier is the
+in-memory `SubAgentRequest`, so the **durable payload shape did not change**.
+
+### U2 — the authorization seam is wired
+
+`src/core/runtime_deps.rs` builds the production permit authority with
+`.with_authorization(AuthorizationService::new(TeamStore::new(pool)))`, so the
+`Capability::FileModify` check for the checkout's project runs on every
+permit. A team member is admitted by the membership that grants `file.modify`
+in that project; a principal with no such grant is refused; the local owner
+keeps the daemon's broad local policy, so the check narrows the team without
+narrowing the daemon's own user.
+
+§10's wording — that `local_owner`'s `PolicyKind::LocalOwnerBroad` "is not yet
+narrowed" — is discharged in the sense it was meant. The *effective* policy is
+no longer the local owner's for everyone: every non-local-owner principal is
+now decided by its own grant, and a principal with no grant is refused. The
+local owner's own broad policy is **unchanged**, and that is by design: it is
+the daemon's own user, and narrowing it would be a change to the identity
+contract rather than to this milestone.
+
+### The guard
+
+`scripts/check_writer_fence_completeness.py` gained two rules, each with a
+self-test case that proves it discriminates:
+
+- `permit-authorization-seam` — the production permit authority must be built
+  with `.with_authorization(...)`;
+- `delegated-child-attribution` — neither dispatch site may drop the carried
+  attribution, the worker must install it, and the tool batch must read it.
+
+The self-test went from 19 cases to **23**, and each new case fails on an
+injected violation rather than passing vacuously.
+
+### The evidence
+
+`tests/writer_fence_c009.rs` gained two tests:
+
+- `a_delegated_child_writes_under_the_dispatching_turns_actor` — an
+  unattributed write on a team daemon is refused with "no bound actor", and
+  the same write under the dispatching turn's restored attribution is
+  admitted, with the permit row naming **that** actor;
+- `the_production_permit_service_checks_the_writers_file_modify_grant` — the
+  **production** permit service (the one `CoreRuntimeDeps` installs, not a
+  hand-built authority) admits a member holding `file.modify` in the project,
+  refuses a member without it and a member with no membership, and still
+  admits the local owner.
+
+The second test was checked against a **planted regression**: with the
+`.with_authorization(...)` call removed from `src/core/runtime_deps.rs`, it
+fails with
+
+```text
+assertion `left == right` failed: a member without `file.modify` must be refused:
+Ok(WriterPermitGuard { worktree_id: "…", state: "held", revision: 1, settled: false })
+  left: true
+ right: false
+```
+
+— the member was admitted. The file was restored and the suite re-run green.
+
+### The gates
+
+Every gate below was run **locally**, on this tree, after the change landed.
+The hosted lanes are opportunistic and are **not** counted as evidence here.
+
+| Gate | Result |
+|---|---|
+| `scripts/verify.sh quick` | **green**, **111 steps** (`run_guards` 107 + `run_quick` 4, measured) |
+| `cargo fmt --check --all` | green |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | green |
+| `cargo nextest run --locked --profile ci -p codegg --lib` | **7,490 passed**, 4 skipped |
+| `cargo nextest run --locked --profile ci -p codegg-core` | **1,141 passed**, 0 skipped |
+| `cargo nextest run --locked --profile ci -p codegg --test shared_checkout_c006 --test writer_fence_c009 --test contained_worktree_c008 --test composed_two_agent_race_m011` | **37 passed**, 0 skipped |
+| `cargo nextest run --locked --profile ci -p codegg --features server --test core_daemon` | **508 passed**, 0 skipped |
+| `python3 -m unittest discover -s dev/harness_lab/tests` | **329 passed**, 1 skipped |
+| `python3 scripts/check_writer_fence_completeness.py --self-test` | **23 cases**, each new case discriminating |
+| `python3 scripts/check_comment_budget.py` | green |
+
+The quick lane's step count is unchanged at **111** — this change adds no
+guard script, so no `==>` line was added. The comment budget was re-banked on
+this tree at **123,805** lines / **1,090,704** words / ratio **0.1326**, still
+below the 124,865 pre-reduction baseline, and
+`docs/comment-budget.toml` is edited in this same diff as the comments that
+took those lines.
+
+
+### What this amendment does not claim
+
+- It does not claim that a delegated child is **more** authorized than its
+  dispatching turn. The child's authority is the dispatching turn's, and the
+  authorization behind it is re-evaluated at the permit, so a membership
+  revoked between the dispatch and the write is refused at the write.
+- It does not claim that the local owner's broad policy was narrowed. It was
+  not, and it should not be: the local owner is the daemon's own user.
+- It does not reopen C009's milestone status. C009 was closed before this
+  amendment and stays closed; this amendment discharges two of its findings.

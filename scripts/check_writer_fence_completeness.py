@@ -19,7 +19,10 @@ without the authority the fence exists to enforce:
      writer permit — so a grandchild wrote into the shared checkout while a
      group sibling held the permit.
 
-This script enforces the three corresponding invariants statically. It
+This script enforces the three corresponding invariants statically, plus the
+two the follow-up corrective added: the production permit authority must
+consult the daemon's authorization service, and a delegated child must carry
+the dispatching turn's attribution instead of writing anonymously. It
 self-tests: `--self-test` feeds synthetic sources through the same detectors
 used against the real tree and fails if a planted violation is not reported.
 A guard that cannot be shown to fail on an injected violation is not accepted
@@ -47,6 +50,9 @@ DAEMON_CONSTRUCT_FILE = "src/core/daemon_construct.rs"
 WORKER_FILE = "src/agent/worker.rs"
 TASK_TOOL_FILE = "src/tool/task.rs"
 DAEMON_FENCE_FILE = "src/core/writer_fence.rs"
+RUNTIME_DEPS_FILE = "src/core/runtime_deps.rs"
+EXECUTORS_FILE = "src/scheduler/executors.rs"
+TOOL_BATCH_FILE = "src/agent/tool_batch.rs"
 
 SCANNED_FILES: list[str] = [
     REGISTRY_FILE,
@@ -54,6 +60,9 @@ SCANNED_FILES: list[str] = [
     WORKER_FILE,
     TASK_TOOL_FILE,
     DAEMON_FENCE_FILE,
+    RUNTIME_DEPS_FILE,
+    EXECUTORS_FILE,
+    TOOL_BATCH_FILE,
 ]
 
 # ── Rule A: mutating workspace tools fail closed ─────────────────────
@@ -548,12 +557,128 @@ def _arm_yields_false(arm: str) -> bool:
     return bool(re.search(r"\bfalse\b\s*$", body))
 
 
+def scan_permit_authorization_seam(sources: dict[str, str]) -> list[Finding]:
+    """The production permit authority must consult the authorization service.
+
+    M005 corrective C009 (U2). The permit authority decides *which* principal
+    may write a managed checkout. Without an `AuthorizationService` it decides
+    no policy at all: every writer that reached it held the same blanket
+    authority the local owner has, so a team member with no membership in the
+    checkout's project wrote it exactly as the owner does. The seam is the
+    only thing that narrows that to the writer's own `file.modify` grant.
+    """
+    source = sources.get(RUNTIME_DEPS_FILE, "")
+    findings: list[Finding] = []
+    matches = list(re.finditer(r"WorktreePermitAuthority::new\s*\(", source))
+    if not matches:
+        findings.append(
+            Finding(
+                RUNTIME_DEPS_FILE,
+                1,
+                "the production permit authority is not built here; the writer "
+                "permit would resolve no policy at all",
+                "permit-authorization-seam",
+            )
+        )
+        return findings
+    for match in matches:
+        # The whole builder chain belongs to one `let` statement, so the
+        # statement — not the `new(...)` call — is where a seam would be
+        # wired.
+        binding = None
+        for candidate in re.finditer(r"\n[ \t]*let\b", source[: match.start()]):
+            binding = candidate
+        if binding is None:
+            continue
+        end = _statement_end(source, binding.start())
+        statement = source[binding.start() : end]
+        if ".with_authorization(" not in statement:
+            findings.append(
+                Finding(
+                    RUNTIME_DEPS_FILE,
+                    _line_no(source, match.start()),
+                    "the production permit authority is built without "
+                    "`.with_authorization(...)`; the writer's `file.modify` "
+                    "grant for the checkout's project is never checked",
+                    "permit-authorization-seam",
+                )
+            )
+    return findings
+
+
+def scan_delegated_child_attribution(sources: dict[str, str]) -> list[Finding]:
+    """A delegated child must carry the dispatching turn's attribution.
+
+    M005 corrective C009 (U1). A delegated child has no daemon-owned turn of
+    its own, so it resolves no actor of its own: without a carried
+    attribution its write on a shared checkout is refused as anonymous, or —
+    worse — attributed to the daemon's synthetic fallback. The dispatch site
+    carries the dispatching turn's already-admitted attribution in, the worker
+    installs it, and the tool batch reads it.
+    """
+    findings: list[Finding] = []
+
+    for rel in (EXECUTORS_FILE, TASK_TOOL_FILE):
+        source = sources.get(rel, "")
+        for match in re.finditer(r"SubAgentRequest\s*\{", source):
+            open_brace = source.index("{", match.start())
+            _, close = _balanced(source, open_brace)
+            block = source[open_brace:close]
+            if "execution_audit" not in block:
+                findings.append(
+                    Finding(
+                        rel,
+                        _line_no(source, match.start()),
+                        "the dispatch carries no attribution at all; the child's "
+                        "write resolves no actor",
+                        "delegated-child-attribution",
+                    )
+                )
+            elif re.search(r"execution_audit\s*:\s*None", block):
+                findings.append(
+                    Finding(
+                        rel,
+                        _line_no(source, match.start()),
+                        "the dispatch drops the dispatching turn's attribution "
+                        "(execution_audit: None)",
+                        "delegated-child-attribution",
+                    )
+                )
+
+    worker = sources.get(WORKER_FILE, "")
+    if "set_inherited_execution_audit(" not in worker:
+        findings.append(
+            Finding(
+                WORKER_FILE,
+                1,
+                "the worker never installs the carried attribution; the child's "
+                "loop resolves no actor",
+                "delegated-child-attribution",
+            )
+        )
+
+    batch = sources.get(TOOL_BATCH_FILE, "")
+    if "inherited_execution_audit" not in batch:
+        findings.append(
+            Finding(
+                TOOL_BATCH_FILE,
+                1,
+                "the tool batch never reads the carried attribution; the child's "
+                "write stays unattributed",
+                "delegated-child-attribution",
+            )
+        )
+    return findings
+
+
 CHECKS = (
     ("registry-fail-closed", scan_registry_fail_closed),
     ("local-principal-fallback", scan_local_principal_fallback),
     ("worker-fence-fallback", scan_worker_fence_fallback),
     ("nested-dispatch-fence", scan_nested_dispatch_fence),
     ("fail-closed-authority-read", scan_fail_closed_authority_reads),
+    ("permit-authorization-seam", scan_permit_authorization_seam),
+    ("delegated-child-attribution", scan_delegated_child_attribution),
 )
 
 
@@ -984,6 +1109,84 @@ SELF_TEST_CASES: list[tuple[str, str, dict[str, str], int]] = [
         },
         0,
     ),
+    (
+        "a production permit authority built without the authorization seam is caught",
+        "permit-authorization-seam",
+        {
+            RUNTIME_DEPS_FILE: (
+                "fn build() {\n"
+                "    let permit = WriterPermitService::new(\n"
+                "        store,\n"
+                "        WorktreePermitAuthority::new(worktrees)\n"
+                "            .with_groups(groups),\n"
+                "    );\n"
+                "}\n"
+            )
+        },
+        1,
+    ),
+    (
+        "a production permit authority wired with the authorization seam is accepted",
+        "permit-authorization-seam",
+        {
+            RUNTIME_DEPS_FILE: (
+                "fn build() {\n"
+                "    let permit = WriterPermitService::new(\n"
+                "        store,\n"
+                "        WorktreePermitAuthority::new(worktrees)\n"
+                "            .with_groups(groups)\n"
+                "            .with_authorization(authz),\n"
+                "    );\n"
+                "}\n"
+            )
+        },
+        0,
+    ),
+    (
+        "a dispatch that drops the dispatching turn's attribution is caught",
+        "delegated-child-attribution",
+        {
+            TASK_TOOL_FILE: (
+                "fn build() {\n"
+                "    let req = SubAgentRequest {\n"
+                "        task_id,\n"
+                "        writer_fence: self.inherited_writer_fence(ctx),\n"
+                "        execution_audit: None,\n"
+                "    };\n"
+                "}\n"
+            )
+        },
+        1,
+    ),
+    (
+        "a dispatch that carries the dispatching turn's attribution is accepted",
+        "delegated-child-attribution",
+        {
+            TASK_TOOL_FILE: (
+                "fn build() {\n"
+                "    let req = SubAgentRequest {\n"
+                "        task_id,\n"
+                "        writer_fence: self.inherited_writer_fence(ctx),\n"
+                "        execution_audit: ctx.and_then(|c| c.execution_audit().cloned()),\n"
+                "    };\n"
+                "}\n"
+            )
+        },
+        0,
+    ),
+    (
+        "a worker that never installs the carried attribution is caught",
+        "delegated-child-attribution",
+        {
+            WORKER_FILE: (
+                "fn build() {\n"
+                "    let mut agent_loop = AgentLoop::new();\n"
+                "    agent_loop.set_session_id(id);\n"
+                "}\n"
+            )
+        },
+        1,
+    ),
 ]
 
 
@@ -1022,7 +1225,9 @@ def main(argv: list[str]) -> int:
             "A mutating tool must be registered behind the fail-closed `unrooted(...)`\n"
             "wrapper; the daemon's local-principal fallback must follow its durable\n"
             "team state; the containment-only fence must never stand in for a managed\n"
-            "checkout; and a nested dispatch must carry the parent's fence.\n"
+            "checkout; a nested dispatch must carry the parent's fence; the production\n"
+            "permit authority must consult the authorization service; and a delegated\n"
+            "child must carry the dispatching turn's attribution.\n"
         )
         for f in findings:
             print(f"  [{f.rule}] {f.file}:{f.line_no}: {f.line_text}")
