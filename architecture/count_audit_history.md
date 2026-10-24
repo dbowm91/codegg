@@ -725,3 +725,40 @@ global block: no per-file ceiling moved, because `main` had already banked the
 composer's files and the branch's own files were already banked at their
 current values.
 
+
+### Tenth amendment — 2026-10-24, delegated-run corrective, merge reconciliation with `main` (M008)
+
+Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
+the delegated-run corrective branch moved three code-count rows, because both
+lines added a test module and a guard. The measured values on the merged tree
+are:
+
+| row | before (this branch) | `main` | merged |
+|---|---|---|---|
+| Integration test files | 346 | 339 | **347** |
+| Guard scripts (all) | 95 | 93 | **96** |
+| CI guard scripts | 61 | 56 | **62** |
+
+Each merged value is the sum of the two lines' own deltas, measured with
+`python3 scripts/measure_overview_counts.py` and confirmed by
+`python3 scripts/check_test_target_references.py`. The quick-only difference is
+**unchanged at 14**: the delegated-run corrective's six new guards all run in
+**both** `verify.sh quick` and CI, and M008's one new guard does too, so
+neither line adds a quick-only entry. The quick-only set was **re-derived**,
+not carried over, by differencing the guards `run_guards()` names against the
+guards `.github/workflows/ci.yml` names.
+
+**`AGENTS.md`'s published counts were corrected at the source** to **76** for
+`quick` and **62** for CI. The *method* is unchanged — the count is the number
+of distinct `scripts/check_*` files the two files name — and the 14-guard
+difference still holds (76 − 62 = 14).
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet and both lines spent comment lines: the merged tree measures
+**125,729** comment lines, **1,109,416** words and a **0.1333** ratio. The
+re-bank raised the global block and moved only the per-file ceilings of files
+**either** line touched — this line's `crates/codegg-protocol/src/projection/
+{dto,limits,mod,snapshot}.rs` and `src/core/daemon_{refresh,sessions}.rs`, and
+`main`'s `crates/codegg-protocol/src/scratch.rs` and
+`src/core/daemon_scratch.rs` — so the bank diff stays confined to touched
+files plus the global block, as the ratchet requires.

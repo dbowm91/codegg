@@ -661,9 +661,22 @@ async fn attach_test_workspace_authority(
     agent_loop.set_workspace_services_lease(lease);
 }
 
-async fn build_test_agent_loop(
+pub async fn build_test_agent_loop(
     provider: Box<dyn Provider>,
     tool_registry: ToolRegistry,
+) -> AgentLoop {
+    build_test_agent_loop_with_pool(provider, tool_registry, None).await
+}
+
+/// The same loop, but with a durable pool so the turn owns an event store.
+///
+/// The job-notice boundary injection appends a durable parent-session event
+/// before it hands the notice to the model, so a turn that must observe that
+/// injection needs an event store.
+pub async fn build_test_agent_loop_with_pool(
+    provider: Box<dyn Provider>,
+    tool_registry: ToolRegistry,
+    pool: Option<sqlx::SqlitePool>,
 ) -> AgentLoop {
     let agents = vec![Agent {
         git_read_only: false,
@@ -720,7 +733,7 @@ async fn build_test_agent_loop(
         tool_registry,
         config,
         None,
-        None,
+        pool,
         Arc::new(InMemoryArtifactStore::new()),
         workspace_root.clone(),
         "test-session".to_string(),

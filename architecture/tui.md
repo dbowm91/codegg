@@ -848,6 +848,14 @@ Session-dialog selection keys use `child_instance_id` when available, while
 `Enter` still carries the worker task id required to open that child's
 transcript; the two identities are kept in separate fields.
 
+**C001 changes no TUI surface.** A delegated run's terminal state now reaches
+the *orchestrator* — the model — as a durable notice injected at the next turn
+boundary, and the agent can read the child's recorded result with
+`task action=get`. The strip, the sidebar panel, the `Ctrl+T` overlay, the
+`/sessions` dialog, and the subagent tab are unchanged: the notice is a
+channel to the model, not a new row for the user. See `architecture/agent.md`
+"The delegated run's durable terminal notice".
+
 **Descriptors are carried, never resolved.** `SubagentRow::profile` and
 `usefulness` are the curated pool entry's one-line character description and
 operational guidance. They are drawn once at spawn by `SubagentNameLease::entry`
@@ -865,6 +873,43 @@ one, and a released name can be re-drawn to a different subagent while a stale
 snapshot is still on screen. `scripts/check_tui_subagent_name_pool_isolation.py`
 enforces this and carries a `--self-test` proving it fails on a planted
 violation; run the guard, not the absence of a complaint.
+
+**C003 makes the delegated tab a transcript buffer.** The tab used to be a run
+inspector and said so: it showed the agent, the task, the status and the
+canonical ids, and nothing else, because the projection carried no
+conversation for a delegated run. It now renders the child's **recorded
+conversation** — the durable transcript the store kept (ADR-0051 option B) —
+beneath that metadata. The metadata is **retained**: the run's identity and
+status come first, because a conversation without the run it belongs to is a
+wall of text, and the user still needs the status at a glance.
+
+The three transcript states are three different facts and each is rendered
+distinctly: `complete`, `truncated` (with the ordinal the next entry would
+carry, and whether the run's own recording stopped at the store's per-run
+bound), and `absent` — a plain statement of why, never an empty pane that
+reads as "the child did nothing". A `None` transcript (a summary written by a
+daemon older than this milestone) leaves the tab as the inspector it was.
+
+**The transcript is read at a boundary, not on a timer.** The tab's transcript
+comes from the session projection snapshot, which is rebuilt when the tab
+opens: `App::open_subagent_tab` asks the daemon for a fresh session snapshot,
+and the snapshot builder attaches each run's bounded transcript page. The
+refresh is a re-read of the session the client is already watching and it
+leaves the open rows alone, so it neither flickers the tab nor detaches the
+other tabs. There is no poll and no live feed: a live feed would be a new
+projection capability with its own bounds, and the plan puts it out of scope.
+
+**The tab is scrollable, and says when there is more.** The tab's content is
+one paragraph, so the viewport keys and `PageUp`/`PageDown` scroll it, and the
+tab states how many lines are below the fold. A transcript taller than the
+window that says nothing about it reads as a complete conversation.
+
+**The tool output is bounded on screen.** A tool call renders as a tool call
+and a tool result as a tool result, and a body larger than
+`MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES` is cut with the number of omitted bytes
+stated. The display bound is separate from the wire bound on purpose: the wire
+bound is a contract, and the display bound is what keeps one row from filling
+the viewport.
 
 **One row, five surfaces, and a deliberate trade.** The strip, the sidebar panel,
 the `Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab all render the

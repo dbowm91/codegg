@@ -19,8 +19,8 @@ TOML assets and generates `model_adapters.rs` into `OUT_DIR`
 
 ## Modules
 
-54 `pub mod` declarations in `crates/codegg-core/src/lib.rs` (the file is
-exactly those 54 lines — there are no `pub use` re-exports and no crate-level
+55 `pub mod` declarations in `crates/codegg-core/src/lib.rs` (the file is
+exactly those 55 lines — there are no `pub use` re-exports and no crate-level
 attributes there):
 
 | Module | Purpose |
@@ -29,6 +29,7 @@ attributes there):
 | `agent_run` | Agent run lifecycle and state |
 | `agent_run_control` | Agent run control signals and cancellation |
 | `agent_run_group` | Agent run group coordination |
+| `agent_run_transcript` | Durable delegated-run transcript, keyed by `AgentRunId` (ADR-0051) |
 | `approval` | Approval routing domain and durable runtime preferences (M003) |
 | `audit` | Audit logging and event recording |
 | `audit_instrumentation` | Audit instrumentation hooks |
@@ -188,7 +189,7 @@ verified, and content-addressed.
 
 `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog.
 `init_legacy_project_store(root)` retains backward compat. The current layout
-version is defined by `storage::STORAGE_LAYOUT_VERSION` (currently **87**,
+version is defined by `storage::STORAGE_LAYOUT_VERSION` (currently **89**,
 and `scripts/check_project_catalog_invariants.py` fails the build if it drifts
 below the highest migration number in `session/schema.rs`). `DaemonPaths` is
 the single source of truth for catalog and asset paths.
@@ -212,6 +213,62 @@ Five core modules together are the checkout-writing authority, and they are
 
 `session_launch` adds the durable, recoverable launch saga that spans a
 Git worktree on disk and a session row in SQLite.
+
+### Delegated-Run Transcript (ADR-0051 option B)
+
+`agent_run_transcript` owns the durable conversation of a **delegated run**.
+A delegated run is not a session: it has no `session` row, it never enters
+session enumeration, and it is never compacted by the parent session's
+policy. Its conversation therefore cannot live in the `message` table —
+`message.session_id` is a foreign key with `ON DELETE CASCADE`, so writing
+one would fail the constraint rather than create a transcript.
+
+| Property | Where |
+|----------|-------|
+| The key | `AgentRunId` — the same durable identity `agent_run` already owns |
+| The row | `(run_id, ordinal, role, kind, redacted_body, byte_len, created_at)` |
+| The table | `agent_run_transcript`, created by migration **v89** |
+| The aggregate | `agent_run_transcript_state` — next ordinal, stored bytes, truncation flag |
+| Redaction | `redact_transcript_body`, at **write**, before the body is durable |
+| The row bound | `MAX_TRANSCRIPT_ROW_BYTES` — 8 KiB, marked in the row |
+| The run bound | `MAX_TRANSCRIPT_RUN_BYTES` — 256 KiB, marked by a truncation marker row |
+| The read bound | `MAX_TRANSCRIPT_READ_LIMIT` — 256 rows; there is no unbounded read |
+
+Three properties are load-bearing:
+
+- **Redaction happens at write.** The recogniser is the existing
+  `ProjectionFieldRedactor`, the same one the projection seam and the run's
+  durable failure message use — there is no second secret recogniser. A
+  read-time redaction would leave the secret durable.
+- **The bounds are enforced at write.** A truncated transcript says so: a
+  bounded row carries the in-row marker, and a bounded run carries a
+  truncation-marker row instead of the body it refused.
+- **The store is append-only and ordinal-stable.** A row is never rewritten,
+  and a concurrent append for one run receives a distinct ordinal. The
+  ordinal and the per-run byte total are read and advanced in one
+  `BEGIN IMMEDIATE` transaction, so the bound check costs the same on the
+  hundredth append as on the first.
+
+The transcript is written by the child's own capture path
+(`src/agent/worker.rs`), where the child's messages are produced. A
+transcript write failure is logged and the delegated work continues.
+
+A tool result in the transcript is the **outcome the loop actually executed**,
+not an event the provider chose to emit. The loop retains the executed
+outcomes per run (`src/agent/loop.rs`, `ExecutedToolOutcomes`), bounded, and
+the capture path writes one `ToolResult` row per retained outcome. The reason
+is that no provider adapter emits a tool-result event: the child's event
+vector carries the tool *calls*, and the tool *outputs* exist only where the
+tools ran. Reading the outputs from the event stream would therefore record a
+transcript whose tool results are empty in production.
+
+The retained output is the path-redacted text the loop published and the model
+received, kept as a bounded **excerpt**: a head, the truncation marker, and a
+tail. The tail matters — a tool's conclusion is at the end of its output, so a
+head-only cut would discard exactly the line a caller reads the output for.
+The capture path never writes into the child's event vector: that vector is
+what the parent's turn transcript is built from, so a tool call with no
+matching result must stay `Pending`.
 
 ## Configuration Surface
 

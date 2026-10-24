@@ -828,6 +828,16 @@ pub struct SessionAnalytics {
     and output are redacted on export. Specific keys (`command`, `path`,
     `content`, etc.) are individually redacted within the input object.
     Note: the code uses `terminal`, not `tail` as some docs claim.
+13. **A delegated run is not a session**: it has no `session` row, it
+    appears in no session enumeration, and it is never compacted by the
+    parent session's policy. `SessionStore::append_batch` therefore
+    returns `Ok(None)` for a synthetic transcript — `message.session_id`
+    is a foreign key with `ON DELETE CASCADE`, so writing one would fail
+    the constraint rather than create a transcript. A delegated run's
+    conversation is durable elsewhere: the delegated-run transcript
+    store (`codegg_core::agent_run_transcript`, ADR-0051 option B),
+    keyed by the run's `AgentRunId`. It is created by migration **v89**
+    and it is written by the child's own capture path, not from here.
 
 ## Testing
 

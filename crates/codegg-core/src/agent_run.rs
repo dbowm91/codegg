@@ -10,9 +10,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use super::agent_run_attempt::{
+    AgentRunAttemptStore, InMemoryAgentRunAttemptStore, SqliteAgentRunAttemptStore,
+};
 use crate::identity::{
     AgentRunId, AgentTaskId, NodeId, ProjectId, RepositoryId, ScratchId, WorktreeId,
 };
@@ -579,6 +583,17 @@ pub trait AgentRunStore: Send + Sync {
     ) -> Result<bool, AgentRunStoreError>;
     async fn has_scratch_leases(&self, scratch_id: &ScratchId) -> Result<bool, AgentRunStoreError>;
     async fn reconcile_scratch_attempt_leases(&self) -> Result<u64, AgentRunStoreError>;
+
+    /// The attempt and continuation store this run store owns.
+    async fn attempt_store(&self) -> Arc<dyn AgentRunAttemptStore>;
+
+    /// Move a terminal run back to `Queued` for a continuation: a
+    /// continuation is a **new attempt of the same run**, so the run's own
+    /// record must leave its terminal state.
+    async fn resume_for_continuation(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError>;
 }
 
 #[derive(Default)]
@@ -592,14 +607,23 @@ struct MemoryState {
     scratch_leases: HashMap<(ScratchId, JobId, AttemptId), AgentRunId>,
 }
 
-#[derive(Default)]
 pub struct InMemoryAgentRunStore {
     state: Mutex<MemoryState>,
+    attempts: Arc<dyn AgentRunAttemptStore>,
+}
+
+impl Default for InMemoryAgentRunStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryAgentRunStore {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            state: Mutex::new(MemoryState::default()),
+            attempts: Arc::new(InMemoryAgentRunAttemptStore::new()),
+        }
     }
 }
 
@@ -1058,6 +1082,34 @@ impl AgentRunStore for InMemoryAgentRunStore {
         }
         Ok(finished_run)
     }
+    async fn attempt_store(&self) -> Arc<dyn AgentRunAttemptStore> {
+        self.attempts.clone()
+    }
+    async fn resume_for_continuation(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError> {
+        let mut state = self.state.lock().await;
+        let run = state
+            .runs
+            .get_mut(id)
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
+        if !run.status.is_terminal() {
+            return Err(AgentRunStoreError::InvalidRunTransition {
+                from: run.status,
+                to: AgentRunStatus::Queued,
+            });
+        }
+        let now = Utc::now().timestamp_millis();
+        run.status = AgentRunStatus::Queued;
+        run.terminal = None;
+        run.result_ref = None;
+        run.failure_class = None;
+        run.failure_message = None;
+        run.finished_at = None;
+        run.updated_at = now;
+        Ok(run.clone())
+    }
     async fn save_result(&self, result: AgentRunResult) -> Result<(), AgentRunStoreError> {
         let mut state = self.state.lock().await;
         if !state.runs.contains_key(&result.run_id) {
@@ -1314,11 +1366,15 @@ impl AgentRunStore for InMemoryAgentRunStore {
 
 pub struct SqliteAgentRunStore {
     pool: SqlitePool,
+    attempts: Arc<dyn AgentRunAttemptStore>,
 }
 
 impl SqliteAgentRunStore {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            attempts: Arc::new(SqliteAgentRunAttemptStore::new(pool.clone())),
+            pool,
+        }
     }
 }
 
@@ -1801,6 +1857,41 @@ impl AgentRunStore for SqliteAgentRunStore {
         sqlx::query("UPDATE agent_task SET status = ?, updated_at = ? WHERE task_id = ? AND status NOT IN ('completed','failed','interrupted','cancelled')").bind(outcome.task_status().as_str()).bind(now).bind(run.task_id.as_str()).execute(&mut *tx).await.map_err(storage_error)?;
         tx.commit().await.map_err(storage_error)?;
         Ok(self.get_run(id).await?.unwrap_or(run))
+    }
+    async fn attempt_store(&self) -> Arc<dyn AgentRunAttemptStore> {
+        self.attempts.clone()
+    }
+    async fn resume_for_continuation(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError> {
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let now = Utc::now().timestamp_millis();
+        let result = sqlx::query(
+            "UPDATE agent_run SET status = 'queued', terminal = NULL, result_ref = NULL, \
+             failure_class = NULL, failure_message = NULL, finished_at = NULL, updated_at = ? \
+             WHERE run_id = ? AND status IN ('completed','failed','interrupted','cancelled')",
+        )
+        .bind(now)
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await.map_err(storage_error)?;
+            let run = self
+                .get_run(id)
+                .await?
+                .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
+            return Err(AgentRunStoreError::InvalidRunTransition {
+                from: run.status,
+                to: AgentRunStatus::Queued,
+            });
+        }
+        tx.commit().await.map_err(storage_error)?;
+        self.get_run(id)
+            .await?
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))
     }
     async fn save_result(&self, result: AgentRunResult) -> Result<(), AgentRunStoreError> {
         let bounded = result.bounded();

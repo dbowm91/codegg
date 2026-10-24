@@ -434,6 +434,28 @@ impl JobScheduler {
         self.job_notifications.lock().await.clone()
     }
 
+    /// Backfill durable terminal notices for jobs that terminated before
+    /// their subscription landed.
+    ///
+    /// The delegated spawn path subscribes a job after it dispatches it, so a
+    /// child that terminates inside that window has no subscription to
+    /// attribute its notice to. The notification service holds such a
+    /// terminal in memory and releases it when the subscription lands; this
+    /// is the durable counterpart for the case where the daemon restarted in
+    /// between, and for a subscription that landed after the terminal was
+    /// recorded.
+    ///
+    /// Bounded (the newest terminal jobs) and best-effort: a failure here
+    /// never fails daemon recovery, and the next recovery retries.
+    pub async fn recover_missing_terminal_notices(
+        &self,
+    ) -> Result<usize, super::job_notifications::JobNotificationError> {
+        let Some(service) = self.job_notifications.lock().await.clone() else {
+            return Ok(0);
+        };
+        service.recover_from_store(&self.store).await
+    }
+
     /// Best-effort durable terminal notice for one terminal job.
     ///
     /// Only explicitly subscribed background jobs produce notices; all

@@ -14,6 +14,7 @@
 //! and the attached/detached distinction. This module owns only the *rows* and
 //! the mouse hit geometry, and reconciles the two on every arriving snapshot.
 
+use crate::protocol::projection::dto::AgentRunTranscriptProjection;
 use crate::tui::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, SubagentTabs};
 use crate::tui::wrap::ellipsize_to_width;
 
@@ -60,6 +61,15 @@ pub struct SubagentRow {
     pub description: String,
     /// Raw status string from the projection.
     pub status: String,
+    /// The delegated run's recorded transcript, and how complete it is.
+    ///
+    /// `None` means the projection carried no transcript at all — an older
+    /// daemon, or a row built for a lifecycle event rather than read at a
+    /// boundary. It is **not** the same as
+    /// [`AgentRunTranscriptProjection::Absent`], which says the run recorded
+    /// no transcript: the tab says which of the two it is looking at, and
+    /// never renders an absent transcript as an empty pane.
+    pub transcript: Option<AgentRunTranscriptProjection>,
 }
 
 impl SubagentRow {
@@ -301,6 +311,7 @@ mod tests {
 
     fn row(status: &str) -> SubagentRow {
         SubagentRow {
+            transcript: None,
             child_instance_id: Some("t1".into()),
             task_id: "t1".into(),
             run_id: Some("r1".into()),
@@ -321,6 +332,7 @@ mod tests {
     /// the fallback they are meant to pin.
     fn described(status: &str) -> SubagentRow {
         SubagentRow {
+            transcript: None,
             profile: Some("Reconnaissance generalist.".into()),
             usefulness: Some("Useful for broad recon.".into()),
             ..row(status)
@@ -329,6 +341,7 @@ mod tests {
 
     fn row_id(task_id: &str, status: &str) -> SubagentRow {
         SubagentRow {
+            transcript: None,
             child_instance_id: Some(task_id.into()),
             task_id: task_id.into(),
             ..row(status)

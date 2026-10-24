@@ -95,7 +95,14 @@ pub const BAR_HINTS: &str = "⇧P/⇧N switch · ⇧X close";
 
 /// Columns between the tab entries (and the persona) and the key hints.
 pub const BAR_GAP: usize = 1;
-
+/// Maximum body bytes one transcript entry may occupy on screen.
+///
+/// The wire payload is bounded by the DTO's declared bound; this is the
+/// **display** bound, and it is separate on purpose. A tool result is the
+/// one place a delegated run can hand back an arbitrary blob, and a blob
+/// that fills the viewport is a blob the user cannot scroll past. The cut
+/// is stated on screen, so a shortened body never reads as the whole one.
+pub const MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES: usize = 4 * 1024;
 /// Narrowest a persona may be trimmed to before it is dropped instead.
 ///
 /// The same rule the sidebar applied to its descriptor, and for the same
@@ -261,7 +268,34 @@ impl SubagentTabs {
         let id = self.active_tab_id.clone()?;
         self.tabs.get_mut(&id)
     }
-
+    /// Scroll the active tab's view by `delta` rows.
+    ///
+    /// The offset never goes below zero. The **lower** end is the renderer's
+    /// to clamp: only the renderer knows how tall the content is, and a tab
+    /// that guessed would either stop short of the end or run past it.
+    pub fn scroll_active(&mut self, delta: i16) {
+        let Some(tab) = self.active_mut() else {
+            return;
+        };
+        let next = i32::from(tab.scroll) + i32::from(delta);
+        tab.scroll = next.max(0) as u16;
+    }
+    /// Move the active tab's view to its first line.
+    pub fn scroll_active_to_top(&mut self) {
+        if let Some(tab) = self.active_mut() {
+            tab.scroll = 0;
+        }
+    }
+    /// Move the active tab's view to its last line.
+    ///
+    /// `u16::MAX` means "as far down as there is": the renderer clamps the
+    /// offset to the content height, so the tab does not have to know how
+    /// tall its own content is.
+    pub fn scroll_active_to_bottom(&mut self) {
+        if let Some(tab) = self.active_mut() {
+            tab.scroll = u16::MAX;
+        }
+    }
     /// Lookup a tab by id.
     pub fn get(&self, tab_id: &SubagentTabId) -> Option<&SubagentTabState> {
         self.tabs.get(tab_id)
@@ -758,6 +792,7 @@ mod tests {
 
     fn row(task_id: &str, status: &str) -> SubagentRow {
         SubagentRow {
+            transcript: None,
             child_instance_id: Some(task_id.to_string()),
             task_id: task_id.into(),
             run_id: None,

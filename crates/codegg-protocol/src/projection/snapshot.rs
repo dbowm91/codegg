@@ -288,6 +288,14 @@ impl SessionProjectionSnapshot {
     pub fn upsert_agent_run(&mut self, mut run: AgentRunSummary) {
         run.normalise();
         if let Some(slot) = self.agent_runs.iter_mut().find(|r| r.run_id == run.run_id) {
+            // A lifecycle event carries lifecycle facts; the transcript is a
+            // boundary read and is not carried by the event. An upsert must
+            // therefore not **erase** a transcript the snapshot already
+            // holds — the recorded transcript only ever grows, so the older
+            // page is stale, not wrong. A later snapshot read replaces it.
+            if run.transcript.is_none() {
+                run.transcript = slot.transcript.clone();
+            }
             *slot = run;
             return;
         }
