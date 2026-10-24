@@ -51,11 +51,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # `tool/terminal.rs`, `tool/formatter.rs`, `tool/tool_program.rs`,
 # `tool/lsp_read.rs`, `tool/git_read.rs` and `tool/mod.rs`, all of which carry
 # workspace-scoped defaults.
+#
+# M005 corrective C008: `crates/codegg-core` is on the list too. The checkout
+# reservation authority lives there and resolves the managed checkout that
+# contains a path; it used to resolve a relative path against the process
+# working directory, which is the mis-targeting class this guard exists to
+# reject. The crate is daemon-owned (the daemon's durable store and its
+# reservation authority), so its working-directory reads are the same class.
 
 SCANNED_TREES: list[str] = [
     "src/tool",
     "src/scheduler",
     "src/core",
+    "crates/codegg-core",
 ]
 SCANNED_FILES: list[str] = [
     "src/agent/worker.rs",
@@ -222,6 +230,34 @@ SELF_TEST_CASES: list[tuple[str, str, str, int]] = [
         "a normal rooted call is not a violation",
         "src/tool/hypothetical.rs",
         "pub fn new(root: PathBuf) -> Self { Self { allowed_root: root } }\n",
+        0,
+    ),
+    (
+        "M005 corrective C008: a process-cwd read in the core crate is caught",
+        "crates/codegg-core/src/checkout_reservation.rs",
+        "pub fn canonical_identity(path: &Path) -> PathBuf {\n"
+        "    let absolute = std::env::current_dir()\n"
+        "        .unwrap_or_else(|_| PathBuf::from(\"/\"))\n"
+        "        .join(path);\n"
+        "    absolute\n"
+        "}\n",
+        1,
+    ),
+    (
+        "M005 corrective C008: a bare current_dir() in the core crate is caught too",
+        "crates/codegg-core/src/process_admission.rs",
+        "pub fn root() -> PathBuf {\n"
+        "    current_dir().unwrap_or_default()\n"
+        "}\n",
+        1,
+    ),
+    (
+        "M005 corrective C008: a core-crate test module is not a violation",
+        "crates/codegg-core/src/tool_program/child_job.rs",
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn t() { let root = std::env::current_dir().unwrap(); }\n"
+        "}\n",
         0,
     ),
 ]

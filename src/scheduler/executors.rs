@@ -594,6 +594,14 @@ pub struct SubagentAuthority {
     pub shared_checkout: Option<Arc<codegg_core::shared_checkout::SharedCheckoutCoordinator>>,
     /// M005 C006: the writer-fence factory.
     pub writer_fences: Option<Arc<dyn crate::tool::writer_fence::WriterFenceFactory>>,
+    /// M005 corrective C009: the daemon's session pool.
+    ///
+    /// A delegated child has no turn of its own, so the executor restores the
+    /// dispatching turn's durable origin attribution from the daemon's own
+    /// store and carries it into the child. When this is absent the child's
+    /// write stays unattributed, which the shared-checkout fence refuses on
+    /// a daemon with a team policy.
+    pub origin_attribution_pool: Option<sqlx::SqlitePool>,
 }
 
 /// Canonical executor for `JobKind::Subagent`. Hands the work off to
@@ -665,6 +673,110 @@ impl SubagentJobExecutor {
     pub fn with_authority(mut self, authority: SubagentAuthority) -> Self {
         self.authority = authority;
         self
+    }
+
+    /// Release the lease on a managed checkout this run holds for **itself**.
+    ///
+    /// M005 corrective C007 §6.2. An **isolated** checkout belongs to one
+    /// run, so its lease is released exactly as it always was.
+    ///
+    /// A **shared** checkout belongs to the **group**. In the shared case
+    /// `owned_worktree` names that same shared checkout — the run that
+    /// allocated it holds the lease — so releasing it here would strip the
+    /// group of its write authority. The shared lease is released by
+    /// [`Self::release_shared_checkout`], and only once the group's
+    /// liveness is settled.
+    async fn release_isolated_checkout(
+        &self,
+        owned_worktree: Option<&(
+            codegg_core::worktree_service::WorktreeRecord,
+            codegg_core::worktree_service::WorktreeLease,
+        )>,
+        shared_checkout: Option<&codegg_core::shared_checkout::SharedCheckout>,
+    ) {
+        if shared_checkout.is_some() {
+            return;
+        }
+        let Some(service) = self.worktree_service.as_ref() else {
+            return;
+        };
+        if let Some((record, lease)) = owned_worktree {
+            let _ = service.refresh(&record.worktree_id).await;
+            let _ = service
+                .release_lease(&record.worktree_id, &lease.owner_run_id, lease.generation)
+                .await;
+        }
+    }
+
+    /// Release the lease on a **shared** managed checkout, once the group has
+    /// finished.
+    ///
+    /// M005 corrective C007 §6.2: the shared checkout's lease belongs to the
+    /// **group**: its lease is released only once the group has reached a
+    /// terminal status.
+    ///
+    /// The lease used to be released unconditionally when the run that
+    /// allocated it ended. That stripped the surviving member of its write
+    /// authority — the fence reads `managed_worktree.owner_run_id`, and a
+    /// released lease clears it — lapsed the group's reservation, and let the
+    /// group split across two checkouts, because a checkout with no lease
+    /// holder is skipped by the coordinator's resolution.
+    ///
+    /// M005 corrective C007 (implementation review): this is called
+    /// **after** the run's terminal transition is durable. The group's
+    /// liveness is derived from its members' durable statuses, so a release
+    /// decided before this run is terminal sees the group as live and
+    /// retains the lease for good.
+    async fn release_shared_checkout(
+        &self,
+        shared_checkout: Option<&codegg_core::shared_checkout::SharedCheckout>,
+    ) {
+        let Some(checkout) = shared_checkout else {
+            return;
+        };
+        let group_id = checkout.group_id.clone();
+        // The lease belongs to the group, so the coordinator decides
+        // whether it goes back: a live group keeps it.
+        let released = match self.authority.shared_checkout.as_ref() {
+            Some(coordinator) => coordinator.release_group_lease(checkout).await,
+            None => Err(
+                codegg_core::shared_checkout::SharedCheckoutError::MissingStore("agent-run group"),
+            ),
+        };
+        match released {
+            Ok(true) => {
+                // The group has finished: the lease goes back and the
+                // checkout returns to `ready`.
+                tracing::info!(
+                    group_id = %group_id,
+                    worktree_id = %checkout.worktree_id,
+                    "shared checkout lease released: the group has finished",
+                );
+            }
+            Ok(false) => {
+                // The group is still live: the lease belongs to the
+                // group, so it is held. Releasing it here would strip the
+                // group's remaining members of their write authority.
+                tracing::info!(
+                    group_id = %group_id,
+                    worktree_id = %checkout.worktree_id,
+                    "shared checkout lease retained: the group is still live",
+                );
+            }
+            Err(error) => {
+                // The group's state cannot be read, so the lease is HELD.
+                // Releasing it on an unreadable group state would strip
+                // the group's members of their write authority; the
+                // reconcile path releases it once the owner run is
+                // terminal and the group is no longer live.
+                tracing::warn!(
+                    ?error,
+                    group_id = %group_id,
+                    worktree_id = %checkout.worktree_id,
+                    "shared checkout lease retained: the group's state could not be read",
+                );
+            }
+        }
     }
 
     /// Publish a bounded, store-derived projection after an authoritative
@@ -954,12 +1066,31 @@ impl JobExecutor for SubagentJobExecutor {
             );
         }
         let mut owned_worktree = None;
+        // M005 corrective C007 §6.2: the group's shared checkout is tracked
+        // apart from an isolated one, because the two differ in what happens
+        // to the lease when this run ends. An isolated checkout's lease
+        // belongs to the run; a shared checkout's lease belongs to the
+        // **group**.
+        let mut shared_checkout: Option<codegg_core::shared_checkout::SharedCheckout> = None;
         let needs_isolation = self.pool.requires_isolation(&agent, &denied_tools);
-        if needs_isolation && run_id.is_none() {
+        // M005 corrective C007 §6.4: the shared branch is entered on the
+        // **placement**, not on `needs_isolation`. The placement used to be
+        // honoured only when the run's own tool profile happened to need
+        // isolation, so a shared placement could be dropped in favour of the
+        // parent's workspace root — with no writer fence, because the run's
+        // durable record carried no `worktree_id`.
+        let shared_placement = placement.shared_group_id().cloned();
+        let wants_shared_checkout = shared_placement.is_some();
+        if (needs_isolation || wants_shared_checkout) && run_id.is_none() {
             return failure_completion(
                 started,
                 ExecutorStatus::Failed,
-                "mutating delegated run must use the durable scheduler path for isolation".into(),
+                if wants_shared_checkout {
+                    "a shared placement must use the durable scheduler path".into()
+                } else {
+                    "mutating delegated run must use the durable scheduler path for isolation"
+                        .into()
+                },
             );
         }
 
@@ -982,27 +1113,32 @@ impl JobExecutor for SubagentJobExecutor {
                     format!("agent run preparation failed: {error}"),
                 );
             }
-            if needs_isolation {
+            // M005 corrective C007 §6.4: the shared branch is entered on the
+            // **placement**, not on `needs_isolation`. A run that asked for
+            // the shared profile gets the shared checkout even when its own
+            // tool profile would not have needed isolation — and a placement
+            // that cannot be honoured is refused with a typed error rather
+            // than silently dropped in favour of the parent's workspace root.
+            if needs_isolation || wants_shared_checkout {
                 let Some(worktree_service) = self.worktree_service.as_ref() else {
+                    let reason = if wants_shared_checkout {
+                        "a shared placement requires managed worktree isolation"
+                    } else {
+                        "mutating delegated run requires managed worktree isolation"
+                    };
                     if let Err(error) = store
                         .finish(
                             run_id,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
                             None,
                             Some("isolation_unavailable".into()),
-                            Some(
-                                "mutating delegated run requires managed worktree isolation".into(),
-                            ),
+                            Some(reason.into()),
                         )
                         .await
                     {
                         tracing::error!(?error, run_id = ?run_id, "agent run finish failed (isolation unavailable)");
                     }
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        "mutating delegated run requires managed worktree isolation".into(),
-                    );
+                    return failure_completion(started, ExecutorStatus::Failed, reason.into());
                 };
                 let run = match store.get_run(run_id).await {
                     Ok(Some(run)) => run,
@@ -1052,13 +1188,42 @@ impl JobExecutor for SubagentJobExecutor {
                 // reached only for genuinely repo-less roots. Such a run
                 // executes in place. The sandbox profile and the permission
                 // layer are unchanged: they are orthogonal to isolation.
-                if task.repository_id.is_none() {
-                    tracing::info!(
-                        run_id = ?run_id,
-                        "delegated mutating run has no repository identity; executing in place without worktree isolation",
-                    );
-                }
-                if let Some(repository_id) = task.repository_id.clone() {
+                //
+                // M005 corrective C007 §6.4: a **shared** placement is not
+                // "executes in place". A repo-less root has no managed
+                // checkout to share, so the placement cannot be honoured and
+                // the run is refused. The isolated arm below keeps the
+                // repo-less "execute in place" behaviour it always had.
+                //
+                // M005 C006: a shared placement joins the group's checkout
+                // instead of allocating a second one.
+                //
+                // The group's checkout is resolved *and* created under the
+                // group's own lock, so two members that reach this point
+                // together end up on one checkout: the first allocates it,
+                // the second joins it. The placement is opt-in, so the
+                // default path below is untouched.
+                //
+                // c006-shared-placement: the group's shared checkout
+                if let Some(group_id) = shared_placement.clone() {
+                    let Some(repository_id) = task.repository_id.clone() else {
+                        let reason = "a shared placement cannot be honoured: the workspace has \
+                                     no repository identity, so there is no managed checkout to \
+                                     share";
+                        if let Err(error) = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("shared_checkout_unavailable".into()),
+                                Some(reason.into()),
+                            )
+                            .await
+                        {
+                            tracing::error!(?error, run_id = ?run_id, "agent run finish failed (shared placement unhonourable)");
+                        }
+                        return failure_completion(started, ExecutorStatus::Failed, reason.into());
+                    };
                     let repository_root = workspace_root.clone();
                     let request = codegg_core::worktree_service::CreateWorktreeRequest {
                         project_id: task.project_id.clone(),
@@ -1072,82 +1237,139 @@ impl JobExecutor for SubagentJobExecutor {
                         base_path: Some(repository_root.clone()),
                         owner_run_id: run_id.clone(),
                     };
-                    // M005 C006: a shared placement joins the group's checkout
-                    // instead of allocating a second one.
-                    //
-                    // The group's checkout is resolved *and* created under the
-                    // group's own lock, so two members that reach this point
-                    // together end up on one checkout: the first allocates it,
-                    // the second joins it. The placement is opt-in, so the
-                    // default path below is untouched.
-                    //
-                    // c006-shared-placement: the group's shared checkout
-                    if let Some(group_id) = placement.shared_group_id().cloned() {
-                        let Some(coordinator) = self.authority.shared_checkout.as_ref() else {
-                            return failure_completion(
-                                started,
-                                ExecutorStatus::Failed,
-                                "the shared checkout profile is not available in this daemon"
-                                    .into(),
-                            );
-                        };
-                        let outcome = match coordinator
-                            .acquire(codegg_core::shared_checkout::SharedCheckoutRequest {
-                                group_id: group_id.clone(),
-                                member_run_id: run_id.clone(),
-                                allocation: request,
-                            })
+                    let Some(coordinator) = self.authority.shared_checkout.as_ref() else {
+                        // M005 corrective C007 (implementation review): the
+                        // run is finished here, exactly as its neighbours
+                        // finish it. The arm returned a failure without
+                        // recording the terminal transition, so the run
+                        // stayed in `Preparing` for good — and a group
+                        // whose member never finishes never terminates,
+                        // which holds the shared checkout's lease.
+                        if let Err(finish_error) = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("shared_checkout_unavailable".into()),
+                                Some(
+                                    "the shared checkout profile is not available in this daemon"
+                                        .into(),
+                                ),
+                            )
                             .await
                         {
-                            Ok(outcome) => outcome,
-                            Err(error) => {
-                                if let Err(finish_error) = store
-                                    .finish(
-                                        run_id,
-                                        codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
-                                        None,
-                                        Some("shared_checkout_unavailable".into()),
-                                        Some(error.to_string()),
-                                    )
-                                    .await
-                                {
-                                    tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (shared checkout unavailable)");
-                                }
-                                return failure_completion(
-                                    started,
-                                    ExecutorStatus::Failed,
-                                    format!("shared checkout placement failed: {error}"),
-                                );
+                            tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (shared checkout unavailable)");
+                        }
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            "the shared checkout profile is not available in this daemon".into(),
+                        );
+                    };
+                    let outcome = match coordinator
+                        .acquire(codegg_core::shared_checkout::SharedCheckoutRequest {
+                            group_id: group_id.clone(),
+                            member_run_id: run_id.clone(),
+                            allocation: request,
+                        })
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            if let Err(finish_error) = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("shared_checkout_unavailable".into()),
+                                    Some(error.to_string()),
+                                )
+                                .await
+                            {
+                                tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (shared checkout unavailable)");
                             }
-                        };
-                        let checkout = outcome.checkout().clone();
-                        if let Err(error) = store
-                            .attach_worktree(run_id, checkout.worktree_id.clone())
-                            .await
-                        {
                             return failure_completion(
                                 started,
                                 ExecutorStatus::Failed,
-                                format!("shared checkout linkage failed: {error}"),
+                                format!("shared checkout placement failed: {error}"),
                             );
                         }
-                        allowed_paths = vec![checkout.path.to_string_lossy().into_owned()];
-                        workspace_root = checkout.path.clone();
-                        if let codegg_core::shared_checkout::SharedCheckoutOutcome::Created {
-                            record,
-                            lease,
-                            ..
-                        } = outcome
+                    };
+                    let checkout = outcome.checkout().clone();
+                    if let Err(error) = store
+                        .attach_worktree(run_id, checkout.worktree_id.clone())
+                        .await
+                    {
+                        // M005 corrective C007 (implementation review): the
+                        // run is finished here too. A linkage failure that
+                        // returns without a terminal transition leaves the
+                        // run in `Preparing`, and a group whose member never
+                        // finishes never terminates.
+                        if let Err(finish_error) = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("shared_checkout_unavailable".into()),
+                                Some(error.to_string()),
+                            )
+                            .await
                         {
-                            owned_worktree = Some((*record, *lease));
+                            tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (shared checkout linkage failed)");
                         }
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("shared checkout linkage failed: {error}"),
+                        );
+                    }
+                    allowed_paths = vec![checkout.path.to_string_lossy().into_owned()];
+                    workspace_root = checkout.path.clone();
+                    // M005 corrective C007 §6.2: the shared checkout's lease
+                    // belongs to the **group**, so the run tracks the
+                    // checkout itself — not only the lease it happens to
+                    // hold. A joiner holds no lease of its own and must
+                    // still be able to release it once the group is done.
+                    shared_checkout = Some(checkout.clone());
+                    if let codegg_core::shared_checkout::SharedCheckoutOutcome::Created {
+                        record,
+                        lease,
+                        ..
+                    } = outcome
+                    {
+                        owned_worktree = Some((*record, *lease));
+                    }
+                    tracing::info!(
+                        run_id = ?run_id,
+                        group_id = ?group_id,
+                        worktree_id = %checkout.worktree_id,
+                        "delegated run placed on the group's shared checkout",
+                    );
+                } else if needs_isolation {
+                    // No repository identity means there is no worktree to
+                    // isolate in, so the run executes in place. The
+                    // sandbox profile and the permission layer are
+                    // unchanged: they are orthogonal to isolation.
+                    if task.repository_id.is_none() {
                         tracing::info!(
                             run_id = ?run_id,
-                            group_id = ?group_id,
-                            worktree_id = %checkout.worktree_id,
-                            "delegated run placed on the group's shared checkout",
+                            "delegated mutating run has no repository identity; executing in place without worktree isolation",
                         );
-                    } else {
+                    }
+                    if let Some(repository_id) = task.repository_id.clone() {
+                        let repository_root = workspace_root.clone();
+                        let request = codegg_core::worktree_service::CreateWorktreeRequest {
+                            project_id: task.project_id.clone(),
+                            repository_id,
+                            workspace_id: task.workspace_id.clone(),
+                            node_id: None,
+                            repository_root: repository_root.clone(),
+                            base_commit,
+                            base_ref: None,
+                            target_branch: None,
+                            base_path: Some(repository_root.clone()),
+                            owner_run_id: run_id.clone(),
+                        };
                         let (record, lease) = match worktree_service.create(&request).await {
                             Ok(value) => value,
                             Err(error) => {
@@ -1266,13 +1488,22 @@ impl JobExecutor for SubagentJobExecutor {
         // run's own durable record, so a child on a shared checkout takes
         // that checkout's writer permit and a child on an isolated checkout
         // keeps the containment-only profile it always had.
+        //
+        // M005 corrective C009 (implementation review): an unreadable run
+        // record is not "this run holds no checkout". The old `.ok()` chain
+        // discarded the error and the attribution silently became empty; the
+        // run is refused instead.
         let attached_worktree_id = match (self.agent_runs.as_ref(), run_id.as_ref()) {
-            (Some(store), Some(run)) => store
-                .get_run(run)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|record| record.worktree_id),
+            (Some(store), Some(run)) => match store.get_run(run).await {
+                Ok(record) => record.and_then(|record| record.worktree_id),
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("the agent-run record could not be read: {error}"),
+                    );
+                }
+            },
             _ => None,
         };
         let writer_fence = match self.authority.writer_fences.as_ref() {
@@ -1312,6 +1543,38 @@ impl JobExecutor for SubagentJobExecutor {
                 .as_ref()
                 .map(|worktree| worktree.as_str().to_owned()),
         );
+        // M005 corrective C009: the child's writes run on behalf of the actor
+        // that admitted the dispatching turn. The child has no turn of its
+        // own, so the executor restores that turn's durable origin attribution
+        // and carries it in. An unreadable or absent row leaves the child
+        // unattributed, which is the refusal direction.
+        let execution_audit = match (
+            self.authority.origin_attribution_pool.as_ref(),
+            ctx.job.turn_id.as_deref(),
+        ) {
+            (Some(pool), Some(turn_id)) => {
+                let mut chain = codegg_core::audit_instrumentation::AuditChainContext::new();
+                chain.session_id = ctx.job.session_id.clone();
+                chain.turn_id = Some(turn_id.to_owned());
+                chain.job_id = Some(ctx.job.job_id.as_str().to_owned());
+                match crate::tool::factory::resolve_origin_execution_audit(
+                    pool, "turn", turn_id, chain,
+                )
+                .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            turn_id = %turn_id,
+                            "dispatching turn origin attribution lookup failed; the delegated child stays unattributed"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             child_instance_id: String::new(),
@@ -1355,6 +1618,8 @@ impl JobExecutor for SubagentJobExecutor {
             process_admission: child_process_admission,
             // M005 corrective C006: the resolved writer fence.
             writer_fence,
+            // M005 corrective C009: the dispatching turn's actor.
+            execution_audit,
         };
         let effective_workspace_root = request.workspace_root.clone();
 
@@ -1411,18 +1676,13 @@ impl JobExecutor for SubagentJobExecutor {
         }
         match result {
             Ok(result) => {
-                if let Some((record, lease)) = owned_worktree.as_ref() {
-                    if let Some(service) = self.worktree_service.as_ref() {
-                        let _ = service.refresh(&record.worktree_id).await;
-                        let _ = service
-                            .release_lease(
-                                &record.worktree_id,
-                                &lease.owner_run_id,
-                                lease.generation,
-                            )
-                            .await;
-                    }
-                }
+                // M005 corrective C007 §6.2: an isolated checkout's lease is
+                // the run's own and is released exactly as it always was. A
+                // shared checkout's lease belongs to the group, so it is
+                // released **after** this run's terminal transition is
+                // durable — see `release_shared_checkout` below.
+                self.release_isolated_checkout(owned_worktree.as_ref(), shared_checkout.as_ref())
+                    .await;
                 let status = if result.success {
                     ExecutorStatus::Completed
                 } else if ctx.cancellation.is_cancelled() {
@@ -1484,6 +1744,14 @@ impl JobExecutor for SubagentJobExecutor {
                         }
                     }
                 }
+                // M005 corrective C007 (implementation review): the shared
+                // lease is released **after** this run's terminal transition
+                // is durable. The group's liveness is derived from its
+                // members' durable statuses, so a release decided before the
+                // transition would see the group as live and retain the
+                // lease for good — the checkout would never return to
+                // `ready`.
+                self.release_shared_checkout(shared_checkout.as_ref()).await;
                 if let Some(run_id) = run_id_for_lifecycle.as_ref() {
                     self.publish_run_projection(run_id).await;
                 }
@@ -1499,18 +1767,13 @@ impl JobExecutor for SubagentJobExecutor {
                 }
             }
             Err(e) => {
-                if let Some((record, lease)) = owned_worktree.as_ref() {
-                    if let Some(service) = self.worktree_service.as_ref() {
-                        let _ = service.refresh(&record.worktree_id).await;
-                        let _ = service
-                            .release_lease(
-                                &record.worktree_id,
-                                &lease.owner_run_id,
-                                lease.generation,
-                            )
-                            .await;
-                    }
-                }
+                // M005 corrective C007 §6.2: an isolated checkout's lease is
+                // the run's own and is released exactly as it always was. A
+                // shared checkout's lease belongs to the group, so it is
+                // released **after** this run's terminal transition is
+                // durable — see `release_shared_checkout` below.
+                self.release_isolated_checkout(owned_worktree.as_ref(), shared_checkout.as_ref())
+                    .await;
                 if let (Some(store), Some(run_id)) =
                     (&self.agent_runs, run_id_for_lifecycle.as_ref())
                 {
@@ -1559,6 +1822,14 @@ impl JobExecutor for SubagentJobExecutor {
                     }
                     self.publish_run_projection(run_id).await;
                 }
+                // M005 corrective C007 (implementation review): the shared
+                // lease is released **after** this run's terminal transition
+                // is durable. The group's liveness is derived from its
+                // members' durable statuses, so a release decided before the
+                // transition would see the group as live and retain the
+                // lease for good — the checkout would never return to
+                // `ready`.
+                self.release_shared_checkout(shared_checkout.as_ref()).await;
                 failure_completion(
                     started,
                     if ctx.cancellation.is_cancelled() {

@@ -10,11 +10,12 @@
 //! * **The branch is the daemon's.** The daemon creates it first, through the
 //!   existing typed, policy-allowed `git branch` path. The child attaches to a
 //!   branch that already exists, so it writes **no ref**.
-//! * **The grant is the administration directory and nothing else.** The child
-//!   may write the new checkout, the daemon scratch, and the linked worktree's
-//!   own `worktrees/` directory inside the repository's Git directory. Every
-//!   other path under that Git directory — `refs`, `objects`, `index`,
-//!   `config`, `hooks`, `packed-refs` — is read-only to the child.
+//! * **The grant is the administration root and nothing else.** The child may
+//!   write the new checkout, the daemon scratch, and the repository's Git
+//!   directory's **shared** `worktrees/` root — the parent of every linked
+//!   worktree's own administration directory. Every other path under that Git
+//!   directory — `refs`, `objects`, `index`, `config`, `hooks`, `packed-refs`
+//!   — is read-only to the child.
 //! * **Containment is asserted, not requested.** The launch's *obtained*
 //!   enforcement is read after the launch. A request is a hope; only the
 //!   obtained fact is evidence.
@@ -97,8 +98,10 @@ impl WorktreeLaunchTiers {
 /// Everything one contained worktree creation names.
 ///
 /// The paths are resolved **before** the child runs, and they are the whole
-/// grant: the child may write the checkout, the scratch and the linked
-/// worktree's own administration directory, and nothing else.
+/// grant: the child may write the checkout, the scratch and the **shared**
+/// administration root, and nothing else. The shared root is the *parent* of
+/// every linked worktree's own administration directory — see ADR-0048's
+/// clause 3 and the amendment that records what that reach permits.
 #[derive(Clone, Debug)]
 pub struct WorktreeChildPaths {
     /// The daemon-pinned Git executable.
@@ -111,9 +114,11 @@ pub struct WorktreeChildPaths {
     pub checkout: PathBuf,
     /// The daemon scratch root.
     pub scratch: PathBuf,
-    /// `<common-gitdir>/worktrees/` — the grant's administration root.
+    /// `<common-gitdir>/worktrees/` — the **shared** administration root, and
+    /// the parent of every linked worktree's own administration directory.
     pub administration_root: PathBuf,
-    /// The linked worktree's own administration directory.
+    /// The linked worktree's own administration directory — the child writes
+    /// it *through* the shared root above, which is what the grant names.
     pub administration_dir: PathBuf,
     /// The daemon's branch, already created.
     pub branch: String,
@@ -131,7 +136,7 @@ pub struct WorktreeChildPaths {
 /// and rewrites the branch ref even when the value is unchanged, so the
 /// attached form cannot run inside a grant that excludes `refs`. The detached
 /// form writes no ref at all, and attaching the branch afterwards is a write
-/// to the administration directory the grant already names.
+/// inside the shared administration root the grant already names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeChildStep {
     /// `git --git-dir=<gitdir> worktree add --detach <checkout> <commit>`
@@ -187,8 +192,8 @@ pub struct WorktreeChildLaunch {
 ///
 /// This is the **one authorized operation** ADR-0048 grants, in its two
 /// steps. The grant is identical for both: the child may write the checkout,
-/// the daemon scratch and the linked worktree's own administration directory,
-/// and nothing else.
+/// the daemon scratch and the **shared** administration root, and nothing
+/// else.
 pub fn compose_worktree_child_launch(
     paths: &WorktreeChildPaths,
     step: WorktreeChildStep,
@@ -271,18 +276,20 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
         // ── The paths the grant names ──────────────────────────────────────
         let gitdir = canonical(&request.repository_gitdir)?;
         let scratch = prepare_scratch_root(&self.scratch_root)?;
-        // Neither the checkout nor the administration directory exists yet —
-        // the daemon creates the first and Git creates the second — so both
+        // Neither the checkout nor the administration root exists yet — the
+        // daemon creates the first and the second is created below — so both
         // are resolved through their existing parent rather than through
         // `canonicalize`, which demands every component exist.
         let checkout = canonical_pending(&request.worktree_path)?;
         // A linked worktree's administration directory always lives inside
         // the repository's Git directory — `git worktree add` has no
-        // separate-git-dir option — so the grant names it explicitly.
+        // separate-git-dir option — so the grant names the **shared** root
+        // that holds every one of them.
         let administration_root = canonical_pending(&gitdir.join("worktrees"))?;
 
-        // The administration directory is created by Git on demand, but the
-        // grant names it, so it has to exist before the launch.
+        // The shared administration root has to exist before the launch: the
+        // grant names it, and the child may only write paths the launch
+        // description already declares.
         std::fs::create_dir_all(&administration_root).map_err(|error| {
             WorktreeServiceError::Git(format!(
                 "the worktree administration directory could not be prepared: {error}"
@@ -344,8 +351,9 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
         // refs/heads/<branch>`. The attached form of `worktree add` would
         // lock and rewrite the branch ref — measured, not assumed — so the
         // worktree is created detached and the daemon's branch is attached
-        // afterwards, with Git's own plumbing, writing only the
-        // administration directory the grant already names.
+        // afterwards, with Git's own plumbing, writing only the linked
+        // worktree's own administration directory inside the shared root the
+        // grant names.
         let paths = WorktreeChildPaths {
             git_binary: self.git_binary.clone(),
             gitdir: gitdir.clone(),
@@ -385,14 +393,16 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
         };
         // The mount view is the dimension this milestone's grant is about, and
         // it must be **obtained**, not merely requested: the obtained scope
-        // has to name the administration directory as a writable root. A
+        // has to name the administration root as a writable root. A
         // request is a hope; only the obtained fact is evidence.
-        let obtained_writes = guarantees
-            .iter()
-            .find_map(|entry| entry.strip_prefix("writable grant roots: "))
-            .unwrap_or_default();
+        //
+        // The comparison is on whole paths. A substring test over the
+        // joined report accepts a root that merely shares a prefix with the
+        // required one — `/repo/.git/worktrees-old` contains
+        // `/repo/.git/worktrees` — and that is not the root the child
+        // obtained.
         for required in [&checkout, &scratch, &administration_root] {
-            if !obtained_writes.contains(&required.display().to_string()) {
+            if !obtained_write_root_is_present(&guarantees, required) {
                 return Err(WorktreeServiceError::Git(format!(
                     "the worktree child did not obtain write access to {}",
                     required.display()
@@ -431,7 +441,7 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
             )));
         }
         // The attach is a contained launch too, and its obtained enforcement
-        // is asserted the same way: the administration directory must be in
+        // is asserted the same way: the administration root must be in
         // the scope the launch actually obtained.
         let attach_guarantees = match &attach.sandbox {
             SandboxExecutionOutcome::Enforced { guarantees, .. } => guarantees.clone(),
@@ -441,11 +451,7 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
                 ))
             }
         };
-        let attach_writes = attach_guarantees
-            .iter()
-            .find_map(|entry| entry.strip_prefix("writable grant roots: "))
-            .unwrap_or_default();
-        if !attach_writes.contains(&administration_root.display().to_string()) {
+        if !obtained_write_root_is_present(&attach_guarantees, &administration_root) {
             return Err(WorktreeServiceError::Git(format!(
                 "the worktree attach did not obtain write access to {}",
                 administration_root.display()
@@ -459,6 +465,57 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
             network_enforced,
         })
     }
+}
+
+/// Whether the launch's **obtained** enforcement names `required` as a
+/// writable root.
+///
+/// ADR-0048 clause 4 is "containment is asserted, not requested": the launch's
+/// obtained scope, not the requested configuration, is the evidence. This is
+/// the writable-root half of that assertion.
+///
+/// The comparison is on **whole paths**, never on a substring of the joined
+/// report. A substring test accepts a root that merely shares a prefix with
+/// the required one — `/repo/.git/worktrees-old` contains
+/// `/repo/.git/worktrees` — and that root is not the one the child obtained.
+///
+/// The obtained set is compared by **membership**, so a backend that reports
+/// its roots in a different order, or reports extra roots alongside the
+/// required one, still passes: the question is whether the required root is
+/// *among* the obtained roots, not whether the obtained list matches it
+/// exactly.
+///
+/// Public so the integration suite can prove the prefix-sharing rejection
+/// against the same function the launch itself uses.
+pub fn obtained_write_root_is_present(guarantees: &[String], required: &Path) -> bool {
+    obtained_write_roots(guarantees)
+        .iter()
+        .any(|root| root.as_path() == required)
+}
+
+/// The writable roots the launch reported it actually obtained.
+///
+/// The mount view reports them as one comma-joined entry, so the set is
+/// recovered by splitting that entry back into its elements. Splitting is
+/// what makes the comparison exact: the elements are whole paths, and a
+/// prefix-sharing root is a different element, not a match.
+///
+/// A path that itself contains a comma is split here and therefore never
+/// matches. That is the safe direction: the launch fails closed rather than
+/// passing on a partial path.
+fn obtained_write_roots(guarantees: &[String]) -> Vec<PathBuf> {
+    guarantees
+        .iter()
+        .find_map(|entry| entry.strip_prefix("writable grant roots: "))
+        .map(|joined| {
+            joined
+                .split(',')
+                .map(str::trim)
+                .filter(|element| !element.is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The child is launched through the canonical managed-process owner, with the
@@ -485,7 +542,8 @@ async fn run_worktree_child_step(
 }
 
 /// Verify that the checkout's `.git` is the **pointer file** the child's grant
-/// authorized, naming the administration directory the grant named.
+/// authorized, naming the administration directory under the grant's shared
+/// root.
 ///
 /// The mount view exempts exactly one path from its "hide a `.git` that does
 /// not exist yet" rule: the checkout's own `.git`. The child could in
@@ -552,7 +610,8 @@ fn verify_pointer(checkout: &Path, administration_dir: &Path) -> Result<(), Work
 /// and that is read from the launch's own result.
 ///
 /// The grant is exactly ADR-0048 clause 3: the child may write the new
-/// checkout, the daemon scratch, and the linked worktree's own
+/// checkout, the daemon scratch, and the **shared** administration root —
+/// `<common-gitdir>/worktrees/`, the parent of every linked worktree's own
 /// administration directory. Every other path under the repository's Git
 /// directory — `refs`, `objects`, `index`, `config`, `hooks`,
 /// `packed-refs` — is read-only to it.
@@ -652,9 +711,11 @@ fn worktree_child_args(paths: &WorktreeChildPaths, step: WorktreeChildStep) -> V
 /// description the child will actually run with.
 ///
 /// The child may write exactly three things: the new checkout, the daemon
-/// scratch, and the linked worktree's own administration directory. Every
-/// other path under the repository's Git directory — `refs`, `objects`,
-/// `index`, `config`, `hooks`, `packed-refs` — is read-only to it.
+/// scratch, and the **shared** administration root —
+/// `<common-gitdir>/worktrees/`, the parent of every linked worktree's own
+/// administration directory. Every other path under the repository's Git
+/// directory — `refs`, `objects`, `index`, `config`, `hooks`, `packed-refs` —
+/// is read-only to it.
 ///
 /// This is checked against the **built** description rather than against the
 /// configuration that was requested, because a request is a hope and the
@@ -700,9 +761,9 @@ fn assert_grant(
             "the repository's Git directory was granted to the worktree child as writable",
         ));
     }
-    // Nothing under the Git directory is writable except the administration
-    // directory itself. This is the property that makes branch creation by
-    // the child impossible rather than merely unintended.
+    // Nothing under the Git directory is writable except the shared
+    // administration root itself. This is the property that makes branch
+    // creation by the child impossible rather than merely unintended.
     for write in writes {
         if write.starts_with(gitdir) && write != administration_root {
             return Err(fail(&format!(

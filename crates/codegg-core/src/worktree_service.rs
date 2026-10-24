@@ -26,6 +26,13 @@ use crate::workspace_services::WorkspaceLockTable;
 /// The scheduler's Git mutation profile already reserves this key.
 pub const WORKTREE_MUTATION_EXCLUSIVITY_KEY: &str = "exclusive:worktree-mutation";
 pub const DEFAULT_WORKTREE_DIRECTORY: &str = "worktrees";
+/// The bound on a **display** list of managed worktrees.
+///
+/// M005 corrective C008: this is a presentation bound, not an authority
+/// bound. The checkout reservation authority must be able to find a managed
+/// checkout whatever the size of the user's catalog, so it never reads
+/// through this surface — it uses
+/// [`WorktreeStore::list_authority_candidates`], which has no `LIMIT`.
 pub const MAX_WORKTREE_LIST: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +296,21 @@ pub trait WorktreeStore: Send + Sync {
         &self,
         query: &WorktreeQuery,
     ) -> Result<Vec<WorktreeRecord>, WorktreeServiceError>;
+    /// M005 corrective C008: the **unbounded authority read**.
+    ///
+    /// The checkout reservation authority resolves the managed checkout that
+    /// contains a path by canonical containment, and it must find that
+    /// checkout whatever the size of the user's catalog. The `list` surface
+    /// above is capped (`MAX_WORKTREE_LIST`, oldest-first), so a catalog with
+    /// more non-removed rows than the cap hides the *newest* rows — and a
+    /// newly created, currently reserved checkout is exactly one of them. A
+    /// cap must never be able to hide a reserved checkout, so the authority
+    /// reads through this method instead: every non-removed row, no
+    /// `LIMIT`.
+    ///
+    /// It exists for that one caller. A caller that wants a bounded list for
+    /// display uses `list`.
+    async fn list_authority_candidates(&self) -> Result<Vec<WorktreeRecord>, WorktreeServiceError>;
     async fn save(&self, record: WorktreeRecord) -> Result<(), WorktreeServiceError>;
     async fn acquire_lease(
         &self,
@@ -471,6 +493,33 @@ impl WorktreeStore for InMemoryWorktreeStore {
             .cloned()
             .collect();
         values.sort_by_key(|record| record.created_at);
+        Ok(values)
+    }
+
+    /// M005 corrective C008: every non-removed row, no cap.
+    ///
+    /// The in-memory store was already unbounded, so it keeps the durable
+    /// store's semantics: the authority sees the whole catalog.
+    ///
+    /// M005 corrective C008 (implementation review): the ordering is a
+    /// **total** order, matching the durable store's. Ordering by
+    /// `created_at` alone leaves records that share a timestamp in an
+    /// unspecified order — the in-memory store kept its insertion order and
+    /// the durable store returned the database's — so the two stores could
+    /// answer the same lookup differently. `worktree_id` breaks the tie.
+    async fn list_authority_candidates(&self) -> Result<Vec<WorktreeRecord>, WorktreeServiceError> {
+        let state = self.state.lock().await;
+        let mut values: Vec<_> = state
+            .records
+            .values()
+            .filter(|record| record.state != ManagedWorktreeState::Removed)
+            .cloned()
+            .collect();
+        values.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.worktree_id.cmp(&right.worktree_id))
+        });
         Ok(values)
     }
 
@@ -700,6 +749,31 @@ impl WorktreeStore for SqliteWorktreeStore {
         rows.iter().map(row_to_record).collect()
     }
 
+    /// M005 corrective C008: every non-removed row, no `LIMIT`.
+    ///
+    /// The `list` surface above is capped at `MAX_WORKTREE_LIST` rows,
+    /// oldest-first. The reservation authority cannot use it: past the cap
+    /// the newest rows — including a freshly created, currently reserved
+    /// checkout — are absent from the result, so the authority would report
+    /// a reserved checkout as unreserved. This read has no bound, so a cap
+    /// can never hide a reserved checkout.
+    /// M005 corrective C008: every non-removed row, no cap.
+    ///
+    /// The durable store's ordering is a **total** order. Ordering by
+    /// `created_at` alone leaves records that share a timestamp in the
+    /// database's unspecified order, so the in-memory and durable stores
+    /// could answer the same lookup differently. `worktree_id` breaks the
+    /// tie, and the in-memory store breaks it the same way.
+    async fn list_authority_candidates(&self) -> Result<Vec<WorktreeRecord>, WorktreeServiceError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {RECORD_COLUMNS} FROM managed_worktree WHERE state <> 'removed' ORDER BY created_at, worktree_id"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
+        rows.iter().map(row_to_record).collect()
+    }
+
     async fn save(&self, record: WorktreeRecord) -> Result<(), WorktreeServiceError> {
         let result = sqlx::query("UPDATE managed_worktree SET node_id = ?, repository_root = ?, path = ?, branch = ?, base_commit = ?, managed = ?, state = ?, health = ?, lease_generation = ?, owner_run_id = ?, updated_at = ? WHERE worktree_id = ?")
             .bind(record.node_id.as_ref().map(NodeId::as_str)).bind(record.repository_root.to_string_lossy().as_ref()).bind(record.path.to_string_lossy().as_ref()).bind(record.branch.as_deref()).bind(&record.base_commit).bind(if record.managed { 1_i64 } else { 0_i64 }).bind(record.state.as_str()).bind(record.health.as_str()).bind(record.lease_generation as i64).bind(record.owner_run_id.as_ref().map(AgentRunId::as_str)).bind(record.updated_at).bind(record.worktree_id.as_str()).execute(&self.pool).await.map_err(|e| WorktreeServiceError::Storage(e.to_string()))?;
@@ -914,6 +988,20 @@ impl WorktreeService {
         query: WorktreeQuery,
     ) -> Result<Vec<WorktreeRecord>, WorktreeServiceError> {
         self.store.list(&query).await
+    }
+
+    /// M005 corrective C008: the unbounded candidate set the checkout
+    /// reservation authority reads.
+    ///
+    /// `list` is capped and oldest-first, so it cannot answer "which managed
+    /// checkout contains this path" once the user's catalog grows past
+    /// [`MAX_WORKTREE_LIST`] rows: the newest rows are missing from the
+    /// result. This reads every non-removed row, so a reserved checkout is
+    /// never hidden by the size of the catalog.
+    pub async fn list_authority_candidates(
+        &self,
+    ) -> Result<Vec<WorktreeRecord>, WorktreeServiceError> {
+        self.store.list_authority_candidates().await
     }
 
     /// Reserve a deterministic identity and locator. No Git mutation occurs.
@@ -1915,5 +2003,74 @@ mod tests {
         assert_eq!(loaded.state, ManagedWorktreeState::Reserved);
         assert_eq!(loaded.workspace_id, workspace);
         assert_eq!(loaded.repository_id, repository);
+    }
+
+    /// M005 corrective C008: the capped `list` surface hides the newest rows
+    /// of a user catalog that holds more than `MAX_WORKTREE_LIST` non-removed
+    /// rows, and the reservation authority must never read through it — a
+    /// cap that hides a reserved checkout admits the writer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_authority_read_finds_a_checkout_the_capped_list_hides() {
+        let root = TempDir::new().unwrap();
+        let db_path = root.path().join("catalog.db");
+        let pool = crate::storage::init_pool_at_for_migration(&db_path)
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let managed = TempDir::new().unwrap();
+        let store = Arc::new(SqliteWorktreeStore::new(pool));
+        let service = WorktreeService::with_store(
+            store.clone(),
+            managed.path().to_path_buf(),
+            Arc::new(WorkspaceLockTable::new()),
+        );
+        let (project, repository, workspace, run) = ids();
+        let now = Utc::now().timestamp_millis();
+        // One row past the cap, so the newest checkout is the one the
+        // oldest-first capped list drops.
+        let total = MAX_WORKTREE_LIST + 1;
+        let newest = WorktreeId::new();
+        for index in 0..total {
+            let worktree_id = if index + 1 == total {
+                newest.clone()
+            } else {
+                WorktreeId::new()
+            };
+            store
+                .insert_reserved(WorktreeRecord {
+                    worktree_id,
+                    project_id: project.clone(),
+                    repository_id: repository.clone(),
+                    workspace_id: workspace.clone(),
+                    node_id: None,
+                    repository_root: PathBuf::from("/repo"),
+                    path: PathBuf::from(format!("/managed/wt-{index:05}")),
+                    branch: Some("codegg/worktree/x".into()),
+                    base_commit: "a".repeat(40),
+                    managed: true,
+                    state: ManagedWorktreeState::InUse,
+                    health: WorktreeHealth::Clean,
+                    lease_generation: 0,
+                    owner_run_id: Some(run.clone()),
+                    created_at: now + index as i64,
+                    updated_at: now + index as i64,
+                })
+                .await
+                .unwrap();
+        }
+
+        let capped = service.list(WorktreeQuery::default()).await.unwrap();
+        assert_eq!(capped.len(), MAX_WORKTREE_LIST);
+        assert!(
+            !capped.iter().any(|record| record.worktree_id == newest),
+            "the capped list is the defect this milestone closes: it drops the newest row"
+        );
+
+        let candidates = service.list_authority_candidates().await.unwrap();
+        assert_eq!(candidates.len(), total);
+        assert!(
+            candidates.iter().any(|record| record.worktree_id == newest),
+            "the authority read must see the newest checkout"
+        );
     }
 }

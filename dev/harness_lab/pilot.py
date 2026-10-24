@@ -312,7 +312,7 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
     # ``/var`` -> ``/private/var``, so the lane root is resolved to its
     # canonical path before anything is created under it.
     lane_root = lane_root.resolve()
-    lane_root.mkdir(parents=True, exist_ok=True)
+    supervisor.private_dir(lane_root)
     workspace = lane_root / "workspace"
     spec = SubjectSpec.create(f"pilot-{task}", binary, workspace, lane_root, repository)
     env = spec.environment()

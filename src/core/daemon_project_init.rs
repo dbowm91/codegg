@@ -15,11 +15,26 @@ const MAX_INIT_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_TARGET_BYTES: u64 = 64 * 1024;
 
 impl CoreDaemon {
+    /// M005 corrective C008: `request_id`, `authority` and `authz_decision`
+    /// are carried into the handler so the under-lock re-check can record a
+    /// refusal with the same durable evidence the pre-dispatch gate records.
     pub(crate) async fn handle_project_init_request(
         &self,
         request: CoreRequest,
+        request_id: &str,
         client_id: &str,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
+        // M005 corrective C008: the under-lock re-check records the refusal
+        // against the request that asked for the write.
+        let audit_request = request.clone();
+        let refusal_context = crate::core::daemon::CheckoutRefusalContext {
+            authority: &authority,
+            decision: &authz_decision,
+            request_id,
+            request: &audit_request,
+        };
         match request {
             CoreRequest::ProjectInitDraftGet {
                 project_id,
@@ -33,8 +48,14 @@ impl CoreDaemon {
                 workspace_id,
                 draft_token,
             } => {
-                self.project_init_publish(&project_id, &workspace_id, &draft_token, client_id)
-                    .await
+                self.project_init_publish(
+                    &project_id,
+                    &workspace_id,
+                    &draft_token,
+                    client_id,
+                    &refusal_context,
+                )
+                .await
             }
             _ => Ok(CoreResponse::Error {
                 code: "project_init_unimplemented".into(),
@@ -150,6 +171,7 @@ impl CoreDaemon {
         workspace_id: &str,
         draft_token: &str,
         client_id: &str,
+        refusal_context: &crate::core::daemon::CheckoutRefusalContext<'_>,
     ) -> Result<CoreResponse, AppError> {
         if draft_token.len() != 32 || !draft_token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Ok(init_error(
@@ -209,6 +231,23 @@ impl CoreDaemon {
             ));
         };
         let _workspace = services.locks().acquire_repository(&root).await;
+        // M005 corrective C008: the gate's answer is a fast pre-filter; the
+        // answer that counts is the one taken with the repository lock held.
+        // The window between the gate and the write is the lock wait, not the
+        // instruction gap.
+        if let Err(conflict) = self
+            .recheck_checkout_reservation(
+                refusal_context,
+                crate::core::checkout_mediation::CheckoutWriterSink::ProjectInitPublish,
+                &root,
+            )
+            .await
+        {
+            return Ok(CoreResponse::Error {
+                code: conflict.code().to_string(),
+                message: conflict.to_string(),
+            });
+        }
         let (old_content, new_digest) = match publish_checked(
             &root,
             pending.expected_digest.as_deref(),

@@ -163,11 +163,14 @@ result would be a false security claim.
 
 3. **The writable set.** The contained child may write exactly three things:
    the new worktree directory, the daemon-owned scratch root, and
-   `<common-gitdir>/worktrees/` — the linked worktree's own administration
-   directory. Every other path under the Git metadata, including `refs`,
-   `objects`, `index`, `config`, `hooks` and `packed-refs`, is read-only to the
-   child. This is the narrowest grant a linked worktree admits, because Git
-   always places the administration directory inside the common Git directory.
+   `<common-gitdir>/worktrees/` — the **shared** administration root. That
+   root is the **parent** of every linked worktree's own administration
+   directory, so the child may write another linked worktree's `HEAD` under
+   it; the amendment below records that consequence as an open question.
+   Every other path under the Git metadata, including `refs`, `objects`,
+   `index`, `config`, `hooks` and `packed-refs`, is read-only to the child.
+   The narrower grant — the linked worktree's own administration directory
+   alone — is **not** granted; narrowing the grant to it is a new ADR.
 
 4. **Containment is asserted, not requested.** The child is a daemon-pinned Git
    executable launched through the managed-process owner with the M004
@@ -420,3 +423,110 @@ have kept a single launch. It was rejected: the child would then be able to
 repoint **any** managed worktree's branch, which is exactly the "a child that
 can write refs can repoint `main`" failure this ADR exists to prevent, and it
 would contradict clause 2 outright.
+
+## Amendment: the shared administration root, and the capability it carries
+
+Amended 2026-10-23, after a clause-by-clause review of this ADR against the
+implementation it governs. This amendment corrects **clause 3**'s
+*description* and records a **consequence** the clause did not carry. It does
+not change the accepted path, weaken a clause, or change the decision's
+option.
+
+### What was wrong
+
+Clause 3 said the child may write `<common-gitdir>/worktrees/` — "the linked
+worktree's own administration directory". The **path** is right; the
+**description** is not. `<common-gitdir>/worktrees/` is the **shared**
+administration root: the **parent** of every linked worktree's own
+administration directory, not one of them.
+
+The implementation grants the shared root, which is what the acceptance record
+chose — "the writable grant be `<common-gitdir>/worktrees/` only". So the
+defect was in the prose, and in the artifacts that repeated it: this ADR's
+clause 3, two comments in `src/git_contained_worktree.rs`, and the
+containment test in `tests/contained_worktree_c008.rs` — the test whose job
+is to assert the grant. Five artifacts described a narrower grant than the
+code delivers.
+
+The consequence of the shared root is recorded below because it is real, and
+because the clause's own wording hid it.
+
+### What changes
+
+**Clause 3** now names `<common-gitdir>/worktrees/` as the **shared**
+administration root, states plainly that it is the parent of every linked
+worktree's own administration directory, and states that the narrower grant —
+the linked worktree's own administration directory alone — is not granted.
+
+The accepted **path** is unchanged: `<common-gitdir>/worktrees/`, and only
+that.
+
+The code's two grant comments and the containment test's name and comment
+agree with it. A static guard, `scripts/check_contained_worktree_grant.py`,
+asserts that they continue to agree: that the grant's writable roots under
+the repository's Git directory are exactly one path, that the path is the one
+this ADR names, and that clause 3 and the code's comments describe it as the
+shared root rather than as a linked worktree's own directory.
+
+### What does not change
+
+* The accepted path: `<common-gitdir>/worktrees/` only, with the branch owned
+  by the daemon.
+* The writable set: still exactly `{checkout, scratch,
+  <common-gitdir>/worktrees/}`.
+* The Git directory is still read-only to the child, `refs` included, so the
+  child still writes **no ref** and cannot create a branch. Clause 2 holds as
+  written.
+* The operation is still one operation in two steps, and the attach step
+  still runs last with the daemon's fixed target.
+* **No implementation behaviour changes.** The delivered grant was already
+  the shared root; only the description of it was wrong.
+
+### The consequence the shared root carries
+
+The shared root is the **parent** of every linked worktree's administration
+directory, so the child can write **any** of them — including another linked
+worktree's `HEAD`. The path to that write is real: `git worktree add` runs
+the repository's `post-checkout` hook, and the contained child's argv does not
+pin `core.hooksPath`. A repository that declares such a hook therefore runs
+it inside the containment, and the hook can repoint another worktree's branch
+pointer.
+
+This is not a new capability of the child. It is what the accepted path
+always permitted, and the clause did not say so. It is recorded here because
+this ADR's own decision drivers refuse exactly it — "a child that can write
+refs can repoint `main`" — and the shared root is a way to reach that outcome
+without writing `refs`.
+
+What is **not** affected: the child's own `refs` remain read-only.
+`refs/heads/main` is under `<common-gitdir>/refs`, not under
+`<common-gitdir>/worktrees`. The child cannot create a branch, and clause 2
+still holds as written.
+
+### Disposition: an open capability question, not an acceptance
+
+**The maintainer has not chosen a disposition for this consequence, so this
+amendment does not record one.** The consequence is recorded here as an **open
+capability question**, and the milestone that corrected the prose stops at
+the documentation correction rather than recording an acceptance that was not
+made.
+
+The question is whether the shared root's reach over **other** linked
+worktrees' `HEAD` files is an acceptable consequence of ADR-0048's accepted
+path. The candidates are listed for the maintainer to choose among; this
+amendment selects none of them:
+
+* **Accept as recorded** — the shared root stays, and the reach over other
+  worktrees' `HEAD` files becomes an accepted, documented consequence of this
+  ADR.
+* **Narrow the grant** to the linked worktree's own administration directory.
+  This **changes the accepted contract** and requires a **new ADR**; it is not
+  an edit to this one, and this milestone does not do it.
+* **Defence in depth** — pin `core.hooksPath` for the contained child, so the
+  repository's `post-checkout` hook does not run inside the containment. This
+  removes the most obvious path to the capability; it does not close it,
+  because the shared root stays writable.
+
+Until the maintainer chooses, the milestone
+`plans/implementation/linux-trusted-git-cost-corrective/009-contained-worktree-grant-precision.md`
+records this as an open question and stops at the documentation correction.

@@ -297,7 +297,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-23**, each against its own listed `Source`, in the tree at `12999178a`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `a4bbba81e` together with the M005 writer-containment line's branch tip `28ebe7163`. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -447,10 +447,79 @@ conflict — and the row values above are the canonical measurement of the
 top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
 `architecture/count_audit_history.md`.
 
+Four rows moved again on **2026-10-23**, when this line was reconciled with
+`main` for the **fourth** time, merging `origin/main` `6e097dd3a` with the
+five post-closure corrective milestones' branch tip `d5b7efc02`. Each moved
+row was re-measured against its own listed `Source` in the merged tree, with
+`python3 scripts/measure_overview_counts.py`, and **not** incremented from
+either parent. *Integration test files* is **337** (`tests/*.rs` +
+`tests/*/*.inc`, with the `tests/common/` helper tree excluded). *Guard
+scripts (all)* is **90** (`ls scripts/check_*`). *CI guard scripts* is **53**
+(the distinct `scripts/check_*` names in `.github/workflows/ci.yml` — it
+remains a strict subset of `quick`, which runs **67** guards and runs **14**
+guards CI does not). The *Tool registrations* row's **total** did not move — it
+is still 67 — but its **split** did: **54 `register` + 13 `register_boxed` →
+53 `register` + 14 `register_boxed`**, because C009 moved the `commit` tool off
+the plain `register` path onto the fail-closed `UnrootedTool` wrapper, which
+registers boxed rather than in place. Every other row was **confirmed
+unchanged** by measurement, not by assumption: architecture docs **92**,
+distinct production tool names **75**, tool source files **83**, LSP server
+definitions **39**, `codegg-core` modules **54**, `AppEvent` variants **61**,
+`CoreRequest` variants **266** (240 struct + 26 unit), `CoreResponse` variants
+**174** (173 struct + 1 unit), `CoreEvent` variants **92**, `ProjectionEvent`
+variants **47**, authorized operations **260**, identity newtypes **19**,
+built-in slash commands **169**, built-in agents **10**, bundled themes **50**,
+TUI state modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95
+statements / 91 tables**, storage layout version **88**, Git operation variants
+**54**, Git risk classes **11**, and workspace member crates **11** (+ root).
+The full reconciliation is in `architecture/count_audit_history.md`.
+
+Three rows moved again on **2026-10-24**, when this line was reconciled with
+`main` for the **sixth** time, merging `origin/main` `a4bbba81e` (PR #183, the
+composer's second post-closure corrective) with the writer-containment line's
+branch tip `28ebe7163`. Each moved row was re-measured against its own listed
+`Source` in the merged tree, with `python3 scripts/measure_overview_counts.py`,
+and **not** incremented from either parent. *Guard scripts (all)* is **92**
+(`ls scripts/check_*` — the union of the two guard sets: `main` added
+`scripts/check_tui_composer_keymap_drift.py`). *CI guard scripts* is **55**
+(the distinct `scripts/check_*` names in `.github/workflows/ci.yml` — it
+remains a strict subset of `quick`, which runs **69** guards and runs **14**
+guards CI does not). *Integration test files* is **338**, and it did **not**
+move: `main`'s composer corrective extended the existing members
+`tests/tui_render/tui_composer_claims.inc` and
+`tests/tui_render/tui_composer_motions.inc` and rewrote the already-existing
+`tests/tui_render/tui_composer_selection.inc`, so it added no new integration
+test file — a new-file line in a diff stat is not a new file. The two sides'
+test-file sets were differenced to confirm the union rather than inferred from
+the diff stat. `AGENTS.md`'s published counts were corrected to the merged
+tree's measured **69 quick / 55 CI**; the *quick runs 14 guards CI does not*
+difference is unchanged at 14, re-derived by differencing the guards
+`run_guards()` names against the guards `.github/workflows/ci.yml` names.
+Every other row was **confirmed unchanged** by measurement, not by assumption:
+architecture docs **92**, distinct production tool names **75**, tool source
+files **83**, LSP server definitions **39**, `codegg-core` modules **54**,
+`AppEvent` variants **61**, `CoreRequest` variants **266** (240 struct + 26
+unit), `CoreResponse` variants **174** (173 struct + 1 unit), `CoreEvent`
+variants **92**, `ProjectionEvent` variants **47**, authorized operations
+**260**, identity newtypes **19**, built-in slash commands **169**, built-in
+agents **10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files
+incl. `mod.rs`), database tables **95 statements / 91 tables**, storage layout
+version **88**, Git operation variants **54**, Git risk classes **11**, and
+workspace member crates **11** (+ root). The **Tool registrations** row is
+unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** —
+and it is named here rather than left implicit, because it is the row the
+fourth reconciliation had to qualify with a split note. The comment budget was
+re-banked on the merged tree: **124,310** comment lines, **1,095,646** words, a
+**0.1330** ratio — over the branch's prior ceiling of 123,805 and still
+**below** the 124,865 pre-reduction baseline, the same relation the fourth and
+fifth reconciliations recorded. The full reconciliation is in
+`architecture/count_audit_history.md`.
+
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 92 | `architecture/*.md` |
-| Tool registrations in `with_options()` | 67 (54 `register` + 13 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
+| Tool registrations in `with_options()` | 67 (53 `register` + 14 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
 | Distinct production tool names | 75 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 13 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 67 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 8 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
 | Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`; excl. the `bash/tests/` fixture, which is test support, not tool source) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
@@ -471,9 +540,9 @@ top-level `pub mod` in the crate's `lib.rs`. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 335 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 88 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 49 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 338 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 92 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 55 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ## Feature gates
 

@@ -233,17 +233,29 @@ pub async fn write_file(
     // live agent-run group, before any filesystem mutation. The refusal is
     // a conflict, not an authorization failure: the caller's own authority
     // is untouched and it may retry once the group finishes.
-    if let Some(daemon) = state.daemon.as_ref() {
-        daemon
-            .mediate_http_checkout_write(
-                &principal,
-                Some(context.project_id.clone()),
-                &context.workspace_root,
-                crate::core::checkout_mediation::CheckoutWriterSink::HttpFileWrite,
-            )
-            .await
-            .map_err(|conflict| AppError::Storage(StorageError::Conflict(conflict.to_string())))?;
-    }
+    //
+    // M005 corrective C008: a missing daemon is a **refusal**, not a skip.
+    // C004 mediated this route only when a daemon was present, so a server
+    // without one wrote ungated — the exact failure the gate exists to
+    // prevent. The route now requires the mediation authority: without it
+    // the write is refused with the same conflict disposition the daemon
+    // side uses.
+    let daemon = state.daemon.as_ref().ok_or_else(|| {
+        AppError::Storage(StorageError::Conflict(
+            "checkout mediation is unavailable: the server has no daemon, so the checkout \
+             reservation cannot be established"
+                .to_owned(),
+        ))
+    })?;
+    daemon
+        .mediate_http_checkout_write(
+            &principal,
+            Some(context.project_id.clone()),
+            &context.workspace_root,
+            crate::core::checkout_mediation::CheckoutWriterSink::HttpFileWrite,
+        )
+        .await
+        .map_err(|conflict| AppError::Storage(StorageError::Conflict(conflict.to_string())))?;
     let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
     if let Some(parent) = full.parent() {
         tokio::fs::create_dir_all(parent)
@@ -289,17 +301,25 @@ pub async fn delete_file(
     .await?;
     // M005 corrective C004: same pre-effect reservation refusal as the
     // write route. A delete is a checkout write too.
-    if let Some(daemon) = state.daemon.as_ref() {
-        daemon
-            .mediate_http_checkout_write(
-                &principal,
-                Some(context.project_id.clone()),
-                &context.workspace_root,
-                crate::core::checkout_mediation::CheckoutWriterSink::HttpFileDelete,
-            )
-            .await
-            .map_err(|conflict| AppError::Storage(StorageError::Conflict(conflict.to_string())))?;
-    }
+    //
+    // M005 corrective C008: a missing daemon is a refusal, not a skip — see
+    // the write route above.
+    let daemon = state.daemon.as_ref().ok_or_else(|| {
+        AppError::Storage(StorageError::Conflict(
+            "checkout mediation is unavailable: the server has no daemon, so the checkout \
+             reservation cannot be established"
+                .to_owned(),
+        ))
+    })?;
+    daemon
+        .mediate_http_checkout_write(
+            &principal,
+            Some(context.project_id.clone()),
+            &context.workspace_root,
+            crate::core::checkout_mediation::CheckoutWriterSink::HttpFileDelete,
+        )
+        .await
+        .map_err(|conflict| AppError::Storage(StorageError::Conflict(conflict.to_string())))?;
     let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
     tokio::fs::remove_file(&full).await.map_err(AppError::Io)?;
     Ok(StatusCode::NO_CONTENT)

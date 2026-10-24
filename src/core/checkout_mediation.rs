@@ -120,8 +120,17 @@ pub struct CheckoutConflict {
 
 impl CheckoutConflict {
     /// The stable error code a client sees.
+    ///
+    /// M005 corrective C008 (implementation review): a refusal that carries
+    /// a **lookup failure** is not an observed reservation, and it does not
+    /// get the reservation's code. The old code answered
+    /// `"checkout_reserved"` for both, so a client could not tell "another
+    /// group holds this checkout" from "the authority could not answer".
     pub fn code(&self) -> &'static str {
-        "checkout_reserved"
+        match self.lookup_failure {
+            Some(_) => "checkout_target_unresolved",
+            None => "checkout_reserved",
+        }
     }
 
     /// The recovery path a client is offered.
@@ -129,8 +138,16 @@ impl CheckoutConflict {
     /// The caller may retry once the group finishes; it may not force the
     /// write through, and the group's permit is never released on the
     /// caller's behalf.
+    ///
+    /// M005 corrective C008 (implementation review): a lookup failure has no
+    /// group to wait for, so it gets its own recovery text. The old text
+    /// pointed such a caller at "that group", which may not exist, and
+    /// invited a retry loop that could never succeed.
     pub fn recovery(&self) -> &'static str {
-        "the checkout is reserved by a live agent-run group; retry after that group finishes, or write to a separate checkout"
+        match self.lookup_failure {
+            Some(_) => "the checkout reservation could not be established, so the write was refused rather than admitted unmediated; retry, and report the failure if it persists",
+            None => "the checkout is reserved by a live agent-run group; retry after that group finishes, or write to a separate checkout",
+        }
     }
 }
 
@@ -325,5 +342,50 @@ mod tests {
         assert!(rendered.contains("group-1"));
         assert!(rendered.contains("document_save"));
         assert!(!rendered.contains('/'));
+    }
+
+    /// M005 corrective C008 (implementation review): a refusal that carries a
+    /// lookup failure is not an observed reservation, and it does not get the
+    /// reservation's code or its recovery text.
+    ///
+    /// The old code answered `"checkout_reserved"` for both, and offered the
+    /// reserved-checkout recovery ("retry after that group finishes") to a
+    /// caller whose group may not exist — a retry loop that could never
+    /// succeed.
+    #[test]
+    fn a_lookup_failure_is_not_reported_as_an_observed_reservation() {
+        let reserved = CheckoutConflict {
+            sink: CheckoutWriterSink::DocumentSave,
+            worktree_id: "worktree-1".to_owned(),
+            group_id: "group-1".to_owned(),
+            owner_run_id: "run-1".to_owned(),
+            lookup_failure: None,
+        };
+        let unresolved = CheckoutConflict {
+            sink: CheckoutWriterSink::DocumentSave,
+            worktree_id: String::new(),
+            group_id: String::new(),
+            owner_run_id: String::new(),
+            lookup_failure: Some("the workspace is not registered".to_owned()),
+        };
+
+        assert_eq!(reserved.code(), "checkout_reserved");
+        assert_eq!(unresolved.code(), "checkout_target_unresolved");
+        assert_ne!(
+            reserved.code(),
+            unresolved.code(),
+            "a client must be able to tell an observed reservation from an unresolved target"
+        );
+        assert!(
+            reserved
+                .recovery()
+                .contains("retry after that group finishes"),
+            "an observed reservation keeps its recovery text"
+        );
+        assert!(
+            !unresolved.recovery().contains("that group"),
+            "an unresolved target has no group to wait for: {}",
+            unresolved.recovery()
+        );
     }
 }

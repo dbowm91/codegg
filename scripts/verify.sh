@@ -89,6 +89,61 @@ run_guards() {
 
     echo "==> python3 scripts/check_tool_broker_boundary.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tool_broker_boundary.py)
+    # The daemon's turn code resolves its workspace root from the execution
+    # context, never from the process working directory: a user-scoped
+    # daemon's working directory is wherever it was launched. The guard
+    # covers `src/core/**` and the turn-code surfaces, plus the
+    # `codegg-core` crate. A guard which is not run automatically cannot
+    # protect anything, so it runs here with its self-test.
+    echo "==> python3 scripts/check_daemon_cwd_usage.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py --self-test)
+
+    echo "==> python3 scripts/check_daemon_cwd_usage.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py)
+
+    # The trusted Git route owns every CodeGG-owned Git child, and the
+    # hostile-metadata detector is the mediation that refuses a repository
+    # which declares a configuration surface the route cannot neutralise.
+    # A guard which is not run automatically cannot protect anything, so
+    # both the route guard and the diff-consumer guard run here with their
+    # self-tests: a guard that cannot be shown to fail on an injected
+    # defect is not evidence.
+    echo "==> python3 scripts/check_git_forbidden_patterns.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_git_forbidden_patterns.py --self-test)
+
+    echo "==> python3 scripts/check_git_forbidden_patterns.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_git_forbidden_patterns.py)
+
+    echo "==> python3 scripts/check_git_consistency_consumers.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_git_consistency_consumers.py --self-test)
+
+    echo "==> python3 scripts/check_git_consistency_consumers.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_git_consistency_consumers.py)
+
+    # The contained managed-worktree child's writable grant is the SHARED
+    # administration root, and ADR-0048 says so. The grant's precision is a
+    # security boundary: a description that understates it is a description
+    # the reviewer can trust too far. The guard runs with its self-test.
+    echo "==> python3 scripts/check_contained_worktree_grant.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_grant.py --self-test)
+
+    echo "==> python3 scripts/check_contained_worktree_grant.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_grant.py)
+
+    # The shared checkout's lease belongs to the group, and the mediation
+    # authority must not fail open. Both are correctness contracts whose
+    # regressions are silent, so both guards run here with their self-tests.
+    echo "==> python3 scripts/check_writer_fence_completeness.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_writer_fence_completeness.py --self-test)
+
+    echo "==> python3 scripts/check_writer_fence_completeness.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_writer_fence_completeness.py)
+
+    echo "==> python3 scripts/check_checkout_mediation_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_checkout_mediation_authority.py --self-test)
+
+    echo "==> python3 scripts/check_checkout_mediation_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_checkout_mediation_authority.py)
 
     echo "==> python3 scripts/check_network_intent_owner_wiring.py"
     (cd "$REPO_ROOT" && python3 scripts/check_network_intent_owner_wiring.py)

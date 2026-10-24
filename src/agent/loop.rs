@@ -151,6 +151,15 @@ pub struct AgentLoop {
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
     pub(super) turn_id: Option<String>,
+    /// M005 corrective C009: the actor this loop's writes run on behalf of,
+    /// when the loop has no turn of its own.
+    ///
+    /// A delegated child has no daemon-owned turn: the actor that admitted
+    /// the dispatching turn is the actor the child acts for. The dispatch
+    /// site carries that already-admitted attribution in, so the child's
+    /// write is attributed to it rather than refused as anonymous.
+    pub(super) inherited_execution_audit:
+        Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
     pub(super) workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     pub(super) workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// Retains the workspace service bundle so eviction cannot replace the
@@ -498,6 +507,7 @@ impl AgentLoop {
             plugin_service: None,
             session_id,
             turn_id: None,
+            inherited_execution_audit: None,
             workspace_id: None,
             workspace_locks: None,
             workspace_service_lease: None,
@@ -787,6 +797,19 @@ impl AgentLoop {
 
     pub fn set_turn_id(&mut self, turn_id: Option<String>) {
         self.turn_id = turn_id;
+    }
+
+    /// Install the dispatching turn's trusted execution-audit context.
+    ///
+    /// M005 corrective C009. A delegated child runs under the authority of
+    /// the turn that dispatched it, so the child needs that turn's actor.
+    /// The context is the daemon's own record of the actor, carried in by
+    /// the dispatch site; it is never synthesized here.
+    pub fn set_inherited_execution_audit(
+        &mut self,
+        context: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+    ) {
+        self.inherited_execution_audit = context;
     }
 
     pub fn set_workspace_id(&mut self, workspace_id: codegg_core::workspace::WorkspaceId) {

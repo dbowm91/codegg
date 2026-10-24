@@ -15,6 +15,12 @@ polish/maintainability/verification plan (Workstream E2):
   * Hostile Git metadata that could reach code execution through the
     trusted read route: a dangerous configuration key that is not
     neutralised, or that is carried in a form that lets it run.
+  * Hostile Git metadata mediation that is declared but never invoked:
+    the trusted route must CALL the bounded hostile-config detector from
+    every child-construction path — the async one and the sync one. A
+    comment that names the detector is documentation, not a call, and
+    asserting only one of the two call sites would let the other be
+    deleted while this guard stayed green.
 
 Exits 0 when all checks pass, 1 otherwise. Each finding includes the
 file, line, and a one-line rationale.
@@ -28,7 +34,8 @@ Usage:
 injects one defect at a time, and asserts that each injected defect is
 rejected. A guard that cannot be shown to fail on an injected defect is
 not accepted as evidence, so the self-test fails loudly (exit 1) when an
-injected defect slips through.
+injected defect slips through. Every injection is reported by name, so
+the self-test's own output says which defect it exercised.
 
 The script is deliberately strict — every false positive should be
 either fixed or added to the explicit allowlist at the bottom of this
@@ -38,8 +45,10 @@ file with a rationale.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,8 +71,25 @@ class Finding:
     message: str
 
 
-def rg(pattern: str, root: Path, include: Optional[str] = None) -> List[Tuple[Path, int, str]]:
-    """Run ripgrep with line numbers, return list of (path, line, content)."""
+def _parse_matches(stdout: str, relative_to_root: bool) -> List[Tuple[Path, int, str]]:
+    """Parse `<path>:<lineno>:<content>` output into typed matches."""
+    out: List[Tuple[Path, int, str]] = []
+    for raw in stdout.splitlines():
+        parts = raw.split(":", 2)
+        if len(parts) < 3:
+            continue
+        path_str, lineno_str, content = parts
+        try:
+            lineno = int(lineno_str)
+        except ValueError:
+            continue
+        path = Path(path_str)
+        out.append((ROOT / path if relative_to_root else path, lineno, content))
+    return out
+
+
+def _scan_with_rg(pattern: str, root: Path, include: Optional[str]) -> List[Tuple[Path, int, str]]:
+    """Scan with ripgrep, which is the fast path when it is installed."""
     args = [
         "rg",
         "--line-number",
@@ -74,29 +100,95 @@ def rg(pattern: str, root: Path, include: Optional[str] = None) -> List[Tuple[Pa
     if include is not None:
         args.extend(["-g", include])
     args.extend([pattern, str(root)])
-    try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            check=False,
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _parse_matches(result.stdout, relative_to_root=False)
+
+
+def _repository_source_files() -> List[Path]:
+    """The repository's source files, enumerated by the repository itself.
+
+    `git ls-files` with `--cached --others --exclude-standard` lists the
+    tracked files plus the untracked ones that are not ignored — which is the
+    set ripgrep searches: the ignore rules are the repository's own, so the
+    build tree and the vendored directories are excluded without this script
+    carrying a second copy of those rules. Hidden paths are dropped because
+    ripgrep skips them by default.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(ROOT),
+    )
+    if result.returncode != 0:
+        print(
+            "error: `git ls-files` failed, so the tree could not be enumerated: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
         )
-    except FileNotFoundError:
-        print("error: ripgrep (`rg`) not found on PATH", file=sys.stderr)
+        sys.exit(2)
+    files: List[Path] = []
+    for entry in result.stdout.split("\0"):
+        if not entry:
+            continue
+        if any(part.startswith(".") for part in Path(entry).parts):
+            continue
+        files.append(ROOT / entry)
+    return files
+
+
+def _scan_with_python(pattern: str, root: Path, include: Optional[str]) -> List[Tuple[Path, int, str]]:
+    r"""Scan with Python's own regex engine, the fallback when ripgrep is absent.
+
+    A checkout does not always carry ripgrep — the hosted CI runner does not —
+    and a guard that cannot *run* on a clean runner protects nothing, so this
+    path exists rather than an install step in the workflow.
+
+    The pattern is compiled with Python's `re`, which accepts the same
+    constructs these rules use (`\s`, `\{`, `\(\)`). `git grep` does not: its
+    default engine is POSIX basic regular expressions, in which `\(` opens a
+    group rather than matching a parenthesis, so the same pattern matches a
+    different set of lines.
+    """
+    try:
+        expression = re.compile(pattern)
+    except re.error as error:
+        print(f"error: the pattern {pattern!r} does not compile: {error}", file=sys.stderr)
         sys.exit(2)
     out: List[Tuple[Path, int, str]] = []
-    for raw in result.stdout.splitlines():
-        # rg output: <path>:<lineno>:<content>
-        parts = raw.split(":", 2)
-        if len(parts) < 3:
-            continue
-        path_str, lineno_str, content = parts
+    for path in _repository_source_files():
         try:
-            lineno = int(lineno_str)
+            path.relative_to(root)
         except ValueError:
             continue
-        out.append((Path(path_str), lineno, content))
+        if include is not None and not fnmatch.fnmatch(path.name, include):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if expression.search(line):
+                out.append((path, lineno, line))
     return out
+
+
+def rg(pattern: str, root: Path, include: Optional[str] = None) -> List[Tuple[Path, int, str]]:
+    """Return the pattern's matches with line numbers.
+
+    Ripgrep is used when it is on PATH; Python's own scanner is the fallback.
+    The two are proved to agree by the self-test, which scans the real tree
+    with both and compares the results.
+    """
+    if shutil.which("rg") is not None:
+        return _scan_with_rg(pattern, root, include)
+    return _scan_with_python(pattern, root, include)
 
 
 # Allowlist patterns (paths or path-prefixes that may opt out of a rule).
@@ -723,6 +815,27 @@ _OVERRIDE_ENTRY_RE = re.compile(r'\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.
 _STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _CONFIG_KEY_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[A-Za-z0-9_.-]+)+$")
 
+# The bounded hostile-config detector, and the trusted-route methods that must
+# invoke it.
+#
+# The detector is the mediation that refuses a repository which declares a
+# configuration surface the trusted route cannot neutralise. Declaring it is
+# not the same as calling it: a route that builds a Git child without ever
+# calling the detector builds a child against an unbounded repository
+# configuration, and every other check in this file still passes — the
+# override table is still pinned, the dangerous keys are still absent from
+# it. So the *call* is asserted here, in both child-construction paths.
+#
+# The pattern matches a call, not a mention: the trailing `(` is required, the
+# name may not be part of a longer identifier, and the body it is searched in
+# has every non-code region masked out first — line comments, block comments
+# (including multi-line ones), string literals, raw string literals and
+# character literals — so a comment or a string that names the detector
+# cannot satisfy the obligation.
+DETECTOR_NAME = "ensure_repository_config_surface_is_contained"
+DETECTOR_CALL_RE = re.compile(rf'(?<![\w"]){re.escape(DETECTOR_NAME)}\s*\(')
+DETECTOR_ROUTE_METHODS: Tuple[str, ...] = ("apply", "apply_sync")
+
 
 def _strip_line_comments(text: str) -> str:
     """Remove `//` comments while leaving string literals intact."""
@@ -756,6 +869,39 @@ def _strip_line_comments(text: str) -> str:
     return "".join(out)
 
 
+# The regions of a Rust source that are not code: comments, string literals
+# (including raw ones) and character literals. A lifetime is not a character
+# literal — `<'a, 'b>` has no closing quote after the `a` — so the
+# character-literal form only matches a quoted single character.
+#
+# This is the same masking technique `scripts/check_git_consistency_consumers.py`
+# uses, kept as a local copy because the guards in this repository are
+# independent scripts: none of them imports another.
+_MASK_RE = re.compile(
+    r"r(?P<hashes>#+)\"(?:[^\"]|\"(?!(?P=hashes)))*\"(?P=hashes)"
+    r"|r\"[^\"]*\""
+    r"|//[^\n]*"
+    r"|/\*.*?\*/"
+    r"|\"(?:\\.|[^\"\\\n])*\""
+    r"|'(?:\\.|[^\\'\n])'",
+    re.DOTALL,
+)
+
+
+def _mask_non_code(text: str) -> str:
+    """Blank out comments and literal contents, preserving every offset.
+
+    Every non-code region — a `//` line comment, a `/* ... */` block comment
+    (single-line or spanning many lines), a string literal, a raw string
+    literal, or a character literal — is replaced by spaces of the same
+    length, so offsets and line numbers still address the original text.
+
+    A name that appears **only** inside one of those regions is a mention,
+    not a call, and must not satisfy an obligation that asks for a call.
+    """
+    return _MASK_RE.sub(lambda match: re.sub(r"[^\n]", " ", match.group(0)), text)
+
+
 def _function_body(text: str, name: str) -> Optional[str]:
     """Return the body of a top-level Rust function, or None if it is absent.
 
@@ -787,6 +933,54 @@ def _function_body(text: str, name: str) -> Optional[str]:
     return text[open_at : open_at + close.end()]
 
 
+def _impl_block(text: str, name: str) -> Optional[Tuple[str, int]]:
+    """Return the body of `impl <name> { ... }` and the line it starts on.
+
+    The body opens on the `impl` line and closes on the first line that is
+    exactly `}` at column 0, which is how a top-level item ends in this
+    crate. Returning None is a finding, never a pass: a route the guard
+    cannot read is a route it cannot vouch for.
+    """
+    match = re.search(rf"^impl {re.escape(name)}\s*\{{", text, re.MULTILINE)
+    if match is None:
+        return None
+    open_at = text.find("\n", match.start())
+    if open_at == -1:
+        return None
+    close = re.search(r"^\}$", text[open_at:], re.MULTILINE)
+    if close is None:
+        return None
+    body = text[match.start() : open_at + close.end()]
+    line = text.count("\n", 0, match.start()) + 1
+    return body, line
+
+
+def _method_body(block: str, name: str) -> Optional[Tuple[str, int]]:
+    """Return the body of a method inside an impl block, and its line.
+
+    The method is located by its `fn` line, and its body ends on the first
+    line that closes it: the same indentation as the `fn` line, holding a
+    single `}`. Returning None is a finding, never a pass.
+    """
+    match = re.search(
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?fn {re.escape(name)}\s*\(",
+        block,
+        re.MULTILINE,
+    )
+    if match is None:
+        return None
+    line_start = match.start()
+    indent_match = re.match(r"[ \t]*", block[line_start:])
+    indent = len(indent_match.group(0)) if indent_match else 0
+    close_pattern = "^" + re.escape(" " * indent) + r"\}\s*$"
+    close = re.search(close_pattern, block[match.end() :], re.MULTILINE)
+    if close is None:
+        return None
+    body = block[line_start : match.end() + close.end()]
+    line = block.count("\n", 0, line_start) + 1
+    return body, line
+
+
 def _override_table_span(body: str) -> Optional[Tuple[int, int]]:
     """Locate the `for (key, value) in [ ... ]` override table in a body."""
     match = re.search(r"for\s*\(\s*key\s*,\s*value\s*\)\s*in\s*\[", body)
@@ -814,7 +1008,7 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
     """Repository-controlled Git metadata must not reach code execution.
 
     The trusted read route is the only place a CodeGG-owned Git child is
-    constructed, so this check asserts three things about it:
+    constructed, so this check asserts four things about it:
 
       1. every dangerous configuration key is neutralised — by a pinned
          `-c key=value` override, by an environment pin Git prefers over the
@@ -826,7 +1020,11 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
          table;
       3. the `GIT_CONFIG_COUNT` injection path carries only the commit
          identity keys, so a dangerous key cannot be smuggled through the
-         environment instead of the override table.
+         environment instead of the override table;
+      4. the bounded hostile-config detector is actually *called* from every
+         trusted child-construction path — the async one and the sync one.
+         A route that stops calling it keeps every override and every
+         environment pin, so no other check in this file can see the loss.
     """
     root = ROOT if root is None else root
     rel = "crates/egggit/src/process.rs"
@@ -1054,6 +1252,75 @@ def check_hostile_git_metadata_authority(root: Optional[Path] = None) -> List[Fi
                 )
             )
 
+    # 5. The bounded hostile-config detector is invoked from every trusted
+    #    child-construction path.
+    #
+    #    The detector is the mediation: it refuses a repository that declares
+    #    a configuration surface the route cannot neutralise. Every other
+    #    check in this file describes what the route *carries*, and a route
+    #    that never calls the detector carries all of it correctly while
+    #    still building a child against an unbounded repository
+    #    configuration. So the call itself is asserted — in the async path
+    #    and in the sync path, because a route that mediates only one of
+    #    them is half-moderated, not moderated.
+    #
+    #    The assertion matches a call, not a mention: the method's body is
+    #    masked so that no comment, string literal or character literal can
+    #    stand in for the call, and the pattern requires the name to be
+    #    followed by `(`.
+    policy = _impl_block(text, "GitEnvPolicy")
+    if policy is None:
+        findings.append(
+            Finding(
+                rule="hostile-git-metadata-detector-call-missing",
+                file=rel,
+                line=1,
+                message=(
+                    "the trusted Git route policy (impl GitEnvPolicy) could not be located; "
+                    f"the {DETECTOR_NAME}() call sites cannot be verified"
+                ),
+            )
+        )
+    else:
+        policy_body, policy_line = policy
+        for method in DETECTOR_ROUTE_METHODS:
+            found = _method_body(policy_body, method)
+            if found is None:
+                findings.append(
+                    Finding(
+                        rule="hostile-git-metadata-detector-call-missing",
+                        file=rel,
+                        line=policy_line,
+                        message=(
+                            f"the trusted Git route method {method}() could not be located; "
+                            f"the {DETECTOR_NAME}() call site cannot be verified"
+                        ),
+                    )
+                )
+                continue
+            method_body, method_line = found
+            # The body is masked before it is searched: a name that appears
+            # only inside a line comment, a block comment, a string literal
+            # or a character literal is a mention, not a call, and cannot
+            # satisfy the obligation.
+            if not DETECTOR_CALL_RE.search(_mask_non_code(method_body)):
+                findings.append(
+                    Finding(
+                        rule="hostile-git-metadata-detector-call-missing",
+                        file=rel,
+                        # The method's line is counted from the impl block, so
+                        # the file's line is the block's line plus the
+                        # method's offset from the block's first line.
+                        line=policy_line + method_line - 1,
+                        message=(
+                            f"the trusted Git route method {method}() no longer calls "
+                            f"{DETECTOR_NAME}(); the detector is the mediation that refuses a "
+                            "repository-controlled configuration surface, and a comment naming "
+                            "it is not a call"
+                        ),
+                    )
+                )
+
     return findings
 
 
@@ -1079,6 +1346,35 @@ def _delete_line(text: str, needle: str) -> str:
             del lines[index]
             return "".join(lines)
     raise AssertionError(f"fixture line not found: {needle!r}")
+
+
+def _delete_nth_line(text: str, needle: str, occurrence: int) -> str:
+    """Delete the `occurrence`-th (1-based) line that contains `needle`.
+
+    The detector is called from two places with identical text, so deleting
+    "the async call" and deleting "the sync call" are different defects and
+    need different fixtures.
+    """
+    lines = text.splitlines(keepends=True)
+    seen = 0
+    for index, line in enumerate(lines):
+        if needle in line:
+            seen += 1
+            if seen == occurrence:
+                del lines[index]
+                return "".join(lines)
+    raise AssertionError(
+        f"fixture line not found: {needle!r} (occurrence {occurrence}; saw {seen})"
+    )
+
+
+def _delete_all_lines(text: str, needle: str) -> str:
+    """Delete every line that contains `needle`."""
+    lines = text.splitlines(keepends=True)
+    kept = [line for line in lines if needle not in line]
+    if len(kept) == len(lines):
+        raise AssertionError(f"fixture line not found: {needle!r}")
+    return "".join(kept)
 
 
 def _insert_override(text: str, entry: str) -> str:
@@ -1305,6 +1601,75 @@ def _self_test_cases() -> List[Tuple[str, Callable[[str], Optional[str]], str]]:
             lambda text: "",
             "hostile-git-metadata-source-empty",
         ),
+        (
+            "the trusted route stops calling the hostile-config detector in the async path",
+            lambda text: _delete_nth_line(
+                text, "ensure_repository_config_surface_is_contained(&worktree)?;", 1
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route stops calling the hostile-config detector in the sync path",
+            lambda text: _delete_nth_line(
+                text, "ensure_repository_config_surface_is_contained(&worktree)?;", 2
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route stops calling the hostile-config detector at all",
+            lambda text: _delete_all_lines(
+                text, "ensure_repository_config_surface_is_contained(&worktree)?;"
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a comment",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                "// ensure_repository_config_surface_is_contained(&worktree)?;",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a block comment",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                "/* ensure_repository_config_surface_is_contained(&worktree)?; */",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a multi-line "
+            "block comment",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                "/* the detector is called here:\n"
+                "           ensure_repository_config_surface_is_contained(&worktree)?;\n"
+                "        */",
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a string literal",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                'let _note = "see ensure_repository_config_surface_is_contained(&worktree)?;";',
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
+        (
+            "the trusted route only mentions the hostile-config detector in a raw string literal",
+            lambda text: _replace_once(
+                text,
+                "ensure_repository_config_surface_is_contained(&worktree)?;",
+                'let _note = r#"see ensure_repository_config_surface_is_contained(&worktree)?;"#;',
+            ),
+            "hostile-git-metadata-detector-call-missing",
+        ),
     ]
 
 
@@ -1330,6 +1695,47 @@ def self_test() -> int:
         )
         return 1
     pristine = source.read_text()
+
+    # The fallback scanner must agree with ripgrep on the real tree, and it
+    # must find something: two scanners that both found nothing would agree
+    # vacuously. The guard runs in CI, where ripgrep is not installed, so the
+    # fallback is the path that actually has to be right.
+    fallback_cases = 0
+    for pattern, include, scan_root in (
+        ("expose_secret\\(\\)", None, ROOT),
+        ("RerunDescriptor\\s*\\{", "*.rs", ROOT),
+        ("cmd\\.arg\\(\"--no-ext-diff\"\\);", "*.rs", ROOT),
+    ):
+        fallback_cases += 1
+        with_python = _scan_with_python(pattern, scan_root, include)
+        python_set = {(str(path), line) for path, line, _ in with_python}
+        if not python_set:
+            failures.append(
+                f"the fallback scanner found no match for {pattern!r}, so it cannot be "
+                "shown to find anything at all"
+            )
+            continue
+        if shutil.which("rg") is None:
+            print(
+                f"  ok   the fallback scanner found {len(python_set)} matches for {pattern!r} "
+                "(ripgrep is not installed, so there is nothing to compare against)"
+            )
+            continue
+        with_rg = _scan_with_rg(pattern, scan_root, include)
+        rg_set = {(str(path), line) for path, line, _ in with_rg}
+        if rg_set != python_set:
+            only_rg = sorted(rg_set - python_set)[:4]
+            only_python = sorted(python_set - rg_set)[:4]
+            failures.append(
+                f"the fallback scanner disagrees with ripgrep on {pattern!r}: ripgrep found "
+                f"{len(rg_set)} matches and the fallback found {len(python_set)}; "
+                f"only ripgrep: {only_rg}; only the fallback: {only_python}"
+            )
+            continue
+        print(
+            f"  ok   the fallback scanner agrees with ripgrep on {pattern!r} "
+            f"({len(python_set)} matches)"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
@@ -1361,13 +1767,19 @@ def self_test() -> int:
             reported += check_trusted_git_execution_policy(work)
             if not reported:
                 failures.append(f"{description}: the guard did not reject the injected defect")
-            elif expected_rule and not any(
+                continue
+            if expected_rule and not any(
                 finding.rule == expected_rule for finding in reported
             ):
                 failures.append(
                     f"{description}: the guard rejected the injected defect, but not with the "
                     f"check that owns it (no finding had rule {expected_rule!r}): {reported}"
                 )
+                continue
+            # The self-test names the injection it exercised, so its own
+            # output is the evidence that this defect — and not some other
+            # one — is the thing the guard rejects.
+            print(f"  ok   {description} (rejected by {expected_rule})")
 
     if failures:
         for failure in failures:
@@ -1375,7 +1787,8 @@ def self_test() -> int:
         return 1
     print(
         f"git-forbidden-patterns self-test passed: {cases} injected defects were each rejected by "
-        "the guard, and the unmodified trusted Git route produced no finding"
+        f"the guard, the unmodified trusted Git route produced no finding, and the fallback "
+        f"scanner agreed with ripgrep on {fallback_cases} patterns"
     )
     return 0
 

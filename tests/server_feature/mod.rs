@@ -24,6 +24,9 @@ pub mod common;
 #[path = "checkout_reservation_c004_http.inc"]
 pub mod checkout_reservation_c004_http;
 
+#[path = "checkout_mediation_authority_c008_http.inc"]
+pub mod checkout_mediation_authority_c008_http;
+
 #[path = "identity_m002_transport_auth.inc"]
 pub mod identity_m002_transport_auth;
 

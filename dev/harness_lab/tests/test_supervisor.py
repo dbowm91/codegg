@@ -83,6 +83,32 @@ class SubjectEnvironmentTests(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertTrue((root / "lane" / "config").is_dir())
 
+    def test_the_lane_roots_are_private_whatever_the_umask(self) -> None:
+        """The lane's ``XDG_CACHE_HOME`` must not inherit the operator's umask.
+
+        The daemon's scratch allocator refuses a cache root that is group- or
+        world-writable, so a lane built with a group-granting umask (``0002``)
+        would be refused for a reason that has nothing to do with the code
+        under test. The lane's directories are created private instead.
+        """
+        if not hasattr(os, "getuid"):
+            self.skipTest("POSIX-only ownership check")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            binary = root / "codegg"
+            binary.write_bytes(b"candidate")
+            spec = SubjectSpec.create("a", binary, root, root / "lane", root)
+            previous = os.umask(0o002)
+            try:
+                spec.environment()
+            finally:
+                os.umask(previous)
+            for key in ("config", "codegg", "daemon", "data", "home", "xdg-data",
+                        "cache", "state", "runtime", "scratch", "artifacts",
+                        "cargo-home"):
+                mode = (root / "lane" / key).stat().st_mode & 0o777
+                self.assertEqual(mode, 0o700, f"{key} is {oct(mode)}, not 0700")
+
     def test_subject_hash_is_pinned_at_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

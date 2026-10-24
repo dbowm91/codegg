@@ -1208,7 +1208,21 @@ impl ToolRegistry {
         } else {
             commit_tool
         };
-        registry.register(commit_tool);
+        // M005 corrective C009: `commit` is a mutating workspace tool, so it
+        // takes the same fail-closed `None` arm as the fourteen workspace tools
+        // above it. Registered directly, it kept the sentinel workdir
+        // `\0codegg:no-workspace-root`, which `canonicalize_existing_prefix`
+        // resolves *under* the checkout root — lexically contained, so the
+        // fence's containment check passed and the tool took the checkout's
+        // writer permit before failing with a raw Git error and reporting
+        // `Unproven`, which parks the checkout instead of releasing it.
+        // Wrapping makes the missing root a typed refusal instead, and
+        // `register_boxed` keeps the wrapper from being flattened away.
+        let commit_tool: Box<dyn Tool> = match workspace_root.as_ref() {
+            Some(_) => Box::new(commit_tool),
+            None => unrooted(Box::new(commit_tool)),
+        };
+        registry.register_boxed(commit_tool);
 
         // --- Security: consult resolved backend config. ---
         let sec_backend = options

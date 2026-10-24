@@ -339,3 +339,50 @@ python3 -m dev.harness_lab sustained \
   and the rate that is still not established.
 - Nothing else is unblocked. No other registered plan listed C006 as a
   dependency.
+
+## 13. Amendment: the lane's private roots must not inherit the operator's umask
+
+**The harness created the lane's private roots with ambient permissions, so
+whether the product accepted the lane depended on the operator's umask.**
+
+`SubjectSpec.environment()` creates the lane's twelve roots — including
+`XDG_CACHE_HOME` — with `mkdir(parents=True, exist_ok=True)`, whose mode is
+`0777 & ~umask`. The daemon's scratch allocator refuses a cache root that is
+group- or world-writable (`ensure_private_parent` in `src/scratch.rs`), so on
+a host whose umask grants group-write — this workstation's is `0002`, and the
+lane's `cache` root came out `0775` — the daemon refused the lane with
+`ScratchError::WrongOwner`, *"managed scratch path is owned by a different
+user"*. The refusal is correct; the **fixture** was building a root the
+product is required to refuse. That is the same defect class
+`plans/closure/branch-and-ci-stabilization/001-status.md` already closed for
+the product, the scratch fixture and the runners: *"the trust chain does not
+depend on the operator's umask"*.
+
+The symptom was two tests in `dev/harness_lab/tests/test_sustained.py` —
+`test_a_transport_fault_lane_does_not_stop_the_next_lane` and
+`test_a_cancelled_lane_does_not_stop_the_next_lane` — failing with
+`managed scratch path is owned by a different user:
+/home/sugarwookie/.codegg-harness-lanes/tool-0a104ea0/cache` and, in the
+second case, with a cascading *"provider fixture did not reach the
+cancellation gate"*. Both pass under `umask 0077` and fail under the
+workstation's `0002`, which is the fingerprint of an ambient-permission
+defect rather than of a logic error. The other 326 harness-lab tests passed
+either way, because only the lanes that allocate a scratch path reach the
+refusal.
+
+**The fix** is `supervisor.private_dir(path)`: it creates the directory with
+mode `0700`, and narrows an **existing** directory to `0700` only when this
+user owns it. A directory owned by another user is left alone, so the
+product's refusal still stands rather than being silently undone by the
+fixture. Every lane root and every lane sub-root now goes through it —
+`supervisor.py`, `pilot.py`, `autonomy_run.py` and `sustained.py`.
+
+**The regression test** is
+`dev/harness_lab/tests/test_supervisor.py::SubjectEnvironmentTests::test_the_lane_roots_are_private_whatever_the_umask`:
+it sets `umask 002`, builds the lane environment, and asserts that all
+twelve lane roots are `0700`. It restores the umask in a `finally`, because
+the umask is process-global.
+
+**This amendment changes no milestone status.** C006 stays **conditionally
+closed** — the live flake rate is still not established, which is what the
+milestone says — and `plans/registry.md` needs no transition for it.

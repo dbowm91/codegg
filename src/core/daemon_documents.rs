@@ -362,11 +362,20 @@ impl CoreDaemon {
         snapshot
     }
 
+    /// M005 corrective C008: `request_id`, `authority` and `authz_decision`
+    /// are carried into the handler so the under-lock re-check can record a
+    /// refusal with the same durable evidence the pre-dispatch gate records.
     pub(crate) async fn handle_document_request(
         &self,
         request: CoreRequest,
+        request_id: &str,
         client_id: &str,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
+        // M005 corrective C008: the under-lock re-check records the refusal
+        // against the request that asked for the write.
+        let audit_request = request.clone();
         match request {
             CoreRequest::DocumentCapabilities => Ok(CoreResponse::DocumentCapabilities {
                 capability: codegg_protocol::document::DOCUMENT_PROTOCOL_CAPABILITY.to_owned(),
@@ -475,6 +484,29 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&workspace.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::DocumentCreate,
+                        &workspace.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 match crate::lsp::mutation::checked_workspace_file_create(
                     &workspace.canonical_root,
                     &relative_path,
@@ -572,6 +604,29 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&workspace.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::DocumentDelete,
+                        &workspace.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 match crate::lsp::mutation::checked_workspace_file_delete(
                     &workspace.canonical_root,
                     &relative_path,
@@ -751,6 +806,29 @@ impl CoreDaemon {
                     .locks()
                     .acquire_repository(&workspace.canonical_root)
                     .await;
+
+                // M005 corrective C008: the gate's answer is a fast
+                // pre-filter; the answer that counts is the one taken with
+                // the repository lock held. The window between the gate and
+                // the write is the lock wait, not the instruction gap.
+                if let Err(conflict) = self
+                    .recheck_checkout_reservation(
+                        &crate::core::daemon::CheckoutRefusalContext {
+                            authority: &authority,
+                            decision: &authz_decision,
+                            request_id,
+                            request: &audit_request,
+                        },
+                        crate::core::checkout_mediation::CheckoutWriterSink::DocumentSave,
+                        &workspace.canonical_root,
+                    )
+                    .await
+                {
+                    return Ok(CoreResponse::Error {
+                        code: conflict.code().to_string(),
+                        message: conflict.to_string(),
+                    });
+                }
                 let result = crate::lsp::mutation::checked_workspace_text_write(
                     &workspace.canonical_root,
                     &save.relative_path,

@@ -407,6 +407,15 @@ pub struct TaskTool {
     max_depth: u32,
     convergence_store: Option<Arc<dyn ConvergenceStore>>,
     orchestration_config: crate::config::schema::OrchestrationConfig,
+    /// M005 corrective C009: the parent's checkout writer fence.
+    ///
+    /// A nested subagent must write under the same fence its parent writes
+    /// under. The containment-only fallback the worker used to substitute
+    /// can never take the writer permit, so a nested child that inherited
+    /// the parent's *managed* checkout under that fallback wrote into the
+    /// shared checkout while a group sibling held the permit. The fence
+    /// travels with the dispatch instead.
+    writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
 }
 
 /// Explicit owner of orchestration operations. A root turn owns its direct
@@ -999,6 +1008,7 @@ impl TaskTool {
             max_depth: 3,
             convergence_store: None,
             orchestration_config: Default::default(),
+            writer_fence: None,
         }
     }
 
@@ -1031,6 +1041,7 @@ impl TaskTool {
             max_depth: 3,
             convergence_store: None,
             orchestration_config: Default::default(),
+            writer_fence: None,
         }
     }
 
@@ -1223,6 +1234,32 @@ impl TaskTool {
     ) -> Self {
         self.workspace_locks = locks;
         self
+    }
+
+    /// M005 corrective C009: bind the parent's checkout writer fence.
+    ///
+    /// The nested dispatch inherits the parent's fence, so the child writes
+    /// under the same authority the parent writes under. The fence the
+    /// execution context carries wins over this one; this is the fallback
+    /// for a tool that was constructed with an explicit fence.
+    pub fn with_writer_fence(
+        mut self,
+        fence: Option<crate::tool::writer_fence::SharedWriterFence>,
+    ) -> Self {
+        self.writer_fence = fence;
+        self
+    }
+
+    /// The fence a nested dispatch inherits from its parent.
+    ///
+    /// The execution context's fence is authoritative — it is the loop's
+    /// own fence, resolved for the checkout this run actually holds.
+    fn inherited_writer_fence(
+        &self,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Option<crate::tool::writer_fence::SharedWriterFence> {
+        ctx.and_then(|context| context.writer_fence.clone())
+            .or_else(|| self.writer_fence.clone())
     }
 
     pub fn store(&self) -> Arc<Mutex<TaskStore>> {
@@ -1574,6 +1611,7 @@ impl TaskTool {
                     }
                     let mut accepted = Vec::with_capacity(requests.len());
                     let mut rejected = Vec::new();
+                    let group_id_text = group_id.to_string();
                     for (index, request) in requests.iter().enumerate() {
                         let mut child = request.clone();
                         let object = child.as_object_mut().ok_or_else(|| {
@@ -1585,11 +1623,40 @@ impl TaskTool {
                         // group's placement. A shared child is bound to the
                         // group that this call is about to create, so the
                         // group identity travels with the child.
-                        let placement = object
+                        //
+                        // M005 corrective C007: the effective placement must
+                        // reach the child **object**, not only the
+                        // `group_id` decision. It used to be computed here
+                        // and then discarded, so the nested spawn re-read
+                        // `input["placement"]`, found the key absent, and
+                        // parsed `Auto` — the documented group-level form
+                        // was inert. The value written back is the
+                        // **parsed** form, so the child carries the same
+                        // canonical string the parser accepts and the shared
+                        // tool narrowing is applied.
+                        let effective_placement = object
                             .get("placement")
-                            .cloned()
-                            .unwrap_or_else(|| input["placement"].clone());
-                        if placement.as_str() == Some("serialized_shared") {
+                            .and_then(|value| value.as_str())
+                            .or_else(|| input["placement"].as_str());
+                        let placement = match effective_child_placement(
+                            effective_placement,
+                            group_id_text.as_str(),
+                        ) {
+                            Ok(placement) => placement,
+                            Err(error) => {
+                                // C007 §6.4: an unhonourable placement is
+                                // reported as a rejected child, never as an
+                                // accepted one, and never leaves the group
+                                // half-created.
+                                rejected.push(format!("child {index}: {error}"));
+                                continue;
+                            }
+                        };
+                        object.insert(
+                            "placement".into(),
+                            serde_json::Value::String(placement.as_str().to_string()),
+                        );
+                        if placement.is_shared() {
                             object.insert(
                                 "group_id".into(),
                                 serde_json::Value::String(group_id.to_string()),
@@ -2226,7 +2293,19 @@ impl TaskTool {
                     // parent's process admission policy, so it can never be
                     // handed a wider profile than its parent.
                     process_admission: ctx.and_then(|c| c.process_admission.clone()),
-                    writer_fence: None,
+                    // M005 corrective C009: forward the parent's checkout
+                    // writer fence. The nested child inherits the parent's
+                    // workspace root, which for a delegated run IS the
+                    // managed checkout; dropping the fence here left the
+                    // child writing into the shared checkout without
+                    // taking the writer permit, overlapping the group
+                    // sibling that holds it.
+                    writer_fence: self.inherited_writer_fence(ctx),
+                    // M005 corrective C009: the nested child runs on behalf of
+                    // the same actor as this execution, so it carries the
+                    // same trusted attribution. The nested child has no turn
+                    // of its own to resolve an actor from.
+                    execution_audit: ctx.and_then(|c| c.execution_audit().cloned()),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))
@@ -2296,6 +2375,23 @@ fn parse_join_policy(value: &str) -> Result<RunJoinPolicy, ToolError> {
 /// native containment evidence refuses it here, before any child runs, and
 /// says why: the refusal names the missing evidence rather than degrading
 /// to a profile that was never qualified.
+/// The placement a child request runs with.
+///
+/// M005 corrective C007 §6.1. The effective placement is the **child's own**
+/// when it has one, and the **group's** otherwise, and it is returned in the
+/// **parsed** form — so the caller writes back a canonical value, the shared
+/// narrowing is applied, and the nested spawn reads exactly what the parser
+/// accepts.
+///
+/// A placement that cannot be honoured is an **error**, not a silent `Auto`:
+/// the caller reports it as a rejected child, never an accepted one.
+fn effective_child_placement(
+    effective_placement: Option<&str>,
+    group_id: &str,
+) -> Result<codegg_core::run_placement::RunPlacement, ToolError> {
+    parse_run_placement(effective_placement, Some(group_id))
+}
+
 fn parse_run_placement(
     placement: Option<&str>,
     group_id: Option<&str>,
@@ -2499,6 +2595,125 @@ fn authority_digest(denied_tools: &[String], allowed_paths: &[String]) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M005 corrective C009: the nested dispatch inherits the parent's fence.
+    ///
+    /// The containment-only fence the worker used to substitute can never take
+    /// the writer permit, so a nested child that inherited the parent's
+    /// *managed* checkout under that fallback wrote into the shared checkout
+    /// while a group sibling held the permit. The fence travels with the
+    /// dispatch instead.
+    ///
+    /// The wiring — that the `SubAgentRequest` really carries this value —
+    /// is owned by the static guard
+    /// `scripts/check_writer_fence_completeness.py`; this test owns the
+    /// resolution.
+    #[test]
+    fn the_nested_dispatch_inherits_the_parents_writer_fence() {
+        let fence: crate::tool::writer_fence::SharedWriterFence =
+            Arc::new(crate::tool::writer_fence::WorkspaceWriterFence::new(
+                std::path::PathBuf::from("/tmp/codegg-c009-parent-checkout"),
+            ));
+
+        let mut context = ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        context.writer_fence = Some(fence.clone());
+
+        let tool = TaskTool::default();
+        assert!(
+            tool.inherited_writer_fence(Some(&context)).is_some(),
+            "the execution context's fence must reach the nested dispatch"
+        );
+        assert!(
+            tool.inherited_writer_fence(None).is_none(),
+            "a dispatch with no fence available must not invent one"
+        );
+
+        let bound = tool.clone().with_writer_fence(Some(fence));
+        assert!(
+            bound.inherited_writer_fence(None).is_some(),
+            "a tool bound to a fence must use it when the context carries none"
+        );
+    }
+
+    /// M005 corrective C007 §6.1: the group-level placement must reach the
+    /// child.
+    ///
+    /// It used to be computed and then discarded, so the nested spawn re-read
+    /// `input["placement"]`, found the key absent, and parsed `Auto` — the
+    /// documented group-level form was inert.
+    #[test]
+    fn the_group_level_placement_reaches_the_child() {
+        let group_id = AgentRunGroupId::new();
+
+        // The group's placement, with no placement on the child.
+        let placement = effective_child_placement(Some("auto"), group_id.to_string().as_str())
+            .expect("the group's auto placement resolves");
+        assert_eq!(
+            placement,
+            codegg_core::run_placement::RunPlacement::Auto,
+            "a group with no shared placement leaves the child on the default profile",
+        );
+
+        // The child's own placement wins over the group's.
+        let placement =
+            effective_child_placement(Some("isolated_new"), group_id.to_string().as_str())
+                .expect("the child's own placement resolves");
+        assert_eq!(
+            placement,
+            codegg_core::run_placement::RunPlacement::IsolatedNew,
+            "the child's own placement is not overridden by the group's",
+        );
+
+        // A placement that cannot be honoured is an error, never a silent
+        // `Auto`.
+        let error =
+            effective_child_placement(Some("not_a_placement"), group_id.to_string().as_str())
+                .expect_err("an unknown placement must be refused");
+        assert!(
+            matches!(error, ToolError::Execution(_)),
+            "the refusal must be typed, got {error:?}",
+        );
+    }
+
+    /// M005 corrective C007 §6.1: the shared placement the group asked for
+    /// reaches the child as the **parsed** form, carrying the group's
+    /// identity.
+    ///
+    /// The shared profile is unavailable on a platform without native
+    /// containment evidence, so this asserts the *rule* — the child's own
+    /// placement wins, and an absent placement falls back to the group's —
+    /// and the shared form is asserted where the platform supports it.
+    #[test]
+    fn the_shared_placement_carries_the_groups_identity() {
+        let group_id = AgentRunGroupId::new();
+        let parsed =
+            effective_child_placement(Some("serialized_shared"), group_id.to_string().as_str());
+        match parsed {
+            Ok(placement) => {
+                assert_eq!(
+                    placement,
+                    codegg_core::run_placement::RunPlacement::SerializedShared {
+                        group_id: group_id.clone(),
+                    },
+                    "the shared placement must carry the group it is bound to",
+                );
+            }
+            Err(error) => {
+                // The shared profile is unavailable on a platform without
+                // native containment evidence. The refusal is still the
+                // contract: an unhonourable placement is an error, not a
+                // silent `Auto`.
+                assert!(
+                    matches!(error, ToolError::Execution(_)),
+                    "the refusal must be typed, got {error:?}",
+                );
+                assert!(
+                    !codegg_core::run_placement::shared_checkout_availability().is_available(),
+                    "the shared profile is only refused where it is unavailable",
+                );
+            }
+        }
+    }
 
     #[test]
     fn call_identity_prefers_explicit_key_then_context_then_fresh_legacy_key() {
