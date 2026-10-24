@@ -1,9 +1,9 @@
 //! Deterministic control seam for the C003 built-app WebDriver trajectory.
 //!
 //! This helper is a separate test process that talks to an isolated daemon
-//! through the same native protocol/client crates as production (`codegg-client`
-//! + `codegg-protocol`). It holds a TUI-kind observer client against the
-//! isolated daemon, so the WebDriver spec can assert real daemon
+//! through the same native protocol/client crates as production
+//! (`codegg-client` + `codegg-protocol`). It holds a TUI-kind observer client
+//! against the isolated daemon, so the WebDriver spec can assert real daemon
 //! `connected_clients` counts, register deterministic projects, and emit
 //! project-catalog invalidations on demand.
 //!

@@ -365,6 +365,18 @@ currently pins to local assets only, so it needs its own ADR.
 
 ## Developer commands
 
+**One entry point runs the desktop's gate.** From the repository root,
+`apps/desktop/scripts/verify-desktop.sh` runs, in order: the desktop boundary
+guard, the renderer checks (`npm ci`, `npm run typecheck`, `npm test`,
+`npm run bindings:check`, `npm run build`), the daemon staging, the host
+checks (`cargo test --lib`, `cargo fmt --check`, `cargo clippy --all-targets
+--locked -- -D warnings`, all on the pinned 1.90.0 toolchain), and — only when
+a display is available — the built-app trajectory. It prints which steps it
+skipped and why. The hosted lane calls the same script, phase by phase, so
+the two cannot drift; the script fails closed if the workflow's own lint line
+and its copy disagree. Each phase is individually invocable
+(`verify-desktop.sh boundary`, `renderer`, `stage-daemon`, `host`, `e2e`).
+
 From `apps/desktop`, run `npm ci`, `npm run typecheck`, `npm test`,
 `npm run bindings:check`, and `npm run build`. With Tauri system libraries
 installed, run `npm run tauri dev`. Set `CODEGG_DAEMON_EXECUTABLE` to a built
