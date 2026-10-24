@@ -770,3 +770,19 @@ With those separated, the whole delegation-affected surface is green locally:
 340, `config_provider` 149, `scheduler_cancellation` 10,
 `interactive_process_attach_resume` 39, `tool_programs` 1048, `ide_protocols`
 225, and the root crate's lib suite 7477.
+
+**The `process-launcher` job is red on `main`, and this branch inherits it.**
+Merging `origin/main` brought in the managed-agent-scratch M008 line, whose
+Windows qualification job fails at
+`scratch::tests::a_tree_with_an_owner_record_that_is_not_owner_only_is_refused`
+(`src/scratch.rs:1878`) — 30 passed, 1 failed. **The identical failure is on
+`main` itself**: run `40131159604`, the `Windows process launcher` job on the
+M008 merge commit `c4fa30aeb`, fails at the same test and the same line, while
+main's own `CI` job passes. This branch changes no scratch code —
+`src/scratch.rs` is byte-identical to `main`'s — so the failure is **inherited,
+not introduced**, and it is `main`'s to fix.
+
+It does not gate this line. The gate this line is held to is the `verify` job:
+every guard and its `--self-test`, `Formatting` under the runner's 1.99
+rustfmt, `Workspace Clippy` under the runner's 1.99 clippy with `-D warnings`,
+and the full workspace test sweep.
