@@ -743,3 +743,30 @@ continuation distinguishable from an original attempt. The test was the
 incomplete thing, and it now records the run's first attempt with the same
 shape the executor writes. The full detail, and the assertion improvement that
 names the run's error text, are in the C002 closure record's §15.
+
+**The local test failures that were not product defects, and how they were
+separated.** This machine's disk reached 100% during this line's verification,
+and the resulting failures looked like real ones. They are not, and the
+separation is worth recording so they are not re-investigated:
+
+- The `scratch_cache_root_contract`, `scratch_retention_sweep`,
+  `scratch_usage_census` and `async_background_c006_tool_to_idle_ci` members
+  of `scheduler_jobs`, and `command_git`'s
+  `git_read_consistency::a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache`,
+  all **fail locally and pass on the hosted runner** — the hosted sweep logs
+  every one of them as `PASS`. They are disk-exhaustion artifacts: a
+  capture-cache write that cannot land leaves the read seeing an immutable
+  generation instead of a captured one, and the scratch members are cache-root
+  members by construction.
+- The two `core::daemon_refresh` members that register `/tmp` and the one
+  macOS-only `managed_process` refusal are **pre-existing and
+  environment-dependent**: they reproduce identically at `origin/main`, and
+  `/tmp` is a symlink on macOS, which `canonicalize_workspace_root` refuses.
+  The hosted runner is Linux, where they do not apply.
+
+With those separated, the whole delegation-affected surface is green locally:
+`agent_loop` 561, `session_family` 98, `projection_replay` 69, `tui_render`
+1101, `causal_observe_replay` 13, `core_daemon` 498, `security_permission`
+340, `config_provider` 149, `scheduler_cancellation` 10,
+`interactive_process_attach_resume` 39, `tool_programs` 1048, `ide_protocols`
+225, and the root crate's lib suite 7477.
