@@ -2184,7 +2184,7 @@ not share: the Ctrl+T pane's filter lives in the app's tree state, and the
 | `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
 | `Enter` | **the same as `l`**: a directory is entered, a file is opened in the editor |
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a file it opens the file |
-| `h` / `←` | go back one level (at the workspace root: collapse in place, otherwise jump to the parent) |
+| `h` / `←` | go up one level (at the workspace root: collapse in place, otherwise jump to the parent) |
 | `i` | type a filter into the pane — the rows narrow as you type |
 | `r` | **refresh**: re-list the current directory |
 | `Esc` | leave the filter mode, keeping the filter |

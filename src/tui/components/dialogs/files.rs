@@ -10,10 +10,8 @@
 //! The navigator's tree **structure** belongs to exactly one value: the app's
 //! `file_tree_state`. This box holds a [`FileTreeStructure`] — a read-only
 //! projection of it, and a *distinct type*, so the box cannot hold an
-//! authoritative field it might mutate. It is refreshed once per frame.
-//!
-//! Every verb is an intent naming a **path**: the command layer resolves the
-//! motion against the authority.
+//! authoritative field it might mutate. It is refreshed once per frame, and
+//! every verb is an intent naming a **path** the command layer resolves.
 //!
 //! ## What the box owns
 //!
@@ -46,8 +44,10 @@ use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 /// Hints rendered under the listing. Kept in one place so the box, its
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
 /// [`Component::keymap_hint`] hands this exact string to the panel host.
+///
+/// The panel chrome owns the word **back**, so `h` is **up** one level here.
 pub const HINT: &str =
-    "j/k move · ^d/^u page · l/→ peek · h/← back · enter open · i filter · r refresh · q/⇧Q close";
+    "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close";
 /// Separator between breadcrumb components. A `›` reads as "down one level".
 const BREADCRUMB_SEP: &str = " › ";
 
@@ -200,7 +200,6 @@ impl FilesDialog {
     fn activate(&self) -> Option<TuiMsg> {
         let row = self.selected_row()?;
         match row.kind {
-            // A directory is **entered**, the same motion `l` makes.
             TreeNodeKind::Directory => Some(TuiMsg::FilesDescend { path: row.path }),
             TreeNodeKind::File => Some(TuiMsg::FilesOpenSelected { path: row.path }),
         }
@@ -286,7 +285,7 @@ impl FilesDialog {
                 // find anything, and the recovery is a keypress: `l` re-walks
                 // the selected directory on its own budget.
                 lines.push(Line::from(Span::styled(
-                    "  l to list a directory on its own · h to go back",
+                    "  l to list a directory on its own · h to go up",
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -429,10 +428,9 @@ impl Component for FilesDialog {
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
-            // `l` opens the selected row and `h` goes back one level. Both
-            // are intents that name the row they act on: the box holds a view
-            // of the shared structure and the walk belongs to the command
-            // layer.
+            // `l` and `h` are intents that name the row they act on: the box
+            // holds a view of the shared structure and the walk belongs to
+            // the command layer.
             KeyCode::Char('l') | KeyCode::Right => {
                 let row = self.selected_row()?;
                 Some(TuiMsg::FilesDescend { path: row.path })

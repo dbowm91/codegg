@@ -207,17 +207,14 @@ impl PanelDirection {
 /// Groundwork for more than one panel. The directionals already address panes
 /// *by direction* — `Shift+H` means "the pane on my left" — so what was
 /// missing was a way to say **which** pane the one existing host is currently
-/// living in. Without that, every gesture silently assumed "right", which is
-/// exactly the hardcoding that makes a second column impossible to add later.
+/// living in. Without that, every gesture silently assumed "right".
 ///
 /// `Right` is the default and reproduces the layout that shipped first, so a
 /// user who configures nothing sees no change at all.
 ///
 /// The three placements are the ones the frame can honestly host today: a
 /// left column, a right column, and a full-width row beneath the main input
-/// box. Growing a second column is a fourth variant plus one geometry arm —
-/// the gesture dispatcher already reads *which* side a direction names and
-/// needs no new rule.
+/// box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelPlacement {
     /// The shipped default: a column beside the main buffer, on the right.
@@ -512,10 +509,7 @@ impl SidePanelId {
     /// [`is_bespoke`](Self::is_bespoke), which is what `SidePanelHost` filters
     /// on. **A panel appears here only if selecting it does something**:
     /// either the box that fills it exists, or selecting it states the reason
-    /// it cannot act. A row that could only ever render an empty placeholder
-    /// was a promise the manager could not keep — `Workspace` was one, and was
-    /// removed for it. The Workspace *view* is untouched and still opens with
-    /// `Ctrl+O` / `/workspace`; it was never a panel.
+    /// it cannot act.
     pub const ALL: &'static [SidePanelId] = &[
         SidePanelId::Session,
         SidePanelId::Chat,
@@ -1423,8 +1417,8 @@ impl SidePanelHost {
 
     /// Mutate the component a hosted panel owns, when it is of type `T`.
     ///
-    /// The seam the frame pass needs to reach a **docked** box: a box that
-    /// was docked is owned by this host, not by the focus manager.
+    /// The seam the frame pass needs to reach a **docked** box: a docked box
+    /// is owned by this host, not by the focus manager.
     pub fn with_hosted_mut<T: Component + 'static, R>(
         &mut self,
         id: SidePanelId,
@@ -2437,6 +2431,11 @@ mod tests {
         Box::new(dialog)
     }
 
+    /// The verbs a docked `/files` panel's line must advertise. Named rather
+    /// than inline, because it is a fourth copy of the navigator's vocabulary
+    /// and the keymap guard compares it with the hint.
+    const ADVERTISED_VERBS: &[&str] = &["enter open", "l/→ peek", "^d/^u page"];
+
     /// The reported defect, as an assertion: a `/files` box docked in a side
     /// panel showed no keymap anywhere until the user had already guessed the
     /// keys correctly. The line must appear the moment the box is docked,
@@ -2461,7 +2460,7 @@ mod tests {
             !hint.contains("i act"),
             "the host's generic line describes a verb `/files` does not have, got {hint:?}"
         );
-        for verb in ["enter open", "l/→ open", "^d/^u page"] {
+        for &verb in ADVERTISED_VERBS {
             assert!(hint.contains(verb), "missing {verb:?} in {hint:?}");
         }
     }

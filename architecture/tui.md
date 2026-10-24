@@ -3350,7 +3350,7 @@ stack left the docked panel showing a frozen copy of the tree.
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
 | `Enter` | **the same motion as `l`**: a directory is entered, a file is opened in the editor |
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
-| `h` / `←` | **back one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
+| `h` / `←` | **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | **refresh**: re-walk the current root |
 | `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
