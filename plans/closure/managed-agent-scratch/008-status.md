@@ -239,15 +239,85 @@ of the implementation itself. Following the M007 precedent, the run is
 cited against the head that carries the implementation; a closure-record-only
 follow-up commit is a documentation delta, not a second implementation.
 
-**Merged-head run — still outstanding.** The plan's §15.2 asks for a run on
-the merged head as well. That run cannot exist before the merge, so no
-merged-head identifier is claimed here and none is invented. It is recorded
-in this section when the pull request merges.
+**Merged-head run — the merge happened; the run is in flight.** Pull request
+#187 was merged by the repository owner at `2026-10-24T20:44:41Z` with the
+pull-request head `7ad3fabb658248a38e7e624f5b59363695f1327c` still current,
+producing merge commit `c4fa30aeba439894b048768d4829dea0cfa0b84b` on `main`.
+The hosted `CI` run on that merged head is run `40131159586`; it was
+`in_progress` when this record was written, so **no conclusion is claimed
+for it here and none is invented**. It is recorded in this section when it
+reports.
+
+The two commits that followed the merge — this closure's anchor correction
+and this section's pull-request run record — were pushed to the branch after
+the merge, so they are **not** ancestors of the merged head. They are
+carried by a follow-up pull request, and the merged-head run identifier
+recorded there is the one that belongs to the merged implementation.
 
 **The anchor correction is a follow-up commit.** A later commit corrects the
 §3 line anchors against the committed source; it is documentation only, and
 it triggers one further hosted run on the final pull-request head. That run's
 identifier is recorded here as well when it reports.
+
+### 4.4 The Windows qualification found a real defect in this milestone's test
+
+**The pull request merged with one hosted lane red, and the lane was right.**
+The `Windows process launcher` workflow ran on the pull-request head
+(`40129287318`) and failed one of this milestone's own tests:
+
+```
+scratch::tests::a_tree_with_an_owner_record_that_is_not_owner_only_is_refused
+thread '...' panicked at src\scratch.rs:1878:68:
+called `Result::unwrap_err()` on an `Ok` value: true
+test result: FAILED. 30 passed; 1 failed
+```
+
+The defect is in the **test**, not in the product. The ownership check has
+two halves, and only one of them has a portable expression:
+
+- The reclaim path's owner check is `#[cfg(unix)]`
+  (`src/scratch.rs:636-641`): it reads `MetadataExt::uid()` and
+  `PermissionsExt::mode() & 0o077`. POSIX mode bits are what carry the
+  owner-only property; there is no Windows equivalent this check reads.
+- The test was gated `#[cfg(any(unix, windows))]`, so it ran on Windows,
+  but the step that makes the record *not owner-only* — `chmod 0644` — was
+  `#[cfg(unix)]`. On Windows the record therefore still read as owner-only,
+  the reclaim path treated the tree as reclaimable, and the tree was
+  **removed**. The test then called `unwrap_err()` on that `Ok` and panicked.
+
+**The Windows behaviour is not a security hole, and it is not M008's
+change.** The tree the fixture plants is **empty**
+(`plant_record_less_tree` creates a directory and no entries), so removing
+it is exactly M008's intended disposition for a tree that holds nothing.
+The *production* owner check is byte-for-byte the pre-existing one: the
+`#[cfg(unix)]` block at `src/scratch.rs:636-641` is the same code that was
+at `:516-520` before this milestone, and M008 did not move it.
+
+**The fix is to the test's gate**, and it is the honest one: the owner-only
+half of the ownership check is a Unix property, so the test that asserts it
+is now `#[cfg(unix)]`. Narrowing the gate does not weaken what the product
+does — the product's Windows behaviour is unchanged and was never what this
+test was asserting.
+
+**What this says about the plan's §15.2 evidence.** The plan asked for a
+pull-request-head run and a merged-head run. The `CI / verify` job — the
+job `AGENTS.md` names — was green on both. The *Windows* lane is a
+**separate qualification workflow**, not the `verify` job, and it was red
+on the pull-request head (`40129287318`) and is red on the merged head
+(`40131159604`) for the same reason. The milestone is therefore **not**
+claimed to have a fully green hosted qualification; only the `verify` job
+is claimed green, and the Windows lane is claimed red-until-fixed. The
+Windows half of this subsystem's native qualification remains outstanding
+in any case — it was already outstanding under M007, and M008 does not
+discharge it.
+
+| Lane | Run id | Head | Conclusion |
+|------|--------|------|------------|
+| `CI` / `verify` | `40129287199` | `7ad3fabb6` (pull-request head) | **success** |
+| `CI` / `verify` | `40131159586` | `c4fa30aeb` (merged head) | *in flight when written* |
+| `Windows process launcher` | `40129287318` | `7ad3fabb6` (pull-request head) | **failure** — the mis-gated test |
+| `Windows process launcher` | `40131159604` | `c4fa30aeb` (merged head) | **failure** — the same test |
+| `Shared checkout macOS qualification` | `40131159646` | `c4fa30aeb` (merged head) | **success** |
 
 ### 4.3 The record-less residue on this host — the before observation
 
@@ -506,6 +576,15 @@ unrelated to M008 and is not discharged by it.
   **success** on 2026-10-24T20:53:17Z, and §4.2 now carries that identifier
   with its head commit, job and timestamps. The run identifier was read back
   from the hosted service; it was not written in advance of the run.
+- **One of this milestone's own tests was mis-gated for Windows, and the
+  hosted Windows lane caught it.** `a_tree_with_an_owner_record_that_is_not
+  _owner_only_is_refused` was declared `#[cfg(any(unix, windows))]` while
+  the step that makes the record not-owner-only is `#[cfg(unix)]`. On Windows
+  the test asserted a refusal the product never makes, and it failed on the
+  pull-request head (`40129287318`) and on the merged head. The test is now
+  `#[cfg(unix)]`; the product's behaviour is unchanged, because the owner
+  check it exercises was already `#[cfg(unix)]` before this milestone. §4.4
+  records the finding in full.
 
 ## 14. Handoff notes
 
