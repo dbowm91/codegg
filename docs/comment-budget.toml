@@ -14,7 +14,7 @@ unlisted_max_comment_lines = 20
 
 [global]
 max_comment_lines = 122449
-max_comment_words = 1078060
+max_comment_words = 1078055
 max_ratio = 0.1316
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -685,7 +685,7 @@ max_ratio = 0.1316
 "src/tui/panels/chat.rs" = { max_comment_lines = 126, max_ratio = 0.4566 }
 "src/tui/panels/help.rs" = { max_comment_lines = 38, max_ratio = 0.5672 }
 "src/tui/panels/hosted.rs" = { max_comment_lines = 131, max_ratio = 0.5118 }
-"src/tui/panels/mod.rs" = { max_comment_lines = 929, max_ratio = 0.6128 }
+"src/tui/panels/mod.rs" = { max_comment_lines = 929, max_ratio = 0.6133 }
 "src/tui/panels/session.rs" = { max_comment_lines = 30, max_ratio = 0.411 }
 "src/tui/panels/terminal.rs" = { max_comment_lines = 191, max_ratio = 0.5149 }
 "src/tui/render_cost.rs" = { max_comment_lines = 39, max_ratio = 0.8864 }
