@@ -34,7 +34,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::Style;
 
-use crate::tui::app::state::file_tree::{FileTreeState, MAX_INDENT_DEPTH};
+use crate::tui::app::state::file_tree::MAX_INDENT_DEPTH;
 use crate::tui::file_tree::{TreeNodeKind, TreeRow};
 use crate::tui::theme::Theme;
 
@@ -230,19 +230,11 @@ pub const INDENT_LEVEL_COLS: usize = 3;
 /// `budget` is what remains of the column once the name and the icon are
 /// accounted for, and levels that do not fit are dropped from the **outside**
 /// in: the guide to the immediate parent is what tells the reader what this
-/// row belongs to, so that is the part that survives. When even one level does
-/// not fit, the guide is empty and the name sits flush left — the name is
-/// content, the guide is orientation.
-pub fn tree_indent(
-    state: &FileTreeState,
-    rows: &[TreeRow],
-    index: usize,
-    inner_width: usize,
-) -> String {
-    let indent = state.indent_for(rows, index);
+/// row belongs to, so that is the part that survives.
+pub fn tree_indent(rows: &[TreeRow], index: usize, inner_width: usize) -> String {
+    let indent = crate::tui::app::state::file_tree::indent_for(rows, index);
     // Char count rather than display width: it under-counts a CJK name, which
-    // can leave the guide one column wider than the budget. Cheap and it
-    // errs toward keeping the guide rather than dropping it.
+    // can leave the guide one column wider than the budget.
     let name_cols = rows.get(index).map_or(0, |row| row.name.chars().count());
     indent_prefix(
         indent.depth,
@@ -703,9 +695,9 @@ mod tests {
         let mut state = FileTreeState::default();
         assert_eq!(state.indent_for(&rows, 0).depth, 0, "at the root, nothing");
         assert_eq!(state.indent_for(&rows, 1).depth, 1);
-        assert_eq!(tree_indent(&state, &rows, 0, 40), "");
+        assert_eq!(tree_indent(&rows, 0, 40), "");
         assert_eq!(
-            tree_indent(&state, &rows, 1, 40),
+            tree_indent(&rows, 1, 40),
             "└─ ",
             "one level in: the connector to the parent, and nothing above it"
         );
@@ -714,12 +706,12 @@ mod tests {
         // visibly inside something rather than merely indented.
         let deeper = vec![row("a", "a", 0), row("a/b", "b", 1), row("a/b/c", "c", 2)];
         assert_eq!(
-            tree_indent(&state, &deeper, 1, 40),
+            tree_indent(&deeper, 1, 40),
             "├─ ",
             "one level in, with a sibling still to come, keeps its level open"
         );
         assert_eq!(
-            tree_indent(&state, &deeper, 2, 40),
+            tree_indent(&deeper, 2, 40),
             "│  └─ ",
             "two levels in and last: the outer level continues, this one closes"
         );
@@ -739,7 +731,7 @@ mod tests {
              not added back"
         );
         assert_eq!(
-            tree_indent(&state, &scoped, 0, 40),
+            tree_indent(&scoped, 0, 40),
             "└─ ",
             "the scope itself is the parent, so its only child closes the level"
         );

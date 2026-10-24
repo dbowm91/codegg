@@ -3,20 +3,23 @@
 //! This is a **navigator**, not a document surface. It owns no file text and
 //! performs no reads of its own: the listing arrives already walked, and
 //! opening a row is a [`TuiMsg::FilesOpenSelected`] intent the command layer
-//! turns into an editor attachment through `open_editor`. That is the same
-//! split the Ctrl+T tree pane and `/open` use, so all three reach a document
-//! through one path.
+//! turns into an editor attachment through `open_editor`.
 //!
-//! Navigation state is not reimplemented here either — the box holds a real
-//! [`FileTreeState`], so `l`/`h`, Enter, paging, and the cursor clamp are
-//! literally the same code the editor-side pane runs, and a fix in one is a
-//! fix in both. Re-rooting (`l`) is the one thing the box cannot do to its
-//! own copy: it emits [`TuiMsg::FilesDescend`] / [`TuiMsg::FilesAscend`] and
-//! the command layer moves the shared scope and issues the walk.
+//! ## The box holds a view, not a copy of the tree
 //!
-//! The box seeds itself from the app's shared state when it opens, so `/files`
-//! picks up where a previous browse left off instead of resetting the cursor
-//! to the workspace root every time.
+//! The navigator's tree **structure** belongs to exactly one value: the app's
+//! `file_tree_state`. This box holds a [`FileTreeStructure`] — a read-only
+//! projection of it, and a *distinct type*, so the box cannot hold an
+//! authoritative field it might mutate. It is refreshed once per frame, and
+//! every verb is an intent naming a **path** the command layer resolves.
+//!
+//! ## What the box owns
+//!
+//! The genuinely per-surface state: the **filter text**, the **insert mode**
+//! and the **scroll offset**. The filter stays box-local by a closed
+//! decision, so the two surfaces may show different rows — the accepted
+//! contract, not a defect. The box measures its own viewport, so `Ctrl+d`
+//! pages against the height of *this* box.
 
 use std::sync::Arc;
 
@@ -31,43 +34,64 @@ use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
 
-use crate::tui::app::state::file_tree::{FileTreeState, FileTreeStatus, TreePanelMode};
+use crate::tui::app::state::file_tree::{
+    filter_rows, FileTreeStatus, FileTreeStructure, TreePanelMode, FALLBACK_PAGE_ROWS,
+};
 use crate::tui::app::TuiMsg;
 use crate::tui::file_icons::{self, FileIconStyle};
-use crate::tui::file_tree::{TreeFilterField, TreeListing, TreeNodeKind};
+use crate::tui::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 
 /// Hints rendered under the listing. Kept in one place so the box, its
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
+/// [`Component::keymap_hint`] hands this exact string to the panel host.
 ///
-/// The single source is not a convention any more: [`Component::keymap_hint`]
-/// hands this exact string to the panel host, so the composer status line for
-/// a docked `/files` panel is these bytes and not a host-side paraphrase. A
-/// second copy in `panels/hosted.rs` is what taught the panel to advertise an
-/// `i act` verb `handle_key` never implemented.
+/// The panel chrome owns the word **back**, so `h` is **up** one level here.
 pub const HINT: &str =
-    "j/k move · ^d/^u page · l/→ open · h/← up · enter open · i filter · r refresh · ⇧Q close";
-
-/// Separator between breadcrumb components. A `›` reads as "down one level"
-/// and is BMP box-adjacent, so it survives the plain-icon fallback.
+    "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close";
+/// Separator between breadcrumb components. A `›` reads as "down one level".
 const BREADCRUMB_SEP: &str = " › ";
 
+/// The revision a box starts on: one no authority can hold, so the first
+/// refresh always copies.
+const NO_REVISION: u64 = u64::MAX;
 #[derive(Clone)]
 pub struct FilesDialog {
     pub theme: Arc<Theme>,
-    /// The shared navigation state. Cloned from the app on open so the box
-    /// starts where the user was, then owned by the box for its lifetime.
-    pub state: FileTreeState,
-    pub scroll: CenteredScroll,
+    /// The authority's tree structure, as a read-only view.
+    ///
+    /// Refreshed from `App::file_tree_state` once per frame, before this
+    /// surface is drawn, and only when the authority's revision moved.
+    view: FileTreeStructure,
+    /// The authority's revision the view was taken at.
+    view_revision: u64,
+    /// The box's own filter. Box-local by a closed decision: the Ctrl+T
+    /// pane's filter lives in the authority and this one does not.
+    filter: String,
+    /// The box's own insert mode.
+    panel_mode: TreePanelMode,
+    /// The box's own scroll offset.
+    scroll: CenteredScroll,
+    /// The box's own measured viewport height, in rows.
     visible_height: usize,
 }
 
 impl FilesDialog {
-    pub fn new(theme: Arc<Theme>, state: FileTreeState) -> Self {
+    pub fn new(theme: Arc<Theme>) -> Self {
         Self {
             theme,
-            state,
+            view: FileTreeStructure {
+                rows: Vec::new(),
+                selected: None,
+                root: None,
+                scope: String::new(),
+                truncated: None,
+                status: FileTreeStatus::Idle,
+            },
+            view_revision: NO_REVISION,
+            filter: String::new(),
+            panel_mode: TreePanelMode::Normal,
             scroll: CenteredScroll::new(),
-            visible_height: 10,
+            visible_height: FALLBACK_PAGE_ROWS,
         }
     }
 
@@ -75,82 +99,122 @@ impl FilesDialog {
         self.theme = Arc::clone(theme);
     }
 
-    /// Adopt a freshly completed walk without losing the cursor.
+    /// Adopt the authority's current structure.
     ///
-    /// The shared `apply_listing` already drops a listing that belongs to a
-    /// different workspace or generation, so a refresh that lands after the
-    /// user left the project cannot repaint this box with someone else's
-    /// tree.
-    pub fn apply_listing(
-        &mut self,
-        generation: u64,
-        request_id: u64,
-        root: std::path::PathBuf,
-        listing: TreeListing,
-    ) {
-        if !self
-            .state
-            .apply_listing(generation, request_id, root, listing)
-        {
-            self.state.request.cancel();
+    /// The copy happens only when the revision has moved: an unchanged frame
+    /// costs nothing, and the box's own filter, mode and scroll are untouched.
+    pub fn adopt_structure(&mut self, revision: u64, build: &dyn Fn() -> FileTreeStructure) {
+        if self.view_revision == revision {
+            return;
         }
+        self.view = build();
+        self.view_revision = revision;
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        self.state.move_selection(delta);
-        self.reveal();
+    /// The rows this box shows: the view's rows, narrowed by its own filter.
+    fn rows(&self) -> Vec<TreeRow> {
+        filter_rows(&self.view.rows, &self.filter)
     }
 
-    fn page_selection(&mut self, direction: isize) {
-        // The box measures its own viewport during render; feeding it back
-        // here is what makes `Ctrl+d` move a page of *this* box rather than a
-        // fixed guess.
-        self.state.viewport_rows = self.visible_height;
-        self.state.page_selection(direction);
-        self.reveal();
+    /// Index of the cursor within the rows this box shows.
+    fn selected_index(&self) -> Option<usize> {
+        let rows = self.rows();
+        self.selected_index_in(&rows)
+    }
+
+    fn selected_index_in(&self, rows: &[TreeRow]) -> Option<usize> {
+        if rows.is_empty() {
+            return None;
+        }
+        let index = self
+            .view
+            .selected
+            .as_deref()
+            .and_then(|path| rows.iter().position(|row| row.path == path))
+            .unwrap_or(0);
+        Some(index.min(rows.len() - 1))
+    }
+
+    /// The row the cursor is on.
+    fn selected_row(&self) -> Option<TreeRow> {
+        let rows = self.rows();
+        let index = self.selected_index_in(&rows)?;
+        rows.into_iter().nth(index)
+    }
+
+    /// The path of the row `delta` rows from the cursor, if there is one.
+    fn path_at_offset(&self, delta: isize) -> Option<String> {
+        let rows = self.rows();
+        if rows.is_empty() {
+            return None;
+        }
+        let current = self.selected_index_in(&rows).unwrap_or(0) as isize;
+        let next = (current + delta).clamp(0, rows.len() as isize - 1) as usize;
+        rows.get(next).map(|row| row.path.clone())
+    }
+
+    /// Name the row `delta` rows from the cursor. The box knows its own
+    /// filtered rows; the command layer records the choice on the authority.
+    fn move_by(&self, delta: isize) -> Option<TuiMsg> {
+        let path = self.path_at_offset(delta)?;
+        Some(TuiMsg::FilesSelect { path })
+    }
+
+    /// Rows one page moves: two thirds of **this box's** viewport, which the
+    /// box measures during its own render.
+    fn page_step(&self) -> isize {
+        ((self.visible_height * 2) / 3).max(1) as isize
+    }
+
+    /// Page the cursor by `direction` rows.
+    fn page(&self, direction: isize) -> Option<TuiMsg> {
+        let path = self.path_at_offset(direction * self.page_step())?;
+        Some(TuiMsg::FilesSelect { path })
+    }
+    /// Keep the cursor on a row the filter still shows: the selection is the
+    /// authority's, so a filter that hides it names the row it belongs on.
+    fn reanchor(&self) -> Option<TuiMsg> {
+        let rows = self.rows();
+        let first = rows.first()?;
+        if self
+            .view
+            .selected
+            .as_deref()
+            .is_some_and(|path| rows.iter().any(|row| row.path == path))
+        {
+            return None;
+        }
+        Some(TuiMsg::FilesSelect {
+            path: first.path.clone(),
+        })
     }
 
     fn reveal(&mut self) {
-        let index = self.state.selected_index().unwrap_or(0);
-        let total = self.state.rows().len();
-        self.state.ensure_visible(index, self.visible_height);
-        self.scroll.set(self.state.scroll);
+        let index = self.selected_index().unwrap_or(0);
+        let total = self.rows().len();
         self.scroll.clamp(index, total, self.visible_height);
     }
 
-    /// Activate the selected row.
-    ///
-    /// A directory is **peeked into** — the same motion `l` makes, and the
-    /// same one the Ctrl+T pane's `l` makes — so the two surfaces cannot
-    /// disagree about what `Enter` does. A file asks the command layer to
-    /// open it; only a file can become a document, so only a file emits an
-    /// intent.
-    fn activate(&mut self) -> Option<TuiMsg> {
-        let row = self.state.selected_row()?;
+    /// Activate the selected row. A directory is **peeked into** — the same
+    /// motion `l` makes; a file asks the command layer to open it.
+    fn activate(&self) -> Option<TuiMsg> {
+        let row = self.selected_row()?;
         match row.kind {
-            // A directory is **entered**, the same motion `l` makes: the
-            // standalone toggle verb is retired, and a toggle at the listing
-            // window's edge expanded a directory that has no children in the
-            // listing — which reads as an empty directory, not as a move.
             TreeNodeKind::Directory => Some(TuiMsg::FilesDescend { path: row.path }),
             TreeNodeKind::File => Some(TuiMsg::FilesOpenSelected { path: row.path }),
         }
     }
 
     fn render_rows(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let rows = self.state.rows();
-        let selected = self.state.selected_index();
+        let rows = self.rows();
+        let selected = self.selected_index_in(&rows);
         let icon_style_kind = FileIconStyle::active();
         let mut lines: Vec<Line> = Vec::new();
 
-        // The **filter field** takes a row of its own when it has something
-        // to show. It is a row rather than an overlay because the panel is a
-        // listing, and a listing that silently changed under a typed filter
-        // would be a listing the reader could not account for.
-        let field = TreeFilterField::new(
-            &self.state.filter,
-            self.state.panel_mode == TreePanelMode::Insert,
-        );
+        // The **filter field** takes a row of its own when it has something to
+        // show: a listing that silently changed under a typed filter would
+        // be a listing the reader could not account for.
+        let field = TreeFilterField::new(&self.filter, self.panel_mode == TreePanelMode::Insert);
         let field_rows = u16::from(field.is_visible());
         let list_height = area.height.saturating_sub(field_rows);
 
@@ -161,8 +225,8 @@ impl FilesDialog {
             )));
         } else if rows.is_empty() {
             lines.push(Line::from(Span::styled(
-                if self.state.status == FileTreeStatus::Loading
-                    || self.state.status == FileTreeStatus::Waiting
+                if self.view.status == FileTreeStatus::Loading
+                    || self.view.status == FileTreeStatus::Waiting
                 {
                     "Loading…"
                 } else {
@@ -171,7 +235,7 @@ impl FilesDialog {
                 Style::default().fg(theme.muted),
             )));
         } else {
-            let selected_path = self.state.selected.clone();
+            let selected_path = self.view.selected.clone();
             for (offset, row) in rows
                 .iter()
                 .skip(self.scroll.get())
@@ -181,16 +245,9 @@ impl FilesDialog {
                 let is_selected = selected == Some(self.scroll.get() + offset);
                 // Depth, last-ness and the guide glyph come from one shared
                 // calculation, so a row nested one level in looks the same in
-                // this box, in the Ctrl+T pane, and in a listing scoped with
-                // `l` — whose top level arrives at the depth the workspace
-                // root's own top level arrives at, and so used to draw exactly
-                // like the root it was no longer showing.
-                let indent = file_icons::tree_indent(
-                    &self.state,
-                    &rows,
-                    self.scroll.get() + offset,
-                    area.width as usize,
-                );
+                // this box and in the Ctrl+T pane.
+                let indent =
+                    file_icons::tree_indent(&rows, self.scroll.get() + offset, area.width as usize);
                 let (glyph, icon_style) = file_icons::icon_style(
                     row.kind,
                     &row.name,
@@ -219,21 +276,16 @@ impl FilesDialog {
                 }
                 lines.push(line);
             }
-            if let Some(reason) = self.state.truncated.as_deref() {
+            if let Some(reason) = self.view.truncated.as_deref() {
                 lines.push(Line::from(Span::styled(
                     format!("… {reason}"),
                     Style::default().fg(theme.warning),
                 )));
                 // A truncated listing is bounded *in scope*, not a failure to
-                // find anything, and the recovery is a keypress. Without this
-                // the notice reads as a terminal verdict: the user is left
-                // staring at whatever survived the cut with nothing to do
-                // about it. `l` re-walks the selected directory on its own
-                // budget, so it is the way past every kind of truncation here
-                // — the retained-node cap, the depth window, and the response
-                // byte cap alike.
+                // find anything, and the recovery is a keypress: `l` re-walks
+                // the selected directory on its own budget.
                 lines.push(Line::from(Span::styled(
-                    "  l to list a directory on its own · h to go back",
+                    "  l to list a directory on its own · h to go up",
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -259,22 +311,13 @@ impl FilesDialog {
         }
     }
 
-    /// The title is a breadcrumb of the scope, not a flat path.
-    ///
-    /// A pane scoped with `l` is not showing the workspace root, and a title
-    /// that still read the workspace name would be telling the user the wrong
-    /// thing about every row under it. Spelling the scope as
-    /// `workspace › one › two` says the same thing the indentation now says
-    /// about the rows: this is the third level of the same tree, one `h` from
-    /// its parent.
-    ///
-    /// The path already carried this information and nobody could use it — a
-    /// nested scope presented as one unbroken string hides which component you
-    /// arrived through, so `h` looked like it would jump somewhere arbitrary.
+    /// The title is a breadcrumb of the scope: a pane scoped with `l` is not
+    /// showing the workspace root, and a flat title would be wrong about
+    /// every row under it.
     pub(crate) fn title(&self) -> String {
-        let total = self.state.rows().len();
+        let total = self.rows().len();
         let workspace = self
-            .state
+            .view
             .root
             .as_ref()
             .and_then(|root| root.file_name())
@@ -283,12 +326,7 @@ impl FilesDialog {
         if let Some(workspace) = workspace.as_deref() {
             crumbs.push(workspace);
         }
-        crumbs.extend(
-            self.state
-                .root_prefix()
-                .split('/')
-                .filter(|part| !part.is_empty()),
-        );
+        crumbs.extend(self.view.scope.split('/').filter(|part| !part.is_empty()));
         if crumbs.is_empty() {
             return format!(" Files ({total} shown)");
         }
@@ -296,7 +334,7 @@ impl FilesDialog {
     }
 
     fn error_line(&self) -> Option<&str> {
-        match &self.state.status {
+        match &self.view.status {
             FileTreeStatus::Error(message) => Some(message.as_str()),
             _ => None,
         }
@@ -306,28 +344,24 @@ impl FilesDialog {
     fn handle_insert_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
             KeyCode::Esc => {
-                self.state.panel_mode = TreePanelMode::Normal;
-                None
+                self.panel_mode = TreePanelMode::Normal;
+                self.reanchor()
             }
             KeyCode::Enter => {
-                self.state.panel_mode = TreePanelMode::Normal;
-                None
+                self.panel_mode = TreePanelMode::Normal;
+                self.reanchor()
             }
             KeyCode::Backspace => {
-                self.state.filter.pop();
-                self.state.reanchor_selection();
-                self.reveal();
-                None
+                self.filter.pop();
+                self.reanchor()
             }
             // Only plain (or shifted) characters are typed. A control or alt
             // combination is a chord, not a character.
             KeyCode::Char(character)
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
             {
-                self.state.filter.push(character);
-                self.state.reanchor_selection();
-                self.reveal();
-                None
+                self.filter.push(character);
+                self.reanchor()
             }
             _ => None,
         }
@@ -337,10 +371,7 @@ impl FilesDialog {
 impl Component for FilesDialog {
     /// A plain viewer box: no composer of its own, so the panel host may
     /// resolve `Shift+←/→/↑/↓` as the docking gesture before this dialog
-    /// sees the key. The filter is the *panel's* input and the panel's mode,
-    /// not the composer's — the composer badge reports the app-level mode,
-    /// and a filter being typed must never be reported as the composer being
-    /// in Insert.
+    /// sees the key.
     fn docks_as_viewer(&self) -> bool {
         true
     }
@@ -363,69 +394,54 @@ impl Component for FilesDialog {
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         // The panel's own insert mode owns the keyboard while it is active:
-        // printable keys edit the filter and `Esc` leaves insert mode. The
-        // composer is a different surface with a different job, and this
-        // filter is the panel's input.
-        if self.state.panel_mode == TreePanelMode::Insert {
+        // printable keys edit the filter and `Esc` leaves insert mode.
+        if self.panel_mode == TreePanelMode::Insert {
             return self.handle_insert_key(key);
         }
         // Checked before the character arms: `Ctrl+d`/`Ctrl+u` carry
         // `Char('d')`/`Char('u')` codes, so a listing taller than the box
-        // needs a verb that moves more than one row. The box owns the
-        // keyboard while it is open, so nothing downstream competes for them.
+        // needs a verb that moves more than one row.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('d') => {
-                    self.page_selection(1);
-                    return None;
-                }
-                KeyCode::Char('u') => {
-                    self.page_selection(-1);
-                    return None;
-                }
+                KeyCode::Char('d') => return self.page(1),
+                KeyCode::Char('u') => return self.page(-1),
                 _ => {}
             }
         }
         match key.code {
             // `Esc` is the **mode** switch, not the exit. In Normal mode
             // there is no mode to leave, so the key does nothing: the panel
-            // keeps the keyboard and the selection, and `Shift+Q` is how the
-            // user leaves.
+            // keeps the keyboard and the selection.
             KeyCode::Esc => None,
             // `Shift+Q` closes the box, the same gesture that exits a
-            // docked panel. It is spelled with the shift modifier so the
-            // plain `q` stays the program's quit key.
+            // docked panel.
             KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 Some(TuiMsg::CloseDialog)
             }
+            // `q` closes the **box**; it is inert in the docked panel.
+            KeyCode::Char('q') if key.modifiers.is_empty() => Some(TuiMsg::FilesClose),
             // `i` opens the panel's filter field. The filter narrows the rows
             // the panel shows; it never re-scopes the listing.
             KeyCode::Char('i') => {
-                self.state.panel_mode = TreePanelMode::Insert;
+                self.panel_mode = TreePanelMode::Insert;
                 None
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.move_selection(1);
-                None
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.move_selection(-1);
-                None
-            }
-            // `l` opens the selected row and `h` goes back one level. Both
-            // are intents: the box holds a copy of the shared state and the
-            // walk belongs to the command layer, so it names the direction
-            // rather than moving its own scope. A directory is entered; a
-            // file is opened, because it has nothing to enter.
+            KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
+            // `l` and `h` are intents that name the row they act on: the box
+            // holds a view of the shared structure and the walk belongs to
+            // the command layer.
             KeyCode::Char('l') | KeyCode::Right => {
-                let row = self.state.selected_row()?;
+                let row = self.selected_row()?;
                 Some(TuiMsg::FilesDescend { path: row.path })
             }
-            KeyCode::Char('h') | KeyCode::Left => Some(TuiMsg::FilesAscend),
+            KeyCode::Char('h') | KeyCode::Left => {
+                let row = self.selected_row()?;
+                Some(TuiMsg::FilesAscend { path: row.path })
+            }
             KeyCode::Enter => self.activate(),
             // `r` re-walks the workspace. It is an intent, not a walk: the
-            // command layer owns the async read and the completion comes back
-            // through the shared generation-guarded path.
+            // command layer owns the async read.
             KeyCode::Char('r') => Some(TuiMsg::FilesRefresh),
             _ => None,
         }
@@ -451,8 +467,7 @@ impl Component for FilesDialog {
 
         // The listing gets the whole box. The hotkey line that used to sit
         // at the bottom of the box duplicated the keymap the composer status
-        // line already carries above the input, and in a narrow box it
-        // wrapped onto rows and pushed the listing out of view.
+        // line already carries above the input.
         self.visible_height = inner.height as usize;
         self.reveal();
         self.render_rows(frame, inner, theme);
@@ -463,20 +478,20 @@ impl Component for FilesDialog {
     }
 }
 
-/// Read-only view used by tests and the hosted panel.
 impl FilesDialog {
     pub fn visible_row_count(&self) -> usize {
-        self.state.rows().len()
+        self.rows().len()
     }
 
     pub fn selected_path(&self) -> Option<String> {
-        self.state.selected.clone()
+        self.view.selected.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::state::file_tree::FileTreeState;
     use crate::tui::file_tree::build_tree;
 
     fn temp() -> tempfile::TempDir {
@@ -489,11 +504,48 @@ mod tests {
         std::fs::write(path, b"x").expect("write");
     }
 
-    fn dialog(root: &std::path::Path) -> FilesDialog {
-        let mut state = FileTreeState::default();
-        let (generation, request_id) = state.begin_rebuild(root.to_path_buf());
-        state.apply_listing(generation, request_id, root.to_path_buf(), build_tree(root));
-        FilesDialog::new(Arc::new(Theme::default()), state)
+    /// The authority and the box that renders it.
+    ///
+    /// The box holds a **view** of the authority, so a test that wants to see
+    /// a different tree moves the authority and refreshes the box.
+    struct Fixture {
+        state: FileTreeState,
+        dialog: FilesDialog,
+    }
+
+    impl Fixture {
+        fn new(root: &std::path::Path) -> Self {
+            let mut state = FileTreeState::default();
+            let (generation, request_id) = state.begin_rebuild(root.to_path_buf());
+            state.apply_listing(generation, request_id, root.to_path_buf(), build_tree(root));
+            let mut dialog = FilesDialog::new(Arc::new(Theme::default()));
+            let revision = state.revision;
+            let build = || state.structure();
+            dialog.adopt_structure(revision, &build);
+            Self { state, dialog }
+        }
+
+        /// Refresh the box from the authority, the way a frame does.
+        fn refresh(&mut self) {
+            let revision = self.state.revision;
+            let build = || self.state.structure();
+            self.dialog.adopt_structure(revision, &build);
+        }
+
+        /// Move the cursor and refresh, the way a keypress and a frame do.
+        fn select(&mut self, path: &str) {
+            assert!(self.state.select(path), "the authority must know {path}");
+            self.refresh();
+        }
+
+        /// The scope the listing was taken in.
+        fn scope(&mut self, prefix: &str) {
+            assert!(
+                self.state.set_root_prefix(prefix),
+                "the scope must be accepted"
+            );
+            self.refresh();
+        }
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -509,14 +561,14 @@ mod tests {
         let root = temp();
         write(root.path(), "dir/a.txt");
 
-        let mut dialog = dialog(root.path());
-        assert_eq!(dialog.selected_path().as_deref(), Some("dir"));
+        let mut fixture = Fixture::new(root.path());
+        assert_eq!(fixture.dialog.selected_path().as_deref(), Some("dir"));
 
         // `Enter` is the same motion as `l`: it enters the directory. It used
         // to expand it in place, which at the listing window's edge expanded a
         // directory with no children — an "empty directory", not a move.
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Enter)),
+            fixture.dialog.handle_key(key(KeyCode::Enter)),
             Some(TuiMsg::FilesDescend {
                 path: "dir".to_string()
             })
@@ -529,17 +581,17 @@ mod tests {
         write(root.path(), "dir/a.txt");
         write(root.path(), "top.txt");
 
-        let mut dialog = dialog(root.path());
+        let mut fixture = Fixture::new(root.path());
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Char('l'))),
+            fixture.dialog.handle_key(key(KeyCode::Char('l'))),
             Some(TuiMsg::FilesDescend {
                 path: "dir".to_string()
             }),
-            "the box cannot relist: it holds a copy of the state, so `l` is an intent"
+            "the box cannot relist: it holds a view of the shared structure, so `l` is an intent"
         );
         // The arrow is the same verb.
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Right)),
+            fixture.dialog.handle_key(key(KeyCode::Right)),
             Some(TuiMsg::FilesDescend {
                 path: "dir".to_string()
             })
@@ -547,9 +599,9 @@ mod tests {
 
         // A file has no directory to enter, so `l` opens it: the command
         // layer resolves the row, and the key is never dead.
-        dialog.state.selected = Some("top.txt".to_string());
+        fixture.select("top.txt");
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Char('l'))),
+            fixture.dialog.handle_key(key(KeyCode::Char('l'))),
             Some(TuiMsg::FilesDescend {
                 path: "top.txt".to_string()
             })
@@ -557,18 +609,51 @@ mod tests {
     }
 
     #[test]
-    fn h_asks_the_command_layer_to_go_back_one_level() {
+    fn h_names_the_row_the_cursor_is_on() {
         let root = temp();
         write(root.path(), "dir/nested/deep.txt");
 
-        let mut dialog = dialog(root.path());
+        let mut fixture = Fixture::new(root.path());
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Char('h'))),
-            Some(TuiMsg::FilesAscend)
+            fixture.dialog.handle_key(key(KeyCode::Char('h'))),
+            Some(TuiMsg::FilesAscend {
+                path: "dir".to_string()
+            }),
+            "`h` names the row it acts on: the relation is resolved against the authority"
         );
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Left)),
-            Some(TuiMsg::FilesAscend)
+            fixture.dialog.handle_key(key(KeyCode::Left)),
+            Some(TuiMsg::FilesAscend {
+                path: "dir".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn movement_names_the_row_it_wants() {
+        let root = temp();
+        for index in 0..40 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+
+        let mut fixture = Fixture::new(root.path());
+        assert_eq!(
+            fixture.dialog.selected_path().as_deref(),
+            Some("file00.txt")
+        );
+
+        assert_eq!(
+            fixture.dialog.handle_key(key(KeyCode::Char('j'))),
+            Some(TuiMsg::FilesSelect {
+                path: "file01.txt".to_string()
+            }),
+            "`j` names the row below the cursor; the authority records it"
+        );
+        assert_eq!(
+            fixture.dialog.handle_key(key(KeyCode::Char('k'))),
+            Some(TuiMsg::FilesSelect {
+                path: "file00.txt".to_string()
+            })
         );
     }
 
@@ -579,20 +664,27 @@ mod tests {
             write(root.path(), &format!("file{index:02}.txt"));
         }
 
-        let mut dialog = dialog(root.path());
-        assert_eq!(dialog.selected_path().as_deref(), Some("file00.txt"));
-
-        assert!(dialog.handle_key(ctrl('d')).is_none());
-        assert!(
-            dialog.selected_path().as_deref() != Some("file00.txt"),
-            "a page verb must move further than the `j` beside it, got {:?}",
-            dialog.selected_path()
+        let mut fixture = Fixture::new(root.path());
+        assert_eq!(
+            fixture.dialog.selected_path().as_deref(),
+            Some("file00.txt")
         );
 
-        dialog.handle_key(ctrl('u'));
+        let paged = fixture.dialog.handle_key(ctrl('d')).expect("a page verb");
+        let TuiMsg::FilesSelect { path } = paged else {
+            panic!("paging must name the row it lands on");
+        };
+        assert_ne!(
+            path, "file00.txt",
+            "a page verb must move further than the `j` beside it, got {path:?}"
+        );
+
+        let back = fixture.dialog.handle_key(ctrl('u')).expect("a page verb");
         assert_eq!(
-            dialog.selected_path().as_deref(),
-            Some("file00.txt"),
+            back,
+            TuiMsg::FilesSelect {
+                path: "file00.txt".to_string()
+            },
             "paging back returns to the first row"
         );
     }
@@ -602,9 +694,9 @@ mod tests {
         let root = temp();
         write(root.path(), "notes.md");
 
-        let mut dialog = dialog(root.path());
+        let mut fixture = Fixture::new(root.path());
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Enter)),
+            fixture.dialog.handle_key(key(KeyCode::Enter)),
             Some(TuiMsg::FilesOpenSelected {
                 path: "notes.md".to_string()
             })
@@ -618,10 +710,10 @@ mod tests {
         let root = temp();
         write(root.path(), "dir/a.txt");
 
-        let mut dialog = dialog(root.path());
-        dialog.state.selected = Some("dir".to_string());
+        let mut fixture = Fixture::new(root.path());
+        fixture.select("dir");
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Enter)),
+            fixture.dialog.handle_key(key(KeyCode::Enter)),
             Some(TuiMsg::FilesDescend {
                 path: "dir".to_string()
             }),
@@ -636,10 +728,10 @@ mod tests {
         let root = temp();
         write(root.path(), "a.txt");
 
-        let mut dialog = dialog(root.path());
-        dialog.state.selected = Some("a.txt".to_string());
+        let mut fixture = Fixture::new(root.path());
+        fixture.select("a.txt");
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Char('l'))),
+            fixture.dialog.handle_key(key(KeyCode::Char('l'))),
             Some(TuiMsg::FilesDescend {
                 path: "a.txt".to_string()
             }),
@@ -652,9 +744,9 @@ mod tests {
         let root = temp();
         write(root.path(), "a.txt");
 
-        let mut dialog = dialog(root.path());
+        let mut fixture = Fixture::new(root.path());
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Char('r'))),
+            fixture.dialog.handle_key(key(KeyCode::Char('r'))),
             Some(TuiMsg::FilesRefresh),
             "the daemon-side walk belongs to the command layer, not the widget"
         );
@@ -668,18 +760,49 @@ mod tests {
         let root = temp();
         write(root.path(), "a.txt");
 
-        let mut dialog = dialog(root.path());
+        let mut fixture = Fixture::new(root.path());
         assert_eq!(
-            dialog.handle_key(key(KeyCode::Esc)),
+            fixture.dialog.handle_key(key(KeyCode::Esc)),
             None,
             "Esc must not close the box or hand the keyboard back"
         );
         assert_eq!(
-            dialog.handle_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT,)),
+            fixture
+                .dialog
+                .handle_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT,)),
             Some(TuiMsg::CloseDialog),
             "Shift+Q is the box's exit"
         );
-        assert!(dialog.handle_key(key(KeyCode::Char('z'))).is_none());
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('z'))).is_none());
+    }
+
+    /// `q` is the box's exit verb, and the filter still owns printable keys.
+    #[test]
+    fn q_closes_the_box_and_the_filter_still_owns_printable_keys() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+
+        let mut fixture = Fixture::new(root.path());
+        assert_eq!(
+            fixture.dialog.handle_key(key(KeyCode::Char('q'))),
+            Some(TuiMsg::FilesClose),
+            "`q` is the box's exit verb"
+        );
+        assert_eq!(
+            fixture
+                .dialog
+                .handle_key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT,)),
+            Some(TuiMsg::CloseDialog),
+            "`Shift+Q` still closes the box"
+        );
+
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('i'))).is_none());
+        assert_eq!(fixture.dialog.panel_mode, TreePanelMode::Insert);
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('q'))).is_none());
+        assert_eq!(
+            fixture.dialog.filter, "q",
+            "the filter types `q`; the exit verb does not fire in insert mode"
+        );
     }
 
     /// `i` opens the panel's filter, and `Esc` leaves insert mode **keeping**
@@ -690,29 +813,67 @@ mod tests {
         write(root.path(), "alpha.txt");
         write(root.path(), "beta.txt");
 
-        let mut dialog = dialog(root.path());
-        assert!(dialog.handle_key(key(KeyCode::Char('i'))).is_none());
-        assert_eq!(dialog.state.panel_mode, TreePanelMode::Insert);
+        let mut fixture = Fixture::new(root.path());
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('i'))).is_none());
+        assert_eq!(fixture.dialog.panel_mode, TreePanelMode::Insert);
 
-        assert!(dialog.handle_key(key(KeyCode::Char('a'))).is_none());
-        assert!(dialog.handle_key(key(KeyCode::Char('l'))).is_none());
-        assert_eq!(dialog.state.filter, "al");
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('a'))).is_none());
+        assert!(fixture.dialog.handle_key(key(KeyCode::Char('l'))).is_none());
+        assert_eq!(fixture.dialog.filter, "al");
 
         // Esc leaves insert mode and keeps the filter, so the rows the user
         // narrowed to stay narrowed.
-        assert!(dialog.handle_key(key(KeyCode::Esc)).is_none());
-        assert_eq!(dialog.state.panel_mode, TreePanelMode::Normal);
-        assert_eq!(dialog.state.filter, "al");
-        assert_eq!(dialog.state.rows().len(), 1, "only alpha.txt survives");
+        assert!(fixture.dialog.handle_key(key(KeyCode::Esc)).is_none());
+        assert_eq!(fixture.dialog.panel_mode, TreePanelMode::Normal);
+        assert_eq!(fixture.dialog.filter, "al");
+        assert_eq!(fixture.dialog.rows().len(), 1, "only alpha.txt survives");
+    }
+
+    /// The filter is **box-local**: it narrows the box's own rows and never
+    /// reaches the authority's own filter.
+    #[test]
+    fn the_filter_is_the_boxs_own_and_never_the_authoritys() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+
+        let mut fixture = Fixture::new(root.path());
+        fixture.dialog.handle_key(key(KeyCode::Char('i')));
+        fixture.dialog.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(fixture.dialog.filter, "a");
+        assert_eq!(
+            fixture.state.filter, "",
+            "the Ctrl+T pane's filter lives in the authority and this one does not"
+        );
+    }
+
+    /// A filter that hides the cursor names the row the cursor belongs on, so
+    /// the authority never keeps a selection the box cannot show.
+    #[test]
+    fn a_filter_that_hides_the_cursor_re_anchors_it() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+
+        let mut fixture = Fixture::new(root.path());
+        fixture.select("beta.txt");
+        fixture.dialog.handle_key(key(KeyCode::Char('i')));
+        assert_eq!(
+            fixture.dialog.handle_key(key(KeyCode::Char('l'))),
+            Some(TuiMsg::FilesSelect {
+                path: "alpha.txt".to_string()
+            }),
+            "the cursor moves to the first row the filter still shows"
+        );
     }
 
     #[test]
     fn the_box_is_a_viewer_so_shift_directionals_still_dock_it() {
         let root = temp();
         write(root.path(), "a.txt");
-        let dialog = dialog(root.path());
+        let fixture = Fixture::new(root.path());
         assert!(
-            dialog.docks_as_viewer(),
+            fixture.dialog.docks_as_viewer(),
             "without this the panel host cannot resolve Shift+←/→/↑/↓ as docking"
         );
     }
@@ -723,16 +884,16 @@ mod tests {
         write(root.path(), "dir/a.txt");
         write(root.path(), "top.rs");
 
-        let mut dialog = dialog(root.path());
-        let at_root = dialog.title();
+        let mut fixture = Fixture::new(root.path());
+        let at_root = fixture.dialog.title();
         assert!(at_root.contains("Files"), "got {at_root:?}");
         assert!(
             !at_root.contains("dir ·"),
             "at the workspace root the scope is not named, got {at_root:?}"
         );
 
-        assert!(dialog.state.set_root_prefix("dir"));
-        let scoped = dialog.title();
+        fixture.scope("dir");
+        let scoped = fixture.dialog.title();
         assert!(
             scoped.contains("dir") && scoped.contains("Files"),
             "a pane scoped with `l` must not keep claiming the workspace root, got {scoped:?}"
@@ -751,25 +912,8 @@ mod tests {
         write(root.path(), "Cargo.toml");
         write(root.path(), "src/lib.rs");
 
-        let mut dialog = dialog(root.path());
-        let backend = ratatui::backend::TestBackend::new(40, 12);
-        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                let theme = Arc::clone(&dialog.theme);
-                dialog.render(frame, frame.area(), &theme);
-            })
-            .expect("draw");
-        let buffer = terminal.backend().buffer().clone();
-        let text: String = (0..buffer.area.height)
-            .map(|y| {
-                (0..buffer.area.width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
+        let mut fixture = Fixture::new(root.path());
+        let text = render_text(&mut fixture.dialog, 40, 12);
         assert!(text.contains("main.rs"));
         assert!(text.contains("Cargo.toml"));
 
@@ -785,7 +929,7 @@ mod tests {
         for icon in [rust, markdown, config] {
             assert!(
                 !icon.is_empty(),
-                "the plain fallback leaves files iconless by design, but the default style must not"
+                "the plain fallback leaves files iconless by design, but the default style must not be"
             );
             assert!(
                 text.contains(icon),
@@ -797,9 +941,9 @@ mod tests {
     #[test]
     fn an_empty_workspace_renders_a_message_rather_than_a_blank_box() {
         let root = temp();
-        let dialog = dialog(root.path());
-        assert_eq!(dialog.visible_row_count(), 0);
-        assert!(dialog.error_line().is_none());
+        let fixture = Fixture::new(root.path());
+        assert_eq!(fixture.dialog.visible_row_count(), 0);
+        assert!(fixture.dialog.error_line().is_none());
     }
 
     /// Render the box into a buffer and hand back the text.
@@ -824,7 +968,7 @@ mod tests {
     }
 
     /// A listing scoped with `l`, exactly as the command layer hands it over.
-    fn scoped_dialog(root: &std::path::Path, prefix: &str) -> FilesDialog {
+    fn scoped_dialog(root: &std::path::Path, prefix: &str) -> Fixture {
         static NEVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let mut state = FileTreeState::default();
         // The root is known before the scope is set: `begin_rebuild` resets the
@@ -844,7 +988,11 @@ mod tests {
             state.apply_listing(generation, request_id, root.to_path_buf(), listing),
             "a scoped listing must apply to a scoped pane"
         );
-        FilesDialog::new(Arc::new(Theme::default()), state)
+        let mut dialog = FilesDialog::new(Arc::new(Theme::default()));
+        let revision = state.revision;
+        let build = || state.structure();
+        dialog.adopt_structure(revision, &build);
+        Fixture { state, dialog }
     }
 
     /// Drop the box's own left border, leaving the row as the widget drew it.
@@ -857,21 +1005,19 @@ mod tests {
 
     /// The acceptance signal for the reported defect: a listing scoped with `l`
     /// is walked with depth restarting at the subtree, so its top level arrives
-    /// at exactly the depth the workspace root's top level arrives at — and
-    /// both renderers drew that identically, so entering a directory made the
-    /// listing *look* like the root again. Assert on the rendered buffer, not
-    /// on `depth`: `depth` was never wrong, the drawing of it was.
+    /// at the depth the workspace root's own top level arrives at. Assert on
+    /// the rendered buffer, not on `depth`.
     #[test]
     fn a_scoped_listing_draws_its_rows_one_level_in() {
         let root = temp();
         write(root.path(), "dir/nested/deep.txt");
         write(root.path(), "dir/top.txt");
 
-        let mut at_root = dialog(root.path());
+        let mut at_root = Fixture::new(root.path());
         let mut scoped = scoped_dialog(root.path(), "dir");
 
-        let root_depths: Vec<usize> = at_root.state.rows().iter().map(|r| r.depth).collect();
-        let scoped_depths: Vec<usize> = scoped.state.rows().iter().map(|r| r.depth).collect();
+        let root_depths: Vec<usize> = at_root.dialog.rows().iter().map(|r| r.depth).collect();
+        let scoped_depths: Vec<usize> = scoped.dialog.rows().iter().map(|r| r.depth).collect();
         assert_eq!(
             root_depths.first().copied(),
             scoped_depths.first().copied(),
@@ -879,13 +1025,13 @@ mod tests {
              arrives at the same depth the workspace root's does"
         );
         assert_eq!(
-            at_root.state.display_depth(&at_root.state.rows()[0]),
-            scoped.state.display_depth(&scoped.state.rows()[0]),
+            at_root.state.display_depth(&at_root.dialog.rows()[0]),
+            scoped.state.display_depth(&scoped.dialog.rows()[0]),
             "the indent is relative to the scope, so the scope's own depth is \
              not added back — a deep scope no longer flattens to the same cap"
         );
 
-        let text = render_text(&mut scoped, 44, 10);
+        let text = render_text(&mut scoped.dialog, 44, 10);
         assert!(
             text.contains("top.txt") && text.contains("nested"),
             "the scoped listing must still list its own rows, got {text:?}"
@@ -902,14 +1048,10 @@ mod tests {
              the icon and the name, got {row:?}"
         );
 
-        // And the same row in the *root* listing sits at the same indent.
-        //
-        // The indent is **relative to the scope**, so each listing draws its
-        // own top level at the left edge and the scope's absolute depth is
-        // carried by the breadcrumb in the title rather than by a stack of
-        // guides the reader has to count. The two listings are told apart by
-        // their scope, not by their shape.
-        let root_text = render_text(&mut at_root, 44, 10);
+        // And the same row in the *root* listing sits at the same indent: the
+        // indent is **relative to the scope**, so each listing draws its own
+        // top level at the left edge.
+        let root_text = render_text(&mut at_root.dialog, 44, 10);
         let dir_line = root_text
             .lines()
             .find(|line| line.contains('─') && line.contains("dir"))
@@ -928,28 +1070,28 @@ mod tests {
     }
 
     /// The title is a breadcrumb, so a nested scope says which component each
-    /// `h` steps back through — a flat path hid exactly that.
+    /// `h` steps back through.
     #[test]
     fn the_title_is_a_breadcrumb_of_the_scope() {
         let root = temp();
         write(root.path(), "dir/nested/deep.txt");
 
-        let mut dialog = dialog(root.path());
+        let mut fixture = Fixture::new(root.path());
         let workspace = root
             .path()
             .file_name()
             .expect("temp dir")
             .to_string_lossy()
             .to_string();
-        let at_root = dialog.title();
+        let at_root = fixture.dialog.title();
         assert!(at_root.contains(&workspace), "got {at_root:?}");
         assert!(
             !at_root.contains(BREADCRUMB_SEP.trim()),
             "at the root there is nowhere to go, got {at_root:?}"
         );
 
-        assert!(dialog.state.set_root_prefix("dir/nested"));
-        let scoped = dialog.title();
+        fixture.scope("dir/nested");
+        let scoped = fixture.dialog.title();
         assert_eq!(
             scoped,
             format!(
@@ -960,15 +1102,14 @@ mod tests {
         );
     }
 
-    /// The host must not paraphrase this box's keymap. The one line the panel
-    /// shows above the composer is these bytes, so `i act` — a verb no arm in
-    /// `handle_key` dispatches — cannot survive here.
+    /// The host must not paraphrase this box's keymap, so the `i act` verb
+    /// `handle_key` never dispatches cannot survive here.
     #[test]
     fn the_keymap_the_host_advertises_is_this_box_keymap() {
         let root = temp();
         write(root.path(), "a.txt");
-        let dialog = dialog(root.path());
-        assert_eq!(dialog.keymap_hint().as_deref(), Some(HINT));
+        let fixture = Fixture::new(root.path());
+        assert_eq!(fixture.dialog.keymap_hint().as_deref(), Some(HINT));
         assert!(HINT.contains("enter open"), "got {HINT:?}");
         assert!(
             !HINT.contains("i act"),
@@ -976,34 +1117,30 @@ mod tests {
         );
     }
 
-    /// The box's own hotkey row is gone. The row above the composer carries
-    /// the panel's keymap, and a second copy at the bottom of the box was the
-    /// noise the user asked to be rid of.
+    /// The box's own hotkey row is gone: the row above the composer carries
+    /// the panel's keymap.
     #[test]
     fn the_modal_box_spends_its_rows_on_the_listing() {
         let root = temp();
         write(root.path(), "a.txt");
-        let mut dialog = dialog(root.path());
-        let text = render_text(&mut dialog, 100, 12);
+        let mut fixture = Fixture::new(root.path());
+        let text = render_text(&mut fixture.dialog, 100, 12);
         assert!(
             !text.contains("enter open"),
             "the box must not repeat the keymap the composer row already carries: {text:?}"
         );
     }
 
-    /// In a docked panel the host owns the chrome. `render_in_panel` must not
-    /// repaint a border or a title over the one the host already drew — the
-    /// focus dot in that title is how a focused panel is told apart from an
-    /// unfocused one — and must not spend rows on a keymap the composer row is
-    /// already showing.
+    /// In a docked panel the host owns the chrome: `render_in_panel` must not
+    /// repaint a border or a title over the one the host already drew.
     #[test]
     fn a_hosted_render_keeps_the_hosts_chrome_and_spends_every_row_on_rows() {
         let root = temp();
         write(root.path(), "alpha.txt");
         write(root.path(), "beta.txt");
 
-        let mut dialog = dialog(root.path());
-        let theme = Arc::clone(&dialog.theme);
+        let mut fixture = Fixture::new(root.path());
+        let theme = Arc::clone(&fixture.dialog.theme);
         let width = 30u16;
         let height = 8u16;
         let backend = ratatui::backend::TestBackend::new(width, height);
@@ -1016,7 +1153,7 @@ mod tests {
                         .title(" ● Files "),
                     frame.area(),
                 );
-                dialog.render_in_panel(frame, frame.area(), &theme);
+                fixture.dialog.render_in_panel(frame, frame.area(), &theme);
             })
             .expect("draw");
         let buffer = terminal.backend().buffer().clone();
@@ -1043,5 +1180,98 @@ mod tests {
         );
         // 8 rows: border, listing rows, border. Nothing reserved for a footer.
         assert_eq!(height, 8);
+    }
+
+    /// The refresh copies only when the authority's revision moved: an
+    /// unchanged frame must not cost a copy of the whole tree.
+    #[test]
+    fn the_refresh_copies_only_when_the_revision_moved() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        let mut fixture = Fixture::new(root.path());
+        let copies = std::cell::Cell::new(0usize);
+        let revision = fixture.state.revision;
+        let build = || {
+            copies.set(copies.get() + 1);
+            fixture.state.structure()
+        };
+
+        fixture.dialog.adopt_structure(revision, &build);
+        assert_eq!(
+            copies.get(),
+            0,
+            "an unchanged revision must not copy the tree"
+        );
+
+        fixture.dialog.adopt_structure(revision + 1, &build);
+        assert_eq!(
+            copies.get(),
+            1,
+            "a moved revision copies the tree exactly once"
+        );
+    }
+
+    /// The refresh is the authority's, not the surface's: the box keeps its
+    /// filter, its insert mode and its scroll across it. A listing landing
+    /// while the user is typing must not wipe what they typed.
+    #[test]
+    fn the_refresh_preserves_the_surface_filter_mode_and_scroll() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+
+        let mut fixture = Fixture::new(root.path());
+        fixture.dialog.filter = "alp".to_string();
+        fixture.dialog.panel_mode = TreePanelMode::Insert;
+        fixture.dialog.scroll.set(1);
+
+        // The authority moves, so the refresh really copies.
+        assert!(fixture.state.select("beta.txt"));
+        fixture.refresh();
+
+        assert_eq!(fixture.dialog.filter, "alp", "the filter survives");
+        assert_eq!(
+            fixture.dialog.panel_mode,
+            TreePanelMode::Insert,
+            "the insert mode survives"
+        );
+        assert_eq!(fixture.dialog.scroll.get(), 1, "the scroll survives");
+        assert_eq!(
+            fixture.dialog.visible_row_count(),
+            1,
+            "the filter still narrows the rows"
+        );
+    }
+
+    /// A page is a page of **this** box: the box measures its own height
+    /// during its render, so it pages against its own viewport and not
+    /// against whichever other surface happens to be on screen.
+    #[test]
+    fn paging_uses_the_surfaces_own_viewport_height() {
+        let root = temp();
+        for index in 0..40 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+
+        let mut fixture = Fixture::new(root.path());
+        fixture.dialog.visible_height = 3;
+        let short = fixture.dialog.handle_key(ctrl('d')).expect("a page verb");
+        fixture.dialog.visible_height = 30;
+        let tall = fixture.dialog.handle_key(ctrl('d')).expect("a page verb");
+
+        assert_eq!(
+            short,
+            TuiMsg::FilesSelect {
+                path: "file02.txt".to_string()
+            },
+            "a short box pages two thirds of its own three rows"
+        );
+        assert_eq!(
+            tall,
+            TuiMsg::FilesSelect {
+                path: "file20.txt".to_string()
+            },
+            "a tall box pages two thirds of its own thirty rows"
+        );
     }
 }

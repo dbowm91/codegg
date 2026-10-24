@@ -10,31 +10,26 @@
 //! fallback in any mode, including standalone — an unavailable daemon
 //! listing is an explicit error, never a silent local walk.
 //!
-//! Opening a listed entry still hands its workspace-relative path to the
-//! existing [`crate::tui::commands::editor::open_editor`]. This module
-//! deliberately has no path-to-document code of its own: the tree is a
-//! navigator, and `open_editor` is the only thing that turns a path into a
-//! document attachment (and reauthorizes it via `DocumentOpen`).
+//! Opening a listed entry hands its workspace-relative path to the existing
+//! [`crate::tui::commands::editor::open_editor`], the only thing that turns a
+//! path into a document attachment (and reauthorizes it via `DocumentOpen`).
 //!
 //! ## The keymap
 //!
-//! [`handle_panel_key`] owns every key the tree pane claims, and it is the
-//! whole of the tree's keymap: navigation, the **peek** motion (`l`/`h`),
-//! the panel-local **live filter**, paging and the refresh. The editor
-//! command module calls it while the tree holds the focus; it is not
-//! called from anywhere else, so the tree's verbs and the editor's verbs
-//! cannot both claim the same key.
+//! [`handle_panel_key`] owns every key the tree pane claims: navigation, the
+//! **peek** motion (`l`/`h`), the panel-local **live filter**, paging and the
+//! refresh. The editor command module calls it while the tree holds the
+//! focus, so the tree's verbs and the editor's verbs cannot both claim the
+//! same key.
 //!
 //! ## Peek, not re-root
 //!
 //! `l` expands the selected directory *in place* and moves the cursor into
-//! it; `h` moves the cursor back out to the parent row and collapses it.
-//! The daemon's listing window is three levels deep, so a directory at the
-//! window's edge cannot show its children — the **scope** slides instead:
-//! the scope becomes that directory's parent and the directory is expanded
-//! there. A scope slide is a daemon round-trip (the scope travels with the
-//! request); everything else is local navigation over the listing the
-//! daemon already answered.
+//! it; `h` moves the cursor back out to the parent row and collapses it. The
+//! daemon's listing window is three levels deep, so a directory at the
+//! window's edge cannot show its children — the **scope** slides instead,
+//! and a scope slide is a daemon round-trip. Everything else is local
+//! navigation over the listing the daemon already answered.
 
 use std::path::PathBuf;
 
@@ -68,20 +63,16 @@ pub fn toggle_tree(app: &mut App) {
 /// Request the daemon-owned directory listing under single-flight admission.
 ///
 /// C004: at most one listing round-trip is in flight — the permit is held
-/// from admission until the completion arrives, not merely while its async
-/// waiter is registered. A rebuild that arrives while a request is active
-/// supersedes intent immediately (generation bump) but coalesces as the
-/// single pending latest intent; no new request issues until the active
-/// one completes. The active waiter is deliberately **not** aborted:
-/// aborting it would strand the pending intent without a completion to
-/// drive it. Completions are still generation/root/request-guarded, so a
-/// stale listing never renders against the wrong workspace.
+/// from admission until the completion arrives. A rebuild that arrives while
+/// a request is active supersedes intent immediately (generation bump) but
+/// coalesces as the single pending latest intent; no new request issues
+/// until the active one completes.
 ///
 /// C005: the request carries the tab's canonical project/workspace binding
 /// and the response must echo the daemon's workspace identity before it is
 /// displayed. A slow or failed daemon round-trip cannot preempt anything;
 /// the newest request shows an explicit `Waiting` state while the prior
-/// request drains. The event loop stays responsive.
+/// request drains.
 pub fn rebuild(app: &mut App) {
     let context = match app.project_execution_context() {
         Ok(context) => context,
@@ -414,8 +405,9 @@ pub fn apply_listing(
     root: PathBuf,
     listing: crate::tui::file_tree::TreeListing,
 ) {
-    let applied = app
-        .file_tree_state
+    // A stale completion is dropped inside the authority, and it is
+    // deliberately not cancelled: cancelling would strand the queued intent.
+    app.file_tree_state
         .apply_listing(generation, request_id, root, listing);
     // Release the permit even for a stale completion: the active round-trip
     // has ended (its `RunningGuard` already decremented `running`), and the
@@ -424,39 +416,11 @@ pub fn apply_listing(
     // Single call: `finish_active` clears the active request and takes the
     // pending in one lock hold; `launch_taken_pending` revalidates it.
     release_after_completion(app, generation, request_id);
-    if !applied {
-        // Stale: deliberately no `request.cancel()`. Cancelling here would
-        // bump the request id past the queued latest intent and strand it.
-        return;
-    }
-    // Mirror the accepted listing into a mounted `/files` box. It holds its
-    // own copy of the state (a widget cannot reach `App` from `render`), so
-    // without this a refresh would repaint the Ctrl+T pane and leave the box
-    // showing the previous listing. Cloned only when a box is actually open —
-    // the round-trip that produced this state is far more expensive than the
-    // copy.
-    //
-    // The box's **filter** and its panel mode are the box's own input, not
-    // the shared navigation state: a listing landing while the user is typing
-    // a filter must not wipe the text they typed or drop them out of insert
-    // mode. They are carried across the mirror.
-    if app
-        .focus_manager
-        .has_dialog(crate::tui::components::component::DialogType::Files)
-    {
-        let snapshot = app.file_tree_state.clone();
-        app.focus_manager
-            .with_dialog_mut::<crate::tui::components::dialogs::files::FilesDialog, ()>(
-                crate::tui::components::component::DialogType::Files,
-                |dialog| {
-                    let filter = dialog.state.filter.clone();
-                    let panel_mode = dialog.state.panel_mode;
-                    dialog.state = snapshot;
-                    dialog.state.filter = filter;
-                    dialog.state.panel_mode = panel_mode;
-                },
-            );
-    }
+    // The listing needs no mirror: the authority bumped its revision, and the
+    // frame pass pushes the structure into every mounted `/files` surface
+    // before it is drawn. A mirror here would be a second, dead way to
+    // adopt a listing — and the one that was there only reached the modal
+    // box, which is why a docked panel kept showing a frozen copy.
 }
 
 /// Apply a failed daemon listing: record the explicit error, then release
@@ -491,17 +455,14 @@ pub fn page_selection(app: &mut App, direction: isize) {
 
 /// Make `path` the pane's root and list it: the `l`/right-arrow verb.
 ///
-/// A daemon round-trip, not a local filter — see the module note in
-/// [`crate::tui::app::state::file_tree`]. A path that is not a directory in
+/// A daemon round-trip, not a local filter. A path that is not a directory in
 /// the current listing, or is already the root, does nothing at all rather
 /// than issuing a request the daemon would answer with nothing.
 ///
 /// Under the peek motion this no longer re-roots the pane: a directory
 /// whose children are still inside the listing window is expanded *in
 /// place* and the cursor moves into it, and only a directory at the
-/// window's edge slides the scope. The parent and the siblings stay
-/// visible — that is the difference between peeking into a directory and
-/// re-rooting the pane on it.
+/// window's edge slides the scope.
 ///
 /// A **file** has nothing to peek into, so the motion opens it: `l` on a
 /// file is the same path `Enter` takes, and the key is never dead.
@@ -530,28 +491,56 @@ pub fn descend_to(app: &mut App, path: &str) {
             rebuild(app);
         }
         PeekStep::Open { path } => {
-            // The open path is `open_editor` verbatim, so the tree inherits
-            // its lexical validation, its already-open short-circuit, its
-            // daemon-authorized attachment, and its request/generation
-            // discipline without duplicating any of them.
-            app.file_tree_state.set_pending_editor_handoff(&path);
-            open_editor(app, &path);
+            open_file(app, &path);
         }
         PeekStep::None => {}
     }
 }
 
-/// Go back one level: the `h`/left-arrow verb.
+/// Open a file from a `/files` surface and hand the keyboard to the editor.
+///
+/// **One** path for both open verbs: `Enter` and `l` on a file are the same
+/// verb, and the handoff is armed *before* the open.
+pub fn open_file(app: &mut App, path: &str) {
+    app.file_tree_state.set_pending_editor_handoff(path);
+    open_editor(app, path);
+}
+
+/// Close the `/files` box, and nothing else.
+///
+/// Resolved against a mounted `/files` **dialog**: a docked panel is not
+/// one, so the key is inert there.
+pub fn close_files_box(app: &mut App) {
+    if app.focus_manager.active_dialog_type()
+        != crate::tui::components::component::DialogType::Files
+    {
+        return;
+    }
+    app.close_dialog();
+}
+
+/// Make `path` the pane's selection.
+///
+/// The path-bearing half of every movement verb: a surface names the row it
+/// wants and the authority records it, so the selection is a **path** rather
+/// than an index into whichever rows a surface happened to be showing.
+pub fn select_path(app: &mut App, path: &str) {
+    app.file_tree_state.select(path);
+}
+
+/// Go up one level: the `h`/left-arrow verb.
 ///
 /// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
 /// enters a directory, `h` leaves the one the cursor is in. The cursor
 /// inside a directory moves to its parent row and that directory collapses;
-/// the cursor on a top-level row slides the scope up, with the old scope
-/// root expanded in the new scope. At the workspace root there is no scope
-/// to slide to, so the selected directory collapses in place — the key is
-/// never dead.
-pub fn ascend_one_level(app: &mut App) {
-    match app.file_tree_state.peek_up() {
+/// the cursor on a top-level row slides the scope up. At the workspace root
+/// there is no scope to slide to, so the selected directory collapses in
+/// place — the key is never dead.
+///
+/// `path` is the row the surface is on; the relation is resolved against the
+/// **unfiltered** row set.
+pub fn ascend_one_level(app: &mut App, path: &str) {
+    match app.file_tree_state.peek_up(path) {
         PeekUp::Leave { parent } => {
             app.file_tree_state.leave_into(&parent);
         }
@@ -575,13 +564,10 @@ pub fn ascend_one_level(app: &mut App) {
 ///
 /// The open path is `open_editor` verbatim, so the tree inherits its lexical
 /// validation, its already-open short-circuit, its daemon-authorized
-/// attachment, and its request/generation discipline without duplicating any
-/// of them.
+/// attachment, and its request/generation discipline.
 ///
-/// A **directory** is entered, not toggled: the standalone toggle verb is
-/// retired, and `Enter` is the same motion as `l` (see [`descend_to`]). Both
-/// directions are one motion now, so this is [`descend_to`] with the row's
-/// own kind resolved.
+/// A **directory** is entered, not toggled: `Enter` is the same motion as
+/// `l` (see [`descend_to`]).
 pub fn activate_selected(app: &mut App) {
     let Some(row) = app.file_tree_state.selected_row() else {
         return;
@@ -639,11 +625,9 @@ pub fn set_focus(app: &mut App, focused: bool) {
 /// | `Shift+Q` | leave the tree and return the keyboard to the editor |
 ///
 /// The panel's mode is **panel-local**: the composer badge reports the
-/// app-level mode, so a filter being typed is never reported as the
-/// composer being in Insert.
+/// app-level mode, so a filter being typed is never reported as Insert.
 // The editor-side keymap is the caller; until that call lands the crate has
-// no live user of this function, and the lint is about the wiring rather
-// than about the code.
+// no live user of this function, and the lint is about the wiring.
 pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
     // Paging is checked before the character arms below: `Ctrl+d`/`Ctrl+u`
@@ -699,9 +683,13 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             true
         }
         // `h` peeks up. `Backspace` is the same verb: it is what a user
-        // reaches for when the cursor is "inside" something.
+        // reaches for when the cursor is "inside" something. The row the
+        // cursor is on is named, and the authority resolves the relation.
         KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-            ascend_one_level(app);
+            let Some(path) = app.file_tree_state.selected.clone() else {
+                return true;
+            };
+            ascend_one_level(app, &path);
             true
         }
         // Enter opens a file, or enters a directory, through the existing
@@ -718,7 +706,7 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
         // `i` opens the panel's live filter. The mode is panel-local, so
         // the app-level mode (and the composer badge) does not move.
         KeyCode::Char('i') => {
-            app.file_tree_state.panel_mode = TreePanelMode::Insert;
+            app.file_tree_state.set_panel_mode(TreePanelMode::Insert);
             true
         }
         _ => false,
@@ -732,18 +720,18 @@ fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bo
         // `Esc` leaves insert mode and keeps the filter: the user is
         // navigating the filtered rows now, not discarding the search.
         KeyCode::Esc => {
-            app.file_tree_state.panel_mode = TreePanelMode::Normal;
+            app.file_tree_state.set_panel_mode(TreePanelMode::Normal);
             true
         }
         KeyCode::Backspace => {
-            app.file_tree_state.filter.pop();
+            app.file_tree_state.filter_pop();
             app.file_tree_state.reanchor_selection();
             true
         }
         // Enter applies the filter: the same rows stay, and the mode goes
         // back to navigation.
         KeyCode::Enter => {
-            app.file_tree_state.panel_mode = TreePanelMode::Normal;
+            app.file_tree_state.set_panel_mode(TreePanelMode::Normal);
             true
         }
         // Only plain (or shifted) characters are typed. A control or alt
@@ -751,7 +739,7 @@ fn handle_panel_insert_key(app: &mut App, key: crossterm::event::KeyEvent) -> bo
         KeyCode::Char(character)
             if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
         {
-            app.file_tree_state.filter.push(character);
+            app.file_tree_state.filter_push(character);
             app.file_tree_state.reanchor_selection();
             true
         }
@@ -796,8 +784,8 @@ pub fn complete_editor_open_handoff(app: &mut App, succeeded: bool) {
     hand_off_to_editor(app);
 }
 
-/// Give the keyboard to the editor: the tree loses the focus, and the
-/// editor is put in **Normal**.
+/// Give the keyboard to the editor: the tree and the **side panel** lose the
+/// focus, and the editor is put in **Normal**.
 ///
 /// Normal, and not merely "not Insert": an editor left in Select would keep
 /// extending a selection that no longer means anything once the tree moved
@@ -805,6 +793,7 @@ pub fn complete_editor_open_handoff(app: &mut App, succeeded: bool) {
 /// read yet.
 pub fn hand_off_to_editor(app: &mut App) {
     set_focus(app, false);
+    super::panels::blur_panel(app);
     super::editor::enter_editor_normal(app);
 }
 
@@ -812,6 +801,15 @@ pub fn hand_off_to_editor(app: &mut App) {
 mod tests {
     use super::*;
     use crate::tui::app::state::file_tree::FileTreeStatus;
+
+    /// The `h` verb from the authority's own selection: what the tree pane
+    /// does, which is to name the row the cursor is on.
+    fn ascend(app: &mut App) {
+        let Some(path) = app.file_tree_state.selected.clone() else {
+            return;
+        };
+        ascend_one_level(app, &path);
+    }
     use crate::tui::app::state::project_tabs::{ProjectTabId, ProjectTabState};
     use crate::tui::file_tree::TreeNodeKind;
     use codegg_protocol::document::{
@@ -1215,7 +1213,7 @@ mod tests {
         rebuild_once(&mut app, &mut rx).await;
         assert_eq!(app.file_tree_state.root_prefix(), "src");
 
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(
             app.file_tree_state.root_prefix(),
             "",
@@ -1264,7 +1262,7 @@ mod tests {
         ));
         app.file_tree_state.expanded.insert("src".to_string());
 
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert!(
             app.file_tree_state.at_workspace_root(),
             "there is no level above the workspace root"
@@ -1366,7 +1364,7 @@ mod tests {
         );
 
         // `h` from inside `app`: up to its parent row, and it collapses.
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "src");
         assert_eq!(
             shown(&app),
@@ -1383,14 +1381,14 @@ mod tests {
         );
 
         // `h` again: out of `tui` as well, still inside the `src` scope.
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "src");
         assert_eq!(shown(&app), vec!["src/tui".to_string()]);
         assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui"));
 
         // `h` on a top-level row: the scope slides up, with the old scope
         // root expanded in the new scope.
-        ascend_one_level(&mut app);
+        ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "");
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(
@@ -2374,5 +2372,105 @@ mod tests {
             "a failed open does not move the keyboard"
         );
         assert!(app.file_tree_state.pending_editor_handoff.is_none());
+    }
+
+    /// The side panel is a **second** holder of the keyboard.
+    #[tokio::test]
+    async fn the_editor_handoff_releases_the_docked_panel() {
+        use crate::tui::editor::EditorMode;
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, _client) = app_with_listing_client(
+            root.path(),
+            FakeListingClient::ready_listing("workspace-test", &["lib.rs"]),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        apply_listing_to_tree(
+            &mut app,
+            root.path(),
+            vec![node("lib.rs", 1, TreeNodeKind::File, None)],
+        );
+        app.file_tree_state.visible = true;
+        set_focus(&mut app, true);
+        app.file_tree_state.selected = Some("lib.rs".to_string());
+        app.panel_host.adopt(
+            crate::tui::panels::SidePanelId::Files,
+            Box::new(crate::tui::components::dialogs::files::FilesDialog::new(
+                std::sync::Arc::clone(&app.ui_state.theme),
+            )),
+        );
+        assert!(
+            app.panel_host.focus(),
+            "the docked panel takes the keyboard"
+        );
+        assert!(app.panel_host.is_focused(), "the panel holds it");
+
+        activate_selected(&mut app);
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("the open installed a session")
+                .presentation()
+                .mode,
+            EditorMode::Normal,
+            "the document lands in Normal: a finding, not a defect"
+        );
+        complete_editor_open_handoff(&mut app, true);
+
+        assert!(
+            !app.panel_host.is_focused(),
+            "the handoff released the docked panel: the editor has the keyboard"
+        );
+        assert!(
+            !app.ui_state.tree_focused,
+            "the handoff released the tree pane too"
+        );
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("the session is still there")
+                .presentation()
+                .mode,
+            EditorMode::Normal,
+            "the editor is in Normal, not merely out of Insert"
+        );
+    }
+
+    /// The exit verb never pops an unrelated modal.
+    #[test]
+    fn the_files_exit_verb_leaves_an_unrelated_modal_alone() {
+        use crate::tui::components::component::DialogType;
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut app = app_with_root(root.path());
+
+        app.focus_manager.push(Box::new(
+            crate::tui::components::dialogs::files::FilesDialog::new(std::sync::Arc::clone(
+                &app.ui_state.theme,
+            )),
+        ));
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::Files,
+            "the box is mounted"
+        );
+
+        // An unrelated modal opens on top of the box.
+        app.open_dialog(crate::tui::app::Dialog::Tree);
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::Tree,
+            "the unrelated modal is on top"
+        );
+
+        close_files_box(&mut app);
+
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::Tree,
+            "the exit verb popped nothing: the unrelated modal is still mounted"
+        );
+        assert_eq!(app.focus_manager.len(), 2, "both modals are still mounted");
     }
 }

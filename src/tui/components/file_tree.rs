@@ -210,7 +210,7 @@ impl<'a> FileTreeView<'a> {
         // Shared with the `/files` box, including the scope a `l`-scoped
         // listing needs added to `row.depth`: both renderers once computed
         // their own indent and drew different ladders for the same tree.
-        let indent = file_icons::tree_indent(self.state, rows, index, inner_width as usize);
+        let indent = file_icons::tree_indent(rows, index, inner_width as usize);
         // The folder icon carries the expansion state, so there is no second
         // caret column doing the same job in a pane 22 columns wide.
         let (glyph, icon_style) = file_icons::icon_style(

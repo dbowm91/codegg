@@ -58,6 +58,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::tui::app::state::ChatState;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::component::Component;
 use crate::tui::components::sidebar::SidebarWidget;
 use crate::tui::input::{InputAction, InputMode};
 use crate::tui::theme::Theme;
@@ -67,25 +68,13 @@ use crate::tui::theme::Theme;
 ///
 /// ratatui's `Frame` has no public constructor, so the widget is rendered into
 /// an in-memory backend sized to the column and the result is copied out.
-/// `TestBackend` is used for what it actually is — a `Backend` over a plain
-/// `Buffer` — not as a test harness; nothing here asserts.
-///
-/// This exists so a dockable box can be adopted into the column without
-/// rewriting that box's render path. It is the one place this bridge is
-/// allowed, so a widget that needs real cursor or clipping semantics inside
-/// the column can grow a native `render_into(&mut Buffer, ..)` — as
-/// `HelpDialog` did — and the host can prefer it.
 ///
 /// ## The host owns the chrome
 ///
 /// The block painted here is the panel's identity: the name, and the `●` that
 /// marks which panel has the keyboard. A widget that then painted its own
 /// border over the same rect did not layer, it overwrote — the title and the
-/// focus dot included, so a focused panel and an unfocused one rendered
-/// identically and the one piece of information the title carried was the one
-/// thing destroyed. Hence [`Component::render_in_panel`], which defaults to
-/// `render` for every widget that draws no chrome and is overridden by the ones
-/// that do.
+/// focus dot included. Hence [`Component::render_in_panel`].
 pub fn render_hosted(
     widget: &mut dyn crate::tui::components::component::Component,
     buf: &mut Buffer,
@@ -218,17 +207,14 @@ impl PanelDirection {
 /// Groundwork for more than one panel. The directionals already address panes
 /// *by direction* — `Shift+H` means "the pane on my left" — so what was
 /// missing was a way to say **which** pane the one existing host is currently
-/// living in. Without that, every gesture silently assumed "right", which is
-/// exactly the hardcoding that makes a second column impossible to add later.
+/// living in. Without that, every gesture silently assumed "right".
 ///
 /// `Right` is the default and reproduces the layout that shipped first, so a
 /// user who configures nothing sees no change at all.
 ///
 /// The three placements are the ones the frame can honestly host today: a
 /// left column, a right column, and a full-width row beneath the main input
-/// box. Growing a second column is a fourth variant plus one geometry arm —
-/// the gesture dispatcher already reads *which* side a direction names and
-/// needs no new rule.
+/// box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelPlacement {
     /// The shipped default: a column beside the main buffer, on the right.
@@ -523,10 +509,7 @@ impl SidePanelId {
     /// [`is_bespoke`](Self::is_bespoke), which is what `SidePanelHost` filters
     /// on. **A panel appears here only if selecting it does something**:
     /// either the box that fills it exists, or selecting it states the reason
-    /// it cannot act. A row that could only ever render an empty placeholder
-    /// was a promise the manager could not keep — `Workspace` was one, and was
-    /// removed for it. The Workspace *view* is untouched and still opens with
-    /// `Ctrl+O` / `/workspace`; it was never a panel.
+    /// it cannot act.
     pub const ALL: &'static [SidePanelId] = &[
         SidePanelId::Session,
         SidePanelId::Chat,
@@ -1430,6 +1413,18 @@ impl SidePanelHost {
             }
             None => false,
         }
+    }
+
+    /// Mutate the component a hosted panel owns, when it is of type `T`.
+    ///
+    /// The seam the frame pass needs to reach a **docked** box: a docked box
+    /// is owned by this host, not by the focus manager.
+    pub fn with_hosted_mut<T: Component + 'static, R>(
+        &mut self,
+        id: SidePanelId,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        self.hosted_mut(id)?.with_widget_mut::<T, R>(f)
     }
 
     pub fn is_focused(&self) -> bool {
@@ -2429,13 +2424,20 @@ mod tests {
             root,
             crate::tui::file_tree::build_tree(&std::env::temp_dir()),
         );
-        Box::new(FilesDialog::new(Arc::new(Theme::default()), state))
+        let mut dialog = FilesDialog::new(Arc::new(Theme::default()));
+        let revision = state.revision;
+        let build = || state.structure();
+        dialog.adopt_structure(revision, &build);
+        Box::new(dialog)
     }
 
     /// The reported defect, as an assertion: a `/files` box docked in a side
     /// panel showed no keymap anywhere until the user had already guessed the
     /// keys correctly. The line must appear the moment the box is docked,
     /// keyboard or no keyboard.
+    ///
+    /// The verbs come from the widget's own hint, not from a list written here:
+    /// such a list was a second copy of the vocabulary, and it drifted.
     #[test]
     fn a_docked_files_panel_advertises_its_own_keymap_without_the_keyboard() {
         let mut host = host_showing(SidePanelId::Files, PanelPlacement::Right);
@@ -2456,7 +2458,7 @@ mod tests {
             !hint.contains("i act"),
             "the host's generic line describes a verb `/files` does not have, got {hint:?}"
         );
-        for verb in ["enter open", "l/→ open", "^d/^u page"] {
+        for verb in crate::tui::components::dialogs::files::HINT.split(" · ") {
             assert!(hint.contains(verb), "missing {verb:?} in {hint:?}");
         }
     }
@@ -2579,7 +2581,7 @@ mod tests {
         use crate::tui::components::dialogs::files::FilesDialog;
 
         let theme = Arc::new(Theme::default());
-        let mut dialog = FilesDialog::new(Arc::clone(&theme), Default::default());
+        let mut dialog = FilesDialog::new(Arc::clone(&theme));
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
         render_hosted(&mut dialog, &mut buf, area, &theme, " ● Files ");

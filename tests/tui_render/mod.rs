@@ -34,6 +34,9 @@ pub mod connect_tui_restoration;
 #[path = "dialog_dispatch_coverage.inc"]
 pub mod dialog_dispatch_coverage;
 
+#[path = "file_picker_surface_corrective.inc"]
+pub mod file_picker_surface_corrective;
+
 #[path = "file_tree_trajectory.inc"]
 pub mod file_tree_trajectory;
 
