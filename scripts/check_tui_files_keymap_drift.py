@@ -18,7 +18,7 @@ from drifting.
 
 ## What this guard reads
 
-Four inputs, and no more:
+Three inputs, and no more:
 
 * `src/tui/components/dialogs/files.rs` — the widget's `HINT` constant. This
   is the **model**: it is the one string the panel host's composer status line
@@ -26,8 +26,6 @@ Four inputs, and no more:
   guard reads that one string literal and nothing else in the Rust file — it
   never re-derives the keymap from `handle_key`, which is what a guard that
   parsed the Rust *code* would have to do.
-* `src/tui/panels/mod.rs` — the panel's `ADVERTISED_VERBS` list, the verbs its
-  status line must show.
 * `architecture/tui.md` — the `/files` key table.
 * `docs/tui.md` — the browsing-files key table, and the status line it
   quotes.
@@ -56,12 +54,7 @@ Four inputs, and no more:
 - **Rule 8 — the quoted status line has drifted from the hint.**
   `docs/tui.md` shows the hint as the reader sees it; a stale quote is the
   same drift in one more place.
-- **Rule 9 — the panel's advertised verbs have drifted from the hint.** The
-  panel's own test names the verbs its status line must show. That list is a
-  **fourth copy** of the vocabulary, and it drifted once: the hint moved to
-  `peek` and the copy did not, and the drift reached CI as a failed test
-  rather than as a finding here.
-- **Rule 10 — the hint says a word the panel chrome owns.** The chrome
+- **Rule 9 — the hint says a word the panel chrome owns.** The chrome
   mints `Shift+← back` for a **focused** panel — the way out to the composer
   — and an **unfocused** panel's line must not say "back" at all: it has not
   been entered, so it has nothing to go back from. The navigator's `h` is
@@ -100,7 +93,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 WIDGET_RS = "src/tui/components/dialogs/files.rs"
-PANEL_RS = "src/tui/panels/mod.rs"
 ARCHITECTURE_MD = "architecture/tui.md"
 DOCS_MD = "docs/tui.md"
 
@@ -156,15 +148,6 @@ HINT_CONST_RE = re.compile(
     r"pub\s+const\s+HINT\s*:\s*&str\s*=\s*\"(?P<body>(?:[^\"\\]|\\.)*)\"\s*;"
 )
 
-# The panel's own advertised verbs: a named list, read by name rather than by
-# shape, so a renamed or deleted list is a finding and not a silent pass.
-ADVERTISED_VERBS_RE = re.compile(
-    r"const\s+ADVERTISED_VERBS\s*:\s*&\[&str\]\s*=\s*&\[(?P<body>[^\]]*)\]\s*;"
-)
-
-# A Rust string literal.
-STRING_LITERAL_RE = re.compile(r"\"((?:[^\"\\]|\\.)*)\"")
-
 # A code span in a table's key cell.
 CODE_SPAN_RE = re.compile(r"`([^`]+)`")
 
@@ -209,7 +192,6 @@ class Model:
     architecture: tuple[Row, ...]
     docs: tuple[Row, ...]
     docs_text: str
-    advertised: tuple[str, ...]
 
 
 def canonical(token: str) -> str:
@@ -241,21 +223,6 @@ def read_hint(source: str) -> str:
             "navigator's model from it and has nothing else to check"
         )
     return unescape(match.group("body"))
-
-
-def read_advertised(source: str) -> tuple[str, ...]:
-    """The verbs the panel's status line must advertise."""
-    match = ADVERTISED_VERBS_RE.search(source)
-    if match is None:
-        raise ParseError(
-            "the panel's `ADVERTISED_VERBS` list was not found; the guard "
-            "compares the panel's advertised verbs with the hint and has "
-            "nothing else to check"
-        )
-    return tuple(
-        unescape(literal)
-        for literal in STRING_LITERAL_RE.findall(match.group("body"))
-    )
 
 
 def unescape(body: str) -> str:
@@ -491,23 +458,12 @@ def analyse(model: Model) -> list[Violation]:
     # Rule 8 — the quoted status line has drifted from the hint.
     violations.extend(check_status_line(model.docs_text, verbs))
 
-    # Rule 9 — the panel's advertised verbs have drifted from the hint.
-    for verb in model.advertised:
-        if verb not in model.hint:
-            violations.append(
-                Violation(
-                    9,
-                    f"the panel advertises {verb!r} and the hint does not "
-                    "publish it; the hint is the model, so the panel names a "
-                    "verb the navigator does not have",
-                )
-            )
-    # Rule 10 — the hint spends a word the panel chrome owns.
+    # Rule 9 — the hint spends a word the panel chrome owns.
     for word in sorted(CHROME_OWNED_WORDS):
         if re.search(r"\b" + re.escape(word), model.hint, re.IGNORECASE):
             violations.append(
                 Violation(
-                    10,
+                    9,
                     f"the hint says {word!r}, which the panel chrome owns: a "
                     "focused panel's `Shift+← back` is the way out to the "
                     "composer, so the navigator's own motion must use another "
@@ -561,7 +517,6 @@ def check_status_line(docs_text: str, verbs: list[Verb]) -> list[Violation]:
 def build_model() -> Model:
     """Read the tree."""
     widget = (REPO_ROOT / WIDGET_RS).read_text(encoding="utf-8")
-    panel = (REPO_ROOT / PANEL_RS).read_text(encoding="utf-8")
     architecture = (REPO_ROOT / ARCHITECTURE_MD).read_text(encoding="utf-8")
     docs = (REPO_ROOT / DOCS_MD).read_text(encoding="utf-8")
     return Model(
@@ -569,7 +524,6 @@ def build_model() -> Model:
         architecture=find_table(architecture, ARCHITECTURE_HEADING),
         docs=find_table(docs, DOCS_HEADING),
         docs_text=docs,
-        advertised=read_advertised(panel),
     )
 
 
@@ -579,11 +533,6 @@ CLEAN_HINT = (
     "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · "
     "r refresh · q/⇧Q close"
 )
-
-# The verbs the panel's status line must advertise, and the guard's own copy
-# of them: the panel names them, the hint publishes them, and a verb in one
-# and not the other is rule 9.
-CLEAN_ADVERTISED = ("enter open", "l/→ peek", "^d/^u page")
 
 CLEAN_ARCHITECTURE = """## Key Types & APIs
 
@@ -632,7 +581,6 @@ def clean_model() -> Model:
         architecture=find_table(CLEAN_ARCHITECTURE, ARCHITECTURE_HEADING),
         docs=find_table(CLEAN_DOCS, DOCS_HEADING),
         docs_text=CLEAN_DOCS,
-        advertised=CLEAN_ADVERTISED,
     )
 
 
@@ -648,14 +596,12 @@ def _model(
     hint: str = CLEAN_HINT,
     architecture: str = CLEAN_ARCHITECTURE,
     docs: str = CLEAN_DOCS,
-    advertised: tuple[str, ...] = CLEAN_ADVERTISED,
 ) -> Model:
     return Model(
         hint=hint,
         architecture=find_table(architecture, ARCHITECTURE_HEADING),
         docs=find_table(docs, DOCS_HEADING),
         docs_text=docs,
-        advertised=advertised,
     )
 
 
@@ -663,7 +609,7 @@ SELF_TEST_CASES: list[tuple[str, Model, Expectation]] = [
     (
         "a clean tree finds nothing",
         clean_model(),
-        Expectation((), "the four surfaces agree"),
+        Expectation((), "the three surfaces agree"),
     ),
     (
         "the tables describing different verbs is rule 1",
@@ -762,12 +708,7 @@ SELF_TEST_CASES: list[tuple[str, Model, Expectation]] = [
         Expectation((8,), "the quoted status line has drifted from the hint"),
     ),
     (
-        "a panel verb the hint does not publish is rule 9",
-        _model(advertised=("enter open", "l/→ open", "^d/^u page")),
-        Expectation((9,), "the panel still advertises `l` as an open"),
-    ),
-    (
-        "a hint that spends the chrome's word is rule 10",
+        "a hint that spends the chrome's word is rule 9",
         _model(
             hint=CLEAN_HINT.replace("h/← up", "h/← back"),
             architecture=CLEAN_ARCHITECTURE.replace(
@@ -775,7 +716,7 @@ SELF_TEST_CASES: list[tuple[str, Model, Expectation]] = [
             ),
             docs=CLEAN_DOCS.replace("go up one level", "go back one level"),
         ),
-        Expectation((10,), "the hint says `back`, which the panel chrome owns"),
+        Expectation((9,), "the hint says `back`, which the panel chrome owns"),
     ),
 ]
 
@@ -838,8 +779,8 @@ def main(argv: list[str]) -> int:
         )
         return 1
     print(
-        "check_tui_files_keymap_drift: the hint, the panel's advertised verbs "
-        "and the two published tables describe one set of verbs"
+        "check_tui_files_keymap_drift: the hint and the two published tables "
+        "describe one set of verbs"
     )
     return 0
 
