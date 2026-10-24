@@ -18,6 +18,7 @@
 pub mod blackboard;
 pub mod checkout_reservation;
 pub mod eggwork_node;
+pub mod isolated_env;
 pub mod linked_worktree;
 pub mod pool;
 pub mod projection_replay;

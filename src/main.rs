@@ -880,6 +880,7 @@ fn scratch_refusal_name(
     match refusal {
         ScratchReclaimRefusalDto::SymbolicLink => "symbolic_link",
         ScratchReclaimRefusalDto::NonRegularEntry => "non_regular_entry",
+        ScratchReclaimRefusalDto::OwnershipUnverifiable => "ownership_unverifiable",
     }
 }
 
@@ -928,9 +929,16 @@ fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageRe
             tree.file_count,
             format_age(tree.newest_modified_ms),
             match tree.reclaimable {
-                Some(true) => "yes",
-                Some(false) => "no",
-                None => "unknown",
+                Some(true) => "yes".to_string(),
+                Some(false) => match tree.refusal {
+                    // The reason is the operator's only clue to which rule
+                    // refused the tree, and it is what distinguishes a tree
+                    // the daemon cannot prove it owns from one holding a
+                    // planted link.
+                    Some(refusal) => format!("no ({})", scratch_refusal_name(refusal)),
+                    None => "no".to_string(),
+                },
+                None => "unknown".to_string(),
             },
         );
     }

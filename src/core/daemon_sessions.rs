@@ -1431,6 +1431,9 @@ mod scratch_cleanup_tests {
 
     #[tokio::test]
     async fn deleted_session_cleanup_waits_for_jobs_and_preserves_restored_sessions() {
+        // The test allocates and removes a real scratch tree, so it must not
+        // do that in the developer's own scratch root.
+        let _scratch_root = crate::scratch::isolated_scratch_root("daemon-sessions");
         let pool = cleanup_pool().await;
         let sessions = SessionStore::new(pool.clone());
         let runs = Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());

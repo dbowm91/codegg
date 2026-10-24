@@ -950,6 +950,9 @@ mod tests {
 
     #[tokio::test]
     async fn python_tempfile_uses_the_persistent_session_scratch() {
+        // The test allocates a real scratch tree, so it must not do that in
+        // the developer's own scratch root.
+        let _scratch_root = crate::scratch::isolated_scratch_root("python-scratch");
         let session_id = format!("python-scratch-{}", uuid::Uuid::new_v4());
         let scratch = crate::scratch::session_scratch_dir(&session_id).unwrap();
         let request = PythonScriptRequest {

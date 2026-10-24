@@ -3005,6 +3005,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn delegated_scratch_keeps_temp_private_and_exposes_only_granted_aliases() {
+        // The test allocates real scratch trees, so it must not do that in
+        // the developer's own scratch root.
+        let _scratch_root = crate::scratch::isolated_scratch_root("managed-process");
         let run_id = codegg_core::identity::AgentRunId::new();
         let session_id = format!("delegated-test-{run_id}");
         let private_root = crate::scratch::agent_run_scratch_dir(&session_id, &run_id)
