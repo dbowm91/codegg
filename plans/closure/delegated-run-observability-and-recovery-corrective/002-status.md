@@ -934,3 +934,27 @@ missing the suppression are not: three place the allow *before* `#[async_trait]`
 `#[must_use = "reason"]`, which the lint accepts in place of the allow, and
 `tool_program/content_store.rs` declares no module and is therefore **never
 compiled** — which is why it never trips anything.
+
+### C004's provider-entry guard broke this milestone's catalog test
+
+The hosted `verify` job found this one, at the `Workspace tests` step: this
+milestone's `delegated_transcript_catalog` member failed with *"the delegated
+run must complete, got Failed"*.
+
+C004 requires a durable delegated run to have an **attempt record** before it
+may reach a provider entry — the attempt record is where "this is the run's
+original attempt or a claimed continuation" is decided, and a run with no
+attempt record has no authorized attempt. The **scheduler executor** records
+that attempt in production (`src/scheduler/executors.rs`). This milestone's
+catalog test drives the subagent pool **directly**, so it never recorded one,
+and the guard refused the run.
+
+The guard is **not** loosened. It is the correct rule, the production path
+already satisfies it, and the other durable-delegation tests in this line
+already recorded their attempts. The test was the incomplete thing: it now
+records the run's first attempt with the same shape the executor writes
+(`attempt_ordinal: 1`, kind `Original`, the originating session and turn as
+the principal), and it passes.
+
+The test's assertion now also names the run's error text, so a future failure
+of the same kind says *why* instead of only that the status was `Failed`.

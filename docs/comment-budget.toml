@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 125417
-max_comment_words = 1106353
+max_comment_lines = 125422
+max_comment_words = 1106417
 max_ratio = 0.1331
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -864,6 +864,7 @@ max_ratio = 0.1331
 "tests/server_feature/team_collaboration_m006_trajectory.inc" = { max_comment_lines = 135, max_ratio = 0.0783 }
 "tests/session_family/control_m004_controller_lease.inc" = { max_comment_lines = 87, max_ratio = 0.0591 }
 "tests/session_family/crud.inc" = { max_comment_lines = 22, max_ratio = 0.0187 }
+"tests/session_family/delegated_transcript_catalog.inc" = { max_comment_lines = 20, max_ratio = 0.0639 }
 "tests/session_family/projection_consumer.inc" = { max_comment_lines = 20, max_ratio = 0.0712 }
 "tests/session_family/projection_m4_controller.inc" = { max_comment_lines = 34, max_ratio = 0.0838 }
 "tests/session_family/selection.inc" = { max_comment_lines = 46, max_ratio = 0.0539 }

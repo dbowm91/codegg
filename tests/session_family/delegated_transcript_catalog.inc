@@ -19,6 +19,9 @@ use codegg::session::SessionStore;
 use codegg_core::agent_run::{
     AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask, SqliteAgentRunStore,
 };
+use codegg_core::agent_run_attempt::{
+    AgentRunAttemptEvent, AgentRunAttemptKind, NewAgentRunAttempt,
+};
 use codegg_core::agent_run_group::AgentRunGroupService;
 use codegg_core::agent_run_transcript::{
     AgentRunTranscriptRead, AgentRunTranscriptStore, SqliteAgentRunTranscriptStore,
@@ -234,6 +237,30 @@ async fn a_delegated_run_appears_in_no_session_enumeration_and_leaves_the_catalo
     )
     .await;
     let run_id = create_durable_run(&pool).await;
+    // A durable delegated run reaches a provider entry only as its original
+    // attempt or as a claimed continuation, and that is decided by the run's
+    // attempt record: a run with no attempt record has no authorized
+    // attempt. The scheduler executor records it in production; this test
+    // drives the pool directly, so it records it here with the same shape.
+    let attempt_store = SqliteAgentRunStore::new(pool.clone()).attempt_store().await;
+    attempt_store
+        .append_attempt(NewAgentRunAttempt {
+            run_id: run_id.clone(),
+            attempt_ordinal: 1,
+            event: AgentRunAttemptEvent::Attempt,
+            attempt_kind: AgentRunAttemptKind::Original,
+            continued_from_ordinal: None,
+            principal: "parent-session".into(),
+            principal_turn_id: "turn".into(),
+            authority_digest: "authority".into(),
+            transcript_digest: None,
+            failure_class: None,
+            ceiling_json: None,
+            outcome: None,
+            detail: None,
+        })
+        .await
+        .expect("record the delegated run's first attempt");
     let request = SubAgentRequest {
         child_instance_id: String::new(),
         originating_turn_id: None,
@@ -291,8 +318,9 @@ async fn a_delegated_run_appears_in_no_session_enumeration_and_leaves_the_catalo
             ) {
                 assert!(
                     matches!(task.status, codegg::tool::task::TaskStatus::Completed),
-                    "the delegated run must complete, got {:?}",
-                    task.status
+                    "the delegated run must complete, got {:?}: {:?}",
+                    task.status,
+                    task.result
                 );
                 break;
             }

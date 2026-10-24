@@ -727,3 +727,19 @@ therefore now part of this line's evidence, and the two `core_daemon`
 failures and the one macOS-only `managed_process` refusal it reports are the
 pre-existing, environment-dependent ones — each reproduced at `origin/main`,
 not inherited from this line.
+
+**C004's provider-entry guard broke C002's catalog test, and the hosted CI
+found it.** The guard requires a durable delegated run to have an **attempt
+record** before it may reach a provider entry: the attempt record is where
+"this is the run's original attempt or a claimed continuation" is decided, and
+a run with no attempt record has no authorized attempt. The **scheduler
+executor** records that attempt in production (`src/scheduler/executors.rs`),
+so the production path already satisfies the rule. C002's catalog test drives
+the subagent pool **directly** and never recorded one, so the guard refused
+the run and the test saw `Failed`.
+
+The guard is **not** loosened: it is the correct rule, and it is what makes a
+continuation distinguishable from an original attempt. The test was the
+incomplete thing, and it now records the run's first attempt with the same
+shape the executor writes. The full detail, and the assertion improvement that
+names the run's error text, are in the C002 closure record's §15.
