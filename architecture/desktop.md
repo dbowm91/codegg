@@ -202,9 +202,21 @@ authority boundary, and the `check-desktop-boundary.sh` guard all stand; what
 changed is the *hosted qualification*, which now runs again against a lane
 whose premise matches the product's behaviour.
 
-Until the lane produces hosted evidence, the desktop foundation's evidence is
-the `CI / verify` lane plus the local `apps/desktop` host and renderer checks —
-which the root workspace's gate does not compile, so they are run by hand.
+**The hosted qualification is green (2026-10-24).** PR #185's `e2e` job
+(`40103667676`, job `120900793854`) ran the three phases on Linux/WebKitGTK
+605.1.15 against a real daemon: the lifecycle phase **5 passing**, the
+autostart phase **2 passing**, the session phase **7 passing** — **14
+passing, 0 failing**. The phase homes were under `/tmp`, so this is the
+**Linux** trajectory: the recognised-temp-root redirect fired and the human
+was asked on the **second** attempt, which is the branch the local macOS run
+never exercises. The mock's insist plus the spec's answer-every-permission
+loop is therefore proven to converge on the platform that actually produces
+the redirect offer.
+
+Before that run, the desktop foundation's evidence was the `CI / verify` lane
+plus the local `apps/desktop` host and renderer checks — which the root
+workspace's gate does not compile, so they were run by hand. The hosted `e2e`
+job is now part of the lane's own evidence.
 
 Test instrumentation never widens production authority:
 

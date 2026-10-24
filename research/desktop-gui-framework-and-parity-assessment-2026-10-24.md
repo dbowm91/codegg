@@ -47,7 +47,7 @@ projects are labelled with the source they came from.
 | What is the real gap? | **Presenter breadth.** 15 TUI surfaces have no desktop counterpart (§4.2). Todos/`Ctrl+T`, multi-turn transcript, model/provider selection, settings, LSP/editor and terminal are *absent*; subagents, runs and jobs are *stubs* — populated in the DTO and never rendered (§5.1). |
 | Best frontend framework? | **Tauri, retained.** With a measured WebKitGTK gate before the renderer scales, and a named fallback that is *not* a rewrite (§6). |
 | What must happen first? | **Green the hosted E2E lane.** The failure has a specific, cheap, code-level diagnosis (§5.2). |
-| What has been implemented since? | **Phases 0–3 and 5.** The lane is green locally (all three phases, against a real daemon), the lane's triggers are restored, the presenter now carries the full projection contract (transcript, tool detail, subagents, background activity, todos) through virtualised React surfaces, the daemon answers a read-only git + skills catalogue, and one shared golden pins the TUI's and the desktop's reconstruction of the same session. See §5.2.1 for the measured E2E outcome and §8 for what was executed versus read. |
+| What has been implemented since? | **Phases 0–3 and 5.** The lane is green **locally and on the hosted Linux lane** (all three phases, against a real daemon, 14 passing / 0 failing), the lane's triggers are restored, the presenter now carries the full projection contract (transcript, tool detail, subagents, background activity, todos) through virtualised React surfaces, the daemon answers a read-only git + skills catalogue, and one shared golden pins the TUI's and the desktop's reconstruction of the same session. See §5.2.1 for the measured E2E outcome and §8 for what was executed versus read. |
 
 ---
 
@@ -799,7 +799,8 @@ no file was modified.
    **14 passing, 0 failing** (lifecycle 5, autostart 2, session 7), after the
    fixture insist, the answer-every-permission spec loop, and the harness's
    physical fake `HOME` (§5.2.1). The baseline for the same suite was
-   `6 passing / 1 failing` with a 120 s timeout.
+   `6 passing / 1 failing` with a 120 s timeout. This was run **both** locally
+   (macOS) and on the hosted lane (Linux/WebKitGTK) — see item 7.
 3. The desktop's own gates: `npm run bindings:check`, `npm run typecheck`,
    `npm test` (**69 passed / 10 files**), and the host crate's
    `cargo test --lib` (**90 passed, 0 failed, 1 ignored**).
@@ -825,15 +826,19 @@ no file was modified.
    and into the panel, which shows what the observation is worth — the same
    fact the TUI's `git_service` already returns.
 
+7. **The hosted run is green** — PR #185's `e2e` job (`40103667676`, job
+   `120900793854`) ran the three phases on Linux/WebKitGTK 605.1.15 against a
+   real daemon: lifecycle **5 passing**, autostart **2 passing**, session **7
+   passing** — **14 passing, 0 failing**. The phase homes were under `/tmp`, so
+   this is the **Linux** trajectory: the recognised-temp-root redirect fired
+   and the human was asked on the **second** attempt, the branch the local
+   macOS run never exercises (§5.2.1b). The mock's insist plus the spec's
+   answer-every-permission loop is therefore proven to converge on the
+   platform that actually produces the redirect offer.
+
 **Still not verified:**
 
-1. The **hosted** run. The lane was un-paused and the local reproduction is
-   green, but only a hosted run proves the Linux trajectory — where the
-   temp-root redirect *does* fire and the human is asked on the **second**
-   attempt — converges. The local run exercised the macOS trajectory, where
-   `/var` is a system path and the human is asked on the **first** attempt
-   (§5.2.1b). The fixture and the spec handle both.
-2. **Six workspace tests fail on macOS, and they failed before this work
+1. **Six workspace tests fail on macOS, and they failed before this work
    started.** The broad sweep is `16,144 tests: 16,137 passed, 7 failed, 9
    skipped`; six of the seven failures are reproducible on the **pristine**
    tree (`git stash` → `a4bbba81e` → the same six fail → restore), and the
@@ -847,17 +852,14 @@ no file was modified.
    `tests/scheduler_jobs/scratch_cache_root_contract.inc`, and the sandbox
    gate, which says so outright: *"protected mount view is available only on
    Linux"*. None of them is in a file this work touched.
-3. The `/tui` ↔ `/core` capability asymmetry (G2) is asserted from
+2. The `/tui` ↔ `/core` capability asymmetry (G2) is asserted from
    `architecture/protocol.md:593-600`; I confirmed the structural cause
    (`TuiMessage` has no `CoreRequest` variant) but did not exercise the
    endpoint.
-4. The desktop E2E pause is a repo-state claim read from
-   `architecture/desktop.md:154-175` and `.github/workflows/desktop-e2e.yml`; I
-   did not query GitHub Actions.
-5. Framework measurements in §6.1 come from published comparisons and vendor
+3. Framework measurements in §6.1 come from published comparisons and vendor
    documentation, not from a CodeGG-specific benchmark. **That is precisely why
    Gate G1 exists** — the CodeGG-specific measurement has not been taken yet.
-6. `architecture/protocol.md:131-274` cites `CoreEvent` at `core.rs:4162` while
+4. `architecture/protocol.md:131-274` cites `CoreEvent` at `core.rs:4162` while
    the declaration is at `core.rs:4257`; `architecture/client.md:51` cites
    `driver.rs:483` (actual `:498`) and `compose.rs:123`/`:110` for
    `PromptIntent`/`PromptIntentState` (actual `:174`/`:161`). The *counts* in
