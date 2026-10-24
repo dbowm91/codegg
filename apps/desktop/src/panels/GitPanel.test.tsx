@@ -8,6 +8,7 @@ const status = (overrides: Partial<GitStatusView> = {}): GitStatusView => ({
   isDirty: false,
   commitHash: 'abc123',
   stashCount: 0,
+  consistency: 'immutable_generation',
   ...overrides,
 });
 
@@ -18,6 +19,7 @@ const diff = (overrides: Partial<GitDiffView> = {}): GitDiffView => ({
   files: [{ path: 'src/lib.rs', kind: 'modified' }],
   totalFiles: 1,
   truncated: false,
+  consistency: 'immutable_generation',
   ...overrides,
 });
 
@@ -35,6 +37,7 @@ const branches = (overrides: Partial<GitBranchListView> = {}): GitBranchListView
   ],
   total: 1,
   truncated: false,
+  consistency: 'immutable_generation',
   ...overrides,
 });
 
@@ -79,8 +82,32 @@ describe('the desktop git surface', () => {
     ]);
   });
 
-  it('says the facts are unknown until the host has read them', () => {
-    render(<GitPanel status={null} diff={null} branches={null} />);
+  it('shows the consistency class of each read', () => {
+    // The class says what the observation is worth. A panel that drew the
+    // numbers without it would be implying a guarantee the daemon never
+    // gave, so every fact set names the class it was read under.
+    render(
+      <GitPanel
+        status={status({ consistency: 'captured_not_current' })}
+        diff={diff({ consistency: 'live_mutable' })}
+        branches={branches({ consistency: 'no_object_generation' })}
+      />,
+    );
+    expect(screen.getByTestId('git-status-consistency')).toHaveTextContent(
+      'captured, possibly stale',
+    );
+    expect(screen.getByTestId('git-diff-consistency')).toHaveTextContent('live, may be torn');
+    expect(screen.getByTestId('git-branch-consistency')).toHaveTextContent(
+      'no generation observed',
+    );
+    // The wire class travels with the facts, so the element names it too.
+    expect(screen.getByTestId('git-status-consistency')).toHaveAttribute(
+      'data-consistency',
+      'captured_not_current',
+    );
+  });
+
+  it('says the facts are unknown until the host has read them', () => {    render(<GitPanel status={null} diff={null} branches={null} />);
     // "not read yet" and "nothing to report" are different claims, and an
     // absent fact set must not read as an empty one.
     expect(screen.getByTestId('git-status-unknown')).toHaveTextContent('Git status not read yet.');

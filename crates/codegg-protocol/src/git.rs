@@ -83,6 +83,31 @@ pub struct GitRepoStatusDto {
     pub commit_hash: Option<String>,
     /// How many stashes the repository holds.
     pub stash_count: usize,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitReadConsistencyDto,
+}
+
+/// The object-generation consistency class of a git read.
+///
+/// A read is only as trustworthy as the generation it observed, so the class
+/// travels with the facts rather than being left to the reader's memory. This
+/// is the wire form of the read-only fact layer's consistency class: the
+/// daemon reports what the observation is worth, and a renderer cannot
+/// receive the bytes without also receiving that answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitReadConsistencyDto {
+    /// The read served objects from one materialized generation.
+    ImmutableGeneration,
+    /// The read served objects from a capture that was immutable when it was
+    /// taken and may now be stale relative to the repository.
+    CapturedNotCurrent,
+    /// The read served objects directly from a concurrently mutable
+    /// repository, so the observation may be torn.
+    LiveMutable,
+    /// The read consulted no object store, so it observed no object
+    /// generation at all.
+    NoObjectGeneration,
 }
 
 /// A bounded summary of the working tree's changes against `HEAD`.
@@ -103,6 +128,8 @@ pub struct GitDiffSummaryDto {
     pub total_files: usize,
     /// Whether `files` was shortened by the cap.
     pub truncated: bool,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitReadConsistencyDto,
 }
 
 /// One changed file in a diff summary.
@@ -141,6 +168,8 @@ pub struct GitBranchListDto {
     pub total: usize,
     /// Whether `branches` was shortened by the cap.
     pub truncated: bool,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitReadConsistencyDto,
 }
 
 /// One local branch.
@@ -217,6 +246,7 @@ mod tests {
             is_dirty: true,
             commit_hash: Some("abc123".into()),
             stash_count: 2,
+            consistency: GitReadConsistencyDto::CapturedNotCurrent,
         });
         let json = serde_json::to_value(&result).expect("the result renders");
         assert_eq!(
@@ -244,6 +274,7 @@ mod tests {
             }],
             total_files: 900,
             truncated: true,
+            consistency: GitReadConsistencyDto::ImmutableGeneration,
         });
         let json = serde_json::to_value(&result).expect("the result renders");
         assert_eq!(
@@ -254,5 +285,47 @@ mod tests {
             json.get("total_files").and_then(|value| value.as_u64()),
             Some(900)
         );
+    }
+
+    #[test]
+    fn every_read_carries_its_consistency_class() {
+        // The class travels with the facts: a renderer cannot receive the
+        // bytes without also receiving what the observation is worth.
+        // A read that dropped it on the way to the wire would make the
+        // class unfalsifiable from the client's side.
+        for (class, wire) in [
+            (
+                GitReadConsistencyDto::ImmutableGeneration,
+                "immutable_generation",
+            ),
+            (
+                GitReadConsistencyDto::CapturedNotCurrent,
+                "captured_not_current",
+            ),
+            (GitReadConsistencyDto::LiveMutable, "live_mutable"),
+            (
+                GitReadConsistencyDto::NoObjectGeneration,
+                "no_object_generation",
+            ),
+        ] {
+            let result = GitReadResultDto::Diff(GitDiffSummaryDto {
+                files_changed: 0,
+                insertions: 0,
+                deletions: 0,
+                files: Vec::new(),
+                total_files: 0,
+                truncated: false,
+                consistency: class,
+            });
+            let json = serde_json::to_value(&result).expect("the result renders");
+            assert_eq!(
+                json.get("consistency").and_then(|value| value.as_str()),
+                Some(wire),
+                "the class must survive onto the wire"
+            );
+            let decoded: GitReadResultDto =
+                serde_json::from_value(json).expect("the result decodes back");
+            assert_eq!(decoded, result);
+        }
     }
 }

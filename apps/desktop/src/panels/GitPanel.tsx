@@ -1,4 +1,5 @@
 import type { GitBranchListView, GitDiffView, GitStatusView } from '../bridge-types';
+import { formatConsistency } from './format';
 
 // The project's git facts.
 //
@@ -67,6 +68,12 @@ export function GitPanel({
           {status.stashCount > 0 && (
             <span data-testid="git-stash">{status.stashCount} stash(es)</span>
           )}
+          {/* The class of the read travels with the facts: the panel says
+              what the observation is worth rather than implying a
+              guarantee the daemon never gave. */}
+          <span data-testid="git-status-consistency" data-consistency={status.consistency}>
+            {formatConsistency(status.consistency)}
+          </span>
         </p>
       ) : (
         <p className="muted" data-testid="git-status-unknown">
@@ -78,6 +85,9 @@ export function GitPanel({
         <>
           <p className="fact-row" data-testid="git-diff-counts">
             {diff.filesChanged} changed file(s), +{diff.insertions} -{diff.deletions}
+            <span data-testid="git-diff-consistency" data-consistency={diff.consistency}>
+              {formatConsistency(diff.consistency)}
+            </span>
           </p>
           {diff.files.length ? (
             <ul data-testid="git-file-list">
@@ -139,6 +149,11 @@ export function GitPanel({
               Showing {branches.branches.length} of {branches.total} branch(es).
             </p>
           )}
+          <p className="fact-row" data-testid="git-branches-consistency-row">
+            <span data-testid="git-branch-consistency" data-consistency={branches.consistency}>
+              {formatConsistency(branches.consistency)}
+            </span>
+          </p>
         </>
       ) : (
         <p className="muted" data-testid="git-branches-unknown">

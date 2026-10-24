@@ -13,9 +13,9 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 124804
-max_comment_words = 1099951
-max_ratio = 0.1334
+max_comment_lines = 124854
+max_comment_words = 1100461
+max_ratio = 0.1335
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
 # recorded here. A file that crosses the unlisted floor must be added.
@@ -153,7 +153,7 @@ max_ratio = 0.1334
 "crates/codegg-protocol/src/document.rs" = { max_comment_lines = 87, max_ratio = 0.2844 }
 "crates/codegg-protocol/src/dto.rs" = { max_comment_lines = 299, max_ratio = 0.2217 }
 "crates/codegg-protocol/src/frames.rs" = { max_comment_lines = 53, max_ratio = 0.3012 }
-"crates/codegg-protocol/src/git.rs" = { max_comment_lines = 88, max_ratio = 0.5715 }
+"crates/codegg-protocol/src/git.rs" = { max_comment_lines = 109, max_ratio = 0.5344 }
 "crates/codegg-protocol/src/interactive_process.rs" = { max_comment_lines = 116, max_ratio = 0.3637 }
 "crates/codegg-protocol/src/lib.rs" = { max_comment_lines = 27, max_ratio = 1.5883 }
 "crates/codegg-protocol/src/lsp.rs" = { max_comment_lines = 566, max_ratio = 0.3833 }
@@ -321,7 +321,7 @@ max_ratio = 0.1334
 "src/core/daemon_projection.rs" = { max_comment_lines = 77, max_ratio = 0.0978 }
 "src/core/daemon_projects.rs" = { max_comment_lines = 34, max_ratio = 0.0351 }
 "src/core/daemon_queue_delivery.rs" = { max_comment_lines = 270, max_ratio = 0.6324 }
-"src/core/daemon_reads.rs" = { max_comment_lines = 96, max_ratio = 0.1749 }
+"src/core/daemon_reads.rs" = { max_comment_lines = 125, max_ratio = 0.1994 }
 "src/core/daemon_refresh.rs" = { max_comment_lines = 80, max_ratio = 0.0699 }
 "src/core/daemon_scratch.rs" = { max_comment_lines = 71, max_ratio = 0.2922 }
 "src/core/daemon_sessions.rs" = { max_comment_lines = 59, max_ratio = 0.0418 }

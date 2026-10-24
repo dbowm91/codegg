@@ -348,7 +348,13 @@ describe('session route flow', () => {
       if (operation === 'status') {
         return {
           kind: 'status' as const,
-          status: { branch: 'main', isDirty: true, commitHash: 'abc123', stashCount: 0 },
+          status: {
+            branch: 'main',
+            isDirty: true,
+            commitHash: 'abc123',
+            stashCount: 0,
+            consistency: 'immutable_generation' as const,
+          },
           diff: null,
           branches: null,
         };
@@ -364,6 +370,7 @@ describe('session route flow', () => {
             files: [{ path: 'src/lib.rs', kind: 'modified' as const }],
             totalFiles: 1,
             truncated: false,
+            consistency: 'immutable_generation' as const,
           },
           branches: null,
         };
@@ -386,6 +393,7 @@ describe('session route flow', () => {
           ],
           total: 1,
           truncated: false,
+          consistency: 'immutable_generation' as const,
         },
       };
     });

@@ -525,6 +525,29 @@ pub enum GitChangeKind {
     Other,
 }
 
+/// The object-generation consistency class of a git read.
+///
+/// A read is only as trustworthy as the generation it observed, so the class
+/// travels with the facts instead of being left to the renderer's memory.
+/// The daemon reports what the observation is worth; the view carries the
+/// same answer so a panel can say it rather than imply a guarantee it was
+/// never given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitConsistency {
+    /// The read served objects from one materialized generation.
+    ImmutableGeneration,
+    /// The read served objects from a capture that was immutable when it was
+    /// taken and may now be stale relative to the repository.
+    CapturedNotCurrent,
+    /// The read served objects directly from a concurrently mutable
+    /// repository, so the observation may be torn.
+    LiveMutable,
+    /// The read consulted no object store, so it observed no object
+    /// generation at all.
+    NoObjectGeneration,
+}
+
 /// The status facts of one repository.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -533,6 +556,8 @@ pub struct GitStatusView {
     pub is_dirty: bool,
     pub commit_hash: Option<String>,
     pub stash_count: usize,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitConsistency,
 }
 
 /// One changed file in a diff summary. The path is repository-relative;
@@ -557,6 +582,8 @@ pub struct GitDiffView {
     pub files: Vec<GitChangedFileView>,
     pub total_files: usize,
     pub truncated: bool,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitConsistency,
 }
 
 /// One local branch.
@@ -579,6 +606,8 @@ pub struct GitBranchListView {
     pub branches: Vec<GitBranchView>,
     pub total: usize,
     pub truncated: bool,
+    /// The consistency class the read was obtained under.
+    pub consistency: GitConsistency,
 }
 
 /// The facts of one read-only git read.

@@ -1,5 +1,4 @@
 // Display helpers shared by the desktop presenter surfaces.
-//
 // The rules here mirror the TUI's own task-surface rules so the desktop
 // and the terminal never disagree about what a state means:
 //
@@ -19,6 +18,8 @@
 //   (`src/tui/components/sidebar.rs:1944-1953`);
 // - the tool duration format
 //   (`src/tui/components/tool_output.rs:41-47`).
+
+import type { GitConsistency } from '../bridge-types';
 
 /// The tokens that mean "finished", matched as substrings of a
 /// lower-cased state.
@@ -114,4 +115,24 @@ export function formatDuration(durationMs: number | null): string | null {
 /// an unresolved counter is not the same claim as an empty one.
 export function formatTokens(value: number | null): string {
   return value === null ? '—' : String(value);
+}
+
+/// How a git read's consistency class is written.
+///
+/// The class says what the observation is worth, so a surface that draws
+/// the facts draws the class too: a reader that showed the numbers
+/// without it would be implying a guarantee the daemon never gave. The
+/// wire carries the class's own name; this maps it onto words that fit a
+/// line of a panel.
+export function formatConsistency(consistency: GitConsistency): string {
+  switch (consistency) {
+    case 'immutable_generation':
+      return 'one generation';
+    case 'captured_not_current':
+      return 'captured, possibly stale';
+    case 'live_mutable':
+      return 'live, may be torn';
+    case 'no_object_generation':
+      return 'no generation observed';
+  }
 }

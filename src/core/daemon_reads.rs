@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 use codegg_protocol::core::{CoreRequest, CoreResponse};
 use codegg_protocol::git::{
     GitBranchDto, GitBranchListDto, GitChangeKindDto, GitChangedFileDto, GitDiffSummaryDto,
-    GitReadOperationDto, GitReadResultDto, GitRepoStatusDto, MAX_GIT_READ_ROWS,
+    GitReadConsistencyDto, GitReadOperationDto, GitReadResultDto, GitRepoStatusDto,
+    MAX_GIT_READ_ROWS,
 };
 use codegg_protocol::skill::{
     SkillCatalogueDto, SkillSourceDto, SkillSummaryDto, MAX_SKILL_CATALOGUE_ENTRIES,
@@ -209,15 +210,17 @@ async fn git_read_facts(
 ) -> Result<GitReadResultDto, &'static str> {
     match operation {
         GitReadOperationDto::Status => {
-            let status = egggit::status::repo_status(root)
+            let status_fact = egggit::status::repo_status(root)
                 .await
-                .map_err(|_| "git_read_failed")?
-                .into_value();
+                .map_err(|_| "git_read_failed")?;
+            let consistency = status_fact.class();
+            let status = status_fact.into_value();
             Ok(GitReadResultDto::Status(GitRepoStatusDto {
                 branch: status.branch,
                 is_dirty: status.is_dirty,
                 commit_hash: status.commit_hash,
                 stash_count: status.stash_count,
+                consistency: consistency_dto(consistency),
             }))
         }
         GitReadOperationDto::Diff => {
@@ -227,17 +230,25 @@ async fn git_read_facts(
             // the tracked-file slice — `git diff` does not list untracked
             // files — so the file list is a subset of the working tree's
             // changes by construction.
-            let summary = egggit::diff::diff_summary(root, None)
+            let diff_fact = egggit::diff::diff_summary(root, None)
                 .await
-                .map_err(|_| "git_read_failed")?
-                .into_value();
+                .map_err(|_| "git_read_failed")?;
+            // This read is a *display* read, not a generation-bound
+            // consumer: it publishes nothing, so it does not claim one
+            // stable object generation. It therefore propagates the class
+            // it observed rather than admitting it — the class travels
+            // with the facts to the renderer, who can say what the
+            // observation is worth. Dropping it here would make the class
+            // unfalsifiable from the client's side.
+            let consistency = diff_fact.class();
+            let summary = diff_fact.value();
             let total_files = summary.files.len();
             let files = summary
                 .files
-                .into_iter()
+                .iter()
                 .take(max_rows)
                 .map(|file| GitChangedFileDto {
-                    path: file.path,
+                    path: file.path.clone(),
                     kind: change_kind(file.kind),
                 })
                 .collect();
@@ -248,13 +259,15 @@ async fn git_read_facts(
                 files,
                 total_files,
                 truncated: total_files > max_rows,
+                consistency: consistency_dto(consistency),
             }))
         }
         GitReadOperationDto::Branches => {
-            let branches = egggit::refs::list_branches(root)
+            let branch_fact = egggit::refs::list_branches(root)
                 .await
-                .map_err(|_| "git_read_failed")?
-                .into_value();
+                .map_err(|_| "git_read_failed")?;
+            let consistency = branch_fact.class();
+            let branches = branch_fact.into_value();
             let total = branches.len();
             let rows = branches
                 .into_iter()
@@ -273,7 +286,28 @@ async fn git_read_facts(
                 branches: rows,
                 total,
                 truncated: total > max_rows,
+                consistency: consistency_dto(consistency),
             }))
+        }
+    }
+}
+
+/// Map the read-only fact layer's consistency class onto the wire taxonomy.
+///
+/// The wire form and the fact layer's form share their names deliberately:
+/// a client that reads `"captured_not_current"` is reading the same class
+/// the fact layer observed, not a paraphrase of it.
+fn consistency_dto(class: egggit::consistency::GitReadConsistency) -> GitReadConsistencyDto {
+    match class {
+        egggit::consistency::GitReadConsistency::ImmutableGeneration => {
+            GitReadConsistencyDto::ImmutableGeneration
+        }
+        egggit::consistency::GitReadConsistency::CapturedNotCurrent => {
+            GitReadConsistencyDto::CapturedNotCurrent
+        }
+        egggit::consistency::GitReadConsistency::LiveMutable => GitReadConsistencyDto::LiveMutable,
+        egggit::consistency::GitReadConsistency::NoObjectGeneration => {
+            GitReadConsistencyDto::NoObjectGeneration
         }
     }
 }
@@ -489,6 +523,85 @@ mod tests {
         assert_eq!(
             status.branch, "bound-branch",
             "the read follows the project's own binding, not the client's path"
+        );
+    }
+
+    /// Ask the daemon for one git fact set and return the consistency class
+    /// it reported.
+    async fn git_read_class(
+        daemon: &CoreDaemon,
+        project_id: &str,
+        operation: GitReadOperationDto,
+    ) -> GitReadConsistencyDto {
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "git-consistency".to_string(),
+                CoreRequest::GitRead {
+                    request: GitReadRequestDto {
+                        project_id: project_id.to_string(),
+                        operation,
+                        max_rows: None,
+                    },
+                },
+            ))
+            .await
+            .expect("the daemon answers the git read");
+        let CoreResponse::GitRead { result } = response else {
+            panic!("a git read answers with git facts");
+        };
+        match result {
+            GitReadResultDto::Status(status) => status.consistency,
+            GitReadResultDto::Diff(diff) => diff.consistency,
+            GitReadResultDto::Branches(branches) => branches.consistency,
+        }
+    }
+
+    #[tokio::test]
+    async fn every_git_read_carries_the_class_it_observed() {
+        // A read that dropped its class on the way to the wire would make
+        // the class unfalsifiable from the client's side: the client could
+        // not tell a one-generation observation from a live one. Every
+        // operation therefore reports the class it observed, and the class
+        // is *specific* — a daemon that reported one constant for every
+        // read would satisfy a weaker check and mislead the client about
+        // the two reads that differ.
+        let (_dir, root) = git_fixture::temp_git_repo("feature-consistency");
+        let pool = isolated_pool().await;
+        let project_id = register_project(&pool, &root).await;
+        let daemon = CoreDaemon::new(Some(pool), None, None);
+
+        let status = git_status(&daemon, &project_id).await;
+        // The status read consults refs and the index, not the object
+        // store, so it honestly reports that it observed no generation.
+        assert_eq!(
+            status.consistency,
+            GitReadConsistencyDto::NoObjectGeneration,
+            "a read of refs and the index observed no object generation"
+        );
+
+        let diff_class = git_read_class(&daemon, &project_id, GitReadOperationDto::Diff).await;
+        // The diff read compares the working tree against `HEAD`, so it
+        // reads the object store: it observed a generation. Which of the
+        // two generation-bearing classes it is depends on whether the
+        // object view came from the capture cache or from a fresh
+        // snapshot, and both are honest answers.
+        assert!(
+            matches!(
+                diff_class,
+                GitReadConsistencyDto::ImmutableGeneration
+                    | GitReadConsistencyDto::CapturedNotCurrent
+            ),
+            "a read of HEAD's tree observed a generation, so it must not \
+             report that it observed none: {diff_class:?}"
+        );
+
+        let branch_class =
+            git_read_class(&daemon, &project_id, GitReadOperationDto::Branches).await;
+        // The branch list reads refs, not the object store.
+        assert_eq!(
+            branch_class,
+            GitReadConsistencyDto::NoObjectGeneration,
+            "a read of refs observed no object generation"
         );
     }
 

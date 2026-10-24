@@ -41,11 +41,11 @@ const expected = {
   SessionPresentationView: ['session_id', 'project_id', 'workspace_id', 'state', 'turn', 'messages', 'truncated_messages', 'transcript', 'truncated_transcript_messages', 'tools', 'runs', 'jobs', 'subagents', 'agent_tree', 'agent_runs', 'tool_programs', 'worktrees', 'run_groups', 'convergences', 'recent_turns', 'todos', 'pending_permissions', 'pending_questions', 'controller', 'artifact_handles', 'cursor', 'resync_reason'],
   // Phase 3 read-only project facts: the git fact sets and the skill
   // catalogue the daemon reads for the route-selected project.
-  GitStatusView: ['branch', 'is_dirty', 'commit_hash', 'stash_count'],
+  GitStatusView: ['branch', 'is_dirty', 'commit_hash', 'stash_count', 'consistency'],
   GitChangedFileView: ['path', 'kind'],
-  GitDiffView: ['files_changed', 'insertions', 'deletions', 'files', 'total_files', 'truncated'],
+  GitDiffView: ['files_changed', 'insertions', 'deletions', 'files', 'total_files', 'truncated', 'consistency'],
   GitBranchView: ['name', 'is_current', 'is_detached', 'upstream', 'ahead', 'behind', 'head'],
-  GitBranchListView: ['branches', 'total', 'truncated'],
+  GitBranchListView: ['branches', 'total', 'truncated', 'consistency'],
   GitReadView: ['kind', 'status', 'diff', 'branches'],
   SkillSummaryView: ['name', 'description', 'source', 'content_digest', 'resource_count'],
   SkillCatalogueView: ['project_id', 'skills', 'total', 'truncated'],

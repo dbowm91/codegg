@@ -338,12 +338,21 @@ export type GitChangeKind =
   | 'renamed'
   | 'copied'
   | 'other';
+// The object-generation consistency class of a git read. The class travels
+// with the facts: a renderer that received the facts without it would be
+// asserting a guarantee it was never given.
+export type GitConsistency =
+  | 'immutable_generation'
+  | 'captured_not_current'
+  | 'live_mutable'
+  | 'no_object_generation';
 export type SkillSource = 'project' | 'global' | 'plugin' | 'configured' | 'native';
 export interface GitStatusView {
   branch: string;
   isDirty: boolean;
   commitHash: string | null;
   stashCount: number;
+  consistency: GitConsistency;
 }
 // One changed file. The path is repository-relative; no filesystem root
 // ever crosses the bridge.
@@ -359,6 +368,7 @@ export interface GitDiffView {
   files: GitChangedFileView[];
   totalFiles: number;
   truncated: boolean;
+  consistency: GitConsistency;
 }
 export interface GitBranchView {
   name: string;
@@ -373,6 +383,7 @@ export interface GitBranchListView {
   branches: GitBranchView[];
   total: number;
   truncated: boolean;
+  consistency: GitConsistency;
 }
 // The facts of one git read. Exactly one payload is set and the others
 // are absent; a payload that does not match the requested operation is

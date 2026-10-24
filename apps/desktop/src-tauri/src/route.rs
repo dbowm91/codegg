@@ -24,15 +24,18 @@ use codegg_client::StoppedDriver;
 use codegg_protocol::{
     core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
     dto::Session,
-    git::{GitChangeKindDto, GitReadOperationDto, GitReadRequestDto, GitReadResultDto},
+    git::{
+        GitChangeKindDto, GitReadConsistencyDto, GitReadOperationDto, GitReadRequestDto,
+        GitReadResultDto,
+    },
     skill::{SkillCatalogueRequestDto, SkillSourceDto},
 };
 
 use super::bridge::{
-    GitBranchListView, GitBranchView, GitChangeKind, GitChangedFileView, GitDiffView, GitReadKind,
-    GitReadOperation, GitReadView, GitStatusView, ProjectDetailView, RouteTokenView,
-    SessionListView, SessionSummaryView, SessionView, SkillCatalogueView, SkillSource,
-    SkillSummaryView, WorkspaceView,
+    GitBranchListView, GitBranchView, GitChangeKind, GitChangedFileView, GitConsistency,
+    GitDiffView, GitReadKind, GitReadOperation, GitReadView, GitStatusView, ProjectDetailView,
+    RouteTokenView, SessionListView, SessionSummaryView, SessionView, SkillCatalogueView,
+    SkillSource, SkillSummaryView, WorkspaceView,
 };
 use super::projection::ProjectionOwner;
 use super::HostState;
@@ -177,6 +180,7 @@ fn git_read_view(
                 is_dirty: status.is_dirty,
                 commit_hash: status.commit_hash,
                 stash_count: status.stash_count,
+                consistency: git_consistency(status.consistency),
             }),
             diff: None,
             branches: None,
@@ -198,6 +202,7 @@ fn git_read_view(
                     .collect(),
                 total_files: diff.total_files,
                 truncated: diff.truncated,
+                consistency: git_consistency(diff.consistency),
             }),
             branches: None,
         }),
@@ -221,9 +226,23 @@ fn git_read_view(
                     .collect(),
                 total: branches.total,
                 truncated: branches.truncated,
+                consistency: git_consistency(branches.consistency),
             }),
         }),
         _ => Err("daemon returned a git read result for another operation".into()),
+    }
+}
+
+/// Carry the daemon's consistency class into the view.
+///
+/// The class is carried rather than dropped: a renderer that received the
+/// facts without it would be asserting a guarantee it was never given.
+fn git_consistency(class: GitReadConsistencyDto) -> GitConsistency {
+    match class {
+        GitReadConsistencyDto::ImmutableGeneration => GitConsistency::ImmutableGeneration,
+        GitReadConsistencyDto::CapturedNotCurrent => GitConsistency::CapturedNotCurrent,
+        GitReadConsistencyDto::LiveMutable => GitConsistency::LiveMutable,
+        GitReadConsistencyDto::NoObjectGeneration => GitConsistency::NoObjectGeneration,
     }
 }
 
@@ -662,6 +681,11 @@ mod tests {
         GitBranchListDto, GitChangedFileDto, GitDiffSummaryDto, GitRepoStatusDto,
     };
     use codegg_protocol::skill::{SkillCatalogueDto, SkillSummaryDto};
+
+    /// The consistency class the daemon reports for a read served from one
+    /// materialized generation. The route carries it into the view, so a
+    /// test that asserts the view's class is asserting the whole chain.
+    const TEST_CONSISTENCY: GitReadConsistencyDto = GitReadConsistencyDto::ImmutableGeneration;
 
     fn detail_response(
         project_id: &str,
@@ -2057,6 +2081,7 @@ mod tests {
                             is_dirty: true,
                             commit_hash: Some("abc123".into()),
                             stash_count: 2,
+                            consistency: TEST_CONSISTENCY,
                         }),
                     },
                 )
@@ -2117,6 +2142,7 @@ mod tests {
                             }],
                             total_files: 900,
                             truncated: true,
+                            consistency: TEST_CONSISTENCY,
                         }),
                     },
                 )
@@ -2182,6 +2208,7 @@ mod tests {
                             is_dirty: false,
                             commit_hash: None,
                             stash_count: 0,
+                            consistency: TEST_CONSISTENCY,
                         }),
                     },
                 )
@@ -2241,6 +2268,7 @@ mod tests {
                             branches: Vec::new(),
                             total: 0,
                             truncated: false,
+                            consistency: TEST_CONSISTENCY,
                         }),
                     },
                 )

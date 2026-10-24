@@ -39,15 +39,15 @@ projects are labelled with the source they came from.
 
 | Question | Answer |
 |---|---|
-| Is the worktree current? | **Yes.** `git rev-list --left-right --count origin/main...HEAD` → `0 0`. It was already at `origin/main` (`a4bbba81e`); no rebase was required. |
-| Does a desktop GUI already exist? | **Yes** — `apps/desktop`: Tauri 2.12.1 + React 19 + Vite 8, 7,817 lines of Rust host, 1,299 lines of TS/TSX renderer, 19 narrow Tauri commands. Development was **paused 2026-10-23** (`architecture/desktop.md:154-175`). |
+| Is the worktree current? | **Yes.** At the time of the research `git rev-list --left-right --count origin/main...HEAD` → `0 0`: the tree was already at `origin/main` (`a4bbba81e`) and no rebase was required. The implementation has since been rebased onto `origin/main` `ffb7bbe8b` (PR #181, the Linux trusted-Git C008 contained worktree), which is where the phases now live as commits. |
+| Does a desktop GUI already exist? | **Yes** — `apps/desktop`: Tauri 2.12.1 + React 19 + Vite 8, 7,817 lines of Rust host, 1,299 lines of TS/TSX renderer, 19 narrow Tauri commands. Development was **paused 2026-10-23** (`architecture/desktop.md:154-175`); the lane's triggers are restored by Phase 0. |
 | Is it a mock? | **No.** It is a real vertical slice against the real daemon: connect, project/workspace select, session list/create/open, live projection push, permission and question responses, artifact excerpts, controller lease display. |
 | Is "TUI and GUI interchangeable over the daemon" already true? | **The data plane is.** Both consume the same `CoreFrame` protocol and the same `SessionProjectionSnapshot`. `ClientKind::Gui` already exists (`crates/codegg-protocol/src/frames.rs:72-78`). |
 | What is *not* interchangeable? | The **capability ceiling**: git, plugin invocation, skills catalogue, tool invocation and web search exist in the daemon but have **zero** `CoreRequest` variants (§3.4). Plus the remote `/tui` transport cannot carry `CoreRequest` at all (`architecture/protocol.md:593-600`). |
 | What is the real gap? | **Presenter breadth.** 15 TUI surfaces have no desktop counterpart (§4.2). Todos/`Ctrl+T`, multi-turn transcript, model/provider selection, settings, LSP/editor and terminal are *absent*; subagents, runs and jobs are *stubs* — populated in the DTO and never rendered (§5.1). |
 | Best frontend framework? | **Tauri, retained.** With a measured WebKitGTK gate before the renderer scales, and a named fallback that is *not* a rewrite (§6). |
 | What must happen first? | **Green the hosted E2E lane.** The failure has a specific, cheap, code-level diagnosis (§5.2). |
-| What has been implemented since? | **Phases 0–3.** The lane is green locally (all three phases, against a real daemon), the lane's triggers are restored, the presenter now carries the full projection contract (transcript, tool detail, subagents, background activity, todos) through virtualised React surfaces, and the daemon answers a read-only git + skills catalogue. See §5.2.1 for the measured E2E outcome and §8 for what was executed versus read. |
+| What has been implemented since? | **Phases 0–3 and 5.** The lane is green locally (all three phases, against a real daemon), the lane's triggers are restored, the presenter now carries the full projection contract (transcript, tool detail, subagents, background activity, todos) through virtualised React surfaces, the daemon answers a read-only git + skills catalogue, and one shared golden pins the TUI's and the desktop's reconstruction of the same session. See §5.2.1 for the measured E2E outcome and §8 for what was executed versus read. |
 
 ---
 
@@ -791,27 +791,39 @@ no file was modified.
 
 **Verified by execution (2026-10-24, the implementation pass):**
 
-1. `scripts/verify.sh quick` — **passes** on the tree that carries Phase 1
-   (data layer), Phase 3 (the daemon-side git + skills slice), the Phase 0
-   E2E fixes, and the architecture-doc corrections. That is rustfmt, the two
-   generated-asset checks, the 63 guard scripts, and a workspace
-   `cargo check --workspace --all-targets --locked`.
+1. `scripts/verify.sh quick` — **passes** on the merged tree that carries
+   Phases 0–3 and 5, rebased onto `origin/main` `ffb7bbe8b`. That is
+   rustfmt, the two generated-asset checks, the **69** guard scripts, and a
+   workspace `cargo check --workspace --all-targets --locked`.
 2. The desktop **E2E suite**, all three phases, against a real daemon —
    **14 passing, 0 failing** (lifecycle 5, autostart 2, session 7), after the
    fixture insist, the answer-every-permission spec loop, and the harness's
    physical fake `HOME` (§5.2.1). The baseline for the same suite was
    `6 passing / 1 failing` with a 120 s timeout.
 3. The desktop's own gates: `npm run bindings:check`, `npm run typecheck`,
-   `npm test` (**68 passed / 10 files**), and the host crate's
+   `npm test` (**69 passed / 10 files**), and the host crate's
    `cargo test --lib` (**90 passed, 0 failed, 1 ignored**).
 4. The Phase 3 slice's own suites: `cargo test -p codegg-core` (933 passed),
-   `cargo test -p codegg-protocol` (312 passed), `cargo test --lib
-   daemon_reads` (8 passed), and the authorization/audit/writer-disposition/
+   `cargo test -p codegg-protocol` (313 passed), `cargo test --lib
+   daemon_reads` (9 passed), and the authorization/audit/writer-disposition/
    execution-ownership/core-boundary guards.
 5. The Phase 5 proof: `cargo test --test frontend_parity` (**6 passed**) and
    the desktop crate's `cargo test --test frontend_parity` (**5 passed**),
    against one shared golden — and the visibility-policy divergence §7.1
    records.
+6. **The merge against `main` found one real defect and it is fixed here.**
+   `main` added `scripts/check_git_consistency_consumers.py` — a guard that
+   every diff consumer must either fence its read through
+   `admit_generation_bound()` or propagate the read's consistency class. The
+   Phase 3 git read did neither: it took the diff fact's value and dropped
+   the class. The fix **propagates** the class rather than admitting it,
+   because the desktop's git read is a *display* read, not a
+   generation-bound consumer — it publishes nothing, so claiming one stable
+   object generation would be a lie, and admitting it would refuse a
+   `NoObjectGeneration` read the panel can legitimately serve. The class now
+   travels on the wire (`GitReadConsistencyDto`) through the desktop's view
+   and into the panel, which shows what the observation is worth — the same
+   fact the TUI's `git_service` already returns.
 
 **Still not verified:**
 
