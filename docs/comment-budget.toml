@@ -597,7 +597,7 @@ max_ratio = 0.1316
 "src/tui/commands/diagnostics.rs" = { max_comment_lines = 30, max_ratio = 0.095 }
 "src/tui/commands/editor.rs" = { max_comment_lines = 2236, max_ratio = 0.2461 }
 "src/tui/commands/exit_control.rs" = { max_comment_lines = 23, max_ratio = 0.6389 }
-"src/tui/commands/file_tree.rs" = { max_comment_lines = 441, max_ratio = 0.2346 }
+"src/tui/commands/file_tree.rs" = { max_comment_lines = 441, max_ratio = 0.2334 }
 "src/tui/commands/goals.rs" = { max_comment_lines = 20, max_ratio = 0.0325 }
 "src/tui/commands/interactive_terminal.rs" = { max_comment_lines = 777, max_ratio = 0.2478 }
 "src/tui/commands/manifest_restore.rs" = { max_comment_lines = 114, max_ratio = 0.4176 }
