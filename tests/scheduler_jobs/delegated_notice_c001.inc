@@ -15,11 +15,11 @@
 //! - `task action=get` returns the recorded result, not only a pointer.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use codegg::agent::job_notification_recovery::inject_recoverable_job_notifications;
 use codegg::scheduler::job_notifications::{
-    format_job_notice_content, JobCompletionDisposition, JobNotificationService,
+    format_job_notice_content, JobCompletionDisposition, JobNotificationService, JobTerminalNotice,
 };
 use codegg::scheduler::{
     ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorStatus, JobExecutionContext,
@@ -145,8 +145,22 @@ async fn harness() -> Harness {
     harness_with_result(true).await
 }
 
+/// A harness whose `task` tool has no durable notification service.
+///
+/// The delegated child still runs and still terminates; it simply has no
+/// subscription to attribute a terminal notice to. That is the state a
+/// daemon restart leaves behind: the durable job and its subscription are
+/// on disk, but the notice was never written.
+async fn harness_without_tool_notifications() -> Harness {
+    harness_with_options(true, false).await
+}
+
 /// A harness whose child leaves a recorded result behind.
 async fn harness_with_result(record_result: bool) -> Harness {
+    harness_with_options(record_result, true).await
+}
+
+async fn harness_with_options(record_result: bool, subscribe_tool: bool) -> Harness {
     let pool = common::pool::isolated_pool().await;
     let notifications = Arc::new(JobNotificationService::with_pool(pool.clone()));
     let store = codegg_core::session::EventStore::new(pool);
@@ -197,8 +211,12 @@ async fn harness_with_result(record_result: bool) -> Harness {
     )
     .with_submission(submission, workspace.path().to_path_buf())
     .with_agent_run_store(runs.clone())
-    .with_project_context(None, None, Some("turn-c001".to_string()))
-    .with_job_notifications(Some(notifications.clone()));
+    .with_project_context(None, None, Some("turn-c001".to_string()));
+    let tool = if subscribe_tool {
+        tool.with_job_notifications(Some(notifications.clone()))
+    } else {
+        tool
+    };
 
     Harness {
         scheduler,
@@ -274,6 +292,38 @@ async fn wait_for_completion(harness: &Harness, job_id: &str) {
         .expect("the delegated run terminates");
 }
 
+/// Wait until the parent session holds at least `expected` pending notices.
+///
+/// `wait_for_completion` waits for the *execution* to finish, and the
+/// scheduler publishes that completion before it records the job's durable
+/// terminal notice. A read taken the instant the completion returns
+/// therefore measures that window rather than a lost notice.
+///
+/// The guarantee under test is that a notice is never lost: the delegated
+/// spawn subscribes its job, and a child that terminated before the
+/// subscription landed has its terminal held until the subscription does.
+/// So the test waits for the durable notice with a bounded poll and then
+/// asserts on what it finds.
+async fn pending_notices(harness: &Harness, expected: usize) -> Vec<JobTerminalNotice> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let pending = harness
+            .notifications
+            .pending_for_session(PARENT_SESSION)
+            .await
+            .expect("pending notices");
+        if pending.len() >= expected {
+            return pending;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} pending notice(s) for {PARENT_SESSION}, saw {}",
+            pending.len()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// The delegated spawn must subscribe the job for its own durable notice,
 /// under the parent's owner.
 #[tokio::test(flavor = "current_thread")]
@@ -322,11 +372,7 @@ async fn the_delegated_run_produces_a_notice_that_names_it() {
 
     wait_for_completion(&harness, &job_id).await;
 
-    let pending = harness
-        .notifications
-        .pending_for_session(PARENT_SESSION)
-        .await
-        .expect("pending notices");
+    let pending = pending_notices(&harness, 1).await;
     assert_eq!(pending.len(), 1, "one notice per delegated run");
     let notice = &pending[0];
     assert_eq!(notice.kind, "subagent");
@@ -377,11 +423,7 @@ async fn the_delegated_notice_survives_a_parent_turn_that_ended() {
     // exists, and the only channel left is the durable notice.
     wait_for_completion(&harness, &job_id).await;
 
-    let pending = harness
-        .notifications
-        .pending_for_session(PARENT_SESSION)
-        .await
-        .expect("pending notices");
+    let pending = pending_notices(&harness, 1).await;
     assert_eq!(
         pending.len(),
         1,
@@ -413,11 +455,7 @@ async fn the_delegated_notice_is_delivered_when_the_in_band_push_is_dropped() {
     // land and is dropped. The durable notice is unaffected.
     wait_for_completion(&harness, &job_id).await;
 
-    let pending = harness
-        .notifications
-        .pending_for_session(PARENT_SESSION)
-        .await
-        .expect("pending notices");
+    let pending = pending_notices(&harness, 1).await;
     assert_eq!(
         pending.len(),
         1,
@@ -473,11 +511,7 @@ async fn a_retried_spawn_completes_the_subscription_after_a_restart() {
 
     wait_for_completion(&harness, &job_id).await;
 
-    let pending = harness
-        .notifications
-        .pending_for_session(PARENT_SESSION)
-        .await
-        .expect("pending notices");
+    let pending = pending_notices(&harness, 1).await;
     assert_eq!(pending.len(), 1, "exactly one notice after the retry");
 }
 
@@ -500,16 +534,76 @@ async fn two_concurrent_delegated_runs_produce_one_notice_each() {
         wait_for_completion(&harness, job_id).await;
     }
 
-    let pending = harness
-        .notifications
-        .pending_for_session(PARENT_SESSION)
-        .await
-        .expect("pending notices");
+    let pending = pending_notices(&harness, 2).await;
     assert_eq!(pending.len(), 2, "one notice per delegated run");
     let mut noticed: Vec<String> = pending.iter().map(|notice| notice.job_id.clone()).collect();
     noticed.sort();
     noticed.dedup();
     assert_eq!(noticed.len(), 2, "no notice is lost or duplicated");
+}
+
+/// A daemon that restarted between a child's termination and its
+/// subscription heals the gap from the durable rows: the job is terminal,
+/// the subscription exists, and the notice is backfilled — naming the run.
+#[tokio::test(flavor = "current_thread")]
+async fn the_daemon_backfill_names_the_run_of_a_delegated_job_that_terminated_first() {
+    let harness = harness_without_tool_notifications().await;
+    let output = spawn(
+        &harness.tool,
+        "spawn-c001-backfill",
+        "a child that terminates before its subscription",
+    )
+    .await;
+    let job_id = field(&output, "Scheduler job");
+    let run_id = field(&output, "Run");
+
+    wait_for_completion(&harness, &job_id).await;
+
+    // A fresh service over the same durable store stands in for the daemon
+    // after a restart: the in-memory hold is gone with the old process.
+    let restarted = Arc::new(JobNotificationService::with_pool(harness.store.pool()));
+    restarted
+        .subscribe(
+            &codegg_core::jobs::JobId::new_unchecked(job_id.clone()),
+            codegg::scheduler::job_notifications::DELEGATED_JOB_KIND,
+            PARENT_SESSION,
+            Some("turn-c001"),
+            "spawn-c001-backfill",
+        )
+        .await
+        .expect("the retried spawn completes the subscription");
+
+    // Nothing was written at the terminal transition: the subscription
+    // landed after it. The durable backfill is what heals the gap.
+    assert!(
+        restarted
+            .pending_for_session(PARENT_SESSION)
+            .await
+            .expect("pending notices")
+            .is_empty(),
+        "the backfill is what creates the notice"
+    );
+    let recovered = restarted
+        .recover_from_store(&harness.job_store)
+        .await
+        .expect("the durable backfill runs");
+    assert_eq!(recovered, 1, "one backfilled notice for the terminal job");
+
+    let pending = restarted
+        .pending_for_session(PARENT_SESSION)
+        .await
+        .expect("pending notices");
+    assert_eq!(pending.len(), 1, "one notice after the backfill");
+    assert_eq!(
+        pending[0].run_id.as_deref(),
+        Some(run_id.as_str()),
+        "a backfilled delegated notice must name the run it is about"
+    );
+    let content = format_job_notice_content(&pending[0]);
+    assert!(
+        content.contains(&run_id),
+        "the backfilled notice content must identify the run, got: {content}"
+    );
 }
 
 /// Repeated injection passes do not duplicate the message.
@@ -519,6 +613,9 @@ async fn repeated_injection_passes_do_not_duplicate_the_notice() {
     let output = spawn(&harness.tool, "spawn-c001-once", "one notice only").await;
     let job_id = field(&output, "Scheduler job");
     wait_for_completion(&harness, &job_id).await;
+    // The injection pass consumes pending notices, so the notice has to be
+    // durable before the passes run.
+    pending_notices(&harness, 1).await;
 
     ensure_session(&harness.store.pool(), PARENT_SESSION).await;
     let mut messages: Vec<String> = vec![];

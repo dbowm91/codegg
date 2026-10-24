@@ -698,3 +698,107 @@ did not touch the TUI's run inspector.
 | **D-6** | `cargo fmt --all` was **not** run; the files this milestone owns were formatted by hand. | A parallel worker is editing `crates/codegg-core` and `src/agent/worker.rs`; a tree-wide format run mid-flight would reformat their half-written files. The orchestrator runs it once, centrally. |
 | **D-7** | The regression tests (§10.3) live in `tests/scheduler_jobs/delegated_notice_c001.inc` rather than in `tests/agent_loop/`. | The plan's §10.3 header names `tests/agent_loop/`, but the behaviour under test is the `task` tool's durable spawn and its durable `get` — which need the scheduler, the submission service and the agent-run store. The `agent_loop` family has no such harness, and building one there would have duplicated the `scheduler_jobs` harness. The §10.3 *cases* are all present; only their file differs. |
 | **D-8** | The guard's `--self-test` builds a **synthetic** clean tree rather than using the repository tree as the baseline. | The briefing asks for "a synthetic tree". Using the repository as the baseline would make the self-test fail on any tree where the guard legitimately fires (for example the pre-change tree), which would make the self-test a tree-shape check rather than a non-vacuity proof. |
+
+## 13. The delegated notice could be lost entirely (orchestrator, 2026-10-24)
+
+The hosted `verify` job found this one, at the `Workspace tests` step:
+`scheduler_jobs::delegated_notice_c001::two_concurrent_delegated_runs_produce_one_notice_each`
+failed with *"one notice per delegated run"* — one notice where two were
+expected.
+
+It is **not** a flake, and it is **not** a merge regression. It is a
+correctness hole in this milestone's central promise, and it was already
+present in the tree this milestone closed with.
+
+### The hole
+
+This milestone's ordering is: **submit, then subscribe**
+(`src/tool/task.rs` — `submission.submit(...)`, then
+`subscribe_delegated_notice(...)`). The scheduler records a terminal notice
+only for a job that **already has a subscription**
+(`JobNotificationService::record_terminal` returns "no subscription" and
+records nothing). So a child that terminates inside that window — which a
+fast child does routinely, and which a loaded CI runner makes likelier — had
+**no subscription to attribute a notice to**, and its terminal state was
+**never recorded at all**.
+
+Nothing healed it. The mechanism that was designed to heal exactly this gap
+exists — `JobNotificationService::recover_from_store`, documented as
+"backfills completion-before-subscribe and restart gaps" in
+`architecture/scheduler.md` and in M001's closure record — but it had **no
+caller anywhere in the tree**. It was dead code. So the delegated run's
+terminal state was lost, and the orchestrator never heard about that child:
+the exact failure this milestone exists to prevent.
+
+The recovery paths that *were* wired do not cover this. The turn-boundary
+injection reconciles **existing** pending notices; the daemon-startup hint
+recovery reads **durable** notices. Neither can create a notice that was
+never written.
+
+### The fix
+
+Two parts, one for the common case and one for the crash.
+
+1. **Hold the terminal until the subscription lands.**
+   `JobNotificationService` now keeps a bounded map of delegated terminals
+   whose subscription has not arrived. `record_terminal` holds one instead of
+   dropping it; `subscribe_with_options` releases it on every success path,
+   recording the notice with the executor's own summary — exactly as if the
+   subscription had landed first. Only a delegated-shaped job
+   (`JobSource::AgentDelegated` or `JobKind::Subagent`) is held, so an
+   ordinary background job's terminal is dropped exactly as before and the
+   map cannot grow with foreground completions.
+2. **Wire the durable backfill.** `JobScheduler::recover_missing_terminal_notices`
+   calls `recover_from_store`, and the daemon's job recovery calls it during
+   startup. A daemon that restarted between a child's termination and its
+   subscription now heals the gap on the next start, which is what
+   `architecture/scheduler.md` already promised.
+
+### The test that was measuring the wrong thing
+
+This milestone's family read the notices **the instant**
+`wait_for_completion` returned. That wait is for the *execution*: the
+scheduler publishes a job's completion before it records the job's durable
+terminal notice, so the read raced the notice write. The family's five
+notice assertions and its injection pass all shared that race; the
+concurrent member simply had two notices to lose instead of one.
+
+The family now waits for the durable notice with a bounded poll and asserts
+on what it finds. That is the honest measurement of the invariant — *the
+notice is never lost* — and it distinguishes a late notice from a lost one:
+a genuinely lost notice now fails with "expected 2 pending notice(s), saw 1"
+after the bound instead of racing.
+
+The deterministic regression test for the product fix is in the notification
+service's own module (`a_delegated_run_that_terminated_before_its_subscription_still_notifies`):
+it records a delegated terminal with no subscription, then subscribes, and
+asserts that exactly one notice appears naming the run and carrying the
+executor's outcome. `a_foreground_terminal_is_never_held_for_a_late_subscription`
+asserts the other half — a foreground job is never held, so the hold map
+cannot become a leak.
+
+Both new members are **armed**, proved by reverting the production change
+and re-running them:
+
+- with the release of a held terminal disabled, the module member fails with
+  `left: 0, right: 1` — the held terminal is never recorded;
+- with the backfill's run-id derivation reverted to `None`, the family
+  member fails with `left: None, right: Some("f2588a9e-...")` — a backfilled
+  delegated notice would not name its run.
+
+The family member stands in for a daemon restart: the child terminates with
+no subscription at all, a fresh notification service over the same durable
+store subscribes it, and the durable backfill then creates exactly one
+notice naming the run. That is the crash variant of the same gap, proved
+without a process restart.
+
+### What this changes about the record above
+
+§1's claim that "the scheduler already recorded a terminal notice for *any*
+subscribed job, so no scheduler behaviour changed" was true about the
+scheduler and incomplete about the whole: the *subscriber* was the only new
+part, and the subscriber had a window in which the notice could not exist.
+The guarantee this milestone closed with was "a delegated run that terminates
+inside its own subscribe window is silently lost". It is now "a delegated
+run that terminates is never lost". The durable notice remains the receipt;
+the in-band `try_send` push remains the non-authoritative fast path.

@@ -747,7 +747,9 @@ unschedulable validation failure, and queued cancellation — it attempts
 one idempotent `record_terminal` for explicitly subscribed jobs only.
 `Interrupted` never notifies; running/progress and wait timeouts are not
 terminals. Notification failure never fails the job; `recover_from_store`
-backfills completion-before-subscribe and restart gaps. Delivery uses the
+backfills completion-before-subscribe and restart gaps, and runs from the
+daemon's job recovery (`JobScheduler::recover_missing_terminal_notices`).
+Delivery uses the
 same claim/append/mark/ack + `SessionEvent::JobTerminalNotification`
 mechanics as Tool Program M017, with a separate `job_notification` /
 `job_background_subscription` table pair (migration v73).
@@ -774,6 +776,39 @@ Two delegated-specific details live in the notice layer:
   recorded nothing. The delegated content names the run, states the recorded
   outcome — or states plainly that the run recorded none — and carries the
   result reference.
+
+#### The delegated subscribe/terminate race (C001 corrective)
+
+The delegated spawn path **dispatches the job and subscribes it afterwards**
+(`src/tool/task.rs`: submit, then `subscribe_delegated_notice`). The
+scheduler publishes a job's completion before it records the job's durable
+terminal notice, so two windows exist between dispatch and a durable notice,
+and only the first is a correctness hole:
+
+- **The termination window.** A child that terminates before its
+  subscription is durable has no subscription to attribute a notice to. The
+  notice used to be dropped on the floor: `record_terminal` returns "no
+  subscription" and nothing re-derived it. The delegated run's terminal
+  state was simply never recorded, so the orchestrator never heard about
+  that child. The notification service now **holds** such a delegated
+  terminal (`held_delegated_terminals`, bounded) and the subscription that
+  lands afterwards **releases** it, recording the notice with the
+  executor's own summary — exactly as if the subscription had landed first.
+  Only a delegated-shaped job (`JobSource::AgentDelegated` or
+  `JobKind::Subagent`) is held, so an ordinary background job's terminal is
+  dropped as before and the hold map cannot grow with foreground
+  completions.
+- **The completion window.** The scheduler publishes the completion before
+  it records the notice, so a reader that waits for the *execution* and then
+  reads the notices measures that window rather than a lost notice. The
+  durable notice is the receipt; a consumer that needs it waits for it.
+
+The durable counterpart is `recover_from_store`, which backfills a terminal
+job that has a subscription but no notice. It is now called from the
+daemon's job recovery (`JobScheduler::recover_missing_terminal_notices`),
+so a daemon that restarted between a child's termination and its
+subscription still heals the gap on the next start. The in-memory hold
+covers the common case; the backfill covers the crash.
 
 ### CI watch observation authority (M004, C001)
 
