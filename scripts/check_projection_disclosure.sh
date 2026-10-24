@@ -12,12 +12,79 @@
 # 4. Forbid the literal string '[REDACTED:oversized:' outside
 #    crates/codegg-core/src/projection_replay/redactor.rs (the
 #    downgraded marker must not be synthesized by callers).
+# 5. The delegated run transcript must be a declared field on the run DTO
+#    AND be populated by production code. A field that is declared but
+#    never populated is a payload that crosses as nothing while the
+#    contract claims it crosses.
 
 set -euo pipefail
 
-ROOT=$(git rev-parse --show-toplevel)
+ROOT=${CODEGG_GUARD_ROOT:-$(git rev-parse --show-toplevel)}
 REPLAY_DIR="$ROOT/crates/codegg-core/src/projection_replay"
+DTO="$ROOT/crates/codegg-protocol/src/projection/dto.rs"
 violations=0
+
+# The self-test builds a miniature tree and runs this same guard against
+# it, so the transcript rule is proved to fire on the violation it claims
+# to catch rather than merely being present in the file.
+run_self_test() {
+  SELF_TEST_FIXTURE=$(mktemp -d)
+  local fixture="$SELF_TEST_FIXTURE"
+  mkdir -p "$fixture/crates/codegg-protocol/src/projection" \
+    "$fixture/crates/codegg-core/src/projection_replay" \
+    "$fixture/src"
+  cat > "$fixture/crates/codegg-protocol/src/projection/dto.rs" <<'EOF'
+pub struct AgentRunSummary {
+    pub transcript: Option<AgentRunTranscriptProjection>,
+}
+EOF
+  cat > "$fixture/crates/codegg-core/src/projection_replay/agent_runs.rs" <<'EOF'
+pub fn populate(summary: &mut AgentRunSummary) {
+    summary.transcript = Some(AgentRunTranscriptProjection::Absent);
+}
+EOF
+  if ! CODEGG_GUARD_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+    echo "ERROR: self-test — the guard rejected a populated transcript field."
+    return 1
+  fi
+  echo "OK: self-test — a declared and populated transcript field passes."
+  # The injected violation: the field is declared and nothing populates it.
+  cat > "$fixture/crates/codegg-core/src/projection_replay/agent_runs.rs" <<'EOF'
+pub fn populate(summary: &mut AgentRunSummary) {
+    let _ = summary;
+}
+EOF
+  if CODEGG_GUARD_ROOT="$fixture" "$0" >/dev/null 2>&1; then
+    echo "ERROR: self-test — the guard accepted a transcript field that is declared but never populated."
+    return 1
+  fi
+  echo "OK: self-test — a declared but unpopulated transcript field is rejected."
+  rm -rf "$fixture"
+  return 0
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit $?
+fi
+
+# ── 5. Declared-and-populated delegated run transcript ────────────────
+# The field's declaration.
+if ! rg -q "pub transcript: Option<AgentRunTranscriptProjection>" "$DTO" 2>/dev/null; then
+  echo "ERROR: $DTO does not declare the delegated run transcript field."
+  echo "  The transcript payload must be a declared field on the run DTO."
+  violations=1
+fi
+# Its population. The protocol crate may only *declare* it; a production
+# site outside the protocol crate must put a payload on a run summary.
+populate_matches=$(rg -n --type rust "\.transcript\s*=\s*Some\(" \
+  "$ROOT/src" "$ROOT/crates/codegg-core/src" 2>/dev/null || true)
+if [ -z "$populate_matches" ]; then
+  echo "ERROR: no production site populates the delegated run transcript field."
+  echo "  The field is declared but nothing puts a transcript on a run summary,"
+  echo "  so the tab would render an absent transcript for every run."
+  violations=1
+fi
 
 # ── 1. SafePublicationClass variant usage outside replay dir ──────────
 # SafePublicationClass is pub(crate) but the guard checks that

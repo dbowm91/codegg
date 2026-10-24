@@ -155,6 +155,27 @@ async fn create_durable_run(pool: &SqlitePool) -> AgentRunId {
         )
         .await
         .expect("create the delegated run");
+    let attempts = codegg_core::agent_run_attempt::SqliteAgentRunAttemptStore::new(pool.clone());
+    codegg_core::agent_run_attempt::AgentRunAttemptStore::append_attempt(
+        &attempts,
+        codegg_core::agent_run_attempt::NewAgentRunAttempt {
+            run_id: submission.run.run_id.clone(),
+            attempt_ordinal: 1,
+            event: codegg_core::agent_run_attempt::AgentRunAttemptEvent::Attempt,
+            attempt_kind: codegg_core::agent_run_attempt::AgentRunAttemptKind::Original,
+            continued_from_ordinal: None,
+            principal: "parent-session".into(),
+            principal_turn_id: "turn".into(),
+            authority_digest: "authority".into(),
+            transcript_digest: None,
+            failure_class: None,
+            ceiling_json: None,
+            outcome: None,
+            detail: None,
+        },
+    )
+    .await
+    .expect("record the delegated run's first attempt");
     submission.run.run_id
 }
 

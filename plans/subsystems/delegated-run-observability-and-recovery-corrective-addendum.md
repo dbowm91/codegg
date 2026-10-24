@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery — Corrective Addendum
 
-Status: active — ADR-0051 accepted (option B) on 2026-10-24; C001 and C002 closed; C003–C004 ready for handoff
+Status: closed — all four milestones closed on 2026-10-24; ADR-0051 accepted (option B) on 2026-10-24
 
 Planning baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before any code change.
 
@@ -195,7 +195,7 @@ Exit conditions: every denial case fails closed before any provider entry; the c
 
 - **D1 — the durable identity of a delegated transcript (ADR-0051).** **Decided 2026-10-24: option B**, accepted explicitly by the user. Options A (status quo) and C (a real `session` row reusing the message store) are rejected; C is rejected because it would change what the user's session catalog means. The decision gates C002, C003 and C004.
 - **D2 — the disposition of a delegated run's terminal notice.** Fixed to `NotifyOnly` in C001. `ResumeOwner` is **not** proposed for delegated runs and is not authorized by this addendum.
-- **D3 — the provider-failure retryability taxonomy.** Whether a provider or upstream failure should be classified `Retryability::RequiresRecovery` rather than `Retryable` is deferred to C004. It is a classification question, not an authority question, and ADR-0051 explicitly defers it.
+- **D3 — the provider-failure retryability taxonomy.** **Decided 2026-10-24 in C004**, and recorded in `crates/codegg-core/src/agent_run_attempt.rs:57` (`DelegatedFailureClass`): a provider authentication or authorization failure is **not** continuable (the continuation presents the same credentials, so an unchanged request refused for its credentials cannot succeed); a provider rate-limit or transient upstream failure, a deadline or budget exhaustion, and a tool-permission denial **are** continuable; a cancellation is **never** continuable; and an unrecognised failure class maps to `Unclassified`, which is **not** continuable — the classification fails closed. The classes come from the repository's own `ProviderError::error_class()`, so there is no second recogniser.
 - **D4 — the legacy, non-durable delegated path.** Whether it is retired, or given the same notification guarantee as the durable path, is out of scope here. C001 must state which path is live in production and must not claim a guarantee for a path it did not change.
 
 ## 11. Completion definition
@@ -208,5 +208,5 @@ This addendum is complete when C001–C004 each have an accepted closure record,
 |---|---|---|---|---|
 | C001 | **closed** | `plans/implementation/delegated-run-observability-and-recovery-corrective/001-the-orchestrator-always-hears-about-its-child.md` | `plans/closure/delegated-run-observability-and-recovery-corrective/001-status.md` | none — closed 2026-10-24 |
 | C002 | **closed** | `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md` | `plans/closure/delegated-run-observability-and-recovery-corrective/002-status.md` | none — closed 2026-10-24 |
-| C003 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/003-the-tui-renders-the-delegated-transcript.md` | — | none — C002 closed 2026-10-24 |
-| C004 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/004-a-delegated-run-can-be-continued.md` | — | none — C002 closed 2026-10-24 |
+| C003 | **closed** | `plans/implementation/delegated-run-observability-and-recovery-corrective/003-the-tui-renders-the-delegated-transcript.md` | `plans/closure/delegated-run-observability-and-recovery-corrective/003-status.md` | none — closed 2026-10-24 |
+| C004 | **closed** | `plans/implementation/delegated-run-observability-and-recovery-corrective/004-a-delegated-run-can-be-continued.md` | `plans/closure/delegated-run-observability-and-recovery-corrective/004-status.md` | none — closed 2026-10-24 |

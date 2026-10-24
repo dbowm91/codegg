@@ -1,6 +1,10 @@
 //! Daemon-side bridge between durable run control and a live `AgentLoop`.
 
 use codegg_core::agent_run::{AgentRunRecord, AgentRunStatus, AgentRunStore};
+use codegg_core::agent_run_attempt::{
+    AgentRunAttemptEvent, ContinuationRefusal, ContinuationState, DelegatedFailureClass,
+    CONTINUATION_AUTHORIZATION_TTL_MS,
+};
 use codegg_core::agent_run_control::{
     AgentRunControlKind, AgentRunControlStore, AgentRunJournalEvent, AgentRunJournalEventKind,
     AgentRunMailboxMessage, InMemoryAgentRunControlStore, MailboxState, NewControlMessage,
@@ -46,6 +50,43 @@ pub enum ControlOutcome {
         run: AgentRunRecord,
         timed_out: bool,
     },
+}
+
+/// The grant a continuation request earns once every denial case has been
+/// ruled out.
+///
+/// It carries no authority the requester did not already hold: the ceiling it
+/// names is the attempt's own, carried through unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContinuationGrant {
+    pub run_id: AgentRunId,
+    /// The ordinal the continuation creates.
+    pub attempt_ordinal: i64,
+    /// The terminal failure class the continuation continues from.
+    pub failure_class: DelegatedFailureClass,
+    /// The parent's ceiling digest, carried through unchanged.
+    pub authority_digest: String,
+    /// The attempt's ceiling: the payload the attempt ran under, verbatim.
+    pub ceiling_json: Option<String>,
+    /// The principal that spawned the run.
+    pub principal: String,
+    pub principal_turn_id: String,
+}
+
+/// What one reconciliation pass surfaced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContinuationReconciliation {
+    /// Continuations that were claimed but never dispatched. They are
+    /// surfaced, never replayed.
+    pub needs_attention: Vec<AgentRunId>,
+}
+
+/// The current wall clock in milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -215,6 +256,152 @@ impl RunControlService {
             }
         }
         Err(RunControlError::Unauthorized)
+    }
+
+    /// Rule every denial case out for a continuation request, before any
+    /// provider entry.
+    ///
+    /// The rule is [`Self::authorize`]'s, at the principal's granularity.
+    /// `authorize` binds a *turn* to a run, because a turn addresses a live
+    /// child. A continuation addresses a run whose turn has already ended —
+    /// the parent learns of the failure on a later turn — so the continuation
+    /// binds the **principal** that spawned the run: the actor's session must
+    /// be the task's originating session, or the actor must be the run's own
+    /// parent run for a nested delegation. The turn-level rule is untouched
+    /// and still governs `message`, `interrupt` and `cancel`.
+    pub async fn authorize_continuation(
+        &self,
+        actor: &ControlActor,
+        target: &AgentRunId,
+    ) -> Result<ContinuationGrant, ContinuationRefusal> {
+        let run = self
+            .runs
+            .get_run(target)
+            .await
+            .map_err(|error| ContinuationRefusal::Storage(error.to_string()))?
+            .ok_or(ContinuationRefusal::RunNotFound)?;
+        let task = self
+            .runs
+            .get_task(&run.task_id)
+            .await
+            .map_err(|error| ContinuationRefusal::Storage(error.to_string()))?
+            .ok_or(ContinuationRefusal::RunNotFound)?;
+
+        // The parent must still be there. A nested delegation whose parent run
+        // is gone has nobody left holding its authority.
+        if let Some(parent) = run.parent_run_id.as_ref() {
+            let parent_run = self
+                .runs
+                .get_run(parent)
+                .await
+                .map_err(|error| ContinuationRefusal::Storage(error.to_string()))?;
+            if parent_run.is_none() {
+                return Err(ContinuationRefusal::NoLiveParent);
+            }
+        }
+
+        // The spawning principal, and only it.
+        let session_principal = actor
+            .session_id
+            .as_deref()
+            .is_some_and(|session| task.originating_session_id == session)
+            && run.parent_run_id.is_none();
+        let parent_principal = actor
+            .run_id
+            .as_ref()
+            .is_some_and(|actor_run| run.parent_run_id.as_ref() == Some(actor_run))
+            && run.run_id != *actor.run_id.as_ref().unwrap();
+        if !session_principal && !parent_principal {
+            return Err(ContinuationRefusal::WrongPrincipal);
+        }
+
+        // The run's own terminal state.
+        if run.cancellation_requested || run.status == AgentRunStatus::Cancelled {
+            return Err(ContinuationRefusal::RunCancelled);
+        }
+        if !run.status.is_terminal() {
+            return Err(ContinuationRefusal::NotTerminal);
+        }
+        if run.status != AgentRunStatus::Failed {
+            // The run reached a different terminal outcome, so the failure the
+            // caller wants to continue is stale.
+            return Err(ContinuationRefusal::RunSuperseded);
+        }
+
+        // The authorization's own bound.
+        let finished_at = run.finished_at.unwrap_or(run.updated_at);
+        if now_ms() > finished_at.saturating_add(CONTINUATION_AUTHORIZATION_TTL_MS) {
+            return Err(ContinuationRefusal::AuthorizationExpired);
+        }
+
+        // The recorded continuability decision.
+        let failure_class = DelegatedFailureClass::classify(run.failure_class.as_deref());
+        if !failure_class.is_continuable() {
+            return Err(ContinuationRefusal::NotContinuable(failure_class));
+        }
+
+        // The attempt's ceiling: the payload the attempt ran under, carried
+        // through unchanged.
+        let attempts = self
+            .runs
+            .attempt_store()
+            .await
+            .attempts(target)
+            .await
+            .map_err(|error| ContinuationRefusal::Storage(error.to_string()))?;
+        let latest = attempts
+            .iter()
+            .rev()
+            .find(|row| row.event == AgentRunAttemptEvent::Attempt);
+        let attempt_ordinal = latest.map(|row| row.attempt_ordinal).unwrap_or(1) + 1;
+        Ok(ContinuationGrant {
+            run_id: run.run_id.clone(),
+            attempt_ordinal,
+            failure_class,
+            authority_digest: run.authority_digest.clone(),
+            ceiling_json: latest.and_then(|row| row.ceiling_json.clone()),
+            principal: task.originating_session_id.clone(),
+            principal_turn_id: task.originating_turn_id.clone().unwrap_or_default(),
+        })
+    }
+
+    /// Surface the continuations that were claimed but never dispatched.
+    ///
+    /// A crash between the claim and the dispatch leaves the continuation
+    /// claimed. It is surfaced as needing attention and **never** replayed:
+    /// the attempt bound is one per terminal failure, and a replay would be a
+    /// second attempt the parent never authorized.
+    pub async fn reconcile_continuations(
+        &self,
+        grace_ms: i64,
+    ) -> Result<ContinuationReconciliation, RunControlError> {
+        let store = self.runs.attempt_store().await;
+        let claimed = store
+            .continuations()
+            .await
+            .map_err(|error| RunControlError::RunStore(error.to_string()))?;
+        let now = now_ms();
+        let mut report = ContinuationReconciliation::default();
+        for record in claimed {
+            if record.state != ContinuationState::Claimed {
+                continue;
+            }
+            if now.saturating_sub(record.created_at) < grace_ms {
+                continue;
+            }
+            let marked = store
+                .mark_needs_attention(
+                    &record.run_id,
+                    record.attempt_ordinal,
+                    "the continuation was claimed but never dispatched",
+                )
+                .await
+                .map_err(|error| RunControlError::RunStore(error.to_string()))?;
+            if marked {
+                report.needs_attention.push(record.run_id.clone());
+            }
+        }
+        Ok(report)
     }
 
     pub async fn send(

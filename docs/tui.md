@@ -882,11 +882,38 @@ to fit, and is dropped rather than squeezed to a stub when nothing is left. A
 row too narrow for the persona still shows every tab label it can.
 
 A subagent tab shows that subagent's **run view** — its task, the agent's own
-description of itself, its canonical ids, and whether the run is still live. It
-is not a transcript: the projection carries no conversation for a delegated
-run, so there is nothing to replay. The tab **replaces** the main conversation
-in the buffer rather than floating over it, so the two are never legible at
-the same time, and the tab's own row is filled rather than transparent.
+description of itself, its canonical ids, whether the run is still live, and
+**the conversation the delegated run actually had**. The transcript is the
+durable record the daemon kept of the child's own messages and tool calls, in
+the order they happened, and it is rendered beneath the run's identity and
+status: the metadata is retained, because a conversation without the run it
+belongs to is a wall of text.
+
+The tab **replaces** the main conversation in the buffer rather than floating
+over it, so the two are never legible at the same time, and the tab's own row
+is filled rather than transparent.
+
+The transcript comes in three shapes, and the tab says which one it is
+looking at — a tab that showed an empty pane for a run with no transcript
+would read as "the child did nothing", which is a claim the system does not
+know:
+
+| State | What the tab says |
+| --- | --- |
+| **complete** | `complete · N entries` — everything that was recorded is here |
+| **truncated** | `truncated · showing N of M recorded entries`, plus the ordinal the next entry would carry, plus a note when the run's own recording stopped at the store's per-run bound |
+| **absent** | `No transcript was recorded for this run.` — nothing was captured, and the tab says why that is not the same as an empty conversation |
+
+A transcript longer than the window is scrollable (`PageUp`/`PageDown` and the
+viewport keys scroll the tab while it is open), and the tab says how many
+lines are below the fold rather than showing the first rows as though they
+were all of them. A tool call renders as a tool call and a tool result as a
+tool result, and a large tool output is cut at the display bound with the
+number of bytes left out stated on screen.
+
+The transcript is read when the tab opens — a boundary read, not a poll — so
+opening a tab on a run that is still working shows what has been recorded so
+far, and reopening it shows the later rows.
 
 Closing it cancels nothing — the run keeps going whether or not you are
 watching it. When a run drops out of the projection the tab stays open and

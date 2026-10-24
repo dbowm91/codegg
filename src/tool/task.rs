@@ -423,6 +423,13 @@ pub struct TaskTool {
     /// notice row is the authoritative channel for the child's terminal
     /// state — the in-band push is only a fast path.
     job_notifications: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    /// The durable delegated-run transcript (ADR-0051, C002).
+    ///
+    /// A continuation seeds its child from the transcript **as it was
+    /// recorded**: the rows are read back from this store, never rebuilt from
+    /// a live in-memory channel, and their redaction is re-verified before
+    /// they may be seeded.
+    transcript_store: Option<Arc<dyn codegg_core::agent_run_transcript::AgentRunTranscriptStore>>,
 }
 
 /// Explicit owner of orchestration operations. A root turn owns its direct
@@ -1017,6 +1024,7 @@ impl TaskTool {
             orchestration_config: Default::default(),
             writer_fence: None,
             job_notifications: None,
+            transcript_store: None,
         }
     }
 
@@ -1051,6 +1059,7 @@ impl TaskTool {
             orchestration_config: Default::default(),
             writer_fence: None,
             job_notifications: None,
+            transcript_store: None,
         }
     }
 
@@ -1100,6 +1109,15 @@ impl TaskTool {
 
     pub fn with_run_control_opt(mut self, service: Option<Arc<RunControlService>>) -> Self {
         self.run_control = service;
+        self
+    }
+
+    /// The durable delegated-run transcript a continuation seeds from.
+    pub fn with_transcript_store(
+        mut self,
+        store: Option<Arc<dyn codegg_core::agent_run_transcript::AgentRunTranscriptStore>>,
+    ) -> Self {
+        self.transcript_store = store;
         self
     }
 
@@ -1470,7 +1488,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1479,8 +1497,8 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id.",
-                    "enum": ["scratch_create", "scratch_revoke", "spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
+                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; continue starts one new attempt of a failed durable child through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id.",
+                    "enum": ["scratch_create", "scratch_revoke", "spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "continue", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
                 },
                 "scratch_alias": { "type": "string", "maxLength": 32, "description": "Bounded env-safe name for a parent-owned shared scratch resource (action=scratch_create)" },
                 "scratch_id": { "type": "string", "description": "Opaque ScratchId, never a path (action=scratch_revoke or spawn shared_scratch)" },
@@ -1617,6 +1635,374 @@ impl Tool for TaskTool {
         let output = self.execute_with_context(input, ctx.as_ref()).await?;
         Ok(StructuredToolResult::legacy(self.name(), output))
     }
+}
+
+impl TaskTool {
+    /// Continue a delegated run that failed with a continuable failure.
+    ///
+    /// The flow is the plan's, in order, and every step is decided before any
+    /// provider entry: resolve, authorize, classify, claim, read back, seed
+    /// and dispatch. A refusal at any step is a typed reason, and the run's
+    /// one continuation is not consumed by a refusal.
+    async fn continue_delegated_run(
+        &self,
+        input: &serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
+        use codegg_core::agent_run_attempt::{
+            build_seeded_context, reverify_transcript_row, transcript_digest, AgentRunAttemptEvent,
+            AgentRunAttemptKind, ContinuationClaimOutcome, ContinuationRefusal, NewAgentRunAttempt,
+            NewContinuationClaim,
+        };
+        use codegg_core::agent_run_transcript::{
+            AgentRunTranscriptRead, MAX_TRANSCRIPT_READ_LIMIT,
+        };
+
+        let Some(control) = self.run_control.clone() else {
+            return Err(ToolError::Execution(
+                "durable run control is unavailable".into(),
+            ));
+        };
+        let Some(agent_runs) = self.agent_runs.clone() else {
+            return Err(ToolError::Execution(
+                "durable agent run store is unavailable".into(),
+            ));
+        };
+        let Some(transcript_store) = self.transcript_store.clone() else {
+            return Err(ToolError::Execution(
+                "the durable delegated transcript is unavailable".into(),
+            ));
+        };
+        let raw_run_id = input["run_id"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("missing 'run_id' parameter".into()))?;
+        let run_id = AgentRunId::parse(raw_run_id)
+            .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?;
+        let actor = ControlActor {
+            session_id: self.parent_session_id.clone(),
+            run_id: self.parent_run_id.clone(),
+            turn_id: self.parent_turn_id.clone(),
+        };
+
+        // 1-5. Resolve, authorize, classify. Every denial case is decided
+        // here, before any provider entry.
+        let grant = match control.authorize_continuation(&actor, &run_id).await {
+            Ok(grant) => grant,
+            Err(refusal) => return Ok(format_continuation_refusal(&run_id, &refusal)),
+        };
+        let attempt_store = agent_runs.attempt_store().await;
+
+        // 6. Claim. The compare-and-swap decides exactly one winner: a
+        // duplicate request is refused, never replayed.
+        let claim = NewContinuationClaim {
+            run_id: run_id.clone(),
+            attempt_ordinal: grant.attempt_ordinal,
+            attempt_kind: AgentRunAttemptKind::Continuation,
+            continued_from_ordinal: Some(grant.attempt_ordinal - 1),
+            principal: grant.principal.clone(),
+            principal_turn_id: grant.principal_turn_id.clone(),
+            authority_digest: grant.authority_digest.clone(),
+            transcript_digest: None,
+            failure_class: grant.failure_class,
+        };
+        match attempt_store.claim_continuation(claim).await {
+            Ok(ContinuationClaimOutcome::Claimed(_)) => {}
+            Ok(ContinuationClaimOutcome::AlreadyClaimed(_)) => {
+                return Ok(format_continuation_refusal(
+                    &run_id,
+                    &ContinuationRefusal::AlreadyContinued,
+                ));
+            }
+            Err(codegg_core::agent_run_attempt::AgentRunAttemptError::AlreadyClaimed) => {
+                return Ok(format_continuation_refusal(
+                    &run_id,
+                    &ContinuationRefusal::AlreadyContinued,
+                ));
+            }
+            Err(error) => return Err(ToolError::Execution(error.to_string())),
+        }
+        let release = {
+            let run_id = run_id.clone();
+            let ordinal = grant.attempt_ordinal;
+            let store = attempt_store.clone();
+            move || {
+                let run_id = run_id.clone();
+                let store = store.clone();
+                async move {
+                    let _ = store.release_claim(&run_id, ordinal).await;
+                }
+            }
+        };
+
+        // 7. Read back the recorded transcript and re-verify its redaction.
+        // The seeded context is exactly what the store holds.
+        let read = match transcript_store
+            .read(&run_id, 0, MAX_TRANSCRIPT_READ_LIMIT)
+            .await
+        {
+            Ok(read) => read,
+            Err(error) => {
+                release().await;
+                return Err(ToolError::Execution(format!(
+                    "the delegated transcript could not be read back: {error}"
+                )));
+            }
+        };
+        let page = match read {
+            AgentRunTranscriptRead::Present(page) => page,
+            AgentRunTranscriptRead::Absent => {
+                release().await;
+                return Ok(format_continuation_refusal(
+                    &run_id,
+                    &ContinuationRefusal::TranscriptAbsent,
+                ));
+            }
+        };
+        for entry in &page.entries {
+            if reverify_transcript_row(entry.kind, &entry.redacted_body).is_err() {
+                release().await;
+                return Ok(format_continuation_refusal(
+                    &run_id,
+                    &ContinuationRefusal::TranscriptUnverified,
+                ));
+            }
+        }
+        let seeded_context = build_seeded_context(&page);
+        let digest = transcript_digest(&page.entries);
+
+        // 8. The ceiling: the attempt's own payload, carried through
+        // unchanged. A continuation may narrow it; it may never widen it.
+        let Some(ceiling_json) = grant.ceiling_json.clone() else {
+            release().await;
+            return Ok(format_continuation_refusal(
+                &run_id,
+                &ContinuationRefusal::CeilingUnavailable,
+            ));
+        };
+        let payload: codegg_core::jobs::JobPayload =
+            serde_json::from_str(&ceiling_json).map_err(|error| {
+                ToolError::Execution(format!("the attempt's ceiling is unreadable: {error}"))
+            })?;
+        let recorded_paths = match &payload {
+            codegg_core::jobs::JobPayload::SubagentRun { allowed_paths, .. } => {
+                allowed_paths.clone()
+            }
+            _ => {
+                release().await;
+                return Err(ToolError::Execution(
+                    "the attempt's ceiling is not a delegated run's payload".into(),
+                ));
+            }
+        };
+        if let Some(requested) = input["allowed_paths"].as_array() {
+            for path in requested {
+                let path = path.as_str().unwrap_or_default();
+                let within = recorded_paths.iter().any(|allowed| {
+                    path == allowed
+                        || path
+                            .strip_prefix(allowed.as_str())
+                            .is_some_and(|rest| rest.starts_with('/'))
+                });
+                if !within {
+                    release().await;
+                    return Ok(format_continuation_refusal(
+                        &run_id,
+                        &ContinuationRefusal::CeilingWidened,
+                    ));
+                }
+            }
+        }
+
+        // The continuation's own delegation key: a new attempt of the same
+        // run, not a second submission of the first attempt.
+        let continuation_key = format!(
+            "{}#continue#{}",
+            delegation_key_of(&payload)?,
+            grant.attempt_ordinal
+        );
+        let payload = continuation_payload(payload, continuation_key.clone())
+            .ok_or_else(|| ToolError::Execution("the attempt's ceiling is unreadable".into()))?;
+
+        // The attempt's record. It is written before the dispatch so the
+        // attempt's own provenance is durable before the attempt can run.
+        let attempt = NewAgentRunAttempt {
+            run_id: run_id.clone(),
+            attempt_ordinal: grant.attempt_ordinal,
+            event: AgentRunAttemptEvent::Attempt,
+            attempt_kind: AgentRunAttemptKind::Continuation,
+            continued_from_ordinal: Some(grant.attempt_ordinal - 1),
+            principal: grant.principal.clone(),
+            principal_turn_id: grant.principal_turn_id.clone(),
+            authority_digest: grant.authority_digest.clone(),
+            transcript_digest: Some(digest),
+            failure_class: Some(grant.failure_class),
+            ceiling_json: Some(ceiling_json),
+            outcome: None,
+            detail: None,
+        };
+        if let Err(error) = attempt_store.append_attempt(attempt).await {
+            release().await;
+            return Err(ToolError::Execution(format!(
+                "the delegated run's attempt could not be recorded: {error}"
+            )));
+        }
+
+        // 9. Seed and dispatch: a new attempt under the parent's authority.
+        let Some(submission) = self.submission.clone() else {
+            release().await;
+            return Err(ToolError::Execution(
+                "the durable job submission path is unavailable".into(),
+            ));
+        };
+        let run = agent_runs
+            .get_run(&run_id)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?
+            .ok_or_else(|| ToolError::Execution("the delegated run does not exist".into()))?;
+        let key = crate::scheduler::SubmissionKey::new(continuation_key.clone())
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let submitted = submission
+            .submit(
+                Some(key),
+                codegg_core::jobs::NewJob {
+                    workspace_id: run.workspace_id.clone(),
+                    session_id: self.parent_session_id.clone(),
+                    turn_id: self.parent_turn_id.clone(),
+                    kind: codegg_core::jobs::JobKind::Subagent,
+                    source: codegg_core::jobs::JobSource::AgentDelegated,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload,
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Subagent,
+                    ),
+                    timeout: None,
+                    // A continuation is an explicitly authorized new attempt of
+                    // the same run, not the scheduler retrying a `no_retry`
+                    // job. The delegated job's retry policy and idempotency
+                    // class are unchanged by it.
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                    target: ExecutionTarget::default(),
+                },
+            )
+            .await;
+        let submitted = match submitted {
+            Ok(submitted) => submitted,
+            Err(error) => {
+                release().await;
+                return Err(ToolError::Execution(format!(
+                    "the continuation could not be dispatched: {error}"
+                )));
+            }
+        };
+        let _ = attempt_store
+            .mark_dispatched(&run_id, grant.attempt_ordinal)
+            .await;
+        let _ = agent_runs
+            .attach_job(&run_id, submitted.job_id.clone())
+            .await;
+        // The continuation's outcome arrives on the **same** durable notice
+        // channel the first attempt's outcome arrived on: the dispatched job
+        // subscribes for its own terminal notice, keyed by the continuation's
+        // own invocation key. No second channel is created.
+        self.subscribe_delegated_notice(
+            &submitted.job_id,
+            &continuation_key,
+            &run.workspace_id,
+            ctx,
+        )
+        .await?;
+        Ok(format_continuation_accepted(
+            &run_id,
+            grant.attempt_ordinal,
+            page.entries.len(),
+            seeded_context.len(),
+        ))
+    }
+}
+
+/// The delegation key a delegated run's payload carries.
+fn delegation_key_of(payload: &codegg_core::jobs::JobPayload) -> Result<String, ToolError> {
+    match payload {
+        codegg_core::jobs::JobPayload::SubagentRun { delegation_key, .. } => {
+            Ok(delegation_key.clone())
+        }
+        _ => Err(ToolError::Execution(
+            "the attempt's ceiling is not a delegated run's payload".into(),
+        )),
+    }
+}
+
+/// The payload a continuation runs under: the attempt's own payload, with
+/// only the delegation key changed.
+fn continuation_payload(
+    payload: codegg_core::jobs::JobPayload,
+    delegation_key: String,
+) -> Option<codegg_core::jobs::JobPayload> {
+    match payload {
+        codegg_core::jobs::JobPayload::SubagentRun {
+            prompt,
+            agent,
+            model,
+            parent_id,
+            denied_tools,
+            allowed_paths,
+            max_tool_calls,
+            task_id,
+            run_id,
+            base_commit,
+            placement,
+            ..
+        } => Some(codegg_core::jobs::JobPayload::SubagentRun {
+            prompt,
+            agent,
+            model,
+            parent_id,
+            denied_tools,
+            allowed_paths,
+            max_tool_calls,
+            task_id,
+            run_id,
+            delegation_key,
+            base_commit,
+            placement,
+        }),
+        _ => None,
+    }
+}
+
+/// A continuation's refusal: the run, and the typed reason.
+fn format_continuation_refusal(
+    run_id: &AgentRunId,
+    refusal: &codegg_core::agent_run_attempt::ContinuationRefusal,
+) -> String {
+    format!(
+        "Continuation refused\nRun: {run_id}\nReason: {}: {refusal}",
+        refusal.code()
+    )
+}
+
+/// A continuation's acceptance: the run, the attempt, and what was seeded.
+fn format_continuation_accepted(
+    run_id: &AgentRunId,
+    attempt_ordinal: i64,
+    entries: usize,
+    context_bytes: usize,
+) -> String {
+    format!(
+        "Continuation accepted\nRun: {run_id}\nAttempt: {attempt_ordinal}\nSeeded context: \
+         {entries} transcript entries ({context_bytes} bytes)"
+    )
 }
 
 impl TaskTool {
@@ -2025,6 +2411,10 @@ impl TaskTool {
             }
             .map_err(|e| ToolError::Execution(e.to_string()))?;
             return Ok(format_control_outcome(outcome));
+        }
+
+        if action == "continue" {
+            return self.continue_delegated_run(&input, ctx).await;
         }
 
         if action == "get" {

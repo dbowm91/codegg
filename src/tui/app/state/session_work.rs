@@ -99,6 +99,9 @@ pub fn select_session_work(snapshot: &SessionProjectionSnapshot) -> Vec<SessionW
             agent: node.agent.clone(),
             description: node.description.clone(),
             status: status.clone(),
+            // The per-turn agent tree carries no transcript; the durable run
+            // summary does, and the merge below fills it in.
+            transcript: None,
         };
         if let Some(run_id) = node.run_id.as_ref() {
             source_runs.insert(run_id.clone());
@@ -138,6 +141,13 @@ pub fn select_session_work(snapshot: &SessionProjectionSnapshot) -> Vec<SessionW
                 if let Some(progress) = run.progress.as_ref() {
                     child.description.clone_from(progress);
                 }
+                // The durable run summary is the only carrier of the
+                // transcript, so it is what fills the row in. A run summary
+                // without one must not erase a transcript the row already
+                // holds.
+                if run.transcript.is_some() {
+                    child.transcript.clone_from(&run.transcript);
+                }
             }
             continue;
         }
@@ -159,6 +169,7 @@ pub fn select_session_work(snapshot: &SessionProjectionSnapshot) -> Vec<SessionW
             agent: run.agent.clone(),
             description: summary.clone(),
             status: run.status.clone(),
+            transcript: run.transcript.clone(),
         };
         rows.push(SessionWorkRow {
             key: format!("run:{}", run.run_id),
@@ -321,6 +332,7 @@ mod tests {
             progress: Some("run progress".into()),
             failure_class: None,
             updated_at: 2,
+            transcript: None,
         });
         snapshot.jobs.push_back(JobProjection {
             job_id: "job-child".into(),

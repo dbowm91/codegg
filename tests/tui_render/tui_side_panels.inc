@@ -811,6 +811,7 @@ fn seed_subagent(
     app.sidebar
         .set_subagents(vec![sidebar_subagent(task_id, name, agent, status)]);
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        transcript: None,
         child_instance_id: Some(task_id.to_string()),
         task_id: task_id.to_string(),
         run_id: None,

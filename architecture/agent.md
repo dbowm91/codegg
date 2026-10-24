@@ -724,7 +724,108 @@ The guarantee is scoped to the **durable delegated path** — the daemon's
 (`src/agent/worker.rs`, `JobPayload::Subagent`) has no push at all and no
 durable notice; it is unchanged by this milestone.
 
-### Durable convergence foundation
+#### Continuing a delegated run
+
+A delegated run that failed with a **continuable** failure may be continued by
+the principal that spawned it. ADR-0051 §4 fixes the authority: the spawning
+principal only, under the parent's own authority and ceiling, **one**
+continuation per terminal failure, a new attempt of the same `run_id`, and no
+provider entry before the recorded transcript has been read back and its
+redaction re-verified.
+
+`task action=continue` is the model's way in. The tool's description states
+the capability, the bound, and when it is warranted.
+
+The flow is decided in order, and every step is decided **before** any
+provider entry:
+
+1. **Resolve** the run and read its terminal outcome and its parent.
+2. **Authorize** the actor. `RunControlService::authorize_continuation`
+   (`src/agent/run_control.rs`) reuses `authorize`'s rule at the *principal's*
+   granularity: `authorize` binds a **turn** to a run, because a turn
+   addresses a live child, while a continuation addresses a run whose turn has
+   already ended — the parent learns of the failure on a later turn. The
+   continuation therefore binds the **session** that spawned the run (or, for a
+   nested delegation, the run's own parent run). The turn-level rule is
+   untouched and still governs `message`, `interrupt` and `cancel`.
+3. **Classify** the terminal failure against the recorded continuability
+   decision (§"The recorded continuability decision" below).
+4. **Claim** the continuation. The claim is a compare-and-swap on the
+   continuation authorization's unique key: exactly one request wins, and
+   every other request is told it lost. A duplicate request is **refused,
+   never replayed**.
+5. **Read back** the recorded transcript and **re-verify** its redaction. The
+   seeded context is exactly what the store holds; a row that fails
+   re-verification is refused rather than seeded.
+6. **Seed and dispatch** a new attempt under the parent's authority, with the
+   attempt ordinal incremented.
+
+Every refusal is a typed reason (`ContinuationRefusal`): `run_not_found`,
+`not_terminal`, `no_live_parent`, `wrong_principal`, `run_cancelled`,
+`run_superseded`, `authorization_expired`, `already_continued`,
+`not_continuable`, `transcript_absent`, `transcript_unverified`,
+`ceiling_widened`, `ceiling_unavailable`. The action's answer states the run,
+the attempt ordinal, whether the continuation was accepted or refused, and —
+when refused — the typed reason.
+
+A refusal does not consume the run's one continuation: the claim is released
+when the refusal happens before any dispatch.
+
+##### The recorded continuability decision
+
+ADR-0051 deferred the provider-failure retryability taxonomy to this
+milestone. The decision is recorded explicitly, per class, in
+`codegg_core::agent_run_attempt::DelegatedFailureClass`. It is **not** a
+generic bucket, and an unrecognised class is not continuable — the
+classification fails closed.
+
+| class | continuable | reason |
+| --- | --- | --- |
+| `provider_authentication` | no | the continuation carries the parent's authority unchanged, so it presents the same credentials; retrying an unchanged request that was refused for its credentials cannot succeed |
+| `provider_rate_limit` | yes | throttling is transient by the provider taxonomy the repository already owns, and a later attempt is a different moment |
+| `provider_transient` | yes | a 5xx, a transport error or an interrupted stream is transient one level up, by the same taxonomy |
+| `deadline_exceeded` | yes | a fresh attempt gets a fresh deadline; the work itself is unchanged |
+| `budget_exhausted` | yes | a fresh attempt gets a fresh budget |
+| `tool_permission_denied` | yes | the parent's own tool policy is carried through unchanged, so the continuation is the parent's chance to re-dispatch with authority the child could use |
+| `cancelled` | no | a cancellation is a decision, not a failure |
+| `unclassified` | no | an unrecognised failure is not assumed recoverable |
+
+The provider classes are produced by the repository's **own** provider
+taxonomy (`ProviderError::error_class()`), so a second recogniser is not
+invented. `AppError::Provider`, `AppError::Cancelled` and the permission
+errors are what the child's terminal error is classified against.
+
+##### The ceiling is carried through unchanged
+
+The continuation's job payload is the attempt's own payload, read back from
+the attempt record, with only the delegation key changed. The parent's
+`denied_tools`, `allowed_paths`, model, sandbox profile and worktree ceiling
+are therefore byte-identical: a continuation cannot widen them. The
+`continue` action accepts an optional `allowed_paths` that may only *narrow*
+the recorded ceiling; anything wider is refused with `ceiling_widened`.
+
+The delegated job's own admission is unchanged: a continuation is an
+explicitly authorized new attempt, **not** the scheduler retrying a
+`no_retry` job, so the job keeps `RetryPolicy::no_retry()` and
+`IdempotencyClass::NonIdempotent`.
+
+##### The continuation's outcome arrives on the same channel
+
+The continuation dispatches through the ordinary submission path, and the
+dispatched job subscribes for its own durable terminal notice with the same
+service and the same kind token the first attempt's job used. The parent's
+existing drain (`src/agent/follow_up.rs`) therefore picks the continuation's
+outcome up. **No second notification channel is created.**
+
+##### Crash safety
+
+A crash between the claim and the dispatch leaves the continuation claimed and
+not dispatched. `RunControlService::reconcile_continuations` surfaces it as
+`needs_attention` — it is **never** replayed, because the attempt bound is one
+per terminal failure and a replay would be a second attempt the parent never
+authorized.
+
+
 
 `codegg_core::agent_convergence` owns the bounded, host-side lifecycle for a
 produce/verify convergence request. `ConvergenceRecord` persists the exact

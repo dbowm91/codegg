@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery Corrective Milestone 004 — A Delegated Run Can Be Continued
 
-Status: ready for handoff
+Status: closed
 
 Repository baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before editing.
 

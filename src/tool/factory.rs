@@ -392,7 +392,20 @@ pub fn build_session_tool_registry(
                 // The durable notifier: a delegated run subscribes for its own
                 // terminal notice, so the orchestrator hears about the child even
                 // when its turn has already ended.
-                .with_job_notifications(job_notification_service.clone());
+                .with_job_notifications(job_notification_service.clone())
+                // The durable delegated transcript: a continuation seeds its
+                // child from the transcript as it was recorded, so the tool
+                // needs to read the store back.
+                .with_transcript_store(pool.as_ref().map(|pool| {
+                    std::sync::Arc::new(
+                        codegg_core::agent_run_transcript::SqliteAgentRunTranscriptStore::new(
+                            pool.clone(),
+                        ),
+                    )
+                        as std::sync::Arc<
+                            dyn codegg_core::agent_run_transcript::AgentRunTranscriptStore,
+                        >
+                }));
         tool_registry.register(task_tool);
     }
 

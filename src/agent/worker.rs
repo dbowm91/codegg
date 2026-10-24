@@ -81,6 +81,21 @@ impl SubAgentReport {
     }
 }
 
+/// The provenance of a delegated run's attempt.
+///
+/// A durable delegated run reaches a provider entry only as the run's
+/// original attempt or as a claimed continuation of a terminal failure. The
+/// provenance is resolved from the run's attempt record, so a dispatch that
+/// carries neither cannot be told apart from an authorized attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegatedAttemptProvenance {
+    /// The run's first attempt.
+    Original,
+    /// A claimed continuation: a new attempt of the same run, seeded from the
+    /// run's recorded transcript.
+    Continuation,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubAgentRequest {
     pub task_id: u64,
@@ -188,6 +203,9 @@ pub struct SubAgentResult {
     pub report: Option<SubAgentReport>,
     pub validation: Vec<codegg_core::run_result::ValidationEvidence>,
     pub artifacts: Vec<codegg_core::run_result::AgentRunArtifact>,
+    /// The classified failure class, when the run failed with a recognised
+    /// one. It is what the continuability decision is made against.
+    pub failure_class: Option<String>,
 }
 
 impl SubAgentResult {
@@ -199,6 +217,7 @@ impl SubAgentResult {
             report: None,
             validation: Vec::new(),
             artifacts: Vec::new(),
+            failure_class: None,
         }
     }
 
@@ -210,6 +229,7 @@ impl SubAgentResult {
             report: Some(report),
             validation: Vec::new(),
             artifacts: Vec::new(),
+            failure_class: None,
         }
     }
 
@@ -221,6 +241,20 @@ impl SubAgentResult {
             report: None,
             validation: Vec::new(),
             artifacts: Vec::new(),
+            failure_class: None,
+        }
+    }
+
+    /// A failure with the class its terminal error named.
+    pub fn failure_with_class(task_id: u64, error: String, failure_class: Option<String>) -> Self {
+        Self {
+            task_id,
+            success: false,
+            result: error,
+            report: None,
+            validation: Vec::new(),
+            artifacts: Vec::new(),
+            failure_class,
         }
     }
 }
@@ -1049,6 +1083,127 @@ async fn capture_transcript(
     }
 }
 
+/// The attempt store a durable delegated run's provenance is read from.
+fn delegated_attempt_store(
+    pool: Option<&SqlitePool>,
+) -> Option<Arc<dyn codegg_core::agent_run_attempt::AgentRunAttemptStore>> {
+    pool.map(|pool| {
+        Arc::new(codegg_core::agent_run_attempt::SqliteAgentRunAttemptStore::new(pool.clone()))
+            as Arc<dyn codegg_core::agent_run_attempt::AgentRunAttemptStore>
+    })
+}
+
+/// The provenance of a delegated run's attempt, read from the run's attempt
+/// record.
+///
+/// A durable delegated run reaches a provider entry only as the run's original
+/// attempt or as a claimed continuation. The attempt record is where that is
+/// decided, so a run with no attempt record has no authorized attempt.
+async fn delegated_attempt_provenance(
+    store: Option<&Arc<dyn codegg_core::agent_run_attempt::AgentRunAttemptStore>>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+) -> Result<Option<DelegatedAttemptProvenance>, String> {
+    let (Some(store), Some(run_id)) = (store, run_id) else {
+        return Ok(None);
+    };
+    let rows = store.attempts(run_id).await.map_err(|error| {
+        format!("the delegated run's attempt record could not be read: {error}")
+    })?;
+    let latest = rows
+        .iter()
+        .rev()
+        .find(|row| row.event == codegg_core::agent_run_attempt::AgentRunAttemptEvent::Attempt)
+        .ok_or_else(|| {
+            "the delegated run has no attempt record, so it may not reach a provider entry"
+                .to_string()
+        })?;
+    Ok(Some(match latest.attempt_kind {
+        codegg_core::agent_run_attempt::AgentRunAttemptKind::Original => {
+            DelegatedAttemptProvenance::Original
+        }
+        codegg_core::agent_run_attempt::AgentRunAttemptKind::Continuation => {
+            DelegatedAttemptProvenance::Continuation
+        }
+    }))
+}
+
+/// Read back the recorded transcript and re-verify its redaction.
+///
+/// The seeded context of a continuation is **exactly** what the store holds:
+/// the rows are read back from the store, never reconstructed from a live
+/// in-memory channel, and every row is re-verified with the repository's own
+/// recogniser before it may be seeded. A row that fails re-verification is
+/// refused rather than seeded.
+async fn seed_delegated_context(
+    store: Option<&Arc<dyn AgentRunTranscriptStore>>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+    provenance: Option<DelegatedAttemptProvenance>,
+) -> Result<Option<String>, String> {
+    let (Some(store), Some(run_id)) = (store, run_id) else {
+        return Ok(None);
+    };
+    let read = store
+        .read(
+            run_id,
+            0,
+            codegg_core::agent_run_transcript::MAX_TRANSCRIPT_READ_LIMIT,
+        )
+        .await
+        .map_err(|error| format!("the delegated transcript could not be read back: {error}"))?;
+    let page = match read {
+        codegg_core::agent_run_transcript::AgentRunTranscriptRead::Absent => {
+            // A run with no recorded transcript has nothing to seed. A
+            // continuation must never start from nothing and present itself
+            // as a continuation.
+            if provenance == Some(DelegatedAttemptProvenance::Continuation) {
+                return Err(
+                    "the delegated run has no recorded transcript, so the continuation is refused"
+                        .to_string(),
+                );
+            }
+            return Ok(None);
+        }
+        codegg_core::agent_run_transcript::AgentRunTranscriptRead::Present(page) => page,
+    };
+    for entry in &page.entries {
+        codegg_core::agent_run_attempt::reverify_transcript_row(entry.kind, &entry.redacted_body)
+            .map_err(|error| {
+            format!(
+                "a stored transcript row failed redaction re-verification ({error:?}) and is \
+                     refused rather than seeded"
+            )
+        })?;
+    }
+    Ok(Some(codegg_core::agent_run_attempt::build_seeded_context(
+        &page,
+    )))
+}
+
+/// The failure class a delegated child's terminal error names.
+///
+/// The classification uses the repository's own provider taxonomy, so a
+/// provider authentication failure and a provider rate limit are told apart
+/// without a second recogniser. `None` means the failure has no recognised
+/// class, which the continuability decision treats as not continuable.
+pub fn classify_delegated_failure(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<&'static str> {
+    use codegg_core::error::{AppError, ToolError};
+    match error.downcast_ref::<AppError>()? {
+        AppError::Provider(provider) => Some(match provider.error_class() {
+            "auth" => "provider_authentication",
+            "rate_limit" => "provider_rate_limit",
+            "timeout" | "server" | "stream_interrupted" | "connect" | "tls" | "io" | "hyper"
+            | "pool" | "transport" | "proxy_connect" => "provider_transient",
+            _ => return None,
+        }),
+        AppError::Cancelled => Some("cancelled"),
+        AppError::Permission(_) => Some("tool_permission_denied"),
+        AppError::Tool(ToolError::Permission(_)) => Some("tool_permission_denied"),
+        _ => None,
+    }
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn run_subagent_task_with_cancel(
     request: SubAgentRequest,
@@ -1236,7 +1391,9 @@ async fn run_subagent_task_with_cancel(
                         &error_msg,
                     ).await;
                     // Don't update task store here - let handle_response do it
-                    SubAgentResult::failure(task_id, error_msg)
+                    let failure_class =
+                        classify_delegated_failure(e.as_ref()).map(str::to_string);
+                    SubAgentResult::failure_with_class(task_id, error_msg, failure_class)
                 }
             }
         }
@@ -1270,6 +1427,7 @@ async fn execute_agent_task(
 
     // Resolved before the pool is handed to the child's loop.
     let transcript_store = delegated_transcript_store(pool.as_ref(), request.run_id.as_ref());
+    let attempt_store = delegated_attempt_store(pool.as_ref());
     let transcript_run_id = request.run_id.clone();
 
     // Phase 3: Apply safety envelope to prevent custom files from escalating
@@ -1889,14 +2047,45 @@ async fn execute_agent_task(
         &request.prompt,
     )
     .await;
+    // The delegated run's provider entry.
+    //
+    // A durable delegated run reaches a provider entry only as the run's
+    // original attempt or as a claimed continuation, and the attempt record
+    // is where that is decided. A continuation must also carry its seeded
+    // context: the recorded transcript, read back and re-verified, so a
+    // continuation cannot smuggle an unreviewed context into a new provider
+    // request.
+    let provenance =
+        delegated_attempt_provenance(attempt_store.as_ref(), transcript_run_id.as_ref()).await?;
+    let seeded_context = seed_delegated_context(
+        transcript_store.as_ref(),
+        transcript_run_id.as_ref(),
+        provenance,
+    )
+    .await?;
+    if provenance == Some(DelegatedAttemptProvenance::Continuation) && seeded_context.is_none() {
+        return Err(
+            "a claimed continuation may not reach a provider entry without its seeded context"
+                .into(),
+        );
+    }
     let mut messages = vec![crate::provider::Message::System {
         content: compiled_prompt.text.into(),
     }];
 
+    // The seeded context leads the child's own turn: it is what the previous
+    // attempt recorded, read back and re-verified. It is a separate part so
+    // the child can tell the recorded conversation from the request that
+    // continues it.
+    let mut user_content = Vec::new();
+    if let Some(seed) = seeded_context {
+        user_content.push(crate::provider::ContentPart::Text { text: seed.into() });
+    }
+    user_content.push(crate::provider::ContentPart::Text {
+        text: request.prompt.clone().into(),
+    });
     messages.push(crate::provider::Message::User {
-        content: vec![crate::provider::ContentPart::Text {
-            text: request.prompt.clone().into(),
-        }],
+        content: user_content,
     });
 
     // The bare model id, never the `<provider>/<model>` string. This is the value

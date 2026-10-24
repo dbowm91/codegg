@@ -149,6 +149,38 @@ run_guards() {
     echo "==> python3 scripts/check_delegated_transcript_store.py"
     (cd "$REPO_ROOT" && python3 scripts/check_delegated_transcript_store.py)
 
+    # A delegated run's provider entry must be either the original attempt or
+    # a claimed continuation. A provider entry reachable without a claim is a
+    # continuation that was never authorized, so the guard runs with its
+    # self-test.
+    echo "==> python3 scripts/check_delegated_continuation_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_delegated_continuation_authority.py --self-test)
+
+    echo "==> python3 scripts/check_delegated_continuation_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_delegated_continuation_authority.py)
+
+    # The projection guards used to be change-triggered only. The delegated
+    # run's transcript now rides the projection, so a payload that is
+    # declared but never populated — or one that crosses to the wrong
+    # session — is a silent failure. Each guard carries a self-test.
+    echo "==> bash scripts/check_projection_disclosure.sh --self-test"
+    (cd "$REPO_ROOT" && bash scripts/check_projection_disclosure.sh --self-test)
+
+    echo "==> bash scripts/check_projection_disclosure.sh"
+    (cd "$REPO_ROOT" && bash scripts/check_projection_disclosure.sh)
+
+    echo "==> bash scripts/check_projection_publication_seam.sh --self-test"
+    (cd "$REPO_ROOT" && bash scripts/check_projection_publication_seam.sh --self-test)
+
+    echo "==> bash scripts/check_projection_publication_seam.sh"
+    (cd "$REPO_ROOT" && bash scripts/check_projection_publication_seam.sh)
+
+    echo "==> python3 scripts/check_websocket_bounds.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_websocket_bounds.py --self-test)
+
+    echo "==> python3 scripts/check_websocket_bounds.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_websocket_bounds.py)
+
     # The shared checkout's lease belongs to the group, and the mediation
     # authority must not fail open. Both are correctness contracts whose
     # regressions are silent, so both guards run here with their self-tests.

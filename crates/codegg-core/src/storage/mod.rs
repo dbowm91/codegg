@@ -50,7 +50,9 @@ use crate::error::StorageError;
 ///
 /// ADR-0051 option B adds **v89**, the durable delegated-run transcript: one
 /// append-only row table keyed by `AgentRunId`, plus its per-run aggregate.
-pub const STORAGE_LAYOUT_VERSION: u32 = 89;
+///
+/// Milestone C004 adds **v90**, the delegated run's attempt record.
+pub const STORAGE_LAYOUT_VERSION: u32 = 90;
 
 pub struct Database {
     pool: SqlitePool,
