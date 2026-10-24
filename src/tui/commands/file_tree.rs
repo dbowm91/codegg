@@ -2406,6 +2406,16 @@ mod tests {
         assert!(app.panel_host.is_focused(), "the panel holds it");
 
         activate_selected(&mut app);
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .expect("the open installed a session")
+                .presentation()
+                .mode,
+            EditorMode::Normal,
+            "the document lands in Normal: a finding, not a defect"
+        );
         complete_editor_open_handoff(&mut app, true);
 
         assert!(
