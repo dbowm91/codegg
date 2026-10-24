@@ -2,7 +2,9 @@
 
 Status: ready for handoff
 
-Repository baseline: `c4fa30aeba439894b048768d4829dea0cfa0b84b` (the `origin/main` head)
+Repository baseline: `c5d3f4dc4c35ae702a7bbaf14009526295d6ac8a` — the merged tree carrying
+the desktop-parity work (`cd9c2fab4 feat(desktop): project the whole session snapshot and
+render it`)
 
 Source roadmap:
 
@@ -11,9 +13,9 @@ Source roadmap:
 
 Planning basis:
 
-- Roadmap §3.1 amendment — the **docking system** moved from "not delivered by this
-  roadmap" into scope **for M007-B**, as the side-panel frame and its placement model
-  (`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md:120`).
+- Roadmap §3.1 amendment (`:133`) — the **docking system** moved from "not delivered by this
+  roadmap" (`:120`) into scope **for M007-B**, as the side-panel frame and its placement model
+  (`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md:143-144`).
 - Roadmap §7 — the line's own "what does not exist, and is why the line has a gate
   milestone first" evidence (`:498-511`). This milestone is the first to consume it.
 
@@ -22,7 +24,7 @@ Long-term requirements:
 - `plans/000-long-term-specification.md:97` §4.4 — frontends MUST render frontend-neutral
   snapshots and events, and MUST NOT become independent owners of provider credentials,
   project authorization, global scheduling, or durable session state.
-- `plans/000-long-term-specification.md:424` — "Observation MUST render the same logical
+- `plans/000-long-term-specification.md:426` — "Observation MUST render the same logical
   activity panel from frontend-neutral state." The canonical **panel-parity** requirement is
   *logical* panel identity, not pixel identity.
 - `plans/000-long-term-specification.md:476` — frontends MUST use project-relative
@@ -64,20 +66,21 @@ Primary class: capability
 
 Deliver a **main chat region and a dockable side panel** in the desktop renderer, mirroring
 the TUI's placement model, and render the projection fields the desktop already receives:
-the 407-line single component at `apps/desktop/src/App.tsx:15` becomes named regions (chat
+the 631-line single component at `apps/desktop/src/App.tsx:28` becomes named regions (chat
 region, side-panel frame, composer region, status/context row), each in its own module
 under `apps/desktop/src/`; the side panel gains the TUI's **placement** concept (`right` /
 `left` / `bottom`), a panel registry, one slot per edge and a pointer **resize seam**; a
-**tasks panel** renders `runs`, `jobs`, `subagents` and `recentTurns` from the
-`SessionPresentationView` the desktop already receives, with **zero Rust work**; session and
-activity panels render from the same existing projection; a real layout system replaces the
-11-line ad-hoc `style.css`; and the new regions and panels get renderer unit/component
-tests.
+**tasks panel** renders the TUI's canonical task surface — **todos, live jobs and active
+subagents** — together with the two projection identifiers the baseline still drops
+(`runs` and `recentTurns`), from the `SessionPresentationView` the desktop already
+receives, with **zero Rust work**; session and activity panels render from the same
+existing projection; a real layout system replaces the single-column ad-hoc frame in
+`style.css`; and the new regions and panels get renderer unit/component tests.
 
 One bounded outcome: **a user can open the desktop app, read the conversation in a main
 chat region, and dock a side panel — on the right, left, or along the bottom — that shows
-the runs, jobs, subagents and recent turns the daemon is already reporting, and the
-renderer is no longer one component.**
+the todos, live jobs, active subagents, runs and recent turns the daemon is already
+reporting, and the renderer is no longer one component.**
 
 ## 2. Why this milestone is ready
 
@@ -87,20 +90,21 @@ Closed hard dependencies:
   (`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md:648`). The projection
   contract this milestone renders is the same one the TUI renders.
 - The `SessionPresentationView` DTO and its Rust/TypeScript field parity are already
-  pinned by `apps/desktop/scripts/check-bindings.mjs`, which lists `runs`, `jobs`,
-  `subagents` and `recent_turns` in the `SessionPresentationView` contract. That guard
-  makes the four fields a **frozen, already-checked contract**, not an invitation to add
-  one.
+  pinned by `apps/desktop/scripts/check-bindings.mjs`, whose `SessionPresentationView`
+  contract lists `runs`, `jobs`, `subagents`, `agent_tree`, `agent_runs`, `tool_programs`,
+  `worktrees`, `run_groups`, `convergences`, `recent_turns` and `todos`
+  (`apps/desktop/scripts/check-bindings.mjs:41`). That guard makes the fields a **frozen,
+  already-checked contract**, not an invitation to add one.
 
 Stable interface dependencies:
 
-- `present_snapshot` (`apps/desktop/src-tauri/src/present.rs:223`) already derives
-  `runs` (`:310-322`), `jobs` (`:323-335`), `subagents` (`:336-354`) and `recent_turns`
-  (`:355-360`) with explicit bounds — `MAX_VISIBLE_RUNS = 10`, `MAX_VISIBLE_JOBS = 10`,
-  `MAX_VISIBLE_SUBAGENTS = 10`, `MAX_RECENT_TURNS = 5` (`:45-49`).
+- `present_snapshot` (`apps/desktop/src-tauri/src/present.rs:488`) already derives
+  `runs` (`:604-616`), `jobs` (`:617-629`), `subagents` (`:639-646`) and `recent_turns`
+  (`:700-705`) with explicit bounds — `MAX_VISIBLE_RUNS = 10`, `MAX_VISIBLE_JOBS = 10`,
+  `MAX_VISIBLE_SUBAGENTS = 10`, `MAX_RECENT_TURNS = 5` (`:54-63`).
 - The desktop's live projection path already goes through `present_driver`
   (`apps/desktop/src-tauri/src/projection.rs:226`), which delegates to `present_snapshot`
-  when a snapshot is installed (`present.rs:379-387`).
+  when a snapshot is installed (`present.rs:735-741`).
 
 **The hard dependency on M007-A is not satisfied by this plan and is not waived by it.**
 `plans/implementation/desktop-frontend-ide-foundation/011-desktop-build-and-hosted-gate.md`
@@ -125,40 +129,74 @@ presentation state that ADR-0011 already classifies as frontend-owned.
 
 ## 3. Current implementation evidence
 
-At the baseline:
+At the baseline (the merged desktop-parity tree, in which `apps/desktop/src/panels/*.tsx`
+now exists):
 
-- **The renderer is one component.** `App()` is declared at `apps/desktop/src/App.tsx:15`
-  and the file is 407 lines. It holds 21 `useState` hooks (`:16-45`) and renders four
-  stacked `<section className="panel">` cards — Daemon (`:384`), Projects (`:387`), Route
-  (`:388-392`), Session (`:395-404`). There is no region, no frame, no composition
-  boundary.
-- **There is no layout system.** `apps/desktop/src/style.css` is 11 lines. The whole
-  layout is `main { max-width: 760px; margin: 8vh auto; padding: 0 24px; }` (`:2`) — one
-  centred column, no grid, no regions, no panel concept.
-- **The renderer has zero keyboard handlers and twelve `onClick` bindings.** There is no
-  `onKeyDown`, `onKeyUp`, `onKeyPress`, or `addEventListener` anywhere in `App.tsx`; the
-  four `useEffect` calls (`:59`, `:69`, `:103`, `:125`) are bridge subscriptions and
-  teardown. **This milestone does not fix that** — the keyboard surface is M007-C, a
-  recorded dependency rather than scope.
-- **The projection carries four fields the renderer throws away.**
-  `SessionPresentationView` declares `runs: RunSummaryView[]`, `jobs: JobSummaryView[]`,
-  `subagents: SubagentSummaryView[]` and `recentTurns: TurnSummaryView[]`
-  (`apps/desktop/src/bridge-types.ts:160-163`). The identifiers `runs`, `jobs`,
-  `subagents` and `recentTurns` appear **nowhere** in `apps/desktop/src/App.tsx`. The
-  renderer consumes `messages`, `tools`, `artifactHandles`, `pendingPermissions`,
-  `pendingQuestions`, `controller`, `cursor`, `truncatedMessages`, `state` and `turn`, and
-  drops the other four. The Rust presenter already derives them with explicit bounds
-  (`present.rs:310-360`, `:45-49`). **This is the cheapest user-visible win in the whole
-  M007 line and it requires zero Rust work.**
+- **The renderer is one component.** `App()` is declared at `apps/desktop/src/App.tsx:28`
+  and the file is 631 lines. It holds 26 `useState` hooks (`:29-78`) and 6 `useEffect`
+  calls (`:217`, `:227`, `:261`, `:286`, `:320`, `:372`), and it renders four stacked
+  `<section className="panel">` cards — Daemon (`:596`), Projects (`:599`), Route
+  (`:600-605`), Session (`:611-621`) — followed by the baseline's panel modules
+  (`:622-629`). There is still **no region, no frame and no region composition
+  boundary**: the panels are composed inline in the same file, in document order, with no
+  region container, no named slot and no per-edge area.
+- **The panel modules now exist, and they are panel-level, not region-level.** The
+  desktop-parity work added eight modules under `apps/desktop/src/panels/`:
+  `TaskPanel.tsx`, `SubagentPanel.tsx`, `ActivityPanel.tsx`, `TranscriptPanel.tsx`,
+  `TurnSummary.tsx`, `ToolDetail.tsx`, `GitPanel.tsx` and `SkillsPanel.tsx` (plus
+  `format.ts`). `App.tsx:623-628` composes six of them and `App.tsx:608-609` composes the
+  other two. Each renders one
+  `<section className="surface">` over props; **none** owns a region container, a slot, a
+  placement or a resize seam, and **none** of them is this milestone's to create.
+- **The desktop's bridge invoke targets are 23.** `apps/desktop/src/bridge.ts` names 23
+  distinct `desktop_*` targets (`:22-94`), and the host registers the same 23
+  `#[tauri::command]` functions (`apps/desktop/src-tauri/src/lib.rs:1058-1078`). The three
+  that arrived with the desktop-parity work are `desktop_todo_refresh`
+  (`bridge.ts:53-54`), `desktop_git_read` (`:60-61`) and `desktop_skill_catalogue`
+  (`:62-63`). M007-B adds **none** of them.
+- **There is still no layout system.** `apps/desktop/src/style.css` is 145 lines — a themed
+  design system with custom properties on `:root` (`:28-`), typography and component
+  classes — but the **frame** is still one centred column:
+  `main { max-width: 760px; margin: 8vh auto; padding: 0 24px; }` (`:55`), which the
+  stylesheet's own header describes as "the desktop is a single-column shell" (`:24-25`).
+  The only `display: grid` is the definition-list layout `dl { display: grid; … }` (`:73`);
+  there is no frame grid, no `grid-template-areas`, and no named region.
+- **The renderer has zero keyboard handlers.** There is no `onKeyDown`, `onKeyUp`,
+  `onKeyPress` or `addEventListener` for any key event anywhere under `apps/desktop/src/`,
+  and no `KeyboardEvent` type is named there. Twelve `onClick` bindings live in `App.tsx`
+  and four more in the panel modules — 16 across `apps/desktop/src/`. **This milestone does
+  not fix that** — the keyboard surface is M007-C, a recorded dependency rather than scope.
+- **Two of the four identifiers are now rendered; two are still dead payload.**
+  `SessionPresentationView` declares `runs: RunSummaryView[]`
+  (`apps/desktop/src/bridge-types.ts:298`), `jobs: JobSummaryView[]` (`:299`),
+  `subagents: SubagentSummaryView[]` (`:301`) and `recentTurns: TurnSummaryView[]`
+  (`:310`). The baseline **renders** `jobs` and `subagents`: `App.tsx:628` passes
+  `projection.jobs` to `TaskPanel`, and `App.tsx:626` passes `projection.subagents` and
+  `projection.agentTree` to `SubagentPanel`. The identifiers `projection.runs` and
+  `projection.recentTurns` appear **nowhere** under `apps/desktop/src/` — the presenter
+  populates them and the renderer drops them: `present.rs:604-616` derives `runs` and
+  `present.rs:700-705` derives `recent_turns`, and neither reaches a component. The
+  renderer reads **21** distinct `projection.<field>` identifiers today; the two it still
+  drops are `runs` and `recentTurns`. The Rust presenter already derives all four with
+  explicit bounds (`present.rs:604-705`, `:54-63`), and finishing the pair the baseline
+  left open **requires zero Rust work**.
+- **The TUI's canonical task surface is `Ctrl+T`, and it carries todos, live jobs and
+  active subagents.** The overlay's rows are built by `build_task_rows`
+  (`src/tui/app/state/tasks.rs:173`), whose three sources are `todos`, `subagents` and
+  `jobs` in a fixed order (`:170`, `:174-176`); the overlay is drawn by
+  `render_tasks_strip` (`src/tui/app/render.rs:1394`, documented at `:1387-1393`), fed
+  from `App::task_rows` (`src/tui/app/mod.rs:15374`). A desktop tasks panel that agrees
+  with the TUI carries that same content set — not a different one.
 - **The daemon already bounds what a renderer may show.** `MAX_PENDING_PERMISSIONS = 16`
-  (`present.rs:53`) with the pending set derived from `turn.pending_permissions`
-  (`:107-108`, `:274-288`); messages cap at 100 (`:41`, `:244-248`), tools at 20 (`:43`).
-  The renderer must render what arrives and must not invent its own truncation markers.
-- **"No snapshot yet" and "empty session" are distinguishable.** `present_driver` publishes
-  a skeleton with empty `runs`/`jobs`/`subagents`/`recent_turns` and a `state` of
-  `connecting` / `subscribing` / `resyncing` / `disconnected` / `unavailable`
-  (`present.rs:388-411`, `:65-74`) when no snapshot is installed. A panel that renders
-  "nothing to show" for both is lying about the second.
+  (`present.rs:98`) with the pending set derived from `turn.pending_permissions`
+  (`:177-178`, `:546-569`); messages cap at 100 (`:50`, `:509-511`), tools at 20 (`:52`,
+  `:528`). The renderer must render what arrives and must not invent its own truncation
+  markers.
+- **"No snapshot yet" and "empty session" are distinguishable.** `present_driver`
+  publishes a skeleton with empty `runs`/`jobs`/`subagents`/`recent_turns`
+  (`present.rs:742-774`) and a `state` of `connecting` / `subscribing` / `resyncing` /
+  `disconnected` / `unavailable` (`present.rs:110-119`) when no snapshot is installed. A
+  panel that renders "nothing to show" for both is lying about the second.
 - **The TUI's model to mirror is already a model, not a widget.** `PanelRegions
   { main, left, right, bottom }` (`src/tui/layout.rs:37`), with `main` documented as "The
   transcript, composer and everything that is not a panel"; `TuiLayout::split`
@@ -210,10 +248,10 @@ At the baseline:
    and does not change the root's Rust 1.89 contract (`Cargo.toml:12`).
 6. Node/TypeScript dependencies and lockfile stay confined to `apps/desktop`
    (roadmap §9, `:579`).
-7. **Logical panel parity, not pixel parity** (`plans/000-long-term-specification.md:424`).
-   The desktop's tasks panel shows the same logical activity — the same runs, jobs,
-   subagents and turns — as the TUI's, in the desktop's own layout. The two frontends are
-   not required to look alike, and this milestone does not attempt to.
+7. **Logical panel parity, not pixel parity** (`plans/000-long-term-specification.md:426`).
+   The desktop's tasks panel shows the same logical activity — the same todos, live jobs,
+   active subagents, runs and turns — as the TUI's, in the desktop's own layout. The two
+   frontends are not required to look alike, and this milestone does not attempt to.
 8. Presentation state the renderer owns (which panel is docked where, panel width, scroll
    position) is **frontend-owned** under ADR-0011 and is never transmitted as authority,
    never persisted daemon-side, and never sent to the daemon as a request argument.
@@ -233,14 +271,34 @@ At the baseline:
 - A side-panel frame with the TUI's placement concept (`right` / `left` / `bottom`),
   `right` as the default, a panel registry, one slot per edge, a dock operation that
   moves rather than copies, and a pointer **resize seam**.
-- A **tasks panel** rendering `runs`, `jobs`, `subagents` and `recentTurns` from the
-  projection the desktop already receives — **no protocol change**.
+- A **tasks panel** rendering the TUI's canonical task surface — **todos, live jobs and
+  active subagents** — plus the two projection identifiers the baseline still drops
+  (`runs` and `recentTurns`), from the projection the desktop already receives — **no
+  protocol change**.
 - A **session panel** and an **activity panel** rendered from the same existing
   projection.
-- A real layout and styling system replacing the 11-line `style.css`.
+- A real layout and styling system replacing the single-column frame in `style.css`.
 - Renderer unit/component tests for the new regions, the registry, the panel host and the
   panels.
 - Documentation updates named in §12.
+
+**Why the tasks panel's content set is what it is.** The baseline's `TaskPanel`
+(`apps/desktop/src/panels/TaskPanel.tsx:44`) already renders the todos and the live jobs,
+and its own header states that it is "the TUI's `Ctrl+T` task surface in DOM form — 'todos,
+live jobs, active subagents'" (`TaskPanel.tsx:6-10`), with the subagents half in
+`SubagentPanel` (`SubagentPanel.tsx:22`). The TUI's canonical surface agrees: the
+`Ctrl+T` overlay's rows come from exactly three sources — todos, subagents and jobs
+(`src/tui/app/state/tasks.rs:173-176`, order fixed at `:170`). So the content set is
+corrected to **that** set — todos, live jobs, active subagents — rather than the
+`runs`/`jobs`/`subagents`/`recentTurns` set this plan originally named, which would have
+invented a task surface different from the TUI's and would have duplicated work the
+baseline has already done. On top of that corrected set, the panel additionally renders the
+two identifiers the baseline still drops — `runs` and `recentTurns` — because this
+milestone's own acceptance criterion (§13.5) requires the renderer to stop
+receiving-and-discarding all four. `runs` and `recentTurns` are *not* part of the TUI's
+`Ctrl+T` task surface; they are additional history the daemon already reports and the
+baseline already carries, and this milestone renders them so the "received and discarded"
+defect is closed rather than narrowed.
 
 ### Explicitly out of scope
 
@@ -264,7 +322,10 @@ At the baseline:
   enforces this; M007-B must not weaken it and must not add a permission to
   `apps/desktop/src-tauri/capabilities/main.json`.
 - **Git UI, graphical terminal, Monaco, or any third-party editor engine** (roadmap
-  `:541-545`, `:144-153`).
+  `:541-545`, `:144-153`). The baseline's read-only project-facts `GitPanel`
+  (`apps/desktop/src/panels/GitPanel.tsx`) and `SkillsPanel`
+  (`apps/desktop/src/panels/SkillsPanel.tsx`) arrived with the desktop-parity work and are
+  **not** M007-B's; M007-B adds no Git surface and does not replace them.
 - **Persisting the panel layout.** The TUI persists placement as `ui.panel_placement`
   (`architecture/tui.md:3656-3658`); M007-B does not. Panel placement is renderer state
   for the lifetime of the renderer, and a renderer reload returns it to the default. A
@@ -282,13 +343,15 @@ At the baseline:
     surface the TUI calls the "main buffer".
   - **side-panel frame** — the docked panel, its header, and its resize seam.
   - **composer region** — the prompt textarea, the plan-mode checkbox, and the submit
-    button, taken from the existing Route card (`App.tsx:392`).
+    button, taken from the existing Route card (`App.tsx:604`).
   - **status/context row** — `projection.state`, the current turn, the cursor diagnostic,
-    and the controller summary, taken from the existing Session card (`:395-401`).
+    and the controller summary, taken from the existing Session card (`:611`, `:616`).
   `App.tsx` remains the composition root: it keeps the bridge wiring, the React state that
   owns **no** durable state, and the region composition. The Daemon and Projects cards
-  (`App.tsx:384-387`) stay as they are — connection and catalog surfaces, not session
-  surfaces — but they leave the chat region.
+  (`App.tsx:596`, `:599`) stay as they are — connection and catalog surfaces, not session
+  surfaces — but they leave the chat region. The baseline's panel modules
+  (`App.tsx:623-628`) move **into** the side-panel frame and the chat region rather than
+  being rewritten: they are panels, and this milestone gives them somewhere to be.
 - **A panel registry.** A TypeScript module exporting a `PanelId` union, a `PANEL_REGISTRY`
   mapping id → `{ label, render }`, and the `PanelPlacement` type
   (`'right' | 'left' | 'bottom'`). The registry is **data, not a switch statement** — the
@@ -299,11 +362,16 @@ At the baseline:
   placement)` **moves** the panel and never loads one panel on two edges at once
   (mirroring `src/tui/panels/mod.rs:1191`, `:1093`, `:1336`). `right` is the default edge.
   The host owns no session state — a panel reads the projection it is given.
-- **The tasks panel.** Renders four sections from the projection it is given: runs, jobs,
-  subagents, recent turns. Each row shows the daemon's own status token and summary. The
-  panel renders **exactly what arrives** and adds no truncation marker of its own — the
-  daemon already bounded the lists (`present.rs:45-49`) and reported no truncation count
-  for them.
+- **The tasks panel.** Renders the TUI's canonical task content — **todos, live jobs and
+  active subagents** — plus the two identifiers the baseline still drops, **`runs` and
+  `recentTurns`**. The baseline already renders the todos and the live jobs in
+  `apps/desktop/src/panels/TaskPanel.tsx` and the subagents in
+  `apps/desktop/src/panels/SubagentPanel.tsx`; **this milestone's tasks panel reuses those
+  modules' rendering and adds the `runs` and `recentTurns` sections**, rather than
+  reimplementing the todo and job rows. Each row shows the daemon's own status token and
+  summary. The panel renders **exactly what arrives** and adds no truncation marker of its
+  own — the daemon already bounded the lists (`present.rs:54-63`) and reported no
+  truncation count for them.
 - **The session panel and the activity panel.** Session renders the session's identity,
   current turn, and controller summary from the same projection; activity renders the
   projection's cursor diagnostic, resync reason, and the artifact handle list. Neither
@@ -331,11 +399,23 @@ host-side change, that is a stop condition (§14), not a task.
 
 ### Protocol and DTOs
 
-**NONE. Zero. No `CoreRequest` variant, no `CoreResponse` variant, no `CoreEvent`
-variant, no DTO field added, removed, or renamed.** The desktop's thirteen `CoreRequest`
-variants are unchanged. If a panel appears to need new daemon data, name the existing
-variant it would use (`apps/desktop/src/bridge.ts:19-48` lists every bridge call) or stop
-and report.
+**This milestone adds no new protocol variant, no new DTO field and no new bridge
+target.** The baseline is: the daemon's `CoreRequest` enum has **268** variants (242
+struct + 26 unit) and `CoreResponse` has **176** (175 struct + 1 unit)
+(`crates/codegg-protocol/src/core.rs:2330` and `:1202`; measured by
+`python3 scripts/measure_overview_counts.py` and cross-checked against
+`architecture/overview.md`'s "Verified counts" table, `:565-566`), and the desktop's bridge
+names **23** `desktop_*` invoke targets (`apps/desktop/src/bridge.ts:22-94`). Three of those
+targets — `desktop_todo_refresh` (`bridge.ts:53-54`), `desktop_git_read` (`:60-61`) and
+`desktop_skill_catalogue` (`:62-63`) — arrived with the desktop-parity work and are
+**recorded here as the baseline, not as this milestone's to change**. M007-B adds **zero**
+to all three numbers: no `CoreRequest` variant, no `CoreResponse` variant, no `CoreEvent`
+variant, no DTO field added, removed or renamed, and no bridge target.
+
+If a panel this milestone adds appears to need new daemon data, **name the existing
+variant it would use** (`apps/desktop/src/bridge.ts:22-94` lists every bridge call, and
+`crates/codegg-protocol/src/core.rs:2330` lists every request variant) **or stop and
+report** (§14).
 
 ### Storage and migrations
 
@@ -347,8 +427,17 @@ and report.
 - The renderer gains **no** Tauri capability: `apps/desktop/src-tauri/capabilities/main.json`
   keeps its empty permission list and the CSP keeps local-only origins with no
   `unsafe-eval`.
-- The renderer adds **no** bridge call. The panels render; they do not fetch. Every value
-  they display arrived on the existing projection channel.
+- **This milestone's panel modules add no bridge call and fetch nothing.** They render the
+  projection they are given; every value they display arrived on the existing projection
+  channel. **Recorded baseline fact, not a violation:** the desktop's existing fetches
+  live in `App.tsx`, not in the panel modules — `desktop_git_read` (`App.tsx:608`),
+  `desktop_skill_catalogue` (`App.tsx:609`) and `desktop_todo_refresh` (`App.tsx:628`'s
+  refresh callback) are called from the composition root, and the git, skills and todo
+  **values** arrive on those bridge calls rather than on the projection channel. The
+  presenter says so explicitly for todos: they "live behind a separate daemon read
+  (`CoreRequest::TodoList`), so the pure presenter carries no list" and the host's refresh
+  overlays it (`present.rs:706-710`). M007-B adds **no** new bridge call and **no** new
+  fetch; the modules it adds fetch nothing.
 - The renderer adds **no** credential, provider, scheduler, job-admission, or
   writer-permit surface. A panel that appears to need one is a stop condition (§14).
 - The resize seam is a **pointer** interaction inside the renderer. It changes a CSS
@@ -373,24 +462,41 @@ and report.
 
 ## 7. Ordered work packages
 
-### Work package A — Surface the projection fields the renderer already receives
+### Work package A — Surface the two projection fields the renderer still receives
 
 Intent: take the single cheapest user-visible win in the M007 line before touching the
 frame. Zero Rust work, zero protocol work.
 
+**Delivered by the baseline — not re-done here.** The baseline already renders `jobs`
+(`App.tsx:628` → `TaskPanel`) and `subagents` and `agentTree` (`App.tsx:626` →
+`SubagentPanel`), and the baseline's `TaskPanel` already carries the TUI's canonical task
+content — the todos and the live jobs (`TaskPanel.tsx:6-10`, `:42`). That half of this
+work package is **done**.
+
+Files:
+
+- **NEW** `apps/desktop/src/panels/RunHistory.tsx` — renders the projection's `runs`
+  (`bridge-types.ts:298`), each row showing the daemon's own status token and summary.
+- **NEW** `apps/desktop/src/panels/RecentTurns.tsx` — renders the projection's
+  `recentTurns` (`bridge-types.ts:310`), with the same status/summary rule.
+- **MODIFIED** `apps/desktop/src/panels/TaskPanel.tsx` — compose the two new sections
+  into the existing task surface (or render them in one module; the split above is the
+  expected shape, not a second registry).
+- **MODIFIED** `apps/desktop/src/App.tsx` — pass `projection.runs` and
+  `projection.recentTurns` into the composition (`:622-629`).
+- **NOT created by this milestone**: the eight panel modules under
+  `apps/desktop/src/panels/` that the desktop-parity work already added.
+
 Required changes:
 
-- Add the tasks panel rendering `runs`, `jobs`, `subagents` and `recentTurns` from the
-  `SessionPresentationView` the renderer already holds (`App.tsx:34`). Each row shows the
-  daemon's own status token and summary, and the panel renders an explicit empty state per
-  section.
 - A distinct "no snapshot installed yet" state when `projection.state` is one of
   `connecting`, `subscribing`, `resyncing`, `disconnected`, `unavailable`
-  (`present.rs:65-74`) — the driver skeleton publishes empty lists in exactly those states
-  (`present.rs:388-411`), and "no snapshot yet" must not read as "this session has no
+  (`present.rs:110-119`) — the driver skeleton publishes empty lists in exactly those states
+  (`present.rs:742-774`), and "no snapshot yet" must not read as "this session has no
   jobs".
-- The four identifiers `runs`, `jobs`, `subagents`, `recentTurns` now appear in the
-  renderer. That is the observable end of this work package.
+- The identifiers `projection.runs` and `projection.recentTurns` now appear in the
+  renderer, alongside the already-rendered `projection.jobs` and `projection.subagents`.
+  That is the observable end of this work package.
 
 Acceptance evidence:
 
@@ -403,6 +509,18 @@ Acceptance evidence:
 ### Work package B — Region split
 
 Intent: stop being one component, without changing what the user sees yet.
+
+Files:
+
+- **NEW** `apps/desktop/src/regions/ChatRegion.tsx`,
+  `apps/desktop/src/regions/SidePanelFrame.tsx`,
+  `apps/desktop/src/regions/ComposerRegion.tsx`,
+  `apps/desktop/src/regions/StatusRow.tsx` — one module per region named in §6.
+- **NEW** `apps/desktop/src/regions/index.ts` — the region registry, if the implementer
+  wants one; the region set is small enough that a plain exported map is enough.
+- **MODIFIED** `apps/desktop/src/App.tsx` — the composition root.
+- **NOT created by this milestone**: `apps/desktop/src/panels/*.tsx` (the eight modules
+  the desktop-parity work added) — they are moved **into** regions, not rewritten.
 
 Required changes:
 
@@ -429,15 +547,32 @@ Acceptance evidence:
 
 Intent: give the side panel the TUI's *shape* without importing the TUI's *catalogue*.
 
+Files:
+
+- **NEW** `apps/desktop/src/panels/registry.ts` — the `PanelId` union, the `PANEL_REGISTRY`
+  map and the `PanelPlacement` type.
+- **NEW** `apps/desktop/src/panels/host.ts` — the panel host, its per-edge slots and the
+  `dock(id, placement)` operation.
+- **NEW** `apps/desktop/src/panels/ResizeSeam.tsx` — the pointer resize seam.
+- **MODIFIED** `apps/desktop/src/App.tsx` — the composition root holds the host's state.
+- **NOT created by this milestone**: the eight panel modules under `apps/desktop/src/panels/`
+  that the desktop-parity work already added — the registry **registers** them, it does
+  not author them.
+
 Required changes:
 
 - A `PanelPlacement` type (`'right' | 'left' | 'bottom'`) with `'right'` as the default
   edge, mirroring `PanelPlacement { Right, Left, Bottom }` with `Right` default
   (`src/tui/panels/mod.rs:219-229`, `architecture/tui.md:3516-3518`).
-- A panel registry as data: id → `{ label, render }`. The desktop's registry ships
-  **tasks**, **session** and **activity**. It does **not** ship the TUI's 32 panel kinds,
-  and it does not ship empty placeholders for them — a panel that renders nothing is a
-  claim the renderer cannot keep.
+- A panel registry as data: id → `{ label, render }`. The desktop's registry ships the
+  panels the tree already has content for: **tasks** (`TaskPanel.tsx`), **subagents**
+  (`SubagentPanel.tsx`), **activity** (`ActivityPanel.tsx`) and **session** (the session
+  summary this milestone extracts into its own module). The baseline's `TranscriptPanel`,
+  `TurnSummary`, `ToolDetail`, `GitPanel` and `SkillsPanel` are **not** side-panel
+  entries at this milestone — `App.tsx` composes them inline and they carry their own
+  content, so registering them would claim a placement the milestone does not give them.
+  The registry does **not** ship the TUI's 32 panel kinds, and it does not ship empty
+  placeholders for them — a panel that renders nothing is a claim the renderer cannot keep.
 - A panel host with one slot per edge, a `dock(id, placement)` that **moves** rather than
   copies, and a per-slot visibility flag (mirroring `SidePanelHost`,
   `src/tui/panels/mod.rs:1191`, `:1093`, `:1336`).
@@ -463,6 +598,14 @@ Acceptance evidence:
 
 Intent: replace ad-hoc CSS with a frame that can actually host a dockable panel.
 
+Files:
+
+- **MODIFIED** `apps/desktop/src/style.css` — the only stylesheet. The frame rules, the
+  named areas and the panel-geometry custom properties land here.
+- **NOT created by this milestone**: no new stylesheet, no CSS module and no
+  `grid-template-areas` exists in the tree today — `style.css:55` is still the whole
+  frame.
+
 Required changes:
 
 - A CSS grid frame with named areas: the chat region, the composer region, the status
@@ -474,9 +617,9 @@ Required changes:
   **independently** and scrolling one does not move the other.
 - CSS custom properties for the panel width, the minimum main width, and the bottom panel
   ratio, mirroring `LayoutConfig` (`src/tui/layout.rs:108-140`).
-- The `max-width: 760px` single column is removed; the desktop frame is a full-window
-  application frame, not a document, and must render in a narrow window without the main
-  region collapsing to zero.
+- The `max-width: 760px` single column (`style.css:55`) is removed; the desktop frame is a
+  full-window application frame, not a document, and must render in a narrow window
+  without the main region collapsing to zero.
 
 Acceptance evidence:
 
@@ -489,6 +632,18 @@ Acceptance evidence:
 ### Work package E — Renderer test sweep
 
 Intent: make the new surfaces regression-proof and prove the *old* path is unchanged.
+
+Files:
+
+- **NEW** `apps/desktop/src/regions/*.test.tsx` — one component test file per new region.
+- **NEW** `apps/desktop/src/panels/registry.test.ts` and
+  `apps/desktop/src/panels/host.test.ts` — the registry and the host.
+- **NEW** `apps/desktop/src/panels/RunHistory.test.tsx` and
+  `apps/desktop/src/panels/RecentTurns.test.tsx` — the two new panel sections from work
+  package A.
+- **NOT created by this milestone**: the eight panel modules' own `*.test.tsx` files
+  already exist beside them (`apps/desktop/src/panels/*.test.tsx`) and are the baseline's
+  to maintain; they must pass unmodified.
 
 Required changes:
 
@@ -523,7 +678,7 @@ Acceptance evidence:
   (`architecture/tui.md:999-1004`) — and the desktop does the same.
 - **"No snapshot yet" versus "empty session".** A driver skeleton (empty lists, state
   `connecting` / `subscribing` / `resyncing` / `disconnected` / `unavailable`,
-  `present.rs:388-411`) renders the "no snapshot installed yet" state. A snapshot that
+  `present.rs:742-774`) renders the "no snapshot installed yet" state. A snapshot that
   genuinely contains no runs renders the per-section empty state. These are different
   facts and the renderer must not conflate them.
 - **Renderer reload.** The renderer reloads to its defaults: the panel is docked `right`,
@@ -541,15 +696,16 @@ Acceptance evidence:
 - **Contention on the resize seam.** One pointer drag at a time; a second drag while one
   is in flight is ignored rather than interleaved. The resize is a pure presentation
   write, and a drag interrupted mid-gesture leaves the width at its last committed value.
-- **Renderer unload.** The existing teardown discipline (`App.tsx:125`, the unsubscribe
-  effect) is preserved exactly. Splitting the component must not introduce a second
-  subscription or drop the existing one.
+- **Renderer unload.** The existing teardown discipline (the projection-subscription effect
+  at `App.tsx:320`, its cleanup at `:358`) is preserved exactly. Splitting the component
+  must not introduce a second subscription or drop the existing one.
 
 ## 9. Compatibility and migration
 
 - **No wire change.** No protocol negotiation, no version-skew behavior, no
-  `PROTOCOL_VERSION` change. The desktop's thirteen `CoreRequest` variants and the
-  `SessionPresentationView` DTO are untouched.
+  `PROTOCOL_VERSION` change. The daemon's 268 `CoreRequest` variants, the desktop's 23
+  bridge targets and the `SessionPresentationView` DTO are untouched — this milestone
+  adds none of them (§6 "Protocol and DTOs").
 - **No storage change.** No migration, no `STORAGE_LAYOUT_VERSION` update, no new
   persisted state.
 - **The existing render path is unchanged.** This is the compatibility requirement, not a
@@ -581,10 +737,11 @@ Acceptance evidence:
 
 ### Integration tests
 
-- The tasks panel renders runs, jobs, subagents and recent turns from a populated
-  projection; the session and activity panels render from the same projection.
-- A panel switch (tasks → session → activity) changes the docked content without
-  changing the chat region's content.
+- The tasks panel renders **todos, live jobs and active subagents** plus the **runs** and
+  **recent turns** the daemon reports, from a populated projection; the session and
+  activity panels render from the same projection.
+- A panel switch (tasks → subagents → activity → session) changes the docked content
+  without changing the chat region's content.
 - Docking a panel to a second edge moves it, leaving the first edge empty.
 - The composed frame contains the chat region, the composer region, the status row and
   the side-panel frame, and the chat region and the side panel scroll independently.
@@ -606,8 +763,9 @@ Acceptance evidence:
 
 ### Security and negative tests
 
-- The renderer performs **no** `invoke` call from any panel module — asserted by the new
-  static guard, not only by a test.
+- **No panel module added or changed by this milestone performs an `invoke` call** —
+  asserted by the new static guard, not only by a test. (The baseline's own fetches live
+  in `App.tsx`; see §6 "Security and authorization".)
 - No panel module contains a Tauri capability, a filesystem read, a process spawn, or a
   `fetch`/`XMLHttpRequest`.
 - No panel renders projection text as HTML; a projection message containing markup
@@ -701,18 +859,25 @@ classification in the closure record rather than dropping it.
 3. A user can **resize the side panel by dragging its border**, and the main region and
    the panel grow and shrink relative to one another, clamping at a minimum rather than
    collapsing.
-4. The **tasks panel shows the runs, jobs, subagents and recent turns the daemon
-   reports**, with their statuses, and says so distinctly when no snapshot is installed.
+4. The **tasks panel shows the todos, live jobs and active subagents the daemon reports**,
+   together with the **runs** and **recent turns** the daemon reports, with their statuses,
+   and says so distinctly when no snapshot is installed. Its content set agrees with the
+   TUI's `Ctrl+T` overlay (`src/tui/app/state/tasks.rs:173-176`).
 5. The renderer **no longer receives-and-discards** `runs`, `jobs`, `subagents` and
-   `recentTurns`: each is rendered, and a test asserts a row derived from each.
+   `recentTurns`: each is rendered, and a test asserts a row derived from each. (`jobs` and
+   `subagents` are already rendered by the baseline; `runs` and `recentTurns` are the two
+   this milestone closes.)
 6. The renderer is **no longer one component**: the transcript, the composer, the status
    row and the side-panel frame are separate modules, and `App.tsx` no longer contains
    the transcript markup inline.
 7. The renderer has a **real layout system** — a grid frame with named regions, per-edge
    panel areas, custom properties for panel geometry, and independent scroll containers —
-   replacing the 760-pixel single column.
-8. **No protocol variant was added, removed, or renamed**, and no `CoreRequest` variant
-   was introduced. `apps/desktop/scripts/check-bindings.mjs` passes unmodified.
+   replacing the 760-pixel single column (`style.css:55`).
+8. **No protocol variant was added, removed, or renamed**, no `CoreRequest` variant was
+   introduced, no DTO field changed, and no bridge target was added: the daemon's 268
+   `CoreRequest` variants, the 176 `CoreResponse` variants and the desktop's 23 bridge
+   targets are unchanged by this milestone. `apps/desktop/scripts/check-bindings.mjs`
+   passes unmodified.
 9. **No file under `apps/desktop/src-tauri/` changed**, no storage change landed, and no
    migration was written.
 10. `scripts/check-desktop-boundary.sh` still passes, with its meaning unchanged: the
@@ -726,19 +891,26 @@ classification in the closure record rather than dropping it.
     `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml` succeeds.
 13. `scripts/verify.sh quick`, `cargo fmt --all -- --check` and workspace Clippy with
     `-D warnings` are green.
-14. Keyboard handling, the `/` command surface, the editor, the file tree, Git UI, a
-    graphical terminal and any third-party editor engine are **provably absent** from the
-    diff, and no durable panel-layout persistence was added.
+14. Keyboard handling, the `/` command surface, the editor, the file tree, any **new** Git
+    UI, a graphical terminal and any third-party editor engine are **provably absent**
+    from the diff, and no durable panel-layout persistence was added. (The baseline's
+    read-only `GitPanel` and `SkillsPanel` are the desktop-parity work's and are not
+    touched.)
 15. The panel layer holds **no** credential, provider, scheduler, job-admission or
-    writer-permit surface, and no panel performs an `invoke` call.
+    writer-permit surface, and **no panel module added or changed by this milestone
+    performs an `invoke` call**.
 
 ## 14. Stop conditions
 
 The agent must stop and report rather than improvise when:
 
-- **A panel appears to need a new `CoreRequest` variant, or a new field on
-  `SessionPresentationView`.** The protocol is frozen for this milestone. Name the
-  existing variant the panel would use, or stop.
+- **A panel this milestone adds appears to need new daemon data** — a new `CoreRequest`
+  variant, a new field on `SessionPresentationView`, or a new bridge target. This milestone
+  adds **none** of the three (§6 "Protocol and DTOs"): the daemon's 268 request variants,
+  its 176 response variants and the desktop's 23 bridge targets are the recorded baseline,
+  and the three targets the desktop-parity work added (`desktop_todo_refresh`,
+  `desktop_git_read`, `desktop_skill_catalogue`) are **not** this milestone's to change.
+  **Name the existing variant the panel would use, or stop.**
 - **The layout appears to need the renderer to hold durable state** — a persisted panel
   layout, a stored scrollback, a remembered selection that must survive a reload. That
   would introduce a durable frontend-owned store and a persistence surface M007-B has no
@@ -784,7 +956,13 @@ contain:
 - **proof the projection fields are genuinely rendered rather than merely present in the
   DTO** — the renderer test asserting a row derived from each of `runs`, `jobs`,
   `subagents` and `recentTurns`, plus the diff showing those four identifiers now appear
-  in `apps/desktop/src/` and did not before;
+  in `apps/desktop/src/`. `jobs` and `subagents` were already rendered by the baseline
+  (`App.tsx:626`, `:628`); the milestone's own contribution is `runs` and `recentTurns`,
+  and the evidence must show those two moving from **nowhere** under `apps/desktop/src/` to
+  rendered;
+- **proof the milestone's protocol scope held** — the re-measured daemon `CoreRequest` and
+  `CoreResponse` variant counts (the baseline is 268 / 176) and the desktop's bridge
+  target count (the baseline is 23), shown before and after and unchanged;
 - **proof the boundary guard still passes** — the `scripts/check-desktop-boundary.sh`
   output, and confirmation that `apps/desktop/src-tauri/capabilities/main.json` and the
   CSP are byte-identical to the baseline;
@@ -802,7 +980,9 @@ contain:
 - the recorded decisions that panel layout is **not** persisted (and the deferred
   persistence follow-up), and that the desktop registry mirrors the TUI's *model* and not
   its *catalogue*;
-- the evidence that the panel layer performs no `invoke` call and holds no capability;
+- the evidence that the panel layer performs no `invoke` call and holds no capability,
+  with the baseline's own `App.tsx` fetches (`desktop_git_read`, `desktop_skill_catalogue`,
+  `desktop_todo_refresh`) named as the baseline's and not the milestone's;
 - documentation updates actually made, with the re-derived `architecture/overview.md`
   counts shown before and after;
 - unresolved findings classified by severity, with any medium or high finding keeping
@@ -827,7 +1007,7 @@ evidence. A build that compiles is not closure.
   (`:271-275`). **The canonical set has no domain noun for a UI panel** — the word does
   not occur in `plans/001-terminology-and-domain-model.md`. "Side panel", "chat region" and
   "tasks panel" are **UI terms only**; the canonical requirement they serve is logical
-  panel parity (`plans/000-long-term-specification.md:424`).
+  panel parity (`plans/000-long-term-specification.md:426`).
 - **Do not edit** `plans/000-long-term-specification.md`,
   `plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`, any ADR,
   the M007 decomposition rows other than M007-B, the M007-A plan, or any closure record.
@@ -837,6 +1017,12 @@ evidence. A build that compiles is not closure.
   references** for this milestone.
 - **Do not edit** `apps/desktop/src-tauri/`. M007-B has no host-side change. If one appears
   necessary, that is a stop condition (§14).
+- **The desktop-parity work's panel modules are references, not this milestone's work.**
+  `apps/desktop/src/panels/` already holds eight modules (`TaskPanel`, `SubagentPanel`,
+  `ActivityPanel`, `TranscriptPanel`, `TurnSummary`, `ToolDetail`, `GitPanel`,
+  `SkillsPanel`) plus `format.ts`. M007-B **registers** and **places** them; the only one
+  it edits is `TaskPanel.tsx` (work package A composes the two new sections into it), and
+  the only files it adds under that directory are `RunHistory.tsx` and `RecentTurns.tsx`.
 - **Environment.** The root Cargo workspace is Rust 1.89 (`Cargo.toml:12`, edition 2021).
   `apps/desktop/src-tauri` is a **separate Cargo workspace** with `rust-version = "1.90"`
   (`apps/desktop/src-tauri/Cargo.toml:6`, `[workspace]` at `:8-9`), because the selected
