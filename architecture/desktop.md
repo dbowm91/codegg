@@ -151,13 +151,32 @@ coexistence, explicit-path autostart, and daemon survival
 (`apps/desktop/e2e/specs/`, entry point `apps/desktop/e2e/run-e2e.sh`,
 hosted in `.github/workflows/desktop-e2e.yml` on Linux/WebKitGTK/xvfb).
 
-### The hosted qualification is paused (2026-10-23)
+### The hosted qualification is paused (2026-10-23) — resumed 2026-10-24
 
-Development on the desktop foundation line is paused, so the hosted
-qualification **no longer runs on push or on pull requests**:
-`.github/workflows/desktop-e2e.yml` is **manual dispatch only** until that
-line resumes, and its name carries the "(paused)" marker so the state is
+Development on the desktop foundation line **was** paused, so the hosted
+qualification **no longer ran on push or on pull requests**:
+`.github/workflows/desktop-e2e.yml` was **manual dispatch only** while that
+pause held, and its name carried the "(paused)" marker so the state was
 visible in the Actions list rather than inferred.
+
+**The line resumed on 2026-10-24.** The owner directed that the desktop
+carry a TUI-parity GUI — a main chat region with a side panel, the same `/`
+commands the TUI exposes, and an editor — keyboard-first and fully operable
+by mouse. That work is the **M007** line, decomposed M007-A…M007-E at
+`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md#milestone-007--desktop-gui-parity-line`,
+and `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` is
+**proposed** for the one point in it that changes who may do what.
+
+**The pause and its reason are preserved below, because the red lane they
+describe is still red and is now work to be done rather than a reason to stay
+paused.** M007-A owns the restoration: it owns diagnosing the failure below,
+fixing it, restoring the workflow's `push` and `pull_request` triggers with
+the path filters the workflow's own header preserves, and adding the
+`clippy -D warnings` step the desktop Rust host has never had. Until M007-A
+closes, the hosted qualification is still manual-dispatch-only and the
+desktop tree is still compiled by no automated gate — so this page's
+"deferred surfaces" list below is still accurate, and the editor is still not
+implemented.
 
 The pause is not a claim that the trajectory passes. It had already been red
 on `main`: `main`'s own most recent run (`39679968444` at `53d9fc9fd`) fails
@@ -276,6 +295,23 @@ against a deterministic offline provider) **is** implemented — see the
 live-turn leg in the M004 `session` phase above, which asserts the typed
 `model_unselected` fail-closed path before arming a loopback mock model
 server and then a real assistant turn with a denied write.
+
+**The editor and the graphical surfaces are deferred but now planned.** The
+M007 line delivers, in order: the desktop build and hosted gate (M007-A), a
+main chat region with a dockable side panel (M007-B), keyboard-first input
+with mouse parity (M007-C), the shared `/` command surface (M007-D, blocked
+on the acceptance of proposed ADR-0052), and a first-party editor over the
+shared `DocumentController` and the native LSP read surface (M007-E). Until
+those milestones land, none of them is implemented and this list is accurate.
+The renderer remains a single-`App()` control-plane console in a 760-pixel
+column with no keyboard handling; the projection it receives already carries
+`runs`, `jobs`, `subagents` and `recentTurns` that it does not render, which
+is the first thing M007-B changes.
+
+**A third-party editor engine remains deferred.** Monaco and equivalents are
+out of scope for M007: adopting one changes the renderer's Content Security
+Policy, its worker model, and the bundle and signing boundary that §8
+currently pins to local assets only, so it needs its own ADR.
 
 ## Developer commands
 
