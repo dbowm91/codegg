@@ -482,6 +482,115 @@ transcript; a composer whose text wraps to four rows in a three-row box does
 not fit, and `j` moves the caret a visual row. Reading "does it contain a
 newline" would be wrong in both directions.
 
+## Amendment: the vertical keys follow a multiline composer
+
+**Amended 2026-10-24.**
+
+The 2026-10-23 amendment above set the `j`/`k` condition against the box's
+**fit**. The condition is now the composer's **rendered row count**: the
+vertical keys belong to the composer while its content occupies more than one
+row, and they return to the transcript when it is down to one row again.
+
+### The change
+
+The effective condition on Decision part 4's `j` and `k` rows is now: *"The
+composer claims `j` and `k` while the composer content spans more than one
+row. On a composer whose content is a single row the key must fall through to
+transcript scroll unchanged."*
+
+The Decision text itself is **not** edited — an accepted record is amended by
+a dated appended section, never rewritten — so part 4's rows still read "more
+than one line", and this section, like the two above it, is what states the
+condition the implementation carries.
+
+The implementation names the condition
+`ClaimCondition::ContentSpansMultipleRows`, and its published wording is
+**"composer content spans more than one row"** — one string, shared by the
+implementation, `architecture/tui.md`'s claim table and page paragraph, and
+`docs/tui.md`'s two tables and two prose paragraphs.
+
+### What is preserved
+
+The 2026-10-23 amendment's **reason survives unchanged**: a wrapped single
+logical line that overflows its box must stay reachable, and it does. An
+overflowing composer is necessarily multiline — it occupies more rows than the
+box shows — so it keeps the vertical keys under this amendment exactly as it
+did under the previous one. The motion is still a **visual-row** motion, and
+the reason the content has to be reachable is still the reason the condition
+exists.
+
+### What changes
+
+The boundary moves in the **other** direction. A composer holding three rows
+that **fit** its box was previously not multiline by the old condition, so
+`j`, `k`, `Ctrl+u` and `Ctrl+d` fell through to the transcript even though the
+composer held more than one row of text. Under this amendment the composer
+keeps them. The recovery is **automatic**: when the composer's content
+returns to one row, the keys return to the transcript, and no key is needed to
+make that happen.
+
+### The trade-off
+
+While the composer is multiline, the transcript's `j` and `k` are
+unavailable: the composer owns them. That is the price of the rule, and it is
+the same price the previous condition charged for a different set of
+composers. The alternative — keeping the transcript's scroll on a composer
+that holds several rows — would leave the composer's own rows unreachable by
+the keys the composer publishes, which is the defect this amendment corrects.
+
+The app-level `Ctrl+u` and `Ctrl+d` routing follows **the same predicate**: it
+pages the composer while the composer content spans more than one row, and
+the transcript otherwise. It is an app-level chord, it is **not mode-gated**,
+and it adds **no** claim-table row — the claim table still governs the
+composer's letters and only the composer's letters.
+
+### Why this is an amendment and not a new decision
+
+The condition's **intent** is preserved exactly, and its letter could not be.
+The intent is that the vertical keys follow a composer that has more than one
+row of text; that is still precisely what the amended condition says. What
+changes is the **measure** of that intent, from "more rows than the box shows"
+to "more rows than one".
+
+This record already established the form this change takes. Its `space`-chord
+amendment and its wrapped-visual-row amendment above are dated sections
+appended to the accepted record, with a table of what changes and what does
+not, and the original Decision text left intact. This amendment follows that
+precedent rather than superseding the record.
+
+| Section | Before | After |
+|---|---|---|
+| Decision part 4, `j` and `k` rows | The composer claims `j`/`k` **only when the composer's content does not fit its box** — the wrapped row count exceeds the visible row count | The composer claims `j`/`k` **while the composer content spans more than one row** — the rendered row count exceeds one |
+| Decision part 4, `j` and `k` rows (fall-through) | "On a composer whose content **fits**, the key must fall through to transcript scroll unchanged" | "On a composer whose content is a **single row**, the key must fall through to transcript scroll unchanged" |
+| The `j`/`k` motion | A visual-row motion | A visual-row motion — **unchanged** |
+| The app-level `Ctrl+u`/`Ctrl+d` routing | Pages the composer when its content does not fit the box | Pages the composer while the composer content spans more than one row — **the same predicate** |
+| Compatibility | The composer claims `j`/`k` when its content does not fit | The composer claims `j`/`k` when it spans more than one row; a multiline composer that fits keeps them, and a single-row composer gives them back automatically |
+| Verification | `j` on a composer whose content overflows moves the caret a visual row, and `j` on a composer whose content fits falls through to transcript scroll | `j` on a composer that spans more than one row — fitting or not — moves the caret a visual row, and `j` on a single-row composer falls through to transcript scroll |
+
+What the amendment does **not** change: Option A, the single mode axis, the
+unconditional-claim rule, the fall-through rule, the dual-encoding rule for
+uppercase letters, the static-guard requirement, the closed fourteen-letter
+claim set, the mode gate, the composer's frontend-local-string boundary, and
+the transcript's own scroll behaviour. The claim table still governs the
+composer's letters; `j` and `k` are still claimed by the composer, and they
+are now claimed on a different condition.
+
+One consequence worth stating plainly, because it is easy to get wrong in the
+implementation: the condition must be evaluated against the **rendered row
+count**, never against the buffer's newline count and never against the box's
+fit. A composer whose text wraps to three rows in a three-row box is
+**multiline** — it holds more than one row of text — and `j` must move the
+caret a visual row; a composer whose text is one row must fall through to the
+transcript. Reading "does the content overflow the box" would be wrong in one
+direction, and reading "does it contain a newline" would be wrong in both.
+
+The condition is now **published**, and the published wording is checked:
+`scripts/check_tui_composer_keymap_drift.py` reads the label out of
+`ClaimCondition::label` and requires `architecture/tui.md`'s claim table and
+page paragraph and `docs/tui.md`'s tables and prose to carry it verbatim, and
+rejects the superseded phrasings. That guard is what stops this record, the
+implementation and the two published documents from drifting apart again.
+
 ## Supersession
 
 None. If this decision is superseded, `plans/subsystems/tui-composer-helix-parity-roadmap.md`

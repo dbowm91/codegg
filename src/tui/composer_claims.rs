@@ -67,7 +67,12 @@ pub enum ComposerVerb {
     LineDown,
     /// Helix `k` — move the caret up one line.
     LineUp,
-    /// Helix `v` — select characters.
+    /// Helix `v` — toggle the composer's select mode.
+    ///
+    /// A **mode**, not an action: the first press arms a character selection
+    /// at the caret and enters select mode, and the next press leaves the
+    /// mode and drops the selection. While the mode is on, a movement grows
+    /// the selection instead of dropping it.
     SelectChars,
     /// Helix `x` — select the caret's line.
     SelectLine,
@@ -189,20 +194,22 @@ pub enum ComposerFit {
 }
 
 impl ComposerFit {
-    /// Whether the content does not fit the box.
+    /// Whether the composer's content spans more than one rendered row.
     ///
-    /// The wrapped row count against the visible row count: **three rows in a
-    /// three-row box fits**, four rows in a three-row box does not. The
-    /// measure is rows, never the buffer's newline count — a single logical
-    /// line that wraps onto four rows overflows a three-row box, and a
-    /// three-line buffer that fits on one row does not.
-    pub fn overflows(self) -> bool {
+    /// The measure is the **rendered row count**: the wrapped rows the content
+    /// occupies. One row is not multiline; two rows are, whether or not the
+    /// box shows them all. The measure is rows, never the buffer's newline
+    /// count — a single logical line that wraps onto four rows is multiline,
+    /// and a three-line buffer that fits on one row is not.
+    ///
+    /// The **unknown** state is not multiline either: the gate runs before the
+    /// render pass, so a composer that has never been laid out has no
+    /// measurement, and a claim that fired on one would swallow the key in a
+    /// state the user cannot see.
+    pub fn is_multiline(self) -> bool {
         match self {
             Self::Unknown => false,
-            Self::Measured {
-                row_count,
-                visible_rows,
-            } => row_count > visible_rows,
+            Self::Measured { row_count, .. } => row_count > 1,
         }
     }
 }
@@ -210,9 +217,9 @@ impl ComposerFit {
 /// When a claim is live.
 ///
 /// A claim is usually live unconditionally. The one conditional claim is
-/// `j`/`k`, which the composer owns only when its **content does not fit its
-/// box**; on a composer whose content fits, they fall through to transcript
-/// scroll unchanged.
+/// `j`/`k`, which the composer owns only while its **content spans more than
+/// one row**; on a composer whose content is a single row, they fall through
+/// to transcript scroll unchanged.
 ///
 /// The condition is **explicit** on purpose. An implicit conditional is how a
 /// leak reappears: a claim that quietly stops applying looks exactly like a
@@ -221,9 +228,9 @@ impl ComposerFit {
 pub enum ClaimCondition {
     /// The claim is always live.
     Always,
-    /// The claim is live only when the composer's content does not fit its
-    /// box — the wrapped row count exceeds the visible row count.
-    ContentOverflowsBox,
+    /// The claim is live only when the composer's content spans more than one
+    /// rendered row — the wrapped row count exceeds one.
+    ContentSpansMultipleRows,
 }
 
 impl ComposerVerb {
@@ -239,7 +246,7 @@ impl ComposerVerb {
             Self::WordEnd => "Move to the end of the word",
             Self::LineDown => "Move down one line",
             Self::LineUp => "Move up one line",
-            Self::SelectChars => "Select characters",
+            Self::SelectChars => "Toggle select mode; a motion then extends the selection",
             Self::SelectLine => "Select the line",
             Self::DeleteSelection => "Delete the selection",
             Self::Paste => "Paste",
@@ -260,7 +267,7 @@ impl ClaimCondition {
     pub fn label(self) -> Option<&'static str> {
         match self {
             Self::Always => None,
-            Self::ContentOverflowsBox => Some("composer content overflows the box"),
+            Self::ContentSpansMultipleRows => Some("composer content spans more than one row"),
         }
     }
 }
@@ -319,7 +326,7 @@ fn key_label(key: char) -> Option<&'static str> {
 ///
 /// The derivation respects the claim's **condition**, so a consumer can decide
 /// whether the verb is available *now*. That is what makes `j` and `k` correct
-/// on a single-line buffer: there they are the transcript's, and the row must
+/// on a single-row composer: there they are the transcript's, and the row must
 /// not claim them.
 pub fn composer_verb_entries() -> Vec<ComposerVerbEntry> {
     COMPOSER_CLAIMS
@@ -350,7 +357,7 @@ impl ClaimCondition {
             // out, so there is nothing to measure against, and a claim that
             // fired on an unknown fit would swallow the key in a state the
             // user cannot see.
-            Self::ContentOverflowsBox => fit.overflows(),
+            Self::ContentSpansMultipleRows => fit.is_multiline(),
         }
     }
 }
@@ -416,11 +423,12 @@ impl ComposerClaim {
 /// `scripts/check_tui_composer_key_authority.py` rule G9 fails if the two
 /// maps ever disagree about a caret motion again.
 ///
-/// `j` and `k` are the one conditional pair. They are claimed only when the
-/// composer's **content does not fit its box** — the wrapped row count
-/// exceeds the visible row count. On a composer whose content fits they fall
+/// `j` and `k` are the one conditional pair. They are claimed only while the
+/// composer's **content spans more than one row** — the wrapped row count
+/// exceeds one. On a composer whose content is a single row they fall
 /// through to transcript scroll, which is why their app-level binding
-/// survives.
+/// survives; and they come back on their own as soon as the content grows
+/// back to more than one row.
 ///
 /// ## Which claims are live
 ///
@@ -497,14 +505,14 @@ pub const COMPOSER_CLAIMS: &[ComposerClaim] = &[
         verb: ComposerVerb::LineDown,
         status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
-        condition: ClaimCondition::ContentOverflowsBox,
+        condition: ClaimCondition::ContentSpansMultipleRows,
     },
     ComposerClaim {
         key: 'k',
         verb: ComposerVerb::LineUp,
         status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
-        condition: ClaimCondition::ContentOverflowsBox,
+        condition: ClaimCondition::ContentSpansMultipleRows,
     },
     ComposerClaim {
         key: 'o',
@@ -730,8 +738,8 @@ mod tests {
         assert_eq!(
             conditional,
             vec![
-                ('j', ClaimCondition::ContentOverflowsBox),
-                ('k', ClaimCondition::ContentOverflowsBox)
+                ('j', ClaimCondition::ContentSpansMultipleRows),
+                ('k', ClaimCondition::ContentSpansMultipleRows)
             ],
             "only the line motions are conditional; the rest are available whenever \
              the composer holds the keyboard"
@@ -749,14 +757,37 @@ mod tests {
         }
     }
 
-    /// The condition is the **fitted** content, not the buffer's line count.
+    /// A composer holding one rendered row is not multiline.
     ///
-    /// Three rows in a three-row box **fits**, and the key falls through; four
-    /// rows in a three-row box does not fit, and the composer takes the key.
-    /// The exact-fit case is the one that is easy to get backwards, so it is
-    /// stated on its own.
+    /// The measure is the **rendered row count**: a composer whose content
+    /// occupies a single row has no row below the caret for a vertical motion
+    /// to reach, so the transcript keeps the key.
     #[test]
-    fn the_fitted_content_condition_gates_j_and_k_only() {
+    fn a_composer_with_one_row_is_not_multiline() {
+        let one_row = ComposerFit::Measured {
+            row_count: 1,
+            visible_rows: 3,
+        };
+
+        assert!(
+            !one_row.is_multiline(),
+            "a composer whose content occupies one row is not multiline"
+        );
+        assert!(
+            !ClaimCondition::ContentSpansMultipleRows.holds(one_row),
+            "the multiline condition must not hold for a one-row composer"
+        );
+    }
+
+    /// Several rendered rows are multiline — whether or not the box shows them.
+    ///
+    /// The fitting case is the one the old condition got wrong: three rows in
+    /// a three-row box **fits**, and it is still multiline, so the vertical
+    /// keys belong to the composer. The overflowing case is the one the
+    /// 2026-10-23 amendment was recorded for: a composer whose content does
+    /// not fit is necessarily multiline, so it keeps them too.
+    #[test]
+    fn a_composer_with_several_rows_is_multiline() {
         let fits = ComposerFit::Measured {
             row_count: 3,
             visible_rows: 3,
@@ -765,22 +796,46 @@ mod tests {
             row_count: 4,
             visible_rows: 3,
         };
+
+        assert!(
+            fits.is_multiline(),
+            "three rows in a three-row box fits, and it is still multiline"
+        );
+        assert!(
+            overflows.is_multiline(),
+            "four rows in a three-row box does not fit, and it is multiline too"
+        );
+        assert!(
+            ClaimCondition::ContentSpansMultipleRows.holds(fits),
+            "the multiline condition must hold for a composer whose content fits"
+        );
+        assert!(
+            ClaimCondition::ContentSpansMultipleRows.holds(overflows),
+            "the multiline condition must hold for a composer whose content overflows"
+        );
+    }
+
+    /// The multiline condition gates the line motions and nothing else.
+    ///
+    /// The claim set is unchanged — the same letters, the same spellings. What
+    /// the condition changed is the **boundary** at which `j` and `k` become
+    /// the composer's.
+    #[test]
+    fn the_multiline_condition_gates_j_and_k_only() {
+        let multiline = ComposerFit::Measured {
+            row_count: 3,
+            visible_rows: 3,
+        };
         for claim in COMPOSER_CLAIMS {
-            let holds = claim.condition.holds(fits);
-            if claim.condition == ClaimCondition::ContentOverflowsBox {
+            if claim.condition == ClaimCondition::ContentSpansMultipleRows {
                 assert!(
-                    !holds,
-                    "{:?} must not be live when the content fits its box",
-                    claim.key
-                );
-                assert!(
-                    claim.condition.holds(overflows),
-                    "{:?} must be live when the content overflows its box",
+                    claim.condition.holds(multiline),
+                    "{:?} must be live on a multiline composer",
                     claim.key
                 );
             } else {
                 assert!(
-                    holds,
+                    claim.condition.holds(ComposerFit::Unknown),
                     "{:?} must be live whatever the content's fit",
                     claim.key
                 );
@@ -798,7 +853,7 @@ mod tests {
     #[test]
     fn an_unknown_fit_does_not_hold_the_condition() {
         assert!(
-            !ClaimCondition::ContentOverflowsBox.holds(ComposerFit::Unknown),
+            !ClaimCondition::ContentSpansMultipleRows.holds(ComposerFit::Unknown),
             "an unmeasured composer must not claim the key"
         );
         assert!(
@@ -807,17 +862,18 @@ mod tests {
         );
     }
 
-    /// The condition's label says what the condition is.
+    /// The label names the multiline rule, in the words the published tables
+    /// use.
     ///
-    /// The label is what the help overlay and the hint row show, so it has to
-    /// state the condition truthfully: the composer claims `j`/`k` when its
-    /// content does not fit its box, not when its buffer has more than one
-    /// line.
+    /// The label is the **shared vocabulary** between the implementation and
+    /// the published keymaps: `scripts/check_tui_composer_keymap_drift.py`
+    /// reads it out of this function and requires the published surfaces to
+    /// carry it verbatim.
     #[test]
-    fn the_conditions_label_states_the_fitted_content_condition() {
+    fn the_condition_label_names_the_multiline_rule() {
         assert_eq!(
-            ClaimCondition::ContentOverflowsBox.label(),
-            Some("composer content overflows the box"),
+            ClaimCondition::ContentSpansMultipleRows.label(),
+            Some("composer content spans more than one row"),
             "the label is the user-facing statement of the condition"
         );
         assert_eq!(

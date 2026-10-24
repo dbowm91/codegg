@@ -4051,6 +4051,13 @@ impl App {
             return;
         }
 
+        // The composer's mode is pushed here, at **dispatch**, and not at
+        // render: the rule that gives a movement its meaning has to hold
+        // when the key is dispatched, and a mode written during the render
+        // pass would be a frame behind the keystroke it is meant to
+        // explain.
+        self.sync_composer_mode();
+
         if self.prompt_state.show_completions && self.handle_completion_key(key) {
             debug_log!(
                 "routing to handle_completion_key - completions shown, Enter was intercepted"
@@ -4418,10 +4425,11 @@ impl App {
             Some(InputAction::PageUp) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, -10);
-                } else if self.prompt_state.prompt.content_overflows() {
-                    // The innermost surface first: the composer overflows its
-                    // box, so the page is the composer's. The transcript's
-                    // page is unchanged when the composer fits.
+                } else if self.prompt_state.prompt.is_multiline() {
+                    // The innermost surface first: the composer's content spans
+                    // more than one row, so the page is the composer's. The
+                    // transcript's page is unchanged when the composer holds a
+                    // single row.
                     self.prompt_state.prompt.page_up();
                 } else {
                     self.scroll_page_up()
@@ -4430,7 +4438,7 @@ impl App {
             Some(InputAction::PageDown) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, 10);
-                } else if self.prompt_state.prompt.content_overflows() {
+                } else if self.prompt_state.prompt.is_multiline() {
                     self.prompt_state.prompt.page_down();
                 } else {
                     self.scroll_page_down()
@@ -12935,6 +12943,43 @@ impl App {
         self.ui_state.input_mode
     }
 
+    /// Keep the composer's surface-local mode in step with the app.
+    ///
+    /// The composer holds a mode the app has no word for — Helix's select
+    /// mode — so the app pushes its own half (Insert or Normal) and the
+    /// composer's half survives the push. The push happens at **key
+    /// dispatch**, because the rule that decides what a movement means has
+    /// to hold when the key is dispatched and not a frame later.
+    ///
+    /// A composer that does **not** hold the keyboard has no mode of its
+    /// own to report: the badge describes the surface that holds the
+    /// keyboard, and a select mode left behind by a surface the reader has
+    /// left would be a mode the reader never chose. So the select mode ends
+    /// with the keyboard.
+    fn sync_composer_mode(&mut self) {
+        if !self.composer_holds_keyboard() {
+            self.prompt_state.prompt.leave_select_mode();
+            return;
+        }
+        let mode = self.composer_input_mode();
+        self.prompt_state.prompt.set_app_mode(mode);
+    }
+
+    /// Park the composer at Normal, dropping any select mode it held.
+    ///
+    /// A panel is a Normal-mode surface, so a panel taking the keyboard
+    /// parks the composer at Normal — and the composer's own select mode
+    /// ends with it, because a composer that comes back from a panel must
+    /// not be holding a select mode the reader never left.
+    ///
+    /// The park is the seam the panel focus already owns, so the mouse
+    /// route and the keyboard route cannot leave the composer in different
+    /// modes.
+    pub(crate) fn park_composer_at_normal(&mut self) {
+        self.ui_state.input_mode = InputMode::Normal;
+        self.prompt_state.prompt.leave_select_mode();
+    }
+
     /// Whether the focused side panel owns the keyboard right now.
     ///
     /// This is the exact condition `App::on_key` uses to decide whether the
@@ -13082,8 +13127,8 @@ impl App {
                         // The composer's vertical motion is a **visual-row**
                         // motion: the row the caret's byte is drawn on, not a
                         // newline-separated line of the buffer. The claim
-                        // holds only when the content overflows the box, so
-                        // the row below is a row the user can see.
+                        // holds only while the composer's content spans more
+                        // than one row, so there is a row below to move to.
                         self.prompt_state.prompt.cursor_visual_row_down();
                         debug_log!("composer claim: visual row down");
                     }

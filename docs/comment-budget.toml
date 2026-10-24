@@ -13,9 +13,9 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 122449
-max_comment_words = 1078055
-max_ratio = 0.1316
+max_comment_lines = 122954
+max_comment_words = 1082997
+max_ratio = 0.132
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
 # recorded here. A file that crosses the unlisted floor must be added.
@@ -551,12 +551,12 @@ max_ratio = 0.1316
 "src/tts/mod.rs" = { max_comment_lines = 41, max_ratio = 0.217 }
 "src/tui/app/commands.rs" = { max_comment_lines = 449, max_ratio = 0.3349 }
 "src/tui/app/input.rs" = { max_comment_lines = 104, max_ratio = 0.0849 }
-"src/tui/app/mod.rs" = { max_comment_lines = 2913, max_ratio = 0.1733 }
+"src/tui/app/mod.rs" = { max_comment_lines = 2942, max_ratio = 0.1749 }
 "src/tui/app/modal.rs" = { max_comment_lines = 85, max_ratio = 0.1641 }
 "src/tui/app/plugin_ui.rs" = { max_comment_lines = 60, max_ratio = 0.2231 }
 "src/tui/app/project_session.rs" = { max_comment_lines = 118, max_ratio = 0.5593 }
 "src/tui/app/prompt_turn.rs" = { max_comment_lines = 94, max_ratio = 0.3062 }
-"src/tui/app/render.rs" = { max_comment_lines = 685, max_ratio = 0.2812 }
+"src/tui/app/render.rs" = { max_comment_lines = 707, max_ratio = 0.2861 }
 "src/tui/app/state/async_request.rs" = { max_comment_lines = 64, max_ratio = 0.3299 }
 "src/tui/app/state/change_review.rs" = { max_comment_lines = 77, max_ratio = 0.1965 }
 "src/tui/app/state/chat.rs" = { max_comment_lines = 300, max_ratio = 0.1634 }
@@ -656,14 +656,14 @@ max_ratio = 0.1316
 "src/tui/components/messages.rs" = { max_comment_lines = 895, max_ratio = 0.1715 }
 "src/tui/components/messages/layout.rs" = { max_comment_lines = 68, max_ratio = 0.4534 }
 "src/tui/components/mod.rs" = { max_comment_lines = 32, max_ratio = 1.6843 }
-"src/tui/components/prompt.rs" = { max_comment_lines = 409, max_ratio = 0.417 }
+"src/tui/components/prompt.rs" = { max_comment_lines = 607, max_ratio = 0.4717 }
 "src/tui/components/sidebar.rs" = { max_comment_lines = 214, max_ratio = 0.0887 }
 "src/tui/components/spinner.rs" = { max_comment_lines = 81, max_ratio = 0.8351 }
 "src/tui/components/status_bar.rs" = { max_comment_lines = 23, max_ratio = 0.0661 }
 "src/tui/components/toast.rs" = { max_comment_lines = 44, max_ratio = 0.1226 }
-"src/tui/composer_claims.rs" = { max_comment_lines = 309, max_ratio = 0.6385 }
-"src/tui/composer_geometry.rs" = { max_comment_lines = 128, max_ratio = 0.37 }
-"src/tui/composer_text.rs" = { max_comment_lines = 377, max_ratio = 0.3844 }
+"src/tui/composer_claims.rs" = { max_comment_lines = 332, max_ratio = 0.6472 }
+"src/tui/composer_geometry.rs" = { max_comment_lines = 173, max_ratio = 0.3932 }
+"src/tui/composer_text.rs" = { max_comment_lines = 445, max_ratio = 0.4317 }
 "src/tui/document_session.rs" = { max_comment_lines = 339, max_ratio = 0.8053 }
 "src/tui/editor.rs" = { max_comment_lines = 2884, max_ratio = 0.4069 }
 "src/tui/editor_completion.rs" = { max_comment_lines = 130, max_ratio = 0.2022 }
@@ -915,16 +915,16 @@ max_ratio = 0.1316
 "tests/tui_render/nested_runtime_command_dispatch.inc" = { max_comment_lines = 37, max_ratio = 0.3895 }
 "tests/tui_render/presence_m002_collaborators.inc" = { max_comment_lines = 30, max_ratio = 0.0625 }
 "tests/tui_render/theme_selection_tokens.inc" = { max_comment_lines = 78, max_ratio = 0.2681 }
-"tests/tui_render/tui.inc" = { max_comment_lines = 144, max_ratio = 0.0683 }
+"tests/tui_render/tui.inc" = { max_comment_lines = 147, max_ratio = 0.0696 }
 "tests/tui_render/tui_agents_panel.inc" = { max_comment_lines = 42, max_ratio = 0.6087 }
 "tests/tui_render/tui_chat_surfaces.inc" = { max_comment_lines = 127, max_ratio = 0.1863 }
 "tests/tui_render/tui_completion_trajectory.inc" = { max_comment_lines = 158, max_ratio = 0.1393 }
-"tests/tui_render/tui_composer_claims.inc" = { max_comment_lines = 210, max_ratio = 0.3421 }
-"tests/tui_render/tui_composer_cursor.inc" = { max_comment_lines = 116, max_ratio = 0.2673 }
+"tests/tui_render/tui_composer_claims.inc" = { max_comment_lines = 225, max_ratio = 0.3549 }
+"tests/tui_render/tui_composer_cursor.inc" = { max_comment_lines = 130, max_ratio = 0.2749 }
 "tests/tui_render/tui_composer_insert_transitions.inc" = { max_comment_lines = 57, max_ratio = 0.2865 }
 "tests/tui_render/tui_composer_keymap_consistency.inc" = { max_comment_lines = 100, max_ratio = 0.3817 }
-"tests/tui_render/tui_composer_motions.inc" = { max_comment_lines = 112, max_ratio = 0.3673 }
-"tests/tui_render/tui_composer_selection.inc" = { max_comment_lines = 76, max_ratio = 0.2784 }
+"tests/tui_render/tui_composer_motions.inc" = { max_comment_lines = 125, max_ratio = 0.3754 }
+"tests/tui_render/tui_composer_selection.inc" = { max_comment_lines = 151, max_ratio = 0.2802 }
 "tests/tui_render/tui_composer_undo.inc" = { max_comment_lines = 77, max_ratio = 0.3263 }
 "tests/tui_render/tui_composer_wrap.inc" = { max_comment_lines = 29, max_ratio = 0.2397 }
 "tests/tui_render/tui_formatted_json_detail_view.inc" = { max_comment_lines = 34, max_ratio = 0.2519 }

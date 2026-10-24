@@ -682,7 +682,8 @@ fn test_prompt_widget_horizontal_cursor_visibility() {
 
 #[test]
 fn test_prompt_widget_cursor_on_empty_line() {
-    let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+    let theme = Arc::new(Theme::dark());
+    let mut widget = PromptWidget::new(theme.clone());
     widget.set_text("a\n".to_string());
     // The block is opt-in: the app decides which caret the composer draws
     // from the derived keyboard-ownership fact, and it tells the widget.
@@ -695,7 +696,15 @@ fn test_prompt_widget_cursor_on_empty_line() {
         .unwrap();
 
     let cell = &terminal.backend().buffer()[(0, 2)];
-    assert!(cell.modifier.contains(ratatui::style::Modifier::REVERSED));
+    assert_eq!(cell.bg, theme.primary, "the block's background");
+    assert_eq!(cell.fg, theme.background, "the block's foreground");
+    // `REVERSED` is SGR 7: it swaps the cell's two colours. The colours
+    // above already say "inverted", so the swap cancelled the block and left
+    // the caret invisible against the composer's own background.
+    assert!(
+        !cell.modifier.contains(ratatui::style::Modifier::REVERSED),
+        "the block carries no REVERSED modifier: it would swap the colours"
+    );
 }
 
 #[test]

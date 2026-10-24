@@ -168,6 +168,12 @@ jobs:
       - name: Composer key-ownership guard
         run: python3 scripts/check_tui_composer_key_authority.py
 
+      - name: Composer keymap drift self-test
+        run: python3 scripts/check_tui_composer_keymap_drift.py --self-test
+
+      - name: Composer keymap drift guard
+        run: python3 scripts/check_tui_composer_keymap_drift.py
+
       - name: Nested runtime block_on self-test
         run: python3 scripts/check_no_nested_runtime_block_on.py --self-test
 

@@ -18,12 +18,13 @@
 //! surfaces answering the same question differently.
 //!
 //! The vertical motions are **visual-row** motions (ADR-0042's amendment),
-//! and they are claimed only when the composer's content does not fit its
-//! box. Both facts are layout facts, so the tests below lay the composer out
+//! and they are claimed only while the composer's content spans more than one
+//! row. Both facts are layout facts, so the tests below lay the composer out
 //! before they press a key: a composer that has never been drawn has no
 //! measurement, and an unmeasured composer does not claim the key.
 
 use codegg::tui::app::App;
+use codegg::tui::composer_claims::ComposerFit;
 use codegg::tui::composer_geometry::VisualLayout;
 use codegg::tui::input::{InputAction, InputMode};
 use codegg::tui::text_geometry;
@@ -153,8 +154,8 @@ fn the_word_motions_stop_at_the_buffers_edges() {
 
 /// Lay the composer out, so the claim has a measurement.
 ///
-/// The `j`/`k` claim is a **layout** fact: the composer claims them when its
-/// content does not fit its box, and the box only exists once the app has
+/// The `j`/`k` claim is a **layout** fact: the composer claims them while its
+/// content spans more than one row, and the box only exists once the app has
 /// rendered. A test that presses a key without rendering first is testing
 /// the *unmeasured* case, where the key falls through to the transcript.
 fn render_app(app: &mut App, width: u16, height: u16) {
@@ -185,6 +186,16 @@ fn overflowing_prompt() -> String {
     (0..200).map(|index| format!("w{index:03} ")).collect()
 }
 
+/// A prompt whose content spans more than one row **and fits** the box.
+///
+/// The box grows to fit its content up to the pane's budget, so a prompt of a
+/// few rows is shown whole: it is multiline and it is not cut off. This is
+/// the case the old "does not fit its box" condition missed — the composer
+/// holds more than one row, and it keeps the page keys.
+fn multiline_prompt() -> String {
+    (0..40).map(|index| format!("w{index:03} ")).collect()
+}
+
 /// `j` moves the caret down a **visual row**, and the transcript does not
 /// scroll.
 ///
@@ -196,8 +207,8 @@ fn j_moves_the_caret_down_a_visual_row() {
     compose(&mut app, &overflowing_prompt(), 0);
     render_app(&mut app, 80, 24);
     assert!(
-        app.prompt_state.prompt.content_overflows(),
-        "precondition: the composer's content overflows its box"
+        app.prompt_state.prompt.is_multiline(),
+        "precondition: the composer's content spans more than one row"
     );
     let layout = visual_layout(&app);
     let expected = layout.byte_at(1, 0).expect("the second row has a cell");
@@ -265,8 +276,8 @@ fn the_vertical_motions_land_on_the_shared_geometrys_offsets() {
             "the text must wrap onto more than one row at width {width}"
         );
         assert!(
-            app.prompt_state.prompt.content_overflows(),
-            "precondition: the composer's content overflows its box at width {width}"
+            app.prompt_state.prompt.is_multiline(),
+            "precondition: the composer's content spans more than one row at width {width}"
         );
 
         // Every twenty-fifth byte: the widget's own test walks every byte of
@@ -299,35 +310,35 @@ fn the_vertical_motions_land_on_the_shared_geometrys_offsets() {
     }
 }
 
-/// `j` and `k` are claimed only when the composer's content **overflows** its
-/// box.
+/// `j` and `k` are claimed only while the composer's content spans more than
+/// one row.
 ///
-/// On a composer whose content fits they fall through to transcript scroll,
-/// which is what ADR-0042's conditional pair says. The caret staying put is
-/// the observable half; the scroll is the other half, and it is checked in
-/// the claim table's own tests.
+/// On a composer whose content is a single row they fall through to transcript
+/// scroll, which is what ADR-0042's conditional pair says. The caret staying
+/// put is the observable half; the scroll is the other half, and it is checked
+/// in the claim table's own tests.
 #[test]
-fn the_vertical_motions_do_not_apply_when_the_content_fits() {
+fn the_vertical_motions_do_not_apply_when_the_content_is_a_single_row() {
     let mut app = test_app();
     compose(&mut app, "one two three", 4);
     render_app(&mut app, 80, 24);
     assert!(
-        !app.prompt_state.prompt.content_overflows(),
-        "precondition: the composer's content fits its box"
+        !app.prompt_state.prompt.is_multiline(),
+        "precondition: the composer's content occupies a single row"
     );
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         caret(&app),
         4,
-        "`j` moved the caret on a composer whose content fits"
+        "`j` moved the caret on a composer whose content is a single row"
     );
 
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
     assert_eq!(
         caret(&app),
         4,
-        "`k` moved the caret on a composer whose content fits"
+        "`k` moved the caret on a composer whose content is a single row"
     );
 }
 
@@ -347,18 +358,18 @@ fn a_motion_does_not_change_the_text() {
 // The page motions
 // ---------------------------------------------------------------------------
 
-/// `Ctrl+d` pages the **composer** when its content overflows the box.
+/// `Ctrl+d` pages the **composer** when its content spans more than one row.
 ///
 /// The innermost surface first: the composer is the surface the user is
-/// looking at, and its content does not fit.
+/// looking at, and it holds more than one row.
 #[test]
-fn ctrl_d_pages_the_composer_when_its_content_overflows() {
+fn ctrl_d_pages_the_composer_when_its_content_spans_more_than_one_row() {
     let mut app = test_app();
     compose(&mut app, &overflowing_prompt(), 0);
     render_app(&mut app, 80, 24);
     assert!(
-        app.prompt_state.prompt.content_overflows(),
-        "precondition: the composer's content overflows its box"
+        app.prompt_state.prompt.is_multiline(),
+        "precondition: the composer's content spans more than one row"
     );
     let scroll_before = app.prompt_state.prompt.scroll;
 
@@ -366,16 +377,50 @@ fn ctrl_d_pages_the_composer_when_its_content_overflows() {
 
     assert!(
         app.prompt_state.prompt.scroll > scroll_before,
-        "`Ctrl+d` must page the composer when its content overflows the box"
+        "`Ctrl+d` must page the composer when its content spans more than one row"
     );
 }
 
-/// `Ctrl+d` pages the **transcript** when the composer's content fits.
+/// A composer holding more than one row **that fits its box** takes the page
+/// keys, and the page moves the caret with the window.
 ///
-/// The transcript's page is unchanged when the composer fits: the composer's
-/// box holds its content, so there is nothing of the composer's to page.
+/// This is the case the old condition got wrong: the composer fits, so it used
+/// to page nothing at all. The page moves the caret by a page of visual rows,
+/// and the caret is what makes the case usable — so the caret must move.
 #[test]
-fn ctrl_d_pages_the_transcript_when_the_composers_content_fits() {
+fn a_multiline_composer_takes_the_page_keys() {
+    let mut app = test_app();
+    compose(&mut app, &multiline_prompt(), 0);
+    render_app(&mut app, 80, 24);
+    let fit = app.prompt_state.prompt.content_fit();
+    assert!(
+        matches!(
+            fit,
+            ComposerFit::Measured {
+                row_count,
+                visible_rows
+            } if row_count > 1 && row_count <= visible_rows
+        ),
+        "precondition: the composer holds several rows and shows all of them, got {fit:?}"
+    );
+    let caret_before = caret(&app);
+
+    press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+    assert_ne!(
+        caret(&app),
+        caret_before,
+        "`Ctrl+d` must page the composer and move the caret with the window"
+    );
+}
+
+/// `Ctrl+d` pages the **transcript** when the composer's content is a single
+/// row.
+///
+/// The transcript's page is unchanged when the composer holds one row: there
+/// is nothing of the composer's to page, so the key falls through.
+#[test]
+fn a_single_row_composer_leaves_the_page_keys_to_the_transcript() {
     let mut app = test_app();
     for index in 0..40 {
         app.messages_state
@@ -390,8 +435,8 @@ fn ctrl_d_pages_the_transcript_when_the_composers_content_fits() {
     compose(&mut app, "a short prompt", 0);
     render_app(&mut app, 80, 24);
     assert!(
-        !app.prompt_state.prompt.content_overflows(),
-        "precondition: the composer's content fits its box"
+        !app.prompt_state.prompt.is_multiline(),
+        "precondition: the composer's content occupies a single row"
     );
     let composer_scroll = app.prompt_state.prompt.scroll;
     app.messages_state.messages.scroll = 0;
@@ -400,11 +445,11 @@ fn ctrl_d_pages_the_transcript_when_the_composers_content_fits() {
 
     assert_eq!(
         app.prompt_state.prompt.scroll, composer_scroll,
-        "the composer must not page when its content fits"
+        "the composer must not page when its content is a single row"
     );
     assert!(
         app.messages_state.messages.scroll > 0,
-        "`Ctrl+d` must page the transcript when the composer's content fits"
+        "`Ctrl+d` must page the transcript when the composer's content is a single row"
     );
 }
 
