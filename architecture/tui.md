@@ -848,6 +848,14 @@ Session-dialog selection keys use `child_instance_id` when available, while
 `Enter` still carries the worker task id required to open that child's
 transcript; the two identities are kept in separate fields.
 
+**C001 changes no TUI surface.** A delegated run's terminal state now reaches
+the *orchestrator* — the model — as a durable notice injected at the next turn
+boundary, and the agent can read the child's recorded result with
+`task action=get`. The strip, the sidebar panel, the `Ctrl+T` overlay, the
+`/sessions` dialog, and the subagent tab are unchanged: the notice is a
+channel to the model, not a new row for the user. See `architecture/agent.md`
+"The delegated run's durable terminal notice".
+
 **Descriptors are carried, never resolved.** `SubagentRow::profile` and
 `usefulness` are the curated pool entry's one-line character description and
 operational guidance. They are drawn once at spawn by `SubagentNameLease::entry`

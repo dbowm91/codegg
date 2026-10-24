@@ -47,7 +47,10 @@ use crate::error::StorageError;
 /// publication journal). The constant therefore moves 87 → 88. The
 /// renumbering is additive and changes the meaning of no published
 /// database: v88 is a new migration above every published one.
-pub const STORAGE_LAYOUT_VERSION: u32 = 88;
+///
+/// ADR-0051 option B adds **v89**, the durable delegated-run transcript: one
+/// append-only row table keyed by `AgentRunId`, plus its per-run aggregate.
+pub const STORAGE_LAYOUT_VERSION: u32 = 89;
 
 pub struct Database {
     pool: SqlitePool,

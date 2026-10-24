@@ -130,6 +130,25 @@ run_guards() {
     echo "==> python3 scripts/check_contained_worktree_grant.py"
     (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_grant.py)
 
+    # A delegated run's terminal state must be durable: the delegated job has
+    # to subscribe for a terminal notice, or the orchestrator never learns what
+    # happened to its child. The subscription's disposition and kind are part
+    # of the same contract, so the guard runs with its self-test.
+    echo "==> python3 scripts/check_subagent_notification_wiring.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_subagent_notification_wiring.py --self-test)
+
+    echo "==> python3 scripts/check_subagent_notification_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_subagent_notification_wiring.py)
+
+    # A delegated run's transcript must be written redacted and bounded. The
+    # declared bounds and the redaction entry point are production claims, so
+    # the guard runs with its self-test.
+    echo "==> python3 scripts/check_delegated_transcript_store.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_delegated_transcript_store.py --self-test)
+
+    echo "==> python3 scripts/check_delegated_transcript_store.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_delegated_transcript_store.py)
+
     # The shared checkout's lease belongs to the group, and the mediation
     # authority must not fail open. Both are correctness contracts whose
     # regressions are silent, so both guards run here with their self-tests.

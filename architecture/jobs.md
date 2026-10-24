@@ -788,6 +788,38 @@ The `job` model tool (`status|wait|cancel|output`) reuses the
 "Generic job terminal notices" and `architecture/authorization.md` for the
 owner rule.
 
+#### Delegated runs subscribe for the same notice (C001)
+
+The `task` tool's durable spawn path is a second subscriber of the same
+machinery. After a successful submit and before the tool reports acceptance,
+it durably subscribes the delegated job with kind `subagent`, the parent's
+session and turn, the same invocation key the submit used, the parent's owner
+principal and workspace, and the `NotifyOnly` disposition. A retried spawn
+reuses the invocation key and therefore re-subscribes the same job instead of
+creating a second notice.
+
+Three rules are load-bearing:
+
+- **A subscription failure never fails the delegated work.** It is logged at
+  `warn` with the job id and the reason, and delivery falls back to the
+  in-band push. The only exception is a *conflicting owner* on the same
+  invocation key: that fails the spawn rather than silently re-targeting the
+  notice at another session.
+- **A missing parent session skips the subscription.** The notice's owner must
+  be the job's owner, so a delegated spawn with no host-originated parent
+  session logs the reason and proceeds; it never fabricates a session id.
+- **The delegated kind has its own notice content.** The generic
+  background-job wording cannot identify the child, and its "completed
+  successfully: {summary}" tail reads as an empty success when the child
+  recorded nothing. The delegated content names the run, states the recorded
+  outcome — or states plainly that the run recorded none — and carries the
+  result reference the orchestrator reads for the full result.
+
+`JobBackgroundSubscription` records the owner principal and the workspace the
+subscription was created under (both optional, so pre-existing rows still
+deserialize). See `architecture/agent.md` "The delegated run's durable
+terminal notice".
+
 ### GitHub Actions watching (M004)
 
 `src/scheduler/ci_watch.rs` registers one immutable watch target

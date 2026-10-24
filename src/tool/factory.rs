@@ -310,7 +310,7 @@ pub fn build_session_tool_registry(
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
         notification_service,
-        job_notification_service,
+        job_notification_service: job_notification_service.clone(),
         ci_watch_service,
         search_runtime,
         research_provider,
@@ -383,11 +383,16 @@ pub fn build_session_tool_registry(
         } else {
             task_tool
         };
-        let task_tool = task_tool
-            .with_workspace_id(Some(execution.workspace_id.clone()))
-            .with_workstream_claim_store(pool.as_ref().map(|pool| {
-                codegg_core::workstream_claim::WorkstreamClaimStore::new(pool.clone())
-            }));
+        let task_tool =
+            task_tool
+                .with_workspace_id(Some(execution.workspace_id.clone()))
+                .with_workstream_claim_store(pool.as_ref().map(|pool| {
+                    codegg_core::workstream_claim::WorkstreamClaimStore::new(pool.clone())
+                }))
+                // The durable notifier: a delegated run subscribes for its own
+                // terminal notice, so the orchestrator hears about the child even
+                // when its turn has already ended.
+                .with_job_notifications(job_notification_service.clone());
         tool_registry.register(task_tool);
     }
 

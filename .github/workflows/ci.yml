@@ -153,6 +153,18 @@ jobs:
       - name: Contained worktree grant guard
         run: python3 scripts/check_contained_worktree_grant.py
 
+      - name: Subagent notification-wiring guard (self-test)
+        run: python3 scripts/check_subagent_notification_wiring.py --self-test
+
+      - name: Subagent notification-wiring guard
+        run: python3 scripts/check_subagent_notification_wiring.py
+
+      - name: Delegated transcript-store guard (self-test)
+        run: python3 scripts/check_delegated_transcript_store.py --self-test
+
+      - name: Delegated transcript-store guard
+        run: python3 scripts/check_delegated_transcript_store.py
+
       - name: Writer-fence completeness guard (self-test)
         run: python3 scripts/check_writer_fence_completeness.py --self-test
 

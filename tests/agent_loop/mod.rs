@@ -48,8 +48,14 @@ pub mod context_continuity_m004;
 #[path = "context_epoch_handoff.inc"]
 pub mod context_epoch_handoff;
 
+#[path = "delegated_transcript.inc"]
+pub mod delegated_transcript;
+
 #[path = "context_plan_convergence.inc"]
 pub mod context_plan_convergence;
+
+#[path = "delegated_notice_c001.inc"]
+pub mod delegated_notice_c001;
 
 #[path = "event_processor.inc"]
 pub mod event_processor;

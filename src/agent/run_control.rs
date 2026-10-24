@@ -411,12 +411,15 @@ impl RunControlService {
         );
         if let Some(parent) = run.parent_run_id {
             if let Some(handle) = self.live.lock().await.get(&parent).cloned() {
+                // The in-band push is a fast path for a live parent turn. The
+                // durable terminal notice row is the authoritative channel
+                // and is unaffected by a dropped push.
                 if let Err(error) = handle.follow_up_tx.try_send(notice.clone()) {
                     tracing::warn!(
                         run_id = %run_id,
                         parent_run_id = %parent,
                         %error,
-                        "child completion notice dropped (parent channel full/closed)"
+                        "child completion push dropped (parent channel full/closed); the durable terminal notice is unaffected"
                     );
                 }
             }
@@ -432,11 +435,13 @@ impl RunControlService {
                     turn_id,
                 };
                 if let Some(follow_up_tx) = self.live_turns.lock().await.get(&owner).cloned() {
+                    // Same fast path as above: a dropped push costs latency,
+                    // never the notice.
                     if let Err(error) = follow_up_tx.try_send(notice) {
                         tracing::warn!(
                             run_id = %run_id,
                             %error,
-                            "child completion notice dropped (turn channel full/closed)"
+                            "child completion push dropped (turn channel full/closed); the durable terminal notice is unaffected"
                         );
                     }
                 }

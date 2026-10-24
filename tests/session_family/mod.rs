@@ -21,6 +21,8 @@ pub mod common;
 pub mod control_m004_controller_lease;
 #[path = "crud.inc"]
 pub mod crud;
+#[path = "delegated_transcript_catalog.inc"]
+pub mod delegated_transcript_catalog;
 #[path = "projection_consumer.inc"]
 pub mod projection_consumer;
 #[path = "projection_m4_controller.inc"]

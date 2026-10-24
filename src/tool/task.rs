@@ -416,6 +416,13 @@ pub struct TaskTool {
     /// shared checkout while a group sibling held the permit. The fence
     /// travels with the dispatch instead.
     writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
+    /// The durable job-terminal notifier (ADR-0031).
+    ///
+    /// `None` in a standalone harness: the delegated spawn then skips the
+    /// subscription (logged) instead of failing. With a handle, the durable
+    /// notice row is the authoritative channel for the child's terminal
+    /// state — the in-band push is only a fast path.
+    job_notifications: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
 }
 
 /// Explicit owner of orchestration operations. A root turn owns its direct
@@ -1009,6 +1016,7 @@ impl TaskTool {
             convergence_store: None,
             orchestration_config: Default::default(),
             writer_fence: None,
+            job_notifications: None,
         }
     }
 
@@ -1042,6 +1050,7 @@ impl TaskTool {
             convergence_store: None,
             orchestration_config: Default::default(),
             writer_fence: None,
+            job_notifications: None,
         }
     }
 
@@ -1072,6 +1081,20 @@ impl TaskTool {
 
     pub fn with_agent_run_store_opt(mut self, store: Option<Arc<dyn AgentRunStore>>) -> Self {
         self.agent_runs = store;
+        self
+    }
+
+    /// Attach the durable job-terminal notifier (ADR-0031).
+    ///
+    /// With a handle, a delegated spawn subscribes for its own terminal
+    /// notice, so the orchestrator hears about the child even when its turn
+    /// has ended. `None` leaves the delegated spawn on the in-band push only
+    /// (the standalone-harness case).
+    pub fn with_job_notifications(
+        mut self,
+        service: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    ) -> Self {
+        self.job_notifications = service;
         self
     }
 
@@ -1262,6 +1285,151 @@ impl TaskTool {
             .or_else(|| self.writer_fence.clone())
     }
 
+    /// Render a durable `task action=get` answer.
+    ///
+    /// The `result_ref` pointer is kept so an existing reader still finds
+    /// it, and the child's recorded outcome is returned under a clearly
+    /// named field so its bound is observable. A run with no recorded
+    /// result says so plainly: an empty string would read like "the child
+    /// produced nothing".
+    fn format_durable_task_get(
+        &self,
+        task: &codegg_core::agent_run::AgentTaskRecord,
+        run: &codegg_core::agent_run::AgentRunRecord,
+        recorded: Option<codegg_core::run_result::AgentRunResult>,
+    ) -> String {
+        let result_ref = run.result_ref.clone().unwrap_or_default();
+        let text = append_run_failure(
+            format!(
+                "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
+                task.task_id,
+                run.run_id,
+                run.status.as_str(),
+                result_ref
+            ),
+            run,
+        );
+        let (state, note, body, recorded_status) = match recorded {
+            Some(result) if !result.summary.trim().is_empty() => (
+                "recorded",
+                None,
+                Some(result.summary),
+                Some(format!("{:?}", result.status).to_lowercase()),
+            ),
+            Some(result) => (
+                "empty",
+                Some("this run recorded a result with no output text".to_string()),
+                None,
+                Some(format!("{:?}", result.status).to_lowercase()),
+            ),
+            None => (
+                "absent",
+                Some("this run recorded no result".to_string()),
+                None,
+                None,
+            ),
+        };
+        serde_json::json!({
+            "task_id": task.task_id.to_string(),
+            "run_id": run.run_id.to_string(),
+            "status": run.status.as_str(),
+            "result_ref": result_ref,
+            "text": text,
+            "recorded_result": body,
+            "recorded_result_state": state,
+            "recorded_result_note": note,
+            "recorded_result_status": recorded_status,
+            "recorded_result_bytes": body.as_deref().map(str::len).unwrap_or(0),
+            "recorded_result_limit_bytes": codegg_core::run_result::MAX_RESULT_SUMMARY_BYTES,
+        })
+        .to_string()
+    }
+
+    /// Subscribe the delegated job for its own durable terminal notice.
+    ///
+    /// The durable notice row is the authoritative channel: the in-band push
+    /// (`RunControlService::record_terminal`) reaches a live parent turn only
+    /// while its channel accepts, and reaches nobody once the turn has ended.
+    /// The subscription is created with the same invocation key the submit
+    /// used, so a retried spawn is idempotent and a crash between submit and
+    /// subscribe is healed by that retry.
+    ///
+    /// A subscription failure never fails the delegated work: it is logged at
+    /// `warn` and the orchestrator falls back to the in-band push. A
+    /// *conflicting owner* on the same invocation key is the one exception —
+    /// it fails the spawn rather than silently re-targeting the notice at
+    /// another session.
+    async fn subscribe_delegated_notice(
+        &self,
+        job_id: &codegg_core::jobs::JobId,
+        invocation_key: &str,
+        workspace_id: &WorkspaceId,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<(), ToolError> {
+        use crate::scheduler::job_notifications::{
+            JobCompletionDisposition, JobNotificationError, DELEGATED_JOB_KIND,
+        };
+        let Some(service) = self.job_notifications.clone() else {
+            tracing::warn!(
+                job_id = %job_id,
+                "delegated run has no durable job notification service; delivery falls back to the in-band push"
+            );
+            return Ok(());
+        };
+        // The job's owning session is the parent's: the durable terminal
+        // notice is refused when the subscription owner and the job owner
+        // differ, so this must be the same identity the job was submitted
+        // with. A missing parent session is a skip, not a fabrication.
+        let Some(session_id) = self
+            .parent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|session| !session.is_empty())
+        else {
+            tracing::warn!(
+                job_id = %job_id,
+                "delegated run has no host-originated parent session; the durable terminal notice is skipped"
+            );
+            return Ok(());
+        };
+        let turn_id = ctx
+            .and_then(|context| context.turn_id.clone())
+            .or_else(|| self.parent_turn_id.clone());
+        let owner_principal = ctx.and_then(|context| {
+            context
+                .origin_principal
+                .clone()
+                .or_else(|| context.principal_identity.clone())
+        });
+        match service
+            .subscribe_with_options(
+                job_id,
+                DELEGATED_JOB_KIND,
+                session_id,
+                turn_id.as_deref(),
+                invocation_key,
+                JobCompletionDisposition::NotifyOnly,
+                owner_principal.as_deref(),
+                Some(workspace_id.as_str()),
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(JobNotificationError::Conflict(reason)) => Err(ToolError::Execution(format!(
+                "delegated run notification subscription conflicts with an existing owner: {reason}"
+            ))),
+            Err(error) => {
+                tracing::warn!(
+                    job_id = %job_id,
+                    %error,
+                    "delegated run notification subscription failed; the durable notice is missing and delivery falls back to the in-band push"
+                );
+                Ok(())
+            }
+        }
+    }
+
     pub fn store(&self) -> Arc<Mutex<TaskStore>> {
         self.store.clone()
     }
@@ -1302,7 +1470,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1884,16 +2052,17 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 return Ok(match run {
-                    Some(run) => append_run_failure(
-                        format!(
-                            "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
-                            task.task_id,
-                            run.run_id,
-                            run.status.as_str(),
-                            run.result_ref.clone().unwrap_or_default()
-                        ),
-                        &run,
-                    ),
+                    Some(run) => {
+                        // The recorded result is the child's own durable
+                        // outcome, read from the run-result store and bounded
+                        // by that store's own bound. A pointer alone leaves
+                        // the orchestrator guessing what the child produced.
+                        let recorded = agent_runs
+                            .get_result(&run.run_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?;
+                        self.format_durable_task_get(&task, &run, recorded)
+                    }
                     None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
                 });
             }
@@ -1979,6 +2148,9 @@ impl TaskTool {
                     .workspace_id_for_root(&workspace_root)
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
+                // The subscription's workspace: the parent's, resolved once
+                // for both the first submit and a retry after a restart.
+                let notification_workspace_id = workspace_id.clone();
                 let durable = if let Some(agent_runs) = self.agent_runs.clone() {
                     let delegation_key = delegation_key(&call_identity);
                     let project_id = self.project_id.clone().unwrap_or_default();
@@ -2071,6 +2243,21 @@ impl TaskTool {
                         }
                     }
                     if created.run.job_id.is_some() || created.run.status.is_terminal() {
+                        // A retry after a restart: the job is already
+                        // submitted, so the subscription the interrupted
+                        // attempt may never have created is completed here.
+                        // The invocation key is the one the submit used, so
+                        // an existing subscription is reused rather than
+                        // duplicated.
+                        if let Some(existing_job_id) = created.run.job_id.clone() {
+                            self.subscribe_delegated_notice(
+                                &existing_job_id,
+                                &delegation_key,
+                                &notification_workspace_id,
+                                ctx,
+                            )
+                            .await?;
+                        }
                         return Ok(format!(
                             "Task status\nTask: {}\nRun: {}\nStatus: {}",
                             created.task.task_id,
@@ -2198,6 +2385,18 @@ impl TaskTool {
                 let durable_ids = durable
                     .as_ref()
                     .map(|(task_id, run_id, _)| (task_id.clone(), run_id.clone()));
+                // Durable subscription before reporting acceptance. A retried
+                // spawn reuses the same invocation key, so it re-subscribes
+                // the same job instead of creating a second notice.
+                if let Some((_, _, delegation_key)) = durable.as_ref() {
+                    self.subscribe_delegated_notice(
+                        &submitted.job_id,
+                        delegation_key,
+                        &notification_workspace_id,
+                        ctx,
+                    )
+                    .await?;
+                }
                 if let Some((_, run_id, _)) = durable {
                     if let Some(agent_runs) = self.agent_runs.clone() {
                         agent_runs
@@ -2814,5 +3013,210 @@ mod tests {
             spawn_request_fingerprint("general", "description-a", "prompt", &[], None, &[]),
             spawn_request_fingerprint("general", "description-b", "prompt", &[], None, &[])
         );
+    }
+
+    // ── C001: the delegated run's durable terminal notice ──────────────────
+
+    use crate::scheduler::job_notifications::{JobCompletionDisposition, JobNotificationService};
+    use codegg_core::jobs::JobId;
+    use codegg_core::workspace::WorkspaceId;
+
+    fn parent_tool(service: Arc<JobNotificationService>) -> TaskTool {
+        TaskTool::new(
+            Arc::new(Mutex::new(TaskStore::new())),
+            None,
+            Some("sess-parent".to_string()),
+            Vec::new(),
+        )
+        .with_project_context(None, None, Some("turn-parent".to_string()))
+        .with_job_notifications(Some(service))
+    }
+
+    fn parent_context() -> ToolExecutionContext {
+        let mut context = ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        context.session_id = Some("sess-parent".to_string());
+        context.turn_id = Some("turn-parent".to_string());
+        context.origin_principal = Some("principal-parent".to_string());
+        context
+    }
+
+    /// The subscription must carry the owner the plan names, so the notice
+    /// lands in the parent's session and no one else's.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_delegated_subscription_records_the_agreed_owner() {
+        let service = Arc::new(JobNotificationService::new());
+        let tool = parent_tool(service.clone());
+        let job_id = JobId::new_unchecked("job-c001-owner");
+        let workspace_id = WorkspaceId::new_unchecked("ws-c001");
+
+        tool.subscribe_delegated_notice(
+            &job_id,
+            "invocation-c001",
+            &workspace_id,
+            Some(&parent_context()),
+        )
+        .await
+        .expect("the delegated spawn subscribes");
+
+        let subscription = service
+            .get_subscription(job_id.as_str())
+            .await
+            .expect("subscription lookup")
+            .expect("the delegated job is subscribed");
+        assert_eq!(subscription.kind, "subagent");
+        assert_eq!(subscription.session_id, "sess-parent");
+        assert_eq!(subscription.turn_id.as_deref(), Some("turn-parent"));
+        assert_eq!(subscription.invocation_key, "invocation-c001");
+        assert_eq!(
+            subscription.disposition,
+            JobCompletionDisposition::NotifyOnly,
+            "a delegated run asks for a notice, never for a continuation"
+        );
+        assert_eq!(
+            subscription.owner_principal.as_deref(),
+            Some("principal-parent")
+        );
+        assert_eq!(subscription.workspace_id.as_deref(), Some("ws-c001"));
+    }
+
+    /// No host-originated parent session means no owner to notify. The
+    /// subscription is skipped, not fabricated, and the spawn still succeeds.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_delegated_spawn_without_a_parent_session_skips_the_subscription() {
+        let service = Arc::new(JobNotificationService::new());
+        let tool = TaskTool::default().with_job_notifications(Some(service.clone()));
+        let job_id = JobId::new_unchecked("job-c001-no-session");
+        let workspace_id = WorkspaceId::new_unchecked("ws-c001");
+
+        tool.subscribe_delegated_notice(&job_id, "invocation-c001", &workspace_id, None)
+            .await
+            .expect("a missing parent session must not fail the spawn");
+
+        assert!(
+            service
+                .get_subscription(job_id.as_str())
+                .await
+                .expect("subscription lookup")
+                .is_none(),
+            "no subscription may be created without an owning session"
+        );
+    }
+
+    /// Another owner already holds the job: the spawn fails rather than
+    /// silently re-targeting the notice at a session that did not ask.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_conflicting_owner_fails_the_delegated_spawn() {
+        let service = Arc::new(JobNotificationService::new());
+        let job_id = JobId::new_unchecked("job-c001-conflict");
+        service
+            .subscribe(&job_id, "subagent", "sess-other", None, "invocation-other")
+            .await
+            .expect("the first owner subscribes");
+        let tool = parent_tool(service.clone());
+
+        let error = tool
+            .subscribe_delegated_notice(
+                &job_id,
+                "invocation-c001",
+                &WorkspaceId::new_unchecked("ws-c001"),
+                Some(&parent_context()),
+            )
+            .await
+            .expect_err("a conflicting owner must fail the spawn");
+        assert!(
+            error.to_string().contains("conflicts"),
+            "the refusal must name the conflict, got {error}"
+        );
+    }
+
+    /// A notification store that cannot answer must not take the delegated
+    /// work down with it: the failure is logged at `warn` and the spawn
+    /// proceeds on the in-band push.
+    #[test]
+    fn a_failed_subscription_does_not_fail_the_delegated_spawn() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let pool = runtime.block_on(async {
+            let name = format!("c001_notify_{}", uuid::Uuid::new_v4().simple());
+            let url = format!("file:{name}?mode=memory&cache=shared");
+            let options = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url)
+                .expect("valid sqlite options")
+                .create_if_missing(true)
+                .foreign_keys(true);
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .expect("connect");
+            crate::session::schema::migrate(&pool)
+                .await
+                .expect("migrate");
+            pool
+        });
+        let service = Arc::new(JobNotificationService::with_pool(pool.clone()));
+        runtime.block_on(pool.close());
+        let tool = parent_tool(service.clone());
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                tool.subscribe_delegated_notice(
+                    &JobId::new_unchecked("job-c001-store-failure"),
+                    "invocation-c001",
+                    &WorkspaceId::new_unchecked("ws-c001"),
+                    Some(&parent_context()),
+                )
+                .await
+            })
+        });
+
+        assert!(
+            outcome.is_ok(),
+            "a failed subscription must not fail the delegated work, got {outcome:?}"
+        );
+        let logged = capture.text();
+        assert!(
+            logged.contains("WARN"),
+            "the failed subscription must be logged at warn, got: {logged}"
+        );
+        assert!(
+            logged.contains("job-c001-store-failure"),
+            "the warn must name the job, got: {logged}"
+        );
+    }
+
+    /// Captures the daemon's own account of what it did.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl LogCapture {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().expect("log lock").clone()).unwrap_or_default()
+        }
+    }
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = LogCapture;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
     }
 }

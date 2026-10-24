@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery Corrective Milestone 004 — A Delegated Run Can Be Continued
 
-Status: blocked — C002 is not closed
+Status: ready for handoff
 
 Repository baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before editing.
 
@@ -28,9 +28,9 @@ One bounded outcome: when a delegated run fails for a recoverable reason, the or
 
 ## 2. Why this milestone is ready
 
-**It is not yet.** This milestone is **blocked** on one named dependency:
+**It is.** The milestone's gates are discharged:
 
-1. **C002 is not closed** — `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md`. A continuation is a continuation *of a conversation*; without the durable transcript there is nothing to continue from, and a "continuation" that starts from nothing is a re-dispatch with a different name.
+1. **C002 is closed** (2026-10-24) — `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md`, closure record `plans/closure/delegated-run-observability-and-recovery-corrective/002-status.md`. The durable transcript exists, so a continuation continues a *conversation* rather than starting from nothing.
 
 ADR-0051 was **accepted on 2026-10-24 as option B**, so the second former blocker is discharged: its §4 is now the authority contract this milestone implements, and its §"Neutral or deferred" defers the provider-failure **retryability taxonomy** to this milestone (roadmap D3), which is a decision this milestone must make and record.
 

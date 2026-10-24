@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery — Corrective Addendum
 
-Status: active — ADR-0051 accepted (option B) on 2026-10-24; C001 and C002 ready for handoff; C003–C004 blocked on C002
+Status: active — ADR-0051 accepted (option B) on 2026-10-24; C001 and C002 closed; C003–C004 ready for handoff
 
 Planning baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before any code change.
 
@@ -206,7 +206,7 @@ This addendum is complete when C001–C004 each have an accepted closure record,
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/001-the-orchestrator-always-hears-about-its-child.md` | — | none |
-| C002 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md` | — | none — ADR-0051 accepted (option B) 2026-10-24 |
-| C003 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/003-the-tui-renders-the-delegated-transcript.md` | — | C002 not closed |
-| C004 | **blocked** | `plans/implementation/delegated-run-observability-and-recovery-corrective/004-a-delegated-run-can-be-continued.md` | — | C002 not closed |
+| C001 | **closed** | `plans/implementation/delegated-run-observability-and-recovery-corrective/001-the-orchestrator-always-hears-about-its-child.md` | `plans/closure/delegated-run-observability-and-recovery-corrective/001-status.md` | none — closed 2026-10-24 |
+| C002 | **closed** | `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md` | `plans/closure/delegated-run-observability-and-recovery-corrective/002-status.md` | none — closed 2026-10-24 |
+| C003 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/003-the-tui-renders-the-delegated-transcript.md` | — | none — C002 closed 2026-10-24 |
+| C004 | **ready for handoff** | `plans/implementation/delegated-run-observability-and-recovery-corrective/004-a-delegated-run-can-be-continued.md` | — | none — C002 closed 2026-10-24 |

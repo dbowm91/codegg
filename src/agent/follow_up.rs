@@ -419,6 +419,9 @@ impl AgentLoop {
         // M001: generic job terminal notices share the same safe-boundary
         // injection. No consumption-only toast: every notice becomes one
         // durable session event plus one system message at the next turn.
+        // The durable notice row is the authoritative channel for a
+        // delegated run's terminal state — the in-band push it also sends is
+        // a fast path that a full or closed parent channel can drop.
         if let Some(ref svc) = self.services.job_notification_service {
             let report =
                 crate::agent::job_notification_recovery::inject_recoverable_job_notifications(

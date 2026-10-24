@@ -674,6 +674,56 @@ the recorded base and a clean, unchanged parent before dispatching an
 explicit typed merge, cherry-pick, or rebase; no child completion mutates the
 parent automatically.
 
+#### The delegated run's durable terminal notice
+
+A delegated run has two channels to its orchestrator, and only one of them
+is authoritative.
+
+- The **durable notice row** (ADR-0031) is authoritative. `task`'s durable
+  spawn path subscribes the delegated job for it *after* the submit succeeds
+  and *before* the tool reports acceptance, with the kind token `subagent`,
+  the parent's session and turn, the same invocation key the submit used, the
+  parent's owner principal, the parent's workspace, and the
+  `JobCompletionDisposition::NotifyOnly` disposition. The scheduler already
+  records a terminal notice for any subscribed job, so no scheduler change
+  is involved. The next parent turn's boundary drains the notice and hands
+  it to the model as a `Message::System` that names the child
+  (`src/agent/follow_up.rs`).
+- The **in-band push** (`RunControlService::record_terminal`) is a fast path
+  for a parent turn that is still running. It is a `try_send` on a bounded
+  channel: a full or closed channel drops it, and a parent turn that has
+  already ended has no channel at all. The drop log says so explicitly. The
+  push stays because removing it would cost turn latency, not because it can
+  be relied on.
+
+A subscription failure never fails the delegated work: it is logged at `warn`
+with the job id and the reason, and delivery falls back to the in-band push.
+A *conflicting owner* on the same invocation key is the one exception — the
+spawn fails rather than silently re-targeting the notice at a session that
+did not ask for it. A delegated spawn with no host-originated parent session
+skips the subscription and logs the reason; it does not fabricate a session
+id.
+
+A **retry after a daemon restart** completes the subscription rather than
+skipping it. The retry's delegation key resolves the original run, whose
+`job_id` is already attached, so the tool returns the run's status instead
+of re-submitting — and it subscribes that already-submitted job before it
+returns. Without that, a crash between the submit and the subscription would
+leave the child with no notice at all, because the retry would never reach
+the submit. The invocation key is the same one the submit used, so the
+subscription is created once, not twice.
+
+The delegated kind has its own notice content: the notice names the run, the
+recorded outcome (or states plainly that the run recorded none), and the
+result reference the orchestrator reads for the full result. `task action=get`
+returns that recorded result under a named field, bounded by the run-result
+store's own bound, next to the `result_ref` pointer it always returned.
+
+The guarantee is scoped to the **durable delegated path** — the daemon's
+`task spawn` through `JobPayload::SubagentRun`. The legacy in-process path
+(`src/agent/worker.rs`, `JobPayload::Subagent`) has no push at all and no
+durable notice; it is unchanged by this milestone.
+
 ### Durable convergence foundation
 
 `codegg_core::agent_convergence` owns the bounded, host-side lifecycle for a

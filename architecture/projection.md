@@ -25,6 +25,16 @@ completion for an active owning session, but reconnecting clients recover
 from the durable run/control state. Projection consumers must not replay a
 journal event as a provider turn or tool invocation.
 
+The same holds for the **delegated-run transcript** (ADR-0051 option B,
+`codegg_core::agent_run_transcript`): it is authoritative durable state,
+keyed by the run's `AgentRunId`, and it is **not** projected. Nothing about
+it crosses a wire today — the store's read API is a Rust API only, and a
+delegated run has no `session` row, no session enumeration and no
+session-scoped snapshot. The milestone that follows this one (C003) extends
+the projection to carry the transcript; until it lands, a frontend that
+wants a delegated run's conversation reads the store directly and accepts
+that it is not a projection.
+
 ## Where It Lives
 
 | Path | Role |

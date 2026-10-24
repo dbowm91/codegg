@@ -752,6 +752,29 @@ same claim/append/mark/ack + `SessionEvent::JobTerminalNotification`
 mechanics as Tool Program M017, with a separate `job_notification` /
 `job_background_subscription` table pair (migration v73).
 
+#### The delegated subscriber (C001)
+
+The scheduler side of a delegated run needed no change: the terminal notice
+is already recorded for *any* subscribed job. What C001 adds is the
+subscriber — the `task` tool's durable spawn path subscribes the delegated
+job before it reports acceptance, with kind `subagent` and the parent's
+owner, so the delegated run's terminal state lands in the same durable
+notice machinery as a background test job.
+
+Two delegated-specific details live in the notice layer:
+
+- The delegated notice takes its run id from the job payload
+  (`JobPayload::SubagentRun { run_id }`) when the caller supplies none. The
+  delegated executor reports its terminal *summary* through the executor
+  completion, not a run id, so the payload is where the notice learns which
+  child it is about.
+- The delegated kind has its own content format. The generic
+  background-job wording cannot identify the child, and its "completed
+  successfully: {summary}" tail reads as an empty success when the child
+  recorded nothing. The delegated content names the run, states the recorded
+  outcome — or states plainly that the run recorded none — and carries the
+  result reference.
+
 ### CI watch observation authority (M004, C001)
 
 CI polls are sub-second network reads, not process executions: admitting

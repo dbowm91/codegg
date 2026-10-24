@@ -893,6 +893,20 @@ watching it. When a run drops out of the projection the tab stays open and
 stops claiming to be live, so the buffer cannot show "running" for something
 the daemon has stopped vouching for.
 
+### When the orchestrator hears about its child
+
+A delegated run's outcome now reaches the **orchestrator**, not just the
+projection. The daemon's `task` spawn subscribes the child for a durable
+terminal notice, so when the child finishes — even after the orchestrator's
+own turn has ended — the next turn of the conversation is told which child
+finished and what it produced, and the agent can read the full recorded result
+with `task action=get`.
+
+None of this changes what the TUI draws. The strip, the sidebar panel, the
+`Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab are exactly as
+they were; the notice is a channel to the model, not a new row for you. See
+`architecture/agent.md` "The delegated run's durable terminal notice".
+
 ### Talking to a subagent
 
 `/subagent-send` points your next prompt at one running subagent.

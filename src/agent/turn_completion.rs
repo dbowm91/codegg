@@ -565,7 +565,10 @@ impl AgentLoop {
                 );
             }
             // Synthetic transcripts (subagents, continuation tasks) have no
-            // durable session row; their output stays in the run journal.
+            // durable session row, so this write is correctly skipped. A
+            // delegated run's conversation is durable elsewhere: ADR-0051's
+            // delegated transcript store, keyed by the run id, written by the
+            // child's own capture path. No `session` row is created for it.
             Ok(None) => {
                 tracing::debug!(
                     session_id = %self.session_id,
@@ -630,6 +633,7 @@ mod tests {
             run_output_tokens: 0,
             run_cached_tokens: None,
             run_reasoning_tokens: None,
+            executed_tool_outcomes: Default::default(),
         };
 
         // A successful accounting tick consumes only the delta; the hard

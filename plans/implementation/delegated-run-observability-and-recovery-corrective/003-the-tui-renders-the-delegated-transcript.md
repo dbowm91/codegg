@@ -1,6 +1,6 @@
 # Delegated Run Observability and Recovery Corrective Milestone 003 — The TUI Renders the Delegated Transcript
 
-Status: blocked — C002 is not closed
+Status: ready for handoff
 
 Repository baseline: `a21b5fffa` on `fix/tui-composer-helix-parity-post-closure-corrective` (2026-10-24). Revalidate the actual implementation head before editing.
 
@@ -31,9 +31,9 @@ This is the milestone that answers the reported symptom directly: *"we can not s
 
 ## 2. Why this milestone is ready
 
-**It is not yet.** This milestone is **blocked** on one named dependency:
+**It is.** The milestone's gates are discharged:
 
-1. **C002 is not closed** — `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md`. There is no transcript to render until the store, the redaction and the bounds exist.
+1. **C002 is closed** (2026-10-24) — `plans/implementation/delegated-run-observability-and-recovery-corrective/002-a-durable-transcript-for-a-delegated-run.md`, closure record `plans/closure/delegated-run-observability-and-recovery-corrective/002-status.md`. The store, the redaction and the bounds exist.
 
 ADR-0051 was **accepted on 2026-10-24 as option B**, so the second former blocker is discharged: §"What may cross the frontend" is now the accepted contract this milestone implements — a bounded, redacted DTO, delivered only to a bound client, with the bound declared and a refusal rather than a silent truncation.
 
