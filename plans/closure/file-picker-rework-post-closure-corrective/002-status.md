@@ -167,8 +167,9 @@ all — is confirmed from `scripts/verify.sh`'s `run_quick()`.
 ## 4. Verification executed
 
 **The first hosted `verify` run against this milestone's head failed** (§3.5 records
-what it found). Everything below was re-run locally against the corrective; the named
-re-entry condition is still a green hosted `CI / verify` run.
+what it found); the second, against the corrective, was **green**. Everything below
+was re-run locally against the corrective, and the named re-entry condition is a
+green hosted `CI / verify` run on the milestone's final head.
 
 | Command | Result |
 |---|---|
@@ -288,12 +289,11 @@ introduced.
 ## 10. Unresolved findings
 
 - **medium — the hosted `verify` lane has not yet run green against this milestone's
-  head.** The first run **failed**, and it failed for the reason §3.5 records: the
-  milestone's hint rewording broke two pre-existing invariants and nothing local
-  compared the four published surfaces. That is now corrected and covered by the
-  guard's rules 9 and 10, but the re-entry condition is unchanged: a green
-  `CI / verify` run on the milestone's final head. Until then, every gate in §4 is
-  local.
+  final head.** The first run **failed**, and it failed for the reason §3.5 records:
+  the milestone's hint rewording broke two pre-existing invariants and nothing local
+  compared the published surfaces. The second run, against the corrective, was
+  **green**. The named re-entry condition is unchanged: a green `CI / verify` run on
+  the milestone's final head. Every gate in §4 is local.
 - **low — the guard reads the hint's string literal out of the Rust source with an
   anchored regex.** The implementation flagged this rather than hiding it: the plan's
   §6 said the guard "reads the code's own model rather than re-parsing it", and the
