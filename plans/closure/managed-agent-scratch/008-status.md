@@ -97,58 +97,59 @@ otherwise.
 ## 3. Production implementation evidence
 
 - **The error taxonomy is split, and the split is compiler-enforced.**
-  `ScratchError::Io` (`src/scratch.rs:93-98`) is the provisioning variant and
-  keeps its text; `ScratchError::ReclaimIo` (`src/scratch.rs:99-108`) is the
+  `ScratchError::Io` (`src/scratch.rs:102-103`) is the provisioning variant and
+  keeps its text; `ScratchError::ReclaimIo` (`src/scratch.rs:109-110`) is the
   reclaim variant. The blanket `#[from] std::io::Error` is **gone**, so a `?`
   on an `io::Result` no longer compiles anywhere in the module: every I/O
   failure is mapped explicitly, to the variant that names its own operation.
-  `reclaim_failure` (`src/scratch.rs:474-481`) maps a provisioning failure that
+  `reclaim_failure` (`src/scratch.rs:504-509`) maps a provisioning failure that
   happens *inside* a reclaim onto the reclaim naming, so no error that escapes
   a reclaim wears the provisioning text.
 - **The reclaim path is one routine, and the guard says so.**
-  `reclaim_owned_resource_dir` → `validate_and_remove_tombstone` →
-  `validate_reclaim_tree` (`src/scratch.rs:437-511`, `:539-680`) is the only
+  `reclaim_owned_resource_dir` (`src/scratch.rs:468-486`) →
+  `validate_and_remove_tombstone` (`:586-654`) →
+  `validate_reclaim_tree` (`:696-715`) is the only
   path that removes a tree, and `std::fs::remove_dir_all` appears **once** in
-  the production source.
+  the production source (`src/scratch.rs:652`).
 - **The owner-record check now distinguishes "already gone" from "cannot be
   owned."** In `validate_and_remove_tombstone`
-  (`src/scratch.rs:589-604`), a **missing** record is matched explicitly on
+  (`src/scratch.rs:611-625`), a **missing** record is matched explicitly on
   `ErrorKind::NotFound` and the tree's own entry list is read once by
-  `tree_is_empty` (`src/scratch.rs:684-716`). Zero entries ⇒ the tree is
+  `tree_is_empty` (`src/scratch.rs:668-693`). Zero entries ⇒ the tree is
   already reclaimed and is removed; one or more ⇒ the validator returns
   `ScratchError::Unreclaimable { reason: OwnershipUnverifiable }` and removes
   nothing. A **malformed** record stays `InvalidPath` and a record that is not
   owner-only stays `WrongOwner`; neither is removed by any path.
 - **The emptiness predicate is one read, and it fails closed.**
-  `tree_is_empty` (`src/scratch.rs:684-716`) confirms the tree is a real
+  `tree_is_empty` (`src/scratch.rs:668-693`) confirms the tree is a real
   directory, owned by the sessions root's owner, and owner-only; it then reads
   the tree's own entry list **once**. It does not recurse, does not follow a
   link, and does not open a file. A read that fails is "not empty".
 - **The rule lives in one place.** `reclaim_verdict`
-  (`src/scratch.rs:763-800`) is the shared rule; the validator applies it and
+  (`src/scratch.rs:779-807`) is the shared rule; the validator applies it and
   the census reports it, so the two cannot drift apart. The census's
   `reclaimable` verdict is now gating on the owner-record rule
-  (`src/scratch.rs:1404-1428`).
+  (`src/scratch.rs:1511-1524`).
 - **The refusal taxonomy is mirrored in four places** with one label:
-  `ReclaimRefusal` (`src/scratch.rs:807-828`),
+  `ReclaimRefusal` (`src/scratch.rs:814-827`),
   `ScratchReclaimRefusalDto` (`crates/codegg-protocol/src/scratch.rs:37-53`),
   the daemon's DTO mapping (`src/core/daemon_scratch.rs:299-308`), and the
   CLI's label map (`src/main.rs:875-887`).
 - **The tombstone's identity is stable across passes.**
-  `recover_reclaim_tombstones` (`src/scratch.rs:487-537`) validates a
+  `recover_reclaim_tombstones` (`src/scratch.rs:533-571`) validates a
   tombstone **in place** instead of re-claiming it under a fresh uuid. The
   tombstone's name is already the claim; a concurrent reclaimer that reaches
   the same tombstone sees it gone and skips it, which is a race rather than a
   failure.
 - **A digest is attempted at most once per pass.**
-  `src/core/scratch_sweep.rs:410-429` keeps an `attempted` set, so a tree that
+  `src/core/scratch_sweep.rs:401-420` keeps an `attempted` set, so a tree that
   has both a live tree and a tombstone is reported once rather than twice.
 - **The refusal is counted as a refusal.** The sweep's existing
   `Unreclaimable` arms already classify the new refusal as `refused`
-  (`src/core/scratch_sweep.rs:424-437`, `:101-107`), so the 15-second
+  (`src/core/scratch_sweep.rs:432-437`, `:98-103`), so the 15-second
   pass-level retry is not armed. The operator path catches the refusal and
   reports the reason rather than failing
-  (`src/core/scratch_sweep.rs:711-726`).
+  (`src/core/scratch_sweep.rs:711-721`).
 - **The protocol surface is additive.** `SCRATCH_PROTOCOL_VERSION` is 3
   (`crates/codegg-protocol/src/scratch.rs:29-40`), and the new refusal member
   is `OwnershipUnverifiable`.
@@ -446,6 +447,18 @@ unrelated to M008 and is not discharged by it.
   **stricter** than the plan's wording, which permitted the conversion to
   remain on one variant: with it gone, the compiler enforces the "map every
   I/O failure explicitly" requirement rather than a guard having to police it.
+- **The §3 anchors were re-measured against the committed source and were
+  wrong as first written.** The record cited `src/scratch.rs:93-98` for the
+  provisioning variant, `:474-481` for `reclaim_failure`, `:589-604` for the
+  missing-record arm, `:684-716` for `tree_is_empty`, `:763-800` for
+  `reclaim_verdict` and `:1404-1428` for the census's verdict, and the sweep's
+  arms at `:410-429`, `:424-437` and `:711-726`. Every one of those pointed
+  at the wrong line: the implementation is at `:102-103`, `:504-509`,
+  `:611-625`, `:668-693`, `:779-807` and `:1511-1524`, and the sweep's at
+  `:401-420`, `:432-437`/`:98-103` and `:711-721`. The anchors are corrected
+  in place; the claims they support were re-read against the same lines and
+  stand unchanged. Nothing about the implementation moved — the citations
+  were the only thing wrong.
 
 ## 14. Handoff notes
 
