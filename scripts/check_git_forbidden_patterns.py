@@ -45,8 +45,10 @@ file with a rationale.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -69,8 +71,25 @@ class Finding:
     message: str
 
 
-def rg(pattern: str, root: Path, include: Optional[str] = None) -> List[Tuple[Path, int, str]]:
-    """Run ripgrep with line numbers, return list of (path, line, content)."""
+def _parse_matches(stdout: str, relative_to_root: bool) -> List[Tuple[Path, int, str]]:
+    """Parse `<path>:<lineno>:<content>` output into typed matches."""
+    out: List[Tuple[Path, int, str]] = []
+    for raw in stdout.splitlines():
+        parts = raw.split(":", 2)
+        if len(parts) < 3:
+            continue
+        path_str, lineno_str, content = parts
+        try:
+            lineno = int(lineno_str)
+        except ValueError:
+            continue
+        path = Path(path_str)
+        out.append((ROOT / path if relative_to_root else path, lineno, content))
+    return out
+
+
+def _scan_with_rg(pattern: str, root: Path, include: Optional[str]) -> List[Tuple[Path, int, str]]:
+    """Scan with ripgrep, which is the fast path when it is installed."""
     args = [
         "rg",
         "--line-number",
@@ -81,29 +100,95 @@ def rg(pattern: str, root: Path, include: Optional[str] = None) -> List[Tuple[Pa
     if include is not None:
         args.extend(["-g", include])
     args.extend([pattern, str(root)])
-    try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            check=False,
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _parse_matches(result.stdout, relative_to_root=False)
+
+
+def _repository_source_files() -> List[Path]:
+    """The repository's source files, enumerated by the repository itself.
+
+    `git ls-files` with `--cached --others --exclude-standard` lists the
+    tracked files plus the untracked ones that are not ignored — which is the
+    set ripgrep searches: the ignore rules are the repository's own, so the
+    build tree and the vendored directories are excluded without this script
+    carrying a second copy of those rules. Hidden paths are dropped because
+    ripgrep skips them by default.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(ROOT),
+    )
+    if result.returncode != 0:
+        print(
+            "error: `git ls-files` failed, so the tree could not be enumerated: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
         )
-    except FileNotFoundError:
-        print("error: ripgrep (`rg`) not found on PATH", file=sys.stderr)
+        sys.exit(2)
+    files: List[Path] = []
+    for entry in result.stdout.split("\0"):
+        if not entry:
+            continue
+        if any(part.startswith(".") for part in Path(entry).parts):
+            continue
+        files.append(ROOT / entry)
+    return files
+
+
+def _scan_with_python(pattern: str, root: Path, include: Optional[str]) -> List[Tuple[Path, int, str]]:
+    r"""Scan with Python's own regex engine, the fallback when ripgrep is absent.
+
+    A checkout does not always carry ripgrep — the hosted CI runner does not —
+    and a guard that cannot *run* on a clean runner protects nothing, so this
+    path exists rather than an install step in the workflow.
+
+    The pattern is compiled with Python's `re`, which accepts the same
+    constructs these rules use (`\s`, `\{`, `\(\)`). `git grep` does not: its
+    default engine is POSIX basic regular expressions, in which `\(` opens a
+    group rather than matching a parenthesis, so the same pattern matches a
+    different set of lines.
+    """
+    try:
+        expression = re.compile(pattern)
+    except re.error as error:
+        print(f"error: the pattern {pattern!r} does not compile: {error}", file=sys.stderr)
         sys.exit(2)
     out: List[Tuple[Path, int, str]] = []
-    for raw in result.stdout.splitlines():
-        # rg output: <path>:<lineno>:<content>
-        parts = raw.split(":", 2)
-        if len(parts) < 3:
-            continue
-        path_str, lineno_str, content = parts
+    for path in _repository_source_files():
         try:
-            lineno = int(lineno_str)
+            path.relative_to(root)
         except ValueError:
             continue
-        out.append((Path(path_str), lineno, content))
+        if include is not None and not fnmatch.fnmatch(path.name, include):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if expression.search(line):
+                out.append((path, lineno, line))
     return out
+
+
+def rg(pattern: str, root: Path, include: Optional[str] = None) -> List[Tuple[Path, int, str]]:
+    """Return the pattern's matches with line numbers.
+
+    Ripgrep is used when it is on PATH; Python's own scanner is the fallback.
+    The two are proved to agree by the self-test, which scans the real tree
+    with both and compares the results.
+    """
+    if shutil.which("rg") is not None:
+        return _scan_with_rg(pattern, root, include)
+    return _scan_with_python(pattern, root, include)
 
 
 # Allowlist patterns (paths or path-prefixes that may opt out of a rule).
@@ -1611,6 +1696,47 @@ def self_test() -> int:
         return 1
     pristine = source.read_text()
 
+    # The fallback scanner must agree with ripgrep on the real tree, and it
+    # must find something: two scanners that both found nothing would agree
+    # vacuously. The guard runs in CI, where ripgrep is not installed, so the
+    # fallback is the path that actually has to be right.
+    fallback_cases = 0
+    for pattern, include, scan_root in (
+        ("expose_secret\\(\\)", None, ROOT),
+        ("RerunDescriptor\\s*\\{", "*.rs", ROOT),
+        ("cmd\\.arg\\(\"--no-ext-diff\"\\);", "*.rs", ROOT),
+    ):
+        fallback_cases += 1
+        with_python = _scan_with_python(pattern, scan_root, include)
+        python_set = {(str(path), line) for path, line, _ in with_python}
+        if not python_set:
+            failures.append(
+                f"the fallback scanner found no match for {pattern!r}, so it cannot be "
+                "shown to find anything at all"
+            )
+            continue
+        if shutil.which("rg") is None:
+            print(
+                f"  ok   the fallback scanner found {len(python_set)} matches for {pattern!r} "
+                "(ripgrep is not installed, so there is nothing to compare against)"
+            )
+            continue
+        with_rg = _scan_with_rg(pattern, scan_root, include)
+        rg_set = {(str(path), line) for path, line, _ in with_rg}
+        if rg_set != python_set:
+            only_rg = sorted(rg_set - python_set)[:4]
+            only_python = sorted(python_set - rg_set)[:4]
+            failures.append(
+                f"the fallback scanner disagrees with ripgrep on {pattern!r}: ripgrep found "
+                f"{len(rg_set)} matches and the fallback found {len(python_set)}; "
+                f"only ripgrep: {only_rg}; only the fallback: {only_python}"
+            )
+            continue
+        print(
+            f"  ok   the fallback scanner agrees with ripgrep on {pattern!r} "
+            f"({len(python_set)} matches)"
+        )
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
 
@@ -1661,7 +1787,8 @@ def self_test() -> int:
         return 1
     print(
         f"git-forbidden-patterns self-test passed: {cases} injected defects were each rejected by "
-        "the guard, and the unmodified trusted Git route produced no finding"
+        f"the guard, the unmodified trusted Git route produced no finding, and the fallback "
+        f"scanner agreed with ripgrep on {fallback_cases} patterns"
     )
     return 0
 
