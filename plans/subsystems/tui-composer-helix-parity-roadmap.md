@@ -225,6 +225,27 @@ terminal cursor on every draw, because ratatui hides it whenever the frame did n
 **Paste has no precedent in any Helix surface.** The editor and the terminal panel both yank to
 the system clipboard; neither has a paste verb.
 
+> **Second correction (C001–C003, `plans/subsystems/tui-composer-helix-parity-post-closure-corrective-addendum.md`).**
+> Four properties of this workstream are wrong, and three of them are wrong on the first keystroke.
+> (1) The **caret does not advance on a space**: the wrap drops a trailing whitespace run, so the
+> space's byte is on no cell, and the caret's fallback column resolves the byte before and the byte
+> after the space to the *same* column — measured on the baseline, `"hello "` puts the caret at
+> column 5 both before and after the space. The **model** was right all along; the geometry was not.
+> (2) The **Normal-mode block is invisible**: it is painted with an explicit colour pair *and*
+> `Modifier::REVERSED`, and SGR 7 swaps the colours, so the block's effective background is the
+> composer's own background — and on the blank cell the caret usually sits on, nothing changes on
+> screen. (3) The **composer's selection is not the editor's**: the editor has a third mode, a word
+> motion that selects the word it lands on, and a rule that a movement outside select mode drops
+> the selection; the composer had none of the three, and M005 closed on the *verbs* rather than on
+> the mode-dependent consequence of a motion. (4) The **vertical keys follow the box, not the
+> text**: `j`/`k` and `Ctrl+u`/`Ctrl+d` belonged to the composer only when its content did not fit
+> its box, so a three-line composer that fits scrolled the transcript instead — and the rule
+> `architecture/tui.md`'s claim table has always published ("composer buffer has more than one
+> line") is the rule the user asked for, while ADR-0042's 2026-10-23 amendment had changed the
+> *implementation* to "does not fit its box" and left the architecture table describing a rule the
+> code no longer implemented. C001–C003 correct all four. **No milestone in this workstream is
+> reopened**, and the closed closure records are not rewritten.
+
 ## 5. Target architecture
 
 **One derived ownership fact.** A helper alongside `App::composer_input_mode()` answers "does the
