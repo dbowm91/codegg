@@ -374,15 +374,17 @@ The word motions move it by word instead of by character:
 | `w` | Move to the start of the next word |
 | `b` | Move to the start of the previous word |
 | `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a row of the box, keeping the column |
+| `j` / `k` | Move down / up a row of the box, keeping the column — only when the composer content spans more than one row |
 
-`j` and `k` only move the caret when your prompt **does not fit its box** —
-when there is more of it than the box can show. When the prompt fits, they
-scroll the conversation instead, which is what they have always done.
+`j` and `k` only move the caret when the **composer content spans more than
+one row** — when there is more of it than a single row. When the composer holds
+one row, they scroll the conversation instead, which is what they have always
+done. The keys come back on their own as soon as the composer holds more than
+one row again.
 
 `Ctrl+u` and `Ctrl+d` **page**. They page the **composer** when the composer
-has more to show than its box can hold, and the **conversation** when it does
-not — the same two keys, and the same page size either way. The page is not
+content spans more than one row, and the **conversation** when it does not —
+the same two keys, and the same page size either way. The page is not
 restricted to `[NOR]`: it behaves the same in both modes.
 
 ### The composer's own keymap in `[NOR]` mode
@@ -393,11 +395,11 @@ three cannot disagree:
 
 | Key | What it does |
 |---|---|
-| `w` | Move to the start of the next word |
-| `b` | Move to the start of the previous word |
-| `e` | Move to the last character of the word at the caret |
-| `j` / `k` | Move down / up a row of the box — only when the prompt does not fit its box |
-| `v` | Start selecting characters; a caret motion then extends the selection |
+| `w` | Move to the start of the next word, without selecting it |
+| `b` | Move to the start of the previous word, and select the word it lands on |
+| `e` | Move to the last character of the word at the caret, and select the word it lands on |
+| `j` / `k` | Move down / up a row of the box — only when the composer content spans more than one row |
+| `v` | Toggle select mode; a caret motion then extends the selection |
 | `x` | Select the whole line, and grow the selection a line at a time |
 | `d` | Delete the selection |
 | `p` | Paste the clipboard at the caret |
@@ -409,8 +411,8 @@ three cannot disagree:
 
 Two rules cover the edges of that table:
 
-- **`j` and `k` need a prompt that does not fit.** When the prompt fits its box
-  they are the conversation's, and scroll it.
+- **`j` and `k` need a composer with more than one row.** When the composer
+  holds one row they are the conversation's, and scroll it.
 - **An edit that changes the length of the text drops the selection.** The
   selection remembers *positions* in the text, so once the text moves the
   selection would point at the wrong characters. Editing, undoing and
@@ -426,8 +428,8 @@ a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
 ```
 
 - The letters are the composer's own keys, and they are the ones available
-  **right now** — `j` and `k` are absent while your prompt fits its box,
-  because there they scroll the conversation.
+  **right now** — `j` and `k` are absent while the composer holds a single
+  row, because there they scroll the conversation.
 - `space help` opens the help box, where every key above is described in
   full.
 - The row does **not** repeat the mode. The badge immediately above the input
@@ -479,8 +481,11 @@ Two keys put the caret somewhere new and start you typing:
 — and `o` opens a new line below the one you are on. `o` is an edit, so `u`
 takes the new line back; `a` only moves the caret, so there is nothing to undo.
 
-While a character selection is held, `a` **extends** it, like the other caret
-motions do.
+`a` is an **insert entry**, not one of the caret motions: it places the caret
+for the insertion and extends a held character selection, the way it always
+has. The **caret motions** — `w`, `b`, `e`, `h`, `l`, `j`, `k`, the arrow keys
+and `Home`/`End` — follow the mode instead: in select mode they grow the held
+selection, and outside it they drop it.
 
 ### Selecting and the clipboard in `[NOR]` mode
 
@@ -489,14 +494,17 @@ delete and copy verbs work on:
 
 | Key | What it does |
 |---|---|
-| `v` | Start selecting characters at the caret; press it again to stop |
+| `v` | Toggle select mode: it arms a selection at the caret, and a caret motion then extends it |
 | `x` | Select the caret's line; press it again to take the next line too |
 | `d` | Delete what is selected |
 | `p` | Paste the clipboard's contents at the caret |
 
-While a character selection is held, the caret motions **extend** it — move
-with `w`, `b`, `e`, `h` or `l` and the selection grows with you. A line
-selection does not: `x` takes one line, and a second `x` takes the next.
+While the composer is in its **select mode**, the caret motions **extend** the
+held selection — move with `w`, `b`, `e`, `h` or `l` and the selection grows with
+you. Outside that mode a caret motion **drops** the selection instead, and `e`
+and `b` replace it with the word they land on. The badge above the composer says
+`[SEL]` while the mode is on. A line selection does not grow with a caret
+motion: `x` takes one line, and a second `x` takes the next.
 
 To **copy** the selection, press `Space` and then `y`. That is the whole
 gesture: `Space` opens the help menu, and `y` in that menu copies what you

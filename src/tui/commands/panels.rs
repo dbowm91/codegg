@@ -671,7 +671,7 @@ pub(crate) fn focus_panel(app: &mut App) -> bool {
     if focused {
         app.composer_mode_before_panel_focus
             .get_or_insert(app.ui_state.input_mode);
-        app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+        app.park_composer_at_normal();
     }
     sync_workspace_focus(app);
     focused
@@ -700,7 +700,7 @@ pub(crate) fn focus_panel_at(app: &mut App, placement: PanelPlacement) {
     if focused {
         app.composer_mode_before_panel_focus
             .get_or_insert(app.ui_state.input_mode);
-        app.ui_state.input_mode = InputMode::Normal;
+        app.park_composer_at_normal();
     }
     sync_workspace_focus(app);
 }

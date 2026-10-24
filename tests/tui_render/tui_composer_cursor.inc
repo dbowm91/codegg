@@ -150,8 +150,15 @@ impl Frame {
             .join("\n")
     }
 
-    fn is_reversed(&self, x: u16, y: u16) -> bool {
-        self.buffer[(x, y)].modifier.contains(Modifier::REVERSED)
+    /// The cell carries the Normal-mode block: the theme's primary as the
+    /// background and the theme's background as the foreground.
+    ///
+    /// The block is recognised by its **colours** and not by a modifier: the
+    /// `REVERSED` modifier that used to paint it is SGR 7, which swaps the
+    /// cell's two colours and cancelled the block.
+    fn is_block(&self, x: u16, y: u16, theme: &Theme) -> bool {
+        let cell = &self.buffer[(x, y)];
+        cell.bg == theme.primary && cell.fg == theme.background
     }
 }
 
@@ -253,6 +260,30 @@ fn the_caret_cell_follows_the_text_column() {
     assert_eq!(widget.caret_cell(area), Some((7, 11)));
     widget.set_cursor(5);
     assert_eq!(widget.caret_cell(area), Some((9, 11)));
+}
+
+/// A space moves the caret one column: the wrap drops the space, and the
+/// caret's column counts the source anyway.
+#[test]
+fn the_composer_caret_advances_one_column_on_a_space() {
+    let mut app = test_app();
+    app.ui_state.input_mode = InputMode::Insert;
+    app.prompt_state.prompt.set_text("hello".to_string());
+
+    let _ = draw(&mut app, 100, 30);
+    let (before_x, before_y) = caret_cell(&app);
+
+    app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+    let _ = draw(&mut app, 100, 30);
+    let (after_x, after_y) = caret_cell(&app);
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "hello ",
+        "the space was typed"
+    );
+    assert_eq!(after_x, before_x + 1, "the caret moved one column right");
+    assert_eq!(after_y, before_y, "the caret stayed on its row");
 }
 
 /// A second line of the buffer is a second row of the composer.
@@ -404,16 +435,34 @@ fn a_focused_editor_buffer_takes_the_keyboard() {
 // The block cursor
 // ---------------------------------------------------------------------------
 
-/// Normal mode paints a solid block at the caret.
+/// Normal mode paints a solid block at the caret, and the block is
+/// **visible**: its colours reach the terminal as written, so the cell shows
+/// the theme's primary as its background and the theme's background as its
+/// foreground.
+///
+/// The cell is a blank one — the caret at the end of the text — because that
+/// is where an invisible block hid best.
 #[test]
-fn the_composer_paints_a_block_in_normal_mode() {
+fn the_composer_paints_a_visible_block_in_normal_mode() {
     let mut app = test_app();
     app.ui_state.input_mode = InputMode::Normal;
     app.prompt_state.prompt.set_text("hello".to_string());
 
     let frame = draw(&mut app, 100, 30);
+    let theme = Arc::clone(&app.ui_state.theme);
     let (x, y) = caret_cell(&app);
-    assert!(frame.is_reversed(x, y), "the caret cell carries the block");
+    let cell = &frame.buffer[(x, y)];
+    assert_eq!(cell.symbol(), " ", "the block is on a blank cell");
+    assert_eq!(cell.bg, theme.primary, "the block's background");
+    assert_eq!(cell.fg, theme.background, "the block's foreground");
+    assert_ne!(
+        cell.bg, theme.input_bg,
+        "the block differs from the composer's own background"
+    );
+    assert!(
+        !cell.modifier.contains(Modifier::REVERSED),
+        "the block carries no REVERSED modifier: it would swap the colours"
+    );
 }
 
 /// Insert mode does not paint a block: the terminal's own cursor is the
@@ -425,8 +474,12 @@ fn the_composer_paints_no_block_in_insert_mode() {
     app.prompt_state.prompt.set_text("hello".to_string());
 
     let frame = draw(&mut app, 100, 30);
+    let theme = Arc::clone(&app.ui_state.theme);
     let (x, y) = caret_cell(&app);
-    assert!(!frame.is_reversed(x, y), "the caret cell carries no block");
+    assert!(
+        !frame.is_block(x, y, &theme),
+        "the caret cell carries no block"
+    );
 }
 
 /// An empty composer still has a caret, and the block is at column zero of
@@ -439,9 +492,10 @@ fn the_composer_paints_a_block_in_normal_mode_even_when_empty() {
     app.prompt_state.prompt.set_text(String::new());
 
     let frame = draw(&mut app, 100, 30);
+    let theme = Arc::clone(&app.ui_state.theme);
     let (x, y) = caret_cell(&app);
     assert!(
-        frame.is_reversed(x, y),
+        frame.is_block(x, y, &theme),
         "the empty composer still has a block"
     );
 }
@@ -454,9 +508,10 @@ fn the_composer_paints_no_block_when_a_panel_holds_the_keyboard() {
     app.prompt_state.prompt.set_text("hello".to_string());
 
     let frame = draw(&mut app, 100, 30);
+    let theme = Arc::clone(&app.ui_state.theme);
     let (x, y) = caret_cell(&app);
     assert!(
-        !frame.is_reversed(x, y),
+        !frame.is_block(x, y, &theme),
         "the composer shows no block while a panel has the keyboard"
     );
 }
@@ -528,8 +583,9 @@ fn the_block_and_the_terminal_cursor_are_never_both_present() {
         app.prompt_state.prompt.set_text("hello".to_string());
 
         let frame = draw(&mut app, 100, 30);
+        let theme = Arc::clone(&app.ui_state.theme);
         let (x, y) = caret_cell(&app);
-        let block = frame.is_reversed(x, y);
+        let block = frame.is_block(x, y, &theme);
         let terminal = frame.position_calls > 0;
         assert!(
             !(block && terminal),
@@ -595,8 +651,9 @@ fn the_badge_and_the_cursor_agree_in_every_focus_state() {
             }
 
             let frame = draw(&mut app, 100, 30);
+            let theme = Arc::clone(&app.ui_state.theme);
             let (x, y) = caret_cell(&app);
-            let block = frame.is_reversed(x, y);
+            let block = frame.is_block(x, y, &theme);
             let terminal = frame.position_calls > 0;
             let text = frame.text();
 

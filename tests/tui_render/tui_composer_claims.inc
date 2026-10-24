@@ -31,7 +31,7 @@ use codegg::tui::app::state::WorkspaceDashboardState;
 use codegg::tui::app::{App, Dialog, SessionStatus, TuiCommand};
 use codegg::tui::components::component::DialogType;
 use codegg::tui::components::dialogs::help::{HelpDialog, HelpRoute};
-use codegg::tui::composer_claims::{self, COMPOSER_CLAIMS};
+use codegg::tui::composer_claims::{self, ComposerFit, COMPOSER_CLAIMS};
 use codegg::tui::input::{build_bindings, InputAction, InputMode};
 use codegg::tui::route::Route;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -582,8 +582,8 @@ fn the_vim_maps_i_no_longer_opens_the_command_palette() {
 
 /// Lay the composer out, so the claim has a measurement.
 ///
-/// The `j`/`k` claim is a **layout** fact: the composer claims them when its
-/// content does not fit its box, and the box only exists once the app has
+/// The `j`/`k` claim is a **layout** fact: the composer claims them while its
+/// content spans more than one row, and the box only exists once the app has
 /// rendered. A test that presses a key without rendering first is testing
 /// the *unmeasured* case, where the key falls through.
 fn render_app(app: &mut App, width: u16, height: u16) {
@@ -601,6 +601,16 @@ fn render_app(app: &mut App, width: u16, height: u16) {
 /// to wrap onto more rows than the box has.
 fn overflowing_prompt() -> String {
     (0..200).map(|index| format!("w{index:03} ")).collect()
+}
+
+/// A prompt whose content spans more than one row **and fits** the box.
+///
+/// The box grows to fit its content up to the pane's budget, so a prompt of a
+/// few rows is shown whole: it is multiline and it is not cut off. This is
+/// the case the old "does not fit its box" condition missed — the composer
+/// holds more than one row, and it keeps the vertical keys.
+fn multiline_prompt() -> String {
+    (0..40).map(|index| format!("w{index:03} ")).collect()
 }
 
 /// A transcript with enough lines to scroll in both directions.
@@ -622,81 +632,108 @@ fn scrollable_transcript(app: &mut App) {
     app.messages_state.messages.set_visible_height(10);
 }
 
-/// `k` still scrolls the transcript when the composer's content **fits** its
-/// box: the claim is conditional, and the condition does not hold.
+/// A composer holding a **single row** leaves the vertical keys to the
+/// transcript.
+///
+/// The claim is conditional, and the condition does not hold for a one-row
+/// composer: `j` falls through and scrolls the conversation, as it has always
+/// done.
 #[test]
-fn k_still_scrolls_the_transcript_when_the_composers_content_fits() {
+fn a_single_row_composer_leaves_the_vertical_keys_to_the_transcript() {
     let mut app = test_app();
     scrollable_transcript(&mut app);
     app.prompt_state.prompt.set_text("one line".to_string());
     normal_mode(&mut app);
     render_app(&mut app, 80, 24);
     assert!(
-        !app.prompt_state.prompt.content_overflows(),
-        "precondition: the composer's content fits its box"
+        !app.prompt_state.prompt.is_multiline(),
+        "precondition: the composer's content occupies a single row"
     );
-    app.messages_state.messages.scroll = 5;
-
-    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
-
-    assert_eq!(
-        app.messages_state.messages.scroll, 4,
-        "`k` must still scroll the transcript when the composer's content fits"
-    );
-}
-
-/// `k` is the composer's when its content **overflows** the box, so the
-/// transcript does not scroll.
-#[test]
-fn k_is_claimed_when_the_composers_content_overflows_its_box() {
-    let mut app = test_app();
-    scrollable_transcript(&mut app);
-    app.prompt_state.prompt.set_text(overflowing_prompt());
-    normal_mode(&mut app);
-    render_app(&mut app, 80, 24);
-    assert!(
-        app.prompt_state.prompt.content_overflows(),
-        "precondition: the composer's content overflows its box"
-    );
-    app.messages_state.messages.scroll = 5;
-
-    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
-
-    assert_eq!(
-        app.messages_state.messages.scroll, 5,
-        "`k` must be the composer's when the content overflows the box"
-    );
-}
-
-/// `j` behaves the same way as `k`: the pair is one conditional claim.
-#[test]
-fn j_follows_the_same_conditional_claim_as_k() {
-    // A composer whose content fits: the transcript scrolls.
-    let mut app = test_app();
-    scrollable_transcript(&mut app);
-    app.prompt_state.prompt.set_text("one line".to_string());
-    normal_mode(&mut app);
-    render_app(&mut app, 80, 24);
     app.messages_state.messages.scroll = 5;
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+
     assert_eq!(
         app.messages_state.messages.scroll, 6,
-        "`j` must scroll the transcript when the composer's content fits"
+        "`j` must scroll the transcript when the composer's content is a single row"
     );
+}
 
-    // A composer whose content overflows: the composer takes the key.
+/// `k` is the composer's while its content spans more than one row, so the
+/// transcript does not scroll.
+#[test]
+fn k_is_claimed_when_the_composers_content_spans_more_than_one_row() {
     let mut app = test_app();
     scrollable_transcript(&mut app);
     app.prompt_state.prompt.set_text(overflowing_prompt());
     normal_mode(&mut app);
     render_app(&mut app, 80, 24);
+    assert!(
+        app.prompt_state.prompt.is_multiline(),
+        "precondition: the composer's content spans more than one row"
+    );
+    app.messages_state.messages.scroll = 5;
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+
+    assert_eq!(
+        app.messages_state.messages.scroll, 5,
+        "`k` must be the composer's while the content spans more than one row"
+    );
+}
+
+/// A composer holding more than one row **that fits its box** takes the
+/// vertical keys.
+///
+/// This is the case the old condition got wrong: three rows in a three-row box
+/// fits, and the composer still owns `j` and `k`. The two observables are the
+/// caret and the transcript: `j` moves the caret down a row and `k` brings it
+/// back up, and the transcript does not scroll.
+#[test]
+fn a_multiline_composer_takes_the_vertical_keys() {
+    let mut app = test_app();
+    scrollable_transcript(&mut app);
+    app.prompt_state.prompt.set_text(multiline_prompt());
+    // The caret starts on the first row, so `j` has a row below it to move to.
+    app.prompt_state.prompt.set_cursor(0);
+    normal_mode(&mut app);
+    render_app(&mut app, 80, 24);
+    let fit = app.prompt_state.prompt.content_fit();
+    assert!(
+        matches!(
+            fit,
+            ComposerFit::Measured {
+                row_count,
+                visible_rows
+            } if row_count > 1 && row_count <= visible_rows
+        ),
+        "precondition: the composer holds several rows and shows all of them, got {fit:?}"
+    );
+    let caret_before = app.prompt_state.prompt.cursor_pos();
     app.messages_state.messages.scroll = 5;
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+
+    let caret_after_j = app.prompt_state.prompt.cursor_pos();
+    assert_ne!(
+        caret_after_j, caret_before,
+        "`j` must move the composer's caret while the content spans more than one row"
+    );
     assert_eq!(
         app.messages_state.messages.scroll, 5,
-        "`j` must be the composer's when the content overflows the box"
+        "the transcript must not scroll while the composer holds more than one row"
+    );
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+
+    assert_ne!(
+        app.prompt_state.prompt.cursor_pos(),
+        caret_after_j,
+        "`k` must move the composer's caret while the content spans more than one row"
+    );
+    assert_eq!(
+        app.messages_state.messages.scroll, 5,
+        "the transcript must not scroll while the composer holds more than one row"
     );
 }
 

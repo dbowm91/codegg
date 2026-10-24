@@ -2156,8 +2156,8 @@ unfocused, a focused panel, the Workspace view's chat pane).
 | `d` | delete selection | always | **live** — M005 |
 | `e` | word end | always | **live** — M004 |
 | `i` | insert before the caret | always | **live** — the app's existing transition |
-| `j` | line down | **composer buffer has more than one line** | **live** — M004 |
-| `k` | line up | **composer buffer has more than one line** | **live** — M004 |
+| `j` | line down | **composer content spans more than one row** | **live** — M004 |
+| `k` | line up | **composer content spans more than one row** | **live** — M004 |
 | `o` | open line below | always | **live** — M006 |
 | `p` | paste | always | **live** — M005 |
 | `u` | undo | always | **live** — M006 |
@@ -2185,12 +2185,13 @@ not a keymap flavour.
 
 `j` and `k` are the table's one **conditional** pair, and the condition is
 written on the entry rather than inferred. The condition is
-`ClaimCondition::ContentOverflowsBox`: the composer claims them when its
-**content does not fit its box** — the wrapped row count exceeds the visible
-row count. On a composer that fits, they fall through to transcript scroll
-unchanged, which is why their app-level binding survives. A condition that is
-not written down is how a leak reappears: a claim that quietly stops applying
-looks exactly like a claim that was never made.
+`ClaimCondition::ContentSpansMultipleRows`: the composer claims them while its
+**content spans more than one row**. On a composer whose content is a single
+row, they fall through to transcript scroll unchanged, which is why their
+app-level binding survives — and they come back on their own as soon as the
+content grows to more than one row. A condition that is not written down is how
+a leak reappears: a claim that quietly stops applying looks exactly like a
+claim that was never made.
 
 The measure is **rows, not lines**, and it is measured once. The layout pass
 caches it on the widget as `ComposerFit::Unknown` or
@@ -2199,10 +2200,12 @@ that cached value, so the gate and the layout cannot disagree. Before the
 composer has been laid out the fit is `Unknown`, the condition does not hold,
 and the keys fall through rather than being swallowed in a state the user
 cannot see. **The exact-fit case is load-bearing**: a composer whose text wraps
-to exactly the box's height *fits* — three rows in a three-row box — and `j`/`k`
-fall through to the transcript; one row more and the composer takes the keys
-and moves the caret one **visual row**, which is the row the caret's byte is
-drawn on, not a newline-separated line of the buffer.
+to exactly the box's height *fits* — three rows in a three-row box — and it is
+still **multiline**, so `j`/`k` are the composer's and move the caret one
+**visual row**, which is the row the caret's byte is drawn on, not a
+newline-separated line of the buffer. The condition is the rendered row count,
+not the box's fit: a composer holding three rows that fit keeps the vertical
+keys, and a single logical line that wraps onto four rows loses nothing.
 
 The claim step is consulted **before** the global binding map, in the
 composer branch of the key chain, so it inherits the chain's priority: a
@@ -2530,11 +2533,11 @@ motion that set the caret directly would re-anchor the selection on every
 press, and "select some text, then walk the caret over it" would be
 impossible — which is the interaction the selection verbs are for.
 
-`j` and `k` keep the table's one **conditional**: they are claimed only when
-the composer buffer has more than one line, and on a single-line buffer they
-fall through to transcript scroll unchanged. The condition is evaluated at the
-claim gate, before the binding map, so a single-line composer scrolls exactly
-as it did before M004.
+`j` and `k` keep the table's one **conditional**: they are claimed only while
+the composer content spans more than one row, and on a composer whose content
+is a single row they fall through to transcript scroll unchanged. The condition
+is evaluated at the claim gate, before the binding map, so a single-row
+composer scrolls exactly as it did before M004.
 
 **The composer's selection is one range, and the copy gesture belongs to the
 help box.** M005 made `v`, `x`, `d` and `p` live.
@@ -2700,6 +2703,15 @@ rendered character and every rendered character is on exactly one cell — so
 "where is the caret" has one answer whether it is asked in bytes or in
 columns.
 
+**A byte the wrap dropped has no cell, and the caret's column counts the
+source.** The wrap drops the whitespace a row break swallowed and the
+whitespace the buffer ends with, and a dropped run is **one column** — the same
+width a drawn run has. So the gap a row break leaves is read off its ends: the
+gap's first byte is the previous row's own end, a byte inside the gap belongs
+to the next row, whose text continues there, and a byte past the last row's
+end is one column past that row's drawn text. The **cells** are untouched by
+this: it changes where the *caret* is, not what is drawn.
+
 **The height formula** is `1 (mode row) + min(wrapped_rows, 10 - 1 -
 marker_rows) + marker_rows`, clamped to the **40 % budget**
 (`area.height * 40 / 100`, floor 3) with a minimum of 3 rows. Two bounds, and
@@ -2726,11 +2738,13 @@ The **horizontal scroll** survives, but it is non-zero only when a row is
 wider than the box — a single character wider than the whole row. With
 wrapping it is zero in every ordinary case.
 
-**`Ctrl+u` and `Ctrl+d` page the composer when it overflows and the transcript
-when it does not**, in the same branch shape the workspace dashboard already
-uses. The page size is the transcript's own rule: the visible height minus
-two, with a floor of one. The page is **not mode-gated** — the same branch
-handles both modes.
+**`Ctrl+u` and `Ctrl+d` page the composer when the composer content spans more
+than one row, and the transcript when it does not**, in the same branch shape
+the workspace dashboard already uses. The page size is the transcript's own
+rule: the visible height minus two, with a floor of one. The page is **not
+mode-gated** — the same branch handles both modes. The page moves the caret
+with the window, so a page inside a composer whose content fits still moves
+the caret.
 
 #### The selection-manipulation verbs (M008)
 
