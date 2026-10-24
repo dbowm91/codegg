@@ -500,9 +500,10 @@ those constraints. §3.1 records what the amendment moved in scope.
 
 **What already exists, and is not M007's work.** The daemon protocol has
 **266** `CoreRequest` variants; the desktop host currently uses **18** of
-them in production code — **no** `Document*` and **no** `Lsp*` variant among them. The TUI already has the whole surface M007 mirrors: **161**
-`BuiltinSlashAction` variants (`src/tui/command.rs`), a dispatcher that
-dispatches **every one** of them by name (`src/tui/app/mod.rs:5661-8895`), **61** bindable
+them in production code — **no** `Document*` and **no** `Lsp*` variant among
+them. The TUI already has the whole surface M007 mirrors: **161**
+`BuiltinSlashAction` variants (`src/tui/command.rs`), a dispatcher with an arm
+for **every one** of them (`src/tui/app/mod.rs:5661-8895`), **61** bindable
 `ActionKey`s with a remappable keymap (`src/tui/input.rs:259`), **32**
 `SidePanelId` panel kinds (`src/tui/panels/mod.rs`), a dockable
 `PanelRegions { main, left, right, bottom }` frame
