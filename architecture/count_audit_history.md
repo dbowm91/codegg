@@ -491,3 +491,30 @@ milestones (C001–C006) are merged. Those branches re-measured the same table
 on their own trees, so this row set is expected to conflict at merge time; the
 reconciliation is the union of each side's contribution, re-measured in the
 merged tree rather than carried over from either side.
+
+## M002 — the `/files` keymap drift guard (2026-10-23)
+
+| Row | Before | After | Why it moved |
+|---|---|---|---|
+| Guard scripts (all) | 86 | **87** | `scripts/check_tui_files_keymap_drift.py` is a new guard. It is wired into `scripts/verify.sh quick` and into the CI guard step. |
+| CI guard scripts | 47 | **48** | The new guard's two CI steps (the `--self-test` and the guard itself) are one guard script, so the *CI guard scripts* row counts the script once, not the steps. |
+
+Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
+against this tree, each against its own listed `Source`. No other row moved:
+this milestone changed no schema, no tool registration, no module and no
+storage layout, and it added **no** integration test file — the new tests
+extend the M001 member `tests/tui_render/file_picker_surface_corrective.inc`,
+which the *Integration test files* row already counted at 335.
+
+The *quick runs 14 guards CI does not* note in the `CI guard scripts` row is
+unchanged: the new guard is in **both** `quick` and CI, so it adds one guard
+to each and does not change the size of the quick-only set.
+
+**A stale number this record also corrects.** `AGENTS.md` carried **45** CI
+guard scripts where the measured value was already **47** before this
+milestone: two CI guards had been added without the prose count following
+them. The count in `AGENTS.md` is now the measured one (**62** for `quick`,
+**48** for CI), and the 14-guard difference the same file publishes still
+holds (62 − 48 = 14). The *method* did not change — the count is still the
+number of distinct `scripts/check_*` files the two files name — only the
+value had drifted.
