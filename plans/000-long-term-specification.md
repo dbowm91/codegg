@@ -94,7 +94,9 @@ A filesystem path MUST NOT be the stable identity of a project, repository, work
 
 ### 4.4 Frontends render projections
 
-TUIs, ACP clients, web clients, and future frontends MUST render frontend-neutral snapshots and events. They MUST NOT become independent owners of provider credentials, project authorization, global scheduling, or durable session state.
+TUIs, ACP clients, web clients, desktop clients, and future frontends MUST render frontend-neutral snapshots and events. They MUST NOT become independent owners of provider credentials, project authorization, global scheduling, or durable session state.
+
+A desktop client is a first-class frontend under these constraints. It renders frontend-neutral snapshots and events over the native protocol, and it holds no durable session, provider, or scheduling authority of its own.
 
 ### 4.5 Locality by default
 
@@ -533,6 +535,8 @@ ACP-specific code MUST NOT bypass scheduler, authorization, workspace, agent-run
 
 All native protocol operations MUST be versioned and capability-negotiated. New clients MUST tolerate unknown optional fields and events where safe. Security-sensitive capability absence MUST fail closed.
 
+The daemon MUST own one catalog of user-invocable commands, and the protocol MUST expose that catalog in a bounded form so that no frontend holds a private copy of the command surface. A command whose result is a change to daemon-owned state MUST be authorized in the daemon under the capability the catalog names, and MUST produce a `Run` record. A command whose result is only what a frontend displays MAY be dispatched by that frontend from a bounded, declared set of frontend actions. Input that is not a recognized command MUST remain prompt text and MUST NOT become a privileged operation.
+
 Project-scoped subscriptions MUST support snapshots, monotonically ordered events, resume from acknowledged sequence, and explicit resynchronization when history is unavailable.
 
 Large output MUST remain in run stores or artifact stores and be referenced by bounded handles. Event payloads, chat payloads, presence lists, scheduler snapshots, and observer projections MUST have explicit size bounds.
@@ -616,6 +620,7 @@ The implementation MUST preserve the following invariants:
 21. Active turns remain pinned to an immutable runtime-asset snapshot.
 22. Compatibility execution paths remain classified and progressively reduced.
 23. Solo mode remains a composition of the same components used for teams.
+24. The daemon owns one command catalog; every command that changes daemon-owned state is authorized in the daemon and produces a `Run`.
 
 ## 30. Completion criteria
 

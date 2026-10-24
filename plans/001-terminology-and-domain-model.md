@@ -154,7 +154,7 @@ A named bundle of project capabilities, such as Viewer, Contributor, Maintainer,
 
 ### Capability
 
-One daemon-enforced permission to perform an operation in a scope, for example `session.observe`, `agent.invoke`, or `worktree.create`.
+One daemon-enforced permission to perform an operation in a scope, for example `session.observe`, `agent.invoke`, `command.execute`, or `worktree.create`.
 
 ### Authorization decision
 
@@ -699,6 +699,25 @@ Replacement of incomplete client state with a new snapshot when event history is
 
 The protocol exchange establishing supported optional operations and semantic versions.
 
+### Command
+
+A named, user-invocable operation drawn from a single daemon-owned catalog and addressed by a stable command identity rather than by its displayed name.
+
+A command has an identity, a display name, a one-line description, a kind, the capability it requires, and its argument shape. The catalog is defined once, in the daemon's own code, and the protocol exposes it in a bounded form, so no frontend holds a private copy of the command surface.
+
+A command has exactly one of two kinds:
+
+- a **daemon effect**, whose result is a change to daemon-owned state. The daemon authorizes it under the capability the catalog names — `command.execute` is the canonical project capability — executes it, and records a `Run`;
+- a **frontend effect**, which changes only what a frontend is showing. A frontend dispatches it locally from a bounded, declared set of frontend actions. It never mutates daemon-owned state.
+
+The kind is a property of the command, not a choice a frontend makes at invocation time.
+
+A frontend MAY present a different display name for the same command identity. The identity, the description, the kind, and the required capability are shared.
+
+Suggested identifier: `CommandId`.
+
+A command is not a `Run`. A command is the request to do something; a run is the record of something that executed. A daemon-effect command that runs produces a `Run`; a frontend-effect command changes nothing durable and produces none. Input that is not a recognized command is prompt text, and never becomes a privileged operation by implication.
+
 ## 14. Compatibility mapping from current code
 
 ### Current `project_id`
@@ -757,6 +776,9 @@ The following phrases SHOULD be removed from new design documents unless qualifi
 - "worker" when execution node, scheduler executor, or agent worker is intended;
 - "session" when turn, client connection, terminal, or process is intended;
 - "run" when job, attempt, agent run, or command run is intended;
+- "command" when the intended object is a `Run`, a scheduler job, a shell
+  command, or a tool call. A `Command` is a catalog entry addressed by its
+  identity; a `Run` is the record of an execution;
 - "task" when the intended object is a project work order, a delegated
   agent task, a Todo item, a work-plan item, or a scheduler job. The TUI
   may label work orders as "Tasks", but protocol, storage, and
