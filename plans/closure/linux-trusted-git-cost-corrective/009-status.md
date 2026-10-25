@@ -263,6 +263,12 @@ than waiting for a reader to notice.
 
 ## 9. Unresolved findings
 
+> **U1 discharged on 2026-10-25.** U1 below was closed by a follow-up after this
+> record was written; see §14 (A14). Its text is kept as it stood when the record
+> was closed, because a reader comparing the record with the tree's history needs
+> to see the finding and its discharge, not a rewritten finding. U2 was already
+> closed when the record was closed.
+
 **U1 — the maintainer has not chosen a disposition for the "another linked worktree's `HEAD` is writable" consequence.** The amendment records the consequence and records the disposition as *not chosen*. Narrowing the grant would need a new ADR; the milestone explicitly stops at the documentation correction. **This is a decision the maintainer owns**, and it is the only thing standing between this milestone and a narrower grant. Severity: medium. No code depends on it.
 
 **U2 — §13 criterion 6's whole-tree gates were run on this tree after the disk emergency.**
@@ -459,3 +465,90 @@ and `tests/tui_render/tui_composer_motions.inc` and rewrote the already-existing
 test file. The comment budget was re-banked on the merged tree at **124,310**
 lines / **1,095,646** words / ratio **0.1330**, still below the 124,865
 pre-reduction baseline.
+
+**A11 — the seventh reconciliation with `main`.** `origin/main` advanced again, to `4aa07fa72`, which carried PRs #184, #187, #188, #189 and #190 — the delegated-run line's reconciliation, the desktop parity merge, the M007-A desktop gate guard, and the managed-agent-scratch M008 corrective. The branch had to be reconciled with it, and two files conflicted.
+
+Three rows moved, each re-measured against its own listed `Source` in the merged tree rather than carried over from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 340 (main) / 339 (branch) | **341** | The union. `main` added `tests/frontend_parity/tui_reconstruction.inc` and the managed-agent-scratch tree's `tests/scheduler_jobs/scratch_record_less_tree.inc`; this branch added `tests/git_consistency_consumers_c005.rs`. |
+| Guard scripts (all) | 93 (main) / 92 (branch) | **94** | The union. `main` added `scripts/check_scratch_reclaim_invariants.py` and `scripts/check_desktop_gate_wiring.py`; this branch added none. |
+| CI guard scripts | 56 (main) / 55 (branch) | **57** | The union of the two workflows' distinct `scripts/check_*` names. Both of `main`'s new guards run in **both** `quick` and CI, so the *quick runs 14 guards CI does not* difference is unchanged at **14**, and the *quick* guard count is **71**. |
+
+`AGENTS.md`'s published counts moved with them — **71 quick / 57 CI** — and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow, not carried over. The quick lane's `==>` lines moved from 113 to **117** (`run_guards` **113**, `run_quick` **4**), because `main` added guard steps and their self-tests.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment budget's relation to the pre-reduction baseline changed, and it is worth stating plainly.** The corpus is a ratchet — no recorded ceiling may be exceeded — and the merged tree measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio, which the re-bank records exactly as measured.
+
+The **124,865** figure is the pre-reduction corpus from the C007 comment-reduction workstream. It is a **historical reference, not a guard**: no script, no entry in `docs/comment-budget.toml`, and no CI step enforces it. The corpus crossed it before this merge — `main`'s own tree banked **125,161** before this change, already **296 lines above** the reference — so this merge did not cross it and did not cause it. The fourth, fifth, sixth and ninth amendments each recorded the corpus *below* the baseline because it *was* below on those trees; that relation simply no longer holds now that `main`'s subsequent lines have spent more comment lines than the reduction freed. Recording it as still-below would be false, so it is recorded as measured.
+
+**`main` and this branch share the fence.** `main`'s `2222697d6` — *"carry a git read's consistency class to the client"* — was written against the guard this line merged, and it **propagates** the Phase 3 git read's class rather than admitting it, because the desktop's git read is a display read rather than a generation-bound consumer. Its commit message notes that the desktop's status and branch reads consult refs and the index rather than the object store, so their composite class is `NoObjectGeneration` — a class the fence refuses outright. That is the same refusal the new standalone integration target asserts from outside the crate, and the two agree.
+
+**A12 — the eighth reconciliation with `main`.** `origin/main` advanced again, to `6e8a6bb60`, which carried PRs #185 and #191 — the desktop chat region and side panel (M007-B) and the panel layer's authority guard. Nothing conflicted textually, but the auto-merge produced **two** copies of the three count rows in `architecture/overview.md` — this branch's and `main`'s — which is the shape a count table takes when both sides moved the same rows without the same values. The duplicate was collapsed to one row set carrying the merged tree's measurement.
+
+Two rows moved, each re-measured against its own listed `Source` in the merged tree rather than carried over from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Guard scripts (all) | 94 | **95** | `main` added `scripts/check_desktop_panel_authority.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 57 | **58** | The CI workflow gained the same guard and its self-test. The measure is unchanged. |
+| Integration test files | 341 | **341** | Unchanged, and worth stating rather than leaving implicit: `main`'s M007-B work added no integration test file. |
+
+The *quick* guard count moved **71 → 72**, and the *quick runs 14 guards CI does not* difference is unchanged at **14**: the new guard runs in **both** `quick` and CI, so it adds no quick-only entry. The quick lane's `==>` lines moved from 117 to **119** (`run_guards` **115**, `run_quick` **4**). `AGENTS.md`'s published counts moved with them, to **72 quick / 58 CI**, and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow rather than carried over.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment corpus did not move, and the relation to the 124,865 reference did not change.** The merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio; the re-bank moved no per-file ceiling, because `main`'s new commits added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the tenth amendment already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
+**A13 — the ninth reconciliation with `main`.**
+
+`origin/main` advanced again, to `cb4ceed9d`, which carried PRs #192 and #194 — the desktop keyboard-first input model (M007-C) and the desktop editor surface (M007-E). One file conflicted: `architecture/overview.md`, in the three count rows.
+
+Two rows moved, each re-measured against its own listed `Source` in the merged tree rather than carried over from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Guard scripts (all) | 95 (branch) / 95 (main) | **96** | The union: `main` added `scripts/check_desktop_editor_surface_authority.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 58 (branch) / 58 (main) | **59** | The union of the two workflows' distinct `scripts/check_*` names. The measure is unchanged. |
+| Integration test files | 341 (branch) / 340 (main) | **341** | The union: this branch's `tests/git_consistency_consumers_c005.rs`. `main`'s two desktop milestones added no integration test file. |
+
+The *quick* guard count moved **72 → 73**, and the *quick runs 14 guards CI does not* difference is unchanged at **14**: the new guard runs in **both** `quick` and CI, so it adds no quick-only entry. The quick lane's `==>` lines moved from 119 to **121** (`run_guards` **117**, `run_quick` **4**). `AGENTS.md`'s published counts moved with them, to **73 quick / 59 CI**, and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow rather than carried over.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment corpus did not move.** The merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio; the re-bank moved no per-file ceiling, because `main`'s two desktop milestones added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the tenth amendment already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
+
+**A14 — the maintainer's chosen disposition for U1: defence in depth, and the hooks-path pin.**
+
+The maintainer has chosen the disposition U1 left open: **defence in depth**. The shared administration root stays writable and the capability it carries stays open — narrowing the grant is still a **new ADR**, and this milestone did not narrow it. What the disposition removes is the most obvious path to that capability: the contained worktree child's argv now carries `-c core.hooksPath=/dev/null`, so the repository's own hooks cannot run inside the containment at all.
+
+**Why the pin is on the argv, and not in the environment.** This is the one part of the disposition that is not obvious, and it was settled by measurement rather than by preference. Git's command-scope configuration can also be carried by `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, and that mechanism *does* outrank the repository's own configuration file — measured on this host, where the repository's local `core.hooksPath` was overridden by the environment route and the hook stopped running. But those variables are in `egggit`'s `ALWAYS_STRIPPED_ENV_VARS`, so the child's environment policy **hard-denies** them, and `EnvironmentPolicy::with_var` **silently refuses** a denied variable rather than reporting it. A pin carried there would therefore be dropped before the child ever saw it: a disposition that reads like a control and is a no-op. The first draft of the test drove the environment and **failed** for exactly that reason. A `-c` on the argv is the mechanism the daemon's own trusted Git reads already use (`egggit::add_trusted_git_overrides`), it is not on the deny list, and it outranks the repository's local configuration.
+
+**What was implemented.**
+
+* `src/git_contained_worktree.rs` — the constant `WORKTREE_CHILD_HOOKS_PATH_PIN` and the argv builder that applies it. The pin is applied to **both** steps of the operation, ahead of the subcommand, because a Git **global** option only applies before it.
+* `scripts/check_contained_worktree_hooks_path.py` — the static guard, wired into `verify.sh quick` and CI, with a `--self-test`. It checks that the constant is declared with the pinned key and a value that names no hook directory, that the argv builder applies it ahead of every step-specific subcommand, that the child's environment carries **no** command-scope pin (the hard-denied route), that ADR-0048 records the disposition as chosen, and that the behavioural proof exists and derives its control from the production pin.
+* `tests/contained_worktree_hooks_path.rs` — the behavioural proof, in a standalone target.
+* `tests/contained_worktree_c008.rs` — the containment test's hook assertion is now the **negative** one. It used to require the repository's hook to have run and merely be contained; it now requires that it does **not** run at all. That is a *stronger* statement than the one it made before.
+* `plans/adrs/ADR-0048-…md` — the disposition section now records the choice, clause 5 no longer lists *hooks* among the repository configuration surfaces that still apply, and a dated amendment records the mechanism and what it does not change.
+
+**What the behavioural proof claims, and how it avoids being vacuous.** The test runs the repository's `post-checkout` hook under the production argv with the **pin pair removed** — the control — and the hook runs; it then removes the control's marker and runs the production argv, and the hook does not run, while the worktree is still created. The control is derived from the production argv rather than written out separately, so it cannot drift from what the child really runs. Without that control the claim would be satisfied by a child that never ran hooks for an unrelated reason.
+
+**Three planted regressions proved the proof load-bearing**, and each was reverted:
+
+| Plant | Where it failed |
+|---|---|
+| The pin removed from the argv builder | `tests/contained_worktree_hooks_path.rs:200` — "the production argv does not carry the hooks-path pin at all" |
+| The pin renamed to a key that does not disable hooks (`core.pager=cat`) | `tests/contained_worktree_hooks_path.rs:237` — "the production argv does not pin core.hooksPath" |
+| The pin applied only to the attach step | `tests/contained_worktree_hooks_path.rs:200` — "the production argv does not carry the hooks-path pin at all" |
+
+**What this amendment does not claim.** It does not close the capability: the shared root stays writable, so the child can still write another linked worktree's `HEAD`. It does not claim the pin is the only way to reach it. It does not claim the repository's hooks are the only hostile configuration the child runs — a hostile `filter.*.smudge` still runs, by ADR-0048's own accepted clause 5, and it is the sandbox that contains it. And it does not reopen C009's status: C009 was closed before this amendment and stays closed. What it does is discharge U1, the record's last open finding, so the record now carries no open finding.
+
+**The counts that moved on this tree.** *Guard scripts (all)* **96 → 97** (this line's `scripts/check_contained_worktree_hooks_path.py`), *CI guard scripts* **59 → 60** (the workflow gained the same guard and its self-test), and *Integration test files* **341 → 342** (`tests/contained_worktree_hooks_path.rs`). The *quick* guard count moved **73 → 74**, the *quick runs 14 guards CI does not* difference is unchanged at **14** (the new guard runs in both lanes), `AGENTS.md`'s published counts moved to **74 quick / 60 CI**, and the quick lane's `==>` lines moved from 121 to **123** (`run_guards` **119**, `run_quick` **4**). Every other row was confirmed unchanged by measurement.
+
+**The comment corpus moved, and the movement is accounted for.** The tree now measures **125,249** comment lines, **1,104,302** words and a **0.1337** ratio, against the recorded **125,212** / **1,103,943** / **0.1337**. The increase is the new target's documentation; it is partly offset by two genuine per-file reductions in the same diff — `src/git_contained_worktree.rs` **284 → 280** and `tests/contained_worktree_c008.rs` **171 → 170** — where three comment blocks in the source repeated what the named functions already say and the containment test's obtained-root block repeated the paragraph the source documents. The corpus remains **above** the 124,865 pre-reduction figure, which is a historical reference and not a guard.
+
+**The count table was also repaired.** `architecture/overview.md`'s Verified-counts table carried **two** copies of the three count rows — one set at **341** and one at **340** — a merge artifact from an earlier reconciliation, in which both sides moved the same rows without the same values. The duplicate was collapsed to one row set carrying the tree's measurement.
+
+**Verification on this tree.** `scripts/verify.sh quick` is **green** at **123 steps**; `tests/contained_worktree_hooks_path.rs` passes; `scripts/check_contained_worktree_hooks_path.py` and its `--self-test` pass; `scripts/check_contained_worktree_grant.py` still passes against the reduced comments, which is the check that the ADR, the two code comments and the containment test still name one shared administration root.

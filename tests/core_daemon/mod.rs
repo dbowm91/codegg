@@ -18,6 +18,13 @@
 //! directory up under `tests/common/mod.rs`, so it is bound here with an
 //! explicit `#[path]`; the members reach it with `use super::common;`.
 
+// M007-D: the daemon's request future grew a layer when the daemon took
+// ownership of the command catalog (ADR-0052), and proving that future is
+// `Send` inside this crate now costs more than the default recursion
+// budget. The limit is raised here rather than in the library, because the
+// overflow is in *this* crate's obligation proof.
+#![recursion_limit = "512"]
+
 #[path = "../common/mod.rs"]
 pub mod common;
 
@@ -32,6 +39,9 @@ pub mod checkout_reservation_c004;
 
 #[path = "checkout_mediation_authority_c008.inc"]
 pub mod checkout_mediation_authority_c008;
+
+#[path = "command_catalog_m007d.inc"]
+pub mod command_catalog_m007d;
 
 #[path = "collaboration_m001_chat.inc"]
 pub mod collaboration_m001_chat;

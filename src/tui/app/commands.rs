@@ -251,7 +251,14 @@ pub enum TuiCommand {
         message: String,
     },
     WorktreeList,
-    MemorySummary,
+    MemorySummary {
+        /// The catalog identity the user named.
+        ///
+        /// `/memory` and `/memory-list` are two commands that share one
+        /// effect, so the command that runs must be the one the user
+        /// typed: a command's name is addressable by its own identity.
+        command_id: String,
+    },
     MemorySearch {
         query: String,
     },

@@ -103,6 +103,8 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
         return;
     };
     let request_id = app.dialog_state.test_run_request.begin();
+    // M007-D: the daemon owns the effect.
+    let command_scope = crate::tui::command_route::scope_for(app);
 
     spawn_registered_tui_task(
         tx,
@@ -250,17 +252,24 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                     });
                 }
             };
-            match core_client
-                .request(crate::core::new_request(
-                    format!("test-wait-{}", uuid::Uuid::new_v4()),
-                    crate::protocol::core::CoreRequest::JobWait {
-                        job_id,
-                        timeout_ms: request
-                            .timeout_secs
-                            .map(|s| s.saturating_add(5).saturating_mul(1000)),
-                    },
-                ))
-                .await
+            // M007-D: the daemon owns the effect. The argument carries the
+            // job id and, when the frontend asked for a bound, that bound
+            // in milliseconds.
+            let timeout_ms = request
+                .timeout_secs
+                .map(|s| s.saturating_add(5).saturating_mul(1000));
+            let argument = match timeout_ms {
+                Some(ms) => format!("{job_id} {ms}"),
+                None => job_id.clone(),
+            };
+            match crate::tui::command_route::send_command(
+                &core_client,
+                command_scope,
+                "test",
+                "",
+                &argument,
+            )
+            .await
             {
                 Ok(crate::protocol::core::CoreResponse::JobWaited { summary, .. }) => {
                     Some(TuiCommand::TestRunFinished {

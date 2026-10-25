@@ -2218,7 +2218,7 @@ fn sync_sheet_error(app: &mut App, error: &str) {
 /// Open (or foreground) the project Task view and refresh its bounded
 /// projection. One `WorkOrderList` + one `WorkOrderSummary` + one
 /// `WorkOrderLaneList`; occurrence detail stays lazy per selected row.
-pub(crate) fn open_task_view(app: &mut App) {
+pub(crate) fn open_task_view(app: &mut App, command_id: &'static str) {
     let context = match app.project_execution_context() {
         Ok(context) => context,
         Err(error) => {
@@ -2233,7 +2233,7 @@ pub(crate) fn open_task_view(app: &mut App) {
         return;
     };
     ensure_task_view_dialog(app, &project_id);
-    start_task_view_refresh(app, project_id);
+    start_task_view_refresh(app, project_id, command_id);
 }
 
 /// Refresh the visible Task view projection (no-op when the view is
@@ -2249,7 +2249,7 @@ pub(crate) fn refresh_task_view(app: &mut App) {
         return;
     };
     ensure_task_view_dialog(app, &project_id);
-    start_task_view_refresh(app, project_id);
+    start_task_view_refresh(app, project_id, "task");
 }
 
 fn ensure_task_view_dialog(app: &mut App, project_id: &str) {
@@ -2262,7 +2262,7 @@ fn ensure_task_view_dialog(app: &mut App, project_id: &str) {
     sync_task_view_dialog(app);
 }
 
-fn start_task_view_refresh(app: &mut App, project_id: String) {
+fn start_task_view_refresh(app: &mut App, project_id: String, command_id: &'static str) {
     let request_id = app.dialog_state.work_order_list_request.begin();
     let Some(route) = capture_route(app, request_id) else {
         let _ = app
@@ -2277,6 +2277,15 @@ fn start_task_view_refresh(app: &mut App, project_id: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let scope = task_scope(&route);
+    // M007-D: the daemon owns the effect. The listing is the catalog's
+    // `tasks` command (or `task` — the two share one effect, and each is
+    // executed under the id the user typed), and the bound travels as the
+    // command's argument.
+    let command_scope = crate::tui::command_route::scope_for(app);
+    let command_scope = crate::protocol::core::CommandCatalogScopeDto {
+        project_id: project_id.clone(),
+        ..command_scope
+    };
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -2300,7 +2309,7 @@ fn start_task_view_refresh(app: &mut App, project_id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            match fetch_task_view(core_client.as_ref(), &project_id).await {
+            match fetch_task_view(&core_client, &project_id, &command_scope, command_id).await {
                 Ok((work_orders, summary, lanes, capabilities_supported, truncated)) => {
                     Some(TuiCommand::TaskViewRefreshed {
                         request_id,
@@ -2342,8 +2351,10 @@ fn start_task_view_refresh(app: &mut App, project_id: String) {
 }
 
 async fn fetch_task_view(
-    core_client: &dyn CoreClient,
+    core_client: &std::sync::Arc<dyn CoreClient>,
     project_id: &str,
+    command_scope: &crate::protocol::core::CommandCatalogScopeDto,
+    command_id: &'static str,
 ) -> Result<
     (
         Vec<WorkOrderDto>,
@@ -2376,24 +2387,45 @@ async fn fetch_task_view(
                 .to_string(),
         );
     }
-    let (work_orders, truncated) = match core_client
-        .request(crate::core::new_request(
-            format!("wo-view-list-{}", uuid::Uuid::new_v4()),
-            CoreRequest::WorkOrderList {
-                project_id: project_id.to_string(),
-                state_filter: None,
-                cursor: None,
-                limit: Some(MAX_TASK_VIEW_ROWS as u32),
-            },
-        ))
-        .await
-    {
+    // `/task` and `/tasks` share one effect, and each is executed under
+    // the id the user typed. Both literals sit at the routing call, so the
+    // routing stays statically readable.
+    let bound = MAX_TASK_VIEW_ROWS.to_string();
+    let listed = match command_id {
+        "task" => {
+            crate::tui::command_route::send_command(
+                core_client,
+                command_scope.clone(),
+                "task",
+                "",
+                &bound,
+            )
+            .await
+        }
+        _ => {
+            crate::tui::command_route::send_command(
+                core_client,
+                command_scope.clone(),
+                "tasks",
+                "",
+                &bound,
+            )
+            .await
+        }
+    };
+    let (work_orders, truncated) = match listed {
         Ok(CoreResponse::WorkOrderList {
             work_orders,
             truncated,
             ..
         }) => (work_orders, truncated),
         Ok(CoreResponse::Error { code, message }) => {
+            return Err(format!("Task list failed: {code}: {message}"));
+        }
+        // A refusal that never reached the effect arrives as the command
+        // execution's own result.
+        Ok(CoreResponse::CommandExecute { result }) => {
+            let (code, message) = crate::tui::command_route::refusal_parts(&result);
             return Err(format!("Task list failed: {code}: {message}"));
         }
         Ok(_) => return Err("Unexpected task list response".to_string()),
@@ -3339,7 +3371,7 @@ pub(crate) fn start_tasks_command(app: &mut App) -> crate::tui::panels::PanelFil
         super::tasks::start_list_tasks(app);
         return crate::tui::panels::PanelFill::Loading;
     }
-    open_task_view(app);
+    open_task_view(app, "tasks");
     crate::tui::panels::PanelFill::OpenedAs(crate::tui::panels::SidePanelId::TaskView)
 }
 

@@ -313,6 +313,14 @@ fn start_show_team(app: &mut App, project_id: String) {
     let reconnect_epoch = epoch_of(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The membership listing is the
+    // catalog's `team` command, and the scope names the project the
+    // listing is taken in — the one the caller resolved.
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        project_id: project_id.clone(),
+        ..scope
+    };
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -345,15 +353,16 @@ fn start_show_team(app: &mut App, project_id: String) {
                     reconnect_epoch,
                 });
             }
-            let list_request = crate::core::new_request(
-                format!("team-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TeamMembershipList {
-                    project_id: project_id.clone(),
-                    limit: None,
-                },
-            );
             let (memberships, truncated, list_error, unauthorized) =
-                match core_client.request(list_request).await {
+                match crate::tui::command_route::send_command(
+                    &core_client,
+                    scope.clone(),
+                    "team",
+                    "",
+                    "",
+                )
+                .await
+                {
                     Ok(CoreResponse::TeamMembershipList {
                         memberships,
                         truncated,
@@ -364,6 +373,17 @@ fn start_show_team(app: &mut App, project_id: String) {
                         Some(format!("{code}: {message}")),
                         unauthorized_of(&code),
                     ),
+                    // A refusal that never reached the effect arrives as
+                    // the command execution's own result.
+                    Ok(CoreResponse::CommandExecute { result }) => {
+                        let (code, message) = crate::tui::command_route::refusal_parts(&result);
+                        (
+                            None,
+                            false,
+                            Some(format!("{code}: {message}")),
+                            unauthorized_of(&code),
+                        )
+                    }
                     Ok(other) => (
                         None,
                         false,
@@ -828,6 +848,9 @@ fn start_principals_list(app: &mut App) {
     let reconnect_epoch = epoch_of(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The principal listing is the
+    // catalog's `collaborators` command.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -854,11 +877,15 @@ fn start_principals_list(app: &mut App) {
                     reconnect_epoch,
                 });
             }
-            let req = crate::core::new_request(
-                format!("team-principals-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TeamPrincipalList { limit: None },
-            );
-            match core_client.request(req).await {
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "collaborators",
+                "",
+                "",
+            )
+            .await
+            {
                 Ok(CoreResponse::TeamPrincipalList {
                     principals,
                     truncated,
@@ -871,6 +898,19 @@ fn start_principals_list(app: &mut App) {
                     reconnect_epoch,
                 }),
                 Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::TeamPrincipalsLoaded {
+                        request_id,
+                        principals: None,
+                        truncated: false,
+                        error: Some(format!("{code}: {message}")),
+                        unauthorized: unauthorized_of(&code),
+                        reconnect_epoch,
+                    })
+                }
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (code, message) = crate::tui::command_route::refusal_parts(&result);
                     Some(TuiCommand::TeamPrincipalsLoaded {
                         request_id,
                         principals: None,

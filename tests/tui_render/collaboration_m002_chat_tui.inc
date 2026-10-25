@@ -72,6 +72,58 @@ impl FakeChatClient {
         self.seen.lock().unwrap().push(kind.to_string());
     }
 
+    /// Answer a command execution the way the daemon's executor does.
+    ///
+    /// M007-D moved the chat effect behind `command.execute`: the daemon
+    /// owns the effect, and the inner response travels back inside the
+    /// command's result. The fake rebuilds the inner request from the
+    /// command's identity and argument, answers it exactly as it always
+    /// did, and wraps the answer the way the daemon does.
+    async fn answer_command(
+        &self,
+        request: &codegg::protocol::core::CommandExecuteRequestDto,
+    ) -> CoreResponse {
+        let mut parts = request.argument.split_whitespace();
+        let channel_id = parts.next().unwrap_or_default().to_string();
+        let number = parts.next().and_then(|token| token.parse::<u64>().ok());
+        let inner = match request.command_id.as_str() {
+            "chat_history" => CoreRequest::ChatHistoryOlder {
+                channel_id,
+                before_seq: None,
+                limit: None,
+            },
+            "chat_sync" => CoreRequest::ChatSync {
+                channel_id,
+                from_seq: number.unwrap_or(0),
+                limit: None,
+            },
+            "chat_read" => CoreRequest::ChatReadSet {
+                channel_id,
+                last_read_seq: number.unwrap_or(0),
+            },
+            other => {
+                return CoreResponse::Error {
+                    code: "command_not_served".to_string(),
+                    message: format!("the fake does not serve {other}"),
+                }
+            }
+        };
+        match self
+            .request(RequestEnvelope {
+                protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: inner,
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => CoreResponse::Error {
+                code: "core_unavailable".to_string(),
+                message: error.to_string(),
+            },
+        }
+    }
+
     fn kinds(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
     }
@@ -113,6 +165,22 @@ impl CoreClient for FakeChatClient {
         &self,
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
+        if let CoreRequest::CommandExecute { request: execute } = &request.payload {
+            let inner = self.answer_command(execute).await;
+            return Ok(CoreResponse::CommandExecute {
+                result: codegg::protocol::core::CommandExecuteResultDto {
+                    run_id: "run-1".to_string(),
+                    command_id: execute.command_id.clone(),
+                    status: codegg::protocol::core::CommandOutcomeStatusDto::Completed,
+                    summary: "ok".to_string(),
+                    lines: Vec::new(),
+                    report: None,
+                    started_at_ms: 0,
+                    completed_at_ms: 1,
+                    response: Some(serde_json::to_value(&inner).expect("the response encodes")),
+                },
+            });
+        }
         match request.payload {
             CoreRequest::ChatCapabilities => {
                 self.record("chat_capabilities");

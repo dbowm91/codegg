@@ -255,21 +255,37 @@ pub(crate) fn start_preference_refresh(app: &mut App) {
     };
     let request_id = app.ui_state.reasoning_request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The selection is the catalog's
+    // `reasoning` command; its request is a unit variant, so the scope
+    // names where the reading is made and nothing more.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "reasoning_preference_get",
         async move {
-            let preference = match core_client
-                .request(crate::core::new_request(
-                    format!("reasoning-get-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ReasoningPreferenceGet,
-                ))
-                .await
+            let preference = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "reasoning",
+                "",
+                "",
+            )
+            .await
             {
                 Ok(CoreResponse::ReasoningPreference { preference }) => Some(preference),
                 Ok(CoreResponse::Error { code, message }) => {
+                    return Some(TuiCommand::ReasoningPreferenceLoaded {
+                        request_id,
+                        preference: None,
+                        error: Some(refusal_message(&code, &message)),
+                    });
+                }
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (code, message) = crate::tui::command_route::refusal_parts(&result);
                     return Some(TuiCommand::ReasoningPreferenceLoaded {
                         request_id,
                         preference: None,

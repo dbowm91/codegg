@@ -193,7 +193,11 @@ read-only except for that one path. It is a grant, not a weaker write grant.
 The shared root is the parent of every linked worktree's own administration
 directory, so a child granted it can also write another linked worktree's
 `HEAD`; ADR-0048's amendment records that consequence as an open capability
-question rather than an accepted narrowing. See `architecture/git.md`
+question rather than an accepted narrowing, and the maintainer's chosen
+disposition for it is **defence in depth**: the contained child's argv pins
+`core.hooksPath`, so the repository's own hooks cannot run inside the
+containment. The reach itself is unchanged — the shared root stays writable,
+and the sandbox remains the security property. See `architecture/git.md`
 §"Contained managed-worktree creation".
 
 The **Git-pointer exemption** is narrower. The protected mount view hides a

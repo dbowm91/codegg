@@ -71,6 +71,24 @@ run_guards() {
     echo "==> ./scripts/check-desktop-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-desktop-boundary.sh)
 
+    # M007-D: the daemon owns the command catalog (ADR-0052). The catalog
+    # ownership guard proves the daemon's catalog and the TUI's command
+    # surface are the same set, that only the catalog can execute a
+    # command, and that no frontend holds a second catalog. The
+    # frontend-action guard proves the frontend's dispatchable set is
+    # declared, finite, closed and non-mutating. Both carry a self-test,
+    # because a guard that cannot fail on an injected defect is not
+    # evidence.
+    echo "==> python3 scripts/check_command_catalog_ownership.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_command_catalog_ownership.py --self-test)
+    echo "==> python3 scripts/check_command_catalog_ownership.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_command_catalog_ownership.py)
+
+    echo "==> python3 scripts/check_frontend_action_set.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_frontend_action_set.py --self-test)
+    echo "==> python3 scripts/check_frontend_action_set.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_frontend_action_set.py)
+
     # The desktop tree is a separate Cargo workspace that the root check
     # never compiles, so the hosted desktop qualification is the only
     # automated gate it has. A guard which is not run automatically cannot
@@ -178,6 +196,18 @@ run_guards() {
 
     echo "==> python3 scripts/check_contained_worktree_grant.py"
     (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_grant.py)
+
+    # The contained child's argv pins core.hooksPath, so the repository's own
+    # hooks cannot run inside the containment. The pin is a defence in depth,
+    # not a narrowing of the grant: the shared root stays writable. A pin
+    # carried by the environment would be dropped by the child's policy and
+    # would be a no-op that reads like a control, so the guard refuses that
+    # route by name.
+    echo "==> python3 scripts/check_contained_worktree_hooks_path.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_hooks_path.py --self-test)
+
+    echo "==> python3 scripts/check_contained_worktree_hooks_path.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_hooks_path.py)
 
     # The shared checkout's lease belongs to the group, and the mediation
     # authority must not fail open. Both are correctness contracts whose

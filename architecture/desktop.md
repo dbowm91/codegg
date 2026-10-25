@@ -70,7 +70,64 @@ route/session surface adds `desktop_project_detail`, `desktop_workspace_select`,
 route errors propagate daemon codes (e.g. `model_unselected`) instead of
 generic failures.
 
-## Lifecycle linearization and concurrency rules (C002)
+## The desktop's command surface (M007-D)
+
+The desktop reads the **daemon's** catalog. It holds no command list of
+its own, no command names, and no command-kind table.
+
+**Two named host commands, and only two.** `desktop_command_catalog`
+(`apps/desktop/src-tauri/src/lib.rs:1011`) and `desktop_command_execute`
+(`:1025`), registered at `:1124-1125`. Both are **named** commands, never a
+generic request passthrough — `scripts/check-desktop-boundary.sh` rejects a
+generic passthrough in the host source. The renderer names the same two
+invoke targets (`apps/desktop/src/bridge.ts:82` and `:90`).
+
+**The DTO mirror is generated, not hand-written.** `npm run bindings:check`
+compares the TypeScript surface with its Rust DTO definitions, through one
+bindings map (`apps/desktop/scripts/check-bindings.mjs`) that is the single
+source of truth for both sides' field lists. A field added on one side and
+not the other fails the check; the map is negative-tested, so a drift is a
+red check and not a silent mismatch.
+
+**The renderer's zero-catalog rule is enforced by a guard.**
+`scripts/check_command_catalog_ownership.py` fails the build if the
+renderer holds a slash-prefixed command spelling. It reads **all three**
+TypeScript quoting styles over comment-stripped sources, so the rule sees
+what the renderer actually writes; a prose note that names a command is not
+a command list. Its self-test injects the defect in each quoting style and
+in each extension, so the rule is proved against the style a reviewer would
+actually use rather than only against a style the guard happens to parse.
+
+**Serve-ability is the daemon's to publish.** The catalog carries
+`daemon_served` per form, and the palette **refuses** an unserved form
+itself (`apps/desktop/src/commands/CommandPalette.tsx:177`) rather than
+dispatching into a refusal. A form the daemon does not serve yet is shown
+as unavailable — the catalog says the command exists, and the daemon says
+it cannot serve it yet.
+
+**The palette resolves by catalog identity.** A typed line selects a catalog
+command and one of its argument forms (`resolveTypedLine`,
+`resolveForm`); a frontend-effect form dispatches locally against the
+declared action set, and a daemon-effect form dispatches to
+`desktop_command_execute`. The desktop's **keymap** ids are a separate
+namespace and are never joined to the catalog's identities.
+
+**The catalog version is quoted back.** The palette reads the catalog with a
+version and quotes it on an execution, so a stale palette is refused rather
+than executed against a classification the daemon no longer serves.
+
+**The inner response crosses the bridge.** `CommandExecuteView` carries the
+daemon's own response for the command's effect, so the desktop formats the
+same authoritative data the TUI formats. The daemon owns the effect and the
+data; the frontend keeps the formatting.
+
+**One recorded deviation.** The plan also asked for a `/` completion
+overlay in the composer, fed by the daemon's catalog. It is **not**
+implemented: the composer's overlay lists the TUI's own registry, and the
+desktop's command surface is the `mod+shift+p` palette, which reads the
+daemon's catalog. The deviation is recorded rather than changed
+(`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md` §8).
+
 
 One lifecycle transition serialization boundary (`HostState.lifecycle`) defines
 connection/subscription linearization. Linearization points, all under the gate:
@@ -579,3 +636,12 @@ undocumented `desktop_projection_subscribe` (`src-tauri/src/lib.rs:979, 1030`);
 live-turn leg present at `m004-session.e2e.ts:156`. The "Deferred surfaces"
 section previously contradicted this doc's own live-turn description; it
 now records the live-turn trajectory as implemented.
+
+Re-verified 2026-10-25 against `apps/desktop/src-tauri/src/lib.rs`
+(`desktop_command_catalog` `:1011`, `desktop_command_execute` `:1025`, their
+registration `:1124-1125`), `apps/desktop/src/bridge.ts:82` and `:90`,
+`apps/desktop/src/commands/CommandPalette.tsx:120` and `:177`,
+`apps/desktop/scripts/check-bindings.mjs` and
+`scripts/check_command_catalog_ownership.py`: the host exposes exactly the
+two named commands, the renderer holds no command name under the guard's
+three quoting styles, and the palette refuses an unserved form itself.

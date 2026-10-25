@@ -583,6 +583,20 @@ paths = [
 ]
 targets = ["contained_worktree_c008"]
 
+# The contained child's hooks-path pin (C009's chosen disposition): the argv
+# the child runs with, and the proof that the repository's own `post-checkout`
+# hook does not run inside the containment. It is a standalone target because
+# it is a different claim from the grant's: the grant test asserts what the
+# child may write, and this one asserts what the child does not run.
+[[groups]]
+id = "root_contained_worktree_hooks_path"
+member = "codegg"
+paths = [
+  "src/git_contained_worktree.rs",
+  "src/managed_process.rs",
+]
+targets = ["contained_worktree_hooks_path"]
+
 # The composed two-agent daemon race: two live agents sharing one checkout,
 # each issuing a real mutating broker operation, with the writer fence
 # resolved from the run's durable record.
@@ -604,6 +618,22 @@ paths = [
   "crates/codegg-core/src/writer_permit.rs",
 ]
 targets = ["composed_two_agent_race_m011"]
+
+# The Git read-consistency fence's **runtime** half at the security-review
+# surface. The static half — that every diff consumer *reaches* the fence —
+# is owned by `scripts/check_git_consistency_consumers.py`, which can see a
+# call site that a runtime test cannot. This group owns the other half: that
+# an inadmissible read produces a *typed* error at the surface rather than
+# content whose class was never checked. The target is standalone because the
+# property is only observable from outside the crate.
+[[groups]]
+id = "root_git_consistency_consumers_c005"
+member = "codegg"
+paths = [
+  "src/git_consistency.rs",
+  "src/security/workflow/report.rs",
+]
+targets = ["git_consistency_consumers_c005"]
 
 # The root package's catch-all: the remaining top-level source paths, and the
 # root library test target. A change to a root source file that no precise

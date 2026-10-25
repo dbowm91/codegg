@@ -21,7 +21,7 @@ The controls this guard enforces:
 
 - **G1 — the recorded bridge baseline still matches the bridge.** The
   desktop's `invoke` targets are a **recorded** set, held in this file: the
-  23 targets `apps/desktop/src/bridge.ts` names and the 23 commands the
+  25 targets `apps/desktop/src/bridge.ts` names and the 25 commands the
   host's `generate_handler!` table registers. If either side grows a
   target, the guard fails until the recorded set here is deliberately
   edited. A baseline measured from the tree at run time is a baseline that
@@ -101,13 +101,30 @@ PANEL_LAYER_DIRS = (
 BRIDGE_MODULE = Path("apps/desktop/src/bridge.ts")
 HOST_COMMAND_TABLE = Path("apps/desktop/src-tauri/src/lib.rs")
 
-# The recorded bridge baseline: the desktop's 23 `invoke` targets, which are
-# the same 23 commands the host registers. The set is recorded **here**
+# The recorded bridge baseline: the desktop's 40 `invoke` targets, which are
+# the same 40 commands the host registers. The set is recorded **here**
 # rather than measured from the tree at run time, because a baseline that is
 # measured is a baseline that grows by itself.
+#
+# The set is the union of three deliberate additions, each named in the
+# change that added it:
+#
+# * M007-D adds `desktop_command_catalog` and `desktop_command_execute`: the
+#   daemon's command catalog read and the daemon-effect command executor
+#   (ADR-0052). They are named commands, never a generic request passthrough,
+#   so they are deliberate additions to this baseline in the same change that
+#   adds them.
+# * M007-E adds the fifteen `desktop_document_*` commands: the editor's
+#   bounded document operations, which the host owns and the renderer names.
+#
+# The baseline was re-measured once **both** sets were present: 40 targets,
+# and the same 40 the host's `generate_handler!` table registers. The two
+# sets are disjoint and the union is what the guard holds.
 RECORDED_BRIDGE_TARGETS = frozenset(
     {
         "desktop_artifact_read",
+        "desktop_command_catalog",
+        "desktop_command_execute",
         "desktop_connect",
         "desktop_connection_snapshot",
         "desktop_control_refresh",

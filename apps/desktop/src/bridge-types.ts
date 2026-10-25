@@ -411,3 +411,75 @@ export interface SkillCatalogueView {
   total: number;
   truncated: boolean;
 }
+
+// M007-D: the daemon's command catalog.
+//
+// The renderer holds no command list, no command names and no command-kind
+// table of its own. Every spelling, description and kind it shows comes
+// from the daemon's catalog, so the desktop and the TUI cannot drift.
+export type CommandKind = 'daemon_effect' | 'frontend_effect';
+
+// One argument form of a command. The form is the classification unit: a
+// command's argument can select a different effect, so the kind is read off
+// the form and not off the command.
+export interface CommandFormView {
+  form: string;
+  kind: CommandKind;
+  argumentHint: string;
+  argumentRequired: boolean;
+  // Whether the daemon's effect table serves this form. The renderer reads
+  // this to show a command the daemon does not serve as unavailable, rather
+  // than dispatching into a refusal.
+  daemonServed: boolean;
+}
+
+// One command in the daemon's catalog.
+export interface CommandDescriptorView {
+  commandId: string;
+  name: string;
+  aliases: string[];
+  description: string;
+  domain: string;
+  kind: CommandKind;
+  capability: string | null;
+  forms: CommandFormView[];
+}
+
+// The daemon's command catalog. `catalogVersion` is what an execution must
+// quote: a version the daemon no longer serves is refused rather than
+// executed against a stale classification.
+export interface CommandCatalogView {
+  catalogVersion: number;
+  commands: CommandDescriptorView[];
+}
+
+// The structured report of one command execution.
+export interface CommandReportView {
+  added: number;
+  removed: number;
+  changed: number;
+  shadowed: number;
+  invalid: number;
+}
+
+// How a command execution ended. `refused` means the daemon refused it
+// before it ran anything, and `runId` is then empty.
+export type CommandOutcomeStatus = 'completed' | 'refused' | 'failed' | 'cancelled';
+
+// The result of one daemon-effect command execution.
+export interface CommandExecuteView {
+  runId: string;
+  commandId: string;
+  status: CommandOutcomeStatus;
+  summary: string;
+  lines: string[];
+  report: CommandReportView | null;
+  startedAtMs: number;
+  completedAtMs: number;
+  // The response the command's effect produced, exactly as the daemon's own
+  // request handler serializes it. The daemon owns the effect and the
+  // authoritative data; the renderer keeps the formatting. Carrying the
+  // inner response is what makes the desktop's presentation parity with the
+  // TUI's real rather than approximate.
+  response: unknown | null;
+}

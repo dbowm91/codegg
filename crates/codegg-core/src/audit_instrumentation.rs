@@ -857,6 +857,18 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // and mutates nothing. Denial *is* audited upstream by
     // `authorize_request`.
     "skill_catalogue_list",
+    // M007-D (ADR-0052): the command catalog read discloses which commands
+    // exist and how each is classified. It is inert metadata and mutates
+    // nothing, so it carries no audit action.
+    "command_catalog",
+    // M007-D (ADR-0052): the daemon-effect command *dispatch*. This is the
+    // envelope, not the effect: the command's own operation (an asset
+    // refresh, a session create, a memory write) is authorized and audited
+    // on its own terms, and the dispatch itself is audited as the
+    // canonical `Run` the execution opens — the run manifest, not a new
+    // audit table. The executor's `command_execute` action is a different
+    // thing entirely: it is the tool executor's live hook.
+    "command_run",
     // `/init` is a bounded, explicitly authorized project-file preview;
     // the publication operation below is structurally audited.
     "project_init_draft",

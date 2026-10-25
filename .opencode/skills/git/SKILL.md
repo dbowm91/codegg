@@ -23,7 +23,7 @@ and invariants that are easy to violate.
 | Read-only git facts | `crates/egggit/` | Structured status/diff/log/blame/refs/worktree/conflict/operation-state reads; canonical subprocess env policy |
 | Read executor | `src/git_service.rs` | `GitExecutionService` — maps typed ops to egggit reads and the process boundary |
 | Mutations | `src/git_mutations.rs`, `src/git_mutations_ops.rs` | `GitMutationExecutor`, snapshot/delta capture, stage/commit/branch/restore/stash/merge/rebase/cherry-pick/revert/tag ops |
-| Contained worktree creation | `src/git_contained_worktree.rs` | The ADR-0048 route: `git worktree add --detach <path> <commit>` followed by `git symbolic-ref HEAD refs/heads/<branch>`, both inside an OS-contained child whose writable grant is the linked worktree's administration directory only |
+| Contained worktree creation | `src/git_contained_worktree.rs` | The ADR-0048 route: `git worktree add --detach <path> <commit>` followed by `git symbolic-ref HEAD refs/heads/<branch>`, both inside an OS-contained child whose writable grant is the **shared** administration root `<common-gitdir>/worktrees/` (plus the new checkout and the daemon scratch). The child's argv pins `core.hooksPath`, so the repository's own hooks cannot run inside the containment — a defence in depth that does not narrow the grant |
 | Network | `src/git_network_ops.rs`, `src/git_network_policy.rs` | Fetch/pull/push/remote/config/reset/clean; env hardening; URL credential redaction |
 | Recovery | `src/git_recovery.rs` | `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress`, `assert_action_matches` |
 | Projection | `src/git_mutation_projector.rs` | `project_mutation`, `project_network_mutation`, `project_destructive_mutation`, `project_recovery` |
@@ -125,7 +125,7 @@ Confirmed: `GitOperation` / `GitRiskClass` (`crates/codegg-git/src/operation.rs:
 counts table; `parse_git_argv` / `render_argv` (`parser.rs:11`, `render.rs:9`)
 as the only argv parser/renderer; `GitExecutionService` (`src/git_service.rs:282`);
 `GitMutationExecutor`; the ADR-0048 route's `git worktree add --detach` plus
-`git symbolic-ref HEAD refs/heads/<branch>` (`src/git_contained_worktree.rs:137-139,338-344`,
+`git symbolic-ref HEAD refs/heads/<branch>` (`src/git_contained_worktree.rs:141-145,690-713`,
 `plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`);
 the recovery entry points (`continue_in_progress` `:49`,
 `abort_in_progress_typed` `:111`, `skip_in_progress` `:169`,

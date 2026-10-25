@@ -196,19 +196,23 @@ fn durable_schedule_task_line(task: &serde_json::Value) -> String {
 }
 
 async fn request_workspace_schedules(
-    core_client: &dyn CoreClient,
-    workspace_id: &str,
+    core_client: &std::sync::Arc<dyn CoreClient>,
+    scope: &crate::protocol::core::CommandCatalogScopeDto,
 ) -> Result<Vec<crate::protocol::dto::ScheduleSummaryDto>, String> {
-    let request = crate::core::new_request(
-        format!("task-list-{}", uuid::Uuid::new_v4()),
-        CoreRequest::ScheduleList {
-            workspace_id: Some(workspace_id.to_string()),
-            include_archived: false,
-        },
-    );
-    match core_client.request(request).await {
+    // M007-D: the daemon owns the effect. The schedule listing is the
+    // catalog's `schedules` command, and the workspace it reads is the
+    // one the scope names.
+    match crate::tui::command_route::send_command(core_client, scope.clone(), "schedules", "", "")
+        .await
+    {
         Ok(CoreResponse::ScheduleList { schedules }) => Ok(schedules),
         Ok(CoreResponse::Error { message, .. }) => Err(format!("Failed to list tasks: {message}")),
+        // A refusal that never reached the effect arrives as the command
+        // execution's own result.
+        Ok(CoreResponse::CommandExecute { result }) => {
+            let (_code, message) = crate::tui::command_route::refusal_parts(&result);
+            Err(format!("Failed to list tasks: {message}"))
+        }
         Ok(_other) => Err("Unexpected task response".to_string()),
         Err(error) => Err(format!("Failed to list tasks: {error}")),
     }
@@ -263,6 +267,8 @@ pub(crate) fn start_list_tasks(app: &mut App) {
     let request_id = app.dialog_state.task_list_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
 
     spawn_registered_tui_task(
         tx,
@@ -277,7 +283,7 @@ pub(crate) fn start_list_tasks(app: &mut App) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            match request_workspace_schedules(core_client.as_ref(), &workspace_id).await {
+            match request_workspace_schedules(&core_client, &scope).await {
                 Ok(schedules) => {
                     let mut tasks = Vec::with_capacity(schedules.len());
                     for schedule in &schedules {
@@ -346,12 +352,13 @@ pub(crate) fn apply_tasks_listed(
 }
 
 pub(crate) fn start_delete_task(app: &mut App, id: String) {
-    let Some(workspace_id) = app
+    if app
         .session_state
         .session
         .as_ref()
         .and_then(|session| session.workspace_id.clone())
-    else {
+        .is_none()
+    {
         app.messages_state
             .toasts
             .warning("Task schedules require an active workspace");
@@ -360,6 +367,8 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
     let request_id = app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
 
     spawn_registered_tui_task(
         tx,
@@ -375,18 +384,17 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let schedules =
-                match request_workspace_schedules(core_client.as_ref(), &workspace_id).await {
-                    Ok(schedules) => schedules,
-                    Err(error) => {
-                        return Some(TuiCommand::TaskOperationFinished {
-                            request_id,
-                            op: "delete".to_string(),
-                            task_id: Some(id.clone()),
-                            error: Some(error),
-                        });
-                    }
-                };
+            let schedules = match request_workspace_schedules(&core_client, &scope).await {
+                Ok(schedules) => schedules,
+                Err(error) => {
+                    return Some(TuiCommand::TaskOperationFinished {
+                        request_id,
+                        op: "delete".to_string(),
+                        task_id: Some(id.clone()),
+                        error: Some(error),
+                    });
+                }
+            };
             let resolved_id = match resolve_schedule_id(&id, &schedules) {
                 Ok(schedule_id) => schedule_id,
                 Err(error) => {
@@ -398,13 +406,17 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                     });
                 }
             };
-            let request = crate::core::new_request(
-                format!("task-delete-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ScheduleDelete {
-                    schedule_id: resolved_id.clone(),
-                },
-            );
-            match core_client.request(request).await {
+            // M007-D: the daemon owns the effect. The resolved schedule id
+            // travels as the command's argument.
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "task_del",
+                "",
+                &resolved_id,
+            )
+            .await
+            {
                 Ok(CoreResponse::ScheduleDeleted { schedule_id }) => {
                     Some(TuiCommand::TaskOperationFinished {
                         request_id,
