@@ -855,3 +855,33 @@ changes no scratch code. The repair is `main`'s, made there and inherited
 here — it is **not** folded into this line's evidence, and the next hosted run
 on this branch is expected to carry it. Whether it is green is a claim the
 next hosted run makes, not one this record makes in advance.
+
+## 15. The fourth merge with `main` (2026-10-25)
+
+`origin/main` advanced to `682ae762a` (PR #193, the contained-worktree C008
+line) and the branch was merged with it again. The merge carried **no change to
+this line's own Rust code** — the delegated-notice fix in §13 is byte-identical
+across it — and it added **one** integration test file and **no** guard, so
+only the *integration test files* row moved: **348 → 349**. *Guard scripts
+(all)* stays **99**, *CI guard scripts* stays **65**, and `AGENTS.md`'s
+published counts (**79** for `quick`, **65** for CI) are unchanged and needed
+no correction. The quick-only difference is **unchanged at 14** and was
+re-derived rather than carried over.
+
+The merge surfaced two defects in `main`'s **own** documentation, both corrected
+here as a consequence of the merge and recorded where they belong:
+
+- `origin/main`'s `architecture/overview.md` carried the three count rows
+  **twice** — once as 341 / 96 / 59 and again as 340 / 96 / 59 — a merge
+  artifact from PR #193. The merged tree carries **one** block, holding the
+  merged tree's measured values.
+- `main` and this branch had each appended an amendment numbered *tenth* after
+  their common ninth. `main`'s three amendments keep their published ordinals,
+  because `main`'s own later text refers to "the tenth amendment" **by that
+  name** and renaming it would rewrite a published record; this branch's two
+  were renumbered *tenth* → **thirteenth** and *eleventh* → **fourteenth**, so
+  the sequence is unique. No recorded measurement changes.
+
+The comment budget was re-banked on the merged tree — **126,430** comment
+lines, **1,115,780** words, a **0.1338** recorded ceiling — and the bank diff
+is one new per-file entry for `main`'s new test file plus the global block.
