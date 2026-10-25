@@ -18,7 +18,15 @@ those sources:
 
 ```
 python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/\
-generate_m007-d-command-classification.py
+generate_m007d_command_classification.py
+```
+
+Add `--check` to derive the artifact again and report whether it is still in
+step with the tree, without writing over it:
+
+```
+python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/\
+generate_m007d_command_classification.py --check
 ```
 
 ## 1. The measured shape
@@ -29,8 +37,8 @@ generate_m007-d-command-classification.py
 | argument forms | 166 |
 | daemon-effect forms | 134 |
 | frontend-effect forms | 32 |
-| daemon-effect forms the daemon's effect table serves | 41 |
-| daemon-effect forms whose TUI arm issues a daemon request | 38 |
+| daemon-effect forms the daemon's effect table serves | 43 |
+| daemon-effect forms whose TUI arm issues a daemon request | 36 |
 | daemon-effect forms whose TUI arm issues no daemon request | 55 |
 | frontend-effect forms covered by the declared action set | 32 |
 
@@ -80,7 +88,7 @@ it issues none.
 | `/sessions` | `—` | frontend | Session | frontend → `OpenSessionDialog` | `src/tui/app/mod.rs:6487` | `ProjectList` |
 | `/projects` | `—` | frontend | Project | frontend → `OpenProjectPicker` | `src/tui/app/mod.rs:6490` | `ProjectList` |
 | `/new` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:5951` | `ProjectList`, `SessionCreate` |
-| `/stop` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6493` | `TurnCancel` |
+| `/stop` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6493` | — |
 | `/start` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6496` | `SessionCreate` |
 | `/share` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6499` | `ProjectList`, `SessionShare` |
 | `/unshare` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6525` | `SessionUnshare` |
@@ -133,7 +141,7 @@ it issues none.
 | `/memory-consolidate` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6849` | `SessionMessagesLoad` |
 | `/habits` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6852` | — |
 | `/habit-dismiss` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6862` | — |
-| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionList`, `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, … (46) |
+| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (44) |
 | `/skill-proposals` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6938` | — |
 | `/skill-proposal` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6975` | — |
 | `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7143` | `GoalCheckpoint`, `GoalSetBudget` |
@@ -212,8 +220,8 @@ it issues none.
 | `/collaborators` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6126` | `PresenceSnapshotGet` |
 | `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6142` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `TeamMembershipAdd`, `TeamMembershipList`, `TeamMembershipRevoke`, … (10) |
 | `/control` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6154` | `SessionControlGet`, `SessionControlRelease`, `SessionControlRequest`, `SessionControlTakeover`, `SessionControlTransfer` |
-| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `ProjectionResume`, `ProjectionUnsubscribe`, `TurnCancel` |
-| `/stop-observing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6197` | `ProjectionUnsubscribe`, `TurnCancel` |
+| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `ProjectionResume`, `ProjectionUnsubscribe` |
+| `/stop-observing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6197` | `ProjectionUnsubscribe` |
 | `/panels` | `—` | frontend | System | frontend → `OpenPanelManager` | `src/tui/app/mod.rs:6203` | — |
 | `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6215` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatHistoryOlder`, `ChatPolicyGet`, `ChatProjectPolicySet`, … (19) |
 | `/chat-send` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6227` | `ChatChannelEnsure`, `ChatSend` |
@@ -226,7 +234,7 @@ it issues none.
 | `/chat-composing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6370` | `ChatComposingList`, `ChatComposingSet` |
 | `/chat-action-task` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6393` | `ChatActionSubmit`, `ChatChannelEnsure` |
 | `/chat-action-review` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6429` | `ChatActionSubmit`, `ChatChannelEnsure` |
-| `/chat-action-list` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6464` | `ChatActionList`, `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
+| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6464` | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
 | `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8201` | `EditCheckpointUndo` |
 | `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8247` | `EditCheckpointReapply` |
 | `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8293` | `EditCheckpointList` |
@@ -242,7 +250,7 @@ already carries, so the coverage list and the catalog cannot drift apart.
 | family | forms | daemon effect | frontend effect | served | issues a daemon request | no daemon request |
 |---|---|---|---|---|---|---|
 | Agent | 11 | 10 | 1 | 1 | 7 | 2 |
-| Collaboration | 16 | 15 | 1 | 2 | 13 | 0 |
+| Collaboration | 16 | 15 | 1 | 4 | 11 | 0 |
 | Diagnostics | 28 | 28 | 0 | 3 | 0 | 25 |
 | Execution | 29 | 28 | 1 | 11 | 8 | 9 |
 | GitReview | 3 | 3 | 0 | 0 | 1 | 2 |
@@ -263,7 +271,6 @@ inventory of exactly this set.
 |---|---|---|---|
 | `/sandbox` | `—` | System | `ExecutionPolicyGet` |
 | `/new` | `—` | Session | `ProjectList`, `SessionCreate` |
-| `/stop` | `—` | Collaboration | `TurnCancel` |
 | `/start` | `—` | Session | `SessionCreate` |
 | `/compact` | `—` | Session | — |
 | `/import` | `—` | Session | `ProjectList` |
@@ -280,7 +287,7 @@ inventory of exactly this set.
 | `/memory-consolidate` | `—` | Memory | `SessionMessagesLoad` |
 | `/habits` | `—` | Memory | — |
 | `/habit-dismiss` | `—` | Memory | — |
-| `/skill-promote` | `—` | Memory | `ChatActionList`, `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, … (46) |
+| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (44) |
 | `/skill-proposals` | `—` | Memory | — |
 | `/skill-proposal` | `—` | Memory | — |
 | `/plan` | `—` | Execution | — |
@@ -342,7 +349,7 @@ inventory of exactly this set.
 | `/plugin-doctor` | `—` | System | — |
 | `/plugin-remove` | `—` | System | — |
 | `/plugin-install` | `—` | System | — |
-| `/stop-observing` | `—` | Collaboration | `ProjectionUnsubscribe`, `TurnCancel` |
+| `/stop-observing` | `—` | Collaboration | `ProjectionUnsubscribe` |
 | `/chat-send` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-reply` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-history` | `—` | Collaboration | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
@@ -353,7 +360,6 @@ inventory of exactly this set.
 | `/chat-composing` | `—` | Collaboration | `ChatComposingList`, `ChatComposingSet` |
 | `/chat-action-task` | `—` | Collaboration | `ChatActionSubmit`, `ChatChannelEnsure` |
 | `/chat-action-review` | `—` | Collaboration | `ChatActionSubmit`, `ChatChannelEnsure` |
-| `/chat-action-list` | `—` | Collaboration | `ChatActionList`, `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
 
 ## 6. What the daemon serves
 
@@ -364,45 +370,47 @@ is the identifier, and the remainder is the payload.
 | command | form | the daemon request it builds |
 |---|---|---|
 | `/approval` | `—` | `approval_preference_get` |
+| `/chat-action-list` | `—` | `chat_action_list` |
 | `/collaborators` | `—` | `team_principal_list` |
-| `/control` | `—` | `—` |
-| `/edit-checkpoints` | `—` | `—` |
-| `/edit-reapply` | `—` | `—` |
-| `/edit-undo` | `—` | `—` |
-| `/export` | `—` | `—` |
-| `/goal` | `—` | `—` |
-| `/lsp-errors` | `—` | `—` |
-| `/lsp-status` | `—` | `—` |
+| `/control` | `—` | `session_control_get` |
+| `/edit-checkpoints` | `—` | `edit_checkpoint_list` |
+| `/edit-reapply` | `—` | `edit_checkpoint_reapply_latest` |
+| `/edit-undo` | `—` | `edit_checkpoint_undo_latest` |
+| `/export` | `—` | `session_export` |
+| `/goal` | `—` | `goal_show` |
+| `/lsp-errors` | `—` | `lsp_diagnostics_get` |
+| `/lsp-status` | `—` | `lsp_diagnostics_get` |
 | `/memory` | `—` | `memory_list` |
 | `/memory-forget` | `—` | `memory_forget` |
-| `/memory-list` | `—` | `—` |
+| `/memory-list` | `—` | `memory_list` |
 | `/memory-remember` | `—` | `memory_remember` |
 | `/memory-search` | `—` | `memory_search` |
 | `/models-refresh` | `—` | `models_refresh` |
 | `/network` | `—` | `network_intent_set` |
 | `/nodes` | `—` | `node_telemetry` |
-| `/observe` | `—` | `—` |
+| `/observe` | `—` | `projection_subscribe` |
 | `/policy` | `—` | `execution_policy_get` |
 | `/init` | `—` | `project_init_draft_get` |
 | `/reasoning` | `—` | `reasoning_preference_get` |
 | `/reload` | `—` | `asset_refresh` |
 | `/schedules` | `—` | `schedule_list` |
-| `/share` | `—` | `—` |
-| `/shell-expand` | `—` | `—` |
+| `/share` | `—` | `session_share` |
+| `/shell-expand` | `—` | `human_shell_run_read` |
 | `/shell-kill` | `—` | `human_shell_run_cancel` |
 | `/shell-list` | `—` | `human_shell_run_capabilities` |
 | `/shell-show` | `—` | `human_shell_run_read` |
 | `/skills` | `—` | `skill_catalogue_list` |
-| `/state` | `—` | `—` |
-| `/status` | `—` | `—` |
-| `/task` | `—` | `—` |
+| `/state` | `—` | `active_goal_load` |
+| `/status` | `—` | `session_lifecycle_get` |
+| `/stop` | `—` | `turn_cancel` |
+| `/task` | `—` | `work_order_list` |
 | `/tasks` | `—` | `work_order_list` |
 | `/team` | `—` | `team_membership_list` |
 | `/terminal-list` | `—` | `interactive_process_list` |
 | `/terminal-send` | `—` | `interactive_process_input` |
-| `/terminal-show` | `—` | `—` |
-| `/tool-contracts` | `—` | `—` |
-| `/unshare` | `—` | `—` |
+| `/terminal-show` | `—` | `interactive_process_list` |
+| `/tool-contracts` | `—` | `tool_program_list` |
+| `/unshare` | `—` | `session_unshare` |
 | `/worktree` | `—` | `managed_worktree_list` |
 
 ## 7. The TUI migration
@@ -415,6 +423,7 @@ keeps the formatting.
 
 | command | family | the TUI effect call |
 |---|---|---|
+| `/chat-action-list` | Collaboration | `CoreRequest::CommandExecute` (`chat_action_list`) |
 | `/edit-reapply` | Session | `CoreRequest::CommandExecute` (`edit_reapply`) |
 | `/edit-undo` | Session | `CoreRequest::CommandExecute` (`edit_undo`) |
 | `/goal` | Execution | `CoreRequest::CommandExecute` (`goal`) |
@@ -425,8 +434,9 @@ keeps the formatting.
 | `/memory-search` | Memory | `CoreRequest::CommandExecute` (`memory_search`) |
 | `/nodes` | System | `CoreRequest::CommandExecute` (`nodes`) |
 | `/reload` | System | `CoreRequest::CommandExecute` (`reload`) |
+| `/stop` | Collaboration | `CoreRequest::CommandExecute` (`stop`) |
 
-**10 of the 134 daemon-effect forms are migrated.**
+**12 of the 134 daemon-effect forms are migrated.**
 The rest keep their local arm, and each one is listed above with the route
 it takes. The migration is one site per command: the request construction
 becomes a `CommandExecute` and the response is unwrapped, so the

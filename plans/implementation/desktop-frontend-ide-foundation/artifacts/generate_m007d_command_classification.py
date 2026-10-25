@@ -172,13 +172,25 @@ def parse_effect_requests(text: str) -> dict[tuple[str, str], str]:
     if end > 0:
         body = body[:end]
     requests: dict[tuple[str, str], str] = {}
+    # A row's body may hold a `let ... else` guard or a bound value before
+    # the `json!`, so the block between `=>` and the request is matched with
+    # one level of nested braces. Without that, a served row reads as `—`
+    # in the artifact and the column stops being a record of the table.
+    #
+    # One row may name several commands (`("memory", "") | ("memory_list", "")`).
+    # Each of them is a served form, so each is recorded.
     for match in re.finditer(
         r'\(\s*"([a-z0-9_]+)"\s*,\s*"([^"]*)"\s*\)'
-        r'(?:\s*\|\s*\(\s*"[a-z0-9_]+"\s*,\s*"[^"]*"\s*\))*'
-        r'\s*=>\s*(?:\{[^{}]*?)?json!\(\{\s*"type":\s*"([a-z0-9_]+)"',
+        r'((?:\s*\|\s*\(\s*"[a-z0-9_]+"\s*,\s*"[^"]*"\s*\))*)'
+        r'\s*=>\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*)?'
+        r'json!\(\{\s*"type":\s*"([a-z0-9_]+)"',
         body,
     ):
-        requests[(match.group(1), match.group(2))] = match.group(3)
+        request = match.group(4)
+        forms = [(match.group(1), match.group(2))]
+        forms.extend(re.findall(r'\(\s*"([a-z0-9_]+)"\s*,\s*"([^"]*)"\s*\)', match.group(3)))
+        for command_id, form in forms:
+            requests[(command_id, form)] = request
     return requests
 
 
@@ -669,7 +681,15 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("```")
     write("python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/\\")
-    write("generate_m007-d-command-classification.py")
+    write("generate_m007d_command_classification.py")
+    write("```")
+    write("")
+    write("Add `--check` to derive the artifact again and report whether it is still in")
+    write("step with the tree, without writing over it:")
+    write("")
+    write("```")
+    write("python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/\\")
+    write("generate_m007d_command_classification.py --check")
     write("```")
     write("")
     write("## 1. The measured shape")
@@ -970,9 +990,32 @@ def migrated_commands() -> dict[str, str]:
 
 
 def main() -> int:
+    check_only = "--check" in sys.argv[1:]
     commands = parse_catalog(read(ROOT / CATALOG))
     served = set(parse_effect_table(read(ROOT / DAEMON_COMMANDS)))
-    ARTIFACT.write_text(build(commands, served), encoding="utf-8")
+    generated = build(commands, served)
+    if check_only:
+        # A generator that can only rewrite the artifact cannot show that the
+        # artifact is in step with the tree. `--check` derives the artifact
+        # again and reports the drift instead of writing over it, so a stale
+        # artifact is a visible fact rather than a silent overwrite.
+        if not ARTIFACT.exists():
+            print(
+                f"check failed: {ARTIFACT.relative_to(ROOT)} does not exist",
+                file=sys.stderr,
+            )
+            return 1
+        current = ARTIFACT.read_text(encoding="utf-8")
+        if current != generated:
+            print(
+                f"check failed: {ARTIFACT.relative_to(ROOT)} is out of step with "
+                "the tree; re-run the generator",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"check passed: {ARTIFACT.relative_to(ROOT)} matches the tree")
+        return 0
+    ARTIFACT.write_text(generated, encoding="utf-8")
     print(f"wrote {ARTIFACT.relative_to(ROOT)}")
     return 0
 
