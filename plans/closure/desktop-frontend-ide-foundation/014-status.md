@@ -51,7 +51,7 @@ delivered and proved:
 - **51** daemon-effect forms are served by the daemon's effect table
   (`src/core/daemon_commands.rs`), and the daemon publishes that serve-ability
   per form, so any frontend can route statically.
-- **20** TUI commands execute their effect through `CoreRequest::CommandExecute`
+- **39** TUI commands execute their effect through `CoreRequest::CommandExecute`
   and render the daemon's inner response verbatim.
 - The two guards bite, with **9** injected defect classes rejected by
   `check_command_catalog_ownership.py --self-test`.
@@ -64,8 +64,12 @@ is proved for the **39** migrated commands and **not** for the **12** served
 forms the TUI does not perform. The gap is a *migration* gap, not a design
 gap: the daemon's effect table already has a row for each of the 51 served
 forms, and each row's request shape is decided. What is missing for the
-remaining twelve is the TUI-side rewiring, and for each of them the reason it
-cannot be rewired is recorded.
+remaining twelve is not a rewiring — it is a **decision** per form, because
+each one's TUI arm performs a *different* effect from the one its row serves.
+Six are a kind correction (§10.6), three are a granularity decision the owner
+owns (§10.6), one is an authority correction, and the two `/lsp-*` forms are
+already decided (§10.2). The corrective pass that carries them is
+`plans/implementation/desktop-frontend-ide-foundation/017-the-forms-the-daemon-serves-and-the-tui-does-not-perform.md`.
 
 §10 records the outstanding work form by form, with the shapes of decision it
 needed — including the two now settled (§10.3) and the one already taken
@@ -524,6 +528,13 @@ milestone merges. This record describes what they should say:
 - The registry gains a corrective-pass entry for M007-D naming the 12 recorded
   forms and the two owner-directed corrective milestones (the scratch
   cache-root contract and the TUI `/compact` sender).
+- The corrective pass is **plan 017**,
+  `plans/implementation/desktop-frontend-ide-foundation/017-the-forms-the-daemon-serves-and-the-tui-does-not-perform.md`,
+  and it is registered under `## Dependency-ready implementation plans`. It
+  is *ready for handoff*, and its plan header says so: the three
+  granularity forms (`shell_show`, `shell_expand`, `terminal_send`) are the
+  owner's decision and are recorded as awaiting it, and the plan's own stop
+  condition says the milestone lands the rest without them.
 
 ## 13. Handoff notes
 
