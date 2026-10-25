@@ -327,12 +327,7 @@ targets above cover each of them. The `scheduler_jobs` family was not run at
 all — M008 §16 forbids running a sweep against the developer's own scratch
 root.
 
-**The lanes that qualify this milestone are** `verify`, `e2e`,
-`restricted-userns-fails-closed` and `process-ipc`; the whole-workspace
-suite runs in `verify`. This milestone's own hosted run is recorded on its
-own pull-request head, in the same way closure 014 §4.2 records its own:
-the run ids belong to the pull request, not to this document, and naming
-them here would name a head this commit is not.
+**The hosted qualification is §4.2.**
 
 ### 4.1 The counts, before and after
 
@@ -351,6 +346,34 @@ carried the literal "29 `FrontendAction` variants"; it now counts the
 parsed set (`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py:1103`), so the
 figure cannot go stale.
 
+### 4.2 Hosted
+
+The lanes that qualify this milestone are `verify`, `e2e`,
+`restricted-userns-fails-closed` and `process-ipc`; the whole-workspace
+suite runs in `verify`.
+
+The hosted runs this milestone has produced, in order:
+
+| Run | Head | Workflow | Conclusion |
+|---|---|---|---|
+| `40190533713` | `9347d6c73` | CI / verify | **success** — all 124 steps green: the 91 guard steps, formatting, workspace clippy and the workspace test sweep |
+| `40190533724` | `9347d6c73` | Desktop E2E | **success** — the built-app WebDriver trajectory |
+| `40192711548` | `ebfd861fd` | CI / verify | **success** — all 124 steps green, the workspace test sweep included |
+| `40192711538` | `ebfd861fd` | Desktop E2E | **success** — the built-app WebDriver trajectory |
+| `40192711541` | `ebfd861fd` | Linux M004 process and IPC qualification | **success** — `process-ipc` and `restricted-userns-fails-closed` both green |
+
+`9347d6c73` is this milestone's **code head**: the tree those runs
+qualified carries the whole of the implementation. The commits after it
+changed this record and the registry alone — `git diff --name-only
+9347d6c73..ebfd861fd` lists three files under `plans/` and no source
+file — so the qualification is the qualification of the milestone's
+implementation and not of its paperwork.
+
+This closure's own head's hosted run is recorded on its own pull-request
+head, in the same way closure 013 §4.2 records its own: the run ids belong
+to the pull request, not to this document, and naming them here would name
+a head this commit is not.
+
 ## 5. Invariant review
 
 Plan 017 §7's acceptance criteria.
@@ -362,7 +385,7 @@ Plan 017 §7's acceptance criteria.
 | 3 | **The desktop palette agrees with the TUI** — a form the TUI performs locally is not dispatchable to the daemon in the palette, and a form the daemon owns is | **partial** | §3.6: the desktop dispatches on the published action, and the six corrected forms are no longer dispatchable to the daemon. The **six** served forms whose TUI arm still performs a different effect — `shell_show`, `shell_expand`, `shell_kill`, `terminal_send`, `lsp_status`, `lsp_errors` — remain dispatchable to the daemon, because the daemon owns them; that disagreement is the shape plan 017 §9 and §3.2 defer, and the three granularity forms await the owner's decision |
 | 4 | **Every user action that reaches a daemon effect has a `Run`**, except where the owner has decided otherwise and the exception is recorded | **yes** | The presence panel's user-triggered refreshes are audited (§3.4). The hint path is not a user action and is recorded. The three granularity forms are not implemented, so they open no `Run` at all |
 | 5 | **The `Run` record keeps its meaning** — no form opens a `Run` per keystroke or per poll unless the owner has decided that it should | **yes** | §3.5: the three granularity forms are not migrated precisely so that no `Run` per poll or per keystroke is introduced |
-| 6 | **The authority of a cancel is the run's own** — `shell_kill` cannot address a run outside the caller's scope | **yes, per plan 017 §3.1's authority class** | §3.3: the row authorizes against the run's own binding, resolved from the daemon's registry before the row is built. The scope compared is the run's own project, workspace and session together with the run's creator principal, so a run in another session of the same project is now reachable where the old scope-built row refused it — the change plan §3.1 prescribes, and §3.3 names |
+| 6 | **The authority of a cancel is the run's own** — `shell_kill` cannot address a run outside the caller's scope | **yes, per plan 017 §3.1's authority class** | §3.3: the row authorizes against the run's own binding, resolved from the daemon's registry before the row is built. The scope compared is the run's stored scope — its project, workspace, session **and** creator principal — so a run in another session of the same project is now reachable where the old scope-built row refused it, and a caller that is not the run's creator is still refused. That is the change plan §3.1 prescribes, and §3.3 names it |
 | 7 | **The artifact matches the tree**, and its §1, §3 and §6 counts agree with the catalog and the effect table | **yes** | §4.1; the generator's `--check` passes |
 | 8 | **The TUI's commands, names, aliases and descriptions are unchanged** | **yes** | no change to `src/tui/command.rs`'s registry or `src/tui/app/commands.rs`; the 169 cached built-in rows and the 161 `BuiltinSlashAction` variants are unchanged (`architecture/command.md:684-685`) |
 | 9 | **`scripts/verify.sh quick` is green**, including both catalog guards' `--self-tests`, and the workspace clippy is clean at `-D warnings` | **yes** | §4 |
@@ -406,11 +429,14 @@ Plan 017 §7's acceptance criteria.
 ## 8. Security review
 
 - **The `shell_kill` correction changes the authority** from the caller's
-  scope to the run's own binding. The row authorizes against the run's own
-  project, workspace and session together with the run's creator principal,
-  so a caller cannot cancel a run it does not own by naming it in a scope it
-  controls — and a run in another session of the same project is now
-  reachable, where the old scope-built row refused it (§3.3).
+  scope to the run's own binding. The row resolves the run's own project,
+  workspace and session before it builds the request, and the cancel is then
+  compared against the run's stored scope — its project, workspace, session
+  **and** creator principal (`src/shell/daemon.rs:451`). The creator check is
+  what still refuses a caller that does not own the run, and the scope the row
+  builds now names the **run's** session rather than the caller's, so a run in
+  another session of the same project is reachable where the old scope-built
+  row refused it (§3.3).
 - **The presence form carries the project in the argument**, and the daemon
   re-authorizes the inner request on its own operation — the frontend never
   supplies the request itself. The project is therefore not trusted from
