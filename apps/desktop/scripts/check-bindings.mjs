@@ -52,7 +52,7 @@ const expected = {
   // M007-D: the daemon's command catalog and one command execution. The
   // renderer holds no command list of its own, so these four types are the
   // whole of the desktop's command contract.
-  CommandFormView: ['form', 'kind', 'argument_hint', 'argument_required'],
+  CommandFormView: ['form', 'kind', 'argument_hint', 'argument_required', 'daemon_served'],
   CommandDescriptorView: ['command_id', 'name', 'aliases', 'description', 'domain', 'kind', 'capability', 'forms'],
   CommandCatalogView: ['catalog_version', 'commands'],
   CommandReportView: ['added', 'removed', 'changed', 'shadowed', 'invalid'],

@@ -427,6 +427,10 @@ export interface CommandFormView {
   kind: CommandKind;
   argumentHint: string;
   argumentRequired: boolean;
+  // Whether the daemon's effect table serves this form. The renderer reads
+  // this to show a command the daemon does not serve as unavailable, rather
+  // than dispatching into a refusal.
+  daemonServed: boolean;
 }
 
 // One command in the daemon's catalog.

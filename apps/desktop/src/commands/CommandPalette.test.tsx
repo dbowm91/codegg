@@ -21,7 +21,9 @@ const catalog = (): CommandCatalogView => ({
       domain: 'System',
       kind: 'daemon_effect',
       capability: 'command.execute',
-      forms: [{ form: '', kind: 'daemon_effect', argumentHint: '', argumentRequired: false }],
+      forms: [
+        { form: '', kind: 'daemon_effect', argumentHint: '', argumentRequired: false, daemonServed: true },
+      ],
     },
     {
       commandId: 'agents',
@@ -32,8 +34,8 @@ const catalog = (): CommandCatalogView => ({
       kind: 'frontend_effect',
       capability: null,
       forms: [
-        { form: '', kind: 'frontend_effect', argumentHint: '', argumentRequired: false },
-        { form: 'show', kind: 'daemon_effect', argumentHint: '<name>', argumentRequired: true },
+        { form: '', kind: 'frontend_effect', argumentHint: '', argumentRequired: false, daemonServed: true },
+        { form: 'show', kind: 'daemon_effect', argumentHint: '<name>', argumentRequired: true, daemonServed: false },
       ],
     },
   ],
@@ -123,6 +125,30 @@ describe('the desktop command palette', () => {
     await waitFor(() => expect(bridge.commandExecute).toHaveBeenCalledTimes(1));
     expect(bridge.commandExecute).toHaveBeenCalledWith('reload', '', '', 7, 3);
     await waitFor(() => expect(onDaemonResult).toHaveBeenCalledTimes(1));
+  });
+
+  it('says a daemon effect the daemon does not serve is unavailable, and does not dispatch it', async () => {
+    bridge.commandCatalog.mockResolvedValue(catalog());
+    const onDaemonResult = vi.fn();
+    render(
+      <CommandPalette
+        open
+        routeGeneration={3}
+        onClose={vi.fn()}
+        onFrontendEffect={vi.fn()}
+        onDaemonResult={onDaemonResult}
+      />,
+    );
+    await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
+    fireEvent.change(screen.getByPlaceholderText('Type a command'), {
+      target: { value: '/agents show tester' },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText('Type a command'), { key: 'Enter' });
+    await waitFor(() =>
+      expect(screen.getByText('/agents is not served by the daemon yet')).toBeTruthy(),
+    );
+    expect(bridge.commandExecute).not.toHaveBeenCalled();
+    expect(onDaemonResult).not.toHaveBeenCalled();
   });
 
   it('sends free text that names no command nowhere at all', async () => {

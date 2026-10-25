@@ -680,6 +680,11 @@ pub struct CommandFormView {
     pub argument_hint: String,
     /// Whether the form requires an argument.
     pub argument_required: bool,
+    /// Whether the daemon's effect table serves this form.
+    ///
+    /// The renderer reads this to show a command the daemon does not serve
+    /// as unavailable, instead of dispatching into a refusal.
+    pub daemon_served: bool,
 }
 
 /// One command in the daemon's catalog.

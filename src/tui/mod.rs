@@ -4,6 +4,7 @@ pub mod app;
 pub mod async_cmd;
 pub mod chat_browser;
 pub mod command;
+pub mod command_route;
 pub mod commands;
 pub mod components;
 pub mod composer_claims;

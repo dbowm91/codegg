@@ -69,6 +69,16 @@ fn scope() -> CommandCatalogScopeDto {
     CommandCatalogScopeDto {
         project_id: "test-proj".to_string(),
         workspace_id: "test-workspace".to_string(),
+        session_id: Some("test-session".to_string()),
+    }
+}
+
+/// A scope that names no session, for the commands that act on one.
+fn sessionless_scope() -> CommandCatalogScopeDto {
+    CommandCatalogScopeDto {
+        project_id: "test-proj".to_string(),
+        workspace_id: "test-workspace".to_string(),
+        session_id: None,
     }
 }
 
@@ -319,5 +329,208 @@ async fn command_execute_audits_a_daemon_effect_as_a_run() {
         manifest.kind,
         codegg_core::run_store::RunKind::Command,
         "the run must be recorded as a command run"
+    );
+}
+
+/// The catalog's families, as the domain names the catalog carries.
+///
+/// The regression coverage is organised by family, and the family list is
+/// this constant: a family's coverage is one test, and the list is the
+/// closure artifact's family column.
+const FAMILIES: &[&str] = &[
+    "Agent",
+    "Collaboration",
+    "Diagnostics",
+    "Execution",
+    "Git/Review",
+    "Memory",
+    "Project",
+    "Provider",
+    "Research",
+    "Session",
+    "System",
+];
+
+/// The catalog's daemon-effect forms in one family, with the flag that says
+/// whether the daemon's effect table serves them.
+async fn family_forms(daemon: &CoreDaemon, family: &str) -> Vec<(String, String, bool)> {
+    let catalog = read_catalog(daemon).await;
+    let mut forms = Vec::new();
+    for command in &catalog.commands {
+        for form in &command.forms {
+            if form.kind != codegg_protocol::core::CommandKindDto::DaemonEffect {
+                continue;
+            }
+            if command.domain == family {
+                forms.push((
+                    command.command_id.clone(),
+                    form.form.clone(),
+                    form.daemon_served,
+                ));
+            }
+        }
+    }
+    forms
+}
+
+/// The catalog names a family for every command.
+#[tokio::test]
+async fn command_catalog_names_a_family_for_every_command() {
+    let pool = migrated_pool().await;
+    let daemon = daemon_with_run_store(pool, std::env::temp_dir().join("m007d-families"));
+    let catalog = read_catalog(&daemon).await;
+
+    let mut seen: Vec<String> = Vec::new();
+    for command in &catalog.commands {
+        let domain = command.domain.clone();
+        assert!(
+            !domain.is_empty(),
+            "{} must name a family",
+            command.command_id
+        );
+        seen.push(domain.clone());
+    }
+    for family in FAMILIES {
+        assert!(
+            seen.iter().any(|domain| domain == family),
+            "the {family} family must hold at least one command"
+        );
+    }
+}
+
+/// Every daemon-effect form the catalog marks as served is served by the
+/// daemon's effect table.
+///
+/// This is the property the palette depends on: a form the catalog marks
+/// served must not be refused with `command_not_served`. The test is
+/// organised by family, and it asserts the family boundary in both
+/// directions — the served set the catalog publishes is the set the daemon
+/// serves.
+#[tokio::test]
+async fn command_catalog_serves_every_form_it_marks_served() {
+    let pool = migrated_pool().await;
+    let daemon = daemon_with_run_store(pool, std::env::temp_dir().join("m007d-served"));
+    let version = codegg_core::command_catalog::catalog_version();
+
+    let mut checked = 0usize;
+    for family in FAMILIES {
+        for (command_id, form, daemon_served) in family_forms(&daemon, family).await {
+            let result = execute(&daemon, &command_id, &form, "", version).await;
+            let refused_as_unserved = result
+                .lines
+                .iter()
+                .any(|line| line.contains("command_not_served"));
+            if daemon_served {
+                assert!(
+                    !refused_as_unserved,
+                    "the {family} family marks {command_id}/{form} as served, \
+                     but the daemon refused it as not served"
+                );
+                assert!(
+                    !result.run_id.is_empty(),
+                    "the {family} family's {command_id}/{form} must open a run"
+                );
+                checked += 1;
+            } else {
+                assert!(
+                    refused_as_unserved,
+                    "the {family} family does not mark {command_id}/{form} as served, \
+                     so the daemon must refuse it as not served, got {result:?}"
+                );
+                assert!(
+                    result.run_id.is_empty(),
+                    "a refusal must not open a run, got {result:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "the served set must not be empty"
+    );
+}
+
+/// A command that acts on a session refuses when the request names no
+/// session, with a reason distinct from "not served".
+#[tokio::test]
+async fn command_execute_refuses_a_session_command_without_a_session() {
+    let pool = migrated_pool().await;
+    let daemon = daemon_with_run_store(pool, std::env::temp_dir().join("m007d-nosession"));
+    let version = codegg_core::command_catalog::catalog_version();
+
+    let response = Box::pin(daemon.handle_request_for_client(
+        RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            payload: CoreRequest::CommandExecute {
+                request: CommandExecuteRequestDto {
+                    scope: sessionless_scope(),
+                    command_id: "share".to_string(),
+                    form: String::new(),
+                    argument: String::new(),
+                    catalog_version: version,
+                },
+            },
+        },
+        LOCAL_CLIENT,
+    ))
+    .await
+    .expect("the daemon must answer");
+    let result = match response {
+        CoreResponse::CommandExecute { result } => result,
+        other => panic!("expected a command execution result, got {other:?}"),
+    };
+
+    assert_eq!(
+        result.status,
+        codegg_protocol::core::CommandOutcomeStatusDto::Refused,
+        "a session command without a session must be refused"
+    );
+    assert!(
+        result
+            .lines
+            .iter()
+            .any(|line| line.contains("no_session")),
+        "the refusal must name its reason, got {:?}",
+        result.lines
+    );
+    assert!(
+        !result.lines.iter().any(|line| line.contains("command_not_served")),
+        "the daemon serves the form; it must not claim otherwise"
+    );
+    assert!(result.run_id.is_empty(), "a refusal must not open a run");
+}
+
+/// The catalog publishes the daemon's own serve-ability, so a frontend can
+/// show a command the daemon does not serve as unavailable instead of
+/// dispatching into a refusal.
+#[tokio::test]
+async fn command_catalog_publishes_the_daemons_serve_ability() {
+    let pool = migrated_pool().await;
+    let daemon = daemon_with_run_store(pool, std::env::temp_dir().join("m007d-ability"));
+    let catalog = read_catalog(&daemon).await;
+
+    let mut served = 0usize;
+    let mut frontend = 0usize;
+    for command in &catalog.commands {
+        for form in &command.forms {
+            if form.kind == codegg_protocol::core::CommandKindDto::FrontendEffect {
+                // The frontend serves a frontend effect itself, so the
+                // daemon serves none of them.
+                assert!(
+                    !form.daemon_served,
+                    "{} is a frontend effect and the daemon must not claim to serve it",
+                    command.command_id
+                );
+                frontend += 1;
+            } else if form.daemon_served {
+                served += 1;
+            }
+        }
+    }
+    assert_eq!(frontend, 32, "32 forms are frontend effects");
+    assert!(
+        served > 0,
+        "the daemon must publish the forms it serves"
     );
 }

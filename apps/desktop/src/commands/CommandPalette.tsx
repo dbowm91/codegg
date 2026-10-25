@@ -154,6 +154,12 @@ export function CommandPalette({
       onClose();
       return;
     }
+    if (!shape.daemonServed) {
+      // The daemon's catalog says it does not serve this form yet. The
+      // renderer says so rather than dispatching into a refusal.
+      setError(`${resolved.command.name} is not served by the daemon yet`);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {

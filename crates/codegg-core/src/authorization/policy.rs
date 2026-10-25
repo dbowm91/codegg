@@ -2581,6 +2581,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             scope: codegg_protocol::core::CommandCatalogScopeDto {
                 project_id: String::new(),
                 workspace_id: String::new(),
+                session_id: None,
             },
         },
         R::CommandExecute {
@@ -2588,6 +2589,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
                 scope: codegg_protocol::core::CommandCatalogScopeDto {
                     project_id: String::new(),
                     workspace_id: String::new(),
+                    session_id: None,
                 },
                 command_id: String::new(),
                 form: String::new(),

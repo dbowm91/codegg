@@ -616,6 +616,7 @@ impl HostState {
                     scope: CommandCatalogScopeDto {
                         project_id: project_id.clone(),
                         workspace_id: workspace_id.clone(),
+                        session_id: None,
                     },
                 },
             })
@@ -645,6 +646,7 @@ impl HostState {
                             kind: command_kind_name(form.kind),
                             argument_hint: form.argument_hint,
                             argument_required: form.argument_required,
+                            daemon_served: form.daemon_served,
                         })
                         .collect(),
                 })
@@ -679,6 +681,7 @@ impl HostState {
                         scope: CommandCatalogScopeDto {
                             project_id,
                             workspace_id,
+                            session_id: None,
                         },
                         command_id: command_id.clone(),
                         form,

@@ -1208,6 +1208,16 @@ pub enum CommandKindDto {
 pub struct CommandCatalogScopeDto {
     pub project_id: String,
     pub workspace_id: String,
+    /// The session the command acts on, when it acts on one.
+    ///
+    /// A session-scoped command needs the session the user is looking at,
+    /// and the daemon cannot guess it: the daemon resolves the *project* and
+    /// the *workspace* from its own durable binding, but the session is the
+    /// caller's selection. The desktop leaves it absent, and a
+    /// session-scoped command then refuses with a typed reason rather than
+    /// acting on a session the caller did not name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// One argument form of a command.
@@ -1224,6 +1234,16 @@ pub struct CommandFormDto {
     pub argument_hint: String,
     /// Whether the form requires an argument.
     pub argument_required: bool,
+    /// Whether the daemon's effect table serves this form.
+    ///
+    /// This is the daemon's own answer, not the frontend's guess: a
+    /// frontend that asks for a form the daemon does not serve gets a
+    /// typed refusal. A frontend that reads this flag can show the command
+    /// as unavailable instead of dispatching into a refusal. It is `true`
+    /// for every frontend-effect form, because the frontend serves those
+    /// itself.
+    #[serde(default)]
+    pub daemon_served: bool,
 }
 
 /// One command's catalog entry.
@@ -1330,6 +1350,17 @@ pub struct CommandExecuteResultDto {
     pub started_at_ms: i64,
     /// When the execution finished.
     pub completed_at_ms: i64,
+    /// The response the command's effect produced, exactly as the daemon's
+    /// own request handler serializes it.
+    ///
+    /// The daemon owns the effect *and* the authoritative data; the
+    /// frontend keeps the formatting. Carrying the inner response is what
+    /// lets a frontend render the result with the presentation code it
+    /// already had: the TUI's existing match on the inner response still
+    /// fires, so the text a user sees does not change. A frontend that
+    /// does not read it renders `lines` and `summary` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

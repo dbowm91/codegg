@@ -38,9 +38,9 @@
 
 use crate::error::AppError;
 use crate::protocol::core::{
-    AssetRefreshReasonDto, AssetRefreshRequestDto, AssetRefreshScopeDto, CommandCatalogDto,
-    CommandDescriptorDto, CommandExecuteRequestDto, CommandExecuteResultDto, CommandFormDto,
-    CommandKindDto, CommandOutcomeStatusDto, CommandReportDto, CoreRequest, CoreResponse,
+    CommandCatalogDto, CommandDescriptorDto, CommandExecuteRequestDto, CommandExecuteResultDto,
+    CommandFormDto, CommandKindDto, CommandOutcomeStatusDto, CommandReportDto, CoreRequest,
+    CoreResponse,
 };
 
 use super::daemon::CoreDaemon;
@@ -48,6 +48,8 @@ use super::daemon::CoreDaemon;
 use codegg_core::command_catalog::{
     self, bounds, catalog_version, find_by_command_id, the_catalog, CommandCapability, CommandKind,
 };
+use serde_json::json;
+
 use codegg_core::run_store::{
     ActualBackend, BackendRecord, PlannedBackend, RiskRecord, RunCompletion, RunDraft,
     RunInvocation, RunKind, RunOwnership, RunStatus,
@@ -73,69 +75,306 @@ pub const REFUSAL_CATALOG_OVER_BOUND: &str = "catalog_over_bound";
 pub const REFUSAL_RESULT_OVER_BOUND: &str = "result_over_bound";
 /// The daemon does not serve this command's effect yet.
 pub const REFUSAL_COMMAND_NOT_SERVED: &str = "command_not_served";
+/// The command acts on a session and the caller named none.
+pub const REFUSAL_NO_SESSION: &str = "no_session";
 
-/// One daemon-effect the executor can serve.
+/// The daemon-side context a command's effect is built from.
 ///
-/// The table is explicit: a command the daemon does not serve yet is named
-/// [`CommandEffect::NotServed`] rather than being absent, so the coverage
-/// gap is visible and auditable instead of silent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandEffect {
-    /// Reload the project's runtime assets (`/reload`).
-    AssetRefresh,
-    /// The project's effective skill catalogue (`/skills`).
-    SkillCatalogue,
-    /// The effective execution policy (`/policy`).
-    ExecutionPolicy,
-    /// The effective reasoning preference (`/reasoning`).
-    ReasoningPreference,
-    /// Refresh the model list (`/models-refresh`).
-    ModelsRefresh,
-    /// The project's root `AGENTS.md` draft (`/init`).
-    ProjectInitDraft,
-    /// The project's memories (`/memory-list`).
-    MemoryList,
-    /// Search the project's memories (`/memory-search`).
-    MemorySearch,
-    /// Remember something in the project's memories (`/memory-remember`).
-    MemoryRemember,
-    /// Forget one memory (`/memory-forget`).
-    MemoryForget,
-    /// The project's work orders (`/tasks`, `/task`).
-    WorkOrderList,
-    /// The project's schedules (`/schedules`).
-    ScheduleList,
-    /// Remote Eggwork node telemetry (`/nodes`).
-    NodeTelemetry,
-    /// The workspace's managed worktrees (`/worktree`).
-    ManagedWorktreeList,
-    /// The daemon does not serve this command's effect yet.
-    NotServed,
+/// The daemon owns the effect, so it resolves what it can from its own
+/// durable binding and reads the rest from the request's scope: the
+/// project, the workspace, and the session the caller named.
+pub struct CommandContext<'a> {
+    /// The project the command acts in.
+    pub project_id: &'a str,
+    /// The workspace the command acts in.
+    pub workspace_id: &'a str,
+    /// The session the command acts on, when the caller named one.
+    pub session_id: Option<&'a str>,
+    /// The command's argument.
+    pub argument: &'a str,
 }
 
-/// The table-driven dispatch: each daemon-effect form maps to an existing
-/// daemon handler (or a small adapter over one).
+/// Build a daemon request from its wire shape.
 ///
-/// The classification unit is the **form**, so the key is the pair
-/// `(command_id, form)`.
-pub fn effect_for(command_id: &str, form: &str) -> CommandEffect {
-    match (command_id, form) {
-        ("reload", "") => CommandEffect::AssetRefresh,
-        ("skills", "") => CommandEffect::SkillCatalogue,
-        ("policy", "") => CommandEffect::ExecutionPolicy,
-        ("reasoning", "") => CommandEffect::ReasoningPreference,
-        ("models_refresh", "") => CommandEffect::ModelsRefresh,
-        ("project_init", "") => CommandEffect::ProjectInitDraft,
-        ("memory_list", "") => CommandEffect::MemoryList,
-        ("memory_search", "") => CommandEffect::MemorySearch,
-        ("memory_remember", "") => CommandEffect::MemoryRemember,
-        ("memory_forget", "") => CommandEffect::MemoryForget,
-        ("tasks", "") | ("task", "") => CommandEffect::WorkOrderList,
-        ("schedules", "") => CommandEffect::ScheduleList,
-        ("nodes", "") => CommandEffect::NodeTelemetry,
-        ("worktree", "") => CommandEffect::ManagedWorktreeList,
-        _ => CommandEffect::NotServed,
+/// The requests are built from JSON rather than from typed constructors so
+/// that one table row is one line, and so that a row which names a shape the
+/// protocol does not have fails *closed* — the deserialisation fails, the
+/// entry yields nothing, and the command is refused with
+/// `command_not_served` instead of dispatching a half-built request.
+fn json_request(shape: serde_json::Value) -> Option<CoreRequest> {
+    match serde_json::from_value(shape.clone()) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("PROBE-SHAPE-FAIL {} :: {}", shape.get("type").and_then(|v| v.as_str()).unwrap_or("?"), e);
+            None
+        }
     }
+}
+
+/// What the daemon's effect table yields for one command form.
+#[derive(Debug)]
+pub enum CommandEffect {
+    /// The request that serves the form.
+    Ready(CoreRequest),
+    /// The form acts on a session and the caller named none.
+    ///
+    /// The daemon resolves the project and the workspace from its own durable
+    /// binding, but the session is the caller's selection: the daemon cannot
+    /// guess which session a user is looking at.
+    NeedsSession,
+}
+
+/// The command's effect table.
+///
+/// Each row names the daemon request that serves the form, built from the
+/// scope and the argument. A form with no row is refused with
+/// `command_not_served`: the daemon does not guess what a command means.
+///
+/// The rows are built from JSON rather than from typed constructors so that
+/// one row is one line, and so that a row which names a shape the protocol
+/// does not have fails *closed* — the deserialisation fails, the entry
+/// yields nothing, and the command is refused with `command_not_served`
+/// instead of dispatching a half-built request. The closedness is proved by
+/// the `every_row_builds` test, so a wrong shape fails a test rather than
+/// quietly becoming a refusal.
+pub fn build_inner_request(
+    command_id: &str,
+    form: &str,
+    ctx: &CommandContext<'_>,
+) -> Option<CommandEffect> {
+    let project_id = ctx.project_id;
+    let workspace_id = ctx.workspace_id;
+    let session = ctx.session_id;
+    let argument = ctx.argument;
+    let trimmed = argument.trim_start();
+    let first = trimmed.split_whitespace().next().unwrap_or_default();
+    let rest = trimmed[first.len()..].trim_start();
+    let shape = match (command_id, form) {
+        // ── assets and the project ──
+        ("reload", "") => json!({
+            "type": "asset_refresh",
+            "request": {
+                "scope": { "project_id": project_id, "workspace_id": workspace_id },
+                "reason": "reload",
+                "session_id": session,
+            }
+        }),
+        ("project_init", "") => json!({
+            "type": "project_init_draft_get",
+            "project_id": project_id,
+            "workspace_id": workspace_id,
+        }),
+
+        // ── the effective policy and the preferences ──
+        ("policy", "") => json!({
+            "type": "execution_policy_get",
+            "session_id": session,
+        }),
+        ("approval", "") => json!({ "type": "approval_preference_get" }),
+        ("reasoning", "") => json!({ "type": "reasoning_preference_get" }),
+        ("network", "") => json!({
+            "type": "network_intent_set",
+            "network_intent": first,
+            "expected_revision": null,
+        }),
+
+        // ── the daemon's own catalogues ──
+        ("skills", "") => json!({
+            "type": "skill_catalogue_list",
+            "request": { "project_id": project_id, "max_entries": null },
+        }),
+        ("models_refresh", "") => json!({ "type": "models_refresh" }),
+        ("nodes", "") => json!({ "type": "node_telemetry", "node_id": null }),
+        ("worktree", "") => json!({
+            "type": "managed_worktree_list",
+            "workspace_id": workspace_id,
+            "repository_id": null,
+            "run_id": null,
+            "include_removed": false,
+        }),
+        ("tool_contracts", "") => json!({
+            "type": "tool_program_list",
+            "session_id": match session { Some(id) => id, None => "" },
+            "state_filter": null,
+        }),
+
+        // ── sessions ──
+        ("share", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "session_share", "session_id": session_id })
+        }
+        ("unshare", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "session_unshare", "session_id": session_id })
+        }
+        ("export", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "session_export", "session_id": session_id })
+        }
+        ("status", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "session_lifecycle_get", "session_id": session_id })
+        },
+
+        // ── goals, tasks and schedules ──
+        ("tasks", "") | ("task", "") => json!({
+            "type": "work_order_list",
+            "project_id": project_id,
+            "state_filter": null,
+            "cursor": null,
+            "limit": 20,
+        }),
+        ("schedules", "") => json!({
+            "type": "schedule_list",
+            "workspace_id": workspace_id,
+            "include_archived": false,
+        }),
+        ("goal", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "goal_show", "session_id": session_id })
+        }
+        ("state", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "active_goal_load", "session_id": session_id })
+        },
+
+        // ── memory ──
+        ("memory", "") | ("memory_list", "") => json!({
+            "type": "memory_list",
+            "namespace": if argument.is_empty() { "user/preferences".to_string() } else { argument.to_string() },
+        }),
+        ("memory_search", "") => json!({ "type": "memory_search", "query": argument }),
+        ("memory_remember", "") => json!({
+            "type": "memory_remember",
+            "text": argument,
+            "namespace": Some("user/preferences".to_string()),
+        }),
+        ("memory_forget", "") => json!({ "type": "memory_forget", "id": argument }),
+
+        // ── collaboration ──
+        ("collaborators", "") => json!({
+            "type": "team_principal_list",
+            "limit": null,
+        }),
+        ("team", "") => json!({
+            "type": "team_membership_list",
+            "project_id": project_id,
+            "limit": null,
+        }),
+        ("control", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({ "type": "session_control_get", "session_id": session_id })
+        }
+        ("observe", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "projection_subscribe",
+                "request": {
+                    "scope": "session",
+                    "scope_id": session_id,
+                    "cursor": null,
+                    "projection_version": 1,
+                }
+            })
+        }
+
+        // ── the editor's checkpoints ──
+        ("edit_checkpoints", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "edit_checkpoint_list",
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "limit": 20,
+            })
+        }
+
+        // ── the human shell ──
+        ("shell_list", "") => json!({ "type": "human_shell_run_capabilities" }),
+        ("shell_show", "") | ("shell_expand", "") => json!({
+            "type": "human_shell_run_read",
+            "request": {
+                "run_id": first,
+                "project_id": project_id,
+                "workspace_id": workspace_id,
+                "session_id": session,
+                "from_sequence": 0,
+                "max_bytes": 65536,
+            }
+        }),
+        ("shell_kill", "") => json!({
+            "type": "human_shell_run_cancel",
+            "request": {
+                "run_id": first,
+                "project_id": project_id,
+                "workspace_id": workspace_id,
+                "session_id": session,
+            }
+        }),
+
+        // ── the interactive terminal ──
+        ("terminal_list", "") | ("terminal_show", "") => json!({
+            "type": "interactive_process_list",
+            "workspace_id": workspace_id,
+            "limit": 20,
+        }),
+        ("terminal_send", "") => json!({
+            "type": "interactive_process_input",
+            "attachment_id": first,
+            "data_b64": rest,
+        }),
+
+        // ── the language server ──
+        ("lsp_status", "") | ("lsp_errors", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "lsp_diagnostics_get",
+                "request": { "project_id": project_id, "session_id": session_id },
+            })
+        }
+
+        _ => return None,
+    };
+    json_request(shape).map(CommandEffect::Ready)
+}
+
+/// Whether the daemon serves this command's effect.
+///
+/// The check is independent of the caller's scope: it asks whether the
+/// effect table has a row for the form at all. A row whose effect needs a
+/// session still counts as served — the daemon refuses *that* call, with
+/// `no_session`, rather than pretending the form is unknown.
+pub fn serves_form(command_id: &str, form: &str) -> bool {
+    let ctx = CommandContext {
+        project_id: "probe",
+        workspace_id: "probe",
+        session_id: Some("probe"),
+        argument: "",
+    };
+    matches!(
+        build_inner_request(command_id, form, &ctx),
+        Some(CommandEffect::Ready(_))
+    )
 }
 
 /// The outcome of one command execution, before it becomes a DTO.
@@ -226,6 +465,10 @@ impl CoreDaemon {
                         kind: command_kind_dto(form.kind),
                         argument_hint: form.argument_hint.to_string(),
                         argument_required: form.argument_required,
+                        // The daemon serves exactly the forms its effect
+                        // table has a row for. A frontend-effect form has no
+                        // row: the frontend owns it.
+                        daemon_served: serves_form(command.command_id, form.form),
                     })
                     .collect(),
             })
@@ -319,14 +562,36 @@ impl CoreDaemon {
             }
         }
 
-        let effect = effect_for(command.command_id, form.form);
-        if effect == CommandEffect::NotServed {
-            return Ok(refusal(
-                &request.command_id,
-                REFUSAL_COMMAND_NOT_SERVED,
-                format!("the daemon does not serve {} yet", command.name),
-                started_at_ms,
-            ));
+        // The effect table is the daemon's own map from a command form to the
+        // request that serves it. A form with no row is refused: the daemon
+        // does not guess what a command means.
+        let ctx = CommandContext {
+            project_id: &request.scope.project_id,
+            workspace_id: &request.scope.workspace_id,
+            session_id: request.scope.session_id.as_deref(),
+            argument: &request.argument,
+        };
+        match build_inner_request(command.command_id, form.form, &ctx) {
+            None => {
+                return Ok(refusal(
+                    &request.command_id,
+                    REFUSAL_COMMAND_NOT_SERVED,
+                    format!("the daemon does not serve {} yet", command.name),
+                    started_at_ms,
+                ))
+            }
+            Some(CommandEffect::NeedsSession) => {
+                return Ok(refusal(
+                    &request.command_id,
+                    REFUSAL_NO_SESSION,
+                    format!(
+                        "{} acts on a session and the request named none",
+                        command.name
+                    ),
+                    started_at_ms,
+                ))
+            }
+            Some(CommandEffect::Ready(_)) => {}
         }
 
         let Some(store) = self.run_store.as_ref() else {
@@ -385,8 +650,15 @@ impl CoreDaemon {
         };
         let run_id = handle.run_id.as_str().to_string();
 
-        let outcome = self
-            .dispatch_command_effect(effect, request, request_id, trusted_client_id, authority)
+        let (outcome, inner) = self
+            .dispatch_command_effect(
+                command.command_id,
+                form.form,
+                &ctx,
+                request_id,
+                trusted_client_id,
+                authority,
+            )
             .await;
 
         let completed_at_ms = chrono::Utc::now().timestamp_millis();
@@ -451,6 +723,11 @@ impl CoreDaemon {
             report: outcome.report,
             started_at_ms,
             completed_at_ms,
+            // The inner response travels verbatim: the daemon owns the
+            // effect and the authoritative data, and the frontend keeps the
+            // formatting by rendering the response it already knows how to
+            // render.
+            response: inner.and_then(|response| serde_json::to_value(response).ok()),
         })
     }
 
@@ -487,23 +764,28 @@ impl CoreDaemon {
 
     /// Serve one command effect by running the daemon's own handler for the
     /// equivalent request.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_command_effect(
         &self,
-        effect: CommandEffect,
-        request: &CommandExecuteRequestDto,
+        command_id: &str,
+        form: &str,
+        ctx: &CommandContext<'_>,
         request_id: &str,
         trusted_client_id: &str,
         authority: &codegg_core::transport_auth::RequestAuthorityContext,
-    ) -> CommandOutcome {
-        let inner = match build_inner_request(effect, request) {
-            Some(inner) => inner,
-            None => {
-                return CommandOutcome {
-                    status: CommandOutcomeStatusDto::Failed,
-                    summary: "the command's effect could not be prepared".to_string(),
-                    lines: Vec::new(),
-                    report: None,
-                }
+    ) -> (CommandOutcome, Option<CoreResponse>) {
+        let inner = match build_inner_request(command_id, form, ctx) {
+            Some(CommandEffect::Ready(inner)) => inner,
+            _ => {
+                return (
+                    CommandOutcome {
+                        status: CommandOutcomeStatusDto::Failed,
+                        summary: "the command's effect could not be prepared".to_string(),
+                        lines: Vec::new(),
+                        report: None,
+                    },
+                    None,
+                )
             }
         };
 
@@ -513,12 +795,15 @@ impl CoreDaemon {
         let decision = match self.authorize_request(authority, request_id, &inner).await {
             Ok(decision) => decision,
             Err(error) => {
-                return CommandOutcome {
-                    status: CommandOutcomeStatusDto::Refused,
-                    summary: format!("the command's effect was refused: {error}"),
-                    lines: vec![format!("refused: {error}")],
-                    report: None,
-                };
+                return (
+                    CommandOutcome {
+                        status: CommandOutcomeStatusDto::Refused,
+                        summary: format!("the command's effect was refused: {error}"),
+                        lines: vec![format!("refused: {error}")],
+                        report: None,
+                    },
+                    None,
+                )
             }
         };
 
@@ -536,86 +821,31 @@ impl CoreDaemon {
         {
             Ok(response) => response,
             Err(error) => {
-                return CommandOutcome {
-                    status: CommandOutcomeStatusDto::Failed,
-                    summary: format!("the command's effect failed: {error}"),
-                    lines: vec![format!("failed: {error}")],
-                    report: None,
-                }
+                return (
+                    CommandOutcome {
+                        status: CommandOutcomeStatusDto::Failed,
+                        summary: format!("the command's effect failed: {error}"),
+                        lines: vec![format!("failed: {error}")],
+                        report: None,
+                    },
+                    None,
+                )
             }
         };
 
-        summarize(effect, response)
+        let outcome = summarize(&response);
+        (outcome, Some(response))
     }
 }
 
-/// Build the inner request a command's effect is served by.
-fn build_inner_request(
-    effect: CommandEffect,
-    request: &CommandExecuteRequestDto,
-) -> Option<CoreRequest> {
-    let scope = AssetRefreshScopeDto {
-        project_id: request.scope.project_id.clone(),
-        workspace_id: request.scope.workspace_id.clone(),
-    };
-    let inner = match effect {
-        CommandEffect::AssetRefresh => CoreRequest::AssetRefresh {
-            request: AssetRefreshRequestDto {
-                scope,
-                reason: AssetRefreshReasonDto::Reload,
-                session_id: None,
-            },
-        },
-        CommandEffect::SkillCatalogue => CoreRequest::SkillCatalogueList {
-            request: codegg_protocol::skill::SkillCatalogueRequestDto {
-                project_id: request.scope.project_id.clone(),
-                max_entries: None,
-            },
-        },
-        CommandEffect::ExecutionPolicy => CoreRequest::ExecutionPolicyGet { session_id: None },
-        CommandEffect::ReasoningPreference => CoreRequest::ReasoningPreferenceGet,
-        CommandEffect::ModelsRefresh => CoreRequest::ModelsRefresh,
-        CommandEffect::ProjectInitDraft => CoreRequest::ProjectInitDraftGet {
-            project_id: request.scope.project_id.clone(),
-            workspace_id: request.scope.workspace_id.clone(),
-        },
-        CommandEffect::MemoryList => CoreRequest::MemoryList {
-            namespace: request.argument.clone(),
-        },
-        CommandEffect::MemorySearch => CoreRequest::MemorySearch {
-            query: request.argument.clone(),
-        },
-        CommandEffect::MemoryRemember => CoreRequest::MemoryRemember {
-            text: request.argument.clone(),
-            namespace: None,
-        },
-        CommandEffect::MemoryForget => CoreRequest::MemoryForget {
-            id: request.argument.clone(),
-        },
-        CommandEffect::WorkOrderList => CoreRequest::WorkOrderList {
-            project_id: request.scope.project_id.clone(),
-            state_filter: None,
-            cursor: None,
-            limit: None,
-        },
-        CommandEffect::ScheduleList => CoreRequest::ScheduleList {
-            workspace_id: Some(request.scope.workspace_id.clone()),
-            include_archived: false,
-        },
-        CommandEffect::NodeTelemetry => CoreRequest::NodeTelemetry { node_id: None },
-        CommandEffect::ManagedWorktreeList => CoreRequest::ManagedWorktreeList {
-            workspace_id: Some(request.scope.workspace_id.clone()),
-            repository_id: None,
-            run_id: None,
-            include_removed: false,
-        },
-        CommandEffect::NotServed => return None,
-    };
-    Some(inner)
-}
-
 /// Summarize the inner response into the command's bounded result.
-fn summarize(effect: CommandEffect, response: CoreResponse) -> CommandOutcome {
+///
+/// The renderer is variant-agnostic on purpose: it reads the response's
+/// wire shape, so one function covers every command family and a new
+/// family needs no new renderer. A frontend that wants richer text reads
+/// the inner response itself and renders it with the presentation code it
+/// already had.
+fn summarize(response: &CoreResponse) -> CommandOutcome {
     if let CoreResponse::Error { code, message } = response {
         return CommandOutcome {
             status: CommandOutcomeStatusDto::Refused,
@@ -624,190 +854,52 @@ fn summarize(effect: CommandEffect, response: CoreResponse) -> CommandOutcome {
             report: None,
         };
     }
-    match effect {
-        CommandEffect::AssetRefresh => match response {
-            CoreResponse::AssetRefresh { report } => {
-                let summary = format!(
-                    "refreshed {} added, {} removed, {} changed, {} shadowed, {} invalid",
-                    report.added.len(),
-                    report.removed.len(),
-                    report.changed.len(),
-                    report.shadowed.len(),
-                    report.invalid.len()
-                );
-                let mut lines = Vec::new();
-                for label in ["added", "removed", "changed", "shadowed", "invalid"] {
-                    for entry in match label {
-                        "added" => &report.added,
-                        "removed" => &report.removed,
-                        "changed" => &report.changed,
-                        "shadowed" => &report.shadowed,
-                        _ => &report.invalid,
-                    } {
-                        lines.push(format!("{label}: {entry}"));
-                    }
-                }
-                CommandOutcome {
-                    status: CommandOutcomeStatusDto::Completed,
-                    summary,
-                    lines,
-                    report: Some(CommandReportDto {
-                        added: report.added.len(),
-                        removed: report.removed.len(),
-                        changed: report.changed.len(),
-                        shadowed: report.shadowed.len(),
-                        invalid: report.invalid.len(),
-                    }),
-                }
-            }
-            other => generic_outcome("reload", other),
-        },
-        CommandEffect::SkillCatalogue => match response {
-            CoreResponse::SkillCatalogueList { result } => {
-                let names = result
-                    .skills
-                    .iter()
-                    .map(|entry| entry.name.clone())
-                    .collect::<Vec<String>>();
-                let summary = format!("{} skills available", names.len());
-                CommandOutcome {
-                    status: CommandOutcomeStatusDto::Completed,
-                    summary,
-                    lines: names,
-                    report: None,
-                }
-            }
-            other => generic_outcome("skills", other),
-        },
-        CommandEffect::ExecutionPolicy => match response {
-            CoreResponse::ExecutionPolicy { snapshot } => {
-                let summary = format!(
-                    "approval mode {:?}, sandbox profile {:?}",
-                    snapshot.approval_mode, snapshot.sandbox_profile
-                );
-                CommandOutcome {
-                    status: CommandOutcomeStatusDto::Completed,
-                    summary: summary.clone(),
-                    lines: vec![summary],
-                    report: None,
-                }
-            }
-            other => generic_outcome("policy", other),
-        },
-        CommandEffect::ReasoningPreference => match response {
-            CoreResponse::ReasoningPreference { preference } => {
-                let summary = format!("reasoning preference: {preference:?}");
-                CommandOutcome {
-                    status: CommandOutcomeStatusDto::Completed,
-                    summary,
-                    lines: vec![format!("reasoning preference: {preference:?}")],
-                    report: None,
-                }
-            }
-            other => generic_outcome("reasoning", other),
-        },
-        CommandEffect::ModelsRefresh => match response {
-            CoreResponse::ModelsSnapshot { models, .. } => {
-                let summary = format!("{} models available", models.len());
-                CommandOutcome {
-                    status: CommandOutcomeStatusDto::Completed,
-                    summary,
-                    lines: models,
-                    report: None,
-                }
-            }
-            other => generic_outcome("models-refresh", other),
-        },
-        CommandEffect::ProjectInitDraft => match response {
-            CoreResponse::ProjectInitDraft { draft } => {
-                let summary = draft
-                    .diagnostics
-                    .iter()
-                    .map(|diagnostic| diagnostic.message.clone())
-                    .collect::<Vec<String>>()
-                    .join("; ");
-                CommandOutcome {
-                    status: CommandOutcomeStatusDto::Completed,
-                    summary: if summary.is_empty() {
-                        "project instruction draft is ready".to_string()
-                    } else {
-                        summary
-                    },
-                    lines: Vec::new(),
-                    report: None,
-                }
-            }
-            other => generic_outcome("init", other),
-        },
-        CommandEffect::MemoryList
-        | CommandEffect::MemorySearch
-        | CommandEffect::MemoryRemember
-        | CommandEffect::MemoryForget
-        | CommandEffect::WorkOrderList
-        | CommandEffect::ScheduleList
-        | CommandEffect::NodeTelemetry
-        | CommandEffect::ManagedWorktreeList => generic_outcome(effect_label(effect), response),
-        CommandEffect::NotServed => CommandOutcome {
-            status: CommandOutcomeStatusDto::Failed,
-            summary: "the daemon does not serve this command's effect yet".to_string(),
-            lines: Vec::new(),
-            report: None,
-        },
-    }
-}
-
-/// The display label for one effect.
-fn effect_label(effect: CommandEffect) -> &'static str {
-    match effect {
-        CommandEffect::AssetRefresh => "reload",
-        CommandEffect::SkillCatalogue => "skills",
-        CommandEffect::ExecutionPolicy => "policy",
-        CommandEffect::ReasoningPreference => "reasoning",
-        CommandEffect::ModelsRefresh => "models-refresh",
-        CommandEffect::ProjectInitDraft => "init",
-        CommandEffect::MemoryList => "memory-list",
-        CommandEffect::MemorySearch => "memory-search",
-        CommandEffect::MemoryRemember => "memory-remember",
-        CommandEffect::MemoryForget => "memory-forget",
-        CommandEffect::WorkOrderList => "tasks",
-        CommandEffect::ScheduleList => "schedules",
-        CommandEffect::NodeTelemetry => "nodes",
-        CommandEffect::ManagedWorktreeList => "worktree",
-        CommandEffect::NotServed => "command",
-    }
-}
-
-/// The outcome for an effect whose payload the daemon does not render
-/// specially. The lines are the payload's own bounded summary.
-fn generic_outcome(label: &str, response: CoreResponse) -> CommandOutcome {
-    let summary = format!("{label} completed");
-    let lines = vec![format!("{label}: {}", response_label(&response))];
+    let value = serde_json::to_value(response).ok();
+    let kind = value
+        .as_ref()
+        .and_then(|value| value.get("type"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("result")
+        .to_string();
+    let lines = render_lines(value.as_ref(), &kind);
     CommandOutcome {
         status: CommandOutcomeStatusDto::Completed,
-        summary,
+        summary: format!("{kind} completed"),
         lines,
         report: None,
     }
 }
 
-/// A short, bounded label for a response variant.
-fn response_label(response: &CoreResponse) -> &'static str {
-    match response {
-        CoreResponse::Error { .. } => "error",
-        CoreResponse::AssetRefresh { .. } => "asset refresh report",
-        CoreResponse::AssetRefreshStatus { .. } => "asset refresh status",
-        CoreResponse::SkillCatalogueList { .. } => "skill catalogue",
-        CoreResponse::ExecutionPolicy { .. } => "execution policy",
-        CoreResponse::ReasoningPreference { .. } => "reasoning preference",
-        CoreResponse::ModelsSnapshot { .. } => "model list",
-        CoreResponse::ProjectInitDraft { .. } => "project instruction draft",
-        CoreResponse::Json { .. } => "result",
-        CoreResponse::WorkOrderList { .. } => "work order list",
-        CoreResponse::ScheduleList { .. } => "schedule list",
-        CoreResponse::NodeTelemetry { .. } => "node telemetry",
-        CoreResponse::ManagedWorktrees { .. } => "managed worktree list",
-        _ => "result",
+/// The bounded lines a response renders to.
+///
+/// A list of records renders as one line per record's naming field; every
+/// other shape renders as its kind. The renderer never renders a payload
+/// that is not already bounded by the protocol.
+fn render_lines(value: Option<&serde_json::Value>, kind: &str) -> Vec<String> {
+    let Some(object) = value.and_then(|value| value.as_object()) else {
+        return vec![kind.to_string()];
+    };
+    for field in ["items", "sessions", "entries", "skills", "records", "rows"] {
+        let Some(serde_json::Value::Array(items)) = object.get(field) else {
+            continue;
+        };
+        if items.is_empty() {
+            return vec![format!("{kind}: 0")];
+        }
+        return items
+            .iter()
+            .take(64)
+            .map(|item| {
+                item.get("name")
+                    .or_else(|| item.get("title"))
+                    .or_else(|| item.get("id"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("entry")
+                    .to_string()
+            })
+            .collect();
     }
+    vec![kind.to_string()]
 }
 
 /// Build a typed refusal. A refusal produces **no** run.
@@ -826,6 +918,7 @@ fn refusal(
         report: None,
         started_at_ms,
         completed_at_ms: started_at_ms,
+        response: None,
     }
 }
 
@@ -834,5 +927,159 @@ fn command_kind_dto(kind: CommandKind) -> CommandKindDto {
     match kind {
         CommandKind::DaemonEffect => CommandKindDto::DaemonEffect,
         CommandKind::FrontendEffect => CommandKindDto::FrontendEffect,
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codegg_core::command_catalog::{the_catalog, CommandKind};
+
+    /// Every row of the effect table.
+    ///
+    /// The list is the table's key set. The `the_effect_table_is_closed` test
+    /// proves it agrees with the match arms in both directions, so a row
+    /// cannot be added to one and forgotten in the other.
+    const EFFECT_TABLE: &[(&str, &str)] = &[
+        ("reload", ""),
+        ("project_init", ""),
+        ("policy", ""),
+        ("approval", ""),
+        ("reasoning", ""),
+        ("network", ""),
+        ("skills", ""),
+        ("models_refresh", ""),
+        ("nodes", ""),
+        ("worktree", ""),
+        ("tool_contracts", ""),
+        ("share", ""),
+        ("unshare", ""),
+        ("export", ""),
+        ("status", ""),
+        ("tasks", ""),
+        ("task", ""),
+        ("schedules", ""),
+        ("goal", ""),
+        ("state", ""),
+        ("memory", ""),
+        ("memory_list", ""),
+        ("memory_search", ""),
+        ("memory_remember", ""),
+        ("memory_forget", ""),
+        ("collaborators", ""),
+        ("team", ""),
+        ("control", ""),
+        ("observe", ""),
+        ("edit_checkpoints", ""),
+        ("shell_list", ""),
+        ("shell_show", ""),
+        ("shell_expand", ""),
+        ("shell_kill", ""),
+        ("terminal_list", ""),
+        ("terminal_show", ""),
+        ("terminal_send", ""),
+        ("lsp_status", ""),
+        ("lsp_errors", ""),
+    ];
+
+    fn daemon_effect_forms() -> Vec<(&'static str, &'static str)> {
+        the_catalog()
+            .commands
+            .iter()
+            .flat_map(|command| {
+                command
+                    .forms
+                    .iter()
+                    .filter(|form| form.kind == CommandKind::DaemonEffect)
+                    .map(move |form| (command.command_id, form.form))
+            })
+            .collect()
+    }
+
+    /// Every row of the effect table names a real daemon-effect form, and
+    /// every daemon-effect form the table serves is listed.
+    ///
+    /// The two directions matter: a row naming a form the catalog does not
+    /// have is dead, and a listed row whose match arm is missing is a
+    /// command the daemon claims to serve and then refuses.
+    #[test]
+    fn the_effect_table_is_closed() {
+        let daemon_forms = daemon_effect_forms();
+        for (command_id, form) in EFFECT_TABLE {
+            assert!(
+                daemon_forms.contains(&(*command_id, *form)),
+                "{command_id}/{form} is not a daemon-effect form in the catalog"
+            );
+            assert!(
+                serves_form(command_id, form),
+                "{command_id}/{form} is listed but the daemon does not build a request for it"
+            );
+        }
+        let served = daemon_forms
+            .iter()
+            .filter(|(command_id, form)| serves_form(command_id, form))
+            .count();
+        assert_eq!(
+            served,
+            EFFECT_TABLE.len(),
+            "the served daemon-effect forms and the listed rows must agree"
+        );
+    }
+
+    /// Every row builds a request the protocol actually has.
+    ///
+    /// The table's rows are built from JSON so that a wrong shape fails
+    /// *closed*. This test is what keeps that from becoming a silent
+    /// refusal: a row whose shape the protocol does not have fails here
+    /// rather than turning into `command_not_served` in production.
+    #[test]
+    fn every_row_builds() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "argument",
+        };
+        for (command_id, form) in EFFECT_TABLE {
+            let effect = build_inner_request(command_id, form, &ctx)
+                .unwrap_or_else(|| panic!("{command_id}/{form} must have a row"));
+            assert!(
+                matches!(effect, CommandEffect::Ready(_)),
+                "{command_id}/{form} must build a request when a session is named"
+            );
+        }
+    }
+
+    /// A session-scoped row refuses when the caller named no session.
+    ///
+    /// The refusal is distinct from `command_not_served`: the daemon serves
+    /// the form, it just cannot guess which session the caller meant.
+    #[test]
+    fn a_session_scoped_row_refuses_without_a_session() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: None,
+            argument: "",
+        };
+        let effect = build_inner_request("share", "", &ctx).expect("share has a row");
+        assert!(
+            matches!(effect, CommandEffect::NeedsSession),
+            "share acts on a session and must refuse without one"
+        );
+        // A row that does not act on a session still builds.
+        let effect = build_inner_request("skills", "", &ctx).expect("skills has a row");
+        assert!(
+            matches!(effect, CommandEffect::Ready(_)),
+            "skills does not act on a session and must build without one"
+        );
+    }
+
+    /// A form with no row is not served, and the daemon says so.
+    #[test]
+    fn a_form_with_no_row_is_not_served() {
+        assert!(!serves_form("not_a_command", ""));
+        assert!(!serves_form("skills", "not_a_form"));
     }
 }
