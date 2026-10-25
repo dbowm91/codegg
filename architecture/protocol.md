@@ -595,7 +595,7 @@ into a refusal.
 bytes per command identity, 4 KiB per argument, 256 result lines and 64 KiB
 of serialized result. An over-bound catalog is **refused** with a typed
 `CatalogBoundError` (`check_catalog_bounds()`, `:3234`, enforced at
-`src/core/daemon_commands.rs:590`) — never silently truncated.
+`src/core/daemon_commands.rs:633`) — never silently truncated.
 
 
 Protocol version 2 remains wire-compatible. `ProjectContextDto` and
@@ -822,5 +822,5 @@ Re-verified 2026-10-25 against `crates/codegg-protocol/src/core.rs`
 `CommandExecuteResultDto` `:1335`, `CoreRequest::CommandCatalog` `:2349`,
 `CoreRequest::CommandExecute` `:2356`), `src/core/daemon_family.rs`
 (`DaemonRequestFamily::Commands` `:71`, its handler mapping `:402`) and
-`src/core/daemon_commands.rs` (the bounds check `:590`): the command family
+`src/core/daemon_commands.rs` (the bounds check `:633`): the command family
 adds exactly **two** `CoreRequest` variants and changes no existing one.
