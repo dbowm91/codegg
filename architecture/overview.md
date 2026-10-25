@@ -468,11 +468,27 @@ identity newtypes **19**, built-in slash commands **169**, built-in agents
 **10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
 `mod.rs`), database tables **95 statements / 91 tables**, storage layout
 version **88**, Git operation variants **54**, Git risk classes **11**, and
-workspace member crates **11** (+ root). The *Guard scripts (all)* row is
-**92** and the *CI guard scripts* row is **55**, both carried unchanged from
-`main`, which added the writer-fence, contained-worktree-grant,
-checkout-mediation, daemon-cwd, Git-forbidden-pattern and
-Git-consistency-consumer guards.
+workspace member crates **11** (+ root). The *Guard scripts (all)* row was
+**92** and the *CI guard scripts* row **55** on this line's own side of that
+merge, both carried unchanged from the `main` it was reconciled with, which had
+added the writer-fence, contained-worktree-grant, checkout-mediation,
+daemon-cwd, Git-forbidden-pattern and Git-consistency-consumer guards.
+
+One more reconciliation, on **2026-10-24**, merged this line's tip with the
+`main` that carried the M008 corrective and the M007 planning line. Neither
+side's numbers were correct for the merged tree, so every moved row was
+**re-measured in the merged tree** with
+`python3 scripts/measure_overview_counts.py` and **not** incremented from
+either parent. *Integration test files* is **340** — `main`'s **339** plus this
+line's `tests/frontend_parity/tui_reconstruction.inc`. *Guard scripts (all)*
+is **93** (`ls scripts/check_*` — `main`'s `scripts/check_scratch_reclaim_invariants.py`
+is in the merged tree and this line adds no guard), *CI guard scripts* is
+**56** (the distinct `scripts/check_*` names in `.github/workflows/ci.yml`),
+and the quick-only difference is unchanged at **14**. The `CoreRequest` (268),
+`CoreResponse` (176) and authorized-operations (262) rows keep this line's
+values, which the merged tree confirms. Every other row was **confirmed
+unchanged** by measurement. `scripts/check_test_target_references.py` checks the
+recorded integration-test-file row against the tree, so that row cannot drift.
 
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
