@@ -499,21 +499,29 @@ pub(crate) fn start_terminal_attach(app: &mut App, handle: String) {
     let from_seq = app.interactive_terminals.resume_cursor(&handle);
     let request_id = app.dialog_state.terminal_request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "terminal_attach",
         async move {
-            let request = crate::core::new_request(
-                format!("terminal-attach-{}", uuid::Uuid::new_v4()),
-                CoreRequest::InteractiveProcessAttach {
-                    handle: handle.clone(),
-                    from_seq,
-                    max_bytes: None,
-                },
-            );
-            let result = match core_client.request(request).await {
+            // M007-D: the argument carries the handle and, when the
+            // frontend resumes from a retained cursor, that cursor.
+            let argument = match from_seq {
+                Some(seq) => format!("{handle} {seq}"),
+                None => handle.clone(),
+            };
+            let result = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "terminal_attach",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::InteractiveProcessAttached {
                     attachment_id,
                     handle,
@@ -681,6 +689,8 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
     let request_id = app.dialog_state.terminal_request.begin();
     let owner = TerminalResumeRequest::User(request_id);
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -689,15 +699,17 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
         async move {
             // Byte-for-byte the same request the cadence pull issues: the
             // daemon's own chunk bound, one explicit cursor, no second cap.
-            let request = crate::core::new_request(
-                format!("terminal-resume-{}", uuid::Uuid::new_v4()),
-                CoreRequest::InteractiveProcessResume {
-                    attachment_id: attachment_id.clone(),
-                    from_seq,
-                    max_bytes: None,
-                },
-            );
-            let result = match core_client.request(request).await {
+            // M007-D: the argument carries the attachment and the cursor.
+            let argument = format!("{attachment_id} {from_seq}");
+            let result = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "terminal_resume",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::InteractiveProcessResumed { chunk, .. }) => {
                     TuiCommand::TerminalResumeFinished {
                         request: owner,

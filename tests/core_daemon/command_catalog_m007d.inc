@@ -426,10 +426,26 @@ async fn command_catalog_serves_every_form_it_marks_served() {
                     "the {family} family marks {command_id}/{form} as served, \
                      but the daemon refused it as not served"
                 );
-                assert!(
-                    !result.run_id.is_empty(),
-                    "the {family} family's {command_id}/{form} must open a run"
-                );
+                // A row that reads a number the empty probe did not supply
+                // refuses the *call*, with its own reason. Serve-ability is
+                // a property of the form, so that refusal must not be
+                // reported as "not served" — and, like every refusal, it
+                // opens no run.
+                let refused_as_unreadable = result
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("argument_unreadable"));
+                if refused_as_unreadable {
+                    assert!(
+                        result.run_id.is_empty(),
+                        "a refusal must not open a run, got {result:?}"
+                    );
+                } else {
+                    assert!(
+                        !result.run_id.is_empty(),
+                        "the {family} family's {command_id}/{form} must open a run"
+                    );
+                }
                 checked += 1;
             } else {
                 assert!(

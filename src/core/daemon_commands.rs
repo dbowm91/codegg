@@ -77,6 +77,11 @@ pub const REFUSAL_RESULT_OVER_BOUND: &str = "result_over_bound";
 pub const REFUSAL_COMMAND_NOT_SERVED: &str = "command_not_served";
 /// The command acts on a session and the caller named none.
 pub const REFUSAL_NO_SESSION: &str = "no_session";
+/// The daemon serves the form, but the argument is not one it can read.
+///
+/// This is deliberately not `command_not_served`: that would say the
+/// daemon does not serve the command, which is false.
+pub const REFUSAL_ARGUMENT_UNREADABLE: &str = "argument_unreadable";
 
 /// The daemon-side context a command's effect is built from.
 ///
@@ -92,6 +97,20 @@ pub struct CommandContext<'a> {
     pub session_id: Option<&'a str>,
     /// The command's argument.
     pub argument: &'a str,
+}
+
+/// The number in the argument's second token.
+///
+/// `Ok(None)` — the argument carries no second token, so the row reads an
+/// absent value. `Ok(Some(n))` — the second token is the number.
+/// `Err(())` — the argument carries a second token that is not a number,
+/// so the row cannot read it and the call is refused as
+/// `argument_unreadable` rather than as an unserved command.
+fn argument_number(rest: &str) -> Result<Option<u64>, ()> {
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    rest.parse::<u64>().map(Some).map_err(|_| ())
 }
 
 /// Build a daemon request from its wire shape.
@@ -130,6 +149,14 @@ pub enum CommandEffect {
     /// binding, but the session is the caller's selection: the daemon cannot
     /// guess which session a user is looking at.
     NeedsSession,
+    /// The form has a row, and the argument the caller gave is not one the
+    /// row can read.
+    ///
+    /// This is its own outcome rather than a missing row. The daemon *does*
+    /// serve the form, so refusing it as `command_not_served` would
+    /// misreport the daemon's capability — and the catalog publishes
+    /// serve-ability from the row's presence, so the form stays dispatchable.
+    UnreadableArgument,
 }
 
 /// The command's effect table.
@@ -349,6 +376,95 @@ pub fn build_inner_request(
             "type": "schedule_delete",
             "schedule_id": first,
         }),
+        // The newest window of one channel. The channel travels as the
+        // argument and the cursor is unanchored, which is the "newest N"
+        // query the chat window wants.
+        ("chat_history", "") => json!({
+            "type": "chat_history_older",
+            "channel_id": first,
+            "before_seq": null,
+            "limit": null,
+        }),
+        // The incremental sync of one channel. The argument carries the
+        // channel and the cursor the frontend holds. The cursor is
+        // required: an argument the daemon cannot read is refused as
+        // `argument_unreadable`, not as an unserved command.
+        ("chat_sync", "") => {
+            let Some(from_seq) = argument_number(rest).ok().flatten() else {
+                return Some(CommandEffect::UnreadableArgument);
+            };
+            json!({
+                "type": "chat_sync",
+                "channel_id": first,
+                "from_seq": from_seq,
+                "limit": null,
+            })
+        }
+        // The read marker of one channel. The argument carries the channel
+        // and the sequence the frontend marked. The sequence is required.
+        ("chat_read", "") => {
+            let Some(last_read_seq) = argument_number(rest).ok().flatten() else {
+                return Some(CommandEffect::UnreadableArgument);
+            };
+            json!({
+                "type": "chat_read_set",
+                "channel_id": first,
+                "last_read_seq": last_read_seq,
+            })
+        }
+        // The attachment of one interactive process. The argument carries
+        // the handle and, when the frontend resumes from a retained
+        // cursor, that cursor. The cursor is optional; a cursor the daemon
+        // cannot read is refused.
+        ("terminal_attach", "") => {
+            let from_seq = match argument_number(rest) {
+                Ok(seq) => seq,
+                Err(()) => return Some(CommandEffect::UnreadableArgument),
+            };
+            let from_seq = match from_seq {
+                Some(seq) => serde_json::json!(seq),
+                None => serde_json::Value::Null,
+            };
+            json!({
+                "type": "interactive_process_attach",
+                "handle": first,
+                "from_seq": from_seq,
+                "max_bytes": null,
+            })
+        }
+        // The resume of one interactive process. The argument carries the
+        // attachment and the cursor the frontend resumes from. The cursor
+        // is required.
+        ("terminal_resume", "") => {
+            let Some(from_seq) = argument_number(rest).ok().flatten() else {
+                return Some(CommandEffect::UnreadableArgument);
+            };
+            json!({
+                "type": "interactive_process_resume",
+                "attachment_id": first,
+                "from_seq": from_seq,
+                "max_bytes": null,
+            })
+        }
+        // The wait for a submitted job. The argument carries the job id
+        // and, when the frontend asked for a bound, that bound in
+        // milliseconds. The bound is optional; a bound the daemon cannot
+        // read is refused.
+        ("test", "") => {
+            let timeout_ms = match argument_number(rest) {
+                Ok(ms) => ms,
+                Err(()) => return Some(CommandEffect::UnreadableArgument),
+            };
+            let timeout_ms = match timeout_ms {
+                Some(ms) => serde_json::json!(ms),
+                None => serde_json::Value::Null,
+            };
+            json!({
+                "type": "job_wait",
+                "job_id": first,
+                "timeout_ms": timeout_ms,
+            })
+        }
 
         // ── the editor's checkpoints ──
         ("edit_undo", "") => {
@@ -436,10 +552,16 @@ pub fn build_inner_request(
 
 /// Whether the daemon serves this command's effect.
 ///
-/// The check is independent of the caller's scope: it asks whether the
-/// effect table has a row for the form at all. A row whose effect needs a
-/// session still counts as served — the daemon refuses *that* call, with
-/// `no_session`, rather than pretending the form is unknown.
+/// The check is independent of the caller's scope **and of the caller's
+/// argument**: it asks whether the effect table has a row for the form at
+/// all. A row whose effect needs a session still counts as served — the
+/// daemon refuses *that* call, with `no_session`, rather than pretending
+/// the form is unknown. So does a row whose argument the caller got
+/// wrong: the daemon refuses *that* call, with `argument_unreadable`.
+///
+/// Serve-ability is a property of the **form**, not of one call's
+/// argument, so it is answered from the row's presence rather than from
+/// whether a probe argument happens to satisfy it.
 pub fn serves_form(command_id: &str, form: &str) -> bool {
     let ctx = CommandContext {
         project_id: "probe",
@@ -447,10 +569,7 @@ pub fn serves_form(command_id: &str, form: &str) -> bool {
         session_id: Some("probe"),
         argument: "",
     };
-    matches!(
-        build_inner_request(command_id, form, &ctx),
-        Some(CommandEffect::Ready(_))
-    )
+    build_inner_request(command_id, form, &ctx).is_some()
 }
 
 /// The outcome of one command execution, before it becomes a DTO.
@@ -666,6 +785,17 @@ impl CoreDaemon {
                     ),
                     started_at_ms,
                 ))
+            }
+            Some(CommandEffect::UnreadableArgument) => {
+                // The daemon serves this form. The caller's argument is
+                // what it cannot read, and saying so is the difference
+                // between a fixable call and a missing capability.
+                return Ok(refusal(
+                    &request.command_id,
+                    REFUSAL_ARGUMENT_UNREADABLE,
+                    format!("{} takes an argument the daemon cannot read", command.name),
+                    started_at_ms,
+                ));
             }
             Some(CommandEffect::Ready(_)) => {}
         }
@@ -1016,52 +1146,58 @@ mod tests {
     /// The list is the table's key set. The `the_effect_table_is_closed` test
     /// proves it agrees with the match arms in both directions, so a row
     /// cannot be added to one and forgotten in the other.
-    const EFFECT_TABLE: &[(&str, &str)] = &[
-        ("reload", ""),
-        ("project_init", ""),
-        ("policy", ""),
-        ("approval", ""),
-        ("reasoning", ""),
-        ("network", ""),
-        ("skills", ""),
-        ("models_refresh", ""),
-        ("nodes", ""),
-        ("worktree", ""),
-        ("tool_contracts", ""),
-        ("share", ""),
-        ("unshare", ""),
-        ("export", ""),
-        ("status", ""),
-        ("tasks", ""),
-        ("task", ""),
-        ("schedules", ""),
-        ("goal", ""),
-        ("state", ""),
-        ("memory", ""),
-        ("memory_list", ""),
-        ("memory_search", ""),
-        ("memory_remember", ""),
-        ("memory_forget", ""),
-        ("collaborators", ""),
-        ("team", ""),
-        ("control", ""),
-        ("observe", ""),
-        ("stop", ""),
-        ("chat_action_list", ""),
-        ("stop_observing", ""),
-        ("task_del", ""),
-        ("edit_undo", ""),
-        ("edit_reapply", ""),
-        ("edit_checkpoints", ""),
-        ("shell_list", ""),
-        ("shell_show", ""),
-        ("shell_expand", ""),
-        ("shell_kill", ""),
-        ("terminal_list", ""),
-        ("terminal_show", ""),
-        ("terminal_send", ""),
-        ("lsp_status", ""),
-        ("lsp_errors", ""),
+    const EFFECT_TABLE: &[(&str, &str, &str)] = &[
+        ("reload", "", ""),
+        ("project_init", "", ""),
+        ("policy", "", ""),
+        ("approval", "", ""),
+        ("reasoning", "", ""),
+        ("network", "", ""),
+        ("skills", "", ""),
+        ("models_refresh", "", ""),
+        ("nodes", "", ""),
+        ("worktree", "", ""),
+        ("tool_contracts", "", ""),
+        ("share", "", ""),
+        ("unshare", "", ""),
+        ("export", "", ""),
+        ("status", "", ""),
+        ("tasks", "", ""),
+        ("task", "", ""),
+        ("schedules", "", ""),
+        ("goal", "", ""),
+        ("state", "", ""),
+        ("memory", "", ""),
+        ("memory_list", "", ""),
+        ("memory_search", "", ""),
+        ("memory_remember", "", ""),
+        ("memory_forget", "", ""),
+        ("collaborators", "", ""),
+        ("team", "", ""),
+        ("control", "", ""),
+        ("observe", "", ""),
+        ("stop", "", ""),
+        ("chat_action_list", "", ""),
+        ("stop_observing", "", ""),
+        ("task_del", "", ""),
+        ("chat_history", "", ""),
+        ("chat_sync", "", "probe 1"),
+        ("chat_read", "", "probe 1"),
+        ("terminal_attach", "", "probe 1"),
+        ("terminal_resume", "", "probe 1"),
+        ("test", "", "probe 1"),
+        ("edit_undo", "", ""),
+        ("edit_reapply", "", ""),
+        ("edit_checkpoints", "", ""),
+        ("shell_list", "", ""),
+        ("shell_show", "", ""),
+        ("shell_expand", "", ""),
+        ("shell_kill", "", ""),
+        ("terminal_list", "", ""),
+        ("terminal_show", "", ""),
+        ("terminal_send", "", ""),
+        ("lsp_status", "", ""),
+        ("lsp_errors", "", ""),
     ];
 
     fn daemon_effect_forms() -> Vec<(&'static str, &'static str)> {
@@ -1087,7 +1223,7 @@ mod tests {
     #[test]
     fn the_effect_table_is_closed() {
         let daemon_forms = daemon_effect_forms();
-        for (command_id, form) in EFFECT_TABLE {
+        for (command_id, form, _) in EFFECT_TABLE {
             assert!(
                 daemon_forms.contains(&(*command_id, *form)),
                 "{command_id}/{form} is not a daemon-effect form in the catalog"
@@ -1114,22 +1250,67 @@ mod tests {
     /// *closed*. This test is what keeps that from becoming a silent
     /// refusal: a row whose shape the protocol does not have fails here
     /// rather than turning into `command_not_served` in production.
+    ///
+    /// Each row is probed with the argument **it declares**, so a row that
+    /// reads more than an identifier is proved with an argument that
+    /// carries what it reads. The requirement is declared in the table
+    /// rather than left implicit in one global probe, because a global
+    /// probe would let a row's requirement drift without the test
+    /// noticing.
     #[test]
     fn every_row_builds() {
-        let ctx = CommandContext {
-            project_id: "project",
-            workspace_id: "workspace",
-            session_id: Some("session"),
-            argument: "argument",
-        };
-        for (command_id, form) in EFFECT_TABLE {
+        for (command_id, form, argument) in EFFECT_TABLE {
+            let ctx = CommandContext {
+                project_id: "project",
+                workspace_id: "workspace",
+                session_id: Some("session"),
+                argument,
+            };
             let effect = build_inner_request(command_id, form, &ctx)
                 .unwrap_or_else(|| panic!("{command_id}/{form} must have a row"));
             assert!(
                 matches!(effect, CommandEffect::Ready(_)),
-                "{command_id}/{form} must build a request when a session is named"
+                "{command_id}/{form} must build a request for the argument it declares"
             );
         }
+    }
+
+    /// An unreadable argument is refused as such, and the form stays
+    /// served.
+    ///
+    /// The two facts are one invariant: serve-ability is a property of the
+    /// form, so a caller that got the argument wrong must be told the
+    /// argument was wrong — not that the daemon does not serve the
+    /// command.
+    #[test]
+    fn an_unreadable_argument_is_refused_and_the_form_stays_served() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "channel-1 not-a-number",
+        };
+        let effect = build_inner_request("chat_sync", "", &ctx);
+        assert!(
+            matches!(effect, Some(CommandEffect::UnreadableArgument)),
+            "a cursor the daemon cannot read must be its own outcome"
+        );
+        assert!(
+            serves_form("chat_sync", ""),
+            "a form whose argument was wrong is still served"
+        );
+        // The same argument with a readable cursor builds.
+        let ctx = CommandContext {
+            argument: "channel-1 42",
+            ..ctx
+        };
+        assert!(
+            matches!(
+                build_inner_request("chat_sync", "", &ctx),
+                Some(CommandEffect::Ready(_))
+            ),
+            "a readable cursor must build the row"
+        );
     }
 
     /// A session-scoped row refuses when the caller named no session.
@@ -1274,6 +1455,152 @@ mod tests {
                 CoreRequest::ScheduleDelete { schedule_id } if schedule_id == "schedule-1"
             ),
             "the schedule-delete row must name the schedule the frontend resolved"
+        );
+    }
+
+    /// The rows whose argument carries an identifier and a cursor.
+    ///
+    /// Each encoding is pinned: a frontend that encoded the cursor
+    /// differently would sync from the wrong place, mark the wrong sequence
+    /// read, or resume the wrong attachment.
+    #[test]
+    fn the_cursor_rows_carry_their_identifier_and_cursor_in_the_argument() {
+        // The newest window of one channel: the channel alone.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "channel-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("chat_history", "", &ctx)
+        else {
+            panic!("chat_history must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ChatHistoryOlder { channel_id, before_seq, limit }
+                    if channel_id == "channel-1" && before_seq.is_none() && limit.is_none()
+            ),
+            "the chat-history row must ask for the unanchored newest window of the channel"
+        );
+
+        // The incremental sync: the channel and the cursor.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "channel-1 42",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("chat_sync", "", &ctx) else {
+            panic!("chat_sync must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ChatSync { channel_id, from_seq, limit }
+                    if channel_id == "channel-1" && *from_seq == 42 && limit.is_none()
+            ),
+            "the chat-sync row must sync the channel from the cursor the frontend holds"
+        );
+
+        // The read marker: the channel and the sequence.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "channel-1 42",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("chat_read", "", &ctx) else {
+            panic!("chat_read must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ChatReadSet { channel_id, last_read_seq }
+                    if channel_id == "channel-1" && *last_read_seq == 42
+            ),
+            "the chat-read row must mark the named sequence of the channel read"
+        );
+
+        // The attach: the handle, and the cursor when the frontend has one.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "handle-1 42",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_attach", "", &ctx)
+        else {
+            panic!("terminal_attach must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::InteractiveProcessAttach { handle, from_seq, max_bytes }
+                    if handle == "handle-1" && *from_seq == Some(42) && max_bytes.is_none()
+            ),
+            "the attach row must resume the handle from the cursor the frontend holds"
+        );
+
+        // An attach with no cursor starts at the oldest retained output.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "handle-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_attach", "", &ctx)
+        else {
+            panic!("terminal_attach must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::InteractiveProcessAttach { handle, from_seq, .. }
+                    if handle == "handle-1" && from_seq.is_none()
+            ),
+            "an attach with no cursor must start at the oldest retained output"
+        );
+
+        // The resume: the attachment and the cursor.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "attachment-1 42",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_resume", "", &ctx)
+        else {
+            panic!("terminal_resume must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::InteractiveProcessResume { attachment_id, from_seq, max_bytes }
+                    if attachment_id == "attachment-1" && *from_seq == 42 && max_bytes.is_none()
+            ),
+            "the resume row must resume the attachment from the cursor the frontend holds"
+        );
+
+        // The job wait: the job id, and the bound when the frontend asked
+        // for one.
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "job-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("test", "", &ctx) else {
+            panic!("test must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::JobWait { job_id, timeout_ms }
+                    if job_id == "job-1" && timeout_ms.is_none()
+            ),
+            "the job-wait row must wait for the named job"
         );
     }
 }

@@ -53,6 +53,9 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     // Execution
     ("goal", "", "Execution"),
     ("task_del", "", "Execution"),
+    ("terminal_attach", "", "Execution"),
+    ("terminal_resume", "", "Execution"),
+    ("test", "", "Execution"),
     // Session
     ("edit_undo", "", "Session"),
     ("edit_reapply", "", "Session"),
@@ -60,6 +63,9 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     ("stop", "", "Collaboration"),
     ("chat_action_list", "", "Collaboration"),
     ("stop_observing", "", "Collaboration"),
+    ("chat_history", "", "Collaboration"),
+    ("chat_sync", "", "Collaboration"),
+    ("chat_read", "", "Collaboration"),
 ];
 
 /// The families the migrated commands cover.
@@ -393,6 +399,23 @@ async fn the_execution_family_is_executed_by_the_daemon() {
         )),
         "the schedule deletion must carry the resolved schedule id as its argument"
     );
+
+    // The attach names the terminal it attaches to; a fresh view has no
+    // retained cursor, so the argument is the handle alone.
+    crate::tui::commands::interactive_terminal::start_terminal_attach(
+        &mut app,
+        "handle-1".to_string(),
+    );
+    wait_for_command(&recorder, "terminal_attach").await;
+    assert_eq!(
+        recorded_for(&recorder, "terminal_attach"),
+        Some((
+            "terminal_attach".to_string(),
+            String::new(),
+            "handle-1".to_string()
+        )),
+        "the attach must carry the terminal handle as its argument"
+    );
 }
 
 /// The Session family: the checkpoint undo and reapply are executed by the
@@ -508,6 +531,69 @@ async fn the_collaboration_family_is_executed_by_the_daemon() {
             "subscription-1".to_string()
         )),
         "the unsubscribe must carry the subscription id the daemon issued"
+    );
+
+    // The chat window's three commands address one channel, so the chat
+    // state must be holding that channel.
+    app.chat.set_capability(true);
+    app.chat.backward_paging = true;
+    let epoch = app.chat.reconnect_epoch;
+    let ensure = app
+        .chat
+        .begin_ensure("project-1")
+        .expect("the chat state accepts a valid project");
+    assert!(
+        app.chat.apply_channel_list(
+            ensure,
+            "project-1",
+            &[chat_channel("project-1")],
+            false,
+            epoch,
+        ),
+        "the chat state accepts the daemon's channel list"
+    );
+    assert_eq!(
+        app.chat
+            .get("project-1")
+            .and_then(|e| e.active_channel_id.clone()),
+        Some("channel-1".to_string()),
+        "the listed channel becomes the active one"
+    );
+
+    crate::tui::commands::chat::start_chat_history(&mut app, "project-1".to_string());
+    wait_for_command(&recorder, "chat_history").await;
+    assert_eq!(
+        recorded_for(&recorder, "chat_history"),
+        Some((
+            "chat_history".to_string(),
+            String::new(),
+            "channel-1".to_string()
+        )),
+        "the newest window must carry the channel as its argument"
+    );
+
+    crate::tui::commands::chat::start_chat_sync(&mut app, "project-1".to_string());
+    wait_for_command(&recorder, "chat_sync").await;
+    assert_eq!(
+        recorded_for(&recorder, "chat_sync"),
+        Some((
+            "chat_sync".to_string(),
+            String::new(),
+            "channel-1 0".to_string()
+        )),
+        "the incremental sync must carry the channel and the cursor as its argument"
+    );
+
+    crate::tui::commands::chat::start_chat_read(&mut app, "project-1".to_string());
+    wait_for_command(&recorder, "chat_read").await;
+    assert_eq!(
+        recorded_for(&recorder, "chat_read"),
+        Some((
+            "chat_read".to_string(),
+            String::new(),
+            "channel-1 0".to_string()
+        )),
+        "the read marker must carry the channel and the sequence as its argument"
     );
 }
 

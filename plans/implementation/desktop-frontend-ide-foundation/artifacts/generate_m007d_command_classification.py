@@ -663,17 +663,17 @@ _arm(
 )
 _arm(
     "/chat-history",
-    "mechanical",
+    "migrated",
     "the arm's newest-window request is `chat_history_older` with an unanchored cursor, which the row can build from `<channel>`; the incapable-daemon fallback stays where it is",
 )
 _arm(
     "/chat-sync",
-    "mechanical",
+    "migrated",
     "`ChatSync` takes the channel and the cursor, so the row can build it from `<channel> <from_seq>`",
 )
 _arm(
     "/chat-read",
-    "mechanical",
+    "migrated",
     "`ChatReadSet` takes the channel and the sequence, so the row can build it from `<channel> <last_read_seq>`",
 )
 _arm(
@@ -725,7 +725,7 @@ _arm(
 )
 _arm(
     "/terminal-attach",
-    "mechanical",
+    "migrated",
     "`InteractiveProcessAttach` takes the handle and the cursor, so the row can build it from `<handle> <from_seq>`",
 )
 _arm(
@@ -735,12 +735,12 @@ _arm(
 )
 _arm(
     "/terminal-resume",
-    "mechanical",
+    "migrated",
     "`InteractiveProcessResume` takes the attachment and the cursor, so the row can build it from `<attachment-id> <from_seq>`",
 )
 _arm(
     "/test",
-    "mechanical",
+    "migrated",
     "the arm's effect is the job wait, and `JobWait` takes one identifier — the job id — which travels as the argument; the workspace registration stays a prerequisite",
 )
 

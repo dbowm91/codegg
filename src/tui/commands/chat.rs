@@ -147,6 +147,8 @@ pub(crate) fn start_chat_history(app: &mut App, project_id: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let pid = project_id.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -212,15 +214,19 @@ pub(crate) fn start_chat_history(app: &mut App, project_id: String) {
             // paging with no anchor is the "newest N" query the window
             // actually wants. Older daemons keep the forward path.
             if backward_paging {
-                let req = crate::core::new_request(
-                    format!("chat-history-newest-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ChatHistoryOlder {
-                        channel_id: channel_id.clone(),
-                        before_seq: None,
-                        limit: None,
-                    },
-                );
-                return match core_client.request(req).await {
+                // M007-D: the daemon owns the effect. The channel travels
+                // as the command's argument and the newest window is an
+                // unanchored cursor.
+                let argument = channel_id.clone();
+                return match crate::tui::command_route::send_command(
+                    &core_client,
+                    scope,
+                    "chat_history",
+                    "",
+                    &argument,
+                )
+                .await
+                {
                     Ok(CoreResponse::ChatHistoryOlder {
                         messages,
                         has_older,
@@ -454,6 +460,8 @@ pub(crate) fn start_chat_sync(app: &mut App, project_id: String) {
     let reconnect_epoch = app.chat.reconnect_epoch;
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -490,15 +498,18 @@ pub(crate) fn start_chat_sync(app: &mut App, project_id: String) {
                     reconnect_epoch,
                 });
             }
-            let req = crate::core::new_request(
-                format!("chat-sync-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ChatSync {
-                    channel_id: channel_id.clone(),
-                    from_seq,
-                    limit: None,
-                },
-            );
-            match core_client.request(req).await {
+            // M007-D: the daemon owns the effect. The argument carries the
+            // channel and the cursor the frontend holds.
+            let argument = format!("{channel_id} {from_seq}");
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "chat_sync",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::ChatSync {
                     messages,
                     next_cursor,
@@ -1200,6 +1211,8 @@ pub(crate) fn start_chat_read(app: &mut App, project_id: String) {
     let tx = app.tui_cmd_tx.clone();
     let pid = project_id.clone();
     let cid = channel_id.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -1214,14 +1227,18 @@ pub(crate) fn start_chat_read(app: &mut App, project_id: String) {
                     error: Some("Core unavailable".to_string()),
                 });
             };
-            let req = crate::core::new_request(
-                format!("chat-read-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ChatReadSet {
-                    channel_id: cid.clone(),
-                    last_read_seq: last_seq,
-                },
-            );
-            match core_client.request(req).await {
+            // M007-D: the argument carries the channel and the sequence the
+            // frontend marked.
+            let argument = format!("{cid} {last_seq}");
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "chat_read",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::ChatReadMarker { last_read_seq, .. }) => {
                     Some(TuiCommand::ChatReadMarkerSet {
                         project_id: pid,

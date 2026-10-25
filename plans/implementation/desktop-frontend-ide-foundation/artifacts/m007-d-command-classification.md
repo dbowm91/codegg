@@ -37,8 +37,8 @@ generate_m007d_command_classification.py --check
 | argument forms | 166 |
 | daemon-effect forms | 134 |
 | frontend-effect forms | 32 |
-| daemon-effect forms the daemon's effect table serves | 45 |
-| daemon-effect forms whose TUI arm issues a daemon request | 34 |
+| daemon-effect forms the daemon's effect table serves | 51 |
+| daemon-effect forms whose TUI arm issues a daemon request | 28 |
 | daemon-effect forms whose TUI arm issues no daemon request | 55 |
 | frontend-effect forms covered by the declared action set | 32 |
 
@@ -130,7 +130,7 @@ it issues none.
 | `/loop` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6727` | `ScheduleCreate` |
 | `/tasks` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6758` | `ScheduleGet`, `ScheduleList`, `WorkOrderLaneList`, `WorkOrderList`, `WorkOrderSummary` |
 | `/task` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6767` | `WorkOrderLaneList`, `WorkOrderList`, `WorkOrderSummary` |
-| `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6770` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatHistoryOlder`, `ChatPolicyGet`, `ChatProjectPolicySet`, … (20) |
+| `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6770` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatPolicyGet`, `ChatProjectPolicySet`, `PresenceSnapshotGet`, … (19) |
 | `/schedules` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:6777` | `ScheduleGet`, `ScheduleList` |
 | `/task-del` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6784` | `ScheduleList` |
 | `/memory` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6800` | `SessionMessagesLoad` |
@@ -141,15 +141,15 @@ it issues none.
 | `/memory-consolidate` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6849` | `SessionMessagesLoad` |
 | `/habits` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6852` | — |
 | `/habit-dismiss` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6862` | — |
-| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (43) |
+| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (38) |
 | `/skill-proposals` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6938` | — |
 | `/skill-proposal` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6975` | — |
 | `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7143` | `GoalCheckpoint`, `GoalSetBudget` |
 | `/plan` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7285` | — |
 | `/state` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7399` | — |
-| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8165` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatReadSet`, `ChatRedact`, … (40) |
+| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8165` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (38) |
 | `/tests` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8174` | — |
-| `/test` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8179` | `JobWait`, `WorkspaceRegister` |
+| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8179` | `WorkspaceRegister` |
 | `/revert` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8192` | — |
 | `/research` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8323` | — |
 | `/research-runs` | `—` | daemon | Research | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8334` | `ProjectList` |
@@ -195,18 +195,18 @@ it issues none.
 | `/shell-include` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8476` | `HumanShellPromotionStage` |
 | `/shell-rerun` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8520` | — |
 | `/shell-kill` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8536` | — |
-| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8879` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatReadSet`, `ChatRedact`, … (45) |
+| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8879` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (43) |
 | `/shell-expand` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8600` | — |
 | `/terminal` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8675` | — |
 | `/terminal-clear` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8709` | `InteractiveProcessInput` |
 | `/terminal-create` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8630` | — |
 | `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8644` | `InteractiveProcessList` |
-| `/terminal-attach` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8647` | `InteractiveProcessAttach` |
+| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8647` | — |
 | `/terminal-show` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8660` | — |
 | `/terminal-focus` | `—` | frontend | Execution | frontend → `FocusTerminal` | `src/tui/app/mod.rs:8736` | — |
 | `/terminal-send` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8745` | `InteractiveProcessInput` |
 | `/terminal-resize` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8762` | — |
-| `/terminal-resume` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8788` | `InteractiveProcessResume` |
+| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8788` | — |
 | `/terminal-detach` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8797` | — |
 | `/terminal-terminate` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8806` | — |
 | `/terminal-remove` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8815` | — |
@@ -223,18 +223,18 @@ it issues none.
 | `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `ProjectionResume` |
 | `/stop-observing` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6197` | — |
 | `/panels` | `—` | frontend | System | frontend → `OpenPanelManager` | `src/tui/app/mod.rs:6203` | — |
-| `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6215` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatHistoryOlder`, `ChatPolicyGet`, `ChatProjectPolicySet`, … (19) |
+| `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6215` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatPolicyGet`, `ChatProjectPolicySet`, `PresenceSnapshotGet`, … (18) |
 | `/chat-send` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6227` | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-reply` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6240` | `ChatChannelEnsure`, `ChatSend` |
-| `/chat-history` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6271` | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
-| `/chat-sync` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6291` | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder`, `ChatSync` |
-| `/chat-read` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6303` | `ChatReadSet` |
+| `/chat-history` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6271` | `ChatChannelEnsure`, `ChatHistory` |
+| `/chat-sync` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6291` | `ChatChannelEnsure`, `ChatHistory` |
+| `/chat-read` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6303` | — |
 | `/chat-edit` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6315` | `ChatEdit` |
 | `/chat-redact` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6345` | `ChatRedact` |
 | `/chat-composing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6370` | `ChatComposingList`, `ChatComposingSet` |
 | `/chat-action-task` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6393` | `ChatActionSubmit`, `ChatChannelEnsure` |
 | `/chat-action-review` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6429` | `ChatActionSubmit`, `ChatChannelEnsure` |
-| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6464` | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
+| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6464` | `ChatChannelEnsure`, `ChatHistory` |
 | `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8201` | `EditCheckpointUndo` |
 | `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8247` | `EditCheckpointReapply` |
 | `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8293` | `EditCheckpointList` |
@@ -250,9 +250,9 @@ already carries, so the coverage list and the catalog cannot drift apart.
 | family | forms | daemon effect | frontend effect | served | issues a daemon request | no daemon request |
 |---|---|---|---|---|---|---|
 | Agent | 11 | 10 | 1 | 1 | 7 | 2 |
-| Collaboration | 16 | 15 | 1 | 5 | 10 | 0 |
+| Collaboration | 16 | 15 | 1 | 8 | 7 | 0 |
 | Diagnostics | 28 | 28 | 0 | 3 | 0 | 25 |
-| Execution | 29 | 28 | 1 | 12 | 7 | 9 |
+| Execution | 29 | 28 | 1 | 15 | 4 | 9 |
 | GitReview | 3 | 3 | 0 | 0 | 1 | 2 |
 | Memory | 12 | 12 | 0 | 6 | 2 | 4 |
 | Project | 6 | 1 | 5 | 0 | 0 | 1 |
@@ -286,13 +286,12 @@ inventory of exactly this set.
 | `/memory-consolidate` | `—` | Memory | `SessionMessagesLoad` |
 | `/habits` | `—` | Memory | — |
 | `/habit-dismiss` | `—` | Memory | — |
-| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (43) |
+| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (38) |
 | `/skill-proposals` | `—` | Memory | — |
 | `/skill-proposal` | `—` | Memory | — |
 | `/plan` | `—` | Execution | — |
-| `/diff` | `—` | GitReview | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatReadSet`, `ChatRedact`, … (40) |
+| `/diff` | `—` | GitReview | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (38) |
 | `/tests` | `—` | Execution | — |
-| `/test` | `—` | Execution | `JobWait`, `WorkspaceRegister` |
 | `/revert` | `—` | GitReview | — |
 | `/research` | `—` | Research | — |
 | `/research-runs` | `—` | Research | `ProjectList` |
@@ -331,13 +330,11 @@ inventory of exactly this set.
 | `/security-review-cancel` | `—` | Agent | — |
 | `/shell-include` | `—` | Execution | `HumanShellPromotionStage` |
 | `/shell-rerun` | `—` | Execution | — |
-| `/shell-ask` | `—` | Execution | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatReadSet`, `ChatRedact`, … (45) |
+| `/shell-ask` | `—` | Execution | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (43) |
 | `/terminal` | `—` | Execution | — |
 | `/terminal-clear` | `—` | Execution | `InteractiveProcessInput` |
 | `/terminal-create` | `—` | Execution | — |
-| `/terminal-attach` | `—` | Execution | `InteractiveProcessAttach` |
 | `/terminal-resize` | `—` | Execution | — |
-| `/terminal-resume` | `—` | Execution | `InteractiveProcessResume` |
 | `/terminal-detach` | `—` | Execution | — |
 | `/terminal-terminate` | `—` | Execution | — |
 | `/terminal-remove` | `—` | Execution | — |
@@ -350,9 +347,6 @@ inventory of exactly this set.
 | `/plugin-install` | `—` | System | — |
 | `/chat-send` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-reply` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
-| `/chat-history` | `—` | Collaboration | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
-| `/chat-sync` | `—` | Collaboration | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder`, `ChatSync` |
-| `/chat-read` | `—` | Collaboration | `ChatReadSet` |
 | `/chat-edit` | `—` | Collaboration | `ChatEdit` |
 | `/chat-redact` | `—` | Collaboration | `ChatRedact` |
 | `/chat-composing` | `—` | Collaboration | `ChatComposingList`, `ChatComposingSet` |
@@ -369,6 +363,9 @@ is the identifier, and the remainder is the payload.
 |---|---|---|
 | `/approval` | `—` | `approval_preference_get` |
 | `/chat-action-list` | `—` | `chat_action_list` |
+| `/chat-history` | `—` | `chat_history_older` |
+| `/chat-read` | `—` | `chat_read_set` |
+| `/chat-sync` | `—` | `chat_sync` |
 | `/collaborators` | `—` | `team_principal_list` |
 | `/control` | `—` | `session_control_get` |
 | `/edit-checkpoints` | `—` | `edit_checkpoint_list` |
@@ -406,9 +403,12 @@ is the identifier, and the remainder is the payload.
 | `/task-del` | `—` | `schedule_delete` |
 | `/tasks` | `—` | `work_order_list` |
 | `/team` | `—` | `team_membership_list` |
+| `/terminal-attach` | `—` | `interactive_process_attach` |
 | `/terminal-list` | `—` | `interactive_process_list` |
+| `/terminal-resume` | `—` | `interactive_process_resume` |
 | `/terminal-send` | `—` | `interactive_process_input` |
 | `/terminal-show` | `—` | `interactive_process_list` |
+| `/test` | `—` | `job_wait` |
 | `/tool-contracts` | `—` | `tool_program_list` |
 | `/unshare` | `—` | `session_unshare` |
 | `/worktree` | `—` | `managed_worktree_list` |
@@ -424,6 +424,9 @@ keeps the formatting.
 | command | family | the TUI effect call |
 |---|---|---|
 | `/chat-action-list` | Collaboration | `CoreRequest::CommandExecute` (`chat_action_list`) |
+| `/chat-history` | Collaboration | `CoreRequest::CommandExecute` (`chat_history`) |
+| `/chat-read` | Collaboration | `CoreRequest::CommandExecute` (`chat_read`) |
+| `/chat-sync` | Collaboration | `CoreRequest::CommandExecute` (`chat_sync`) |
 | `/edit-reapply` | Session | `CoreRequest::CommandExecute` (`edit_reapply`) |
 | `/edit-undo` | Session | `CoreRequest::CommandExecute` (`edit_undo`) |
 | `/goal` | Execution | `CoreRequest::CommandExecute` (`goal`) |
@@ -437,8 +440,11 @@ keeps the formatting.
 | `/stop` | Collaboration | `CoreRequest::CommandExecute` (`stop`) |
 | `/stop-observing` | Collaboration | `CoreRequest::CommandExecute` (`stop_observing`) |
 | `/task-del` | Execution | `CoreRequest::CommandExecute` (`task_del`) |
+| `/terminal-attach` | Execution | `CoreRequest::CommandExecute` (`terminal_attach`) |
+| `/terminal-resume` | Execution | `CoreRequest::CommandExecute` (`terminal_resume`) |
+| `/test` | Execution | `CoreRequest::CommandExecute` (`test`) |
 
-**14 of the 134 daemon-effect forms are migrated.**
+**20 of the 134 daemon-effect forms are migrated.**
 The rest keep their local arm, and each one is listed above with the route
 it takes. The migration is one site per command: the request construction
 becomes a `CommandExecute` and the response is unwrapped, so the
@@ -645,10 +651,10 @@ arm issues a daemon request anyway, are one of four things — the fifth,
 * **misclassified** — the arm's effect is the frontend's own, so the
   catalog's kind is wrong and the corrected kind is named.
 
-**6 mechanical, 9 misclassified, 16 not mechanical, 3 subsystem move**, out of 34 daemon-effect forms whose TUI arm issues a
+**9 misclassified, 16 not mechanical, 3 subsystem move**, out of 28 daemon-effect forms whose TUI arm issues a
 daemon request but which the daemon does not serve.
 
-The accounting is complete: **134 daemon-effect forms = 45 served + 34 mechanical-unserved + 55 with no daemon request**, and every one of them is named.
+The accounting is complete: **134 daemon-effect forms = 51 served + 28 mechanical-unserved + 55 with no daemon request**, and every one of them is named.
 
 | command | family | verdict | why |
 |---|---|---|---|
@@ -666,7 +672,6 @@ The accounting is complete: **134 daemon-effect forms = 45 served + 34 mechanica
 | `/memory-consolidate` | Memory | not mechanical | the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store, which the daemon does not own |
 | `/skill-promote` | Memory | subsystem move | the arm drives 44 daemon requests; moving it is a subsystem, not a table row |
 | `/diff` | GitReview | subsystem move | the arm drives 40 daemon requests; moving it is a subsystem, not a table row |
-| `/test` | Execution | mechanical | the arm's effect is the job wait, and `JobWait` takes one identifier — the job id — which travels as the argument; the workspace registration stays a prerequisite |
 | `/research-runs` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/research-open` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/research-show` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
@@ -674,13 +679,8 @@ The accounting is complete: **134 daemon-effect forms = 45 served + 34 mechanica
 | `/shell-include` | Execution | not mechanical | `HumanShellPromotionStage` carries three identifiers beside the session, and the argument's convention has room for one |
 | `/shell-ask` | Execution | subsystem move | the arm drives 45 daemon requests; moving it is a subsystem, not a table row |
 | `/terminal-clear` | Execution | not mechanical | the request carries a byte payload the TUI composes — the pending input — and the argument's convention cannot carry bytes |
-| `/terminal-attach` | Execution | mechanical | `InteractiveProcessAttach` takes the handle and the cursor, so the row can build it from `<handle> <from_seq>` |
-| `/terminal-resume` | Execution | mechanical | `InteractiveProcessResume` takes the attachment and the cursor, so the row can build it from `<attachment-id> <from_seq>` |
 | `/chat-send` | Collaboration | not mechanical | the body is free text, and the request also carries mentions, references and a runtime idempotency key — none of which the argument's convention can carry |
 | `/chat-reply` | Collaboration | not mechanical | the body is free text, and the request also carries the reply's thread root, mentions, references and a runtime idempotency key |
-| `/chat-history` | Collaboration | mechanical | the arm's newest-window request is `chat_history_older` with an unanchored cursor, which the row can build from `<channel>`; the incapable-daemon fallback stays where it is |
-| `/chat-sync` | Collaboration | mechanical | `ChatSync` takes the channel and the cursor, so the row can build it from `<channel> <from_seq>` |
-| `/chat-read` | Collaboration | mechanical | `ChatReadSet` takes the channel and the sequence, so the row can build it from `<channel> <last_read_seq>` |
 | `/chat-edit` | Collaboration | not mechanical | the request carries four values — the channel, the message id, the revision and a free-text body — and the argument's convention has room for two |
 | `/chat-redact` | Collaboration | not mechanical | the request carries four values — the channel, the message id, the revision and a free-text reason — and the argument's convention has room for two |
 | `/chat-composing` | Collaboration | not mechanical | the arm has two effects (the composing list and the composing set), and the set's flag is a boolean the argument's convention cannot carry |
