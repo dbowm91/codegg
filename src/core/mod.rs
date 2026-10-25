@@ -56,6 +56,8 @@ pub mod scratch_sweep;
 pub mod session_launch;
 pub mod session_runtime;
 pub mod session_selection;
+pub mod session_summary;
+pub mod session_tool_contracts;
 pub mod transport;
 pub mod work_order_coordinator;
 pub mod writer_fence;
@@ -1231,7 +1233,9 @@ mod tests {
         };
         let out = set_turn_id_on_event(ev.clone(), "turn-x".into());
         match out {
-            CoreEvent::SessionUpdated { session_id, title, .. } => {
+            CoreEvent::SessionUpdated {
+                session_id, title, ..
+            } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(title.as_deref(), Some("Titled"));
             }

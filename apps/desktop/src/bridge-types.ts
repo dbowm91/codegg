@@ -227,6 +227,27 @@ export interface ConvergenceView {
   selectedRunId: string | null;
   lastFindingCount: number;
 }
+// One human-shell command run the daemon published. The run's output
+// bytes never cross: the daemon serves them on demand through its own
+// read, and the projection publishes the listing.
+export interface ShellRunView {
+  runId: string;
+  command: string;
+  cwd: string;
+  // How the run was issued: `bang` or `bang_bang`.
+  origin: string;
+  // `running`, `exited`, `timed_out`, `cancelled`, `failed` or `lost`.
+  status: string;
+}
+// One tool contract the session's own registry holds. These four fields
+// are the ones the TUI's `/tool-contracts` renders, so the two frontends
+// say the same thing about the same tool.
+export interface ToolContractView {
+  name: string;
+  callerPolicy: string;
+  effectClass: string;
+  idempotency: string;
+}
 // One todo entry. The content is the entry; the status and priority
 // are its state, and the host applies the TUI's own defaults when the
 // daemon omits one.
@@ -286,6 +307,12 @@ export interface SessionPresentationView {
   projectId: string;
   workspaceId: string;
   state: string;
+  // The session's selected model, as the daemon published it. `null`
+  // means the daemon published no selection, not that the session has
+  // none.
+  selectedModel: string | null;
+  // The session's selected agent, as the daemon published it.
+  selectedAgent: string | null;
   turn: TurnSummaryView | null;
   // The current (or most-recent) turn's messages, flat.
   messages: MessageView[];
@@ -307,6 +334,12 @@ export interface SessionPresentationView {
   worktrees: WorktreeView[];
   runGroups: RunGroupView[];
   convergences: ConvergenceView[];
+  // The human-shell command runs the daemon published for the session,
+  // oldest first within the bounded window.
+  shellRuns: ShellRunView[];
+  // The tool contracts the session's own registry holds, in the order the
+  // daemon published them.
+  toolContracts: ToolContractView[];
   recentTurns: TurnSummaryView[];
   // The session's todo list. `null` means *this view carries no todo
   // list*, not "the session has no todos": todos live behind a separate

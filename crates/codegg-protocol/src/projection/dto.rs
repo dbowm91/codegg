@@ -876,9 +876,12 @@ pub struct ToolContractProjection {
 impl ToolContractProjection {
     pub fn normalise(&mut self) {
         self.name = truncate_str(&self.name, MAX_PROJECTION_STRING_BYTES).into_owned();
-        self.caller_policy = truncate_str(&self.caller_policy, MAX_PROJECTION_STRING_BYTES).into_owned();
-        self.effect_class = truncate_str(&self.effect_class, MAX_PROJECTION_STRING_BYTES).into_owned();
-        self.idempotency = truncate_str(&self.idempotency, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.caller_policy =
+            truncate_str(&self.caller_policy, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.effect_class =
+            truncate_str(&self.effect_class, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.idempotency =
+            truncate_str(&self.idempotency, MAX_PROJECTION_STRING_BYTES).into_owned();
         self.implementation_id =
             truncate_str(&self.implementation_id, MAX_PROJECTION_STRING_BYTES).into_owned();
     }

@@ -990,6 +990,7 @@ impl CoreDaemon {
                     subagent_pool: self.deps.legacy_agent.subagent_pool.clone(),
                     memory_store: self.deps.memory_store.clone(),
                     event_log: Arc::clone(&self.event_log),
+                    session_tool_contracts: Arc::clone(&self.session_tool_contracts),
                     turn_id: turn_id.clone(),
                     lsp_service: self.deps.lsp_service.clone(),
                     document_service: Some(self.documents.clone()),
@@ -1665,6 +1666,16 @@ impl CoreDaemon {
                     let mut selected = runtime.selected_agent.write().await;
                     *selected = Some(agent_name.clone());
                 }
+                self.event_log
+                    .publish(
+                        Some(session_id.clone()),
+                        None,
+                        crate::protocol::core::CoreEvent::AgentSelected {
+                            session_id: session_id.clone(),
+                            agent: agent_name.clone(),
+                        },
+                    )
+                    .await;
                 crate::bus::global::GlobalEventBus::publish(
                     crate::bus::events::AppEvent::SessionUpdated {
                         id: session_id.clone(),

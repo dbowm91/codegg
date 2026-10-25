@@ -206,6 +206,55 @@ mod shell_dispatch_tests {
         crate::tui::commands::shell::capture_shell_binding(app, id);
     }
 
+    fn published_run(
+        run_id: &str,
+        command: &str,
+        status: &str,
+        exit_code: Option<i32>,
+    ) -> crate::protocol::projection::dto::ShellRunProjection {
+        crate::protocol::projection::dto::ShellRunProjection {
+            run_id: run_id.to_string(),
+            command: command.to_string(),
+            cwd: "/tmp".to_string(),
+            origin: "bang".to_string(),
+            status: status.to_string(),
+            started_at_ms: Some(1_000),
+            completed_at_ms: Some(1_200),
+            exit_code,
+        }
+    }
+
+    fn app_with_published_runs(
+        runs: Vec<crate::protocol::projection::dto::ShellRunProjection>,
+    ) -> App {
+        let mut app = make_test_app();
+        let mut snapshot = crate::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+            "shell-test-session",
+            "/tmp",
+            "/tmp",
+        );
+        for run in runs {
+            snapshot.upsert_shell_run(run);
+        }
+        app.projection_client.controller_mut().install_subscription(
+            crate::protocol::projection::replay::ProjectionSubscriptionId::new("sub-1"),
+            crate::protocol::projection::replay::ProjectionStreamDescriptor {
+                stream_id: crate::protocol::projection::replay::ProjectionStreamId::new("stream-1")
+                    .expect("a valid stream id"),
+                kind: crate::protocol::projection::replay::ProjectionStreamKind::Session,
+                project_id: "/tmp".into(),
+                workspace_id: Some("/tmp".into()),
+                session_id: Some("shell-test-session".into()),
+                projection_version: 1,
+                retention_floor_seq: 0,
+                high_water_seq: 0,
+                latest_checkpoint_seq: None,
+            },
+            snapshot,
+        );
+        app
+    }
+
     fn get_toasts(app: &App) -> Vec<String> {
         app.messages_state
             .toasts
@@ -226,7 +275,7 @@ mod shell_dispatch_tests {
 
     #[test]
     fn shell_list_empty_shows_toast() {
-        let mut app = make_test_app();
+        let mut app = app_with_published_runs(Vec::new());
         handle_shell_list(&mut app);
         let toasts = get_toasts(&app);
         assert!(
@@ -237,9 +286,10 @@ mod shell_dispatch_tests {
 
     #[test]
     fn shell_list_with_entries_shows_recent() {
-        let mut app = make_test_app();
-        insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
-        insert_completed_entry(&mut app, 2, "cargo test", b"", b"fail\n", Some(1));
+        let mut app = app_with_published_runs(vec![
+            published_run("run-1", "echo hello", "exited", Some(0)),
+            published_run("run-2", "cargo test", "exited", Some(1)),
+        ]);
         handle_shell_list(&mut app);
         let toasts = get_toasts(&app);
         let text = toasts.join("\n");
@@ -740,19 +790,10 @@ mod shell_dispatch_tests {
 
     #[test]
     fn shell_list_shows_status_labels() {
-        let mut app = make_test_app();
-        insert_completed_entry(&mut app, 1, "cmd1", b"", b"", Some(0));
-        let cmd_id = ShellCommandId(2);
-        let req = ShellRequest {
-            id: cmd_id,
-            origin: ShellOrigin::HumanEphemeral,
-            command: "cmd2".to_string(),
-            cwd: std::env::temp_dir(),
-            timeout: Duration::from_secs(300),
-            capture_policy: ShellCapturePolicy::StoreEphemeral,
-            env_policy: ShellEnvPolicy::Inherit,
-        };
-        app.shell_store.insert_started(&req);
+        let mut app = app_with_published_runs(vec![
+            published_run("run-1", "cmd1", "exited", Some(0)),
+            published_run("run-2", "cmd2", "running", None),
+        ]);
         handle_shell_list(&mut app);
         let toasts = get_toasts(&app);
         let text = toasts.join("\n");
@@ -768,9 +809,10 @@ mod shell_dispatch_tests {
 
     #[test]
     fn shell_list_shows_exit_code() {
-        let mut app = make_test_app();
-        insert_completed_entry(&mut app, 1, "passing", b"", b"", Some(0));
-        insert_completed_entry(&mut app, 2, "failing", b"", b"err\n", Some(101));
+        let mut app = app_with_published_runs(vec![
+            published_run("run-1", "passing", "exited", Some(0)),
+            published_run("run-2", "failing", "exited", Some(101)),
+        ]);
         handle_shell_list(&mut app);
         let toasts = get_toasts(&app);
         let text = toasts.join("\n");

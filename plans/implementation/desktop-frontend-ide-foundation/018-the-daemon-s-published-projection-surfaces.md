@@ -56,6 +56,10 @@ Long-term requirements:
 
 ## 1. Objective
 
+The line anchors in this plan are as of **2026-10-25**, before this plan's
+implementation. They describe the state this plan changed. The closure for
+this plan carries the current anchors.
+
 Make the daemon publish the three surfaces the desktop's uncarried actions
 need, and publish the **real** session summary, so that the desktop
 performs **five** of the six declared frontend actions instead of three.

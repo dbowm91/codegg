@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answerFrontendAction } from './frontendActions';
+import { answerFrontendAction, UNCARRIED_ACTIONS } from './frontendActions';
 import type { FrontendActionContext } from './frontendActions';
 import type { SessionPresentationView, SkillCatalogueView } from '../bridge-types';
 
@@ -11,6 +11,8 @@ const presentation = (
     projectId: 'p0',
     workspaceId: 'w0',
     state: 'attached',
+    selectedModel: null,
+    selectedAgent: null,
     turn: null,
     messages: [],
     truncatedMessages: 0,
@@ -26,6 +28,8 @@ const presentation = (
     worktrees: [],
     runGroups: [],
     convergences: [],
+    shellRuns: [],
+    toolContracts: [],
     recentTurns: [],
     todos: null,
     pendingPermissions: [],
@@ -114,12 +118,13 @@ describe('the desktop frontend actions', () => {
     expect(answer.message).toBe('skills: unavailable (the daemon refused the read)');
   });
 
-  it('reports the session status and the turn token counters', () => {
+  it('reports the session status, the selected model and the turn token counters', () => {
     const answer = answerFrontendAction(
       'show_status',
       context({
         presentation: presentation({
           state: 'attached',
+          selectedModel: 'gpt-5',
           turn: {
             turnId: 'turn-1',
             status: 'active',
@@ -140,7 +145,16 @@ describe('the desktop frontend actions', () => {
       }),
     );
     expect(answer.performed).toBe(true);
-    expect(answer.message).toBe('status: attached | tokens: 10↑ 20↓');
+    expect(answer.message).toBe('status: attached | model: gpt-5 | tokens: 10↑ 20↓');
+  });
+
+  it('says the session has no selected model when the daemon published none', () => {
+    const answer = answerFrontendAction(
+      'show_status',
+      context({ presentation: presentation({ selectedModel: null }) }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toContain('model: none selected');
   });
 
   it('reports the managed worktrees the projection carries', () => {
@@ -185,12 +199,94 @@ describe('the desktop frontend actions', () => {
     expect(answer.message).toBe('worktrees: none');
   });
 
-  it('refuses an action the desktop does not carry, and says what it is missing', () => {
-    const answer = answerFrontendAction('show_tool_contracts', context());
-    expect(answer.performed).toBe(false);
-    expect(answer.reason).toBe(
-      'the session projection publishes the tools a turn used, not the registry contracts',
+  it('reports the tool contracts the daemon published', () => {
+    const answer = answerFrontendAction(
+      'show_tool_contracts',
+      context({
+        presentation: presentation({
+          toolContracts: [
+            {
+              name: 'read',
+              callerPolicy: 'direct_only',
+              effectClass: 'read_only',
+              idempotency: 'idempotent',
+            },
+            {
+              name: 'bash',
+              callerPolicy: 'direct_or_programmatic',
+              effectClass: 'process_exec',
+              idempotency: 'non_idempotent',
+            },
+          ],
+        }),
+      }),
     );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe(
+      'tool contracts: 2 published (' +
+        'read caller=direct_only effect=read_only idempotent=idempotent, ' +
+        'bash caller=direct_or_programmatic effect=process_exec idempotent=non_idempotent)',
+    );
+  });
+
+  it('says there are no tool contracts when the daemon published none', () => {
+    const answer = answerFrontendAction(
+      'show_tool_contracts',
+      context({ presentation: presentation() }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe('tool contracts: none published');
+  });
+
+  it('reports the shell runs the daemon published, newest first', () => {
+    const answer = answerFrontendAction(
+      'show_shell_runs',
+      context({
+        presentation: presentation({
+          shellRuns: [
+            {
+              runId: 'run-1',
+              command: 'cargo test',
+              cwd: '/repo',
+              origin: 'bang',
+              status: 'exited',
+            },
+            {
+              runId: 'run-2',
+              command: 'cargo fmt',
+              cwd: '/repo',
+              origin: 'bang_bang',
+              status: 'running',
+            },
+          ],
+        }),
+      }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe(
+      'shell runs: 2 published (cargo fmt (running) in /repo, cargo test (exited) in /repo)',
+    );
+  });
+
+  it('says there are no shell runs when the daemon published none', () => {
+    const answer = answerFrontendAction(
+      'show_shell_runs',
+      context({ presentation: presentation() }),
+    );
+    expect(answer.performed).toBe(true);
+    expect(answer.message).toBe('shell runs: none published');
+  });
+
+  it('carries the actions the daemon publishes and leaves only the terminal uncarried', () => {
+    expect(UNCARRIED_ACTIONS.show_tool_contracts).toBeUndefined();
+    expect(UNCARRIED_ACTIONS.show_shell_runs).toBeUndefined();
+    expect(UNCARRIED_ACTIONS.show_terminal).toBe('the desktop has no terminal surface to focus');
+  });
+
+  it('refuses an action the desktop does not carry, and says what it is missing', () => {
+    const answer = answerFrontendAction('show_terminal', context());
+    expect(answer.performed).toBe(false);
+    expect(answer.reason).toBe('the desktop has no terminal surface to focus');
   });
 
   it('refuses an action the desktop does not know, without inventing a reason', () => {

@@ -6,8 +6,7 @@
 //! registry, workspace services, worktree service, eggpool provisioner,
 //! selection service, asset-refresh coordinator, project activation,
 //! scheduler + submission, interactive protocol) in one deterministic order
-//! and assembles the struct. It introduces no new store, scheduler, state
-//! machine, service bus, actor/DI framework, or authority.
+//! and assembles the struct. It introduces no new authority.
 //!
 //! ```text
 //! Construction order (preserved verbatim from `daemon.rs`):
@@ -25,8 +24,7 @@
 //! ```
 //!
 //! Construction failures unwind without publishing a partially ready daemon:
-//! every step builds a local before the final assembly, so a panic or early
-//! return never leaves a half-wired `Arc<CoreDaemon>` observable.
+//! every step builds a local before the final assembly.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -910,6 +908,10 @@ impl CoreDaemon {
             None
         };
 
+        // The human-shell service announces every run's lifecycle.
+        let human_shell_publisher =
+            crate::core::daemon_human_shell::human_shell_run_publisher(event_log.clone());
+
         Self {
             daemon_id,
             generation,
@@ -928,6 +930,9 @@ impl CoreDaemon {
             deps,
             reasoning_capabilities: crate::protocol::core::ReasoningCapabilitiesDto::current(),
             event_log,
+            session_tool_contracts: Arc::new(
+                super::session_tool_contracts::SessionToolContractStore::new(),
+            ),
             lsp_diagnostics: Arc::new(parking_lot::Mutex::new(
                 super::lsp_diagnostics_store::LspDiagnosticsStore::new(),
             )),
@@ -979,7 +984,7 @@ impl CoreDaemon {
                 let mut human_shell =
                     crate::shell::daemon::HumanShellRunService::new(scheduler.admission().clone());
                 human_shell.set_process_admission(process_admission.clone());
-                human_shell
+                human_shell.with_publisher(human_shell_publisher)
             }),
             scratch_census,
             _scratch_census_handle: Some(scratch_census_handle),

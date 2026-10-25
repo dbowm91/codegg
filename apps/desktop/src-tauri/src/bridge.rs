@@ -345,6 +345,39 @@ pub struct ConvergenceView {
     pub last_finding_count: usize,
 }
 
+/// One human-shell command run the daemon published for the session.
+///
+/// The run's **output** is deliberately absent: the daemon serves the
+/// bytes on demand through its own read, and the projection publishes
+/// the listing. The `cwd` is the run's own working directory as the
+/// daemon recorded it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellRunView {
+    pub run_id: String,
+    pub command: String,
+    pub cwd: String,
+    /// How the run was issued: `bang` or `bang_bang`.
+    pub origin: String,
+    /// `running`, `exited`, `timed_out`, `cancelled`, `failed` or `lost`.
+    pub status: String,
+}
+
+/// One tool contract the session's own registry holds.
+///
+/// The contract's **schemas** are deliberately absent: the projection
+/// publishes the policy a frontend renders, not the tool's input
+/// grammar. These four fields are the ones the TUI's `/tool-contracts`
+/// renders, so the two frontends say the same thing about the same tool.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolContractView {
+    pub name: String,
+    pub caller_policy: String,
+    pub effect_class: String,
+    pub idempotency: String,
+}
+
 /// Pending (or recently resolved) permission. `scope_summary` is a
 /// display-only string derived from the daemon path; it is never sent
 /// back as authority (WP E responds carry the opaque id + choice only).
@@ -790,6 +823,12 @@ pub struct SessionPresentationView {
     pub project_id: String,
     pub workspace_id: String,
     pub state: String,
+    /// The session's selected model, as the daemon published it. `None`
+    /// means the daemon published no selection, not that the session has
+    /// none.
+    pub selected_model: Option<String>,
+    /// The session's selected agent, as the daemon published it.
+    pub selected_agent: Option<String>,
     pub turn: Option<TurnSummaryView>,
     /// The current (or most-recent) turn's messages, flat.
     pub messages: Vec<MessageView>,
@@ -813,6 +852,12 @@ pub struct SessionPresentationView {
     pub worktrees: Vec<WorktreeView>,
     pub run_groups: Vec<RunGroupView>,
     pub convergences: Vec<ConvergenceView>,
+    /// The human-shell command runs the daemon published for the session,
+    /// oldest first within the bounded window.
+    pub shell_runs: Vec<ShellRunView>,
+    /// The tool contracts the session's own registry holds, in the order
+    /// the daemon published them.
+    pub tool_contracts: Vec<ToolContractView>,
     pub recent_turns: Vec<TurnSummaryView>,
     /// The session's todo list.
     ///

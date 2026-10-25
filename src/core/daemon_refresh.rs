@@ -38,10 +38,29 @@ use codegg_core::context::{
 use codegg_core::workspace::WorkspaceRecord;
 
 impl CoreDaemon {
+    /// The session's durable record, when the daemon has a store.
+    pub(crate) async fn session_record(
+        &self,
+        session_id: &str,
+    ) -> Option<codegg_core::session::Session> {
+        let pool = self.pool.clone()?;
+        let store = codegg_core::session::SessionStore::new(pool);
+        match store.get(session_id).await {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_id = %session_id,
+                    "session record read failed"
+                );
+                None
+            }
+        }
+    }
+
     /// Build the durable portion of a session projection from authoritative
     /// stores. This is used for initial connect and resync, so a reconnect
-    /// does not depend on transient legacy subagent events. The method is
-    /// read-only with respect to run/worktree authority.
+    /// does not depend on transient legacy subagent events.
     pub(crate) async fn projection_snapshot_for_session(
         &self,
         session_id: &str,
@@ -53,6 +72,25 @@ impl CoreDaemon {
             project_id,
             workspace_id,
         );
+        let record = self.session_record(session_id).await;
+        let runtime = self.sessions.get(session_id);
+        let mut summary = super::session_summary::session_summary(
+            session_id,
+            record.as_ref(),
+            runtime.as_deref(),
+        )
+        .await;
+        if summary.project_id.is_empty() {
+            summary.project_id = project_id.to_string();
+        }
+        if summary.workspace_id.is_empty() {
+            summary.workspace_id = workspace_id.to_string();
+        }
+        snapshot.primary_session = summary;
+        for meta in self.human_shell_runs.list_for_session(session_id).await {
+            snapshot.upsert_shell_run(crate::shell::daemon::run_projection(&meta));
+        }
+        snapshot.set_tool_contracts(self.session_tool_contracts.get(session_id));
         if let Some(runtime) = self.sessions.get(session_id) {
             let mut nodes = runtime
                 .subagents

@@ -1037,7 +1037,9 @@ mod tests {
             .expect("event arrives")
             .expect("broadcast stays open");
         match envelope.payload {
-            crate::protocol::core::CoreEvent::SessionUpdated { session_id, title, .. } => {
+            crate::protocol::core::CoreEvent::SessionUpdated {
+                session_id, title, ..
+            } => {
                 assert_eq!(session_id, created.id);
                 assert_eq!(
                     title.as_deref(),

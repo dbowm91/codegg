@@ -302,6 +302,8 @@ describe('session route flow', () => {
     projectId: 'p0',
     workspaceId: 'w0',
     state,
+    selectedModel: null,
+    selectedAgent: null,
     turn: {
       turnId: 'turn-1',
       status: 'active',
@@ -332,6 +334,8 @@ describe('session route flow', () => {
     worktrees: [],
     runGroups: [],
     convergences: [],
+    shellRuns: [],
+    toolContracts: [],
     recentTurns: [],
     todos: null,
     pendingPermissions: [],

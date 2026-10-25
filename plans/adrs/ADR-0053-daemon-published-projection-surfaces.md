@@ -41,6 +41,11 @@ Related ADRs:
 
 ## Context
 
+The line anchors in this section are as of **2026-10-25**, before plan 018
+(`plans/implementation/desktop-frontend-ide-foundation/018-the-daemon-s-published-projection-surfaces.md`)
+implemented this record. They describe the state that motivated the
+decision. The closure for plan 018 carries the current anchors.
+
 ADR-0052 decided that the daemon owns the command catalog and that each
 frontend performs a frontend-effect command from a bounded, declared set.
 Plan 017 applied that decision: six catalog forms were corrected to
