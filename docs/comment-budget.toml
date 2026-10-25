@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 124310
-max_comment_words = 1095646
+max_comment_lines = 124362
+max_comment_words = 1096137
 max_ratio = 0.1331
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -796,6 +796,7 @@ max_ratio = 0.1331
 "tests/core_daemon/writer_fence_c003.inc" = { max_comment_lines = 69, max_ratio = 0.1426 }
 "tests/core_daemon/writer_permit_service.inc" = { max_comment_lines = 66, max_ratio = 0.1292 }
 "tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc" = { max_comment_lines = 205, max_ratio = 0.1459 }
+"tests/git_consistency_consumers_c005.rs" = { max_comment_lines = 52, max_ratio = 0.3742 }
 "tests/ide_protocols/lsp.inc" = { max_comment_lines = 59, max_ratio = 0.0245 }
 "tests/ide_protocols/lsp_read_surface_trajectory.inc" = { max_comment_lines = 64, max_ratio = 0.227 }
 "tests/ide_protocols/phase5_context_integration.inc" = { max_comment_lines = 148, max_ratio = 0.0673 }

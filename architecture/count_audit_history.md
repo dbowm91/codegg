@@ -725,3 +725,30 @@ global block: no per-file ceiling moved, because `main` had already banked the
 composer's files and the branch's own files were already banked at their
 current values.
 
+
+## 2026-10-24 — C005's diff-consumer runtime target
+
+This is **not** a reconciliation: `main` did not advance, and no row moved
+because of an advance. One row moved because of a change on this line — the
+standalone integration target `tests/git_consistency_consumers_c005.rs`, which
+closes the Linux sandbox C005 closure record's last open finding.
+
+*Integration test files* moved **338 → 339**, re-measured on the tree with
+`python3 scripts/measure_overview_counts.py` rather than incremented. The
+other 24 rows were confirmed unchanged by measurement. The new target is a
+root-package integration test file, so the measure is unchanged; what changed
+is the population it counts.
+
+Two things moved with the row and are recorded here because both are gates
+rather than prose:
+
+- **`docs/test-ownership.toml` gained the `root_git_consistency_consumers_c005`
+  group.** Without it `scripts/check_test_ownership.py` fails with *"test
+  target codegg/git_consistency_consumers_c005 exists but no group owns it"* —
+  an unowned target can never be selected by a scoped run, so the guard's
+  failure is the point rather than an obstacle.
+- **The comment budget was re-banked on this tree.** The new target crosses
+  the unlisted floor, so it is listed in `docs/comment-budget.toml` with its
+  measured ceiling. The merged corpus stays **below** the 124,865
+  pre-reduction baseline, which is the same relation the fourth, fifth and
+  sixth reconciliations recorded.

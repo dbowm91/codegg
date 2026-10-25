@@ -237,6 +237,12 @@ consistency, and now it cannot.
 
 ## 9. Unresolved findings
 
+> **U2 discharged on 2026-10-24.** U2 below was closed by a follow-up after
+> this record was written; see §14 (A9). Its text is kept as it stood when the
+> record was closed, because a reader comparing the record with the tree's
+> history needs to see the finding and its discharge, not a rewritten finding.
+> U1 was already closed when the record was closed.
+
 **U1 — the whole-tree verification gap opened by the disk emergency is closed.**
 The host's disk reached 100% during this milestone (the shared XDG trash had
 accumulated 287 GB of already-trashed build caches; purging it was necessary to
@@ -429,3 +435,62 @@ and `tests/tui_render/tui_composer_motions.inc` and rewrote the already-existing
 test file. The comment budget was re-banked on the merged tree at **124,310**
 lines / **1,095,646** words / ratio **0.1330**, still below the 124,865
 pre-reduction baseline.
+**A9 — U2 is discharged: the diff-consumer fix's runtime half now has a dedicated integration test in a standalone target.** U2 recorded that the runtime half — that an inadmissible fact produces a typed error at the security-review surface — was covered by the static guard's assertion and by the fence's own unit tests, but not by a new integration test. That gap is closed by `tests/git_consistency_consumers_c005.rs`, a standalone target that drives the property from **outside** the crate, where the unit tests next to the fence cannot reach.
+
+The target asserts three properties, and each is stated so that a reader can tell what it does and does not prove.
+
+1. **The real route admits.** A real repository's diff read is admitted by the fence, and `discover_targets_from_diff` returns the target, the hunks and the patch built from it. This is the *admitting* half: a fence wired to refuse everything would fail this, so the fence is load-bearing in the admitting direction as well as the refusing one. It does **not** prove the fence is *reached* — a surface that bypassed the fence would return the same content — and the target deliberately does not claim to. That is the static guard's property, and the guard can see a call site this target cannot.
+2. **An inadmissible read is refused, and the refusal is typed.** The refusal reaches the caller as the surface's own `SecurityReviewReadError::Consistency` variant, carrying the consistency refusal's stable machine name — `live_class_without_capability` for a live-class read, `no_object_generation` for a read that observed no generation. The capability the target passes is `crate::git_consistency::live_read_capability()`, the **production** accessor, which returns `None` in every build: this is the production capability state, not a test-only posture.
+3. **A read failure is not a consistency refusal.** On the real path — a directory that is not a repository — the surface's Git read fails before anything can be admitted, and the caller sees `SecurityReviewReadError::Read`, not `Consistency`. This is the property a flattened error would destroy.
+
+**The target is load-bearing, and that was proved by mutation rather than asserted.** Two planted regressions were run against it, and each was reverted afterwards.
+
+**Regression 1 — the typed refusal is flattened.** `From<GitServiceError> for SecurityReviewReadError`'s `Consistency` arm was replaced with an unconditional `Read` arm — the mistake this record's own §3.3 warns against. The target then fails, and it fails on **exactly** the test that owns the property, with the other two still passing:
+
+```
+FAIL [   0.005s] (1/3) codegg::git_consistency_consumers_c005 an_inadmissible_diff_read_is_refused_with_a_typed_error
+  stderr ───
+  thread 'an_inadmissible_diff_read_is_refused_with_a_typed_error' panicked at
+  tests/git_consistency_consumers_c005.rs:156:13:
+  the refusal must stay typed, not become a read failure: git read failed
+  PASS [   0.017s] (2/3) codegg::git_consistency_consumers_c005 a_failed_diff_read_is_not_a_consistency_refusal
+  PASS [   0.064s] (3/3) codegg::git_consistency_consumers_c005 the_security_review_surface_admits_a_real_repositorys_diff
+  Summary: 3 tests run: 2 passed, 1 failed, 0 skipped
+```
+
+**Regression 2 — the fence admits everything.** `admit_generation_bound` was made to downgrade the read's class to an always-admissible one before admitting it, so the fence never refuses anything. The same test then fails, because the inadmissible fact is admitted instead of refused:
+
+```
+FAIL [   0.050s] (1/3) codegg::git_consistency_consumers_c005 an_inadmissible_diff_read_is_refused_with_a_typed_error
+  stderr ───
+  thread 'an_inadmissible_diff_read_is_refused_with_a_typed_error' panicked at
+  tests/git_consistency_consumers_c005.rs:127:6:
+  a live-class read must not be admitted without the live-read capability:
+  GenerationConsistent { value: "torn diff", class: CapturedNotCurrent }
+  PASS [   0.234s] (2/3) codegg::git_consistency_consumers_c005 a_failed_diff_read_is_not_a_consistency_refusal
+  PASS [   1.437s] (3/3) codegg::git_consistency_consumers_c005 the_security_review_surface_admits_a_real_repositorys_diff
+  Summary: 3 tests run: 2 passed, 1 failed, 0 skipped
+```
+
+Both regressions were reverted and the target is green on the restored tree. The two failures land on the same test for two different reasons, which is the shape that matters: the target detects a fence that refuses *incorrectly* and a fence that refuses *not at all*, and it does not fire on the two properties that are still true under either regression.
+
+**The gates run on this tree.**
+
+| Gate | Result |
+|---|---|
+| `scripts/verify.sh quick` | **green**, 113 steps |
+| `cargo fmt --check --all` | green |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | green |
+| `cargo nextest run --locked --profile ci -p codegg --test git_consistency_consumers_c005` | **3 passed**, 0 failed |
+| `cargo nextest run --locked --profile ci -p codegg --lib` | **7,512 passed**, 4 skipped |
+| `cargo nextest run --locked --profile ci -p codegg-core` | **1,141 passed**, 0 skipped |
+| `cargo nextest run --locked --profile ci -p codegg --test shared_checkout_c006 --test writer_fence_c009 --test contained_worktree_c008 --test composed_two_agent_race_m011` | **37 passed**, 0 failed |
+| `python3 -m unittest discover -s dev/harness_lab/tests` | **329 passed**, 1 skipped |
+| `python3 scripts/check_test_ownership.py` | green |
+| `python3 scripts/check_comment_budget.py` | green |
+
+One run of the `--lib` and `codegg-core` sweeps reported **timeouts** rather than failures: `tool::git::schema_tests::a_read_only_agent_may_still_inspect` and two `codegg-core` migration tests exceeded the profile's 120-second bound, and one of them had already **passed** at 119.641 s. This host was running other sessions' builds at the time, and the tests are not slow by construction. The affected test passes in isolation in 4.97 s, and both sweeps are green when re-run — so the timeouts are load, not a defect, and nothing in this change touches `tool::git` or the migration suite.
+
+**The manifest and the counts moved with it.** `docs/test-ownership.toml` gained the `root_git_consistency_consumers_c005` group. Without it the ownership guard fails with *"test target codegg/git_consistency_consumers_c005 exists but no group owns it"* — an unowned target can never be selected by a scoped run, so the guard's failure is the point rather than an obstacle. *Integration test files* moved **338 → 339**, re-measured on the tree with `python3 scripts/measure_overview_counts.py` rather than incremented, and recorded in `architecture/overview.md` and `architecture/count_audit_history.md`.
+
+**What this amendment does not claim.** It does not reopen C005's status: C005 was closed before this amendment and stays closed. It discharges U2, the record's last open finding, so the record now carries no open finding. It does not claim the static guard's coverage is now redundant — the guard still owns the *reach* of the fence at every consumer, which this target cannot see. And it does not claim the runtime half was previously untested: the fence's own unit tests cover the fence; what was missing was a test that could observe the property from outside the crate, where the surface's error type is the surface's own.

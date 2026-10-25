@@ -1,6 +1,6 @@
 # Linux Sandbox Admission C005 — Git Consistency Contract Enforcement and Guard Non-Vacuity
 
-Status: closed — C005 closed (`plans/closure/linux-sandbox-admission-follow-up-corrective/005-status.md`). The guard now asserts the hostile-config detector's **call** in both the async and the sync path, and its `--self-test` deletes each call in turn and proves the rejection; the guard runs in `verify.sh quick` and CI with its self-test; and the security-review surface's two diff reads now go through `admit_generation_bound`.
+Status: closed — C005 closed (`plans/closure/linux-sandbox-admission-follow-up-corrective/005-status.md`). The guard now asserts the hostile-config detector's **call** in both the async and the sync path, and its `--self-test` deletes each call in turn and proves the rejection; the guard runs in `verify.sh quick` and CI with its self-test; and the security-review surface's two diff reads now go through `admit_generation_bound`. A 2026-10-24 follow-up discharged the record's last open finding: the diff-consumer fix's **runtime** half now has a dedicated standalone integration target, `tests/git_consistency_consumers_c005.rs`, whose load-bearing property was proved by planted regression rather than asserted (closure record §14, A9).
 Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
 Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md`
