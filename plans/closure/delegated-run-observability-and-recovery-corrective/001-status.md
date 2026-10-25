@@ -920,3 +920,38 @@ record's own addition, which changes no Rust — ran `CI` / `verify` (run
 31m35s), `Desktop E2E` (run `40169808793`, 14m40s) and the `Linux M004
 process and IPC qualification` workflow's `process-ipc` (run `40169808662`,
 36m28s) and `restricted-userns-fails-closed` (14m39s). Every job green.
+
+## 17. A hosted flake in `codegg-client`, and the evidence that it is not this line's (2026-10-25)
+
+The `verify` job on this branch's head failed **twice** in the `Workspace tests`
+step, both times on the **same 10-second read timeout** in
+`crates/codegg-client/tests/session_projection_driver.rs:197` — a *different*
+member each time: `artifact_excerpt_round_trip_returns_validated_outcome`,
+then `artifact_excerpt_unknown_handle_sends_no_read`. That line is a hard-coded
+`tokio::time::timeout(Duration::from_secs(10), …)` on the fixture daemon's
+reply, and the member normally completes in **8–45 ms** — so the failure says
+the fixture did not answer inside ten seconds on a loaded runner, not that the
+answer was wrong.
+
+**`main` has its own copy of the evidence.** `origin/main`'s own `CI` job on
+run `40156460389` (2026-10-25, 02:58) failed at the **same file and the same
+line** — `session_projection_driver.rs:197`, again a ten-second read timeout,
+again a different member (`closed_transport_publishes_disconnected`) — while
+main's `Desktop E2E` job on the same commit passed. Main's other failure that
+day, run `40153785885`, is a second instance of the same class
+(`shell::runtime::tests::runtime_cwd_respected` and
+`shell::runtime::tests::runtime_invalid_command`).
+
+This branch changes **no** code under `crates/codegg-client` —
+`git diff --stat origin/main...HEAD -- crates/codegg-client/` is empty — and
+the identical tree was green on the two preceding heads: the same member
+logged `PASS` in **0.045 s** on `ebf19bc41` and in **0.008 s** on
+`1c967a836`. The failing member passes locally in **0.01 s**.
+
+The repair is **not** folded into this line. It belongs where the code is: the
+ten seconds are the fixture's budget, and the repository's own precedent for a
+load-sensitive test is a **per-test budget on that one test** rather than a
+global change — M007-C's desktop lane did exactly that for its keymap walk,
+because a global `testTimeout` change would also mask a genuine hang. That is
+a separate change against `main`, not this line's evidence, and this record
+does not absorb it.
