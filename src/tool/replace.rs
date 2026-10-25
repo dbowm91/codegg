@@ -61,7 +61,7 @@ impl Tool for ReplaceTool {
     }
 
     fn description(&self) -> &str {
-        "Find and replace text in a file using regular expressions. Replaces all occurrences by default."
+        "Find and replace text in a file using regular expressions. Replaces all occurrences by default (global defaults to true; non-global is refused — use edit for a single occurrence). Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
     }
 
     fn parameters(&self) -> serde_json::Value {

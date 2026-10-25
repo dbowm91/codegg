@@ -320,11 +320,24 @@ impl Tool for ToolSearchTool {
             .collect();
 
         if filtered.is_empty() && self.advisor_mode != AdvisorMode::Promote {
+            // R20: math/calc/units queries without a registered math tool
+            // still get an actionable fallback instead of a bare no_results.
+            let lower = query.to_lowercase();
+            let looks_like_math = ["math", "calc", "calcul", "arith", "unit", "constant"]
+                .iter()
+                .any(|token| lower.contains(token));
+            let suggestion = if looks_like_math {
+                "No dedicated math tool matched. Use python_script with {\"mode\": \"analyze\", \"code\": \"print(2+2*2)\"} \
+                 for arithmetic, or discover the deferred math_eval / unit_convert tools via query='math' \
+                 (e.g. tool_search {\"query\": \"math eval units\"}). Example: python_script analyze 'print((100/7))'."
+            } else {
+                "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools."
+            };
             return Ok(json!({
                 "status": "no_results",
                 "query": query,
                 "name": exact_name,
-                "suggestion": "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools.",
+                "suggestion": suggestion,
                 "tools": []
             })
             .to_string());
@@ -775,5 +788,20 @@ mod tests {
         let search = ToolSearchTool::new(Arc::new(catalog));
         assert!(search.description().contains("Curated bundles"));
         assert!(search.description().contains("read/write/edit/apply_patch"));
+    }
+
+    #[tokio::test]
+    async fn math_query_without_match_suggests_python_fallback() {
+        let catalog = ToolCatalog::new();
+        let search = ToolSearchTool::new(Arc::new(catalog));
+        let out = search
+            .execute(json!({"query": "math calculator units"}))
+            .await
+            .expect("math fallback search");
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(value["status"], "no_results");
+        let suggestion = value["suggestion"].as_str().unwrap_or_default();
+        assert!(suggestion.contains("python_script"));
+        assert!(suggestion.contains("math_eval"));
     }
 }

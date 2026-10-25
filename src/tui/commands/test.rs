@@ -55,7 +55,7 @@ fn build_test_request(
         "previous_failures" => TestScope::PreviousFailures,
         "custom" => {
             if args.trim().is_empty() {
-                return Err("custom scope requires a command".into());
+                return Err("custom scope requires 'command' parameter. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}".into());
             }
             let cmd = args.trim();
             if validate_custom_command(cmd).is_err() {
@@ -387,6 +387,19 @@ mod tests {
         let (scope, args) = parse_test_slash_args("previous");
         assert_eq!(scope, "previous_failures");
         assert_eq!(args, "");
+    }
+
+    #[test]
+    fn slash_test_custom_missing_command_matches_tool_error() {
+        let err = build_test_request("custom", "", "/tmp".into()).unwrap_err();
+        assert!(
+            err.contains("custom scope requires 'command'"),
+            "TUI custom error must use the tool literal, got: {err}"
+        );
+        assert!(
+            err.contains("cargo test -p mycrate"),
+            "TUI custom error must carry the documented example, got: {err}"
+        );
     }
 
     #[test]

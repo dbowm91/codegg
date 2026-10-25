@@ -199,7 +199,9 @@ impl Tool for DiffTool {
         "Show the unified diff between the given original text and the current file at \
          path. The original parameter is required: pass the full prior file contents; \
          the tool compares it against the file on disk and truncates long output. \
-         Prefer an edit dry-run or text_replace_check for pre-checks; reserve diff for small files."
+         Prefer an edit dry-run or text_replace_check for pre-checks; reserve diff for small files. \
+         For large files prefer git_query diff (working tree against HEAD, no original needed) or text_replace_check. \
+         Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
     }
 
     fn parameters(&self) -> serde_json::Value {

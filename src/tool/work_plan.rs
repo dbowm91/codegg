@@ -101,7 +101,7 @@ impl Tool for WorkPlanGetTool {
     }
 
     fn description(&self) -> &str {
-        "Read the durable WorkPlan projection: current/actionable items by default with bounded pagination. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
+        "Router: use work_plan_get for the actionable slice + revision; no active plan means use todowrite. Read the durable WorkPlan projection: current/actionable items by default with bounded pagination. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -253,7 +253,7 @@ impl Tool for WorkPlanUpdateItemTool {
     }
 
     fn description(&self) -> &str {
-        "Update one WorkPlan item: status/blocker/next-action with revision checking (no host-evidence fabrication). Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
+        "Router: use work_plan_update_item for the actionable slice + revision; no active plan means use todowrite. Update one WorkPlan item: status/blocker/next-action with revision checking (no host-evidence fabrication). Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {

@@ -157,6 +157,48 @@ fn apply_internal_response_detail(input: &Value, args: &mut Value) -> Result<(),
     Ok(())
 }
 
+/// Local-only compact projection (R6/F4).
+///
+/// `compact:true` / `detail:"summary"` never reach eggsearch: they select a
+/// CodeGG-side projection that keeps only selection fields
+/// (`canonical_name`/`path`/`description` plus title/url/snippet aliases).
+/// Invalid `detail` values fail before any MCP dispatch; an unrecognized
+/// upstream shape degrades gracefully to the full envelope.
+fn apply_compact_projection(
+    input: &Value,
+    mut result: EggsearchCallResult,
+    max_items: usize,
+    max_output_chars: usize,
+    cap_label: &str,
+    frame: fn(&str, &str) -> String,
+) -> Result<EggsearchCallResult, ToolError> {
+    let wants_compact = super::framing::search_detail_requests_compact(input)?;
+    if !wants_compact {
+        return Ok(result);
+    }
+    let Some(value) = result.value.clone() else {
+        return Ok(result);
+    };
+    let Some(compact) = super::framing::project_compact_search_value(&value, max_items) else {
+        return Ok(result);
+    };
+    let pretty = serde_json::to_string_pretty(&compact).unwrap_or_else(|_| compact.to_string());
+    let (capped, truncated) = super::framing::clamp_output(&pretty, max_output_chars, cap_label);
+    result.output = frame(&capped, "eggsearch");
+    result.value = Some(compact);
+    result.truncated = truncated || result.truncated;
+    Ok(result)
+}
+
+fn compact_limit(input: &Value, fields: &[&str], default: u64) -> usize {
+    for field in fields {
+        if let Some(n) = input.get(*field).and_then(tolerant_u64) {
+            return (n.min(30).max(1)) as usize;
+        }
+    }
+    default as usize
+}
+
 fn add_fetch_controls(input: &Value, args: &mut Value) -> Result<(), ToolError> {
     let focus = non_empty_string(input, "focus")?;
     if let Some(focus) = focus.as_deref() {
@@ -713,9 +755,11 @@ pub async fn call_web_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    // Validate local-only projection before any MCP dispatch.
+    super::framing::search_detail_requests_compact(input)?;
     let args = build_web_search_args(input)?;
 
-    call_structured_tool_with_service(
+    let result = call_structured_tool_with_service(
         svc,
         mcp_server,
         "web_search",
@@ -725,7 +769,16 @@ pub async fn call_web_search_structured(
         "max_search_output_chars",
         frame_search_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["num_results", "max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_search_output_chars",
+        frame_search_results,
+    )
 }
 
 pub async fn call_web_search(
@@ -808,6 +861,7 @@ pub async fn call_repo_search_structured_with_host_scope(
     timeout_ms: u64,
     host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -851,7 +905,7 @@ pub async fn call_repo_search_structured_with_host_scope(
         .min(30));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service_scope(
+    let result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_search",
@@ -862,7 +916,16 @@ pub async fn call_repo_search_structured_with_host_scope(
         host_scope,
         frame_repo_results,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_results"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_repo_output_chars",
+        frame_repo_results,
+    )
 }
 
 pub async fn call_repo_search(
@@ -991,6 +1054,7 @@ pub async fn call_repo_map_structured_with_host_scope(
     timeout_ms: u64,
     host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
+    super::framing::search_detail_requests_compact(input)?;
     if input
         .get("path")
         .and_then(Value::as_str)
@@ -1023,7 +1087,7 @@ pub async fn call_repo_map_structured_with_host_scope(
     args["max_depth"] = json!(depth);
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service_scope(
+    let result = call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_map",
@@ -1034,7 +1098,16 @@ pub async fn call_repo_map_structured_with_host_scope(
         host_scope,
         frame_repo_map,
     )
-    .await
+    .await?;
+    let limit = compact_limit(input, &["max_entries"], 10);
+    apply_compact_projection(
+        input,
+        result,
+        limit,
+        max_output_chars,
+        "max_repo_output_chars",
+        frame_repo_map,
+    )
 }
 
 pub async fn call_repo_map(

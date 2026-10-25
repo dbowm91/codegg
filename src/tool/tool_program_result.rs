@@ -347,33 +347,47 @@ pub fn result_to_json(record: &ProgramResultRecord) -> serde_json::Value {
         .failure_class
         .as_ref()
         .and_then(|class| serde_json::to_value(class).ok());
+    // F1: small outputs carry no artifact handle (`artifact_id: None`).
+    // The output schema types `artifact_handle` as a strict string and
+    // the broker validator only checks present keys, so omit the key
+    // when there is no handle instead of emitting `null`.
     let call_artifacts: Vec<serde_json::Value> = record
         .call_artifacts
         .iter()
         .map(|a| {
-            serde_json::json!({
-                "tool_name": a.tool_name,
-                "success": a.success,
-                "artifact_handle": a.artifact_id,
-                "preview": a.preview,
-                "digest": a.digest,
-                "absence_reason": a.absence_reason,
-            })
+            let mut artifact = serde_json::Map::new();
+            artifact.insert("tool_name".to_string(), a.tool_name.clone().into());
+            artifact.insert("success".to_string(), a.success.into());
+            if let Some(handle) = a.artifact_id.as_ref() {
+                artifact.insert("artifact_handle".to_string(), handle.clone().into());
+            }
+            artifact.insert("preview".to_string(), a.preview.clone().into());
+            artifact.insert("digest".to_string(), a.digest.clone().into());
+            artifact.insert(
+                "absence_reason".to_string(),
+                a.absence_reason.clone().into(),
+            );
+            serde_json::Value::Object(artifact)
         })
         .collect();
     let child_artifacts: Vec<serde_json::Value> = record
         .child_artifacts
         .iter()
         .map(|a| {
-            serde_json::json!({
-                "job_id": a.job_id,
-                "attempt_id": a.attempt_id,
-                "run_id": a.run_id,
-                "status": a.status,
-                "artifact_handle": a.artifact_id,
-                "digest": a.digest,
-                "absence_reason": a.absence_reason,
-            })
+            let mut artifact = serde_json::Map::new();
+            artifact.insert("job_id".to_string(), a.job_id.clone().into());
+            artifact.insert("attempt_id".to_string(), a.attempt_id.clone().into());
+            artifact.insert("run_id".to_string(), a.run_id.clone().into());
+            artifact.insert("status".to_string(), a.status.clone().into());
+            if let Some(handle) = a.artifact_id.as_ref() {
+                artifact.insert("artifact_handle".to_string(), handle.clone().into());
+            }
+            artifact.insert("digest".to_string(), a.digest.clone().into());
+            artifact.insert(
+                "absence_reason".to_string(),
+                a.absence_reason.clone().into(),
+            );
+            serde_json::Value::Object(artifact)
         })
         .collect();
     let mut value = serde_json::json!({

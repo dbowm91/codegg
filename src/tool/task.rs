@@ -507,9 +507,10 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
         ),
         ControlOutcome::Wait { run, timed_out } => append_run_failure(
             format!(
-                "Run: {}\nStatus: {}\nTimed out: {}\nResult: {}",
+                "Run: {}\nStatus: {}\nTask: {}\nTimed out: {}\nResult: {}",
                 run.run_id,
                 run.status.as_str(),
+                run.task_id,
                 timed_out,
                 run.result_ref.clone().unwrap_or_default()
             ),
@@ -1644,7 +1645,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again. Waits hold no batch execution slot: never batch a wait with work — issue waits solo or they head-of-line-block their siblings. The wait timeout is clamped to 30s."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Retrieve flow: spawn returns both Task and Run ids together (durable path: `Task: <task_id> Run: <run_id>`), then poll status|wait with run_id and fetch the recorded result with get using task_id; either id is accepted as an alias in both paths (status/wait resolve task_id to their run, get resolves run_id to its task). Example: spawn -> `Task: agt-abc Run: agr-def` -> wait {\"run_id\": \"agr-def\"} -> get {\"task_id\": \"agt-abc\"} returns recorded_result (bounded to 4096 bytes, see recorded_result_* fields) plus a transcript tail of the last 20 lines / 2000 chars. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again. Waits hold no batch execution slot: never batch a wait with work — issue waits solo or they head-of-line-block their siblings. The wait timeout is clamped to 30s."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1653,7 +1654,7 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; continue starts one new attempt of a failed durable child through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id.",
+                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id (a durable task_id string is accepted as an alias and resolved to its run); continue starts one new attempt of a failed durable child through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID; a run_id is accepted as an alias and resolved to its task). Group actions use group_id.",
                     "enum": ["scratch_create", "scratch_revoke", "spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "continue", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
                 },
                 "scratch_alias": { "type": "string", "maxLength": 32, "description": "Bounded env-safe name for a parent-owned shared scratch resource (action=scratch_create)" },
@@ -1709,11 +1710,11 @@ impl Tool for TaskTool {
                         {"type": "string", "minLength": 1},
                         {"type": "integer", "minimum": 0}
                     ],
-                    "description": "Required for action=get: durable AgentTaskId string or legacy numeric task ID. Do not use for run status/control."
+                    "description": "Required for action=get: durable AgentTaskId string or legacy numeric task ID. A run_id is accepted as an alias and resolved to its task on the durable path. Do not use task_id for run status/control."
                 },
                 "run_id": {
                     "type": "string",
-                    "description": "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. Do not use task_id here."
+                    "description": "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. A durable task_id string is accepted as an alias and resolved to its run."
                 },
                 "message": {
                     "type": "string",
@@ -2521,11 +2522,28 @@ impl TaskTool {
                     "durable run control is unavailable".into(),
                 ));
             };
-            let raw_run_id = input["run_id"]
-                .as_str()
-                .ok_or_else(|| ToolError::Execution("missing 'run_id' parameter".into()))?;
-            let run_id = AgentRunId::parse(raw_run_id)
-                .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?;
+            let run_id = match input["run_id"].as_str() {
+                Some(raw) => AgentRunId::parse(raw)
+                    .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?,
+                None => {
+                    let raw_task = input["task_id"].as_str().ok_or_else(|| {
+                        ToolError::Execution("missing 'run_id' parameter (a durable task_id is accepted as an alias)".into())
+                    })?;
+                    let agent_runs = self.agent_runs.clone().ok_or_else(|| {
+                        ToolError::Execution("durable agent run store is unavailable".into())
+                    })?;
+                    let task_id = AgentTaskId::parse(raw_task)
+                        .map_err(|e| ToolError::Execution(format!("invalid task_id alias: {e}")))?;
+                    agent_runs
+                        .get_run_for_task(&task_id)
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?
+                        .ok_or_else(|| {
+                            ToolError::Execution(format!("Task {task_id} has no run yet"))
+                        })?
+                        .run_id
+                }
+            };
             let actor = ControlActor {
                 session_id: self.parent_session_id.clone(),
                 run_id: self.parent_run_id.clone(),
@@ -2554,9 +2572,7 @@ impl TaskTool {
                     let key = input["idempotency_key"]
                         .as_str()
                         .map(String::from)
-                        .unwrap_or_else(|| {
-                            format!("control:{call_identity}:{action}:{raw_run_id}")
-                        });
+                        .unwrap_or_else(|| format!("control:{call_identity}:{action}:{run_id}"));
                     control.send(&actor, run_id, kind, payload, key).await
                 }
                 other => {
@@ -2574,8 +2590,36 @@ impl TaskTool {
         }
 
         if action == "get" {
+            // Alias: a run_id is resolved to its task so callers holding
+            // only the wait/status Run id can fetch the recorded result.
+            let resolved_task_id = if input["task_id"].as_str().is_some() {
+                input["task_id"].as_str().map(str::to_string)
+            } else if let Some(raw_run) = input["run_id"].as_str() {
+                let agent_runs = self.agent_runs.clone().ok_or_else(|| {
+                    ToolError::Execution("missing 'task_id' parameter".to_string())
+                })?;
+                let run_id = AgentRunId::parse(raw_run)
+                    .map_err(|e| ToolError::Execution(format!("invalid run_id alias: {e}")))?;
+                let run = agent_runs
+                    .get_run(&run_id)
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?
+                    .ok_or_else(|| ToolError::Execution(format!("Run {run_id} not found")))?;
+                Some(run.task_id.to_string())
+            } else {
+                None
+            };
+            let effective_input = if let Some(resolved) = resolved_task_id {
+                let mut owned = input.clone();
+                if let Some(object) = owned.as_object_mut() {
+                    object.insert("task_id".to_string(), serde_json::Value::String(resolved));
+                }
+                owned
+            } else {
+                input.clone()
+            };
             if let (Some(raw_id), Some(agent_runs)) =
-                (input["task_id"].as_str(), self.agent_runs.clone())
+                (effective_input["task_id"].as_str(), self.agent_runs.clone())
             {
                 let task_id = AgentTaskId::parse(raw_id)
                     .map_err(|e| ToolError::Execution(format!("invalid durable task_id: {e}")))?;
@@ -2612,9 +2656,9 @@ impl TaskTool {
                     None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
                 });
             }
-            let task_id = input["task_id"]
+            let task_id = effective_input["task_id"]
                 .as_u64()
-                .ok_or_else(|| ToolError::Execution("missing 'task_id' parameter".to_string()))?;
+                .ok_or_else(|| ToolError::Execution("missing 'task_id' parameter (a run_id is accepted as an alias on the durable path)".to_string()))?;
 
             if let Some(formatted) = self.store.lock().await.get_and_format_task(task_id).await {
                 Ok(formatted)

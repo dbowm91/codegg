@@ -74,6 +74,8 @@ const DEFERRED_NAMES: &[&str] = &[
     "identifier_inspect",
     "structured_data_compare",
     "text_fingerprint",
+    "math_eval",
+    "unit_convert",
 ];
 
 #[test]
@@ -422,6 +424,44 @@ fn text_fingerprint_deferred_executes() {
     );
 }
 
+#[test]
+fn math_eval_deferred_executes_deterministically() {
+    let runtime = test_runtime();
+    let (_, deferred) = build_eggsact_tools(runtime);
+    let tool = deferred
+        .iter()
+        .find(|t| t.name() == "math_eval")
+        .expect("math_eval must be exposed as deferred");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt
+        .block_on(tool.execute(serde_json::json!({"expression": "2+2*2"})))
+        .expect("math_eval should execute");
+    assert!(
+        result.contains("ok: true"),
+        "math_eval 2+2*2 must succeed, got: {result}"
+    );
+}
+
+#[test]
+fn unit_convert_deferred_executes_with_factor() {
+    let runtime = test_runtime();
+    let (_, deferred) = build_eggsact_tools(runtime);
+    let tool = deferred
+        .iter()
+        .find(|t| t.name() == "unit_convert")
+        .expect("unit_convert must be exposed as deferred");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt
+        .block_on(
+            tool.execute(serde_json::json!({"value": 1.0, "from_unit": "km", "to_unit": "m"})),
+        )
+        .expect("unit_convert should execute");
+    assert!(
+        result.contains("ok: true"),
+        "unit_convert km->m must succeed, got: {result}"
+    );
+}
+
 // ── Descriptions do not imply mutation ───────────────────────────
 
 #[test]
@@ -499,7 +539,7 @@ fn eggsact_tools_are_programmable_with_read_only_contract() {
     let runtime = test_runtime();
     let (visible, deferred) = build_eggsact_tools(runtime);
     let all: Vec<_> = visible.iter().chain(deferred.iter()).collect();
-    assert_eq!(all.len(), 13, "pure validator class must stay at 13 tools");
+    assert_eq!(all.len(), 15, "pure validator class must stay at 15 tools");
     for tool in &all {
         let contract = tool.contract(tool.name(), tool.parameters());
         assert_eq!(

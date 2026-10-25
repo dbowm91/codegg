@@ -41,7 +41,9 @@ impl Tool for WebSearchTool {
          labels. Use this for source discovery; use webfetch only for explicit URLs worth \
          reading. Output is capped (default max_search_output_chars=12000, marker \
          `[truncated by Codegg: output exceeded max_search_output_chars=…]`); tune with \
-         num_results and excerpt_count. Search results are external_untrusted."
+         num_results and excerpt_count. Pass detail='summary' (or compact:true) for a \
+         compact canonical_name/path/description (title/URL/snippet) projection without the \
+         telemetry envelope; default detail='full' keeps source cards. Search results are external_untrusted."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -83,6 +85,15 @@ impl Tool for WebSearchTool {
                     "minimum": 0,
                     "maximum": 3,
                     "description": "Number of provider-neutral extractive evidence excerpts to request (0-3)"
+                },
+                "compact": {
+                    "type": "boolean",
+                    "description": "Return the compact title/URL/snippet projection instead of the full telemetry envelope (equivalent to detail='summary')"
+                },
+                "detail": {
+                    "type": "string",
+                    "enum": ["summary", "full", "schema"],
+                    "description": "Use summary for the compact title/URL/snippet projection; full (default, schema is an alias) keeps source cards with telemetry. Mirrors tool_search detail."
                 }
             },
             "required": ["query"]

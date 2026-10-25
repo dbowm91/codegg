@@ -67,7 +67,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Surgically search and replace text in a file"
+        "Surgically search and replace text in a file. Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
     }
 
     fn parameters(&self) -> serde_json::Value {

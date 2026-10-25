@@ -74,7 +74,7 @@ impl Tool for ApplyPatchTool {
          \"@@ -1,3 +1,3 @@\"); a \"*** Begin Patch ***\" wrapper is not accepted — send bare hunks. \
          mode=create takes file contents; mode=delete takes no body \
          (path only; pass an empty string for patch); mode=move takes a rename header (\"rename from <old>\" plus \
-         \"rename to <new>\", or \"--- a/<old>\" plus \"+++ b/<new>\")."
+         \"rename to <new>\", or \"--- a/<old>\" plus \"+++ b/<new>\"). Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script."
     }
 
     fn parameters(&self) -> serde_json::Value {

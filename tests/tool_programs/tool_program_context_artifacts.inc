@@ -388,7 +388,10 @@ fn program_call_artifact_with_none_handle() {
     };
 
     let json = serde_json::to_value(&artifact).unwrap();
-    assert!(json["artifact_handle"].is_null());
+    // F1: a missing handle is omitted (not `null`) so the strict-string
+    // output schema validates — the broker validator only checks keys
+    // that are present.
+    assert!(json.get("artifact_handle").is_none());
     assert_eq!(json["preview"], "small output");
 }
 

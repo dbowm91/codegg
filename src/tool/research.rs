@@ -157,6 +157,9 @@ impl Tool for ResearchTool {
          Corpus: the local workspace is always searched; web sources run only via eggsearch when \
          [search].backend is not disabled. Depth sets the source budget (low=8, medium=30, high=80); \
          mode sets framing and upstream workflow, not the corpus. \
+         Local ranking is filename-weighted (path hits outrank content hits) and seeds \
+         scripts/verify.sh, AGENTS.md, and architecture/testing.md for repo-how questions: \
+         for repo mechanics, read scripts/verify.sh + AGENTS.md first. \
          The pipeline collects sources from the configured providers, extracts evidence, constructs claims, \
          verifies citations, and synthesizes a final answer. For a quick lookup, use `websearch` instead."
     }

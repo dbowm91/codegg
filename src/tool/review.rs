@@ -278,7 +278,10 @@ impl Tool for ReviewTool {
 
     fn description(&self) -> &str {
         "Read-only tool that analyzes the git diff for the session workspace and provides \
-         structured code review feedback. Reads the working-tree diff through the \
+         structured code review feedback. Requires an active LLM connection (provider/model from \
+         `model`, e.g. `openai/gpt-4o`): without a reachable provider it returns an actionable \
+         offline fallback (diff stats plus a review checklist) instead of failing silently. \
+         Reads the working-tree diff through the \
          session workspace root, not the process cwd; fails when no workspace is \
          bound (use git_query status to check the binding)."
     }
@@ -319,6 +322,50 @@ impl Tool for ReviewTool {
     }
 }
 
+/// Offline fallback when no LLM provider is reachable: diff stats plus a
+/// review checklist that echoes the configured model value, so the agent can
+/// act without burning another call discovering the provider requirement.
+fn offline_review_fallback(diff: &str, model: &str, reason: &str) -> String {
+    let mut files = 0usize;
+    let mut insertions = 0usize;
+    let mut deletions = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("diff --git") {
+            files += 1;
+        } else if line.starts_with("+++") || line.starts_with("---") {
+            // File headers, not content lines.
+        } else if line.starts_with('+') {
+            insertions += 1;
+        } else if line.starts_with('-') {
+            deletions += 1;
+        }
+    }
+    if files == 0 {
+        files = 1;
+    }
+    let mut end = diff.len().min(4000);
+    while end > 0 && !diff.is_char_boundary(end) {
+        end -= 1;
+    }
+    let excerpt = &diff[..end];
+    let truncated = diff.len() > end;
+    format!(
+        "## Code Review (offline fallback — no active LLM connection)\n\n\
+         Configured model `{model}` is unreachable: {reason}. \
+         Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`.\n\n\
+         Diff stats: {files} file(s) changed, +{insertions}/-{deletions} lines, {} bytes.\n\n\
+         Checklist:\n\
+         - Confirm the change compiles and existing tests cover the touched paths.\n\
+         - Look for functional issues (wrong branches, missing error handling).\n\
+         - Look for performance issues (extra clones, unbounded loops).\n\
+         - Look for style issues (naming, dead code, stale comments).\n\
+         - Note anything needing a human decision as a suggestion, not a verdict.\n\n\
+         Diff excerpt{}:\n{excerpt}",
+        diff.len(),
+        if truncated { " (truncated at 4000 chars)" } else { "" },
+    )
+}
+
 impl ReviewTool {
     async fn execute_with_context(
         &self,
@@ -328,10 +375,20 @@ impl ReviewTool {
         let staged = input["staged"].as_bool().unwrap_or(true);
         let diff = self.get_diff_with_context(staged, context).await?;
         let provider_context = provider_request_context(context);
-        let review = self
+        match self
             .analyze_diff_with_context(&diff, provider_context)
-            .await?;
-        Ok(format!("## Code Review Results\n\n{}", review))
+            .await
+        {
+            Ok(review) => Ok(format!("## Code Review Results\n\n{}", review)),
+            Err(e) => {
+                let config = Config::load_or_default();
+                let model = config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
+                Ok(offline_review_fallback(&diff, &model, &e.to_string()))
+            }
+        }
     }
 }
 
@@ -472,6 +529,52 @@ mod tests {
         assert!(
             msg.contains("codegg doctor"),
             "model_not_found must name doctor, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_without_provider_returns_offline_fallback() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let run_git = |args: &[&str]| {
+            // execution-ownership: test_only
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .expect("git should be installed");
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run_git(&["init", "-q"]);
+        std::fs::write(workspace.path().join("lib.rs"), "pub fn test() {}\n")
+            .expect("write staged file");
+        run_git(&["add", "lib.rs"]);
+
+        // No with_provider: resolution fails in this checkout, so the tool
+        // must return the offline fallback instead of an error.
+        let tool = ReviewTool::new().with_workdir(workspace.path().to_path_buf());
+        let output = tool
+            .execute_with_context(json!({"staged": true}), None)
+            .await
+            .expect("offline fallback must succeed");
+        let expected_model = Config::load_or_default()
+            .model
+            .clone()
+            .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
+        assert!(
+            output.contains("offline fallback"),
+            "fallback must be labelled offline, got: {output}"
+        );
+        assert!(
+            output.contains(&expected_model),
+            "fallback must echo the current model value, got: {output}"
+        );
+        assert!(
+            output.contains("Diff stats:"),
+            "fallback must carry diff stats, got: {output}"
+        );
+        assert!(
+            output.contains("Checklist:"),
+            "fallback must carry a review checklist, got: {output}"
         );
     }
 }

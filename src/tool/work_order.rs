@@ -243,7 +243,7 @@ impl Tool for WorkOrderTool {
     }
 
     fn description(&self) -> &str {
-        "Create durable project WorkOrders (future sessions) as single items or one atomic sequential batch. Project WorkOrders enqueue future work that the release coordinator materializes into ordinary sessions; they are NOT delegated subagent runs (use task/spawn for live child execution). Supports create, create_batch (atomic ordered lane placement with optional start_first_now), list, and get. Bounded, project-scoped, and lineage-attributed. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
+        "Router: use work_order for the future-session queue; for live subagent runs use task spawn. Create durable project WorkOrders (future sessions) as single items or one atomic sequential batch. Project WorkOrders enqueue future work that the release coordinator materializes into ordinary sessions; they are NOT delegated subagent runs (use task/spawn for live child execution). Supports create, create_batch (atomic ordered lane placement with optional start_first_now), list, and get. Bounded, project-scoped, and lineage-attributed. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {

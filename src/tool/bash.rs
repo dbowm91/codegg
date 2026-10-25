@@ -463,7 +463,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Routing: use bash for general shell (pipelines/interactive semantics); use terminal only for compat one-shot, test for test runners, python_script for Python. Execute a shell command and return its output. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
+        "Routing: use bash for general shell (pipelines/interactive semantics); use terminal only for compat one-shot, test for test runners, python_script for Python. Execute a shell command and return its output. Chooser: single literal replacement->edit | multi-hunk/create->apply_patch | regex->replace (global:true) | shell pipelines->bash | compat one-shot->terminal; tests->test; python->python_script. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
     }
 
     fn parameters(&self) -> serde_json::Value {

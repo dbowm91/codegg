@@ -29,7 +29,7 @@ impl Tool for GoalGetTool {
     }
 
     fn description(&self) -> &str {
-        "Get the current active goal for this session. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
+        "Router: use goal_get for session intent; no active goal in this session means use todowrite. Get the current active goal for this session. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -102,7 +102,7 @@ impl Tool for GoalUpdateProgressTool {
     }
 
     fn description(&self) -> &str {
-        "Update progress on the current active goal. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
+        "Router: use goal_update_progress for session intent progress; no active goal means use todowrite. Update progress on the current active goal. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -227,7 +227,7 @@ impl Tool for GoalRequestCompletionTool {
     }
 
     fn description(&self) -> &str {
-        "Request host verification and completion of the current active goal. Fails closed with `No active goal` when the host has established none — `goal_get` reports the same state as `{\"active\":false}`; use `todowrite` for in-turn steps instead. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
+        "Router: use goal_request_completion for session intent completion; no active goal means use todowrite. Request host verification and completion of the current active goal. Fails closed with `No active goal` when the host has established none — `goal_get` reports the same state as `{\"active\":false}`; use `todowrite` for in-turn steps instead. Canonical map: goal = session intent, work_plan = actionable slice + revision, work_order = future-session queue, todowrite = in-turn steps. See the planning skill decision table."
     }
 
     fn parameters(&self) -> serde_json::Value {

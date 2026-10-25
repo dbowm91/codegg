@@ -197,7 +197,8 @@ impl AssetRegistry {
 
     pub fn find_matching(&self, query: &str) -> Vec<&EffectiveSkill> {
         let query_lower = query.to_lowercase();
-        self.effective
+        let mut scored: Vec<(i64, &EffectiveSkill)> = self
+            .effective
             .iter()
             .filter(|s| {
                 s.normalized_name.contains(&query_lower)
@@ -207,8 +208,31 @@ impl AssetRegistry {
                             .map(|s| s.to_lowercase().contains(&query_lower))
                             .unwrap_or(false)
                     })
+                    || strsim::levenshtein(&s.normalized_name, &query_lower)
+                        <= query_lower.len().max(3) / 2 + 2
             })
-            .collect()
+            .map(|s| {
+                let distance = strsim::levenshtein(&s.normalized_name, &query_lower) as i64;
+                // Prefix and substring hits rank first; raw edit distance
+                // breaks ties so a near-miss typo (e.g. `tseting-ci` for
+                // `testing-ci`) surfaces at the top even when paginated.
+                let bonus = if s.normalized_name == query_lower {
+                    -100
+                } else if s.normalized_name.starts_with(&query_lower) {
+                    -50
+                } else if s.normalized_name.contains(&query_lower) {
+                    -25
+                } else {
+                    0
+                };
+                (distance + bonus, s)
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.normalized_name.cmp(&b.1.normalized_name))
+        });
+        scored.into_iter().map(|(_, skill)| skill).collect()
     }
 
     pub fn build_system_prompt(&self) -> String {

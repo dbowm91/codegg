@@ -50,7 +50,7 @@ impl EggsactTool {
 
     /// Shared output schema for the deterministic result envelope.
     ///
-    /// All 13 validators are pure functions over their inputs (no
+    /// All 15 validators are pure functions over their inputs (no
     /// filesystem reads, no external state); the envelope carries the
     /// `ok` flag plus optional machine-code/result/findings fields.
     /// No property is required so the schema stays permissive for
@@ -97,7 +97,7 @@ impl Tool for EggsactTool {
 
     /// Program-callable contract for the pure validator class.
     ///
-    /// All 13 eggsact validators are pure functions over their inputs
+    /// All 15 eggsact validators are pure functions over their inputs
     /// (no filesystem or external reads), so every instance shares the
     /// same contract: `DirectOrProgrammatic` (keeps direct model calls
     /// working), `ReadOnly` (severity 0, the only class admissible under
@@ -282,7 +282,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     deferred.push(EggsactTool::new(
         "config_preflight",
         "config_preflight",
-        "Validate generated config text. Auto-detects format (JSON, TOML, YAML) and runs the appropriate validator. Returns valid/invalid with parse error details.",
+        "Validate generated config text. Auto-detects format (JSON, TOML, dotenv/INI, cargo_toml) and runs the appropriate validator. YAML is not supported; YAML input is reported as unsupported rather than JSON. Returns valid/invalid with parse error details.",
         simple_schema(json!({
             "text": { "type": "string", "description": "Config text to validate" },
         }), &["text"]),
@@ -330,6 +330,52 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
         true,
         true,
         runtime.clone(),
+    ));
+
+    // ── Deferred math (R19): upstream MATH_TOOLS lacks the `codegg_core`
+    // profile, so the default runtime cannot see them. Bind these two to a
+    // math-capable (`full`) runtime so agents stop doing arithmetic by LLM
+    // guess or by spawning Python for `2+2`. Descriptions carry
+    // math/calculator/arithmetic/calc/units keywords for `tool_search`.
+    let math_runtime = {
+        let base = runtime.as_ref().config().clone();
+        let math_config = crate::eggsact::adapter::EggsactConfig {
+            profile: "full".to_string(),
+            audience: base.audience.clone(),
+            max_output_chars: base.max_output_chars,
+        };
+        match crate::eggsact::adapter::EggsactRuntime::new(math_config) {
+            Ok(rt) => Arc::new(rt),
+            Err(_) => runtime.clone(),
+        }
+    };
+
+    deferred.push(EggsactTool::new(
+        "math_eval",
+        "math_eval",
+        "Evaluate arithmetic, calculator, and scientific expressions deterministically (math calc arithmetic). Handles units and constants in the expression; state-mutating and random functions are disabled. Use for math and unit tasks instead of asking the model to calculate or spawning python_script for 2+2.",
+        simple_schema(json!({
+            "expression": { "type": "string", "description": "Math expression to evaluate (e.g. '2+2*2', 'sqrt(144)', '30m + 100ft')" },
+        }), &["expression"]),
+        ToolCategory::ReadOnly,
+        true,
+        true,
+        math_runtime.clone(),
+    ));
+
+    deferred.push(EggsactTool::new(
+        "unit_convert",
+        "unit_convert",
+        "Convert a numeric value between units deterministically (units conversion calc). Uses pre-defined conversion factors; use for km/m/ft/in/kg/lb and temperature conversions instead of guessing.",
+        simple_schema(json!({
+            "value": { "type": "number", "description": "Numeric value to convert (must be finite)" },
+            "from_unit": { "type": "string", "description": "Source unit (e.g. 'km', 'ft', 'kg')" },
+            "to_unit": { "type": "string", "description": "Target unit (e.g. 'm', 'in', 'lb')" },
+        }), &["value", "from_unit", "to_unit"]),
+        ToolCategory::ReadOnly,
+        true,
+        true,
+        math_runtime,
     ));
 
     (always_visible, deferred)

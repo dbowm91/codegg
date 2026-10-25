@@ -7,9 +7,12 @@
 //! - H4: Large final output uses a real artifact handle and bounded projection.
 //! - H5: Tampering any semantic field causes digest failure; corruption fails closed.
 
+use codegg::tool::tool_program::ToolProgramTool;
 use codegg::tool::tool_program_result::{
-    ChildArtifactHandle, ProgramArtifactHandle, ToolProgramResultError, ToolProgramResultStore,
+    result_to_json, ChildArtifactHandle, ProgramArtifactHandle, ToolProgramResultError,
+    ToolProgramResultStore,
 };
+use codegg::tool::Tool;
 use codegg_core::tool_program::{ProgramResult, ProgramStatus};
 
 fn make_completed_result() -> ProgramResult {
@@ -323,4 +326,95 @@ async fn h1_selected_backend_tampering_changes_digest() {
         Err(other) => Err(format!("unexpected error: {other:?}")),
     };
     tamper_check.expect("tampered selected_backend must fail digest verification");
+}
+
+/// Present-keys-only JSON-Schema check mirroring the broker validator
+/// (`src/tool/broker.rs::validate_json_schema`): object/array/scalar
+/// types, `properties`, `required`, and `enum`. Absent keys are never
+/// failures, which is why omitting a missing `artifact_handle` validates
+/// while emitting `null` does not.
+fn check_schema_against_value(schema: &serde_json::Value, value: &serde_json::Value, path: &str) {
+    if let Some(expected) = schema.get("type").and_then(|kind| kind.as_str()) {
+        let valid = match expected {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "null" => value.is_null(),
+            _ => true,
+        };
+        assert!(valid, "{path}: expected JSON type {expected}, got {value}");
+    }
+    if let Some(allowed) = schema.get("enum").and_then(|values| values.as_array()) {
+        assert!(
+            allowed.iter().any(|candidate| candidate == value),
+            "{path}: value {value} is not in the allowed enum"
+        );
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(|keys| keys.as_array()) {
+            for key in required.iter().filter_map(|key| key.as_str()) {
+                assert!(
+                    object.contains_key(key),
+                    "{path}: missing required property {key}"
+                );
+            }
+        }
+        if let Some(properties) = schema.get("properties").and_then(|props| props.as_object()) {
+            for (key, child_schema) in properties {
+                if let Some(child) = object.get(key) {
+                    check_schema_against_value(child_schema, child, &format!("{path}.{key}"));
+                }
+            }
+        }
+    }
+    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
+        for (index, item) in values.iter().enumerate() {
+            check_schema_against_value(items, item, &format!("{path}[{index}]"));
+        }
+    }
+}
+
+/// F1: a small-output program (no artifact handle persisted) must project
+/// to JSON that validates against the `tool_program` output schema.
+#[test]
+fn small_output_result_projection_passes_output_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ToolProgramResultStore::new(temp.path());
+    // Small output: no artifact persisted, so no handle and no digest —
+    // only the absence reason, exactly as the executor records it.
+    let small_output_call = ProgramArtifactHandle {
+        tool_name: Some("read".into()),
+        preview: "small output".into(),
+        success: true,
+        artifact_id: None,
+        digest: None,
+        absence_reason: Some("nested call output remained below artifact threshold".into()),
+    };
+    let record = store
+        .persist(
+            "tp-m013-f1-small-output",
+            "attempt-1",
+            "native_only",
+            make_completed_result(),
+            vec![small_output_call],
+            vec![],
+            None,
+        )
+        .expect("persist");
+    let projected = result_to_json(&record);
+    let artifacts = projected["program_artifacts"]
+        .as_array()
+        .expect("program_artifacts must be an array");
+    assert_eq!(artifacts.len(), 1);
+    assert!(
+        artifacts[0].get("artifact_handle").is_none(),
+        "missing handle must be omitted, not null"
+    );
+    let tool = ToolProgramTool::new();
+    let contract = tool.contract("tool_program", tool.parameters());
+    let schema = contract.output_schema.expect("tool_program output schema");
+    check_schema_against_value(&schema, &projected, "$");
 }

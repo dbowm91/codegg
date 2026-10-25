@@ -238,6 +238,32 @@ mod tests {
     }
 
     #[test]
+    fn typo_ranks_exact_near_miss_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let registry = fixture_registry(
+            &dir,
+            &[
+                ("testing-ci", "Run the test suite"),
+                ("tool-execution", "Run tools"),
+                ("agent", "Delegate work"),
+                ("architecture-review", "Review architecture"),
+            ],
+        );
+        let err = skill_not_found("tseting-ci", None, &registry);
+        let msg = err.to_string();
+        let testing_pos = msg.find("testing-ci").expect("near miss must be suggested");
+        // The near miss must outrank every other candidate in the message.
+        for other in ["tool-execution", "agent", "architecture-review"] {
+            if let Some(pos) = msg.find(other) {
+                assert!(
+                    testing_pos < pos,
+                    "testing-ci must rank before {other}: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn skill_description_and_params_document_suggestions() {
         let tool = SkillTool::default();
         assert!(!tool.description().contains("no skill-listing operation"));

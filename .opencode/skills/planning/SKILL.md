@@ -20,6 +20,21 @@ CodeGG separates **canonical long-term direction** (stable) from **interim plann
 roadmaps are active, blocked, or closed. Read it before assuming any
 roadmap state; this skill deliberately does not restate milestone status.
 
+## Tool Decision Table
+
+Canonical map: `goal` = session intent, `work_plan` = actionable slice +
+revision, `work_order` = future-session queue, `todowrite` = in-turn steps,
+`task` = live subagent runs. Each tool description carries a one-line
+router pointing back to this table; this table is the single canonical copy.
+
+| Tool | Use when | Not for |
+|---|---|---|
+| `goal_get` / `goal_update_progress` / `goal_request_completion` | Session intent: read or advance the active goal | In-turn steps (use `todowrite`); no active goal means use `todowrite` |
+| `work_plan_get` / `work_plan_update_item` | Actionable slice + revision: read or update the active plan | Future sessions (use `work_order`); no active plan means use `todowrite` |
+| `work_order` | Future-session queue: enqueue project work for later sessions | Live subagent runs (use `task` spawn) |
+| `todowrite` / `todoread` | In-turn steps: track what this turn is doing | Session intent, plan revisions, or future queues |
+| `task` spawn / status / wait / get | Live subagent runs: delegate and retrieve a child result | Future work (use `work_order`) or plan bookkeeping |
+
 ## When to Load
 
 Load this skill when working on:
@@ -549,4 +564,11 @@ Added the missing `## See Also` section, naming `plans/003-planning-process.md`
 and handoff-review rules come from — alongside the registry and the closure
 template. The `plans/` tree has no `architecture/` counterpart, so this skill's
 authoritative documents are the planning documents themselves.
+
+Third pass (2026-10-25): added the `## Tool Decision Table` above as the
+single canonical copy of the goal/work_plan/work_order/todowrite/task map.
+Each of `todowrite`, `goal_*`, `work_plan_*`, and `work_order` now carries a
+one-line router in its tool description pointing back to this table; the
+repeated Map paragraph was removed from those descriptions. Re-verified the
+registry sections and the Related Files table paths still exist.
 

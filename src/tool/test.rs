@@ -136,7 +136,7 @@ impl Tool for TestTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks."
+                    "description": "Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."
                 },
                 "workdir": {
                     "type": "string",
@@ -662,7 +662,9 @@ fn parse_test_request_in(
         "previous_failures" => TestScope::PreviousFailures,
         "custom" => {
             let cmd = input["command"].as_str().ok_or_else(|| {
-                ToolError::Execution("custom scope requires 'command' parameter".to_string())
+                ToolError::Execution(
+                    "custom scope requires 'command' parameter. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}".to_string(),
+                )
             })?;
             if validate_custom_command(cmd).is_err() {
                 return Err(ToolError::Execution(format!(
@@ -920,9 +922,14 @@ mod tests {
         let result = tool.execute(input).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
+        let msg = format!("{err}");
         assert!(
-            format!("{err}").contains("custom scope requires 'command'"),
-            "unexpected error: {err}"
+            msg.contains("custom scope requires 'command'"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("cargo test -p mycrate"),
+            "missing-command error must carry the documented example: {msg}"
         );
     }
 
@@ -1065,6 +1072,13 @@ mod tests {
         assert_eq!(
             req.scope,
             TestScope::CustomCommand("cargo test --lib".to_string())
+        );
+        // The documented missing-command example must itself parse.
+        let example = json!({"scope": "custom", "command": "cargo test -p mycrate"});
+        let req = parse_test_request(&example).unwrap();
+        assert_eq!(
+            req.scope,
+            TestScope::CustomCommand("cargo test -p mycrate".to_string())
         );
     }
 

@@ -104,6 +104,14 @@ static SECRET_PIPE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+// Scoped recursive force-delete: `rm` with both recursive and force flags.
+// Critical root/home patterns are handled by CRITICAL_RM_RE above; anything
+// else with both flags (e.g. `rm -rf /tmp/dir`) is High, not Medium.
+static RM_RECURSIVE_FLAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\brm\b.*(?:-[a-zA-Z]*[rR]|--recursive)").unwrap());
+static RM_FORCE_FLAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\brm\b.*(?:-[a-zA-Z]*[fF]|--force)").unwrap());
+
 // Medium risk patterns
 static RM_GENERAL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\brm\b").unwrap());
 
@@ -425,6 +433,25 @@ pub fn classify_bash_command(command: &str) -> CommandClassification {
                     Severity::High,
                     Confidence::High,
                     "download to system directory",
+                ));
+            }
+        }
+
+        // Scoped recursive force-delete (F6): `rm` with both recursive and
+        // force flags on a non-root target (e.g. `rm -rf /tmp/dir`). Root and
+        // home targets are already Critical above; anything else with both
+        // flags is High, never Medium.
+        if RM_RECURSIVE_FLAG_RE.is_match(command) && RM_FORCE_FLAG_RE.is_match(command) {
+            risk = risk.max(CommandRisk::High);
+            categories.push(SecurityCategory::DestructiveFilesystem);
+            reasons.push("recursive force delete of scoped path".into());
+            if finding.is_none() {
+                finding = Some(finding_for_command(
+                    command,
+                    SecurityCategory::DestructiveFilesystem,
+                    Severity::High,
+                    Confidence::High,
+                    "recursive force delete of scoped path",
                 ));
             }
         }
@@ -788,6 +815,16 @@ mod tests {
     fn rm_medium() {
         let c = classify_bash_command("rm file.txt");
         assert_eq!(c.risk, CommandRisk::Medium);
+    }
+
+    #[test]
+    fn rm_rf_scoped_tmp_is_high() {
+        let c = classify_bash_command("rm -rf /tmp/test-probe-dir");
+        assert_eq!(c.risk, CommandRisk::High);
+        assert!(c
+            .categories
+            .contains(&SecurityCategory::DestructiveFilesystem));
+        assert!(c.finding.is_some());
     }
 
     #[test]

@@ -145,6 +145,54 @@ struct ToolCatalog {
     registry: Arc<ToolRegistry>,
 }
 
+/// Order-insensitive frozen-vs-live contract snapshot comparison (F1).
+///
+/// The frozen snapshot is canonical JSON (sorted by tool name via
+/// `canonical_contract_json`) while live resolution follows request order,
+/// so an order-sensitive `Vec` comparison reports drift when the digests
+/// agree. Sort clones by tool name before comparing; the digest
+/// triple-check at admission still guards content.
+pub fn contract_snapshots_match(
+    frozen: &[crate::tool::tool_program_context::ContractEntry],
+    current: &[crate::tool::tool_program_context::ContractEntry],
+) -> bool {
+    let mut frozen_sorted = frozen.to_vec();
+    frozen_sorted.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+    let mut current_sorted = current.to_vec();
+    current_sorted.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+    frozen_sorted == current_sorted
+}
+
+/// First position where two snapshots diverge (both sorted by tool name),
+/// for drift diagnostics. Returns `None` when the snapshots match.
+pub fn first_contract_divergence(
+    frozen: &[crate::tool::tool_program_context::ContractEntry],
+    current: &[crate::tool::tool_program_context::ContractEntry],
+) -> Option<String> {
+    let mut frozen_sorted = frozen.to_vec();
+    frozen_sorted.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+    let mut current_sorted = current.to_vec();
+    current_sorted.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+    if frozen_sorted.len() != current_sorted.len() {
+        return Some(format!(
+            "length mismatch: frozen={} current={}",
+            frozen_sorted.len(),
+            current_sorted.len()
+        ));
+    }
+    frozen_sorted
+        .iter()
+        .zip(current_sorted.iter())
+        .enumerate()
+        .find(|(_, (frozen_entry, current_entry))| frozen_entry != current_entry)
+        .map(|(index, (frozen_entry, current_entry))| {
+            format!(
+                "index {index}: frozen={frozen_entry:?} \
+                 current={current_entry:?}"
+            )
+        })
+}
+
 impl ToolProgramExecutor {
     pub fn new(broker: Arc<ToolBroker>, registry: Arc<ToolRegistry>) -> Self {
         Self {
@@ -1788,15 +1836,39 @@ impl JobExecutor for ToolProgramExecutor {
             crate::tool::tool_program_context::canonical_contract_digest(&frozen_contracts);
         let current_digest =
             crate::tool::tool_program_context::canonical_contract_digest(&current_contracts);
-        if frozen_contracts != current_contracts
+        // F1: the frozen snapshot is canonical (sorted by tool name) while
+        // live resolution follows request order, so compare sorted clones
+        // rather than the raw `Vec`s. The digest triple-check still guards
+        // content; the sorted entry check guards membership.
+        let snapshots_match = contract_snapshots_match(&frozen_contracts, &current_contracts);
+        if !snapshots_match
             || frozen_digest.as_deref() != Ok(grant.contract_digest.as_str())
             || current_digest.as_deref() != Ok(grant.contract_digest.as_str())
         {
+            let frozen_order: Vec<&str> = frozen_contracts
+                .iter()
+                .map(|entry| entry.tool_name.as_str())
+                .collect();
+            let current_order: Vec<&str> = current_contracts
+                .iter()
+                .map(|entry| entry.tool_name.as_str())
+                .collect();
+            let first_divergent = first_contract_divergence(&frozen_contracts, &current_contracts)
+                .unwrap_or_else(|| "none".to_string());
             return ExecutorCompletion {
                 status: ExecutorStatus::Failed,
                 summary: format!(
-                    "runtime contract snapshot drift detected (grant={}, frozen={:?}, current={:?})",
-                    grant.contract_digest, frozen_digest, current_digest
+                    "runtime contract snapshot drift detected \
+                     (grant={}, frozen={:?}, current={:?}, \
+                     allowed_tools={:?}, frozen_order={:?}, \
+                     current_order={:?}, \
+                     first_divergent={first_divergent})",
+                    grant.contract_digest,
+                    frozen_digest,
+                    current_digest,
+                    allowed_tools,
+                    frozen_order,
+                    current_order,
                 ),
                 run_id: None,
                 metrics: ExecutorMetrics {

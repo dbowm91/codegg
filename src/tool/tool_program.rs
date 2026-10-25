@@ -61,6 +61,10 @@ pub struct ProgramCallArtifact {
     pub success: bool,
     /// Artifact handle for the full output content (ctx:// URI).
     /// The caller can use `context_read` to expand this.
+    /// Small outputs carry no handle; the key is omitted (not `null`) so
+    /// the strict-string output schema still validates — the broker
+    /// validator only checks present keys.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_handle: Option<String>,
     /// Truncated display preview (first ~200 chars).
     pub preview: String,
