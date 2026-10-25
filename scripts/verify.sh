@@ -82,6 +82,18 @@ run_guards() {
     echo "==> python3 scripts/check_desktop_gate_wiring.py"
     (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py)
 
+    # The renderer's panel layer renders the projection it is given: it calls
+    # no bridge, holds no Tauri capability, reaches no filesystem or process,
+    # and keeps no durable frontend-owned store. A panel that needs daemon
+    # data names the existing variant or stops, so the invariant is enforced
+    # rather than promised. A guard which is not run automatically cannot
+    # protect anything, so this one runs here with its self-test.
+    echo "==> python3 scripts/check_desktop_panel_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_panel_authority.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_panel_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_panel_authority.py)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 

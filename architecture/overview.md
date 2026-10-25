@@ -297,7 +297,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `4aa07fa72` together with the M005 writer-containment line's branch tip `367e28889`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `6e8a6bb60` together with the M005 writer-containment line's branch tip `369839eb8`. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -468,11 +468,27 @@ identity newtypes **19**, built-in slash commands **169**, built-in agents
 **10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
 `mod.rs`), database tables **95 statements / 91 tables**, storage layout
 version **88**, Git operation variants **54**, Git risk classes **11**, and
-workspace member crates **11** (+ root). The *Guard scripts (all)* row is
-**92** and the *CI guard scripts* row is **55**, both carried unchanged from
-`main`, which added the writer-fence, contained-worktree-grant,
-checkout-mediation, daemon-cwd, Git-forbidden-pattern and
-Git-consistency-consumer guards.
+workspace member crates **11** (+ root). The *Guard scripts (all)* row was
+**92** and the *CI guard scripts* row **55** on this line's own side of that
+merge, both carried unchanged from the `main` it was reconciled with, which had
+added the writer-fence, contained-worktree-grant, checkout-mediation,
+daemon-cwd, Git-forbidden-pattern and Git-consistency-consumer guards.
+
+One more reconciliation, on **2026-10-24**, merged this line's tip with the
+`main` that carried the M008 corrective and the M007 planning line. Neither
+side's numbers were correct for the merged tree, so every moved row was
+**re-measured in the merged tree** with
+`python3 scripts/measure_overview_counts.py` and **not** incremented from
+either parent. *Integration test files* is **340** — `main`'s **339** plus this
+line's `tests/frontend_parity/tui_reconstruction.inc`. *Guard scripts (all)*
+is **93** (`ls scripts/check_*` — `main`'s `scripts/check_scratch_reclaim_invariants.py`
+is in the merged tree and this line adds no guard), *CI guard scripts* is
+**56** (the distinct `scripts/check_*` names in `.github/workflows/ci.yml`),
+and the quick-only difference is unchanged at **14**. The `CoreRequest` (268),
+`CoreResponse` (176) and authorized-operations (262) rows keep this line's
+values, which the merged tree confirms. Every other row was **confirmed
+unchanged** by measurement. `scripts/check_test_target_references.py` checks the
+recorded integration-test-file row against the tree, so that row cannot drift.
 
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
@@ -578,11 +594,8 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 341 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 94 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 57 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
-| Integration test files | 340 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 94 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 57 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 95 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 58 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -622,6 +635,12 @@ sandbox C005 closure record's last open finding. *Integration test files* is
 **341**, re-measured on the tree with `python3 scripts/measure_overview_counts.py`
 rather than incremented. Every other row was confirmed unchanged by
 measurement.
+
+### Count reconciliation — the eighth reconciliation with `main` (2026-10-24)
+
+`origin/main` advanced to `6e8a6bb60`, carrying PRs #185 and #191 — the desktop chat region and side panel (M007-B) and the panel layer's authority guard. Nothing conflicted textually, but the auto-merge produced **two** copies of the three count rows, which is the shape a count table takes when both sides moved the same rows without the same values; the duplicate was collapsed to one row set carrying the merged tree's measurement. *Guard scripts (all)* is **95** (`main` added `scripts/check_desktop_panel_authority.py`) and *CI guard scripts* is **58** (the workflow gained the same guard and its self-test). *Integration test files* is **341**, unchanged — `main`'s M007-B work added no integration test file. The *quick* guard count moved **71 → 72**, the *quick runs 14 guards CI does not* difference is unchanged at **14**, `AGENTS.md`'s published counts moved to **72 quick / 58 CI**, and the quick lane's `==>` lines moved from 117 to **119** (`run_guards` **115**, `run_quick` **4**). Every other row was confirmed unchanged by measurement: architecture docs **92**, distinct production tool names **75**, tool source files **83**, LSP server definitions **39**, `codegg-core` modules **54**, `AppEvent` variants **61**, `CoreRequest` variants **268** (242 struct + 26 unit), `CoreResponse` variants **176** (175 struct + 1 unit), `CoreEvent` variants **92**, `ProjectionEvent` variants **47**, authorized operations **262**, identity newtypes **19**, built-in slash commands **169**, built-in agents **10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements / 91 tables**, storage layout version **88**, Git operation variants **54**, Git risk classes **11**, and workspace member crates **11** (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`**.
+
+The comment corpus did **not** move: the merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio, and the re-bank moved no per-file ceiling, because `main`'s new commits added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the seventh reconciliation already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
 
 ### Count reconciliation — the seventh reconciliation with `main` (2026-10-24)
 
@@ -681,6 +700,24 @@ quick-only difference is unchanged at **14** guards CI does not run: the new
 guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
 entry. The *quick* guard count is **71**. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — M007-B desktop panel authority guard (2026-10-24)
+
+Two code-count rows moved when the desktop chat-region milestone added the
+guard that keeps the renderer's panel layer free of authority. *Guard scripts
+(all)* is **95** (`ls scripts/check_*` — the new
+`scripts/check_desktop_panel_authority.py`, which holds the desktop's 23
+bridge targets as a **recorded** set and refuses a panel or region module
+that calls `invoke`, imports the bridge, holds a Tauri capability, reaches a
+filesystem or a process, or keeps a durable frontend-owned store).
+*CI guard scripts* is **58** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained the same guard and its self-test). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
+entry. The *quick* guard count is **72**. *Integration test files* is
+unchanged at **340** — the guard adds a script, not a test file. Every other
+code-count row was re-checked against its own listed `Source` and is
+unchanged.
 
 
 ## Feature gates
@@ -1073,7 +1110,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (80 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (95 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
