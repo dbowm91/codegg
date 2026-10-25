@@ -201,6 +201,12 @@ afterEach(() => {
 });
 
 describe('the desktop input model', () => {
+  // The timeout is explicit because this test is the only one that walks every
+  // declared action and clicks every affordance it finds. Each click is an
+  // `await act(...)` flush, so the cost is proportional to the catalog, not to
+  // one action — and vitest's 5s default is too tight for it on a loaded
+  // machine, where it timed out at 5140ms. A per-test budget keeps the
+  // default tight for every other test instead of loosening it globally.
   it('every_declared_action_is_reachable_by_chord_and_by_mouse', async () => {
     await renderRouted();
     // A draft, so the composer's own affordance is live.
@@ -241,7 +247,7 @@ describe('the desktop input model', () => {
         }
       }
     }
-  });
+  }, 20_000);
 
   it('every_chord_reaches_exactly_one_action', () => {
     const map = buildEffectiveMap(ALL_ACTION_DECLARATIONS, {});
