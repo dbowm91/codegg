@@ -1,0 +1,142 @@
+// M007-017: the desktop's half of a declared frontend action.
+//
+// The daemon owns the catalog: which commands exist, their spellings, their
+// descriptions, their kinds, and — since M007-017 — which declared
+// `FrontendAction` a frontend-effect form resolves to. The catalog publishes
+// that action's stable wire name on the form, so the renderer dispatches by
+// the daemon's own answer and never guesses an action from a spelling.
+//
+// This module owns the other half: given an action's wire name, what the
+// desktop does. It is keyed by the wire name — never by a command spelling
+// and never by a command id — so the renderer holds no second catalog, and a
+// command the daemon renames or re-ids keeps working.
+//
+// Every action here changes only what the frontend is showing. None of them
+// reads or writes durable state: they report what the daemon already
+// published to the renderer.
+//
+// The wire names are the daemon's (`FrontendAction::as_str()` in
+// `crates/codegg-core/src/frontend_action.rs`). The desktop answers to the
+// names the daemon declares and does not extend the set.
+
+import type { SessionPresentationView, SkillCatalogueView } from '../bridge-types';
+
+/** What the desktop shows for one declared frontend action. */
+export interface FrontendActionAnswer {
+  /** Whether the desktop performed the action. */
+  performed: boolean;
+  /** The message the renderer shows when the desktop performed the action. */
+  message: string;
+  /**
+   * Why the desktop does not carry the action, when it knows the action and
+   * cannot perform it. It is null for an action the desktop performed, and
+   * for an action the desktop does not know at all.
+   */
+  reason: string | null;
+}
+
+/** What the desktop already holds, and can report without asking again. */
+export interface FrontendActionContext {
+  /** The route-selected session's projection, or null when none is attached. */
+  presentation: SessionPresentationView | null;
+  /** The skill catalogue the daemon published for the selected project. */
+  catalogue: SkillCatalogueView | null;
+  /** The catalogue read's failure, when the read failed. */
+  catalogueError: string | null;
+}
+
+/**
+ * The declared frontend actions the desktop does not carry, and why.
+ *
+ * The reasons are the desktop's own, and they say what the desktop is
+ * missing — never what the command means. A reason names the gap in the
+ * data the daemon publishes to the renderer, so the message does not read as
+ * a temporary refusal.
+ */
+export const UNCARRIED_ACTIONS: Readonly<Record<string, string | undefined>> = {
+  show_tool_contracts:
+    'the session projection publishes the tools a turn used, not the registry contracts',
+  show_shell_runs: 'the session projection publishes no human-shell runs',
+  focus_terminal: 'the desktop has no terminal surface to focus',
+};
+
+/**
+ * The desktop's report of the skills the daemon discovered for the project.
+ *
+ * The catalogue is the daemon's own discovery, published to the renderer
+ * for the selected project. It is the desktop's counterpart to the TUI's
+ * held asset snapshot: a read of what the project has, not a second copy of
+ * a store the renderer keeps.
+ */
+function skillsReport(context: FrontendActionContext): string {
+  const catalogue = context.catalogue;
+  if (context.catalogueError) return `skills: unavailable (${context.catalogueError})`;
+  if (!catalogue) return 'skills: no catalogue read for this project yet';
+  const shown = catalogue.skills.length;
+  const scope = catalogue.truncated ? `${shown} of ${catalogue.total}` : `${shown}`;
+  const bySource = new Map<string, number>();
+  for (const skill of catalogue.skills) {
+    bySource.set(skill.source, (bySource.get(skill.source) ?? 0) + 1);
+  }
+  const sources = [...bySource.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([source, count]) => `${source} ${count}`);
+  const tail = sources.length > 0 ? ` (${sources.join(', ')})` : '';
+  return `skills: ${scope} discovered${tail}`;
+}
+
+/**
+ * The desktop's report of the session's status.
+ *
+ * The token counters are the current turn's — the projection carries the
+ * turn's counters, not a session-cumulative pair — and the model is absent:
+ * the projection publishes no model, so this report does not name one.
+ */
+function statusReport(context: FrontendActionContext): string {
+  const presentation = context.presentation;
+  if (!presentation) return 'status: no session attached';
+  const input = presentation.turn?.inputTokens ?? 0;
+  const output = presentation.turn?.outputTokens ?? 0;
+  return `status: ${presentation.state} | tokens: ${input}↑ ${output}↓`;
+}
+
+/** The desktop's report of the managed worktrees the projection carries. */
+function worktreesReport(context: FrontendActionContext): string {
+  const worktrees = context.presentation?.worktrees ?? [];
+  if (worktrees.length === 0) return 'worktrees: none';
+  const limit = 8;
+  const shown = worktrees.slice(0, limit).map((worktree) => {
+    const name = worktree.branch ?? worktree.worktreeId;
+    return worktree.dirty ? `${name}: ${worktree.state}, dirty` : `${name}: ${worktree.state}`;
+  });
+  const rest = worktrees.length - shown.length;
+  const tail = rest > 0 ? `, +${rest} more` : '';
+  return `worktrees: ${worktrees.length} managed (${shown.join(', ')}${tail})`;
+}
+
+/**
+ * Answer one declared frontend action.
+ *
+ * The action's wire name is the daemon's, so an action the desktop does not
+ * know is reported honestly rather than guessed at, and an action the
+ * desktop knows it cannot perform says why.
+ */
+export function answerFrontendAction(
+  action: string,
+  context: FrontendActionContext,
+): FrontendActionAnswer {
+  switch (action) {
+    case 'show_skills':
+      return { performed: true, message: skillsReport(context), reason: null };
+    case 'show_status':
+      return { performed: true, message: statusReport(context), reason: null };
+    case 'show_worktrees':
+      return { performed: true, message: worktreesReport(context), reason: null };
+    default:
+      return {
+        performed: false,
+        message: '',
+        reason: UNCARRIED_ACTIONS[action] ?? null,
+      };
+  }
+}

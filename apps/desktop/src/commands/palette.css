@@ -27,11 +27,28 @@
   margin: 10px 0 0;
   padding: 0;
 }
+.cg-palette-list > li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px solid var(--cg-border, #2c3038);
+}
+/* The row is a button, so every catalog command is reachable by mouse as
+   well as by keyboard. */
 .cg-palette-row {
   display: flex;
   gap: 10px;
+  flex: 1 1 auto;
   padding: 4px 2px;
-  border-bottom: 1px solid var(--cg-border, #2c3038);
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cg-palette-row:disabled {
+  cursor: default;
 }
 .cg-palette-name {
   flex: 0 0 auto;

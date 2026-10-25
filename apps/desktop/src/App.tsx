@@ -53,6 +53,9 @@ import {
 // M007-D: the command palette. The chord that opens it is declared in the
 // keymap (M007-C), not in a second table of this milestone's own.
 import { CommandPalette } from './commands';
+// M007-017: the desktop's half of a declared frontend action. The daemon
+// publishes the action's wire name; the desktop answers to it.
+import { answerFrontendAction } from './commands/frontendActions';
 import type {
   ConnectionSnapshot,
   GitBranchListView,
@@ -1279,9 +1282,33 @@ export function App() {
           open={paletteOpen}
           routeGeneration={currentToken?.routeGeneration}
           onClose={() => setPaletteOpen(false)}
-          onFrontendEffect={(command) =>
-            setPaletteNotice(`${command.name} is a frontend effect; the desktop does not implement it yet`)
-          }
+          onFrontendEffect={(command, form) => {
+            // M007-017: a frontend effect is dispatched by the action the
+            // daemon's catalog published on the form, never by the command's
+            // spelling. An action the desktop does not know is reported
+            // honestly rather than guessed at.
+            const action = form.action;
+            if (action === null) {
+              setPaletteNotice(
+                `${command.name} is a frontend effect; the desktop does not implement it yet`,
+              );
+              return;
+            }
+            const answer = answerFrontendAction(action, {
+              presentation: projection,
+              catalogue: skills,
+              catalogueError: skillsError,
+            });
+            if (answer.performed) {
+              setPaletteNotice(answer.message);
+              return;
+            }
+            setPaletteNotice(
+              answer.reason === null
+                ? `${command.name} is a frontend effect; the desktop does not implement it yet`
+                : `${command.name} is a frontend effect; the desktop does not implement it yet — ${answer.reason}`,
+            );
+          }}
           onDaemonResult={(result) =>
             setPaletteNotice(result.status === 'completed' ? result.summary : result.lines.join('\n'))
           }

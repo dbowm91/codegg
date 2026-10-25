@@ -647,6 +647,7 @@ impl HostState {
                             argument_hint: form.argument_hint,
                             argument_required: form.argument_required,
                             daemon_served: form.daemon_served,
+                            action: form.action,
                         })
                         .collect(),
                 })

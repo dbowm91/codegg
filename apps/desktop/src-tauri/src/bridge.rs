@@ -685,6 +685,14 @@ pub struct CommandFormView {
     /// The renderer reads this to show a command the daemon does not serve
     /// as unavailable, instead of dispatching into a refusal.
     pub daemon_served: bool,
+    /// The declared frontend action's stable wire name, or `None` for a
+    /// daemon-effect form.
+    ///
+    /// M007-017: the daemon publishes the action's name on the form, so the
+    /// renderer dispatches by the daemon's own answer and never guesses an
+    /// action from a command spelling. The host forwards it; it does not
+    /// derive it, because the daemon owns the action set.
+    pub action: Option<String>,
 }
 
 /// One command in the daemon's catalog.

@@ -28,7 +28,7 @@ const catalog = (): CommandCatalogView => ({
       kind: 'daemon_effect',
       capability: 'command.execute',
       forms: [
-        { form: '', kind: 'daemon_effect', argumentHint: '', argumentRequired: false, daemonServed: true },
+        { form: '', kind: 'daemon_effect', argumentHint: '', argumentRequired: false, daemonServed: true, action: null },
       ],
     },
     {
@@ -40,8 +40,22 @@ const catalog = (): CommandCatalogView => ({
       kind: 'frontend_effect',
       capability: null,
       forms: [
-        { form: '', kind: 'frontend_effect', argumentHint: '', argumentRequired: false, daemonServed: true },
-        { form: 'show', kind: 'daemon_effect', argumentHint: '<name>', argumentRequired: true, daemonServed: false },
+        {
+          form: '',
+          kind: 'frontend_effect',
+          argumentHint: '',
+          argumentRequired: false,
+          daemonServed: true,
+          action: 'open_agents_dialog',
+        },
+        {
+          form: 'show',
+          kind: 'daemon_effect',
+          argumentHint: '<name>',
+          argumentRequired: true,
+          daemonServed: false,
+          action: null,
+        },
       ],
     },
     {
@@ -59,6 +73,7 @@ const catalog = (): CommandCatalogView => ({
           argumentHint: '',
           argumentRequired: false,
           daemonServed: false,
+          action: null,
         },
       ],
     },
@@ -141,6 +156,57 @@ describe('the desktop command palette', () => {
     expect(onFrontendEffect.mock.calls[0][0].commandId).toBe('fixture-agents');
     expect(bridge.commandExecute).not.toHaveBeenCalled();
     expect(onDaemonResult).not.toHaveBeenCalled();
+  });
+
+  it('hands the daemon the action the catalog published on the form', async () => {
+    bridge.commandCatalog.mockResolvedValue(catalog());
+    const onFrontendEffect = vi.fn();
+    render(
+      <CommandPalette
+        open
+        routeGeneration={3}
+        onClose={vi.fn()}
+        onFrontendEffect={onFrontendEffect}
+        onDaemonResult={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
+    fireEvent.change(screen.getByPlaceholderText('Type a command'), {
+      target: { value: '/fixture-agents' },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText('Type a command'), { key: 'Enter' });
+    await waitFor(() => expect(onFrontendEffect).toHaveBeenCalledTimes(1));
+    // M007-017: the renderer dispatches by the daemon's own answer, so the
+    // form's published action travels with the command.
+    expect(onFrontendEffect.mock.calls[0][1].action).toBe('open_agents_dialog');
+  });
+
+  it('runs a command from a mouse click on its row', async () => {
+    bridge.commandCatalog.mockResolvedValue(catalog());
+    bridge.commandExecute.mockResolvedValue({
+      runId: 'run-1',
+      commandId: 'fixture-reload',
+      status: 'completed',
+      summary: 'refreshed',
+      lines: [],
+      report: null,
+      startedAtMs: 1,
+      completedAtMs: 2,
+    });
+    const onDaemonResult = vi.fn();
+    render(
+      <CommandPalette
+        open
+        routeGeneration={3}
+        onClose={vi.fn()}
+        onFrontendEffect={vi.fn()}
+        onDaemonResult={onDaemonResult}
+      />,
+    );
+    await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
+    fireEvent.click(screen.getByRole('button', { name: /fixture-reload/ }));
+    await waitFor(() => expect(bridge.commandExecute).toHaveBeenCalledTimes(1));
+    expect(bridge.commandExecute).toHaveBeenCalledWith('fixture-reload', '', '', 7, 3);
   });
 
   it('sends a daemon effect to the daemon with the catalog version it resolved against', async () => {
