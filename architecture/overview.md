@@ -594,8 +594,8 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 340 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 94 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 57 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 95 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 58 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -642,6 +642,24 @@ quick-only difference is unchanged at **14** guards CI does not run: the new
 guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
 entry. The *quick* guard count is **71**. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — M007-B desktop panel authority guard (2026-10-24)
+
+Two code-count rows moved when the desktop chat-region milestone added the
+guard that keeps the renderer's panel layer free of authority. *Guard scripts
+(all)* is **95** (`ls scripts/check_*` — the new
+`scripts/check_desktop_panel_authority.py`, which holds the desktop's 23
+bridge targets as a **recorded** set and refuses a panel or region module
+that calls `invoke`, imports the bridge, holds a Tauri capability, reaches a
+filesystem or a process, or keeps a durable frontend-owned store).
+*CI guard scripts* is **58** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained the same guard and its self-test). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
+entry. The *quick* guard count is **72**. *Integration test files* is
+unchanged at **340** — the guard adds a script, not a test file. Every other
+code-count row was re-checked against its own listed `Source` and is
+unchanged.
 
 
 ## Feature gates
@@ -1034,7 +1052,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (80 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (95 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 

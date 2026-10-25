@@ -1,14 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import type { ArtifactExcerptView, ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
-import { ActivityPanel } from './panels/ActivityPanel';
 import { GitPanel } from './panels/GitPanel';
 import { SkillsPanel } from './panels/SkillsPanel';
-import { SubagentPanel } from './panels/SubagentPanel';
-import { TaskPanel } from './panels/TaskPanel';
-import { ToolDetail } from './panels/ToolDetail';
-import { TranscriptPanel } from './panels/TranscriptPanel';
-import { TurnSummary } from './panels/TurnSummary';
+import {
+  dock,
+  initialPanelHostState,
+  resize,
+  resolveColumnWidth,
+  setPanelScroll,
+  toggleSlot,
+} from './panels/host';
+import type { PanelHostState, PanelSize } from './panels/host';
+import type { PanelId, PanelPlacement } from './panels/registry';
+import { ChatRegion, ComposerRegion, PanelControls, SidePanelFrame, StatusRow } from './regions';
 import type {
   ConnectionSnapshot,
   GitBranchListView,
@@ -76,6 +82,17 @@ export function App() {
   const [skills, setSkills] = useState<SkillCatalogueView | null>(null);
   const [skillsBusy, setSkillsBusy] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
+
+  // The side-panel host: one slot per edge, and the panel state that
+  // travels with the panel id. The placement is renderer-local — there is
+  // no durable panel-layout store, because a persisted layout would be a
+  // frontend-owned durable store this milestone has no storage or
+  // configuration change for.
+  const [host, setHost] = useState<PanelHostState>(initialPanelHostState);
+  // The frame the panels live in. Its size is what the resize seam clamps
+  // against, and it is measured rather than assumed.
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
 
   const currentToken: RouteTokenView | null = detail?.routeToken ?? null;
   // The route's own state, readable from the connection effect without
@@ -381,6 +398,26 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.state, connection.connectionGeneration, currentToken?.sessionId, currentToken?.routeGeneration, projection?.sessionId, projection?.turn?.turnId, projection?.turn?.status]);
 
+  // The frame's own size. The panels are sized against it rather than
+  // against the window, and a frame too narrow to host a column beside the
+  // main region's minimum collapses that column instead of squeezing the
+  // transcript out of existence (`src/tui/layout.rs:292-298`).
+  useLayoutEffect(() => {
+    const element = frameRef.current;
+    if (!element) return;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      setFrameSize((previous) =>
+        previous.width === rect.width && previous.height === rect.height
+          ? previous
+          : { width: rect.width, height: rect.height },
+      );
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+
   const selectProject = async (projectId: string) => {
     const request = ++routeRequest.current;
     const forConnection = connectionRef.current.connectionGeneration;
@@ -590,42 +627,242 @@ export function App() {
     }
   };
 
+  // The host's operations. Every one of them is renderer-local: the
+  // placement and the panel sizes live in the renderer, and nothing here
+  // reaches the daemon.
+  const dockPanel = useCallback((panelId: PanelId, placement: PanelPlacement) => {
+    setHost((previous) => dock(previous, panelId, placement));
+  }, []);
+  const resizePanel = useCallback((placement: PanelPlacement, size: PanelSize) => {
+    setHost((previous) => resize(previous, placement, size));
+  }, []);
+  const scrollPanel = useCallback((panelId: PanelId, scrollTop: number) => {
+    setHost((previous) => setPanelScroll(previous, panelId, scrollTop));
+  }, []);
+  const togglePanelSlot = useCallback((placement: PanelPlacement) => {
+    setHost((previous) => toggleSlot(previous, placement));
+  }, []);
+
+  // The frame's grid geometry. The columns are the panels' own widths and
+  // the main region takes the rest; the bottom row is the panel's share of
+  // the frame height.
+  const occupied = (placement: PanelPlacement) => {
+    const slot = host.slots[placement];
+    return slot.visible && slot.panelId !== null;
+  };
+  const clampColumn = (desired: number, otherWidth: number) =>
+    frameSize.width > 0 ? resolveColumnWidth(desired, frameSize.width, otherWidth) : desired;
+  const leftAlone = occupied('left') ? clampColumn(host.layout.leftWidth, 0) : 0;
+  const rightAlone = occupied('right') ? clampColumn(host.layout.rightWidth, 0) : 0;
+  const leftWidth = occupied('left') ? clampColumn(host.layout.leftWidth, rightAlone) : 0;
+  const rightWidth = occupied('right') ? clampColumn(host.layout.rightWidth, leftAlone) : 0;
+  const bottomRatio = occupied('bottom') ? host.layout.bottomRatio : 0;
+  const frameStyle = {
+    '--panel-left-width': `${leftWidth}px`,
+    '--panel-right-width': `${rightWidth}px`,
+    '--panel-bottom-height': `${bottomRatio * 100}%`,
+  } as CSSProperties;
+
   const reconnect = async () => { const current = ++generation.current; setBusy(true); try { const snapshot = await bridge.connect(); if (current === generation.current) { connectionRef.current = snapshot; setConnection(snapshot); if (snapshot.state === 'connected') await refreshProjects(current, snapshot.connectionGeneration); } } catch (error) { if (current === generation.current) { const failed = { ...initial, state: 'disconnected' as const, error: String(error) }; connectionRef.current = failed; setConnection(failed); } } finally { if (current === generation.current) setBusy(false); } };
-  return <main>
-    <header><div><p className="eyebrow">LOCAL DESKTOP</p><h1>CodeGG</h1></div><span className={`status ${connection.state}`} data-testid="connection-status">{connection.state}</span></header>
-    <section className="panel"><h2>Daemon</h2><dl><dt>Identity</dt><dd data-testid="daemon-identity">{connection.daemonId ?? '—'}</dd><dt>Generation</dt><dd data-testid="connection-generation">{connection.connectionGeneration}</dd><dt>Subscription</dt><dd data-testid="subscription-id">{subscriptionId ?? '—'}</dd><dt>Protocol</dt><dd>{connection.protocolVersion ?? '—'}</dd><dt>Uptime</dt><dd>{connection.uptimeSeconds === null ? '—' : `${connection.uptimeSeconds}s`}</dd><dt>Active sessions</dt><dd>{connection.activeSessions ?? '—'}</dd></dl>
-      {connection.error && <p role="alert">{connection.error}</p>}<button data-testid="reconnect-button" disabled={busy} onClick={() => void reconnect()}>{busy ? 'Connecting…' : 'Reconnect'}</button>
-    </section>
-    <section className="panel"><h2>Projects <small>{displayedProjects.length} / 50</small></h2>{displayedProjects.length ? <ul data-testid="project-list">{displayedProjects.map((project) => <li key={project.projectId} data-testid="project-item" data-project-id={project.projectId}><button data-testid={`project-select-${project.projectId}`} onClick={() => void selectProject(project.projectId)}>{project.displayName}</button><small>{project.lifecycle}</small></li>)}</ul> : <p className="muted">No projects registered yet.</p>}</section>
-    {detail && <section className="panel"><h2>Route</h2><dl><dt>Project</dt><dd data-testid="route-project">{detail.displayName}</dd><dt>Workspace</dt><dd data-testid="route-workspace">{detail.routeToken.workspaceId || '—'}</dd><dt>Session</dt><dd data-testid="route-session">{detail.routeToken.sessionId ?? '—'}</dd><dt>Route generation</dt><dd data-testid="route-generation">{detail.routeToken.routeGeneration}</dd></dl>
-      <h3>Workspaces</h3><ul data-testid="workspace-list">{detail.workspaces.map((workspace) => <li key={workspace.workspaceId}><button data-testid={`workspace-select-${workspace.workspaceId}`} onClick={() => void selectWorkspace(workspace.workspaceId)}>{workspace.displayName}</button></li>)}</ul>
-      <h3>Sessions</h3>{sessions.length ? <ul data-testid="session-list">{sessions.map((session) => <li key={session.sessionId} data-testid="session-item" data-session-id={session.sessionId}><button data-testid={`session-open-${session.sessionId}`} onClick={() => void openSession(session.sessionId)}>{session.title || session.sessionId}</button></li>)}</ul> : <p className="muted">No sessions listed yet.</p>}
-      <div><input data-testid="session-title-input" value={newTitle} maxLength={120} placeholder="New session title" onChange={(event) => setNewTitle(event.target.value)} /><button data-testid="session-create-button" disabled={routeBusy || !detail.routeToken.workspaceId} onClick={() => void createSession()}>Create session</button></div>
-      {detail.routeToken.workspaceId && <div><h3>Prompt</h3><textarea data-testid="prompt-input" value={promptDraft} placeholder="Ask the session" onChange={(event) => setPromptDraft(event.target.value)} /><label><input type="checkbox" data-testid="plan-mode-checkbox" checked={planMode} onChange={(event) => setPlanMode(event.target.checked)} /> Plan mode</label><button data-testid="prompt-submit-button" disabled={promptBusy || !promptDraft.trim()} onClick={() => void submitPrompt()}>Submit prompt</button></div>}
-    </section>}
-    {routeError && <p role="alert" data-testid="route-error">{routeError}</p>}
-    {detail && <>
-      <GitPanel status={gitFacts.status} diff={gitFacts.diff} branches={gitFacts.branches} busy={gitBusy} error={gitError} onRefresh={currentToken ? () => void refreshGit(currentToken.routeGeneration) : undefined} />
-      <SkillsPanel catalogue={skills} busy={skillsBusy} error={skillsError} onRefresh={currentToken ? () => void refreshSkills(currentToken.routeGeneration) : undefined} />
-    </>}
-    {projection && <section className="panel"><h2>Session</h2><dl><dt>Projection</dt><dd data-testid="projection-state">{projection.state}</dd><dt>Turn</dt><dd data-testid="turn-status">{projection.turn ? `${projection.turn.turnId} / ${projection.turn.status}` : 'idle'}</dd>{projection.truncatedMessages > 0 && <><dt>Omitted</dt><dd data-testid="truncated-messages">{projection.truncatedMessages} older message(s)</dd></>}<dt>Cursor</dt><dd data-testid="projection-cursor">seq {projection.cursor.eventSeq}</dd></dl>
-      {projection.state === 'resyncing' && <p data-testid="resync-banner" role="status">Resuming projection — live updates paused.</p>}
-      <h3>Messages</h3>{projection.messages.length ? <ul data-testid="message-list">{projection.messages.map((message) => <li key={message.messageId} data-testid="message-item"><strong>{message.role}</strong><p>{message.text}{message.truncated && ' …'}</p></li>)}</ul> : <p className="muted">No visible messages yet.</p>}
-      {!!projection.artifactHandles.length && <><h3>Artifacts</h3><ul data-testid="artifact-list">{projection.artifactHandles.map((artifact) => <li key={artifact.handle} data-testid="artifact-item">{artifact.handle} ({artifact.byteLength} bytes)<button data-testid={`artifact-read-${artifact.handle}`} disabled={excerptBusy === artifact.handle} onClick={() => void readArtifact(artifact.handle)}>Read excerpt</button></li>)}</ul></>}
-      {!!projection.tools.length && <><h3>Tools</h3><ul data-testid="tool-list">{projection.tools.map((tool) => <li key={tool.toolId} data-testid="tool-item">{tool.toolName} — {tool.status} — {tool.summary}{tool.hasArtifact && ' (artifact)'}</li>)}</ul></>}
-      <dl><dt>Controller</dt><dd data-testid="controller-state">{controller ? `${controller.controllerPrincipal} @ rev ${controller.revision}` : 'no exclusive controller'}</dd></dl><button data-testid="control-refresh-button" onClick={() => currentToken && void refreshControl(currentToken.routeGeneration)}>Refresh control</button>
-      {!!projection.pendingPermissions.length && <><h3>Permissions</h3><ul data-testid="permission-list">{projection.pendingPermissions.map((permission) => <li key={permission.permissionId} data-testid="permission-item">{permission.tool} — {permission.status}<button data-testid={`permission-allow-${permission.permissionId}`} disabled={responding.includes(permission.permissionId)} onClick={() => void respondPermission(permission.permissionId, 'allow')}>Allow</button><button data-testid={`permission-deny-${permission.permissionId}`} disabled={responding.includes(permission.permissionId)} onClick={() => void respondPermission(permission.permissionId, 'deny')}>Deny</button></li>)}</ul></>}
-      {!!projection.pendingQuestions.length && <><h3>Questions</h3><ul data-testid="question-list">{projection.pendingQuestions.map((question) => <li key={question.questionId} data-testid="question-item">{question.header ?? 'Question'} — {question.prompt} ({question.status})<textarea data-testid={`question-answer-${question.questionId}`} value={questionDrafts[question.questionId] ?? ''} placeholder='JSON answers, e.g. ["a"]' onChange={(event) => setQuestionDrafts((previous) => ({ ...previous, [question.questionId]: event.target.value }))} /><button data-testid={`question-answer-button-${question.questionId}`} disabled={responding.includes(question.questionId)} onClick={() => void respondQuestion(question.questionId)}>Answer</button></li>)}</ul></>}
-      {excerpt && <div><h3>Excerpt</h3><p data-testid="artifact-excerpt">{excerpt.content}</p><p data-testid="artifact-excerpt-meta">{excerpt.handle} bytes {excerpt.start}-{excerpt.end}{excerpt.truncated ? ' (truncated)' : ''}{excerpt.redacted ? ' (redacted)' : ''}</p></div>}
-      <button data-testid="projection-stop-button" onClick={() => void stopProjection()}>Detach projection</button>
-    </section>}
-    {projection && <>
-      <TurnSummary turn={projection.turn} />
-      <TranscriptPanel messages={projection.transcript} truncatedMessages={projection.truncatedTranscriptMessages} />
-      <ToolDetail tools={projection.tools} />
-      <SubagentPanel subagents={projection.subagents} agentTree={projection.agentTree} />
-      <ActivityPanel agentRuns={projection.agentRuns} toolPrograms={projection.toolPrograms} worktrees={projection.worktrees} runGroups={projection.runGroups} convergences={projection.convergences} />
-      <TaskPanel todos={projection.todos} jobs={projection.jobs} busy={todoBusy} error={todoError} onRefresh={currentToken ? () => void refreshTodos(currentToken.routeGeneration, projection.sessionId) : undefined} />
-    </>}
-  </main>;
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">LOCAL DESKTOP</p>
+          <h1>CodeGG</h1>
+        </div>
+        <span className={`status ${connection.state}`} data-testid="connection-status">
+          {connection.state}
+        </span>
+      </header>
+
+      <div className="app-catalog">
+        <section className="panel">
+          <h2>Daemon</h2>
+          <dl>
+            <dt>Identity</dt>
+            <dd data-testid="daemon-identity">{connection.daemonId ?? '—'}</dd>
+            <dt>Generation</dt>
+            <dd data-testid="connection-generation">{connection.connectionGeneration}</dd>
+            <dt>Subscription</dt>
+            <dd data-testid="subscription-id">{subscriptionId ?? '—'}</dd>
+            <dt>Protocol</dt>
+            <dd>{connection.protocolVersion ?? '—'}</dd>
+            <dt>Uptime</dt>
+            <dd>{connection.uptimeSeconds === null ? '—' : `${connection.uptimeSeconds}s`}</dd>
+            <dt>Active sessions</dt>
+            <dd>{connection.activeSessions ?? '—'}</dd>
+          </dl>
+          {connection.error && <p role="alert">{connection.error}</p>}
+          <button data-testid="reconnect-button" disabled={busy} onClick={() => void reconnect()}>
+            {busy ? 'Connecting…' : 'Reconnect'}
+          </button>
+        </section>
+        <section className="panel">
+          <h2>
+            Projects <small>{displayedProjects.length} / 50</small>
+          </h2>
+          {displayedProjects.length ? (
+            <ul data-testid="project-list">
+              {displayedProjects.map((project) => (
+                <li
+                  key={project.projectId}
+                  data-testid="project-item"
+                  data-project-id={project.projectId}
+                >
+                  <button
+                    data-testid={`project-select-${project.projectId}`}
+                    onClick={() => void selectProject(project.projectId)}
+                  >
+                    {project.displayName}
+                  </button>
+                  <small>{project.lifecycle}</small>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No projects registered yet.</p>
+          )}
+        </section>
+        {detail && (
+          <section className="panel">
+            <h2>Route</h2>
+            <dl>
+              <dt>Project</dt>
+              <dd data-testid="route-project">{detail.displayName}</dd>
+              <dt>Workspace</dt>
+              <dd data-testid="route-workspace">{detail.routeToken.workspaceId || '—'}</dd>
+              <dt>Session</dt>
+              <dd data-testid="route-session">{detail.routeToken.sessionId ?? '—'}</dd>
+              <dt>Route generation</dt>
+              <dd data-testid="route-generation">{detail.routeToken.routeGeneration}</dd>
+            </dl>
+            <h3>Workspaces</h3>
+            <ul data-testid="workspace-list">
+              {detail.workspaces.map((workspace) => (
+                <li key={workspace.workspaceId}>
+                  <button
+                    data-testid={`workspace-select-${workspace.workspaceId}`}
+                    onClick={() => void selectWorkspace(workspace.workspaceId)}
+                  >
+                    {workspace.displayName}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <h3>Sessions</h3>
+            {sessions.length ? (
+              <ul data-testid="session-list">
+                {sessions.map((session) => (
+                  <li
+                    key={session.sessionId}
+                    data-testid="session-item"
+                    data-session-id={session.sessionId}
+                  >
+                    <button
+                      data-testid={`session-open-${session.sessionId}`}
+                      onClick={() => void openSession(session.sessionId)}
+                    >
+                      {session.title || session.sessionId}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted">No sessions listed yet.</p>
+            )}
+            <div>
+              <input
+                data-testid="session-title-input"
+                value={newTitle}
+                maxLength={120}
+                placeholder="New session title"
+                onChange={(event) => setNewTitle(event.target.value)}
+              />
+              <button
+                data-testid="session-create-button"
+                disabled={routeBusy || !detail.routeToken.workspaceId}
+                onClick={() => void createSession()}
+              >
+                Create session
+              </button>
+            </div>
+          </section>
+        )}
+        {routeError && (
+          <p role="alert" data-testid="route-error">
+            {routeError}
+          </p>
+        )}
+        <PanelControls host={host} onDock={dockPanel} onToggle={togglePanelSlot} />
+        {detail && (
+          <>
+            <GitPanel
+              status={gitFacts.status}
+              diff={gitFacts.diff}
+              branches={gitFacts.branches}
+              busy={gitBusy}
+              error={gitError}
+              onRefresh={currentToken ? () => void refreshGit(currentToken.routeGeneration) : undefined}
+            />
+            <SkillsPanel
+              catalogue={skills}
+              busy={skillsBusy}
+              error={skillsError}
+              onRefresh={currentToken ? () => void refreshSkills(currentToken.routeGeneration) : undefined}
+            />
+          </>
+        )}
+      </div>
+
+      <div className="app-frame" ref={frameRef} style={frameStyle}>
+        <ChatRegion
+          projection={projection}
+          excerpt={excerpt}
+          excerptBusy={excerptBusy}
+          responding={responding}
+          questionDrafts={questionDrafts}
+          onReadArtifact={(handle) => void readArtifact(handle)}
+          onRespondPermission={(permissionId, choice) => void respondPermission(permissionId, choice)}
+          onRespondQuestion={(questionId) => void respondQuestion(questionId)}
+          onQuestionDraftChange={(questionId, value) =>
+            setQuestionDrafts((previous) => ({ ...previous, [questionId]: value }))
+          }
+          onStopProjection={() => void stopProjection()}
+        />
+        <SidePanelFrame
+          host={host}
+          panelProps={{
+            projection,
+            controller,
+            todoBusy,
+            todoError,
+            onRefreshTodos:
+              currentToken && projection
+                ? () => void refreshTodos(currentToken.routeGeneration, projection.sessionId)
+                : undefined,
+          }}
+          frameRef={frameRef}
+          onResize={resizePanel}
+          onPanelScroll={scrollPanel}
+        />
+        <ComposerRegion
+          enabled={Boolean(detail?.routeToken.workspaceId)}
+          draft={promptDraft}
+          planMode={planMode}
+          busy={promptBusy}
+          onDraftChange={setPromptDraft}
+          onPlanModeChange={setPlanMode}
+          onSubmit={() => void submitPrompt()}
+        />
+        <StatusRow
+          projection={projection}
+          controller={controller}
+          onRefreshControl={() => {
+            if (currentToken) void refreshControl(currentToken.routeGeneration);
+          }}
+        />
+      </div>
+    </main>
+  );
 }

@@ -21,8 +21,9 @@
  *     hardcoded selection colours anywhere in this file.
  *
  * Layout rules that depend on a feature outside that set are avoided
- * rather than polyfilled: the desktop is a single-column shell, so
- * nothing here needs a query, a `:has()` selector or a subgrid.
+ * rather than polyfilled: the desktop's shell is a two-column grid with a
+ * named-region frame inside it, so nothing here needs a query, a `:has()`
+ * selector or a subgrid.
  */
 
 :root {
@@ -45,6 +46,11 @@
   --surface-selection-bg: #26456f;
   --surface-selection-fg: #e9edf3;
   --surface-row-hover-bg: #202836;
+  /* The shell's geometry. The panel columns and the bottom row are
+   * written per frame by the host; the main region keeps this minimum
+   * whatever the panels ask for. */
+  --catalog-width: 280px;
+  --main-min-width: 320px;
   color: var(--surface-fg);
   background: var(--surface-bg);
   font: 15px system-ui, sans-serif;
@@ -52,9 +58,186 @@
 
 body { margin: 0; }
 
-main { max-width: 760px; margin: 8vh auto; padding: 0 24px; }
+/*
+ * The shell: a catalog rail on the left, the working frame on the right.
+ * The rail holds the connection and catalog surfaces — the daemon, the
+ * projects, the route, the panel controls — and the frame holds the
+ * conversation.
+ */
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--catalog-width) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "header header"
+    "catalog frame";
+  height: 100vh;
+  overflow: hidden;
+}
 
-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.app-catalog {
+  grid-area: catalog;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 14px 24px;
+  border-right: 1px solid var(--surface-border);
+  min-width: 0;
+}
+
+.app-catalog .panel { padding: 16px; margin: 14px 0; }
+
+/*
+ * The frame: the chat region in the middle, a panel column on either
+ * side, a full-width row beneath them for a bottom-docked panel, the
+ * composer under that, and the status row at the bottom.
+ *
+ * The columns are the panels' own widths and the main region takes what
+ * is left, so growing a panel shrinks the conversation. The main region
+ * keeps `--main-min-width`; a frame too narrow to host a column beside
+ * that minimum collapses the column instead.
+ */
+.app-frame {
+  grid-area: frame;
+  display: grid;
+  grid-template-columns:
+    var(--panel-left-width, 0px)
+    minmax(var(--main-min-width), 1fr)
+    var(--panel-right-width, 0px);
+  grid-template-rows:
+    minmax(0, 1fr)
+    var(--panel-bottom-height, 0px)
+    auto
+    auto;
+  grid-template-areas:
+    "panel-left chat panel-right"
+    "panel-bottom panel-bottom panel-bottom"
+    "composer composer composer"
+    "status status status";
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Each region is its own scroll container, so a long conversation never
+ * drags the side panel with it. */
+.chat-region {
+  grid-area: chat;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 20px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-facts { margin: 0 0 12px; }
+
+.composer-region {
+  grid-area: composer;
+  padding: 12px 20px;
+  border-top: 1px solid var(--surface-border);
+  min-width: 0;
+}
+
+/* Without a workspace there is nowhere to route a prompt to, so the
+ * region stays in the frame and draws nothing. */
+.composer-region[data-enabled="false"] { display: none; }
+
+.status-row {
+  grid-area: status;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 20px;
+  border-top: 1px solid var(--surface-border);
+  background: var(--surface-panel);
+  min-width: 0;
+}
+
+.status-row p { margin: 0; }
+.status-row dl {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 4px 14px;
+  justify-content: start;
+}
+
+/* The side panel: the docked panel, its header, and its resize seam. */
+.side-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-bg);
+  border-left: 1px solid var(--surface-border);
+}
+
+.side-panel[data-placement="left"] {
+  grid-area: panel-left;
+  border-left: 0;
+  border-right: 1px solid var(--surface-border);
+}
+
+.side-panel[data-placement="right"] { grid-area: panel-right; }
+
+.side-panel[data-placement="bottom"] {
+  grid-area: panel-bottom;
+  border-left: 0;
+  border-top: 1px solid var(--surface-border);
+}
+
+.side-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.side-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 16px;
+}
+
+.side-panel-body .surface { margin: 12px 0; padding: 16px; }
+
+.panel-section { margin: 14px 0; }
+
+/* The resize seam: a draggable inner border on the panel's shared edge. */
+.resize-seam {
+  position: absolute;
+  z-index: 2;
+  background: transparent;
+}
+
+.resize-seam:hover { background: var(--surface-row-hover-bg); }
+.resize-seam[data-placement="right"] { top: 0; bottom: 0; left: -5px; width: 10px; cursor: col-resize; }
+.resize-seam[data-placement="left"] { top: 0; bottom: 0; right: -5px; width: 10px; cursor: col-resize; }
+.resize-seam[data-placement="bottom"] { left: 0; right: 0; top: -5px; height: 10px; cursor: row-resize; }
+
+/* The frame's panel controls. */
+.panel-tabs, .panel-edges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.panel-tabs button, .panel-edges button { padding: 6px 10px; font-size: 13px; }
+.panel-tabs button[aria-pressed="true"], .panel-edges button[aria-pressed="true"] {
+  background: var(--surface-row-hover-bg);
+  color: var(--surface-fg);
+}
 
 h1 { margin: 3px 0; font-size: 34px; }
 h2 { margin-top: 0; font-size: 18px; }
