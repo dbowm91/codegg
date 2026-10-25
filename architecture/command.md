@@ -163,7 +163,7 @@ pub struct ProcessCommandSpec {
 }
 ```
 
-### TUI Command (`src/tui/command.rs:281`)
+### TUI Command (`src/tui/command.rs:325`)
 
 ```rust
 pub struct Command {
@@ -270,7 +270,7 @@ A future headless plugin surface must call that shared authority
 without duplicating install policy, and must add parser tests plus
 docs in the same change.
 
-### CommandRegistry (`src/tui/command.rs:500`)
+### CommandRegistry (`src/tui/command.rs:557`)
 
 ```rust
 pub struct CommandRegistry {
@@ -542,7 +542,7 @@ source (`CommandRegistry::built_in_commands()` yields 169 entries and the
 enum has 161 variants); `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction` (5,
-`command.rs:313`), the TUI `Command` struct fields (`command.rs:322`), core
+`command.rs:316`), the TUI `Command` struct fields (`command.rs:325`), core
 `Command` (`src/command/mod.rs:39`), `ProcessCommandSpec`
 (`src/command/mod.rs:12`), `execute_command_template`
 (`src/command/mod.rs:320`), the `CommandConfig` field list, the
@@ -553,11 +553,28 @@ absence of any `subtask` field in `src/` and `crates/`, and that
 is the `CommandDomain::Execution` keyword list).
 
 Both count-guard tests live in `src/tui/command.rs`
-(`built_in_command_count_matches_release_docs` at `:1217`,
-`command_docs_count_matches_registry` at `:1364`, and
+(`built_in_command_count_matches_release_docs` at `:1277`,
+`command_docs_count_matches_registry` at `:1429`, and
 `command_docs_builtin_slash_action_variant_count_matches_source` at
-`:1400`); the latter two parse this document, so they fail when it
+`:1465`); the latter two parse this document, so they fail when it
 drifts.
+
+### Pass of 2026-10-25 (M007-D)
+
+Re-verified against `src/tui/command.rs` while closing the daemon-owned
+command catalog milestone.
+
+- **Six stale source anchors, all in `src/tui/command.rs`.** The two section
+  headings pointed at `:281` (the `Command` struct, actually `:325`) and
+  `:500` (the `CommandRegistry`, actually `:557`). `CommandAction` was cited
+  at `:313` (actually `:316`), the `Command` struct at `:322` (actually
+  `:325`), and the three count-guard tests at `:1217`/`:1364`/`:1400`
+  (actually `:1277`/`:1429`/`:1465`). Every anchor was re-read against
+  source; the counts they guarded — 169 built-in commands and 161
+  `BuiltinSlashAction` variants — were correct and are unchanged.
+- **The anchors below were already correct** and are left unchanged:
+  `BuiltinSlashAction` `:112`, `CommandCategory` `:10`, `CommandDomain`
+  `:22`, `CommandScope` `:56`, `CommandSource` `:76`.
 
 ### Earlier passes
 
@@ -566,14 +583,14 @@ re-verified 2026-10-19 after C007 added `/subagent-send`, and re-verified
 2026-10-20 after Eggwork M002 added `/nodes`, and re-verified
 2026-10-23 after the TUI text-rendering line added `/expand-all`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1217`) asserts 169, and every `(\d+)\s+(hardcoded|built-in|total)`
+(`command.rs:1277`) asserts 169, and every `(\d+)\s+(hardcoded|built-in|total)`
 plus `[Cc]ount is (\d+)` match in this document resolves to 169.
 Also verified the 169 built-in registry length, `BuiltinSlashAction`
 (161 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction`
-(5, `command.rs:313`), the TUI `Command` struct fields
-(`command.rs:322`), `CommandRegistry` (`command.rs:500`), core `Command`
+(5, `command.rs:316`), the TUI `Command` struct fields
+(`command.rs:325`), `CommandRegistry` (`command.rs:557`), core `Command`
 (`src/command/mod.rs:39`), `ProcessCommandSpec`
 (`src/command/mod.rs:12`), `execute_command_template`
 (`src/command/mod.rs:320`), `CommandConfig`
