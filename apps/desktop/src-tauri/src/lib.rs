@@ -988,6 +988,45 @@ async fn desktop_skill_catalogue(
     state.route_skill_catalogue(route_generation).await
 }
 
+/// M007-D: the daemon's command catalog.
+///
+/// The renderer holds no command list of its own. It asks the daemon for
+/// the catalog and renders what the daemon says; the scope is the route's
+/// own project and workspace selection, never a renderer-supplied one.
+#[tauri::command]
+async fn desktop_command_catalog(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<bridge::CommandCatalogView, String> {
+    state.route_command_catalog(route_generation).await
+}
+
+/// M007-D: execute one daemon-effect command form.
+///
+/// The daemon authorizes the execution under `command.execute` and audits
+/// it as a canonical run. The host never executes a command itself, and a
+/// `catalogVersion` the daemon no longer serves is refused rather than
+/// executed against a stale classification.
+#[tauri::command]
+async fn desktop_command_execute(
+    state: State<'_, Arc<HostState>>,
+    command_id: String,
+    form: String,
+    argument: String,
+    catalog_version: u64,
+    route_generation: u64,
+) -> Result<bridge::CommandExecuteView, String> {
+    state
+        .route_command_execute(
+            route_generation,
+            command_id,
+            form,
+            argument,
+            catalog_version,
+        )
+        .await
+}
+
 /// M004 WP C projection commands. Narrow capability classes only:
 /// projection start/stop/current/subscribe for the route-selected
 /// session. No generic `CoreRequest` bridge, no filesystem paths.
@@ -1068,6 +1107,8 @@ pub fn run() {
             desktop_todo_refresh,
             desktop_git_read,
             desktop_skill_catalogue,
+            desktop_command_catalog,
+            desktop_command_execute,
             desktop_projection_start,
             desktop_projection_stop,
             desktop_projection_current,

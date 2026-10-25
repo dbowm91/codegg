@@ -218,6 +218,9 @@ pub enum RunKind {
     Search,
     Python,
     NativeTool,
+    /// M007-D: a daemon-effect slash command, audited as a canonical
+    /// `Run` under the `command.execute` capability.
+    Command,
 }
 
 impl std::fmt::Display for RunKind {
@@ -231,6 +234,7 @@ impl std::fmt::Display for RunKind {
             RunKind::Search => write!(f, "search"),
             RunKind::Python => write!(f, "python"),
             RunKind::NativeTool => write!(f, "native_tool"),
+            RunKind::Command => write!(f, "command"),
         }
     }
 }
@@ -922,6 +926,9 @@ impl RunCellView {
                 .detail
                 .clone()
                 .unwrap_or_else(|| m.invocation.command.clone()),
+            RunKind::Command => {
+                format!("command: {}", m.invocation.command)
+            }
         }
     }
 

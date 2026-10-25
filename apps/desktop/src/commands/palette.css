@@ -1,0 +1,51 @@
+/* M007-D: the desktop command palette overlay. */
+.cg-palette {
+  position: absolute;
+  inset: 12% 50% auto 50%;
+  transform: translateX(-50%);
+  width: min(640px, 92vw);
+  max-height: 60vh;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--cg-surface, #14161a);
+  color: var(--cg-text, #e8e9ec);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  z-index: 40;
+}
+.cg-palette-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--cg-border, #2c3038);
+  background: var(--cg-surface-raised, #1b1e24);
+  color: inherit;
+  font: inherit;
+}
+.cg-palette-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.cg-palette-row {
+  display: flex;
+  gap: 10px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--cg-border, #2c3038);
+}
+.cg-palette-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+.cg-palette-description {
+  flex: 1 1 auto;
+  opacity: 0.75;
+}
+.cg-palette-error {
+  color: #ff8a80;
+  margin: 8px 0 0;
+}
+.cg-palette-busy {
+  margin: 8px 0 0;
+  opacity: 0.75;
+}

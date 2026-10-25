@@ -22,7 +22,10 @@ use std::collections::{HashMap, HashSet};
 
 use codegg_client::StoppedDriver;
 use codegg_protocol::{
-    core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
+    core::{
+        CommandCatalogScopeDto, CommandExecuteRequestDto, CommandKindDto, CoreRequest, CoreResponse,
+        RequestEnvelope, PROTOCOL_VERSION,
+    },
     dto::Session,
     git::{
         GitChangeKindDto, GitReadConsistencyDto, GitReadOperationDto, GitReadRequestDto,
@@ -32,10 +35,11 @@ use codegg_protocol::{
 };
 
 use super::bridge::{
-    GitBranchListView, GitBranchView, GitChangeKind, GitChangedFileView, GitConsistency,
-    GitDiffView, GitReadKind, GitReadOperation, GitReadView, GitStatusView, ProjectDetailView,
-    RouteTokenView, SessionListView, SessionSummaryView, SessionView, SkillCatalogueView,
-    SkillSource, SkillSummaryView, WorkspaceView,
+    CommandCatalogView, CommandDescriptorView, CommandExecuteView, CommandFormView,
+    CommandReportView, GitBranchListView, GitBranchView, GitChangeKind, GitChangedFileView,
+    GitConsistency, GitDiffView, GitReadKind, GitReadOperation, GitReadView, GitStatusView,
+    ProjectDetailView, RouteTokenView, SessionListView, SessionSummaryView, SessionView,
+    SkillCatalogueView, SkillSource, SkillSummaryView, WorkspaceView,
 };
 use super::projection::ProjectionOwner;
 use super::HostState;
@@ -591,6 +595,121 @@ impl HostState {
     /// body and never a path — and it stays inside the daemon's own entry
     /// bound, so the view keeps the daemon's `total`/`truncated` pair
     /// rather than implying the list is complete.
+    /// M007-D: read the daemon's command catalog for the route-selected
+    /// project and workspace.
+    ///
+    /// The renderer holds no command list of its own: it asks the daemon
+    /// for the catalog and renders what the daemon says. The scope is the
+    /// route's own selection, never a renderer-supplied project.
+    pub(crate) async fn route_command_catalog(
+        &self,
+        expected_generation: u64,
+    ) -> Result<CommandCatalogView, String> {
+        let (project_id, workspace_id, _connection_generation) =
+            self.route_selection(expected_generation, false).await?;
+        let (client, _) = self.route_request().await?;
+        let response = client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::CommandCatalog {
+                    scope: CommandCatalogScopeDto {
+                        project_id: project_id.clone(),
+                        workspace_id: workspace_id.clone(),
+                    },
+                },
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let CoreResponse::CommandCatalog { catalog } = response else {
+            return Err(unexpected_daemon_response(&response));
+        };
+        Ok(CommandCatalogView {
+            catalog_version: catalog.catalog_version,
+            commands: catalog
+                .commands
+                .into_iter()
+                .map(|command| CommandDescriptorView {
+                    command_id: command.command_id,
+                    name: command.name,
+                    aliases: command.aliases,
+                    description: command.description,
+                    domain: command.domain,
+                    kind: command_kind_name(command.kind),
+                    capability: command.capability,
+                    forms: command
+                        .forms
+                        .into_iter()
+                        .map(|form| CommandFormView {
+                            form: form.form,
+                            kind: command_kind_name(form.kind),
+                            argument_hint: form.argument_hint,
+                            argument_required: form.argument_required,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    /// M007-D: execute one daemon-effect command form.
+    ///
+    /// The daemon authorizes the execution under `command.execute` and
+    /// audits it as a canonical run; the host never executes a command
+    /// itself. The `catalog_version` is the one the renderer resolved the
+    /// command against, so a stale palette is refused rather than executed
+    /// against a classification the daemon no longer serves.
+    pub(crate) async fn route_command_execute(
+        &self,
+        expected_generation: u64,
+        command_id: String,
+        form: String,
+        argument: String,
+        catalog_version: u64,
+    ) -> Result<CommandExecuteView, String> {
+        let (project_id, workspace_id, _connection_generation) =
+            self.route_selection(expected_generation, false).await?;
+        let (client, _) = self.route_request().await?;
+        let response = client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: uuid::Uuid::new_v4().to_string(),
+                payload: CoreRequest::CommandExecute {
+                    request: CommandExecuteRequestDto {
+                        scope: CommandCatalogScopeDto {
+                            project_id,
+                            workspace_id,
+                        },
+                        command_id: command_id.clone(),
+                        form,
+                        argument,
+                        catalog_version,
+                    },
+                },
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let CoreResponse::CommandExecute { result } = response else {
+            return Err(unexpected_daemon_response(&response));
+        };
+        Ok(CommandExecuteView {
+            run_id: result.run_id,
+            command_id: result.command_id,
+            status: command_outcome_name(result.status),
+            summary: result.summary,
+            lines: result.lines,
+            report: result.report.map(|report| CommandReportView {
+                added: report.added,
+                removed: report.removed,
+                changed: report.changed,
+                shadowed: report.shadowed,
+                invalid: report.invalid,
+            }),
+            started_at_ms: result.started_at_ms,
+            completed_at_ms: result.completed_at_ms,
+        })
+    }
+
     pub(crate) async fn route_skill_catalogue(
         &self,
         expected_generation: u64,
@@ -2405,5 +2524,24 @@ mod tests {
             "unexpected error: {error}"
         );
         server.await.expect("server");
+    }
+}
+
+/// The wire name of a command kind.
+fn command_kind_name(kind: CommandKindDto) -> String {
+    match kind {
+        CommandKindDto::DaemonEffect => "daemon_effect".to_string(),
+        CommandKindDto::FrontendEffect => "frontend_effect".to_string(),
+    }
+}
+
+/// The wire name of a command outcome status.
+fn command_outcome_name(status: codegg_protocol::core::CommandOutcomeStatusDto) -> String {
+    use codegg_protocol::core::CommandOutcomeStatusDto;
+    match status {
+        CommandOutcomeStatusDto::Completed => "completed".to_string(),
+        CommandOutcomeStatusDto::Refused => "refused".to_string(),
+        CommandOutcomeStatusDto::Failed => "failed".to_string(),
+        CommandOutcomeStatusDto::Cancelled => "cancelled".to_string(),
     }
 }

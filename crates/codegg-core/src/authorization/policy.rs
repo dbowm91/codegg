@@ -148,6 +148,26 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectRead),
         ),
+        // M007-D: reading the daemon's command catalog discloses which
+        // commands exist and how each one is classified. It is inert
+        // metadata, so it takes the same `project.read` grant the skill
+        // catalogue uses: knowing that `/reload` exists says nothing about
+        // what it may change.
+        R::CommandCatalog { .. } => OperationDescriptor::new(
+            "command_catalog",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectRead),
+        ),
+        // M007-D: executing a daemon-effect command is an effect, so it
+        // carries the dedicated `command.execute` capability rather than a
+        // generic project grant. The capability is a property of the
+        // catalog entry and is re-checked server-side; it is never a
+        // client-supplied widening.
+        R::CommandExecute { .. } => OperationDescriptor::new(
+            "command_run",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
         R::DocumentWriterAcquire { .. }
         | R::DocumentChange { .. }
         | R::DocumentSave { .. }
@@ -2552,6 +2572,27 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             request: codegg_protocol::skill::SkillCatalogueRequestDto {
                 project_id: String::new(),
                 max_entries: None,
+            },
+        },
+        // M007-D: the command catalog read and the daemon-effect command
+        // executor. The payload values are inert placeholders and only the
+        // variant matters here.
+        R::CommandCatalog {
+            scope: codegg_protocol::core::CommandCatalogScopeDto {
+                project_id: String::new(),
+                workspace_id: String::new(),
+            },
+        },
+        R::CommandExecute {
+            request: codegg_protocol::core::CommandExecuteRequestDto {
+                scope: codegg_protocol::core::CommandCatalogScopeDto {
+                    project_id: String::new(),
+                    workspace_id: String::new(),
+                },
+                command_id: String::new(),
+                form: String::new(),
+                argument: String::new(),
+                catalog_version: 0,
             },
         },
     ]

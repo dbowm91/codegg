@@ -296,6 +296,16 @@ export const ACTION_DECLARATIONS: readonly ActionDeclaration[] = [
     captured: true,
   },
   {
+    id: 'command.palette.open',
+    label: 'Open the command palette',
+    description:
+      "Show the daemon's command catalog and run the command that is chosen.",
+    defaultBindings: [{ chord: 'mod+shift+p', scope: GLOBAL_SCOPE }],
+    overrideScope: GLOBAL_SCOPE,
+    affordance: { class: 'button', testIdPrefixes: ['command-palette-open-button'] },
+    captured: true,
+  },
+  {
     id: 'connection.reconnect',
     label: 'Reconnect',
     description: 'Reconnect to the daemon.',
@@ -489,11 +499,6 @@ export const RESERVED_CHORDS: readonly ReservedChord[] = [
     chord: 'mod+s',
     reservedFor: 'M007-E (editor save)',
     reason: 'no editor in M007-C; binding it would capture the WebView save accelerator with no target.',
-  },
-  {
-    chord: 'mod+shift+p',
-    reservedFor: 'M007-D (command palette)',
-    reason: "the palette's command contents are M007-D's, and a chord bound to an empty surface would be a dead chord.",
   },
   {
     chord: 'mod+f',

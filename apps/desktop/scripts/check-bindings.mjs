@@ -49,6 +49,14 @@ const expected = {
   GitReadView: ['kind', 'status', 'diff', 'branches'],
   SkillSummaryView: ['name', 'description', 'source', 'content_digest', 'resource_count'],
   SkillCatalogueView: ['project_id', 'skills', 'total', 'truncated'],
+  // M007-D: the daemon's command catalog and one command execution. The
+  // renderer holds no command list of its own, so these four types are the
+  // whole of the desktop's command contract.
+  CommandFormView: ['form', 'kind', 'argument_hint', 'argument_required'],
+  CommandDescriptorView: ['command_id', 'name', 'aliases', 'description', 'domain', 'kind', 'capability', 'forms'],
+  CommandCatalogView: ['catalog_version', 'commands'],
+  CommandReportView: ['added', 'removed', 'changed', 'shadowed', 'invalid'],
+  CommandExecuteView: ['run_id', 'command_id', 'status', 'summary', 'lines', 'report', 'started_at_ms', 'completed_at_ms'],
 };
 for (const [name, fields] of Object.entries(expected)) {
   const rustBlock = rust.match(new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1];
