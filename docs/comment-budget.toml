@@ -923,7 +923,7 @@ max_ratio = 0.1338
 "tests/tool_programs/tool_registry.inc" = { max_comment_lines = 20, max_ratio = 0.0579 }
 "tests/tool_programs/tool_structured_execution.inc" = { max_comment_lines = 45, max_ratio = 0.2094 }
 "tests/tool_programs/writer_disposition_guards.inc" = { max_comment_lines = 74, max_ratio = 0.3541 }
-"tests/tui_render/collaboration_m002_chat_tui.inc" = { max_comment_lines = 79, max_ratio = 0.0625 }
+"tests/tui_render/collaboration_m002_chat_tui.inc" = { max_comment_lines = 79, max_ratio = 0.0626 }
 "tests/tui_render/connect_dialog_input.inc" = { max_comment_lines = 29, max_ratio = 0.1388 }
 "tests/tui_render/connect_tui_restoration.inc" = { max_comment_lines = 67, max_ratio = 0.089 }
 "tests/tui_render/dialog_dispatch_coverage.inc" = { max_comment_lines = 36, max_ratio = 0.36 }

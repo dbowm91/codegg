@@ -85,9 +85,7 @@ impl FakeChatClient {
     ) -> CoreResponse {
         let mut parts = request.argument.split_whitespace();
         let channel_id = parts.next().unwrap_or_default().to_string();
-        let number = parts
-            .next()
-            .and_then(|token| token.parse::<u64>().ok());
+        let number = parts.next().and_then(|token| token.parse::<u64>().ok());
         let inner = match request.command_id.as_str() {
             "chat_history" => CoreRequest::ChatHistoryOlder {
                 channel_id,

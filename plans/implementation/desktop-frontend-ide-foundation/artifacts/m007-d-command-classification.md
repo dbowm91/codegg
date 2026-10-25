@@ -605,16 +605,21 @@ smuggled into this milestone.
   call-neighbours workflows. The daemon's `egglsp` instance is authoritative and
   the TUI's `LspTool` is a second, non-authoritative one. The catalog declares
   26 `/lsp-*` forms; the daemon serves 2 of them and does not serve the other
-  24. **Which behaviour refuses where:** the TUI's own `/lsp-*` arms refuse
-  locally, with the toast `LSP not available`, because `app.lsp_tool` is `None`
-  — the TUI never builds a second `LspTool` in production, and only the tests
-  populate it. The one arm that would reach the daemon (`/lsp-preview-apply`)
-  reaches it only *after* the same `lsp_tool` check, so it refuses too. The
-  desktop palette shows the same forms as unavailable because the daemon does
-  not serve them. Both refusals state the same fact — the authoritative
-  language server is the daemon's — so the palette's unavailable row is
-  correct, not a gap. | **yes** — the authoritative language server's command
-  surface is a new ownership boundary, and ADR-0052 does not cover it |
+  24. **Which behaviour refuses where:** the TUI's own `/lsp-*` arms refuse in
+  the **socket** (daemon-connected) configuration, with the toast
+  `LSP not available`, because `app.lsp_tool` is `None` there — `src/main.rs`
+  attaches the TUI's own `LspTool` only when the TUI is *not* in socket mode.
+  In **local** mode the same arms work, against that second, non-authoritative
+  server. The one arm that would reach the daemon (`/lsp-preview-apply`)
+  reaches it only *after* the same `lsp_tool` check, so it refuses in socket
+  mode too. The desktop palette shows the 24 unserved forms as unavailable
+  because the daemon does not serve them; the palette's unavailable row is
+  correct, not a gap. The 2 served forms (`/lsp-status`, `/lsp-errors`) build
+  `lsp_diagnostics_get`, and the palette dispatches them through the daemon —
+  the TUI's own arms for those two are a recorded discrepancy, not a
+  migration (see the closure record). | **yes** — the authoritative language
+  server's command surface is a new ownership boundary, and ADR-0052 does not
+  cover it |
 | M007-G | the daemon's plugin catalogue: list, info, enable, disable, doctor,
   remove and install over the plugin registry the daemon actually loads. The
   TUI's `PluginManager` is its own instance and the daemon has none. | **yes** —

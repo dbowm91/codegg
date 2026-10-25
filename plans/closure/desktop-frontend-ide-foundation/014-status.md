@@ -66,8 +66,9 @@ gap: the daemon's effect table already has a row for each of the 31, and each
 row's request shape is decided. What is missing is the TUI-side rewiring, and
 for five of them the argument's encoding.
 
-§10 records the outstanding work form by form, with the two shapes of
-decision it needs.
+§10 records the outstanding work form by form, with the shapes of decision
+it needs — including the one decision already taken (§10.2: the two served
+`/lsp-*` forms stay unmigrated, and why).
 
 ## 2. Requirement-to-evidence matrix
 
@@ -168,6 +169,7 @@ Commands run against this branch's head, with their results.
 | `python3 scripts/check_frontend_action_set.py` | `frontend-action set: clean` |
 | `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after `--bank`) |
 | `python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py --check` | `check passed: … matches the tree` |
+| the owner's read-only migration instrument, `/tmp/m007d_verify_migration.py` | 51 effect-table rows, 20 migrated commands, 22 routed call sites; every migrated command is routed through the daemon's effect table, and the four paths that bypass the catalog are the ones §10.4 records |
 | `cd apps/desktop && npx tsc --noEmit` | clean |
 | `cd apps/desktop && node scripts/check-bindings.mjs` | `desktop bridge DTO fields match` |
 | `cd apps/desktop && npx vitest run` | **29** files, **218** tests, all passed |
@@ -228,6 +230,9 @@ commands is done; the remaining 31 are the work this milestone still owes.
 - The desktop refuses an unserved form rather than dispatching it, so a
   desktop user sees a typed refusal where the TUI still works locally. That
   asymmetry is recorded in the artifact's §8.
+- The two served `/lsp-*` forms are the one place where the daemon serves a
+  form the TUI does not use: the desktop dispatches them through the daemon,
+  and the TUI's own arms remain a recorded discrepancy (§10.2).
 
 ## 8. Security review
 
@@ -279,7 +284,52 @@ network  shell_show  shell_expand  shell_kill  terminal_send
 `tasks`/`task`, `shell_show`/`shell_expand` and `terminal_list`/`terminal_show`
 are **shared arms**: one row serves two forms.
 
-### 10.2 Two shapes of decision the scope-only group needs
+`/lsp-status` and `/lsp-errors` are in this list, and they are **decided**:
+they stay unmigrated, for the reason §10.2 gives.
+
+### 10.2 The two served `/lsp-*` forms: **decided — not migrated in this milestone**
+
+`/lsp-status` and `/lsp-errors` are in the **served** set: their row builds
+`lsp_diagnostics_get`, and the daemon's `egglsp` instance is authoritative.
+The TUI's own arms for those two are **not** migrated, and the decision is
+recorded here rather than taken silently.
+
+The arm's behaviour differs by mode, and that is the reason:
+
+- In the **socket** (daemon-connected) configuration the arm refuses with the
+  toast `LSP not available`, because `app.lsp_tool` is `None` there —
+  `src/main.rs:4014` attaches the TUI's own `LspTool` only when the TUI is
+  **not** in socket mode.
+- In **local** mode the same arm works, against that second, non-authoritative
+  language server.
+
+Migrating the arm would therefore change behaviour in **both** modes: in
+socket mode a refusal becomes real diagnostics, and in local mode the arm
+would need a daemon the local configuration does not have. Plan 014 §14 makes
+the first shape explicit — *"a command that did **not** work before is a
+recorded discrepancy requiring an owner-visible decision, not a licence to
+change behaviour silently"* — and `/lsp-status` in the socket configuration
+is exactly the `/compact` shape. The second shape is a regression the
+milestone's contract forbids outright.
+
+So the two forms stay unmigrated, and the consequence is named rather than
+left implicit: **the daemon serves two forms the TUI does not use.** The
+desktop palette dispatches both through the daemon, because they are
+published as served — so the daemon's capability is used, by the desktop —
+and the TUI's own arms remain a recorded discrepancy for the owner to
+decide.
+
+This supersedes two statements that were published on the strength of a
+narrower reading of the tree, and both are corrected in the artifact:
+
+- `architecture/lsp.md` (the owner's) says the TUI's `/lsp-*` arms refuse.
+  That is true of the **socket** configuration and false of local mode, where
+  the TUI attaches its own `LspTool`. The owner is re-pinning the document.
+- The artifact's M007-F row said the TUI "never builds a second `LspTool` in
+  production". That was wrong — the earlier reading missed `src/main.rs`. The
+  row now names the mode split.
+
+### 10.3 Two shapes of decision the scope-only group needs
 
 "Scope-only" is not automatically behaviour-preserving, and two shapes of it
 are visible in the rows. Both are *recorded*, not guessed at:
@@ -297,7 +347,26 @@ are visible in the rows. Both are *recorded*, not guessed at:
   (`src/tui/commands/sessions.rs`). Migrating them as the rows stand would
   share the *wrong* session. The session id must travel in the argument.
 
-### 10.3 The other recorded findings
+### 10.4 Four daemon-owned requests still bypass the catalog
+
+These are **not** gaps in the 20 migrated commands' arms: every migrated arm
+routes through the daemon and no longer constructs its own request. These are
+*other* paths in the TUI that reach a daemon-owned request directly, outside
+the catalog, and therefore open **no `Run`**. Criterion 3's letter does not
+reach them — they are not commands — but ADR-0052's ownership boundary does.
+
+| request | sites | path | disposition |
+|---|---|---|---|
+| `ProjectionUnsubscribe` | `src/tui/commands/primary_projection.rs:110`, `:172`, `:281`, `:327` | the projection subscription's own teardown and replacement | **lifecycle, recorded.** The subscription is opened and dropped by the projection client, not by a user command; the `/stop-observing` *command* does route through the daemon. A `Run` per teardown would be noise, so this is recorded as lifecycle rather than migrated |
+| `AssetRefresh` | `src/tui/commands/agents.rs:96`, `src/tui/commands/project_init.rs:116` | the asset refresh inside the `/agents` and `/init` flows — a *different* command's side effect | **recorded for the owner.** `/reload` is the catalog's asset-refresh command and its arm routes through the daemon, so the daemon's capability is audited when the user asks for it; here it happens as a side effect of another command, unaudited. Making it the `reload` command's effect is a decision about what `/agents` and `/init` *are*, and it is not this milestone's to take |
+| `ChatHistoryOlder` | `src/tui/commands/chat.rs:1551` | the "load older" **key binding** (`src/tui/app/input.rs:135`), not the `/chat-history` command | **recorded for the owner.** This is the sharpest of the four: `chat_history_older` is **not a catalog command id at all**, so the catalog is not merely bypassed here — it is absent. The effect needs an *anchored* cursor, and the `chat_history` row builds the *unanchored* newest window. The fix is a second form of `chat_history` whose argument carries the anchor, which is a product decision about the catalog's shape |
+| `InteractiveProcessResume` | `src/tui/commands/interactive_terminal.rs:957` | the terminal output pump (`service_terminal_output_pull`), not the `/terminal-resume` command | **lifecycle, recorded.** The pump reads the daemon's retained output on a cadence; the `/terminal-resume` *command* does route through the daemon |
+
+None of the four is a defect in what was migrated. All four are recorded here
+so that the closure does not read as a claim that every daemon-owned effect
+in the TUI is audited.
+
+### 10.5 The other recorded findings
 
 | finding | severity | disposition |
 |---|---|---|
