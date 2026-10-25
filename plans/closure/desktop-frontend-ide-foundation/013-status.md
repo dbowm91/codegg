@@ -82,7 +82,7 @@ Three decisions shape the result:
 | §13.10 — the **existing `data-testid` values survive** and the renderer suite passes unmodified | §4.1 — 232 → 262, **none removed**; `App.test.tsx` byte-identical | met |
 | §13.11 — **no `src/tui/` change**, no protocol change, no Rust change, no Tauri capability | §5 — `git diff --name-only -- src/tui/` and `-- apps/desktop/src-tauri/` are both empty | met |
 | §13.12 — the milestone's **non-goals** are honoured: no `/` command surface, no editor, no clipboard | §5 — no such capability is in the diff; `mod+q` is reserved and `CopyMessage` is recorded as not carried | met |
-| §13.13 — the **terminology amendment** is recorded, not performed | §6 — the proposed vocabulary is in this record; `plans/001-terminology-and-domain-model.md` is untouched | met |
+| §13.13 — the **terminology amendment** is recorded, not performed **by this milestone** | §6 — the proposed vocabulary is in this record. M007-C does not touch `plans/001-terminology-and-domain-model.md`; the **owner directed** the amendment on 2026-10-25 and it was performed by the follow-up plan at `plans/implementation/desktop-frontend-ide-foundation/016-desktop-input-model-terminology-amendment.md`, whose closure record is `plans/closure/desktop-frontend-ide-foundation/016-status.md` | met |
 
 ## 3. Production implementation evidence
 
@@ -400,7 +400,7 @@ missing state is the defaults.
 | **`turn.toggle` and `model.cycleForward`/`model.cycleBackward` are recorded as not carried**, although the plan's WP-2 table lists them as carried with the affordances `turn-toggle-button` and `model-cycle-button` marked "(M007-B)". **Those buttons do not exist** in M007-B's tree, and neither action has a desktop surface to act on: the bridge carries no stop/resume command, and the bridge DTO carries no model catalogue to cycle. Inventing a button that cannot act would be a fake affordance and a dead chord, so both are recorded as not carried with the reason. **This is settled by evidence, not by a preference.** The WP-2 table's "(M007-B)" annotations were a *forward-looking assumption* that M007-B would supply those two buttons, and M007-B's own plan (`plans/implementation/desktop-frontend-ide-foundation/012-desktop-chat-region-and-side-panel.md`) never claimed them — `turn-toggle-button`, `model-cycle-button`, `ToggleAgentRun` and `CycleModel` occur in **no** plan other than 013 — and M007-B's closure delivered a chat region, a dockable side panel and the projection fields it already had, which is what it was scoped to. Plan 013's own acceptance criteria (§13.1–§13.13) do not name either action. The plan file is **left untouched**, because the house pattern at closure is to record the deviation in the closure record rather than to amend an implementation plan after the fact — M007-B's closure (`b1b277505`) touched the closure record, the roadmap and the registry, and not plan 012. **If the owner intends the desktop to carry a turn toggle and a model cycle, that is new scope with no surface behind it today, and it needs its own milestone** — a stop/resume command in the bridge and a model catalogue in the DTO are both protocol and DTO changes, which this milestone's criterion §13.11 forbids. | low | closed by evidence; new scope would need its own milestone |
 | The **project and session switchers are focus-and-reveal**, not picker overlays. A quick-open style surface would drift into M007-D's command surface, which the plan's §5.2 forbids. | low | accepted for this milestone |
 | The bindings surface's own chords (`mod+alt+shift+r` reset, `mod+alt+shift+e` export, `mod+alt+shift+i` import) were **chosen by the implementer** — the plan requires "their own bindings" without naming them. | low | accepted for this milestone |
-| The **terminology amendment is recorded, not performed** — `keymap`, `chord`, and the new UI labels ("Toggle side panel", "Open project switcher", "Toggle tasks panel", "Keyboard help", "Key bindings") are UI-label surface under `plans/001-terminology-and-domain-model.md:5`, and adopting canonical vocabulary for them is an owner-directed step that changes a normative document. | low | the owner |
+| The **terminology amendment is recorded, not performed by this milestone** — `keymap`, `chord`, and the new UI labels ("Toggle side panel", "Open project switcher", "Toggle tasks panel", "Keyboard help", "Key bindings") are UI-label surface under `plans/001-terminology-and-domain-model.md:5`, and adopting canonical vocabulary for them is an owner-directed step that changes a normative document. **Resolved after the fact: the owner directed the amendment on 2026-10-25**, and it was performed by the follow-up plan `016-desktop-input-model-terminology-amendment.md` — `plans/closure/desktop-frontend-ide-foundation/016-status.md`. The canonical set now names `Keymap`, `Chord`, `Action` and `Binding scope`, keeps **action** distinct from ADR-0052's **command**, and adds the UI-label rule. | low | closed |
 | The desktop's **Windows native qualification** (M002's condition) is still outstanding, and this milestone makes no Windows claim. | medium | M002's line |
 
 **No medium or high finding keeps M007-C open.** The one finding that began as
@@ -439,10 +439,18 @@ new scope would cost. The remaining findings are low and accepted.
   M007-C is closed, so M007-D's palette chord is now bound;
 - `## Source verification` gains a dated entry for this closure.
 
-## 13. Proposed terminology (owner-directed step — not performed)
+## 13. Proposed terminology (owner-directed step — not performed **by this milestone**)
 
 Recorded here, as the plan requires, and **not** applied to
-`plans/001-terminology-and-domain-model.md`:
+`plans/001-terminology-and-domain-model.md` by this milestone. **The owner
+directed the amendment on 2026-10-25**, and it was performed by the follow-up
+plan `016-desktop-input-model-terminology-amendment.md`
+(`plans/closure/desktop-frontend-ide-foundation/016-status.md`). The proposal
+below is what landed, with two refinements the amendment made: the term is
+**binding scope** rather than *scope*, because scope is already
+provider-connection scope and authorization scope; and **action** was joined
+by an "action" bullet in §15's prohibited-usage list, beside the "command"
+bullet it is easiest to confuse with.
 
 | Proposed term | Sense | Note |
 |---|---|---|

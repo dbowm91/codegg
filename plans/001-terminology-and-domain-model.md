@@ -779,6 +779,11 @@ The following phrases SHOULD be removed from new design documents unless qualifi
 - "command" when the intended object is a `Run`, a scheduler job, a shell
   command, or a tool call. A `Command` is a catalog entry addressed by its
   identity; a `Run` is the record of an execution;
+- "action" when the intended object is a `Command`, a `Run`, a scheduler job,
+  a shell command, or a tool call. An `Action` is a frontend-local binding; a
+  `Command` is a catalog entry addressed by its identity, and a frontend that
+  implements an action by dispatching a command MUST NOT hold a second
+  catalog of its own;
 - "task" when the intended object is a project work order, a delegated
   agent task, a Todo item, a work-plan item, or a scheduler job. The TUI
   may label work orders as "Tasks", but protocol, storage, and
@@ -786,7 +791,43 @@ The following phrases SHOULD be removed from new design documents unless qualifi
 - "reload config" when the operation specifically refreshes runtime assets;
 - "shared workspace" when isolated worktrees are intended.
 
-## 16. Review checklist
+## 16. Frontend input terms
+
+These terms name what a frontend does with the user's input. They are
+frontend-local: the desktop and the TUI each own an input model, and neither
+is the other's.
+
+### Keymap
+
+A frontend's own mapping from chords to actions.
+
+A keymap is **frontend-local presentation state**. It is not durable session state, not provider state, and not shared with the daemon; each frontend owns its own keymap, and two frontends MAY bind different keys to the same operation. The bindings are the user's, so changing them is a preference of that frontend's user rather than a change to any shared object.
+
+A keymap is not a `Command` catalog. A command is an entry in the daemon-owned catalog; a keymap binds chords to the frontend's own actions.
+
+### Chord
+
+A key combination, normalized into a fixed modifier order and a lowercased key token, that a frontend resolves against a keymap.
+
+A chord is a presentation-layer input. It is not an identity and not an authorization subject: the same operation MAY be reachable by more than one chord, and a chord MAY be rebound without changing what the operation does.
+
+### Action
+
+A named operation a frontend can perform, bound to zero or more chords and to a mouse affordance.
+
+An action is **frontend-local**: it names something the frontend does — open a surface, move the focus, submit a composer, toggle a panel. An action is not a `Command`, a `Run`, a scheduler `Job`, a shell command, or a tool call. A frontend MAY implement an action by dispatching a `Command`, and it MUST NOT thereby become a second command catalog: the commands a frontend can dispatch are the bounded, declared frontend-effect set of the daemon's catalog.
+
+The **label** of an action is presentation, not a canonical term. A label MUST NOT misname the concept the action performs: a label that calls a `Command` an "action", or a `WorkOrder` a "session", is prohibited. A label MAY use a shortened form where the context makes the referent unambiguous, exactly as §15 permits the TUI to label work orders as "Tasks". Two frontends MAY display different labels for the same action, and MAY display different labels for the same command identity, exactly as a `Command` MAY carry a per-frontend display name. The desktop frontend's current labels — "Toggle side panel", "Open project switcher", "Toggle tasks panel", "Keyboard help" and "Key bindings" — are presentation labels under this rule, recorded here so that a reader does not mistake them for canonical terms.
+
+### Binding scope
+
+The context a chord is resolved in, which decides which action owns it.
+
+A binding scope is one of: a **global** scope, a **region** scope bound to one named region of the frontend's view, or an **overlay** scope bound to the topmost overlay. The scope, rather than a mode, decides the owner of a chord, so two scopes MAY bind the same chord to different actions without either being ambiguous.
+
+"Scope" alone is not the term. Scope is already used for provider connection scope and for authorization scope, and the naming rules forbid using one term as interchangeable shorthand across those boundaries.
+
+## 17. Review checklist
 
 Any implementation plan or architectural change SHOULD answer:
 
