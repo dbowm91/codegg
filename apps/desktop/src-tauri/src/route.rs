@@ -23,8 +23,8 @@ use std::collections::{HashMap, HashSet};
 use codegg_client::StoppedDriver;
 use codegg_protocol::{
     core::{
-        CommandCatalogScopeDto, CommandExecuteRequestDto, CommandKindDto, CoreRequest, CoreResponse,
-        RequestEnvelope, PROTOCOL_VERSION,
+        CommandCatalogScopeDto, CommandExecuteRequestDto, CommandKindDto, CoreRequest,
+        CoreResponse, RequestEnvelope, PROTOCOL_VERSION,
     },
     dto::Session,
     git::{
