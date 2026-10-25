@@ -31,7 +31,7 @@ frontend-action set and creates **no** `Run`.
 - `src/core/daemon_commands.rs` — the daemon's **executor**: the
   table-driven dispatch from a catalog form to a daemon request
   (`build_inner_request()`, `:148`), the serve-ability predicate
-  (`serves_form()`, `:429`), and the audit as a canonical `Run`.
+  (`serves_form()`, `:519`), and the audit as a canonical `Run`.
 - `src/command/` — Core `Command` struct, file loading, template processing
 - `src/tui/command.rs` — TUI `CommandRegistry`: a **cache** of the daemon's
   catalog with 169 built-in rows, plus the TUI's own local dynamic sources
@@ -663,7 +663,7 @@ Re-verified 2026-10-25 against `crates/codegg-core/src/command_catalog.rs`
 `bounds` `:186`, `check_catalog_bounds()` `:3234`),
 `crates/codegg-core/src/frontend_action.rs` (`FrontendAction` `:41`,
 `action_for_form()` `:323`), `src/core/daemon_commands.rs`
-(`build_inner_request()` `:148`, `serves_form()` `:429`) and
+(`build_inner_request()` `:148`, `serves_form()` `:519`) and
 `src/tui/command.rs`: the cached built-in rows still number **169** and
 `BuiltinSlashAction` still has **161** variants, byte-identical to
 `origin/main` (`cb4ceed9d`). The daemon's catalog carries **161** commands

@@ -56,30 +56,39 @@ interleave their disk checks.
 
 ### The `/lsp-*` command forms (M007-D)
 
-The daemon's command catalog classifies **27** `/lsp-*` forms as
+The daemon's command catalog classifies **26** `/lsp-*` forms as
 **daemon effects**, and that classification is **correct**: the
 authoritative language server is daemon-owned, and a frontend cannot own
 one. It is also, today, **mostly unserved**.
 
-- **2** forms are served: `/lsp-status` and `/lsp-errors`.
-- **25** forms have **no daemon request at all**. The daemon owns the
+- **2** forms are served: `/lsp-status` and `/lsp-errors`
+  (`src/core/daemon_commands.rs:422`).
+- **24** forms have **no daemon request at all**. The daemon owns the
   language server but exposes no request for the preview surface, the
   repair and review surfaces, the cache controls, the restart and stop
   controls, or the diagnostics-context surface.
 
-The TUI's own `/lsp-*` arms therefore **keep their local execution** and
-drive `egglsp` directly. That is recorded, not hidden: the daemon's
-catalog publishes the classification and publishes, per form, whether the
-daemon can serve it (`daemon_served`), and a frontend refuses an unserved
-form rather than dispatching it. The desktop palette shows the unserved
-forms as unavailable.
+The TUI's own `/lsp-*` arms therefore **keep their local execution** — and
+that execution **refuses**: `app.lsp_tool` is `None` in production (it is
+attached only in local, non-socket mode — `src/main.rs:4011-4013` — and
+every other assignment is inside the test module), so each arm answers with
+the toast `LSP not available` (`src/tui/app/mod.rs:7501`, `:7517`,
+`:7534`, `:7675`). `/lsp-preview-apply` refuses the same way: it reaches
+the daemon only inside the `else if let Some(ref lsp_tool)` branch
+(`src/tui/app/mod.rs:7601`), so it never gets there.
+
+Both refusals state the same fact — the authoritative language server is the
+daemon's — so the desktop palette showing those 24 forms as unavailable is
+**correct, not a gap**. The daemon's catalog publishes the classification
+and publishes, per form, whether the daemon can serve it (`daemon_served`),
+and a frontend refuses an unserved form rather than dispatching it.
 
 **This document must not claim a daemon route that does not exist.** The
 classification and the per-form verdict are recorded in the M007-D
 classification artifact
 (`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md` §10),
-which routes the 25 to a follow-up milestone: giving the daemon an LSP
-command surface is a new capability with its own ADR, and it is **not**
+which routes the 24 to a follow-up milestone (M007-F): giving the daemon an
+LSP command surface is a new capability with its own ADR, and it is **not**
 built inside a desktop-parity milestone.
 
 `NotReady` is a separate fact and keeps its own meaning here: it means
