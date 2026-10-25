@@ -976,3 +976,23 @@ that it collapsed the duplicate. The merged tree carries **one** block.
 The comment budget was re-banked on the merged tree — **126,467** comment
 lines, **1,116,139** words, a **0.1338** recorded ceiling — and the bank diff
 is confined to the files either line touched plus the global block.
+
+**The hosted lane is green on every job for this merge.** The head `1e03d6494`
+ran `CI` / `verify` (run `40178627059`, 29m52s), `Windows process launcher`
+(run `40178627115`, 32m58s), `Desktop E2E` (run `40178627060`, 12m34s), and the
+`Linux M004 process and IPC qualification` workflow — `process-ipc` (26m18s on
+run `40178624421`, 35m37s on run `40178627049`) and
+`restricted-userns-fails-closed` (13m9s and 15m42s on the same two runs).
+GitGuardian passed; `git-cost-pilot` and `c014-negative-reproduction` are
+skipped by design.
+
+**One new local failure is `main`'s, and it is not this line's.**
+`main`'s `tests/contained_worktree_hooks_path.rs`, carried in by this merge,
+is gated `#![cfg(unix)]` but drives a containment that needs the **protected
+mount view**, which `src/security/sandbox.rs` refuses anywhere but Linux, so
+it fails on macOS with *"the worktree child could not be contained: permission
+denied: protected mount view is available only on Linux"*. The file is
+byte-identical to `main`'s, and `main`'s own `CI` job on the commit that
+introduced it is green, because the hosted runner is Linux. The gate is
+`main`'s to tighten — `#![cfg(target_os = "linux")]` — and it is not folded
+into this line.
