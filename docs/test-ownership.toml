@@ -583,6 +583,20 @@ paths = [
 ]
 targets = ["contained_worktree_c008"]
 
+# The contained child's hooks-path pin (C009's chosen disposition): the argv
+# the child runs with, and the proof that the repository's own `post-checkout`
+# hook does not run inside the containment. It is a standalone target because
+# it is a different claim from the grant's: the grant test asserts what the
+# child may write, and this one asserts what the child does not run.
+[[groups]]
+id = "root_contained_worktree_hooks_path"
+member = "codegg"
+paths = [
+  "src/git_contained_worktree.rs",
+  "src/managed_process.rs",
+]
+targets = ["contained_worktree_hooks_path"]
+
 # The composed two-agent daemon race: two live agents sharing one checkout,
 # each issuing a real mutating broker operation, with the writer fence
 # resolved from the run's durable record.

@@ -179,6 +179,18 @@ run_guards() {
     echo "==> python3 scripts/check_contained_worktree_grant.py"
     (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_grant.py)
 
+    # The contained child's argv pins core.hooksPath, so the repository's own
+    # hooks cannot run inside the containment. The pin is a defence in depth,
+    # not a narrowing of the grant: the shared root stays writable. A pin
+    # carried by the environment would be dropped by the child's policy and
+    # would be a no-op that reads like a control, so the guard refuses that
+    # route by name.
+    echo "==> python3 scripts/check_contained_worktree_hooks_path.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_hooks_path.py --self-test)
+
+    echo "==> python3 scripts/check_contained_worktree_hooks_path.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_contained_worktree_hooks_path.py)
+
     # The shared checkout's lease belongs to the group, and the mediation
     # authority must not fail open. Both are correctness contracts whose
     # regressions are silent, so both guards run here with their self-tests.

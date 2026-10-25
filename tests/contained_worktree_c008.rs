@@ -390,10 +390,8 @@ fn the_grant_writes_exactly_one_path_under_the_git_directory() {
 /// `/repo/.git/worktrees-old` contains `/repo/.git/worktrees`, so a substring
 /// test accepted a root the child did not obtain.
 ///
-/// The comparison is by **membership**, so a backend that reports its roots in
-/// a different order, or reports extra roots alongside the required one, still
-/// passes: the question is whether the required root is *among* the obtained
-/// roots, not whether the obtained list matches it exactly.
+/// The comparison is by **membership**, so a backend that reports extra roots
+/// alongside the required one still passes.
 #[test]
 fn the_obtained_root_check_compares_paths_and_not_substrings() {
     let required = Path::new("/repo/.git/worktrees");
@@ -781,14 +779,16 @@ async fn the_contained_child_cannot_write_outside_its_grant() {
         "the checkout's '.git' is not a linked-worktree pointer: {pointer}"
     );
 
-    // The positive controls: both hostile surfaces really ran.
+    // The positive control: the hostile filter really ran. The hook is the
+    // opposite — the child's `core.hooksPath` is pinned, so it never runs.
     assert!(
         filter_ran.is_file(),
         "the hostile filter never ran, so the containment result is vacuous"
     );
     assert!(
-        hook_ran.is_file(),
-        "the hostile hook never ran, so the containment result is vacuous"
+        !hook_ran.is_file(),
+        "the repository's post-checkout hook ran inside the containment, so the \
+         hooks-path pin did not take effect"
     );
 
     // The negatives: neither surface wrote a ref.
