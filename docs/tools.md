@@ -448,7 +448,7 @@ effect.
 | Bounded file diff for review | `diff` (requires `path` **and** full prior `original` text) | `review` (LLM synthesis over the working-tree diff) |
 | Run shell text | `bash` (model exec; stdout is projected) | `terminal` (one-shot `sh -c`; args join verbatim, quote scripts inside `command`; stdout+stderr then `[exit code: N]`) |
 | In-turn steps and todos | `todowrite` / `todoread` | `goal_*` (durable session goals), `work_plan_*` (durable plan projection), `work_order` (cross-session future work) |
-| Discover tools or skills | `tool_search` (paged; `query: ""` browses; `name` + `detail=schema` needs no query) | `skill` (loads one skill by exact name; no listing operation) |
+| Discover tools or skills | `tool_search` (paged; `query: ""` browses; `name` + `detail=schema` needs no query) | `skill` (loads one skill by exact name; unknown names return did-you-mean suggestions) |
 | Call several read-only tools deterministically | `tool_program` (only `DirectOrProgrammatic`/`ProgrammaticOnly` + read-only effect class) | Direct calls (no shared ledger or contract snapshot) |
 
 Counts and sizes are integers: whole-valued floats (`500.0`) are coerced to

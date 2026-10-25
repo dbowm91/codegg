@@ -575,14 +575,8 @@ fn convert_expr(
                         });
                     }
                     "call" => {
-                        if c.args.is_empty() {
-                            return Err(ToolProgramError::Parse(Diagnostic::new(
-                                DiagnosticCode::InvalidCallDescriptor,
-                                "call() requires a descriptor dict argument".to_string(),
-                                SourceSpan::new(0, 0),
-                            )));
-                        }
-                        let descriptor = convert_expr(&c.args[0], source, node_count, depth)?;
+                        // Collect trailing k=v overrides first so both the
+                        // dict form and the bare-kwarg sugar share them.
                         let mut kwargs = Vec::new();
                         for kw in &c.keywords {
                             if let Some(name) = &kw.arg {
@@ -599,6 +593,50 @@ fn convert_expr(
                                 )));
                             }
                         }
+                        // Kwarg sugar: call(tool="read", path=...) builds the
+                        // descriptor dict from the kwargs.
+                        if c.args.is_empty() {
+                            if kwargs.is_empty() {
+                                return Err(ToolProgramError::Parse(Diagnostic::new(
+                                    DiagnosticCode::InvalidCallDescriptor,
+                                    "call() requires a descriptor dict as the first argument: \
+                                     call({\"tool\": \"<name>\", ...}) e.g. \
+                                     call({\"tool\": \"read\", \"path\": \"src/main.rs\"})"
+                                        .to_string(),
+                                    SourceSpan::new(0, 0),
+                                )));
+                            }
+                            if kwargs.len() > MAX_COLLECTION_ELEMENTS {
+                                return Err(ToolProgramError::Parse(Diagnostic::new(
+                                    DiagnosticCode::MaxCollectionSize,
+                                    format!(
+                                        "call() with {} kwargs exceeds maximum {}",
+                                        kwargs.len(),
+                                        MAX_COLLECTION_ELEMENTS
+                                    ),
+                                    SourceSpan::new(0, 0),
+                                )));
+                            }
+                            let mut keys = Vec::with_capacity(kwargs.len());
+                            let mut values = Vec::with_capacity(kwargs.len());
+                            for kw in &kwargs {
+                                keys.push(Expr::StringLiteral {
+                                    value: kw.name.clone(),
+                                    span: Span::new(0, 0),
+                                });
+                                values.push(kw.value.clone());
+                            }
+                            return Ok(Expr::ToolCallExpr {
+                                descriptor: Box::new(Expr::Dict {
+                                    keys,
+                                    values,
+                                    span: Span::new(0, 0),
+                                }),
+                                kwargs: Vec::new(),
+                                span: Span::new(0, 0),
+                            });
+                        }
+                        let descriptor = convert_expr(&c.args[0], source, node_count, depth)?;
                         return Ok(Expr::ToolCallExpr {
                             descriptor: Box::new(descriptor),
                             kwargs,
@@ -1165,6 +1203,68 @@ mod tests {
                 assert!(matches!(value, Expr::ToolCallExpr { .. }));
             }
             _ => panic!("expected Assign"),
+        }
+    }
+
+    #[test]
+    fn reject_bare_call_mentions_descriptor_shape() {
+        let err = parse_source("result = call()\n").expect_err("bare call() must be rejected");
+        match err {
+            ToolProgramError::Parse(diagnostic) => {
+                assert_eq!(diagnostic.code, DiagnosticCode::InvalidCallDescriptor);
+                assert!(
+                    diagnostic.message.contains("{\"tool\":"),
+                    "TP011 must show the descriptor shape, got: {}",
+                    diagnostic.message
+                );
+            }
+            other => panic!("expected Parse diagnostic, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_call_kwargs_sugar_builds_descriptor_dict() {
+        let src = "result = call(tool=\"read\", path=\"src/main.rs\")\n";
+        let prog = parse_source(src).unwrap();
+        match &prog.body[0] {
+            Stmt::Assign { value, .. } => match value {
+                Expr::ToolCallExpr {
+                    descriptor, kwargs, ..
+                } => {
+                    assert!(
+                        kwargs.is_empty(),
+                        "sugar must normalize kwargs into the dict"
+                    );
+                    match descriptor.as_ref() {
+                        Expr::Dict { keys, values, .. } => {
+                            let names: Vec<&str> = keys
+                                .iter()
+                                .map(|k| match k {
+                                    Expr::StringLiteral { value, .. } => value.as_str(),
+                                    _ => panic!("sugar keys must be string literals"),
+                                })
+                                .collect();
+                            assert_eq!(names, vec!["tool", "path"]);
+                            assert_eq!(values.len(), 2);
+                        }
+                        _ => panic!("sugar descriptor must be a Dict"),
+                    }
+                }
+                _ => panic!("expected ToolCallExpr"),
+            },
+            _ => panic!("expected Assign"),
+        }
+    }
+
+    #[test]
+    fn reject_call_kwargs_unpacking() {
+        let src = "d = {\"tool\": \"read\"}\nresult = call(**d)\n";
+        let err = parse_source(src).expect_err("**kwargs unpacking must be rejected");
+        match err {
+            ToolProgramError::Parse(diagnostic) => {
+                assert_eq!(diagnostic.code, DiagnosticCode::UnsupportedSyntax);
+            }
+            other => panic!("expected Parse diagnostic, got: {:?}", other),
         }
     }
 

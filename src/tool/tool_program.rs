@@ -159,7 +159,10 @@ impl Tool for ToolProgramTool {
          read-only effect class (ReadOnly, ReadValidate) and an output schema may be called; \
          DirectOnly and mutating tools are rejected. \
          Intermediate tool call outputs stay in the program artifact ledger and do not \
-         enter the parent transcript."
+         enter the parent transcript. \
+         Example: result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}). \
+         Extra tool args may be extra dict keys or trailing k=v pairs, and parallel() \
+         takes the same dicts."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -168,11 +171,12 @@ impl Tool for ToolProgramTool {
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "Restricted Python source code. Supports: variables, \
-                        assignments, if/elif/else, for loops (with range()), while loops, \
-                        function calls (call()), parallel groups (parallel()), emit(), \
-                        fail(), basic arithmetic, string operations, list/dict literals, \
-                        and indexing."
+                    "description": "Restricted Python source code (no while loops, imports, \
+                        or defs). Supports: variables, assignments, if/elif/else, \
+                        for loops (with range()), call(descriptor_dict[, k=v...]) e.g. \
+                        result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}), \
+                        parallel groups (parallel()), emit(), fail(), basic arithmetic, \
+                        string operations, list/dict literals, and indexing."
                 },
                 "tools": {
                     "type": "array",
@@ -298,7 +302,8 @@ impl Tool for ToolProgramTool {
             output.push_str(
                 "\nOnly tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
                  read-only effect class (ReadOnly, ReadValidate) may be called; \
-                 DirectOnly and mutating tools are rejected.",
+                 DirectOnly and mutating tools are rejected. \
+                 Expected: call({\"tool\": \"<name>\", ...}).",
             );
         }
         Ok(StructuredToolResult {

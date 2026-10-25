@@ -87,6 +87,14 @@ impl TerminalTool {
     }
 
     fn effective_script(command: &str, args: &[String]) -> String {
+        // Normalize the `sh -c` wrapper to what the user meant: `command:"sh"`
+        // with `args:["-c", "<script>", ...]` runs as `sh -c "<script>"`, so
+        // unwrap to the inner script before spawn and security checks. Without
+        // this the verbatim join `sh -c echo hi` runs `echo` with `$0=hi` and
+        // prints nothing. Only the exact `sh` + `-c` shape is unwrapped.
+        if command == "sh" && args.first().is_some_and(|first| first == "-c") && args.len() >= 2 {
+            return args[1..].join(" ");
+        }
         if args.is_empty() {
             command.to_string()
         } else {
@@ -173,7 +181,7 @@ impl Tool for TerminalTool {
     }
 
     fn description(&self) -> &str {
-        "Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Command plus args join verbatim with spaces and run via `sh -c` — quote a `sh -c` script inside `command` (args are not re-quoted); stdout and stderr are both returned followed by `[exit code: N]`. Correct form is `command:\"echo hi\"` with empty `args`, or `command:'sh -c \"echo hi\"'` with empty `args`; do not pass `command:\"sh\"` with `args:[\"-c\", \"echo hi\"]` — args join verbatim so `sh -c echo hi` runs `echo` with `$0=hi` and prints nothing. Bash is the canonical model shell — prefer it for pipelines; human interactive terminals run in the TUI over the daemon interactive-process service"
+        "Routing: compat one-shot raw `sh -c` only — use me only for compat one-shot; prefer bash for pipelines/interactive semantics, test for test runners, python_script for Python. Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Command plus args join verbatim with spaces and run via `sh -c` — quote a `sh -c` script inside `command` (args are not re-quoted); stdout and stderr are both returned followed by `[exit code: N]`. Correct form is `command:\"echo hi\"` with empty `args`. A `command:\"sh\"` with `args:[\"-c\", \"<script>\"]` wrapper is normalized to the inner script before spawn. Bash is the canonical model shell — prefer it for pipelines; human interactive terminals run in the TUI over the daemon interactive-process service"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -357,20 +365,6 @@ impl TerminalTool {
             output.exit_status.code().unwrap_or(-1)
         ));
 
-        // Model-facing guard for the `sh -c` double-wrap footgun: `command`
-        // plus `args` join verbatim, so `command:"sh"` with
-        // `args:["-c", "<script>"]` runs via `sh -c "sh -c <script>"` and the
-        // inner `sh -c echo hi` form prints nothing. Advisory only — the
-        // command above already ran. Prefer `command:"echo hi"` (empty args)
-        // or `command:'sh -c "echo hi"'` (empty args).
-        if command == "sh" && args.first().is_some_and(|first| first == "-c") {
-            result.push_str(&format!(
-                "\n\n[hint: `command:\"sh\"` with `args:[\"-c\", ...]` joined verbatim to `{full_command}`; \
-                that `sh -c <script>` without inner quoting runs the script name as a command with `$0` set and usually prints nothing. \
-                Use `command:\"echo hi\"` with empty `args`, or `command:'sh -c \"echo hi\"'` with empty `args` instead.]"
-            ));
-        }
-
         Ok(result)
     }
 }
@@ -418,12 +412,24 @@ mod tests {
             "printf --label café"
         );
         assert_eq!(TerminalTool::effective_script("true", &[]), "true");
-        // Args join verbatim with spaces: a `sh -c` script must arrive
-        // quoted inside `command` (or as one pre-quoted arg), because
-        // `sh -c echo hi` runs `echo` with `$0=hi` and prints nothing.
+        // The `sh -c` wrapper is normalized to the inner script so the tool
+        // does what the caller meant instead of running the script name with
+        // `$0` set. Only the exact `sh` + `-c` shape unwraps.
         assert_eq!(
             TerminalTool::effective_script("sh", &["-c".to_string(), "echo hi".to_string()]),
-            "sh -c echo hi"
+            "echo hi"
+        );
+        assert_eq!(
+            TerminalTool::effective_script(
+                "sh",
+                &["-c".to_string(), "echo hi".to_string(), "extra".to_string()]
+            ),
+            "echo hi extra"
+        );
+        // Non-`sh` wrappers and non-`-c` flags still join verbatim.
+        assert_eq!(
+            TerminalTool::effective_script("bash", &["-c".to_string(), "echo ok".to_string()]),
+            "bash -c echo ok"
         );
     }
 
@@ -517,13 +523,36 @@ mod tests {
             )
             .is_err());
 
-        let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["sh"]);
+        let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["printf"]);
+        // The `sh -c` wrapper normalizes away, so the allowlist applies to
+        // the inner script: an allowlisted inner command passes, any other
+        // inner command is refused.
         assert!(shell_allowlisted
-            .check_command_security_for_args(
-                "sh",
-                &["-c".to_string(), "$(touch marker)".to_string()]
-            )
+            .check_command_security_for_args("sh", &["-c".to_string(), "printf ok".to_string()])
             .is_ok());
+        assert!(shell_allowlisted
+            .check_command_security_for_args("sh", &["-c".to_string(), "echo ok".to_string()])
+            .is_err());
+    }
+
+    #[test]
+    fn sh_wrapper_normalizes_with_bash_safety_parity() {
+        let bash = BashTool::new().with_blocked_commands(vec!["rm"]);
+        let terminal = TerminalTool::new().with_blocked_commands(vec!["rm"]);
+        let args = vec!["-c".to_string(), "rm -rf /tmp/probe".to_string()];
+        // The wrapper unwraps to the inner script the shell will run.
+        assert_eq!(
+            TerminalTool::effective_script("sh", &args),
+            "rm -rf /tmp/probe"
+        );
+        // The blocked inner command is refused, matching bash on the same
+        // inner script.
+        let script = TerminalTool::effective_script("sh", &args);
+        let parts: Vec<&str> = script.split_whitespace().collect();
+        assert!(bash.check_command_security(&script, &parts).is_err());
+        assert!(terminal
+            .check_command_security_for_args("sh", &args)
+            .is_err());
     }
 
     /// A hard-denied command must not spawn its side effect.

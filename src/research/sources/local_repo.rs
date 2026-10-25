@@ -206,4 +206,132 @@ impl ResearchSourceAdapter for LocalRepoSource {
             Ok(sources)
         })
     }
+
+    fn collect_with_receipt<'a>(
+        &'a self,
+        request: &'a ResearchRequest,
+        plan: &'a ResearchPlan,
+    ) -> Pin<Box<dyn Future<Output = Result<SourceCollection>> + Send + 'a>> {
+        Box::pin(async move {
+            match self.collect(request, plan).await {
+                Ok(sources) => {
+                    let links = sources
+                        .iter()
+                        .map(|source| RetrievalSourceLink {
+                            source_id: source.id.clone(),
+                            upstream_stable_id: None,
+                            group: None,
+                            providers: Vec::new(),
+                            published_at: source.published_at,
+                            provenance: None,
+                        })
+                        .collect::<Vec<_>>();
+                    let count = links.len();
+                    Ok(SourceCollection {
+                        sources,
+                        receipts: vec![ResearchRetrievalReceipt {
+                            adapter: "local_repo".to_string(),
+                            state: RetrievalState::Complete,
+                            source_count: count,
+                            coverage: Some("local workspace search".to_string()),
+                            warning_codes: Vec::new(),
+                            trust_markers: Vec::new(),
+                            failed_providers: Vec::new(),
+                            sources: links,
+                        }],
+                    })
+                }
+                Err(e) => Ok(SourceCollection {
+                    sources: Vec::new(),
+                    receipts: vec![ResearchRetrievalReceipt {
+                        adapter: "local_repo".to_string(),
+                        state: RetrievalState::Failed,
+                        source_count: 0,
+                        coverage: Some(format!("local collection failed: {e}")),
+                        warning_codes: vec!["local_collection_failed".to_string()],
+                        trust_markers: Vec::new(),
+                        failed_providers: Vec::new(),
+                        sources: Vec::new(),
+                    }],
+                }),
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::research::sources::ResearchSourceAdapter;
+
+    fn test_request(question: &str) -> ResearchRequest {
+        ResearchRequest {
+            id: "run-1".to_string(),
+            question: question.to_string(),
+            mode: ResearchMode::NarrowAnswer,
+            audience: ResearchAudience::Human,
+            depth: ResearchDepth::Low,
+            output_profiles: vec![],
+            constraints: vec![],
+            sources: vec![ResearchSourceSpec {
+                spec_type: SourceSpecType::Local,
+                value: String::new(),
+            }],
+            existing_context_refs: vec![],
+            budget: ResearchBudget {
+                max_sources: 8,
+                max_chunks_per_source: 20,
+                max_evidence_spans: 200,
+                max_model_calls: 0,
+                max_output_tokens: None,
+                allow_network: false,
+            },
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn test_plan() -> ResearchPlan {
+        ResearchPlan {
+            scope: "test".to_string(),
+            comparison_axes: vec![],
+            source_classes: vec![],
+            exclusion_criteria: vec![],
+            stopping_conditions: vec![],
+            expected_outputs: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn local_collection_emits_a_complete_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "research probe keyword alpha").unwrap();
+        let source = LocalRepoSource::new(dir.path().to_path_buf());
+        let request = test_request("probe keyword alpha");
+        let collection = source
+            .collect_with_receipt(&request, &test_plan())
+            .await
+            .unwrap();
+        assert_eq!(collection.receipts.len(), 1);
+        let receipt = &collection.receipts[0];
+        assert_eq!(receipt.adapter, "local_repo");
+        assert_eq!(receipt.state, RetrievalState::Complete);
+        assert_eq!(receipt.source_count, collection.sources.len());
+        assert!(!collection.sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_receipt_is_complete_even_with_no_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "unrelated content").unwrap();
+        let source = LocalRepoSource::new(dir.path().to_path_buf());
+        let request = test_request("zzz-no-such-keyword-qqq");
+        let collection = source
+            .collect_with_receipt(&request, &test_plan())
+            .await
+            .unwrap();
+        assert_eq!(collection.receipts.len(), 1);
+        assert_eq!(collection.receipts[0].adapter, "local_repo");
+        assert_eq!(collection.receipts[0].state, RetrievalState::Complete);
+        assert_eq!(collection.sources.len(), 0);
+    }
 }

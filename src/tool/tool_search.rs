@@ -219,7 +219,8 @@ impl Tool for ToolSearchTool {
     fn description(&self) -> &str {
         "Search for available tools by name or description. \
          Searches multiple words by relevance and returns compact authorized tool names. \
-         Use query='' to list tools in bounded pages, then request one exact schema by name."
+         Use query='' to list tools in bounded pages, then request one exact schema by name. \
+         Curated bundles: file ops read/write/edit/apply_patch; validation validate_json/validate_toml/config_preflight; search websearch/repo_search; shell bash/test/python_script."
     }
 
     fn set_available_tools(&mut self, tools: Vec<String>) {
@@ -766,5 +767,13 @@ mod tests {
             "m003 broad lsp search: {full_bytes} -> {broad_bytes} bytes ({}% reduction)",
             100usize.saturating_sub(broad_bytes.saturating_mul(100) / full_bytes.max(1))
         );
+    }
+
+    #[test]
+    fn description_names_curated_bundles() {
+        let catalog = ToolCatalog::new();
+        let search = ToolSearchTool::new(Arc::new(catalog));
+        assert!(search.description().contains("Curated bundles"));
+        assert!(search.description().contains("read/write/edit/apply_patch"));
     }
 }

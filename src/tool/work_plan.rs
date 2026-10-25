@@ -136,7 +136,10 @@ impl Tool for WorkPlanGetTool {
                 .await
                 .map_err(|error| ToolError::Execution(error.to_string()))?
                 .ok_or_else(|| {
-                    ToolError::Execution("no active work plan for this session".to_string())
+                    ToolError::Execution(
+                        "no active work plan for this session; use todowrite for in-turn steps"
+                            .to_string(),
+                    )
                 })?
         };
         if plan.session_id != self.session_id {

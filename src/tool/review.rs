@@ -122,18 +122,69 @@ impl ReviewTool {
             .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
 
         if let Some(provider) = self.provider.as_deref() {
-            return analyze_diff_with_provider(diff, provider, &model, context).await;
+            let model_id = split_model_target(&model)?.1;
+            return analyze_diff_with_provider(diff, provider, &model_id, context).await;
         }
 
         let mut registry = ProviderRegistry::new();
         register_builtin_with_config(&mut registry, &config);
-        let provider = registry
-            .get(&model)
-            .or_else(|| registry.list().first().copied())
-            .ok_or_else(|| ToolError::Execution("no provider available".to_string()))?;
+        let (provider, model_id) = resolve_review_provider(&registry, &model)?;
 
-        analyze_diff_with_provider(diff, provider, &model, context).await
+        analyze_diff_with_provider(diff, provider, &model_id, context).await
     }
+}
+
+/// Split a `provider/model` string into its registry provider name and bare
+/// model id. The registry is keyed by provider id
+/// (`provider_core.rs::get` is an exact match), so looking up the full
+/// `provider/model` string never matches and must not fall through to an
+/// arbitrary provider.
+fn split_model_target(model: &str) -> Result<(String, String), ToolError> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::Execution(
+            "Model must be specified as 'provider/model'. Set `model` via `codegg edit` or pass `-m provider/model`; run `codegg doctor` to check wiring."
+                .to_string(),
+        ));
+    }
+    let raw_id = match trimmed.split_once('/') {
+        Some((_, id)) => id.trim(),
+        None => {
+            return Err(ToolError::Execution(format!(
+                "Model '{trimmed}' must be specified as 'provider/model'. Set `model` via `codegg edit` or pass `-m provider/model`; run `codegg doctor` to check wiring."
+            )));
+        }
+    };
+    let provider_name =
+        crate::core::session_selection::runtime_model_provider_segment(trimmed).trim();
+    if provider_name.is_empty() || raw_id.is_empty() {
+        return Err(ToolError::Execution(format!(
+            "Model '{trimmed}' must be specified as 'provider/model' with a non-empty model id. Set `model` via `codegg edit` or pass `-m provider/model`; run `codegg doctor` to check wiring."
+        )));
+    }
+    Ok((provider_name.to_string(), raw_id.to_string()))
+}
+
+fn resolve_review_provider<'a>(
+    registry: &'a ProviderRegistry,
+    model: &str,
+) -> Result<(&'a dyn Provider, String), ToolError> {
+    let (provider_name, model_id) = split_model_target(model)?;
+    let provider = registry.get(&provider_name).ok_or_else(|| {
+        ToolError::Execution(format!(
+            "No active connection matches provider '{provider_name}' (model '{model}'). Open /connect to create one, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring."
+        ))
+    })?;
+    Ok((provider, model_id))
+}
+
+fn map_llm_request_error(e: &crate::provider::ProviderError, model: &str) -> ToolError {
+    if e.error_class() == "model_not_found" {
+        return ToolError::Execution(format!(
+            "Model '{model}' was not found by the provider ({e}). Open /connect to create a connection, or set `model` via `codegg edit` / `-m provider/model`; run `codegg doctor` to check wiring."
+        ));
+    }
+    ToolError::Execution(format!("LLM request failed: {e}"))
 }
 
 async fn analyze_diff_with_provider(
@@ -173,7 +224,7 @@ async fn analyze_diff_with_provider(
     let mut stream = provider
         .stream(&request)
         .await
-        .map_err(|e| ToolError::Execution(format!("LLM request failed: {}", e)))?;
+        .map_err(|e| map_llm_request_error(&e, &request.model))?;
 
     let mut review = String::new();
     while let Some(event) = stream.next().await {
@@ -390,6 +441,37 @@ mod tests {
         assert_eq!(
             contexts.lock().unwrap().as_slice(),
             &[Some("session-review-structured".to_string())]
+        );
+    }
+
+    #[test]
+    fn review_unknown_provider_points_at_connect() {
+        let registry = ProviderRegistry::new();
+        let err = match resolve_review_provider(&registry, "openai/gpt-4o") {
+            Ok(_) => panic!("unknown provider must fail"),
+            Err(err) => err,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/connect"),
+            "unknown provider must name /connect, got: {msg}"
+        );
+        assert!(msg.contains("openai"), "must name provider, got: {msg}");
+    }
+
+    #[test]
+    fn review_model_not_found_error_is_actionable() {
+        let api_err = crate::provider::ProviderError::api("404", "Model 'openai/gpt-4o' not found");
+        assert_eq!(api_err.error_class(), "model_not_found");
+        let mapped = map_llm_request_error(&api_err, "gpt-4o");
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("-m provider/model") || msg.contains("/connect"),
+            "model_not_found must carry fix guidance, got: {msg}"
+        );
+        assert!(
+            msg.contains("codegg doctor"),
+            "model_not_found must name doctor, got: {msg}"
         );
     }
 }

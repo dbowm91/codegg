@@ -105,7 +105,7 @@ impl Tool for ExtensionSearchTool {
         "extension_search"
     }
     fn description(&self) -> &str {
-        "Search the resolved extension catalog. Results are metadata only; installation requires an explicit host action. An empty result means the query matched nothing in the resolved catalog (backend failures error instead of returning empty)."
+        "Search the resolved extension catalog. Results are metadata only; installation requires an explicit host action. An empty result means the query matched nothing in the resolved catalog (backend failures error instead of returning empty). Returns a {status, configured, count, extensions} envelope: success with count 0 means no match."
     }
     fn parameters(&self) -> serde_json::Value {
         json!({"type":"object","properties":{"query":{"type":"string","maxLength":256},"component":{"type":"string","enum":["skill","mcp","tool","browser"]},"limit":{"type":"integer","minimum":1,"maximum":16}},"required":["query"]})
@@ -147,13 +147,14 @@ impl Tool for ExtensionSearchTool {
             .service
             .search_extensions(query, component, limit)
             .await;
-        let value = serde_json::Value::Array(entries.iter().map(|entry| json!({
+        let list = serde_json::Value::Array(entries.iter().map(|entry| json!({
             "id": entry.id, "name": entry.name, "version": entry.version,
             "description": entry.description, "format": entry.format,
             "components": entry.components, "prerequisites": entry.prerequisites,
             "security_notes": entry.security_notes, "source": {"id": entry.source_id, "tier": entry.tier.to_string()},
             "install_requires_host_action": true,
         })).collect());
+        let value = json!({"status": "success", "configured": true, "query": query, "count": list.as_array().map_or(0, |a| a.len()), "extensions": list});
         Ok(StructuredToolResult::with_value(
             value.to_string(),
             value,
@@ -167,5 +168,27 @@ impl Tool for ExtensionSearchTool {
                 trust: crate::tool::ToolTrust::ExternalUntrusted,
             }),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::Tool;
+
+    #[tokio::test]
+    async fn extension_search_returns_status_configured_count_envelope() {
+        let tool = ExtensionSearchTool::new(std::sync::Arc::new(
+            crate::plugin::marketplace::MarketplaceService::new(),
+        ));
+        let output = tool
+            .execute(serde_json::json!({"query": "zzz-no-such-extension"}))
+            .await
+            .expect("extension search");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("json envelope");
+        assert_eq!(value["status"], "success");
+        assert_eq!(value["configured"], true);
+        assert_eq!(value["count"], 0);
+        assert!(value["extensions"].as_array().is_some());
     }
 }

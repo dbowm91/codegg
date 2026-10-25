@@ -422,7 +422,7 @@ impl PreflightService {
                 severity: PreflightSeverity::Warn,
                 machine_code: result.machine_code.clone(),
                 message: format!(
-                    "Advisory command risk (advisory-block): {}",
+                    "Advisory command risk (advisory-block, scoped to session root; advisory only, execution proceeded): {}",
                     truncate(&sanitize_advisory_output(output), 200)
                 ),
                 location: None,
@@ -888,5 +888,34 @@ mod tests {
         let decision = service.parse_replace_check_result(result);
         assert!(!decision.is_blocked());
         assert!(decision.findings().is_empty());
+    }
+
+    #[test]
+    fn advisory_block_message_names_session_root_scoping() {
+        let service = PreflightService::with_runtime(
+            std::sync::Arc::new(
+                crate::eggsact::adapter::EggsactRuntime::new(
+                    crate::eggsact::adapter::EggsactConfig::default(),
+                )
+                .unwrap(),
+            ),
+            PreflightPolicy::default(),
+        );
+        let result = EggsactCallResult {
+            output: "verdict: block\nrisk: high".to_string(),
+            success: true,
+            elapsed_ms: 1,
+            truncated: false,
+            machine_code: None,
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let decision = service.parse_command_result(result);
+        let summary = decision.summary();
+        assert!(summary.contains("session root"));
+        assert!(summary.contains("advisory only"));
     }
 }

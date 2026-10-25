@@ -37,7 +37,9 @@ impl crate::tool::Tool for ContextReadTool {
          (ctx://evidence/session_id/checkpoint_id/evidence_id). Handles are session-scoped \
          (same session only, never cross-session) and persist for the session lifetime; \
          copy the handle exactly — a mistyped handle fails closed with `no artifact found`. \
-         Small outputs may already be inline in the transcript and need no second round-trip."
+         Small outputs may already be inline in the transcript and need no second round-trip. \
+          If the handle block already contains the full output, don't re-fetch; \
+          context_read is for `Full output: use context_read` truncation only."
     }
 
     fn parameters(&self) -> Value {

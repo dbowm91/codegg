@@ -65,12 +65,13 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
         // M003 operation-scoped program adapters: hidden program-only
         // reads delegating canonical Git/LSP owners. Registered and
         // broker-callable by programs, never model-visible and never
-        // returned by `tool_search`.
-        "git_read" | "lsp_read" => ToolDisclosure::Hidden,
+        // returned by `tool_search`. `codesearch` is the M001 compat alias
+        // over canonical `repo_search`: still registered and callable for
+        // compat, but hidden from default listings so agents pick one.
+        "git_read" | "lsp_read" | "codesearch" => ToolDisclosure::Hidden,
         // Specialist synthesis / evidence / fetch variants: deferred,
         // discoverable via `tool_search`. `repo_search` stays core as the
-        // single canonical repo-inspect primitive; `codesearch` remains
-        // registered as the M001 compatibility alias but deferred.
+        // single canonical repo-inspect primitive.
         "git_query"
         | "research"
         | "research_search"
@@ -79,7 +80,6 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
         | "security_search"
         | "batch_fetch"
         | "evidence_bundle"
-        | "codesearch"
         | "review"
         | "image"
         | "terminal"
@@ -127,7 +127,6 @@ fn is_profile_specific_name(name: &str) -> bool {
             | "repo_map"
             | "batch_fetch"
             | "evidence_bundle"
-            | "codesearch"
             | "security"
             | "security_search"
     )
@@ -254,9 +253,9 @@ pub const MINIMAL_PALETTE: &[&str] = &[
 
 /// Canonical plan-mode allowed surface.
 ///
-/// Read-only inspection plus planning/state operations. Includes both the
-/// canonical `repo_search` and the retained `codesearch` alias (M001) so
-/// existing plan-mode configs keep working, plus `tool_search` so deferred
+/// Read-only inspection plus planning/state operations. Uses the canonical
+/// `repo_search` (the hidden `codesearch` alias stays callable for compat
+/// but is not plan-advertised), plus `tool_search` so deferred
 /// capability remains discoverable in plan mode. Mutating tools remain
 /// excluded.
 pub const PLAN_ALLOWED: &[&str] = &[
@@ -264,7 +263,6 @@ pub const PLAN_ALLOWED: &[&str] = &[
     "glob",
     "grep",
     "list",
-    "codesearch",
     "repo_search",
     "webfetch",
     "lsp",
@@ -297,7 +295,6 @@ pub const RESEARCH_AGENT_IMMEDIATE: &[&str] = &[
     "repo_map",
     "batch_fetch",
     "evidence_bundle",
-    "codesearch",
 ];
 
 /// Deferred tools that become immediate for the `security-review` role.
@@ -364,7 +361,6 @@ mod tests {
             "security_search",
             "batch_fetch",
             "evidence_bundle",
-            "codesearch",
             "review",
             "image",
             "terminal",
@@ -384,6 +380,15 @@ mod tests {
                 "{name} should not be in the core immediate set"
             );
         }
+    }
+
+    #[test]
+    fn codesearch_alias_is_hidden_but_not_core() {
+        // M001 compat alias: registered and callable, never advertised.
+        assert_eq!(disclosure_for("codesearch"), ToolDisclosure::Hidden);
+        assert!(is_hidden("codesearch"));
+        assert!(!is_deferred_by_default("codesearch"));
+        assert!(!is_core("codesearch"));
     }
 
     #[test]
@@ -452,7 +457,7 @@ mod tests {
     fn specialist_roles_receive_role_appropriate_immediate_palette() {
         assert!(immediate_for_agent("research", "research"));
         assert!(immediate_for_agent("evidence_bundle", "research"));
-        assert!(immediate_for_agent("codesearch", "research"));
+        assert!(!immediate_for_agent("codesearch", "research"));
         assert!(!immediate_for_agent("research", "build"));
         assert!(!immediate_for_agent("security", "build"));
         assert!(immediate_for_agent("security", "security-review"));

@@ -358,7 +358,7 @@ pub fn render_human_brief(
 
 /// Render an agent-facing compact answer.
 pub fn render_agent_answer(
-    _request: &ResearchRequest,
+    request: &ResearchRequest,
     claims: &[ClaimRecord],
     contradictions: &[ContradictionRecord],
     sources: &[SourceRecord],
@@ -367,6 +367,17 @@ pub fn render_agent_answer(
     let mut out = String::with_capacity(2048);
 
     writeln!(out, "# Research Answer").unwrap();
+    writeln!(out).unwrap();
+    let network = if request.budget.allow_network {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    let (local, web) = count_sources_by_corpus(sources);
+    writeln!(out, "**Mode:** {:?}", request.mode).unwrap();
+    writeln!(out, "**Depth:** {:?}", request.depth).unwrap();
+    writeln!(out, "**Network:** {network}").unwrap();
+    writeln!(out, "**Sources searched:** local: {local}, web: {web}").unwrap();
     writeln!(out).unwrap();
 
     // Direct answer from recommendation
@@ -654,6 +665,26 @@ fn short_id(id: &str) -> &str {
     }
 }
 
+fn is_local_source(source: &SourceRecord) -> bool {
+    matches!(
+        source.source_type,
+        SourceType::LocalFile | SourceType::LocalSearchResult
+    )
+}
+
+fn count_sources_by_corpus(sources: &[SourceRecord]) -> (usize, usize) {
+    let mut local = 0;
+    let mut web = 0;
+    for source in sources {
+        if is_local_source(source) {
+            local += 1;
+        } else {
+            web += 1;
+        }
+    }
+    (local, web)
+}
+
 fn truncate_str(s: &str, max_chars: usize) -> String {
     let mut out = crate::util::truncate_prefix(s, max_chars).to_string();
     if out.len() < s.len() {
@@ -675,5 +706,75 @@ mod truncate_tests {
         assert!(out.starts_with("综合报告"));
         assert!(out.ends_with('…'));
         assert_eq!(truncate_str(&s, s.len()), s);
+    }
+}
+
+#[cfg(test)]
+mod agent_answer_header_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn test_request(allow_network: bool) -> ResearchRequest {
+        ResearchRequest {
+            id: "run-1".to_string(),
+            question: "q".to_string(),
+            mode: ResearchMode::NarrowAnswer,
+            audience: ResearchAudience::AgentCoder,
+            depth: ResearchDepth::Low,
+            output_profiles: vec![],
+            constraints: vec![],
+            sources: vec![],
+            existing_context_refs: vec![],
+            budget: ResearchBudget {
+                max_sources: 8,
+                max_chunks_per_source: 20,
+                max_evidence_spans: 200,
+                max_model_calls: 0,
+                max_output_tokens: None,
+                allow_network,
+            },
+            created_at: Utc::now(),
+        }
+    }
+
+    fn test_source(id: &str, source_type: SourceType) -> SourceRecord {
+        SourceRecord {
+            id: id.to_string(),
+            run_id: "run-1".to_string(),
+            uri: format!("uri:{id}"),
+            title: None,
+            source_type,
+            source_quality: SourceQuality::Secondary,
+            retrieved_at: Utc::now(),
+            published_at: None,
+            content_hash: None,
+            locator: SourceLocator::TextSpan {
+                label: "test".to_string(),
+            },
+            notes: vec![],
+        }
+    }
+
+    #[test]
+    fn answer_header_echoes_mode_depth_network_and_corpus_counts() {
+        let request = test_request(false);
+        let sources = vec![
+            test_source("l1", SourceType::LocalSearchResult),
+            test_source("w1", SourceType::Url),
+        ];
+        let out = render_agent_answer(&request, &[], &[], &sources, &[]);
+        assert!(out.contains("**Mode:** NarrowAnswer"));
+        assert!(out.contains("**Depth:** Low"));
+        assert!(out.contains("**Network:** disabled"));
+        assert!(out.contains("**Sources searched:** local: 1, web: 1"));
+    }
+
+    #[test]
+    fn answer_header_reports_enabled_network_for_web_runs() {
+        let request = test_request(true);
+        let sources = vec![test_source("l1", SourceType::LocalFile)];
+        let out = render_agent_answer(&request, &[], &[], &sources, &[]);
+        assert!(out.contains("**Network:** enabled"));
+        assert!(out.contains("local: 1, web: 0"));
     }
 }

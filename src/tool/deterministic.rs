@@ -159,7 +159,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "text_equal",
         "text_equal",
-        "Compare two strings for equality under various modes (raw, normalized, casefolded, trimmed). Use when verifying text identity; prefer over regex for equality checks.",
+        "Compare two strings for equality under various modes (raw, normalized, casefolded, trimmed). Use when verifying text identity; prefer over regex for equality checks. `length_only` means the strings differ in length after exact, normalization, and casefold equality all failed, so it can mask an accompanying case or whitespace difference.",
         simple_schema(json!({
             "a": { "type": "string", "description": "First text string" },
             "b": { "type": "string", "description": "Second text string" },
@@ -228,7 +228,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "command_preflight",
         "command_preflight",
-        "Analyze a shell command before execution: parse argv, detect features (network, filesystem, env, process), find risk patterns, and return an ADVISORY verdict; never blocks except typed contract failures under block_on_definite. Use before running bash commands.",
+        "Analyze a shell command before execution: parse argv, detect features (network, filesystem, env, process), find risk patterns, and return an ADVISORY verdict; never blocks except typed contract failures under block_on_definite. Use before running bash commands. Canonical pair: preflight gates shell risk before bash; for secrets/supply-chain/CVE use the security tool (classify_command shares the shell-risk signal with a different envelope).",
         simple_schema(json!({
             "command": { "type": "string", "description": "Shell command to analyze" },
         }), &["command"]),
@@ -254,7 +254,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "text_security_inspect",
         "text_security_inspect",
-        "Security-oriented text hygiene pass: detect hidden chars, confusables, mixed scripts, normalization issues, and prompt injection patterns. Returns allow/review/block verdict. Use when handling untrusted text.",
+        "Security-oriented text hygiene pass: detect hidden chars, confusables, mixed scripts, normalization issues, and prompt injection patterns. Returns allow/review/block verdict. Use when handling untrusted text. Single-character ASCII confusable matches on plain English are informational noise; prioritize INSTRUCTION_PHRASE and secret-exposure findings over them.",
         simple_schema(json!({
             "text": { "type": "string", "description": "Text to inspect for security issues" },
         }), &["text"]),
@@ -333,4 +333,38 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     ));
 
     (always_visible, deferred)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptions() -> Vec<(String, String)> {
+        let runtime = Arc::new(
+            crate::eggsact::adapter::EggsactRuntime::new(
+                crate::eggsact::adapter::EggsactConfig::default(),
+            )
+            .expect("eggsact runtime"),
+        );
+        let (visible, deferred) = build_eggsact_tools(runtime);
+        visible
+            .into_iter()
+            .chain(deferred)
+            .map(|tool| (tool.name().to_string(), tool.description().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn text_equal_description_documents_length_only_masking() {
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        assert!(map["text_equal"].contains("length_only"));
+        assert!(map["text_equal"].contains("case or whitespace"));
+    }
+
+    #[test]
+    fn text_security_inspect_description_flags_ascii_confusable_noise() {
+        let map: std::collections::HashMap<_, _> = descriptions().into_iter().collect();
+        assert!(map["text_security_inspect"].contains("Single-character ASCII"));
+        assert!(map["text_security_inspect"].contains("INSTRUCTION_PHRASE"));
+    }
 }

@@ -28,7 +28,7 @@ impl Tool for SecurityTool {
     }
 
     fn description(&self) -> &str {
-        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict) and covers shell risk (rm -rf / returns critical); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary) and cover secrets/unsafe-deps/CORS/supply-chain, not shell — test strings without execution context are not findings there."
+        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict) and covers shell risk (rm -rf / returns critical); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary) and cover secrets/unsafe-deps/CORS/supply-chain, not shell — test strings without execution context are not findings there. Canonical pair: security covers secrets/supply-chain/CVE plus classify_command; for shell-risk gating before bash use command_preflight (different envelope, same risk class)."
     }
 
     fn parameters(&self) -> serde_json::Value {

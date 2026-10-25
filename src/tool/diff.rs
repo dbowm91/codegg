@@ -198,7 +198,8 @@ impl Tool for DiffTool {
     fn description(&self) -> &str {
         "Show the unified diff between the given original text and the current file at \
          path. The original parameter is required: pass the full prior file contents; \
-         the tool compares it against the file on disk and truncates long output."
+         the tool compares it against the file on disk and truncates long output. \
+         Prefer an edit dry-run or text_replace_check for pre-checks; reserve diff for small files."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -435,5 +436,12 @@ mod tests {
         ctx.cwd = workspace.path().join("missing-dir");
         assert_eq!(tool.effective_root(Some(&ctx)), tool.allowed_root);
         assert_eq!(tool.effective_root(None), tool.allowed_root);
+    }
+
+    #[test]
+    fn diff_description_routes_prechecks_to_replace_check() {
+        let tool = DiffTool::new();
+        assert!(tool.description().contains("text_replace_check"));
+        assert!(tool.description().contains("small files"));
     }
 }

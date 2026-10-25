@@ -114,7 +114,7 @@ impl Tool for TestTool {
     }
 
     fn description(&self) -> &str {
-        "Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
+        "Routing: use test for test runners only, not for non-test shell (prefer bash for general shell; terminal is compat-only). Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -136,7 +136,7 @@ impl Tool for TestTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Custom test command. Requires custom scope and must pass test command safety checks."
+                    "description": "Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks."
                 },
                 "workdir": {
                     "type": "string",

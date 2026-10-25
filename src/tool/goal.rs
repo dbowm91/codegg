@@ -71,7 +71,10 @@ impl Tool for GoalGetTool {
                 })
                 .to_string())
             }
-            Ok(None) => Ok(serde_json::json!({ "active": false }).to_string()),
+            Ok(None) => Ok(
+                serde_json::json!({ "active": false, "hint": "use todowrite for in-turn steps" })
+                    .to_string(),
+            ),
             Err(e) => Err(ToolError::Execution(e.to_string())),
         }
     }

@@ -455,7 +455,7 @@ fn goal_and_todos_contract() -> &'static str {
 ///
 /// Plan mode hides mutating tools from the model and exposes a planning
 /// surface (todowrite/todoread) plus read-only inspection tools (read, glob,
-/// grep, list, codesearch, websearch, webfetch, lsp, skill) and read-only
+/// grep, list, repo_search, websearch, webfetch, lsp, skill) and read-only
 /// bash. The model is told explicitly so it doesn't try to use tools that
 /// don't exist in its schema and doesn't attempt workarounds like writing
 /// a plan file via bash heredoc when todowrite is the intended surface.
