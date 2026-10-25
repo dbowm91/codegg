@@ -819,3 +819,39 @@ inherited through the M008 merge: `origin/main`'s own `Windows process
 launcher` job on the M008 merge commit `c4fa30aeb` (run `40131159604`)
 fails at the identical test and line, while main's `CI` job passes. This
 branch changes no scratch code.
+
+## 14. The third merge with `main` (2026-10-25)
+
+`origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
+surface), and this branch was merged with it. The merge carried **no change to
+this line's own Rust code** — the delegated-notice fix recorded in §13 is
+byte-identical across the merge — and all four conflicts were documentation:
+the registry's "Source verification" entries, `architecture/overview.md`'s
+counts table and reconciliation sections, `AGENTS.md`'s published guard counts,
+and the comment-budget manifest. Each resolution keeps **both** sides' content.
+The count rows were re-measured on the merged tree rather than incremented from
+either parent — integration test files **348**, guard scripts **99**, CI guard
+scripts **65**, `quick` **79** — and the quick-only difference is **unchanged at
+14**, re-derived by differencing the two surfaces' guard names rather than
+carried over.
+
+### The inherited red job is now main's fixed test
+
+The "Hosted-CI outcome" subsection above records the Windows `process launcher`
+job as red on
+`scratch::tests::a_tree_with_an_owner_record_that_is_not_owner_only_is_refused`
+and attributes it to `main`. That attribution is unchanged, and `main` has
+since **fixed the test it had mis-gated**: the M008 scratch line declared it
+`#[cfg(any(unix, windows))]`, but the step that makes the owner record *not*
+owner-only is a `chmod`, and `chmod` is `#[cfg(unix)]` — so on Windows the
+record still read as owner-only, the reclaim path removed the empty tree, and
+the test's `unwrap_err()` panicked on that `Ok`. `main` fixed it in
+`5f9f9bc7d` ("gate the owner-only test to Unix, where its premise holds"), and
+this branch inherits that fix through the merge.
+
+The failure was never this branch's: `git diff --stat origin/main...HEAD --
+src/scratch.rs crates/codegg-core/src/scratch.rs` is empty, and this branch
+changes no scratch code. The repair is `main`'s, made there and inherited
+here — it is **not** folded into this line's evidence, and the next hosted run
+on this branch is expected to carry it. Whether it is green is a claim the
+next hosted run makes, not one this record makes in advance.
