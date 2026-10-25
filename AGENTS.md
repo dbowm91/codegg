@@ -6,7 +6,7 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 74 guard scripts, and a workspace check
+                          # checks, 76 guard scripts, and a workspace check
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
@@ -109,9 +109,9 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 74 guard scripts, and a workspace `cargo check`. CI
+checks, 76 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 60 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 62 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
 As measured on 2026-10-24, quick runs **14 guards CI omits**: the client and
@@ -274,6 +274,16 @@ injects the defect and proves the guard rejects it:
   effect of the tree. A panel that needs daemon data names the existing
   variant or stops — that is the plan's stop condition, and the guard is its
   mechanical form.
+
+- `check_command_catalog_ownership.py` — the daemon's command catalog and the TUI's
+  command surface are the same set; only the catalog can execute a command; no
+  frontend holds a second catalog. M007-D: the daemon owns the catalog
+  (ADR-0052), so a frontend that compiled its own list would be a second
+  source of truth for what commands exist.
+- `check_frontend_action_set.py` — the frontend's dispatchable set is declared,
+  finite, closed over the catalog's frontend-effect forms, and carries no
+  mutating disposition. A frontend that dispatches an undeclared action is a
+  defect, and the guard catches it.
 
 Re-derive the **automatic** set — every guard that runs in *both* `quick` and
 CI — rather than trusting a hand-copied list:

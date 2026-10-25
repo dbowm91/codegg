@@ -196,6 +196,9 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Module | Purpose | Source | Deep dive |
 |--------|---------|--------|-----------|
 | Core | `CoreClient` facade, transport adapters, daemon lifecycle, request handling | `src/core/` | [core.md](core.md) |
+| Command Catalog | **The daemon's single definition of every command** — identity, name, aliases, description, kind, argument forms, and the catalog's bounds | `crates/codegg-core/src/command_catalog.rs` | [command.md](command.md) |
+| Frontend Actions | The **declared, finite** set of actions a frontend may execute for a frontend-effect form — closed and non-mutating | `crates/codegg-core/src/frontend_action.rs` | [command.md](command.md) |
+| Command Executor | The daemon's table-driven dispatch from a catalog form to a daemon request, its serve-ability predicate, and its audit as a canonical `Run` | `src/core/daemon_commands.rs` | [command.md](command.md) |
 | Workspace | Workspace registry, canonical root tracking, immutable `Arc`-wrapped execution context | `crates/codegg-core/src/workspace.rs` | [workspace.md](workspace.md) |
 | Workspace Services | Per-workspace service bundles, single-flight activation, user-scoped catalog | `crates/codegg-core/src/workspace_services.rs` | [workspace_services.md](workspace_services.md) |
 | Jobs | Durable jobs, attempts, schedules, recovery, idempotency | `crates/codegg-core/src/jobs/` | [jobs.md](jobs.md) |
@@ -576,13 +579,13 @@ fifth reconciliations recorded. The full reconciliation is in
 | Distinct production tool names | 75 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 13 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 67 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 8 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
 | Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`; excl. the `bash/tests/` fixture, which is test support, not tool source) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 54 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `codegg-core` modules | 56 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 268 (242 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 176 (175 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 270 (244 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 178 (177 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 262 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 262 arms carrying 262 distinct operation names, covering all 268 `CoreRequest` variants; the `representative_requests()` list holds 252 of them |
+| Authorized operations | 264 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 264 arms carrying 264 distinct operation names, covering all 270 `CoreRequest` variants; the `representative_requests()` list holds 254 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -593,9 +596,9 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 342 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 97 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 60 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 343 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 99 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 62 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -635,6 +638,27 @@ sandbox C005 closure record's last open finding. *Integration test files* is
 **341**, re-measured on the tree with `python3 scripts/measure_overview_counts.py`
 rather than incremented. Every other row was confirmed unchanged by
 measurement.
+
+### Count reconciliation — the M007-D merge with `main` (2026-10-25)
+
+`main` moved to `76b046fd3` (PR #196, the C009 hooks-path disposition) while
+the M007-D branch was open, and three rows moved when the branch absorbed it.
+*Integration test files* is **343** (`tests/*.rs` + `tests/*/*.inc`, with the
+`tests/common/` helper tree excluded — `main`'s **342** plus this line's
+`tests/core_daemon/command_catalog_m007d.inc`). *Guard scripts (all)* is
+**99** (`ls scripts/check_*` — `main`'s **97** plus the command-catalog
+ownership guard and the frontend-action-set guard this line added), and *CI
+guard scripts* is **62** (`main`'s **60** plus the same two, which run in both
+lanes). The *quick* guard count moved **74 → 76**, and the *quick runs 14
+guards CI does not* difference is unchanged at **14** (both new guards run in
+both lanes). `AGENTS.md`'s published counts moved to **76 quick / 62 CI**.
+Every row was re-measured on the merged tree with
+`python3 scripts/measure_overview_counts.py` rather than incremented.
+
+The comment corpus moved **125,249 → 126,485** comment lines and **1,104,302 →
+1,115,299** words, at a **0.1340** ratio. The move is the cost of this line's
+own documentation — the closure record and the command catalog's eight
+architecture documents — not of `main`'s change.
 
 ### Count reconciliation — the C009 hooks-path disposition (2026-10-25)
 
@@ -779,6 +803,37 @@ entry. The *quick* guard count is **72**. *Integration test files* is
 unchanged at **340** — the guard adds a script, not a test file. Every other
 code-count row was re-checked against its own listed `Source` and is
 unchanged.
+
+
+### Count reconciliation — M007-D daemon-owned command catalog (2026-10-25)
+
+Six code-count rows moved when the daemon-owned command catalog milestone
+landed (ADR-0052, accepted 2026-10-24). *`codegg-core` modules* is **56**
+(`crates/codegg-core/src/lib.rs` — the new `command_catalog` and
+`frontend_action` modules). *`CoreRequest` variants* is **270** (244 struct +
+26 unit — the new `CommandCatalog` and `CommandExecute` arms, added **beside**
+the existing `GitRead` and `SkillCatalogueList` arms, never replacing them).
+*`CoreResponse` variants* is **178** (177 struct + 1 unit — the matching
+`CommandCatalog` and `CommandExecute` arms). *Authorized operations* is **264**
+(`operation_descriptor` — 264 arms carrying 264 distinct operation names,
+covering all 270 `CoreRequest` variants; the `representative_requests()` list
+holds 254 of them): the catalog read takes `project.read` and the command
+execution takes the dedicated `command.execute` capability, which was already
+in the enum because the human-shell run family uses it. *Integration test
+files* is **341** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/`
+helper tree excluded — the new `tests/core_daemon/command_catalog_m007d.inc`).
+*Guard scripts (all)* is **98** (`ls scripts/check_*` — the new
+`scripts/check_command_catalog_ownership.py`, which proves the daemon's catalog
+and the TUI's command surface are the same set, that only the catalog can
+execute a command, and that no frontend holds a second catalog, and the new
+`scripts/check_frontend_action_set.py`, which proves the frontend's
+dispatchable set is declared, finite, closed and non-mutating). *CI guard
+scripts* is **61** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained both guards and both self-tests). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guards run in **both** `verify.sh quick` and CI, so they add no quick-only
+entry. The *quick* guard count is **75**. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
 
 
 ## Feature gates
@@ -1171,7 +1226,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (97 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (99 guards) and additionally covers audit coverage/invariants, authorization matrix, command catalog ownership, discovery invariants, frontend action set, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
@@ -1281,3 +1336,11 @@ unchanged.
 
 *Guard scripts (all)* is **81** (the new `scripts/check_destructive_risk_signal_coverage.py`),
 and *CI guard scripts* is **41** (that one guard's two `ci.yml` steps — the guard and its
+
+Re-verified 2026-10-25 against the M007-D branch with
+`scripts/measure_overview_counts.py`: the `## Verified counts` rows read
+**270** `CoreRequest` variants, **264** native operations, **341** integration
+test files, **98** guard scripts, **61** CI guard scripts and **92**
+architecture documents. The count-reconciliation prose under this section
+was corrected to the same figures — it had understated each guard count by
+one.

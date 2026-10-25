@@ -404,7 +404,7 @@ them.
 |-----|-------|-------|
 | `CommandCatalogScopeDto` | `{ project_id, workspace_id }` | mirrors `AssetRefreshScopeDto` (`core.rs:89-93`) |
 | `CommandCatalogDto` | `{ catalog_version: u64, commands: Vec<CommandDescriptorDto> }` | ≤ 256 commands, ≤ 512 forms, ≤ 256 KiB total; **over-bound is refused, not truncated** |
-| `CommandDescriptorDto` | `{ command_id, name, aliases, description, domain, kind, capability, forms }` | description ≤ 200 bytes; ≤ 8 aliases; `command_id` ≤ 64 bytes |
+| `CommandDescriptorDto` | `{ command_id, name, aliases, description, domain, kind, capability, forms }` | description ≤ 256 bytes (**re-baselined from 200** in M007-D: the catalog's own longest descriptions are 217 bytes for `/control` and 211 for `/security-review`, so a 200-byte ceiling refuses a command the plan classifies); ≤ 8 aliases; `command_id` ≤ 64 bytes |
 | `CommandFormDto` | `{ form, kind, argument_hint, argument_required }` | ≤ 32 forms per command |
 | `CommandKindDto` | `{ DaemonEffect, FrontendEffect }` | exactly two values |
 | `CommandExecuteRequestDto` | `{ scope, command_id, form, argument, catalog_version }` | `argument` ≤ 4 KiB |

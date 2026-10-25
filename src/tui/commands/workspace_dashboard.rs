@@ -389,6 +389,13 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
         };
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The listing is the catalog's
+    // `tasks` command, and the bound travels as the command's argument.
+    let command_scope = crate::tui::command_route::scope_for(app);
+    let command_scope = crate::protocol::core::CommandCatalogScopeDto {
+        project_id: project_id.clone(),
+        ..command_scope
+    };
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -400,23 +407,23 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
         async move {
             let error_or_tasks = match core_client {
                 None => Err("Core unavailable".to_string()),
-                Some(core_client) => match core_client
-                    .request(crate::core::new_request(
-                        format!(
-                            "workspace-dashboard-expand-{request_id}-{}",
-                            uuid::Uuid::new_v4()
-                        ),
-                        CoreRequest::WorkOrderList {
-                            project_id: project_id.clone(),
-                            state_filter: None,
-                            cursor: None,
-                            limit: Some(MAX_DASHBOARD_EXPANDED_TASKS as u32),
-                        },
-                    ))
-                    .await
+                Some(core_client) => match crate::tui::command_route::send_command(
+                    &core_client,
+                    command_scope,
+                    "tasks",
+                    "",
+                    &MAX_DASHBOARD_EXPANDED_TASKS.to_string(),
+                )
+                .await
                 {
                     Ok(CoreResponse::WorkOrderList { work_orders, .. }) => Ok(work_orders),
                     Ok(CoreResponse::Error { code, message }) => {
+                        Err(format!("Task detail failed: {code}: {message}"))
+                    }
+                    // A refusal that never reached the effect arrives as
+                    // the command execution's own result.
+                    Ok(CoreResponse::CommandExecute { result }) => {
+                        let (code, message) = crate::tui::command_route::refusal_parts(&result);
                         Err(format!("Task detail failed: {code}: {message}"))
                     }
                     Ok(_) => Err("Unexpected task detail response".to_string()),
@@ -512,7 +519,7 @@ pub(crate) fn open_selected_dashboard_project(app: &mut App) {
     // The Task view is the project Task/session summary view: running
     // rows open materialized sessions through canonical routing and
     // future rows fetch detail (M003 semantics, reused here).
-    crate::tui::commands::work_orders::open_task_view(app);
+    crate::tui::commands::work_orders::open_task_view(app, "task");
 }
 
 // ── Event / reconnect hints ──────────────────────────────────────────
@@ -965,7 +972,26 @@ mod tests {
             &self,
             request: RequestEnvelope<CoreRequest>,
         ) -> Result<CoreResponse, crate::error::AppError> {
-            Ok(match request.payload {
+            // M007-D: the expanded detail fetch is daemon-owned, so it
+            // arrives as the command execution. The daemon builds the inner
+            // request from the scope and the argument, and the fake
+            // resolves it with the daemon's own builder — so the request it
+            // answers is the daemon's request, not a copy of it.
+            let (payload, execute) = match request.payload {
+                CoreRequest::CommandExecute { request: execute } => {
+                    match crate::tui::command_route::inner_request_for_test(&execute) {
+                        Some(inner) => (inner, Some(execute)),
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "unsupported_in_test".to_string(),
+                                message: format!("{} has no daemon row", execute.command_id),
+                            })
+                        }
+                    }
+                }
+                payload => (payload, None),
+            };
+            let response = match payload {
                 CoreRequest::WorkspaceDashboard { .. } => {
                     self.dashboard_requests.fetch_add(1, Ordering::SeqCst);
                     CoreResponse::WorkspaceDashboard {
@@ -989,6 +1015,12 @@ mod tests {
                     code: "unsupported_in_test".to_string(),
                     message: "fake dashboard client".to_string(),
                 },
+            };
+            Ok(match execute {
+                Some(execute) => {
+                    crate::tui::command_route::command_execute_response_for_test(&execute, response)
+                }
+                None => response,
             })
         }
 

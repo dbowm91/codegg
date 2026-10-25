@@ -393,20 +393,29 @@ pub(crate) fn start_terminal_list(app: &mut App) {
     };
     let request_id = app.dialog_state.terminal_request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The listing is the catalog's
+    // `terminal_list` command, and the workspace it reads is the one the
+    // caller resolved.
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        workspace_id: workspace_id.clone(),
+        ..scope
+    };
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "terminal_list",
         async move {
-            let request = crate::core::new_request(
-                format!("terminal-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::InteractiveProcessList {
-                    workspace_id: Some(workspace_id),
-                    limit: None,
-                },
-            );
-            let result = match core_client.request(request).await {
+            let result = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "terminal_list",
+                "",
+                "",
+            )
+            .await
+            {
                 Ok(CoreResponse::InteractiveProcessList {
                     processes,
                     truncated,
@@ -499,21 +508,29 @@ pub(crate) fn start_terminal_attach(app: &mut App, handle: String) {
     let from_seq = app.interactive_terminals.resume_cursor(&handle);
     let request_id = app.dialog_state.terminal_request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "terminal_attach",
         async move {
-            let request = crate::core::new_request(
-                format!("terminal-attach-{}", uuid::Uuid::new_v4()),
-                CoreRequest::InteractiveProcessAttach {
-                    handle: handle.clone(),
-                    from_seq,
-                    max_bytes: None,
-                },
-            );
-            let result = match core_client.request(request).await {
+            // M007-D: the argument carries the handle and, when the
+            // frontend resumes from a retained cursor, that cursor.
+            let argument = match from_seq {
+                Some(seq) => format!("{handle} {seq}"),
+                None => handle.clone(),
+            };
+            let result = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "terminal_attach",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::InteractiveProcessAttached {
                     attachment_id,
                     handle,
@@ -681,6 +698,8 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
     let request_id = app.dialog_state.terminal_request.begin();
     let owner = TerminalResumeRequest::User(request_id);
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -689,15 +708,17 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
         async move {
             // Byte-for-byte the same request the cadence pull issues: the
             // daemon's own chunk bound, one explicit cursor, no second cap.
-            let request = crate::core::new_request(
-                format!("terminal-resume-{}", uuid::Uuid::new_v4()),
-                CoreRequest::InteractiveProcessResume {
-                    attachment_id: attachment_id.clone(),
-                    from_seq,
-                    max_bytes: None,
-                },
-            );
-            let result = match core_client.request(request).await {
+            // M007-D: the argument carries the attachment and the cursor.
+            let argument = format!("{attachment_id} {from_seq}");
+            let result = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "terminal_resume",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::InteractiveProcessResumed { chunk, .. }) => {
                     TuiCommand::TerminalResumeFinished {
                         request: owner,
@@ -2828,6 +2849,63 @@ mod tests {
                 }
                 CoreRequest::InteractiveProcessDetach { attachment_id } => {
                     self.protocol.detach(CLIENT_ID, &attachment_id).await
+                }
+                // M007-D: the terminal surface's effects are daemon-owned
+                // now, so they arrive as the command execution rather than
+                // as the protocol request. The daemon builds the inner
+                // request from the scope and the argument, and the double
+                // uses the daemon's own builder — so the encoding this
+                // test exercises is the daemon's encoding and not a copy
+                // of it — and then answers the inner request with the
+                // real protocol.
+                CoreRequest::CommandExecute { request } => {
+                    let inner = match crate::tui::command_route::inner_request_for_test(&request) {
+                        Some(inner) => inner,
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "fixture_unsupported".to_string(),
+                                message: format!("{} has no daemon row", request.command_id),
+                            })
+                        }
+                    };
+                    let inner_response = match inner {
+                        CoreRequest::InteractiveProcessList {
+                            workspace_id,
+                            limit,
+                        } => {
+                            self.protocol
+                                .list(CLIENT_ID, workspace_id.as_deref(), limit)
+                                .await
+                        }
+                        CoreRequest::InteractiveProcessAttach {
+                            handle,
+                            from_seq,
+                            max_bytes,
+                        } => {
+                            self.protocol
+                                .attach(CLIENT_ID, &handle, from_seq, max_bytes)
+                                .await
+                        }
+                        CoreRequest::InteractiveProcessResume {
+                            attachment_id,
+                            from_seq,
+                            max_bytes,
+                        } => {
+                            self.protocol
+                                .resume(CLIENT_ID, &attachment_id, from_seq, max_bytes)
+                                .await
+                        }
+                        other => CoreResponse::Error {
+                            code: "fixture_unsupported".to_string(),
+                            message: format!("{other:?}"),
+                        },
+                    };
+                    // The inner response travels verbatim, exactly as the
+                    // daemon's executor returns it.
+                    crate::tui::command_route::command_execute_response_for_test(
+                        &request,
+                        inner_response,
+                    )
                 }
                 other => CoreResponse::Error {
                     code: "fixture_unsupported".to_string(),

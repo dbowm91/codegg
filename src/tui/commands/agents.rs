@@ -19,7 +19,21 @@ use crate::util::truncate::truncate_prefix;
 /// refresh coordinator. The TUI never discovers assets or edits foreign
 /// harness directories locally.
 pub(crate) fn start_refresh_assets(app: &mut crate::tui::app::App) {
-    refresh_assets_for_session(app, true);
+    refresh_assets_for_session(app, true, AssetRefreshTrigger::Command);
+}
+
+/// Why the asset registry is being refreshed.
+///
+/// The distinction is M007-D's: the `/reload` **command** is executed by
+/// the daemon's command executor, and the editor's save is an internal
+/// effect that is not a command at all. One shared helper serves both, so
+/// the trigger travels with it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssetRefreshTrigger {
+    /// The `/reload` command.
+    Command,
+    /// The editor's save.
+    Internal,
 }
 
 /// Refresh the asset registry, staying silent when nothing is bound.
@@ -29,7 +43,11 @@ pub(crate) fn start_refresh_assets(app: &mut crate::tui::app::App) {
 /// would put a red toast on the screen after a save that actually succeeded;
 /// the refresh simply has nowhere to run. `report_unbound` is what the `/`
 /// command wants and the save path does not.
-pub(crate) fn refresh_assets_for_session(app: &mut crate::tui::app::App, report_unbound: bool) {
+pub(crate) fn refresh_assets_for_session(
+    app: &mut crate::tui::app::App,
+    report_unbound: bool,
+    trigger: AssetRefreshTrigger,
+) {
     let Some(session) = app.session_state.session.as_ref() else {
         if report_unbound {
             app.messages_state
@@ -47,6 +65,9 @@ pub(crate) fn refresh_assets_for_session(app: &mut crate::tui::app::App, report_
         return;
     };
     let core_client = app.core_client.clone();
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on.
+    let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
     let session_id = session.id.clone();
     let project_id = session.project_id.clone();
@@ -62,20 +83,30 @@ pub(crate) fn refresh_assets_for_session(app: &mut crate::tui::app::App, report_
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let request = crate::core::new_request(
-                format!("asset-refresh-{}", uuid::Uuid::new_v4()),
-                CoreRequest::AssetRefresh {
-                    request: AssetRefreshRequestDto {
-                        scope: AssetRefreshScopeDto {
-                            project_id,
-                            workspace_id,
+            // M007-D: the `/reload` command is executed by the daemon's
+            // command executor; the editor's save is an internal effect and
+            // keeps its own request.
+            let request = match trigger {
+                AssetRefreshTrigger::Command => crate::core::new_request(
+                    format!("asset-refresh-{}", uuid::Uuid::new_v4()),
+                    crate::tui::command_route::command_execute(scope, "reload", "", ""),
+                ),
+                AssetRefreshTrigger::Internal => crate::core::new_request(
+                    format!("asset-refresh-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::AssetRefresh {
+                        request: AssetRefreshRequestDto {
+                            scope: AssetRefreshScopeDto {
+                                project_id,
+                                workspace_id,
+                            },
+                            reason: AssetRefreshReasonDto::Reload,
+                            session_id: Some(session_id),
                         },
-                        reason: AssetRefreshReasonDto::Reload,
-                        session_id: Some(session_id),
                     },
-                },
-            );
-            match core_client.request(request).await {
+                ),
+            };
+            match crate::tui::command_route::unwrap_inner_result(core_client.request(request).await)
+            {
                 Ok(CoreResponse::AssetRefresh { report }) => {
                     Some(TuiCommand::AssetRefreshFinished {
                         report: Some(report),

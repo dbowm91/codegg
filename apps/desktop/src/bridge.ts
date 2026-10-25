@@ -1,6 +1,8 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import type {
   ArtifactExcerptView,
+  CommandCatalogView,
+  CommandExecuteView,
   ConnectionSnapshot,
   ControllerSummaryView,
   DesktopEvent,
@@ -71,6 +73,27 @@ export const bridge = {
     invoke<GitReadView>('desktop_git_read', { operation, routeGeneration }),
   skillCatalogue: (routeGeneration: number) =>
     invoke<SkillCatalogueView>('desktop_skill_catalogue', { routeGeneration }),
+  // M007-D: the daemon's command catalog, and the execution of one
+  // daemon-effect command form. The renderer holds no command list of its
+  // own: it renders what the daemon's catalog says. The catalog version is
+  // quoted back on an execution so a stale palette is refused rather than
+  // executed against a classification the daemon no longer serves.
+  commandCatalog: (routeGeneration: number) =>
+    invoke<CommandCatalogView>('desktop_command_catalog', { routeGeneration }),
+  commandExecute: (
+    commandId: string,
+    form: string,
+    argument: string,
+    catalogVersion: number,
+    routeGeneration: number,
+  ) =>
+    invoke<CommandExecuteView>('desktop_command_execute', {
+      commandId,
+      form,
+      argument,
+      catalogVersion,
+      routeGeneration,
+    }),
   // The editor (M007-E). Every call is a bounded operation with a bounded
   // DTO: the host never serves the document, only the visible window it
   // cut from its own snapshot. The renderer names a movement or an edit

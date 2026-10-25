@@ -1517,7 +1517,11 @@ pub(crate) fn apply_editor_operation_finished(
                 &path,
                 app.editor_state.scope,
             ) {
-                super::agents::refresh_assets_for_session(app, false);
+                super::agents::refresh_assets_for_session(
+                    app,
+                    false,
+                    super::agents::AssetRefreshTrigger::Internal,
+                );
             }
         }
         // `:wq` closes *after* the write succeeds, never before: closing
@@ -1546,7 +1550,11 @@ pub(crate) fn apply_document_deleted(
         return;
     }
     if crate::tui::commands::agent_editor::is_agent_config_path(&path, scope) {
-        super::agents::refresh_assets_for_session(app, false);
+        super::agents::refresh_assets_for_session(
+            app,
+            false,
+            super::agents::AssetRefreshTrigger::Internal,
+        );
         app.messages_state.toasts.info(
             format!(
                 "Deleted {} ({})",

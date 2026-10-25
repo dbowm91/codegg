@@ -105,6 +105,21 @@ jobs:
       - name: Sandbox contract guard
         run: python3 scripts/check_sandbox_contract.py
 
+      # M007-D: the daemon owns the command catalog (ADR-0052). Both guards
+      # run here with their self-tests: a guard that cannot fail on an
+      # injected defect is not evidence.
+      - name: Command catalog ownership guard (self-test)
+        run: python3 scripts/check_command_catalog_ownership.py --self-test
+
+      - name: Command catalog ownership guard
+        run: python3 scripts/check_command_catalog_ownership.py
+
+      - name: Frontend action set guard (self-test)
+        run: python3 scripts/check_frontend_action_set.py --self-test
+
+      - name: Frontend action set guard
+        run: python3 scripts/check_frontend_action_set.py
+
       - name: ADR identity and link guard
         run: python3 scripts/check_adr_integrity.py
 

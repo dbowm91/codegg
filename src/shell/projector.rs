@@ -3686,6 +3686,9 @@ pub fn preferred_projector_for_run_kind(kind: &RunKind) -> &'static str {
         RunKind::Search => "raw",
         RunKind::Python => "python",
         RunKind::RawShell | RunKind::ManagedProcess | RunKind::NativeTool => "raw",
+        // M007-D: a daemon-effect command run is projected like a raw
+        // execution: its output is text the frontend renders.
+        RunKind::Command => "raw",
     }
 }
 

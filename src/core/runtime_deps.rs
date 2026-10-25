@@ -197,6 +197,13 @@ pub struct CoreRuntimeDeps {
     /// The service is independent of job dispatch: it exists whether or not
     /// the scheduler is enabled, and reading it never touches the queue.
     pub node_telemetry: Option<Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>>,
+    /// M007-D: the daemon-owned run store.
+    ///
+    /// The daemon audits every daemon-effect command as a canonical `Run`
+    /// (ADR-0052). It needs a run store to open that run, and it refuses
+    /// to execute a command when this is `None`: an unaudited daemon
+    /// effect is not permitted.
+    pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -230,6 +237,7 @@ impl Clone for CoreRuntimeDeps {
             connection_manager: self.connection_manager.clone(),
             remote_target_policy: self.remote_target_policy.clone(),
             node_telemetry: self.node_telemetry.clone(),
+            run_store: self.run_store.clone(),
         }
     }
 }
@@ -372,6 +380,7 @@ impl CoreRuntimeDeps {
             connection_manager: None,
             remote_target_policy: None,
             node_telemetry: None,
+            run_store: None,
         }
     }
 
@@ -429,6 +438,7 @@ impl CoreRuntimeDeps {
             connection_manager: None,
             remote_target_policy: None,
             node_telemetry: None,
+            run_store: None,
         }
     }
 
@@ -547,6 +557,7 @@ impl CoreRuntimeDeps {
             connection_manager,
             remote_target_policy: None,
             node_telemetry: None,
+            run_store: None,
         }
     }
 
@@ -581,6 +592,13 @@ impl CoreRuntimeDeps {
     }
 
     /// Builder-style setter for the shared LSP service.
+    /// M007-D: install the daemon-owned run store used to audit
+    /// daemon-effect commands as canonical `Run`s.
+    pub fn with_run_store(mut self, store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
+        self.run_store = Some(store);
+        self
+    }
+
     pub fn with_lsp_service(mut self, service: Arc<crate::lsp::service::LspService>) -> Self {
         self.lsp_service = Some(service);
         self
