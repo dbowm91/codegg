@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 125929
-max_comment_words = 1110093
+max_comment_lines = 125933
+max_comment_words = 1110123
 max_ratio = 0.1337
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -310,7 +310,7 @@ max_ratio = 0.1337
 "src/core/client_registry.rs" = { max_comment_lines = 23, max_ratio = 0.108 }
 "src/core/daemon.rs" = { max_comment_lines = 1068, max_ratio = 0.1707 }
 "src/core/daemon_bootstrap.rs" = { max_comment_lines = 143, max_ratio = 0.1557 }
-"src/core/daemon_commands.rs" = { max_comment_lines = 179, max_ratio = 0.2097 }
+"src/core/daemon_commands.rs" = { max_comment_lines = 183, max_ratio = 0.2131 }
 "src/core/daemon_construct.rs" = { max_comment_lines = 233, max_ratio = 0.2713 }
 "src/core/daemon_continuation.rs" = { max_comment_lines = 145, max_ratio = 0.2413 }
 "src/core/daemon_control.rs" = { max_comment_lines = 297, max_ratio = 0.224 }

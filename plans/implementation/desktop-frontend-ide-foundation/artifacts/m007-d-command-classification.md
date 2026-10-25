@@ -472,3 +472,24 @@ command can never be mistaken for an editor gesture.
 The editor's commands go through the daemon's **document path** — a
 different set of `CoreRequest` variants from `CommandExecute` — which is
 the same separation seen from the other side.
+
+## 10. The settled items
+
+* **The description bound is re-baselined from 200 to 256 bytes.** The
+  catalog's own longest descriptions are 217 bytes (`/control`) and 211
+  (`/security-review`), so a 200-byte ceiling refuses a command the plan
+  classifies. The code's bound is
+  `crates/codegg-core/src/command_catalog.rs` —
+  `bounds::MAX_DESCRIPTION_BYTES = 256` — and plan 014's protocol table
+  records the re-baselining with this evidence.
+* **The `core_daemon` family's recursion limit is raised to 512.** The
+  daemon's request future genuinely grew a layer: the command executor and
+  the shared family router sit inside it. The `Send` proof in that test
+  crate exceeded the default budget of 128, so
+  `tests/core_daemon/mod.rs` declares `#![recursion_limit = "512"]`. It is
+  a real type recursion and not a low budget, and only `core_daemon` needed
+  it.
+* **`/compact` keeps its current behaviour** and stays in the inventory. The
+  daemon has no compaction request — `TuiCommand::CompactSession` has no
+  sender — so the form has no daemon route. The behaviour is unchanged and
+  the gap is directed to a separate corrective milestone.
