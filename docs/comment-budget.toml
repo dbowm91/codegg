@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 126364
-max_comment_words = 1114147
+max_comment_lines = 126416
+max_comment_words = 1114638
 max_ratio = 0.134
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
