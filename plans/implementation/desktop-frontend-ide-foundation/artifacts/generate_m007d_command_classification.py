@@ -240,6 +240,23 @@ KEYWORDS = {
 }
 
 
+def _names_a_pattern(body: str, end: int) -> bool:
+    """Whether the match ending at `end` is a **pattern**, not a construction.
+
+    A construction initialises its fields (`field: value`); a match arm
+    names them. The arm's `=>` follows the block, so the block alone cannot
+    tell the two apart — but the text after it can, and that is where the
+    difference lives.
+
+    Counting a pattern as a construction attributes to the arm every request
+    it *matches*, which is the opposite of what this column measures. It is
+    also how a **test double**'s match arm would reach the artifact: the
+    double is not the production path, so a request it names is a request
+    the arm does not issue.
+    """
+    return body[end : end + 8].lstrip().startswith("=")
+
+
 def requests_in(body: str) -> set[str]:
     """The `CoreRequest` variants `body` **constructs**.
 
@@ -249,16 +266,22 @@ def requests_in(body: str) -> set[str]:
     which is the opposite of what this column measures.
     """
     found: set[str] = set()
-    for variant, block in REQ_RE.findall(body):
+    for match in REQ_RE.finditer(body):
+        block = match.group(2)
         if ".." in block or "=>" in block:
             continue
         if ":" not in block:
             continue
-        found.add(variant)
-    for block in CMD_RE.findall(body):
+        if _names_a_pattern(body, match.end()):
+            continue
+        found.add(match.group(1))
+    for match in CMD_RE.finditer(body):
+        block = match.group(1)
         if ".." in block or "=>" in block:
             continue
         if ":" not in block:
+            continue
+        if _names_a_pattern(body, match.end()):
             continue
         found.add("CommandExecute")
     return found
@@ -1300,7 +1323,81 @@ def migrated_commands() -> dict[str, str]:
     return migrated
 
 
+def self_test() -> int:
+    """Prove the generator's own invariants, by injecting their defects.
+
+    Two properties are load-bearing and neither fails loudly on its own:
+
+    * a **match arm** names a request; it does not construct one. A test
+      double's arm would otherwise put a request the production path never
+      issues into the artifact — which is exactly what happened when the
+      corrective pass taught a double to answer a command execution.
+    * the `--check` mode must **reject** a stale artifact. A check that
+      accepts everything proves nothing.
+    """
+    failures: list[str] = []
+
+    def expect(label: str, got: object, want: object) -> None:
+        if got != want:
+            failures.append(f"{label}: expected {want!r}, got {got!r}")
+
+    # A construction initialises its fields: it counts.
+    expect(
+        "a construction counts",
+        requests_in("CoreRequest::CommandExecute { request: dto }"),
+        {"CommandExecute"},
+    )
+    expect(
+        "a construction counts (a plain variant)",
+        requests_in("CoreRequest::WorkspaceDashboard { id: value }"),
+        {"WorkspaceDashboard"},
+    )
+    # A match arm names the variant: it does not count. Its `=>` follows the
+    # block, so the block alone cannot tell the two apart.
+    expect(
+        "a match arm does not count",
+        requests_in("CoreRequest::CommandExecute { request: execute } => { let _ = 1; }"),
+        set(),
+    )
+    expect(
+        "a match arm does not count (a plain variant)",
+        requests_in("CoreRequest::WorkspaceDashboard { id: value } => { let _ = 1; }"),
+        set(),
+    )
+    expect(
+        "a struct-update pattern does not count",
+        requests_in("CoreRequest::WorkspaceDashboard { .. } => { let _ = 1; }"),
+        set(),
+    )
+
+    # The `--check` mode has teeth: a perturbed artifact is not the derived
+    # one, so the comparison can fail.
+    if not ARTIFACT.exists():
+        failures.append("the artifact does not exist")
+    else:
+        current = ARTIFACT.read_text(encoding="utf-8")
+        derived = build(
+            parse_catalog(read(ROOT / CATALOG)),
+            set(parse_effect_table(read(ROOT / DAEMON_COMMANDS))),
+        )
+        expect("the artifact is in step with the tree", current, derived)
+        expect(
+            "a perturbed artifact is not the derived one",
+            derived.replace("\n", "\n\n", 1) == derived,
+            False,
+        )
+
+    if failures:
+        for failure in failures:
+            print(f"self-test failed: {failure}", file=sys.stderr)
+        return 1
+    print("self-test passed: the generator counts constructions, not patterns")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     check_only = "--check" in sys.argv[1:]
     commands = parse_catalog(read(ROOT / CATALOG))
     served = set(parse_effect_table(read(ROOT / DAEMON_COMMANDS)))

@@ -252,6 +252,7 @@ Commands run against this branch's head, with their results.
 | `python3 scripts/check_frontend_action_set.py` | `frontend-action set: clean` |
 | `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after `--bank`) |
 | `python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py --check` | `check passed: … matches the tree` |
+| `python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py --self-test` | `self-test passed: the generator counts constructions, not patterns` — and a mutant that restores the defect is rejected (§10.5) |
 | the owner's read-only migration instrument, `/tmp/m007d_verify_migration.py` | 51 effect-table rows, **39** migrated commands, **40** routed call sites; the **12** served forms the TUI does not perform are exactly the ones §10.1 and §10.6 record, and the paths that still construct a migrated form's request are the ones §10.4 and §10.7 record |
 | `cd apps/desktop && npx tsc --noEmit` | clean |
 | `cd apps/desktop && node scripts/check-bindings.mjs` | `desktop bridge DTO fields match` |
@@ -266,7 +267,7 @@ Commands run against this branch's head, with their results.
 | `rustup run 1.90.0 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | clean — the desktop host's pinned toolchain |
 | `rustup run 1.90.0 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings` | exit 0, no warnings — the check whose masked failure this branch had to repair |
 | `cargo test --test tui_render --test core_daemon` | **1094 + 509 passed**, 0 failed, run twice; no crash |
-| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | the **whole workspace** — every crate's lib tests and every integration family — **15891 passed, 0 failed**, 16 skipped, with the seven exclusions the note below names (§4.1) |
+| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | the **whole workspace** — every crate's lib tests and every integration family — **15891 passed, 0 failed**, 16 skipped, with the seven exclusions the note below names (§4.1), on the milestone's own tree; and **15891 passed, 1 failed**, 16 skipped on the tree with `origin/main` (`76b046fd33`) merged in, where the one failure is the eighth case the note below names — a Linux-only test that arrived with that merge and is not this milestone's |
 | `cargo nextest run --locked --profile ci -p codegg --lib -E 'test(same_scope_requests_coalesce_to_one_publication)'` | passed in 0.15 s, run on its own — the note below says why |
 
 **What the local sweep excludes, and why.** Seven tests are excluded from the
@@ -299,6 +300,26 @@ milestone's code:
 - `command_git::git_read_consistency::a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache`
   — a pre-existing flake (§10.5): it fails in **7 of 8** runs on the tree
   without this milestone's code.
+
+**And one test *fails* on the merged tree, and it is not this milestone's.**
+The tree with `origin/main` (`76b046fd33`) merged in carries one test the
+milestone's own tree does not, and that test **fails** on macOS rather than
+being excluded from the sweep:
+
+- `contained_worktree_hooks_path::the_contained_child_does_not_run_the_repositorys_post_checkout_hook`
+  — Linux only: `the worktree child could not be contained: permission
+  denied: protected mount view is available only on Linux`
+  (`src/security/sandbox.rs:692`). The gate is a compile-time platform split
+  (`#[cfg(not(target_os = "linux"))]`, `src/security/sandbox.rs:689`), and the
+  hosted CI runner is `ubuntu-latest` (`.github/workflows/ci.yml:62`), where
+  the test passes. The test and both files that raise that error are
+  **byte-identical to `origin/main`** — `git diff origin/main ed6f6c723 --
+  tests/contained_worktree_hooks_path.rs src/security/sandbox.rs
+  src/managed_process.rs` is empty — and the test arrived with `76487c587`,
+  which is part of the `main` merge and not of this milestone.
+
+So the merged tree's sweep is **15891 passed, 1 failed**, 16 skipped, and the
+one failure is this test.
 
 The `scheduler_jobs` family is excluded outright, and not run locally at all:
 M008 §16 forbids running a sweep against the developer's own scratch root.
@@ -667,6 +688,8 @@ in the TUI is audited.
 | An **intermittent SIGSEGV** in the `tui_render` test binary | medium | **unexplained and unreproduced.** It appeared once in a combined `tui_render` + `core_daemon` sweep on this branch and did not recur in 5 standalone runs and 6 direct runs of the same binary (the worker's), nor in 3 standalone runs and 2 further combined sweeps (the verifier's) — 16 runs in total across two strategies. Neither the cause nor whether it predates this branch is established, so it is recorded rather than explained away |
 | A **timing-sensitive flake** in the harness lab's interruption test (`dev/harness_lab/tests/test_sustained.py`), `test_a_cancelled_lane_does_not_stop_the_next_lane` | low | **observed twice on this branch, cause not established.** It failed once in a `verify.sh quick` run and once in an eight-run direct loop, and passed on a direct re-run, in a full re-run of `quick`, and in 22 of 22 direct runs on a tree without this milestone's code. The failure is a bookkeeping race in the harness's own native-broker counters (`started=0` while the provider transcript already carries the `write` call), and this milestone does not touch `dev/harness_lab/` at all. It is recorded because the suite is in CI (`.github/workflows/ci.yml:386`) and a flake there turns the lane red |
 | A **pre-existing flake** in the Git read-consistency family (`command_git::git_read_consistency::a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache`) | low | **observed, cause not established, and not this milestone's.** The second read of an unchanged repository was served as a fresh `ImmutableGeneration` instead of a captured one, so the cache did not serve it. It failed in 3 of 5 runs on this branch and in **7 of 8** runs on a tree without this milestone's code, so it is a pre-existing flake that predates the milestone. It is recorded because the suite is in CI and a flake there turns the lane red |
+| The **classification generator** counted a **match arm** as a construction. The arm's `=>` follows the block the pattern captures, so the block alone could not tell a construction from a pattern (`plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py`, `requests_in`) | medium | **found and fixed.** The corrective pass taught a test double to answer a command execution, and the double's arm — which is not the production path — put `CommandExecute` into the `/workspace` row, so the artifact's `--check` failed on the closed tree. The generator now reads the text after the block to tell the two apart; the regenerated artifact is **byte-identical** to the version this milestone reviewed (`c55b8456a`); and a `--self-test` proves the distinction and rejects a mutant that restores the defect. The generator is not gated by `verify.sh quick` or by CI, which is why the drift was found by running its `--check` rather than by a lane |
+| The generator's request column **understates** the `/workspace` arm: the arm calls `crate::tui::command_route::send_command` in production (`src/tui/commands/workspace_dashboard.rs:410`), and the generator does not follow that call, so the row lists 16 requests and not the 17th | low | **recorded.** The column is evidence, not the verdict: the row's kind and route come from the catalog and are unchanged by the gap, and the 17th request is the `tasks` form's own effect rather than the `/workspace` form's. The generator's resolution is a heuristic over call names, and widening it is a separate change with its own blast radius |
 
 ### 10.6 Ten served forms whose TUI arm performs a different effect
 
