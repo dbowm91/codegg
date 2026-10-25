@@ -955,3 +955,24 @@ global change — M007-C's desktop lane did exactly that for its keymap walk,
 because a global `testTimeout` change would also mask a genuine hang. That is
 a separate change against `main`, not this line's evidence, and this record
 does not absorb it.
+
+## 18. The fifth merge with `main` (2026-10-25)
+
+`origin/main` advanced to `76b046fd3` (PR #196, the Linux trusted Git C009
+hooks-path disposition, which pins `core.hooksPath` on the contained worktree
+child's argv) and the branch was merged with it again. The merge carried **no
+change to this line's own Rust code** — the delegated-notice fix in §13 is
+byte-identical across it — and it added one integration test file and one
+guard, so four rows moved: *Integration test files* **349 → 350**, *Guard
+scripts (all)* **99 → 100**, *CI guard scripts* **65 → 66**, and `AGENTS.md`'s
+published counts **79 / 65 → 80 / 66**. The quick-only difference is
+**unchanged at 14** and was re-derived rather than carried over.
+
+`main`'s own repair came with it: `main`'s own thirteenth amendment records
+that `architecture/overview.md`'s Verified-counts table carried **two** copies
+of the three count rows, a merge artifact from an earlier reconciliation, and
+that it collapsed the duplicate. The merged tree carries **one** block.
+
+The comment budget was re-banked on the merged tree — **126,467** comment
+lines, **1,116,139** words, a **0.1338** recorded ceiling — and the bank diff
+is confined to the files either line touched plus the global block.

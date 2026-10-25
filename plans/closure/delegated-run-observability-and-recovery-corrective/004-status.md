@@ -763,6 +763,16 @@ separation is worth recording so they are not re-investigated:
   environment-dependent**: they reproduce identically at `origin/main`, and
   `/tmp` is a symlink on macOS, which `canonicalize_workspace_root` refuses.
   The hosted runner is Linux, where they do not apply.
+- `main`'s `tests/contained_worktree_hooks_path.rs`, carried in by the fifth
+  merge, **fails locally on macOS and passes on the hosted runner**. The test
+  file is byte-identical to `main`'s (`git diff origin/main -- tests/contained_worktree_hooks_path.rs`
+  is empty) and is gated `#![cfg(unix)]`, but the containment it drives needs
+  the **protected mount view**, which `src/security/sandbox.rs` refuses
+  anywhere but Linux: *"the worktree child could not be contained: permission
+  denied: protected mount view is available only on Linux"*. `main`'s own `CI`
+  job on the commit that introduced it is green, because the hosted runner is
+  Linux. The gate is `main`'s to tighten — `#![cfg(target_os = "linux")]` —
+  and it is not folded into this line.
 - The **2–3 of the 94 `interactive_terminal` members** that fail per local run
   of `cargo test -p codegg --lib interactive_terminal` are **flaky in both
   trees**: each of them passes when run alone, each run fails a *different*

@@ -263,6 +263,12 @@ than waiting for a reader to notice.
 
 ## 9. Unresolved findings
 
+> **U1 discharged on 2026-10-25.** U1 below was closed by a follow-up after this
+> record was written; see §14 (A14). Its text is kept as it stood when the record
+> was closed, because a reader comparing the record with the tree's history needs
+> to see the finding and its discharge, not a rewritten finding. U2 was already
+> closed when the record was closed.
+
 **U1 — the maintainer has not chosen a disposition for the "another linked worktree's `HEAD` is writable" consequence.** The amendment records the consequence and records the disposition as *not chosen*. Narrowing the grant would need a new ADR; the milestone explicitly stops at the documentation correction. **This is a decision the maintainer owns**, and it is the only thing standing between this milestone and a narrower grant. Severity: medium. No code depends on it.
 
 **U2 — §13 criterion 6's whole-tree gates were run on this tree after the disk emergency.**
@@ -512,3 +518,37 @@ The *quick* guard count moved **72 → 73**, and the *quick runs 14 guards CI do
 Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
 
 **The comment corpus did not move.** The merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio; the re-bank moved no per-file ceiling, because `main`'s two desktop milestones added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the tenth amendment already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
+
+**A14 — the maintainer's chosen disposition for U1: defence in depth, and the hooks-path pin.**
+
+The maintainer has chosen the disposition U1 left open: **defence in depth**. The shared administration root stays writable and the capability it carries stays open — narrowing the grant is still a **new ADR**, and this milestone did not narrow it. What the disposition removes is the most obvious path to that capability: the contained worktree child's argv now carries `-c core.hooksPath=/dev/null`, so the repository's own hooks cannot run inside the containment at all.
+
+**Why the pin is on the argv, and not in the environment.** This is the one part of the disposition that is not obvious, and it was settled by measurement rather than by preference. Git's command-scope configuration can also be carried by `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, and that mechanism *does* outrank the repository's own configuration file — measured on this host, where the repository's local `core.hooksPath` was overridden by the environment route and the hook stopped running. But those variables are in `egggit`'s `ALWAYS_STRIPPED_ENV_VARS`, so the child's environment policy **hard-denies** them, and `EnvironmentPolicy::with_var` **silently refuses** a denied variable rather than reporting it. A pin carried there would therefore be dropped before the child ever saw it: a disposition that reads like a control and is a no-op. The first draft of the test drove the environment and **failed** for exactly that reason. A `-c` on the argv is the mechanism the daemon's own trusted Git reads already use (`egggit::add_trusted_git_overrides`), it is not on the deny list, and it outranks the repository's local configuration.
+
+**What was implemented.**
+
+* `src/git_contained_worktree.rs` — the constant `WORKTREE_CHILD_HOOKS_PATH_PIN` and the argv builder that applies it. The pin is applied to **both** steps of the operation, ahead of the subcommand, because a Git **global** option only applies before it.
+* `scripts/check_contained_worktree_hooks_path.py` — the static guard, wired into `verify.sh quick` and CI, with a `--self-test`. It checks that the constant is declared with the pinned key and a value that names no hook directory, that the argv builder applies it ahead of every step-specific subcommand, that the child's environment carries **no** command-scope pin (the hard-denied route), that ADR-0048 records the disposition as chosen, and that the behavioural proof exists and derives its control from the production pin.
+* `tests/contained_worktree_hooks_path.rs` — the behavioural proof, in a standalone target.
+* `tests/contained_worktree_c008.rs` — the containment test's hook assertion is now the **negative** one. It used to require the repository's hook to have run and merely be contained; it now requires that it does **not** run at all. That is a *stronger* statement than the one it made before.
+* `plans/adrs/ADR-0048-…md` — the disposition section now records the choice, clause 5 no longer lists *hooks* among the repository configuration surfaces that still apply, and a dated amendment records the mechanism and what it does not change.
+
+**What the behavioural proof claims, and how it avoids being vacuous.** The test runs the repository's `post-checkout` hook under the production argv with the **pin pair removed** — the control — and the hook runs; it then removes the control's marker and runs the production argv, and the hook does not run, while the worktree is still created. The control is derived from the production argv rather than written out separately, so it cannot drift from what the child really runs. Without that control the claim would be satisfied by a child that never ran hooks for an unrelated reason.
+
+**Three planted regressions proved the proof load-bearing**, and each was reverted:
+
+| Plant | Where it failed |
+|---|---|
+| The pin removed from the argv builder | `tests/contained_worktree_hooks_path.rs:200` — "the production argv does not carry the hooks-path pin at all" |
+| The pin renamed to a key that does not disable hooks (`core.pager=cat`) | `tests/contained_worktree_hooks_path.rs:237` — "the production argv does not pin core.hooksPath" |
+| The pin applied only to the attach step | `tests/contained_worktree_hooks_path.rs:200` — "the production argv does not carry the hooks-path pin at all" |
+
+**What this amendment does not claim.** It does not close the capability: the shared root stays writable, so the child can still write another linked worktree's `HEAD`. It does not claim the pin is the only way to reach it. It does not claim the repository's hooks are the only hostile configuration the child runs — a hostile `filter.*.smudge` still runs, by ADR-0048's own accepted clause 5, and it is the sandbox that contains it. And it does not reopen C009's status: C009 was closed before this amendment and stays closed. What it does is discharge U1, the record's last open finding, so the record now carries no open finding.
+
+**The counts that moved on this tree.** *Guard scripts (all)* **96 → 97** (this line's `scripts/check_contained_worktree_hooks_path.py`), *CI guard scripts* **59 → 60** (the workflow gained the same guard and its self-test), and *Integration test files* **341 → 342** (`tests/contained_worktree_hooks_path.rs`). The *quick* guard count moved **73 → 74**, the *quick runs 14 guards CI does not* difference is unchanged at **14** (the new guard runs in both lanes), `AGENTS.md`'s published counts moved to **74 quick / 60 CI**, and the quick lane's `==>` lines moved from 121 to **123** (`run_guards` **119**, `run_quick` **4**). Every other row was confirmed unchanged by measurement.
+
+**The comment corpus moved, and the movement is accounted for.** The tree now measures **125,249** comment lines, **1,104,302** words and a **0.1337** ratio, against the recorded **125,212** / **1,103,943** / **0.1337**. The increase is the new target's documentation; it is partly offset by two genuine per-file reductions in the same diff — `src/git_contained_worktree.rs` **284 → 280** and `tests/contained_worktree_c008.rs` **171 → 170** — where three comment blocks in the source repeated what the named functions already say and the containment test's obtained-root block repeated the paragraph the source documents. The corpus remains **above** the 124,865 pre-reduction figure, which is a historical reference and not a guard.
+
+**The count table was also repaired.** `architecture/overview.md`'s Verified-counts table carried **two** copies of the three count rows — one set at **341** and one at **340** — a merge artifact from an earlier reconciliation, in which both sides moved the same rows without the same values. The duplicate was collapsed to one row set carrying the tree's measurement.
+
+**Verification on this tree.** `scripts/verify.sh quick` is **green** at **123 steps**; `tests/contained_worktree_hooks_path.rs` passes; `scripts/check_contained_worktree_hooks_path.py` and its `--self-test` pass; `scripts/check_contained_worktree_grant.py` still passes against the reduced comments, which is the check that the ADR, the two code comments and the containment test still name one shared administration root.

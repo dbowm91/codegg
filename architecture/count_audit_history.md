@@ -820,7 +820,27 @@ The *quick* guard count moved **72 → 73**, and the *quick runs 14 guards CI do
 Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
 
 **The comment corpus did not move.** The merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio; the re-bank moved no per-file ceiling, because `main`'s two desktop milestones added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the tenth amendment already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
-### Thirteenth amendment — 2026-10-24, delegated-run corrective, merge reconciliation with `main` (M008)
+
+### Thirteenth amendment — 2026-10-25, M005 writer containment corrective, the C009 hooks-path disposition
+
+This amendment is not a reconciliation with `main`: it records the counts that moved because of a change **on** this line — the Linux trusted Git C009 milestone's chosen disposition, **defence in depth**, which pins `core.hooksPath` on the contained worktree child's argv.
+
+Three rows moved, each re-measured against its own listed `Source` on the tree rather than incremented:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Guard scripts (all) | 96 | **97** | This line's `scripts/check_contained_worktree_hooks_path.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 59 | **60** | The workflow gained the same guard and its self-test. The measure is unchanged. |
+| Integration test files | 341 | **342** | This line's `tests/contained_worktree_hooks_path.rs`. |
+
+The *quick* guard count moved **73 → 74**, and the *quick runs 14 guards CI does not* difference is unchanged at **14**: the new guard runs in **both** `quick` and CI, so it adds no quick-only entry. The quick lane's `==>` lines moved from 121 to **123** (`run_guards` **119**, `run_quick` **4**). `AGENTS.md`'s published counts moved with them, to **74 quick / 60 CI**, and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow rather than carried over.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment corpus moved, and the movement is accounted for.** The tree now measures **125,249** comment lines, **1,104,302** words and a **0.1337** ratio, against the recorded **125,212** / **1,103,943** / **0.1337**. The increase is the new integration target's documentation, and it is partly offset by two genuine per-file reductions in the same diff — `src/git_contained_worktree.rs` **284 → 280** and `tests/contained_worktree_c008.rs` **171 → 170** — where three comment blocks in the source repeated what the named functions already say, and the containment test's obtained-root block repeated the paragraph the source documents. The corpus remains **above** the 124,865 pre-reduction figure, which is a historical reference and not a guard: the corpus crossed it before this line's merges.
+
+**The count table was also repaired.** `architecture/overview.md`'s Verified-counts table carried **two** copies of the three count rows — one set at **341** and one at **340** — a merge artifact from an earlier reconciliation, in which both sides moved the same rows without the same values. The duplicate was collapsed to one row set carrying the tree's measurement.
+### Fourteenth amendment — 2026-10-24, delegated-run corrective, merge reconciliation with `main` (M008)
 
 Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
 the delegated-run corrective branch moved three code-count rows, because both
@@ -857,7 +877,7 @@ re-bank raised the global block and moved only the per-file ceilings of files
 `src/core/daemon_scratch.rs` — so the bank diff stays confined to touched
 files plus the global block, as the ratchet requires.
 
-### Fourteenth amendment — 2026-10-25, delegated-run corrective, third reconciliation with `main`
+### Fifteenth amendment — 2026-10-25, delegated-run corrective, third reconciliation with `main`
 
 `origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
 surface), which carried the desktop parity line's three new guards and its own
@@ -899,7 +919,7 @@ only the per-file ceilings of files **either** line touched — `main`'s
 `src/scratch.rs` and the two `tests/frontend_parity/` files — so the bank diff
 stays confined to touched files plus the global block, as the ratchet requires.
 
-### Fifteenth amendment — 2026-10-25, delegated-run corrective, fourth reconciliation with `main`
+### Sixteenth amendment — 2026-10-25, delegated-run corrective, fourth reconciliation with `main`
 
 `origin/main` advanced to `682ae762a` (PR #193, the contained-worktree C008
 line) and the delegated-run corrective branch was merged with it. That line
@@ -943,3 +963,45 @@ and moved only the per-file ceilings of files **either** line touched — the
 C008 line's own `tests/git_consistency_consumers_c005.rs` and the files this
 branch's previous reconciliation had already banked — so the bank diff stays
 confined to touched files plus the global block.
+
+### Seventeenth amendment — 2026-10-25, delegated-run corrective, fifth reconciliation with `main`
+
+`origin/main` advanced to `76b046fd3` (PR #196, the Linux trusted Git C009
+hooks-path disposition, which pins `core.hooksPath` on the contained worktree
+child's argv) and the delegated-run corrective branch was merged with it. The
+merge carried **no change to this line's own Rust code** — the delegated
+notice fix in §13 of the closure record is byte-identical across it — and four
+rows moved, each re-measured against its own listed `Source` on the merged tree
+rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 349 | **350** | `main`'s `tests/contained_worktree_hooks_path.rs`. The two sides' changed test-file sets overlap on no file, so the union is additive. |
+| Guard scripts (all) | 99 | **100** | `main`'s `scripts/check_contained_worktree_hooks_path.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 65 | **66** | The workflow gained the same guard and its self-test. The measure is unchanged. |
+| `AGENTS.md`'s published counts | 79 quick / 65 CI | **80 quick / 66 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. |
+
+The **quick-only difference is unchanged at 14** guards CI does not run, and
+the quick-only set was **re-derived** rather than carried over: it is the same
+fourteen names, because all four of the two lines' new guards run in **both**
+`quick` and CI. The quick lane's `==>` lines moved from **133** to **135**
+(`run_guards` **131**, `run_quick` **4**).
+
+**`main`'s own repair came with it.** `main`'s thirteenth amendment records
+that `architecture/overview.md`'s Verified-counts table carried **two** copies
+of the three count rows — one set at 341 and one at 340 — a merge artifact from
+an earlier reconciliation, and that it collapsed the duplicate. The merged tree
+carries **one** block, holding the merged tree's measured values.
+
+**The amendment ordinals were made unique again.** `main` and this branch had
+each appended an amendment numbered *thirteenth* after their common twelfth.
+`main`'s keeps its published ordinal, and this branch's three were renumbered
+*thirteenth* → **fourteenth**, *fourteenth* → **fifteenth** and *fifteenth* →
+**sixteenth**, so the sequence is unique and monotonic. No recorded
+measurement changes.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: the merged tree measures **126,467** comment lines, **1,116,139**
+words and a **0.1338** recorded ceiling. The re-bank raised the global block
+and moved only the per-file ceilings of files **either** line touched, so the
+bank diff stays confined to touched files plus the global block.

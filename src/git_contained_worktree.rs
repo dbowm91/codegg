@@ -215,7 +215,9 @@ pub fn compose_worktree_child_launch(
 ///
 /// The child's Git configuration is the repository's own and nothing else: the
 /// system and global configuration files are explicitly excluded, so a
-/// host-level `core.hooksPath` or filter driver cannot reach the child.
+/// host-level `core.hooksPath` or filter driver cannot reach the child. The
+/// repository's *own* `core.hooksPath` is pinned on the argv instead — see
+/// [`WORKTREE_CHILD_HOOKS_PATH_PIN`].
 pub fn worktree_child_environment(scratch: &Path) -> EnvironmentPolicy {
     EnvironmentPolicy::sanitized()
         .with_var("GIT_CONFIG_NOSYSTEM", "1")
@@ -342,18 +344,9 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
 
         // ── The one authorized operation, in its two steps ────────────────
         //
-        // Step one: `git --git-dir=<gitdir> worktree add --detach <checkout>
-        // <commit>`. The child runs with the Git directory as its working
-        // directory and never sees the source working tree at all: it needs
-        // the objects, refs and index, not the project's files.
-        //
-        // Step two: `git --git-dir=<admin> symbolic-ref HEAD
-        // refs/heads/<branch>`. The attached form of `worktree add` would
-        // lock and rewrite the branch ref — measured, not assumed — so the
-        // worktree is created detached and the daemon's branch is attached
-        // afterwards, with Git's own plumbing, writing only the linked
-        // worktree's own administration directory inside the shared root the
-        // grant names.
+        // Step one creates the linked worktree **detached**; step two attaches
+        // the daemon's branch to it. The two shapes, and why they are split
+        // that way, are on `WorktreeChildStep`.
         let paths = WorktreeChildPaths {
             git_binary: self.git_binary.clone(),
             gitdir: gitdir.clone(),
@@ -392,15 +385,8 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
             }
         };
         // The mount view is the dimension this milestone's grant is about, and
-        // it must be **obtained**, not merely requested: the obtained scope
-        // has to name the administration root as a writable root. A
-        // request is a hope; only the obtained fact is evidence.
-        //
-        // The comparison is on whole paths. A substring test over the
-        // joined report accepts a root that merely shares a prefix with the
-        // required one — `/repo/.git/worktrees-old` contains
-        // `/repo/.git/worktrees` — and that is not the root the child
-        // obtained.
+        // it must be **obtained**, not merely requested. The comparison is on
+        // whole paths — see `obtained_write_root_is_present`.
         for required in [&checkout, &scratch, &administration_root] {
             if !obtained_write_root_is_present(&guarantees, required) {
                 return Err(WorktreeServiceError::Git(format!(
@@ -684,12 +670,30 @@ pub fn build_worktree_grant(
     Ok(spec)
 }
 
+/// The configuration the contained child runs with, pinned on its **argv**.
+///
+/// `core.hooksPath` is the one repository configuration this pin removes: a
+/// `post-checkout` hook would otherwise run inside the containment, where the
+/// **shared** administration root is writable (ADR-0048's amendment).
+///
+/// The pin is on the argv, not in the environment: Git's command-scope
+/// variables (`GIT_CONFIG_COUNT` and friends) are hard-denied by the child's
+/// environment policy, so a pin carried there would be a no-op.
+pub const WORKTREE_CHILD_HOOKS_PATH_PIN: [&str; 2] = ["-c", "core.hooksPath=/dev/null"];
+
 /// The argv one step of the contained child runs.
 ///
 /// Both shapes are fixed by the daemon. The child cannot choose a different
 /// Git, a different path, or a different branch: the argv *is* the authority.
+/// Both shapes carry the hooks-path pin ahead of the subcommand, because a
+/// Git **global** option only applies before it.
 fn worktree_child_args(paths: &WorktreeChildPaths, step: WorktreeChildStep) -> Vec<String> {
-    match step {
+    let mut args: Vec<String> = WORKTREE_CHILD_HOOKS_PATH_PIN
+        .iter()
+        .copied()
+        .map(str::to_string)
+        .collect();
+    args.extend(match step {
         WorktreeChildStep::Create => vec![
             format!("--git-dir={}", paths.gitdir.display()),
             "worktree".to_string(),
@@ -704,7 +708,8 @@ fn worktree_child_args(paths: &WorktreeChildPaths, step: WorktreeChildStep) -> V
             "HEAD".to_string(),
             format!("refs/heads/{}", paths.branch),
         ],
-    }
+    });
+    args
 }
 
 /// The structural claim ADR-0048 clause 3 makes, asserted against the launch
@@ -714,8 +719,7 @@ fn worktree_child_args(paths: &WorktreeChildPaths, step: WorktreeChildStep) -> V
 /// scratch, and the **shared** administration root —
 /// `<common-gitdir>/worktrees/`, the parent of every linked worktree's own
 /// administration directory. Every other path under the repository's Git
-/// directory — `refs`, `objects`, `index`, `config`, `hooks`, `packed-refs` —
-/// is read-only to it.
+/// directory is read-only to it.
 ///
 /// This is checked against the **built** description rather than against the
 /// configuration that was requested, because a request is a hope and the

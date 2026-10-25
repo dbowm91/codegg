@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 126430
-max_comment_words = 1115780
+max_comment_lines = 126467
+max_comment_words = 1116139
 max_ratio = 0.1338
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -366,7 +366,7 @@ max_ratio = 0.1338
 "src/execution_subject_capture.rs" = { max_comment_lines = 58, max_ratio = 0.7436 }
 "src/executor_audit_hooks.rs" = { max_comment_lines = 29, max_ratio = 0.3187 }
 "src/git_consistency.rs" = { max_comment_lines = 54, max_ratio = 2.3479 }
-"src/git_contained_worktree.rs" = { max_comment_lines = 284, max_ratio = 0.4774 }
+"src/git_contained_worktree.rs" = { max_comment_lines = 280, max_ratio = 0.4652 }
 "src/git_mutation_projector.rs" = { max_comment_lines = 55, max_ratio = 0.1038 }
 "src/git_mutations.rs" = { max_comment_lines = 273, max_ratio = 0.2072 }
 "src/git_mutations_ops.rs" = { max_comment_lines = 76, max_ratio = 0.1123 }
@@ -770,7 +770,8 @@ max_ratio = 0.1338
 "tests/config_provider/search_backend_arg_mapping.inc" = { max_comment_lines = 27, max_ratio = 0.0831 }
 "tests/config_provider/search_backend_eggsearch.inc" = { max_comment_lines = 39, max_ratio = 0.094 }
 "tests/config_provider/search_runtime_isolation.inc" = { max_comment_lines = 25, max_ratio = 0.1137 }
-"tests/contained_worktree_c008.rs" = { max_comment_lines = 171, max_ratio = 0.2497 }
+"tests/contained_worktree_c008.rs" = { max_comment_lines = 170, max_ratio = 0.2479 }
+"tests/contained_worktree_hooks_path.rs" = { max_comment_lines = 42, max_ratio = 0.2039 }
 "tests/core_daemon/approval_router.inc" = { max_comment_lines = 31, max_ratio = 0.0894 }
 "tests/core_daemon/checked_restore_integration.inc" = { max_comment_lines = 66, max_ratio = 0.0646 }
 "tests/core_daemon/checkout_mediation_authority_c008.inc" = { max_comment_lines = 96, max_ratio = 0.3138 }

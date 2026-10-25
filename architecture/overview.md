@@ -593,9 +593,9 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 349 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 99 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 65 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 350 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 100 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 66 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -635,6 +635,37 @@ sandbox C005 closure record's last open finding. *Integration test files* is
 **341**, re-measured on the tree with `python3 scripts/measure_overview_counts.py`
 rather than incremented. Every other row was confirmed unchanged by
 measurement.
+
+### Count reconciliation — the C009 hooks-path disposition (2026-10-25)
+
+Three rows moved because of a change on this line — the contained worktree
+child's argv now pins `core.hooksPath`, with a static guard and a standalone
+integration target proving it. *Guard scripts (all)* is **97**, *CI guard
+scripts* is **60** (the workflow gained the same guard and its self-test), and
+*Integration test files* is **342** — the standalone target
+`tests/contained_worktree_hooks_path.rs`. Every row was re-measured on the tree
+with `python3 scripts/measure_overview_counts.py` rather than incremented. The
+*quick* guard count moved **73 → 74**, the *quick runs 14 guards CI does not*
+difference is unchanged at **14** (the new guard runs in both lanes), and
+`AGENTS.md`'s published counts moved to **74 quick / 60 CI**. The quick lane's
+`==>` lines moved from 121 to **123** (`run_guards` **119**, `run_quick` **4**).
+Every other row was confirmed unchanged by measurement.
+
+The comment corpus moved **125,212 → 125,249** comment lines and **1,103,943 →
+1,104,302** words, at a **0.1337** ratio. The move is the cost of the new
+target's documentation; it is partly offset by two genuine per-file reductions
+in the same diff — `src/git_contained_worktree.rs` **284 → 280** and
+`tests/contained_worktree_c008.rs` **171 → 170** — where three comment blocks
+in the source duplicated what the named functions already say, and the
+containment test's obtained-root block repeated the same paragraph the source
+documents. The corpus remains **above** the 124,865 pre-reduction figure, which
+is a historical reference and not a guard.
+
+The table itself was also **repaired**: it carried **two** copies of the three
+count rows — one set at **341** and one at **340** — a merge artifact from an
+earlier reconciliation, in which both sides moved the same rows without the
+same values. The duplicate was collapsed to one row set carrying the tree's
+measurement, which is the shape the table is supposed to have.
 
 ### Count reconciliation — the ninth reconciliation with `main` (2026-10-25)
 
@@ -793,6 +824,24 @@ this file: `origin/main` carried the three count rows **twice** — once as
 merged tree carries **one** block, holding the merged tree's measured values.
 That is `main`'s defect, corrected here by the merge; this branch made no
 change to `main`'s content.
+
+### Count reconciliation — delegated-run corrective, fifth merge with `main` (2026-10-25)
+
+`origin/main` advanced to `76b046fd3` (PR #196, the Linux trusted Git C009
+hooks-path disposition). It added **one** integration test file and **one**
+guard, so four rows moved. The measured values on the merged tree are
+*Integration test files* **350**, *Guard scripts (all)* **100** and *CI guard
+scripts* **66**, and `AGENTS.md`'s published counts were corrected at the
+source to **80** for `quick` and **66** for CI. The quick-only difference is
+**unchanged at 14** and was **re-derived**, not carried over: all four of the
+two lines' new guards run in **both** surfaces. The quick lane's `==>` lines
+moved from **133** to **135** (`run_guards` **131**, `run_quick` **4**).
+
+`main`'s own repair came with it: `main`'s thirteenth amendment records that
+this file's Verified-counts table carried **two** copies of the three count
+rows — one set at 341 and one at 340 — a merge artifact from an earlier
+reconciliation, and that it collapsed the duplicate. The merged tree carries
+**one** block, holding the merged tree's measured values.
 
 The full record is in `architecture/count_audit_history.md`.
 
@@ -1187,7 +1236,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (95 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (97 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
