@@ -5880,6 +5880,18 @@ mod tests {
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
+        // C004 added the `continue` action after the M003 receipt was frozen.
+        // It is a post-M003 change like the rest, so it is removed here: the
+        // receipt stays immutable and the live schema keeps the continuation
+        // action.
+        let task_action_enum = task_action["enum"]
+            .as_array_mut()
+            .expect("task action enum array");
+        assert!(
+            task_action_enum.iter().any(|action| action == "continue"),
+            "expected post-M003 task action continue"
+        );
+        task_action_enum.retain(|action| action != "continue");
         assert_eq!(
             task_action["enum"],
             serde_json::json!([
@@ -5908,6 +5920,21 @@ mod tests {
             ]),
             "unexpected post-M003 task action schema"
         );
+        // C004 also extended the action description with the `continue`
+        // sentence. It is a post-M003 edit like the rest, so it is removed
+        // here: the receipt stays immutable and the live schema keeps the
+        // continuation wording.
+        const CONTINUE_SENTENCE: &str =
+            "; continue starts one new attempt of a failed durable child through run_id";
+        let live_action_description = task_action["description"]
+            .as_str()
+            .expect("task action description");
+        assert!(
+            live_action_description.contains(CONTINUE_SENTENCE),
+            "expected post-M003 task action description continue sentence"
+        );
+        let frozen_action_description = live_action_description.replace(CONTINUE_SENTENCE, "");
+        task_action["description"] = serde_json::json!(frozen_action_description);
         // The action description carries two independent post-M003 edits and
         // the merged wording is their union: the scratch workstream named the
         // scratch actions and the `main` side named the run_id/task_id/

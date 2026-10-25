@@ -300,7 +300,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-25**, each against its own listed `Source`, in the merged tree that carries `origin/main` `cb4ceed9d` together with the M005 writer-containment line's branch tip `adcd927ee`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-25**, each against its own listed `Source`, in the merged tree that carries `origin/main` `69ceec814` together with the delegated-run corrective line's branch tip `a5a87fd31`. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -579,7 +579,7 @@ fifth reconciliations recorded. The full reconciliation is in
 | Distinct production tool names | 75 | `impl Tool for …` `name()` across `src/` (the whole tree — a production `Tool` impl may live with the subsystem that owns the tool's behaviour, e.g. `src/python_script/tool.rs`), **plus** the 13 eggsact validator names at their `EggsactTool::new()` call sites in `src/tool/deterministic.rs` — that family's `impl Tool for EggsactTool` returns `self.codegg_name`, so a literal-name scan cannot see it. 67 production `impl Tool for` blocks, of which 5 resolve their name at runtime; excludes the 8 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs`, `broker.rs` and `src/scheduler/tool_program_executor.rs`. The runtime-named families that only *substitute* for an already-counted tool add no new name: `DisabledTool` carries the name of the tool it replaces (`lsp`, `lsp_read`, `security`) and `UnrootedTool` forwards its inner tool's name |
 | Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`; excl. the `bash/tests/` fixture, which is test support, not tool source) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 56 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `codegg-core` modules | 58 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
 | `CoreRequest` variants | 270 (244 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 178 (177 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
@@ -591,28 +591,28 @@ fifth reconciliations recorded. The full reconciliation is in
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 95 statements / 91 tables | `crates/codegg-core/src/session/schema.rs` (92 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
-| Storage layout version | 88 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 99 statements / 95 tables | `crates/codegg-core/src/session/schema.rs` (96 distinct `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version`, `origin_attribution` and that rebuild each appear twice) |
+| Storage layout version | 90 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 343 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 99 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 62 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 351 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 102 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 68 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
 Three code-count rows moved when the managed-agent-scratch M008 line landed its
-corrective pass. *Integration test files* is **339** (`tests/*.rs` +
-`tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved
-by one, the new `tests/scheduler_jobs/scratch_record_less_tree.inc`, which
-drives a full sweep pass over a tree whose owner record is missing). *Guard
-scripts (all)* is **93** (`ls scripts/check_*` — the new
+corrective pass. *Integration test files* moved to **339** (`tests/*.rs` +
+`tests/*/*.inc`, with the `tests/common/` helper tree excluded — by one, the
+new `tests/scheduler_jobs/scratch_record_less_tree.inc`, which drives a full
+sweep pass over a tree whose owner record is missing). *Guard scripts (all)*
+moved to **93** (`ls scripts/check_*` — the new
 `scripts/check_scratch_reclaim_invariants.py`, which enforces the reclaim
 path's error taxonomy, its single removal routine, the emptiness proof that
 authorises a removal, and the one shared rule the census and the validator
-both use). *CI guard scripts* is **56** (the `ci.yml` list, which gained the
-same guard and its self-test). The quick-only difference is unchanged at
+both use). *CI guard scripts* moved to **56** (the `ci.yml` list, which gained
+the same guard and its self-test). The quick-only difference was unchanged at
 **14** guards CI does not run: the new guard runs in **both** `verify.sh quick`
 and CI, so it adds no quick-only entry. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
@@ -803,6 +803,129 @@ entry. The *quick* guard count is **72**. *Integration test files* is
 unchanged at **340** — the guard adds a script, not a test file. Every other
 code-count row was re-checked against its own listed `Source` and is
 unchanged.
+
+### Count reconciliation — delegated-run corrective, merge with `main` (2026-10-24)
+
+Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
+the delegated-run corrective branch moved the same three rows again, because
+both lines added a test module and a guard. The measured values on the merged
+tree are *Integration test files* **347**, *Guard scripts (all)* **96** and
+*CI guard scripts* **62** — each the sum of the two lines' own deltas. The
+quick-only difference is **unchanged at 14**: the delegated-run corrective's
+six new guards all run in **both** `verify.sh quick` and CI, and M008's one new
+guard does too, so neither line adds a quick-only entry. `AGENTS.md`'s
+published counts were corrected at the source to **76** for `quick` and **62**
+for CI. The full record is in `architecture/count_audit_history.md`.
+
+### Count reconciliation — delegated-run corrective, third merge with `main` (2026-10-25)
+
+`origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
+surface), which carried the desktop parity line's three new guards and its own
+new integration test module. Merging it into the delegated-run corrective
+branch moved the same three rows again. The measured values on the merged tree
+are *Integration test files* **348**, *Guard scripts (all)* **99** and *CI
+guard scripts* **65** — each the sum of the two lines' own deltas, re-measured
+against its own listed `Source` rather than incremented from either parent. The
+quick-only difference is **unchanged at 14**: the delegated-run corrective's
+three new guards and all three of the desktop line's new guards run in **both**
+`verify.sh quick` and CI, so neither line adds a quick-only entry. `AGENTS.md`'s
+published counts were corrected at the source to **79** for `quick` and **65**
+for CI. The full record is in `architecture/count_audit_history.md`.
+
+### Count reconciliation — delegated-run corrective, fourth merge with `main` (2026-10-25)
+
+`origin/main` advanced to `682ae762a` (PR #193, the contained-worktree C008
+line). It added **one** integration test file and **no** guard, so only the
+*Integration test files* row moved: the measured value on the merged tree is
+**349**. *Guard scripts (all)* stays **99** and *CI guard scripts* stays **65**,
+and `AGENTS.md`'s published counts (**79** for `quick`, **65** for CI) are
+therefore unchanged and needed no correction. The quick-only difference is
+**unchanged at 14** and was **re-derived**, not carried over.
+
+The merge also **collapsed a duplicated table block** in `main`'s own copy of
+this file: `origin/main` carried the three count rows **twice** — once as
+341 / 96 / 59 and again as 340 / 96 / 59 — a merge artifact from PR #193. The
+merged tree carries **one** block, holding the merged tree's measured values.
+That is `main`'s defect, corrected here by the merge; this branch made no
+change to `main`'s content.
+
+### Count reconciliation — delegated-run corrective, fifth merge with `main` (2026-10-25)
+
+`origin/main` advanced to `76b046fd3` (PR #196, the Linux trusted Git C009
+hooks-path disposition). It added **one** integration test file and **one**
+guard, so four rows moved. The measured values on the merged tree are
+*Integration test files* **350**, *Guard scripts (all)* **100** and *CI guard
+scripts* **66**, and `AGENTS.md`'s published counts were corrected at the
+source to **80** for `quick` and **66** for CI. The quick-only difference is
+**unchanged at 14** and was **re-derived**, not carried over: all four of the
+two lines' new guards run in **both** surfaces. The quick lane's `==>` lines
+moved from **133** to **135** (`run_guards` **131**, `run_quick` **4**).
+
+`main`'s own repair came with it: `main`'s thirteenth amendment records that
+this file's Verified-counts table carried **two** copies of the three count
+rows — one set at 341 and one at 340 — a merge artifact from an earlier
+reconciliation, and that it collapsed the duplicate. The merged tree carries
+**one** block, holding the merged tree's measured values.
+
+The full record is in `architecture/count_audit_history.md`.
+
+
+### Count reconciliation — delegated-run corrective, sixth merge with `main` (2026-10-25)
+
+`origin/main` advanced to `69ceec814`, carrying PRs #195, #197 and #198 — the
+desktop command-parity line (M007-D, ADR-0052), its closure records, and the
+owner-directed corrective registrations. **Three** files conflicted, and **all
+three were documentation**: `AGENTS.md`, this file, and
+`docs/comment-budget.toml`. Every code file merged cleanly — the daemon's
+command catalog, the frontend action set and the TUI's migrated served forms
+touch no file this line owns, and the two lines' code sets do not overlap at
+all.
+
+Four rows moved. Each was **re-measured** against its own listed `Source` in the
+merged tree and **not** incremented from either parent:
+
+- *`codegg-core` modules* is **58** (`crates/codegg-core/src/lib.rs`) — `main`'s
+  **56** (which added `command_catalog` and `frontend_action`) plus this line's
+  **two** delegated-run modules. Both parents measure **56**; the merged tree
+  measures **58**.
+- *Integration test files* is **351** (`tests/*.rs` + `tests/*/*.inc`, with the
+  `tests/common/` helper tree excluded) — the base **342**, plus this line's
+  **eight** and `main`'s **one**, with no overlap.
+- *Guard scripts (all)* is **102** (`ls scripts/check_*`) — the base **97**,
+  plus this line's **three** and `main`'s **two**, with no overlap.
+- *CI guard scripts* is **68** (the distinct `scripts/check_*` names in
+  `.github/workflows/ci.yml`) — the base **60**, plus the same **six**.
+
+The *quick* guard count moved **80 → 82**, and `AGENTS.md`'s published counts
+moved to **82** for `quick` and **68** for CI. The quick-only difference is
+**unchanged at 14** and was **re-derived**, not carried over: every one of the
+two lines' new guards runs in **both** surfaces. The quick lane's `==>` lines
+moved from **135** to **139** (`run_guards` **135**, `run_quick` **4**).
+
+`main`'s own M007-D section records *`codegg-core` modules* as **56**. That is
+`main`'s measurement of `main`'s tree and stands as the record of that
+milestone; the row in the table holds the merged tree's measured **58**.
+
+The comment budget was re-banked on the merged tree, after `cargo fmt --all` —
+which produced **no** edit, `main`'s merged code being already formatted. The
+banked manifest holds **127,700** comment lines, **1,127,120** words and a
+**0.1341** ratio, and the bank diff is confined to the files the merge touched,
+plus the global block.
+
+Every other code-count row was re-checked against its own listed `Source` and is
+unchanged: architecture docs **92**, distinct production tool names **75**, tool
+source files **83**, LSP server definitions **39**, `AppEvent` variants **61**,
+`CoreRequest` variants **270** (244 struct + 26 unit), `CoreResponse` variants
+**178** (177 struct + 1 unit), `CoreEvent` variants **92**, `ProjectionEvent`
+variants **47**, authorized operations **264**, identity newtypes **19**, built-in
+slash commands **169**, built-in agents **10**, bundled themes **50**, TUI state
+modules **33** (34 `.rs` files incl. `mod.rs`), database tables **99 statements /
+95 tables**, storage layout version **90**, Git operation variants **54**, Git
+risk classes **11**, and workspace member crates **11** (+ root). The **Tool
+registrations** row is unchanged too — still **67**, still **53 `register` + 14
+`register_boxed`**.
+
+The full record is in `architecture/count_audit_history.md`.
 
 
 ### Count reconciliation — M007-D daemon-owned command catalog (2026-10-25)

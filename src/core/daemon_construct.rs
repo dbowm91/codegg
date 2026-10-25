@@ -911,6 +911,34 @@ impl CoreDaemon {
         // The human-shell service announces every run's lifecycle.
         let human_shell_publisher =
             crate::core::daemon_human_shell::human_shell_run_publisher(event_log.clone());
+        // A delegated run's continuation is claimed and then dispatched. A
+        // daemon that went down between the two leaves the claim live with
+        // nothing behind it, so the claim is surfaced as needing attention at
+        // startup. It is **never** replayed: the bound is one continuation per
+        // terminal failure, and a replay would be a second attempt the parent
+        // never authorized. The grace period is zero here because the daemon
+        // that made the claim is gone — there is no live dispatcher to race.
+        let continuation_reconcile_handle = if deps.pool.is_some() {
+            tokio::runtime::Handle::try_current().ok().map(|handle| {
+                let service = deps.run_control.clone();
+                handle.spawn(async move {
+                    match service.reconcile_continuations(0).await {
+                        Ok(report) if !report.needs_attention.is_empty() => {
+                            tracing::warn!(
+                                count = report.needs_attention.len(),
+                                "delegated run continuations left claimed by a previous daemon"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(?error, "continuation startup reconciliation failed");
+                        }
+                    }
+                })
+            })
+        } else {
+            None
+        };
 
         Self {
             daemon_id,
@@ -950,6 +978,7 @@ impl CoreDaemon {
             process_admission: process_admission.clone(),
             _worktree_reconcile_handle: worktree_reconcile_handle,
             _writer_permit_reconcile_handle: writer_permit_reconcile_handle,
+            _continuation_reconcile_handle: continuation_reconcile_handle,
             eggpool_provisioner,
             selection_service,
             asset_refresh,

@@ -439,6 +439,7 @@ mod tests {
 
     fn subagent(agent: &str, status: &str) -> SubagentRow {
         SubagentRow {
+            transcript: None,
             child_instance_id: Some("child-1".into()),
             task_id: "1".into(),
             run_id: None,

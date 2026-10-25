@@ -642,7 +642,41 @@ enabled (the submission facade refuses every submission otherwise) and a
 pool present (a pool-less daemon has no cross-process durability to
 claim). Schedule creation and resumption wake it.
 
-### Delegated scratch attempt leases (managed-agent-scratch M002)
+### Delegated run attempts and the continuation authorization
+
+`codegg_core::agent_run_attempt` owns a delegated run's **attempt record** and
+its **continuation authorization**. They are two tables because they answer two
+questions and have two shapes.
+
+- `agent_run_attempt` is **append-only**. A row is inserted and never updated
+  or deleted, so the history of a run's attempts cannot be rewritten. Its
+  primary key is `(run_id, attempt_ordinal, event)`, and `event` is one of
+  `attempt` (the attempt was created), `outcome` (the attempt reached a
+  terminal state) or `attention` (the reconciliation surfaced it).
+- `agent_run_continuation` is the **claimable-once authorization**: one row
+  per run, whose primary key *is* the compare-and-swap. Its state moves from
+  `claimed` to `dispatched`, or to `needs_attention` when the dispatch never
+  happened. A duplicate continuation request finds the row present and is
+  refused with `already_continued` — never replayed.
+
+The attempt ordinal is observable: a run with no attempt record reads as `1`
+(a run recorded before this milestone is its own first attempt), and the
+continuation creates ordinal `2`. The bound — one continuation per terminal
+failure — is therefore visible in the durable record, not only in a log line.
+
+Every holder of an `AgentRunStore` reaches both without a second wiring path:
+`AgentRunStore::attempt_store()` returns the store the run store owns.
+
+A delegated run's **provider entry** is guarded by the attempt record. The
+child resolves its attempt's provenance from the record before it reaches the
+provider, and a claimed continuation must additionally carry its seeded
+context — the recorded transcript, read back from the store and re-verified
+with the repository's own recogniser. A run with no attempt record has no
+authorized attempt and is refused before the provider is reached. The static
+guard `scripts/check_delegated_continuation_authority.py` holds that shape in
+place.
+
+
 
 The accepted `AgentRunRecord` carries an immutable list of explicitly granted
 shared scratch IDs. `SubagentJobExecutor` acquires leases for the run-private
@@ -787,6 +821,38 @@ The `job` model tool (`status|wait|cancel|output`) reuses the
 `wait` timeout means still-running. See `architecture/scheduler.md`
 "Generic job terminal notices" and `architecture/authorization.md` for the
 owner rule.
+
+#### Delegated runs subscribe for the same notice (C001)
+
+The `task` tool's durable spawn path is a second subscriber of the same
+machinery. After a successful submit and before the tool reports acceptance,
+it durably subscribes the delegated job with kind `subagent`, the parent's
+session and turn, the same invocation key the submit used, the parent's owner
+principal and workspace, and the `NotifyOnly` disposition. A retried spawn
+reuses the invocation key and therefore re-subscribes the same job instead of
+creating a second notice.
+
+Three rules are load-bearing:
+
+- **A subscription failure never fails the delegated work.** It is logged at
+  `warn` with the job id and the reason, and delivery falls back to the
+  in-band push. The only exception is a *conflicting owner* on the same
+  invocation key: that fails the spawn rather than silently re-targeting the
+  notice at another session.
+- **A missing parent session skips the subscription.** The notice's owner must
+  be the job's owner, so a delegated spawn with no host-originated parent
+  session logs the reason and proceeds; it never fabricates a session id.
+- **The delegated kind has its own notice content.** The generic
+  background-job wording cannot identify the child, and its "completed
+  successfully: {summary}" tail reads as an empty success when the child
+  recorded nothing. The delegated content names the run, states the recorded
+  outcome — or states plainly that the run recorded none — and carries the
+  result reference the orchestrator reads for the full result.
+
+`JobBackgroundSubscription` records the owner principal and the workspace the
+subscription was created under (both optional, so pre-existing rows still
+deserialize). See `architecture/agent.md` "The delegated run's durable
+terminal notice".
 
 ### GitHub Actions watching (M004)
 

@@ -58,9 +58,34 @@ impl CoreDaemon {
         }
     }
 
+    /// The durable delegated-run transcript store, when this daemon has a
+    /// SQLite pool to read it from.
+    ///
+    /// A daemon without a pool has no transcript store: the snapshot then
+    /// carries no transcript at all, and the client degrades to the run
+    /// inspector. That is different from a run with no recorded transcript,
+    /// and the two are kept apart.
+    fn transcript_store(
+        &self,
+    ) -> Option<std::sync::Arc<dyn codegg_core::agent_run_transcript::AgentRunTranscriptStore>>
+    {
+        self.pool.clone().map(|pool| {
+            std::sync::Arc::new(
+                codegg_core::agent_run_transcript::SqliteAgentRunTranscriptStore::new(pool),
+            )
+                as std::sync::Arc<dyn codegg_core::agent_run_transcript::AgentRunTranscriptStore>
+        })
+    }
+
     /// Build the durable portion of a session projection from authoritative
     /// stores. This is used for initial connect and resync, so a reconnect
-    /// does not depend on transient legacy subagent events.
+    /// does not depend on transient legacy subagent events. The method is
+    /// read-only with respect to run/worktree authority.
+    ///
+    /// The snapshot is the **exact-owner** boundary for the delegated run's
+    /// transcript: it is built for one `session_id` and delivered only to the
+    /// client bound to that session, so no client receives another session's
+    /// runs — nor their transcripts.
     pub(crate) async fn projection_snapshot_for_session(
         &self,
         session_id: &str,
@@ -166,13 +191,25 @@ impl CoreDaemon {
                 .await
                 .unwrap_or_default();
             let group_id = groups.first().map(|group| group.group_id.to_string());
-            snapshot.upsert_agent_run(codegg_core::projection_replay::agent_run_summary(
+            let mut summary = codegg_core::projection_replay::agent_run_summary(
                 &task,
                 run,
                 worktree.as_ref(),
                 result.as_ref(),
                 group_id.as_deref(),
-            ));
+            );
+            // The delegated run's recorded transcript, read at this boundary
+            // and bounded by the DTO's declared bound. It is absent — not
+            // empty — when the run recorded none, so the tab can say so.
+            if let Some(store) = self.transcript_store() {
+                summary = codegg_core::projection_replay::agent_run_summary_with_transcript(
+                    summary,
+                    store.as_ref(),
+                    &run.run_id,
+                )
+                .await;
+            }
+            snapshot.upsert_agent_run(summary);
             if let Some(worktree) = worktree.as_ref() {
                 snapshot
                     .upsert_worktree(codegg_core::projection_replay::worktree_summary(worktree));
@@ -1301,5 +1338,207 @@ mod tests {
         assert!(msg.contains("project_context_required"));
         // No path or identity leaks into the code string.
         assert!(!msg.contains("/tmp"));
+    }
+
+    /// A migrated in-memory pool, so the transcript store has its table.
+    async fn transcript_pool() -> sqlx::SqlitePool {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+        let url = format!(
+            "file:daemon-transcript-{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let options = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite url")
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .expect("sqlite pool");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrate the transcript schema");
+        pool
+    }
+
+    /// A real, non-symlink directory to register as a workspace root.
+    ///
+    /// `/tmp` is a symlink on macOS and the registry refuses a symlinked
+    /// root, so the test uses the platform's own temporary directory.
+    fn workspace_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "codegg-c003-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("create the workspace root");
+        root
+    }
+
+    /// Start one delegated run for `session_id` and return its run id.
+    async fn delegated_run(
+        daemon: &CoreDaemon,
+        session_id: &str,
+        workspace_id: &codegg_core::workspace::WorkspaceId,
+    ) -> codegg_core::identity::AgentRunId {
+        use codegg_core::agent_run::{AgentRunBudget, NewAgentRun, NewAgentTask};
+        use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId};
+
+        let run_id = AgentRunId::new();
+        let task = NewAgentTask {
+            task_id: AgentTaskId::new(),
+            parent_task_id: None,
+            originating_session_id: session_id.to_string(),
+            originating_turn_id: Some(format!("turn-{session_id}")),
+            project_id: ProjectId::new(),
+            repository_id: None,
+            workspace_id: workspace_id.clone(),
+            requested_agent: "explore".into(),
+            delegation_key: format!("delegation-{session_id}-{run_id}"),
+            request_fingerprint: format!("fingerprint-{session_id}-{run_id}"),
+            description: "a delegated run".into(),
+        };
+        let run = NewAgentRun {
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            depth: 1,
+            workspace_id: workspace_id.clone(),
+            agent_name: "explore".into(),
+            agent_digest: Some("digest".into()),
+            provider: "openai".into(),
+            model: "model".into(),
+            authority_digest: "authority".into(),
+            budget: AgentRunBudget::default(),
+            shared_scratch: Vec::new(),
+        };
+        daemon
+            .deps
+            .agent_run_store
+            .create_or_get(task, run)
+            .await
+            .expect("start a delegated run");
+        run_id
+    }
+
+    #[tokio::test]
+    async fn a_session_snapshot_carries_only_its_own_delegated_transcripts() {
+        use codegg_core::agent_run_transcript::{
+            AgentRunTranscriptStore, SqliteAgentRunTranscriptStore, TranscriptKind, TranscriptRole,
+        };
+
+        let pool = transcript_pool().await;
+        // The production dependency set: the durable agent run store and the
+        // transcript store are both SQLite-backed over the same pool, so the
+        // transcript's foreign key to the run row is satisfied.
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool.clone(),
+            None,
+            None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("owner"))
+            .await
+            .expect("register workspace");
+
+        let owner_run = delegated_run(&daemon, "session-owner", &workspace.id).await;
+        let other_run = delegated_run(&daemon, "session-other", &workspace.id).await;
+
+        let store = SqliteAgentRunTranscriptStore::new(pool);
+        store
+            .append(
+                &owner_run,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ModelMessage,
+                "the owner's own conversation",
+            )
+            .await
+            .expect("record the owner's transcript");
+        store
+            .append(
+                &other_run,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ModelMessage,
+                "another session's private conversation",
+            )
+            .await
+            .expect("record the other session's transcript");
+
+        let owner_snapshot = daemon
+            .projection_snapshot_for_session(
+                "session-owner",
+                "project-owner",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert_eq!(owner_snapshot.agent_runs.len(), 1);
+        let owner_transcript = owner_snapshot.agent_runs[0]
+            .transcript
+            .as_ref()
+            .expect("the owning session's transcript is attached");
+        let owner_bodies = owner_transcript
+            .entries()
+            .iter()
+            .map(|entry| entry.body.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(owner_bodies, vec!["the owner's own conversation"]);
+
+        let other_snapshot = daemon
+            .projection_snapshot_for_session(
+                "session-other",
+                "project-owner",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert_eq!(other_snapshot.agent_runs.len(), 1);
+        let other_bodies = other_snapshot.agent_runs[0]
+            .transcript
+            .as_ref()
+            .expect("the other session's transcript is attached")
+            .entries()
+            .iter()
+            .map(|entry| entry.body.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(other_bodies, vec!["another session's private conversation"]);
+
+        // The negative case: a client bound to another session does not
+        // receive this session's transcript. The snapshot is built per
+        // session, so the other session's run is not in it at all.
+        let owner_bodies_joined = owner_bodies.join(" ");
+        assert!(
+            !owner_bodies_joined.contains("another session's private conversation"),
+            "the owning session's snapshot must not carry another session's transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_with_no_recorded_transcript_says_absent() {
+        let pool = transcript_pool().await;
+        let daemon = CoreDaemon::with_deps(crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool, None, None,
+        ));
+        let workspace = daemon
+            .workspaces
+            .get_or_register(&workspace_root("owner"))
+            .await
+            .expect("register workspace");
+        let run_id = delegated_run(&daemon, "session-absent", &workspace.id).await;
+
+        let snapshot = daemon
+            .projection_snapshot_for_session(
+                "session-absent",
+                "project-absent",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert_eq!(snapshot.agent_runs.len(), 1);
+        assert_eq!(
+            snapshot.agent_runs[0].transcript,
+            Some(codegg_protocol::projection::dto::AgentRunTranscriptProjection::Absent),
+            "a run that recorded nothing must be absent, not an empty conversation"
+        );
+        assert_eq!(run_id.as_str(), snapshot.agent_runs[0].run_id);
     }
 }

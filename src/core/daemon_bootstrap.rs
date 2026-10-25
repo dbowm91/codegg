@@ -391,6 +391,28 @@ impl CoreDaemon {
     /// get their persisted live hint republished here, deduped by
     /// notice id.
     pub async fn recover_jobs(&self) -> Option<crate::job_recovery::RecoveryReportSummary> {
+        // Backfill durable terminal notices for jobs that terminated before
+        // their subscription landed. The delegated spawn subscribes a job
+        // after it dispatches it, so a child that finished inside that
+        // window had no subscription to attribute its notice to; the
+        // notification service holds that terminal and releases it when the
+        // subscription lands. This is the durable counterpart for a daemon
+        // that restarted in between. It runs before the hint reconciliation
+        // below so a backfilled notice also gets its live hint forwarded.
+        if let Some(scheduler) = self.deps.scheduler.as_ref() {
+            match scheduler.recover_missing_terminal_notices().await {
+                Ok(0) => {}
+                Ok(recovered) => {
+                    tracing::info!(recovered, "terminal notices backfilled during recovery");
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "terminal notice backfill failed; the next recovery retries"
+                    );
+                }
+            }
+        }
         // C004 crash-gap healing first: republish live hints lost between
         // the durable notice commit and the forwarder publish. Failure
         // only warns; job recovery below proceeds regardless.

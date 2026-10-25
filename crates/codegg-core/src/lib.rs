@@ -1,7 +1,9 @@
 pub mod agent_convergence;
 pub mod agent_run;
+pub mod agent_run_attempt;
 pub mod agent_run_control;
 pub mod agent_run_group;
+pub mod agent_run_transcript;
 pub mod approval;
 pub mod audit;
 pub mod audit_instrumentation;

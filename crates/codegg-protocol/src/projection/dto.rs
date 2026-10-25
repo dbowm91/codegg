@@ -15,7 +15,8 @@ use std::collections::VecDeque;
 
 use crate::projection::limits::{
     truncate_str, MAX_PROJECTION_DESCRIPTOR_BYTES, MAX_PROJECTION_DISPLAY_NAME_BYTES,
-    MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_STRING_BYTES,
+    MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_STRING_BYTES, MAX_PROJECTION_TRANSCRIPT_BYTES,
+    MAX_PROJECTION_TRANSCRIPT_ROWS,
 };
 
 /// Visibility classification carried on every projection DTO.
@@ -539,9 +540,173 @@ pub enum AgentTreeStatus {
     Failed,
 }
 
-/// Bounded, frontend-neutral summary of a durable delegated agent run, derived
-/// from the authoritative run, worktree, result, and group stores. It contains
-/// no prompt, transcript, mailbox body, credentials, or raw logs.
+/// Which channel a recorded transcript row belongs to.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunTranscriptRole {
+    /// The orchestrator-visible channel: what the parent run may read.
+    #[default]
+    Orchestrator,
+    /// The child's own messages.
+    Internal,
+}
+
+/// What kind of thing a recorded transcript row is.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunTranscriptKind {
+    /// A model message the child produced or received.
+    #[default]
+    ModelMessage,
+    /// A tool the child called.
+    ToolCall,
+    /// What a tool the child called returned.
+    ToolResult,
+    /// A terminal note: how the child ended.
+    TerminalNote,
+}
+
+/// One recorded transcript row, as it crosses the projection.
+///
+/// The body is the **redacted** text the store recorded. Redaction happened
+/// once, at write; nothing downstream may run a second recogniser over it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunTranscriptEntryProjection {
+    /// The row's position in the run's transcript, ascending.
+    pub ordinal: i64,
+    pub role: AgentRunTranscriptRole,
+    pub kind: AgentRunTranscriptKind,
+    /// The recorded body, already redacted and already bounded by the store.
+    pub body: String,
+    /// The body's byte length, as recorded.
+    pub byte_len: i64,
+    /// When the row was recorded, in epoch milliseconds.
+    pub created_at: i64,
+}
+
+/// Where a transcript payload stops, and why.
+///
+/// "Truncated" and "complete" are different facts, so the truncation point
+/// is carried rather than implied.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunTranscriptTruncation {
+    /// The ordinal the first entry beyond the payload carries.
+    pub next_ordinal: i64,
+    /// How many recorded entries the payload omits.
+    pub omitted_entries: i64,
+    /// Whether the run's own **recording** stopped at the store's per-run
+    /// bound, so the recorded transcript is itself incomplete. Distinct from
+    /// a page that was cut short: here the missing rows were never written.
+    pub recording_stopped: bool,
+}
+
+/// A delegated run's recorded transcript, and the statement of how complete
+/// it is.
+///
+/// Three states, and they are three different facts: **absent** (nothing was
+/// recorded), **complete** (the payload holds everything that was recorded),
+/// and **truncated** (a bounded prefix, with the point it stops at). A
+/// reader that renders an absent transcript as an empty pane is asserting
+/// that the child did nothing, which is not what absent means.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentRunTranscriptProjection {
+    /// No transcript was recorded for this run.
+    #[default]
+    Absent,
+    /// The payload holds the whole recorded transcript.
+    Complete {
+        entries: Vec<AgentRunTranscriptEntryProjection>,
+    },
+    /// The payload holds a bounded prefix of a longer transcript.
+    Truncated {
+        entries: Vec<AgentRunTranscriptEntryProjection>,
+        truncation: AgentRunTranscriptTruncation,
+    },
+}
+
+/// A transcript payload that is over the declared bound.
+///
+/// The bound is a property of the contract, so a payload that breaks it is
+/// **refused** rather than quietly shortened: a reader must never be unable
+/// to tell that it is looking at a shortened transcript.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "transcript payload is over the declared bound: {bytes} body bytes (bound {max_bytes}), {rows} rows (bound {max_rows})"
+)]
+pub struct AgentRunTranscriptBoundExceeded {
+    pub bytes: usize,
+    pub rows: usize,
+    pub max_bytes: usize,
+    pub max_rows: usize,
+}
+
+impl AgentRunTranscriptProjection {
+    /// The declared bound: the maximum body bytes one payload may carry.
+    pub const MAX_BYTES: usize = MAX_PROJECTION_TRANSCRIPT_BYTES;
+
+    /// The declared bound: the maximum rows one payload may carry.
+    pub const MAX_ROWS: usize = MAX_PROJECTION_TRANSCRIPT_ROWS;
+
+    /// Build a payload, refusing one over the declared bound.
+    ///
+    /// `truncation` is `None` for a complete transcript and carries the
+    /// truncation point for a truncated one. A caller that cannot fit its
+    /// rows must say so rather than ship a shortened payload that reads as
+    /// the whole conversation.
+    pub fn checked(
+        entries: Vec<AgentRunTranscriptEntryProjection>,
+        truncation: Option<AgentRunTranscriptTruncation>,
+    ) -> Result<Self, AgentRunTranscriptBoundExceeded> {
+        let bytes: usize = entries.iter().map(|entry| entry.body.len()).sum();
+        let rows = entries.len();
+        if bytes > Self::MAX_BYTES || rows > Self::MAX_ROWS {
+            return Err(AgentRunTranscriptBoundExceeded {
+                bytes,
+                rows,
+                max_bytes: Self::MAX_BYTES,
+                max_rows: Self::MAX_ROWS,
+            });
+        }
+        Ok(match truncation {
+            None => AgentRunTranscriptProjection::Complete { entries },
+            Some(truncation) => AgentRunTranscriptProjection::Truncated {
+                entries,
+                truncation,
+            },
+        })
+    }
+
+    /// The rows this payload carries, in order.
+    pub fn entries(&self) -> &[AgentRunTranscriptEntryProjection] {
+        match self {
+            AgentRunTranscriptProjection::Absent => &[],
+            AgentRunTranscriptProjection::Complete { entries }
+            | AgentRunTranscriptProjection::Truncated { entries, .. } => entries,
+        }
+    }
+
+    /// The total body bytes this payload carries.
+    pub fn body_bytes(&self) -> usize {
+        self.entries().iter().map(|entry| entry.body.len()).sum()
+    }
+
+    /// Whether this payload is within the declared bound.
+    pub fn is_within_bounds(&self) -> bool {
+        self.body_bytes() <= Self::MAX_BYTES && self.entries().len() <= Self::MAX_ROWS
+    }
+}
+
+/// Bounded, frontend-neutral summary of a durable delegated agent run.
+///
+/// This is derived from the authoritative run, worktree, result, and group
+/// stores. It carries no prompt, mailbox body, hidden reasoning,
+/// credentials, or raw logs.
+///
+/// It does carry the run's **recorded transcript** — the child's own
+/// conversation, as the durable store recorded it. The transcript is
+/// redacted at write and bounded on the type, and it is the one part of
+/// this summary that is a *body* rather than a summary of one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunSummary {
     pub run_id: String,
@@ -570,6 +735,16 @@ pub struct AgentRunSummary {
     pub progress: Option<String>,
     pub failure_class: Option<String>,
     pub updated_at: i64,
+    /// The run's recorded transcript, and how complete it is.
+    ///
+    /// `None` means **no transcript was supplied at all** — a daemon older
+    /// than the transcript milestone, or a summary built for a lifecycle
+    /// event rather than read at a boundary. It is distinct from
+    /// [`AgentRunTranscriptProjection::Absent`], which says the run has no
+    /// recorded transcript. A client that sees `None` degrades to the run
+    /// inspector; a client that sees `Absent` says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<AgentRunTranscriptProjection>,
 }
 
 pub type AgentRunSummaryProjection = AgentRunSummary;
@@ -629,6 +804,16 @@ impl AgentRunSummary {
             .failure_class
             .as_deref()
             .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        // A transcript over its declared bound is **refused**, not shortened.
+        // Dropping it leaves the field absent, which a client reads as "no
+        // transcript was supplied" and renders as the run inspector — a
+        // claim the system can support, where a silently shortened
+        // transcript would read as the whole conversation.
+        if let Some(transcript) = &self.transcript {
+            if !transcript.is_within_bounds() {
+                self.transcript = None;
+            }
+        }
     }
 }
 
@@ -834,8 +1019,7 @@ impl RunProjection {
 
 /// Bounded projection of one human-shell command run.
 ///
-/// The run's **output** is not carried: the daemon serves it on demand
-/// through its own read, and the projection publishes the listing.
+/// The run's **output** is not carried: the daemon serves it on demand.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShellRunProjection {
     pub run_id: String,
@@ -1524,5 +1708,185 @@ mod tests {
             let back: NotificationClassification = serde_json::from_str(&json).unwrap();
             assert_eq!(back, case);
         }
+    }
+
+    fn transcript_entry(ordinal: i64, body: &str) -> AgentRunTranscriptEntryProjection {
+        AgentRunTranscriptEntryProjection {
+            ordinal,
+            role: AgentRunTranscriptRole::Orchestrator,
+            kind: AgentRunTranscriptKind::ModelMessage,
+            body: body.to_string(),
+            byte_len: body.len() as i64,
+            created_at: 1_700_000_000_000 + ordinal,
+        }
+    }
+
+    #[test]
+    fn a_transcript_payload_over_the_declared_bound_is_refused() {
+        let entries = vec![transcript_entry(
+            1,
+            &"x".repeat(AgentRunTranscriptProjection::MAX_BYTES + 1),
+        )];
+        let refused = AgentRunTranscriptProjection::checked(entries, None)
+            .expect_err("an over-bound payload must be refused");
+        assert_eq!(refused.max_bytes, AgentRunTranscriptProjection::MAX_BYTES);
+        assert!(refused.bytes > refused.max_bytes);
+    }
+
+    #[test]
+    fn a_transcript_payload_over_the_declared_row_bound_is_refused() {
+        let entries = (0..=AgentRunTranscriptProjection::MAX_ROWS)
+            .map(|index| transcript_entry(index as i64, "x"))
+            .collect::<Vec<_>>();
+        let refused = AgentRunTranscriptProjection::checked(entries, None)
+            .expect_err("an over-bound payload must be refused");
+        assert_eq!(refused.max_rows, AgentRunTranscriptProjection::MAX_ROWS);
+        assert!(refused.rows > refused.max_rows);
+    }
+
+    #[test]
+    fn a_transcript_payload_inside_the_declared_bound_is_accepted() {
+        let entries = vec![transcript_entry(1, "hello"), transcript_entry(2, "world")];
+        let payload = AgentRunTranscriptProjection::checked(entries, None)
+            .expect("an in-bound payload is accepted");
+        assert_eq!(payload.entries().len(), 2);
+        assert!(payload.is_within_bounds());
+    }
+
+    #[test]
+    fn the_completeness_states_are_three_different_facts() {
+        let absent = AgentRunTranscriptProjection::Absent;
+        let complete =
+            AgentRunTranscriptProjection::checked(vec![transcript_entry(1, "hello")], None)
+                .expect("in-bound payload");
+        let truncated = AgentRunTranscriptProjection::checked(
+            vec![transcript_entry(1, "hello")],
+            Some(AgentRunTranscriptTruncation {
+                next_ordinal: 2,
+                omitted_entries: 4,
+                recording_stopped: false,
+            }),
+        )
+        .expect("in-bound payload");
+
+        // Absent and complete are not the same fact even when one of them
+        // carries no rows: "nothing was recorded" and "everything that was
+        // recorded is here" are different claims.
+        assert_ne!(absent, complete);
+        assert_ne!(complete, truncated);
+        assert_ne!(absent, truncated);
+        assert!(matches!(absent, AgentRunTranscriptProjection::Absent));
+        assert!(matches!(
+            complete,
+            AgentRunTranscriptProjection::Complete { .. }
+        ));
+        assert!(matches!(
+            truncated,
+            AgentRunTranscriptProjection::Truncated { .. }
+        ));
+        // The truncation point is carried, not implied.
+        match truncated {
+            AgentRunTranscriptProjection::Truncated { truncation, .. } => {
+                assert_eq!(truncation.next_ordinal, 2);
+                assert_eq!(truncation.omitted_entries, 4);
+                assert!(!truncation.recording_stopped);
+            }
+            other => panic!("expected a truncated payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_older_daemon_summary_without_the_transcript_field_deserialises() {
+        // A summary as an older daemon wrote it: the transcript field is not
+        // there at all.
+        let older = serde_json::json!({
+            "run_id": "run-1",
+            "task_id": "task-1",
+            "project_id": "project-1",
+            "repository_id": null,
+            "workspace_id": "workspace-1",
+            "job_id": null,
+            "parent_run_id": null,
+            "agent": "explore",
+            "status": "running",
+            "depth": 1,
+            "worktree_id": null,
+            "branch": null,
+            "base_commit": null,
+            "result_commit": null,
+            "validation_summary": null,
+            "group_id": null,
+            "attention_required": false,
+            "terminal_summary": null,
+            "control_status": "none",
+            "progress": null,
+            "failure_class": null,
+            "updated_at": 7,
+        });
+        let summary: AgentRunSummary = serde_json::from_value(older).expect("older payload");
+        assert!(summary.transcript.is_none());
+    }
+
+    #[test]
+    fn an_older_client_ignores_the_transcript_field() {
+        // The client that does not know the field: a summary shape without it.
+        #[derive(serde::Deserialize)]
+        struct OlderClientSummary {
+            run_id: String,
+            agent: String,
+        }
+        let summary = AgentRunSummary {
+            run_id: "run-1".into(),
+            task_id: "task-1".into(),
+            project_id: "project-1".into(),
+            repository_id: None,
+            workspace_id: "workspace-1".into(),
+            job_id: None,
+            parent_run_id: None,
+            agent: "explore".into(),
+            status: "running".into(),
+            depth: 1,
+            worktree_id: None,
+            branch: None,
+            base_commit: None,
+            result_commit: None,
+            validation_summary: None,
+            group_id: None,
+            attention_required: false,
+            terminal_summary: None,
+            control_status: "none".into(),
+            progress: None,
+            failure_class: None,
+            updated_at: 7,
+            transcript: Some(
+                AgentRunTranscriptProjection::checked(vec![transcript_entry(1, "hello")], None)
+                    .expect("in-bound payload"),
+            ),
+        };
+        let encoded = serde_json::to_value(&summary).expect("encode");
+        let decoded: OlderClientSummary = serde_json::from_value(encoded).expect("older client");
+        assert_eq!(decoded.run_id, "run-1");
+        assert_eq!(decoded.agent, "explore");
+    }
+
+    #[test]
+    fn an_over_bound_transcript_is_dropped_rather_than_shortened() {
+        let mut summary = AgentRunSummary {
+            run_id: "run-1".into(),
+            ..Default::default()
+        };
+        // The checked constructor refuses an over-bound payload, so the only
+        // way in is a hand-built one; normalisation must refuse it rather
+        // than ship a shortened transcript that reads as the whole
+        // conversation.
+        summary.transcript = Some(AgentRunTranscriptProjection::Truncated {
+            entries: vec![transcript_entry(
+                1,
+                &"x".repeat(AgentRunTranscriptProjection::MAX_BYTES + 1),
+            )],
+            truncation: AgentRunTranscriptTruncation::default(),
+        });
+        summary.normalise();
+        assert!(summary.transcript.is_none());
     }
 }

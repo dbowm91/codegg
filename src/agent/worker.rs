@@ -17,6 +17,9 @@ use crate::provider::ProviderRegistry;
 use crate::session::SessionStore;
 use crate::tool::task::TaskStore;
 use crate::tool::ToolRegistry;
+use codegg_core::agent_run_transcript::{
+    AgentRunTranscriptStore, SqliteAgentRunTranscriptStore, TranscriptKind, TranscriptRole,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentFinding {
@@ -76,6 +79,21 @@ impl SubAgentReport {
         }
         lines.join("\n")
     }
+}
+
+/// The provenance of a delegated run's attempt.
+///
+/// A durable delegated run reaches a provider entry only as the run's
+/// original attempt or as a claimed continuation of a terminal failure. The
+/// provenance is resolved from the run's attempt record, so a dispatch that
+/// carries neither cannot be told apart from an authorized attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegatedAttemptProvenance {
+    /// The run's first attempt.
+    Original,
+    /// A claimed continuation: a new attempt of the same run, seeded from the
+    /// run's recorded transcript.
+    Continuation,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +203,9 @@ pub struct SubAgentResult {
     pub report: Option<SubAgentReport>,
     pub validation: Vec<codegg_core::run_result::ValidationEvidence>,
     pub artifacts: Vec<codegg_core::run_result::AgentRunArtifact>,
+    /// The classified failure class, when the run failed with a recognised
+    /// one. It is what the continuability decision is made against.
+    pub failure_class: Option<String>,
 }
 
 impl SubAgentResult {
@@ -196,6 +217,7 @@ impl SubAgentResult {
             report: None,
             validation: Vec::new(),
             artifacts: Vec::new(),
+            failure_class: None,
         }
     }
 
@@ -207,6 +229,7 @@ impl SubAgentResult {
             report: Some(report),
             validation: Vec::new(),
             artifacts: Vec::new(),
+            failure_class: None,
         }
     }
 
@@ -218,6 +241,20 @@ impl SubAgentResult {
             report: None,
             validation: Vec::new(),
             artifacts: Vec::new(),
+            failure_class: None,
+        }
+    }
+
+    /// A failure with the class its terminal error named.
+    pub fn failure_with_class(task_id: u64, error: String, failure_class: Option<String>) -> Self {
+        Self {
+            task_id,
+            success: false,
+            result: error,
+            report: None,
+            validation: Vec::new(),
+            artifacts: Vec::new(),
+            failure_class,
         }
     }
 }
@@ -1011,6 +1048,162 @@ impl SubAgentSpawner {
     }
 }
 
+/// The delegated transcript store for one run. The transcript is keyed by the
+/// durable `AgentRunId`, so the legacy, non-durable delegated path has none.
+fn delegated_transcript_store(
+    pool: Option<&SqlitePool>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+) -> Option<Arc<dyn AgentRunTranscriptStore>> {
+    match (pool, run_id) {
+        (Some(pool), Some(_)) => Some(Arc::new(SqliteAgentRunTranscriptStore::new(pool.clone()))),
+        _ => None,
+    }
+}
+
+/// Append one row to the delegated transcript. A write failure never fails
+/// the delegated work: the run still completes and records its result.
+async fn capture_transcript(
+    store: Option<&Arc<dyn AgentRunTranscriptStore>>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+    role: TranscriptRole,
+    kind: TranscriptKind,
+    body: &str,
+) {
+    let (Some(store), Some(run_id)) = (store, run_id) else {
+        return;
+    };
+    if let Err(error) = store.append(run_id, role, kind, body).await {
+        tracing::warn!(
+            target: "codegg::agent::worker",
+            error = %error,
+            run_id = %run_id,
+            kind = kind.as_str(),
+            "delegated transcript write failed; the delegated run is unaffected"
+        );
+    }
+}
+
+/// The attempt store a durable delegated run's provenance is read from.
+fn delegated_attempt_store(
+    pool: Option<&SqlitePool>,
+) -> Option<Arc<dyn codegg_core::agent_run_attempt::AgentRunAttemptStore>> {
+    pool.map(|pool| {
+        Arc::new(codegg_core::agent_run_attempt::SqliteAgentRunAttemptStore::new(pool.clone()))
+            as Arc<dyn codegg_core::agent_run_attempt::AgentRunAttemptStore>
+    })
+}
+
+/// The provenance of a delegated run's attempt, read from the run's attempt
+/// record.
+///
+/// A durable delegated run reaches a provider entry only as the run's original
+/// attempt or as a claimed continuation. The attempt record is where that is
+/// decided, so a run with no attempt record has no authorized attempt.
+async fn delegated_attempt_provenance(
+    store: Option<&Arc<dyn codegg_core::agent_run_attempt::AgentRunAttemptStore>>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+) -> Result<Option<DelegatedAttemptProvenance>, String> {
+    let (Some(store), Some(run_id)) = (store, run_id) else {
+        return Ok(None);
+    };
+    let rows = store.attempts(run_id).await.map_err(|error| {
+        format!("the delegated run's attempt record could not be read: {error}")
+    })?;
+    let latest = rows
+        .iter()
+        .rev()
+        .find(|row| row.event == codegg_core::agent_run_attempt::AgentRunAttemptEvent::Attempt)
+        .ok_or_else(|| {
+            "the delegated run has no attempt record, so it may not reach a provider entry"
+                .to_string()
+        })?;
+    Ok(Some(match latest.attempt_kind {
+        codegg_core::agent_run_attempt::AgentRunAttemptKind::Original => {
+            DelegatedAttemptProvenance::Original
+        }
+        codegg_core::agent_run_attempt::AgentRunAttemptKind::Continuation => {
+            DelegatedAttemptProvenance::Continuation
+        }
+    }))
+}
+
+/// Read back the recorded transcript and re-verify its redaction.
+///
+/// The seeded context of a continuation is **exactly** what the store holds:
+/// the rows are read back from the store, never reconstructed from a live
+/// in-memory channel, and every row is re-verified with the repository's own
+/// recogniser before it may be seeded. A row that fails re-verification is
+/// refused rather than seeded.
+async fn seed_delegated_context(
+    store: Option<&Arc<dyn AgentRunTranscriptStore>>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+    provenance: Option<DelegatedAttemptProvenance>,
+) -> Result<Option<String>, String> {
+    let (Some(store), Some(run_id)) = (store, run_id) else {
+        return Ok(None);
+    };
+    let read = store
+        .read(
+            run_id,
+            0,
+            codegg_core::agent_run_transcript::MAX_TRANSCRIPT_READ_LIMIT,
+        )
+        .await
+        .map_err(|error| format!("the delegated transcript could not be read back: {error}"))?;
+    let page = match read {
+        codegg_core::agent_run_transcript::AgentRunTranscriptRead::Absent => {
+            // A run with no recorded transcript has nothing to seed. A
+            // continuation must never start from nothing and present itself
+            // as a continuation.
+            if provenance == Some(DelegatedAttemptProvenance::Continuation) {
+                return Err(
+                    "the delegated run has no recorded transcript, so the continuation is refused"
+                        .to_string(),
+                );
+            }
+            return Ok(None);
+        }
+        codegg_core::agent_run_transcript::AgentRunTranscriptRead::Present(page) => page,
+    };
+    for entry in &page.entries {
+        codegg_core::agent_run_attempt::reverify_transcript_row(entry.kind, &entry.redacted_body)
+            .map_err(|error| {
+            format!(
+                "a stored transcript row failed redaction re-verification ({error:?}) and is \
+                     refused rather than seeded"
+            )
+        })?;
+    }
+    Ok(Some(codegg_core::agent_run_attempt::build_seeded_context(
+        &page,
+    )))
+}
+
+/// The failure class a delegated child's terminal error names.
+///
+/// The classification uses the repository's own provider taxonomy, so a
+/// provider authentication failure and a provider rate limit are told apart
+/// without a second recogniser. `None` means the failure has no recognised
+/// class, which the continuability decision treats as not continuable.
+pub fn classify_delegated_failure(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<&'static str> {
+    use codegg_core::error::{AppError, ToolError};
+    match error.downcast_ref::<AppError>()? {
+        AppError::Provider(provider) => Some(match provider.error_class() {
+            "auth" => "provider_authentication",
+            "rate_limit" => "provider_rate_limit",
+            "timeout" | "server" | "stream_interrupted" | "connect" | "tls" | "io" | "hyper"
+            | "pool" | "transport" | "proxy_connect" => "provider_transient",
+            _ => return None,
+        }),
+        AppError::Cancelled => Some("cancelled"),
+        AppError::Permission(_) => Some("tool_permission_denied"),
+        AppError::Tool(ToolError::Permission(_)) => Some("tool_permission_denied"),
+        _ => None,
+    }
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn run_subagent_task_with_cancel(
     request: SubAgentRequest,
@@ -1079,6 +1272,10 @@ async fn run_subagent_task_with_cancel(
         message: "Task execution started".to_string(),
     });
 
+    // The notes below land on the run's own transcript, not on a session.
+    let transcript_store = delegated_transcript_store(pool.as_ref(), request.run_id.as_ref());
+    let transcript_run_id = request.run_id.clone();
+
     let result = tokio::select! {
         biased;
         _ = scheduler_cancel.cancelled() => {
@@ -1087,6 +1284,13 @@ async fn run_subagent_task_with_cancel(
                 child_instance_id: child_instance_id.clone(),
                 error: "Task cancelled by scheduler".to_string(),
             });
+            capture_transcript(
+                transcript_store.as_ref(),
+                transcript_run_id.as_ref(),
+                TranscriptRole::Orchestrator,
+                TranscriptKind::TerminalNote,
+                "delegated run cancelled by the scheduler",
+            ).await;
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         _ = cancel_token.cancelled() => {
@@ -1098,6 +1302,13 @@ async fn run_subagent_task_with_cancel(
                 agent: request.agent.clone(),
                 error: msg.clone(),
             });
+            capture_transcript(
+                transcript_store.as_ref(),
+                transcript_run_id.as_ref(),
+                TranscriptRole::Orchestrator,
+                TranscriptKind::TerminalNote,
+                "delegated run cancelled during shutdown",
+            ).await;
             // Don't update task store here - let handle_response do it
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
@@ -1107,6 +1318,13 @@ async fn run_subagent_task_with_cancel(
                 child_instance_id: child_instance_id.clone(),
                 error: "Task cancelled by root lineage".to_string(),
             });
+            capture_transcript(
+                transcript_store.as_ref(),
+                transcript_run_id.as_ref(),
+                TranscriptRole::Orchestrator,
+                TranscriptKind::TerminalNote,
+                "delegated run cancelled by the root lineage",
+            ).await;
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         result = async {
@@ -1164,8 +1382,18 @@ async fn run_subagent_task_with_cancel(
                         agent: agent_name,
                         error: error_for_bus,
                     });
+                    // The failure is the last note in the transcript.
+                    capture_transcript(
+                        transcript_store.as_ref(),
+                        transcript_run_id.as_ref(),
+                        TranscriptRole::Orchestrator,
+                        TranscriptKind::TerminalNote,
+                        &error_msg,
+                    ).await;
                     // Don't update task store here - let handle_response do it
-                    SubAgentResult::failure(task_id, error_msg)
+                    let failure_class =
+                        classify_delegated_failure(e.as_ref()).map(str::to_string);
+                    SubAgentResult::failure_with_class(task_id, error_msg, failure_class)
                 }
             }
         }
@@ -1196,6 +1424,11 @@ async fn execute_agent_task(
         .iter()
         .find(|a| a.name == *agent_name)
         .ok_or_else(|| format!("Agent '{}' not found", agent_name))?;
+
+    // Resolved before the pool is handed to the child's loop.
+    let transcript_store = delegated_transcript_store(pool.as_ref(), request.run_id.as_ref());
+    let attempt_store = delegated_attempt_store(pool.as_ref());
+    let transcript_run_id = request.run_id.clone();
 
     // Phase 3: Apply safety envelope to prevent custom files from escalating
     // permissions beyond session/config/hard policy bounds.
@@ -1795,14 +2028,64 @@ async fn execute_agent_task(
             adapter_fingerprint: Some(&adapter.fingerprint),
             runtime_blocks: &runtime_blocks,
         });
+    // Captured where the child's messages are produced, so the stored body
+    // is the text the child acted on. The system message is the child's
+    // internal channel; the prompt is the orchestrator-visible one.
+    capture_transcript(
+        transcript_store.as_ref(),
+        transcript_run_id.as_ref(),
+        TranscriptRole::Internal,
+        TranscriptKind::ModelMessage,
+        &compiled_prompt.text,
+    )
+    .await;
+    capture_transcript(
+        transcript_store.as_ref(),
+        transcript_run_id.as_ref(),
+        TranscriptRole::Orchestrator,
+        TranscriptKind::ModelMessage,
+        &request.prompt,
+    )
+    .await;
+    // The delegated run's provider entry.
+    //
+    // A durable delegated run reaches a provider entry only as the run's
+    // original attempt or as a claimed continuation, and the attempt record
+    // is where that is decided. A continuation must also carry its seeded
+    // context: the recorded transcript, read back and re-verified, so a
+    // continuation cannot smuggle an unreviewed context into a new provider
+    // request.
+    let provenance =
+        delegated_attempt_provenance(attempt_store.as_ref(), transcript_run_id.as_ref()).await?;
+    let seeded_context = seed_delegated_context(
+        transcript_store.as_ref(),
+        transcript_run_id.as_ref(),
+        provenance,
+    )
+    .await?;
+    if provenance == Some(DelegatedAttemptProvenance::Continuation) && seeded_context.is_none() {
+        return Err(
+            "a claimed continuation may not reach a provider entry without its seeded context"
+                .into(),
+        );
+    }
     let mut messages = vec![crate::provider::Message::System {
         content: compiled_prompt.text.into(),
     }];
 
+    // The seeded context leads the child's own turn: it is what the previous
+    // attempt recorded, read back and re-verified. It is a separate part so
+    // the child can tell the recorded conversation from the request that
+    // continues it.
+    let mut user_content = Vec::new();
+    if let Some(seed) = seeded_context {
+        user_content.push(crate::provider::ContentPart::Text { text: seed.into() });
+    }
+    user_content.push(crate::provider::ContentPart::Text {
+        text: request.prompt.clone().into(),
+    });
     messages.push(crate::provider::Message::User {
-        content: vec![crate::provider::ContentPart::Text {
-            text: request.prompt.clone().into(),
-        }],
+        content: user_content,
     });
 
     // The bare model id, never the `<provider>/<model>` string. This is the value
@@ -1851,8 +2134,88 @@ async fn execute_agent_task(
         );
     }
 
+    // The child's tool calls and the outcomes the loop executed for them.
+    //
+    // The call arguments come from the provider's events; the outputs come
+    // from the outcomes the loop itself executed, which is the only place
+    // they exist — no adapter constructs `ChatEvent::ToolResult`, so the
+    // event stream cannot be the source. Both rows carry the tool call id,
+    // so a reader can pair a call with its result. `ReasoningDelta` is
+    // deliberately not captured: raw provider reasoning is not a transcript.
+    let mut calls_by_id: HashMap<&str, &crate::provider::ToolCall> = HashMap::new();
+    for event in &events {
+        if let crate::provider::ChatEvent::ToolCall(call) = event {
+            calls_by_id.insert(call.id.as_str(), call);
+        }
+    }
+    let mut captured_call_ids: HashSet<&str> = HashSet::new();
+    for outcome in agent_loop.executed_tool_outcomes().entries.iter() {
+        if let Some(call) = calls_by_id.get(outcome.tool_call_id.as_str()) {
+            captured_call_ids.insert(call.id.as_str());
+            capture_transcript(
+                transcript_store.as_ref(),
+                transcript_run_id.as_ref(),
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ToolCall,
+                &format!(
+                    "tool_call_id={} tool={} arguments={}",
+                    call.id, call.name, call.arguments
+                ),
+            )
+            .await;
+        }
+        // The truncation flag is a field ahead of the output, so a later and
+        // tighter row bound cannot cut it away.
+        capture_transcript(
+            transcript_store.as_ref(),
+            transcript_run_id.as_ref(),
+            TranscriptRole::Orchestrator,
+            TranscriptKind::ToolResult,
+            &format!(
+                "tool_call_id={} tool={} success={} output_truncated={} output={}",
+                outcome.tool_call_id,
+                outcome.tool_name,
+                outcome.success,
+                outcome.output_truncated,
+                outcome.output
+            ),
+        )
+        .await;
+    }
+    // A call the loop produced no outcome for still belongs in the
+    // transcript: the parent can see that the child asked for it.
+    for event in &events {
+        let crate::provider::ChatEvent::ToolCall(call) = event else {
+            continue;
+        };
+        if captured_call_ids.contains(call.id.as_str()) {
+            continue;
+        }
+        capture_transcript(
+            transcript_store.as_ref(),
+            transcript_run_id.as_ref(),
+            TranscriptRole::Orchestrator,
+            TranscriptKind::ToolCall,
+            &format!(
+                "tool_call_id={} tool={} arguments={}",
+                call.id, call.name, call.arguments
+            ),
+        )
+        .await;
+    }
+
+    // The child's final response: the same text the run records as its result.
+    capture_transcript(
+        transcript_store.as_ref(),
+        transcript_run_id.as_ref(),
+        TranscriptRole::Orchestrator,
+        TranscriptKind::ModelMessage,
+        &output,
+    )
+    .await;
+
     let report = serde_json::from_str::<SubAgentReport>(&output).ok();
-    let (validation, artifacts) = extract_validation_evidence(&events);
+    let (validation, artifacts) = extract_validation_evidence(agent_loop.executed_tool_outcomes());
 
     Ok((output, report, validation, artifacts))
 }
@@ -1868,18 +2231,17 @@ struct ValidationResultMarker {
 }
 
 fn extract_validation_evidence(
-    events: &[crate::provider::ChatEvent],
+    outcomes: &crate::agent::r#loop::ExecutedToolOutcomes,
 ) -> (
     Vec<codegg_core::run_result::ValidationEvidence>,
     Vec<codegg_core::run_result::AgentRunArtifact>,
 ) {
     let mut validation = Vec::new();
     let mut artifacts = Vec::new();
-    for event in events {
-        let crate::provider::ChatEvent::ToolResult { content, .. } = event else {
-            continue;
-        };
-        for line in content.lines() {
+    // The marker is written into a tool's output, and the executed outcomes
+    // are where that output is.
+    for outcome in &outcomes.entries {
+        for line in outcome.output.lines() {
             let Some(payload) = line.strip_prefix(VALIDATION_RESULT_PREFIX) else {
                 continue;
             };
@@ -2119,14 +2481,18 @@ mod admission_tests {
 
     #[test]
     fn scheduler_validation_markers_become_structured_evidence() {
-        let events = vec![crate::provider::ChatEvent::ToolResult {
-            tool_call_id: Arc::new("test-call".into()),
-            content: Arc::new(
-                "passed\nCODEGG_VALIDATION_RESULT:{\"job_id\":\"job-1\",\"kind\":\"test\",\"status\":\"passed\",\"summary\":\"12 tests passed\"}"
+        let outcomes = crate::agent::r#loop::ExecutedToolOutcomes {
+            entries: vec![crate::agent::r#loop::ExecutedToolOutcome {
+                tool_call_id: "test-call".into(),
+                tool_name: "test".into(),
+                output: "passed\nCODEGG_VALIDATION_RESULT:{\"job_id\":\"job-1\",\"kind\":\"test\",\"status\":\"passed\",\"summary\":\"12 tests passed\"}"
                     .into(),
-            ),
-        }];
-        let (validation, artifacts) = extract_validation_evidence(&events);
+                success: true,
+                output_truncated: false,
+            }],
+            truncated: false,
+        };
+        let (validation, artifacts) = extract_validation_evidence(&outcomes);
         assert_eq!(validation.len(), 1);
         assert_eq!(
             validation[0].status,
@@ -2134,6 +2500,55 @@ mod admission_tests {
         );
         assert_eq!(validation[0].summary, "12 tests passed");
         assert_eq!(artifacts[0].reference.as_deref(), Some("job:job-1"));
+    }
+
+    /// The delegated transcript capture reads the child's events; it never
+    /// writes to them.
+    ///
+    /// The parent's turn transcript is built from the same event vector, so a
+    /// tool call the provider emitted with no matching result must still be
+    /// stored as `Pending`. A capture path that appended a synthetic
+    /// `ChatEvent::ToolResult` would claim an outcome that never happened.
+    #[test]
+    fn the_delegated_capture_leaves_a_tool_call_without_a_result_pending() {
+        let events = vec![crate::provider::ChatEvent::ToolCall(
+            crate::provider::ToolCall {
+                id: "call-1".to_string().into(),
+                name: "read".to_string().into(),
+                arguments: serde_json::json!({ "path": "notes.txt" }),
+            },
+        )];
+        let transcript = crate::agent::transcript::build_turn_transcript(
+            "parent-session",
+            "run",
+            "read the notes",
+            &events,
+        );
+        let assistant = transcript
+            .entries
+            .iter()
+            .find(|entry| entry.data.role == Some(crate::session::message::MessageRole::Assistant))
+            .expect("the assistant transcript row");
+        let (status, output) = assistant
+            .data
+            .parts
+            .iter()
+            .find_map(|part| match &part.data {
+                crate::session::message::PartData::ToolCall { status, output, .. } => {
+                    Some((status.clone(), output.clone()))
+                }
+                _ => None,
+            })
+            .expect("the tool call part");
+        assert_eq!(
+            status,
+            crate::session::message::ToolStatus::Pending,
+            "a tool call with no matching result must stay pending"
+        );
+        assert!(
+            output.is_none(),
+            "a pending tool call must carry no output, got: {output:?}"
+        );
     }
 
     /// The provider/model split a delegated run performs.

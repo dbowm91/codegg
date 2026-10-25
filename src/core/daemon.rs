@@ -153,6 +153,11 @@ pub struct CoreDaemon {
     /// Handle for the background projection replay maintenance task.
     /// `None` when no pool is available. Held to keep the task alive.
     pub(crate) _projection_maintenance_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The startup reconciliation for delegated-run continuations that a
+    /// previous daemon left claimed but never dispatched. Held so the daemon
+    /// keeps it alive for its whole lifetime. It surfaces the claim as
+    /// needing attention and never replays it.
+    pub(crate) _continuation_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
     /// C001 daemon-owned idle CI-watch coordinator (earliest-due wake loop).
     /// `None` when idle watch support is unavailable (pool-less) or when
     /// constructed without a Tokio runtime (e.g. bare struct tests). Exactly

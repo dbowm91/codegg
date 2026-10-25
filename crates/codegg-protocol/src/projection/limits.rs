@@ -119,6 +119,25 @@ pub const MAX_PROJECTION_AGENT_RUNS: usize = 64;
 /// projection.
 pub const MAX_PROJECTION_WORKTREES: usize = 32;
 
+/// Maximum body bytes one delegated run's transcript payload may carry.
+///
+/// The bound is on the **body** bytes, not on the serialised envelope: the
+/// envelope overhead is the transport's business, the body is the
+/// conversation the user reads. A run whose recorded transcript is longer
+/// than this is carried as a **truncated** payload that states where it
+/// stops, never as a silently shortened one.
+///
+/// Sized so that a session snapshot holding the maximum number of durable
+/// runs ([`MAX_PROJECTION_AGENT_RUNS`]) still carries a bounded transcript
+/// total: 64 runs x 8 KiB = 512 KiB.
+pub const MAX_PROJECTION_TRANSCRIPT_BYTES: usize = 8 * 1024;
+
+/// Maximum rows one delegated run's transcript payload may carry.
+///
+/// The byte bound above is what caps the payload; this one caps the row
+/// count so a payload cannot be thousands of empty rows.
+pub const MAX_PROJECTION_TRANSCRIPT_ROWS: usize = 64;
+
 /// Maximum number of durable run-group summaries retained in one session
 /// projection.
 pub const MAX_PROJECTION_RUN_GROUPS: usize = 32;

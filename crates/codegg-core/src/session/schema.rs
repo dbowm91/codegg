@@ -288,6 +288,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 88 {
         migrate_and_record(pool, 88).await?;
     }
+    if current_version < 89 {
+        migrate_and_record(pool, 89).await?;
+    }
+    if current_version < 90 {
+        migrate_and_record(pool, 90).await?;
+    }
 
     Ok(())
 }
@@ -388,6 +394,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             86 => migrate_v86(&mut tx).await?,
             87 => migrate_v87(&mut tx).await?,
             88 => migrate_v88(&mut tx).await?,
+            89 => migrate_v89(&mut tx).await?,
+            90 => migrate_v90(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3709,6 +3717,97 @@ async fn migrate_v88(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     }
     for statement in crate::approval::RUNTIME_PREFERENCE_REASONING_MIGRATION_STATEMENTS {
         add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
+    }
+    Ok(())
+}
+
+/// ADR-0051 option B: the durable delegated-run transcript. Append-only and
+/// ordinal-stable; the second table carries the per-run aggregate, so the
+/// bound check and the ordinal assignment stay O(1) per append.
+async fn migrate_v89(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_transcript (
+            run_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('orchestrator','internal')),
+            kind TEXT NOT NULL CHECK (kind IN (
+                'model_message','tool_call','tool_result','terminal_note'
+            )),
+            redacted_body TEXT NOT NULL,
+            byte_len INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (run_id, ordinal),
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_transcript_run \
+         ON agent_run_transcript(run_id, ordinal)",
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_transcript_state (
+            run_id TEXT PRIMARY KEY,
+            next_ordinal INTEGER NOT NULL,
+            total_bytes INTEGER NOT NULL,
+            truncated INTEGER NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Milestone C004: the delegated run's append-only attempt record and its
+/// continuation authorization, whose unique key is the exactly-once swap.
+async fn migrate_v90(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_attempt (
+            run_id TEXT NOT NULL,
+            attempt_ordinal INTEGER NOT NULL,
+            event TEXT NOT NULL CHECK (event IN ('attempt','outcome','attention')),
+            attempt_kind TEXT NOT NULL CHECK (attempt_kind IN ('original','continuation')),
+            continued_from_ordinal INTEGER,
+            principal TEXT NOT NULL,
+            principal_turn_id TEXT NOT NULL,
+            authority_digest TEXT NOT NULL,
+            transcript_digest TEXT,
+            failure_class TEXT,
+            ceiling_json TEXT,
+            outcome TEXT,
+            detail TEXT,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (run_id, attempt_ordinal, event),
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_attempt_run \
+         ON agent_run_attempt(run_id, attempt_ordinal)",
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_continuation (
+            run_id TEXT PRIMARY KEY,
+            attempt_ordinal INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('claimed','dispatched','needs_attention')),
+            principal TEXT NOT NULL,
+            principal_turn_id TEXT NOT NULL,
+            authority_digest TEXT NOT NULL,
+            transcript_digest TEXT,
+            failure_class TEXT NOT NULL,
+            detail TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
     Ok(())
 }

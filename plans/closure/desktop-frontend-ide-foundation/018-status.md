@@ -78,7 +78,7 @@ a value the renderer did not itself receive.
 
 | # | Plan 018 §7 criterion | Evidence |
 |---|---|---|
-| 1 | The daemon's projection snapshot carries the session's **selected model** and **selected agent**, taken from the session's own runtime | `src/core/session_summary.rs:16` builds the summary from `SessionRuntime`; `src/core/daemon_refresh.rs:64` writes it onto `snapshot.primary_session` |
+| 1 | The daemon's projection snapshot carries the session's **selected model** and **selected agent**, taken from the session's own runtime | `src/core/session_summary.rs:16` builds the summary from `SessionRuntime`; `src/core/daemon_refresh.rs:89` writes it onto `snapshot.primary_session` |
 | 2 | `ProjectionEvent::ModelSelected` and `ProjectionEvent::AgentSelected` have producers, and a change of selection is visible without a resync | `src/core/daemon_sessions.rs:187` publishes `CoreEvent::ModelSelected`; `src/core/daemon_turns.rs:1673` publishes `CoreEvent::AgentSelected`; the publication maps them at `crates/codegg-core/src/projection_replay/publication.rs:418`; the reducer arms are at `crates/codegg-protocol/src/projection/reducer.rs:1172` |
 | 3 | A session update publishes the session's **real** summary, and a subscriber keeps its title, status, model and token counts across an unrelated update | `crates/codegg-core/src/projection_replay/publication.rs:399` publishes the carried summary and publishes nothing when none is carried; `crates/codegg-protocol/src/projection/reducer.rs:347` still replaces `primary_session`, but now with a real summary |
 | 4 | The snapshot carries the session's **shell command runs**, the list is the daemon's own registry, and the publication carries the listing and not the output bytes | `src/shell/daemon.rs:458` reads the daemon's own registry; `src/shell/daemon.rs:536` builds the projection's view and carries no chunks; `crates/codegg-protocol/src/projection/snapshot.rs:66` and `:277` hold the bounded collection |
@@ -96,9 +96,9 @@ a value the renderer did not itself receive.
 ### 3.1 The protocol foundation (`2ed792570`)
 
 - Two bounded projection DTOs: `ShellRunProjection`
-  (`crates/codegg-protocol/src/projection/dto.rs:840`) and
+  (`crates/codegg-protocol/src/projection/dto.rs:1024`) and
   `ToolContractProjection`
-  (`crates/codegg-protocol/src/projection/dto.rs:868`).
+  (`crates/codegg-protocol/src/projection/dto.rs:1052`).
 - Two projection events with their reducer arms: `ShellRunUpserted`
   (`crates/codegg-protocol/src/projection/event.rs:386`,
   `crates/codegg-protocol/src/projection/reducer.rs:1184`) and
@@ -128,7 +128,7 @@ protocol version is **not** bumped
   the counters come from the runtime.
 - `src/core/daemon_bootstrap.rs:170` — the daemon's event bridge fills the
   summary on every `SessionUpdated` it forwards.
-- `src/core/daemon_refresh.rs:64` — the snapshot builder writes the same
+- `src/core/daemon_refresh.rs:89` — the snapshot builder writes the same
   summary onto `primary_session`, so a connect and a resync agree with the
   event path.
 - `crates/codegg-core/src/projection_replay/publication.rs:399` — the stub
@@ -162,7 +162,7 @@ protocol version is **not** bumped
 - `src/agent/turn_runtime.rs:678` — the summary is recorded and published
   **after** the plugin tools are registered, so a plugin-contributed tool is
   named when it is really available.
-- `src/core/daemon_refresh.rs:93` — the daemon publishes the session's
+- `src/core/daemon_refresh.rs:118` — the daemon publishes the session's
   contracts on the snapshot.
 
 ### 3.5 The frontends read the same daemon-owned state
@@ -277,7 +277,7 @@ Two further invariants are structural rather than behavioural:
   against (`src/agent/turn_runtime.rs:302`), so no duplicate plugin
   adapter and no second LSP connection can exist.
 - **No second list.** The projection's `shell_runs` collection is filled
-  from the daemon's registry (`src/core/daemon_refresh.rs:90`) and from
+  from the daemon's registry (`src/core/daemon_refresh.rs:115`) and from
   the daemon's own lifecycle events. There is no other copy.
 
 ## 6. Failure, cancellation, restart, and contention semantics
@@ -383,7 +383,7 @@ both are recorded with their reason.
 `show_terminal` remains in the desktop's `UNCARRIED_ACTIONS`
 (`apps/desktop/src/commands/frontendActions.ts:67`) with the desktop's own
 reason. The daemon already serves `CoreRequest::InteractiveProcessList`
-(`src/core/daemon.rs:4774`) and the metadata carries a handle, a state and
+(`src/core/daemon.rs:4779`) and the metadata carries a handle, a state and
 the PTY geometry, so **no ADR and no daemon work** is needed — the gap is
 that the desktop has no terminal surface at all. The owner's direction of
 2026-10-25 made that its own milestone, **M007-J**, which is registered in

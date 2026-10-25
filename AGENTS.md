@@ -6,7 +6,7 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
-                          # checks, 76 guard scripts, and a workspace check
+                          # checks, 82 guard scripts, and a workspace check
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 scripts/verify.sh scoped  # quick's guards + only the tests the change can affect
@@ -109,12 +109,12 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
 ## Change-triggered guards
 
 `verify.sh quick` runs the routine subset: rustfmt, the two generated-asset
-checks, 76 guard scripts, and a workspace `cargo check`. CI
+checks, 82 guard scripts, and a workspace `cargo check`. CI
 (`.github/workflows/ci.yml`) is one bounded `verify` job: the same generated-asset
-checks, 62 guard scripts, fmt, clippy, and the workspace test sweep.
+checks, 68 guard scripts, fmt, clippy, and the workspace test sweep.
 
 CI is a strict **subset** of `quick` — it runs nothing that quick does not.
-As measured on 2026-10-24, quick runs **14 guards CI omits**: the client and
+As measured on 2026-10-25, quick runs **14 guards CI omits**: the client and
 desktop boundaries, `check_daemon_listing_authority`, `check_first_party_skills`,
 `check_network_intent_owner_wiring`, `check_no_hardcoded_selection_colours`,
 `check_eggwork_target_routing`, `check_openai_endpoint_composition`, and the

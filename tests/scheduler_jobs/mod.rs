@@ -51,6 +51,9 @@ pub mod completion_signal_broadcast;
 #[path = "durable_jobs_phase4.inc"]
 pub mod durable_jobs_phase4;
 
+#[path = "delegated_notice_c001.inc"]
+pub mod delegated_notice_c001;
+
 #[path = "eggwork_node_telemetry.inc"]
 pub mod eggwork_node_telemetry;
 

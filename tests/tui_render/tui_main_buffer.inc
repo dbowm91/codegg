@@ -448,6 +448,7 @@ fn active_subagents_are_listed_in_the_tasks_overlay() {
     app.session_state.session_status = SessionStatus::Working;
     let rows = vec![
         SubagentRow {
+            transcript: None,
             child_instance_id: None,
             profile: None,
             usefulness: None,
@@ -459,6 +460,7 @@ fn active_subagents_are_listed_in_the_tasks_overlay() {
             status: "running".into(),
         },
         SubagentRow {
+            transcript: None,
             child_instance_id: None,
             profile: None,
             usefulness: None,
@@ -501,6 +503,7 @@ fn a_long_fan_out_is_bounded_by_the_overlay_with_an_honest_count() {
     app.session_state.session_status = SessionStatus::Working;
     let rows: Vec<SubagentRow> = (0..12)
         .map(|i| SubagentRow {
+            transcript: None,
             child_instance_id: None,
             profile: None,
             usefulness: None,
@@ -544,6 +547,7 @@ fn a_main_agent_waiting_on_subagents_is_listed_by_the_overlay() {
     app.session_state.session_status = SessionStatus::Idle;
     let rows = vec![
         SubagentRow {
+            transcript: None,
             child_instance_id: None,
             profile: None,
             usefulness: None,
@@ -555,6 +559,7 @@ fn a_main_agent_waiting_on_subagents_is_listed_by_the_overlay() {
             status: "running".into(),
         },
         SubagentRow {
+            transcript: None,
             child_instance_id: None,
             profile: None,
             usefulness: None,
@@ -591,6 +596,7 @@ fn an_actually_idle_session_has_no_pending_work() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     let rows = vec![SubagentRow {
+        transcript: None,
         child_instance_id: None,
         profile: None,
         usefulness: None,
@@ -772,6 +778,7 @@ fn the_tasks_overlay_opens_a_subagent_buffer_and_esc_returns_to_main() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     let rows = vec![SubagentRow {
+        transcript: None,
         child_instance_id: None,
         profile: None,
         usefulness: None,
@@ -1173,6 +1180,7 @@ fn a_saturated_overlay_never_squeezes_the_transcript_below_its_floor() {
         app.ui_state.subagents.set_rows(
             (0..10)
                 .map(|i| SubagentRow {
+                    transcript: None,
                     child_instance_id: None,
                     profile: None,
                     usefulness: None,
@@ -1216,6 +1224,7 @@ fn the_overlay_appears_when_the_pane_has_room_for_it() {
         priority: "high".into(),
     }]);
     let rows = vec![SubagentRow {
+        transcript: None,
         child_instance_id: None,
         profile: None,
         usefulness: None,
@@ -1253,6 +1262,7 @@ fn the_overlay_names_rows_omitted_by_its_bound() {
     app.session_state.session_status = SessionStatus::Working;
     let rows: Vec<SubagentRow> = (0..10)
         .map(|index| SubagentRow {
+            transcript: None,
             child_instance_id: Some(format!("child-{index}")),
             task_id: index.to_string(),
             run_id: None,
@@ -1336,6 +1346,7 @@ fn an_expanded_but_empty_tasks_overlay_confirms_the_key_worked() {
 
 fn subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
     SubagentRow {
+        transcript: None,
         child_instance_id: Some(task_id.into()),
         task_id: task_id.into(),
         run_id: Some(format!("run-{task_id}")),
@@ -1351,6 +1362,7 @@ fn subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
 /// The same row as the projection delivers it once descriptors exist.
 fn described_subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
     SubagentRow {
+        transcript: None,
         child_instance_id: Some(task_id.into()),
         profile: Some("Reconnaissance generalist.".into()),
         usefulness: Some("Useful for broad recon.".into()),
@@ -1843,6 +1855,7 @@ fn an_overlay_selection_does_not_retarget_when_its_row_finishes() {
     let mut app = test_app();
     let rows = vec![
         SubagentRow {
+            transcript: None,
             child_instance_id: Some("child-first".into()),
             task_id: "7".into(),
             run_id: None,
@@ -1854,6 +1867,7 @@ fn an_overlay_selection_does_not_retarget_when_its_row_finishes() {
             status: "running".into(),
         },
         SubagentRow {
+            transcript: None,
             child_instance_id: Some("child-second".into()),
             task_id: "7".into(),
             run_id: None,
@@ -2128,6 +2142,7 @@ fn app_with_transcript_marker() -> App {
 /// The subagent whose tab body carries [`TAB_ONLY_TEXT`].
 fn tabbed_subagent() -> SubagentRow {
     SubagentRow {
+        transcript: None,
         child_instance_id: Some("child-1".into()),
         task_id: "1".into(),
         run_id: Some("run-1".into()),
@@ -2224,6 +2239,7 @@ fn with_no_tab_open_the_transcript_still_renders() {
 fn the_subagent_view_fills_the_viewport_to_its_last_column() {
     let mut app = app_with_transcript_marker();
     let rows = vec![SubagentRow {
+        transcript: None,
         description: EDGE_FILLER.repeat(40),
         ..tabbed_subagent()
     }];

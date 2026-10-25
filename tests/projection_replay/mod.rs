@@ -23,6 +23,8 @@ pub mod common;
 
 #[path = "daemon_protocol.inc"]
 pub mod daemon_protocol;
+#[path = "delegated_transcript.inc"]
+pub mod delegated_transcript;
 #[path = "failpoint.inc"]
 pub mod failpoint;
 #[path = "publication_integration.inc"]

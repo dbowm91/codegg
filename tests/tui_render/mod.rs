@@ -31,6 +31,9 @@ pub mod connect_dialog_input;
 #[path = "connect_tui_restoration.inc"]
 pub mod connect_tui_restoration;
 
+#[path = "delegated_transcript.inc"]
+pub mod delegated_transcript;
+
 #[path = "dialog_dispatch_coverage.inc"]
 pub mod dialog_dispatch_coverage;
 

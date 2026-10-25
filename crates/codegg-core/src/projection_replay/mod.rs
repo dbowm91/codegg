@@ -34,7 +34,10 @@ pub mod service;
 pub mod store;
 pub mod subscription;
 
-pub use agent_runs::{agent_run_summary, run_group_summary, run_upsert_event, worktree_summary};
+pub use agent_runs::{
+    agent_run_summary, agent_run_summary_with_transcript, run_group_summary, run_upsert_event,
+    worktree_summary,
+};
 pub use artifact_registry::{
     ArtifactRegistryError, HandleEntry, HandleId, ProjectionArtifactRegistry,
     RunStoreProjectionArtifactRegistry,
