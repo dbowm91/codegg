@@ -2,8 +2,8 @@
 
 Status: ready for handoff
 
-Repository baseline: `6e8a6bb60` — `origin/main` with M007-A, M007-B and M007-C
-landed.
+Repository baseline: `b25439def` — `origin/main` with M007-A, M007-B, M007-C,
+M007-D and M007-E landed.
 
 Source roadmap:
 
