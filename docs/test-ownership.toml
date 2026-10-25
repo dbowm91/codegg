@@ -605,6 +605,22 @@ paths = [
 ]
 targets = ["composed_two_agent_race_m011"]
 
+# The Git read-consistency fence's **runtime** half at the security-review
+# surface. The static half — that every diff consumer *reaches* the fence —
+# is owned by `scripts/check_git_consistency_consumers.py`, which can see a
+# call site that a runtime test cannot. This group owns the other half: that
+# an inadmissible read produces a *typed* error at the surface rather than
+# content whose class was never checked. The target is standalone because the
+# property is only observable from outside the crate.
+[[groups]]
+id = "root_git_consistency_consumers_c005"
+member = "codegg"
+paths = [
+  "src/git_consistency.rs",
+  "src/security/workflow/report.rs",
+]
+targets = ["git_consistency_consumers_c005"]
+
 # The root package's catch-all: the remaining top-level source paths, and the
 # root library test target. A change to a root source file that no precise
 # group claims is attributed here rather than dropped.

@@ -811,6 +811,7 @@ max_ratio = 0.134
 "tests/eggwork_remote_execution_live/eggwork_remote_execution_live.inc" = { max_comment_lines = 205, max_ratio = 0.1459 }
 "tests/frontend_parity/mod.rs" = { max_comment_lines = 103, max_ratio = 1.3919 }
 "tests/frontend_parity/tui_reconstruction.inc" = { max_comment_lines = 62, max_ratio = 0.2184 }
+"tests/git_consistency_consumers_c005.rs" = { max_comment_lines = 52, max_ratio = 0.3742 }
 "tests/ide_protocols/lsp.inc" = { max_comment_lines = 59, max_ratio = 0.0245 }
 "tests/ide_protocols/lsp_read_surface_trajectory.inc" = { max_comment_lines = 64, max_ratio = 0.227 }
 "tests/ide_protocols/phase5_context_integration.inc" = { max_comment_lines = 148, max_ratio = 0.0673 }
