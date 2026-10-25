@@ -913,3 +913,10 @@ The delegated-notice family that produced the fifth hosted-CI finding now
 passes on the hosted runner too: the `verify` job's `Workspace tests` step ran
 the full **16 360**-test workspace sweep and the delegated-notice members were
 among the `PASS` results.
+
+**The branch's head is green on the same terms.** The head `ebf19bc41` — this
+record's own addition, which changes no Rust — ran `CI` / `verify` (run
+`40169808663`, 19m48s), `Windows process launcher` (run `40169808712`,
+31m35s), `Desktop E2E` (run `40169808793`, 14m40s) and the `Linux M004
+process and IPC qualification` workflow's `process-ipc` (run `40169808662`,
+36m28s) and `restricted-userns-fails-closed` (14m39s). Every job green.
