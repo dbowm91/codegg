@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ArtifactExcerptView, ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
 import { GitPanel } from './panels/GitPanel';
+import { KeybindingsPanel } from './panels/KeybindingsPanel';
 import { SkillsPanel } from './panels/SkillsPanel';
 import {
   dock,
   initialPanelHostState,
+  placementOf,
   resize,
   resolveColumnWidth,
   setPanelScroll,
@@ -15,6 +17,38 @@ import {
 import type { PanelHostState, PanelSize } from './panels/host';
 import type { PanelId, PanelPlacement } from './panels/registry';
 import { ChatRegion, ComposerRegion, PanelControls, SidePanelFrame, StatusRow } from './regions';
+import {
+  ALL_ACTION_DECLARATIONS,
+  GLOBAL_SCOPE,
+  OVERLAY_SCOPE,
+  browserStorage,
+  buildEffectiveMap,
+  clearKeymap,
+  exportDocument,
+  importDocument,
+  loadKeymap,
+  neutralChord,
+  normalizeChord,
+  regionScope,
+  remapAction,
+  resolveAction,
+  saveKeymap,
+} from './keymap';
+import type { KeymapNotice, Scope } from './keymap';
+import {
+  REGIONS,
+  activeElementWithin,
+  applyFocusIndicator,
+  applyRovingTabIndex,
+  firstByTestIdPrefix,
+  focusFallback,
+  focusRegion,
+  moveFocusWithinRegion,
+  prepareRegionContainers,
+  regionById,
+  regionContainer,
+  regionOfElement,
+} from './focus';
 import type {
   ConnectionSnapshot,
   GitBranchListView,
@@ -30,6 +64,9 @@ import type {
 } from './bridge-types';
 
 const initial: ConnectionSnapshot = { state: 'starting', daemonId: null, protocolVersion: null, uptimeSeconds: null, activeSessions: null, error: null, connectionGeneration: 0 };
+
+/** The overlays the renderer owns. The stack is ordered: the last one is on top. */
+type OverlayId = 'help' | 'keybinds';
 
 export function App() {
   const [connection, setConnection] = useState(initial);
@@ -93,6 +130,57 @@ export function App() {
   // against, and it is measured rather than assumed.
   const frameRef = useRef<HTMLDivElement>(null);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
+
+  // ── The keymap and the focus model (M007-C) ─────────────────────────────
+  //
+  // The renderer owns the keymap: it is presentation state, not session
+  // state, and it never reaches the daemon. The document lives in the
+  // renderer's own storage, and a missing, malformed or stale document
+  // yields the defaults plus a visible notice — the TUI's posture
+  // (`src/tui/app/mod.rs:868-876`).
+  const [keymap, setKeymap] = useState<{
+    overrides: Record<string, string[]>;
+    notices: KeymapNotice[];
+  }>(() => {
+    const loaded = loadKeymap(browserStorage());
+    return { overrides: loaded.overrides, notices: loaded.notices };
+  });
+
+  // The effective map: the declaration table's defaults merged with the
+  // user's overrides.
+  const effectiveMap = useMemo(
+    () => buildEffectiveMap(ALL_ACTION_DECLARATIONS, keymap.overrides),
+    [keymap.overrides],
+  );
+  // The chord summary the bindings surface and the help overlay show.
+  const bindingSummary = useMemo(() => {
+    const summary: Record<string, string[]> = {};
+    for (const declaration of ALL_ACTION_DECLARATIONS) {
+      summary[declaration.id] = (effectiveMap.bindings.get(declaration.id) ?? []).map(
+        (binding) => binding.chord,
+      );
+    }
+    return summary;
+  }, [effectiveMap]);
+
+  // The overlay stack. An overlay owns the focus while it is open, and
+  // `escape` pops exactly one layer.
+  const [overlays, setOverlays] = useState<OverlayId[]>([]);
+  // The region that holds the focus.
+  const [focusedRegion, setFocusedRegion] = useState<string | null>(null);
+
+  // The dispatcher reads the current state through refs, so the single
+  // keydown listener is installed once and never re-installed.
+  const overlaysRef = useRef<OverlayId[]>([]);
+  overlaysRef.current = overlays;
+  const focusedRegionRef = useRef<string | null>(null);
+  focusedRegionRef.current = focusedRegion;
+  const effectiveMapRef = useRef(effectiveMap);
+  effectiveMapRef.current = effectiveMap;
+  const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  // What had the focus before each overlay opened, so closing it restores
+  // the focus it interrupted.
+  const overlayRestoreRef = useRef<Record<string, HTMLElement | null>>({});
 
   const currentToken: RouteTokenView | null = detail?.routeToken ?? null;
   // The route's own state, readable from the connection effect without
@@ -664,6 +752,255 @@ export function App() {
   } as CSSProperties;
 
   const reconnect = async () => { const current = ++generation.current; setBusy(true); try { const snapshot = await bridge.connect(); if (current === generation.current) { connectionRef.current = snapshot; setConnection(snapshot); if (snapshot.state === 'connected') await refreshProjects(current, snapshot.connectionGeneration); } } catch (error) { if (current === generation.current) { const failed = { ...initial, state: 'disconnected' as const, error: String(error) }; connectionRef.current = failed; setConnection(failed); } } finally { if (current === generation.current) setBusy(false); } };
+
+  // ── The keyboard (M007-C) ──────────────────────────────────────────────
+  //
+  // There is **one** keydown listener, installed at the renderer's root,
+  // and one owner per chord: the overlay stack first, then the focused
+  // region, then the global map. A chord that no action claims is not
+  // swallowed — ordinary typing and native editing stay untouched.
+  const focusRegionById = (regionId: string) => {
+    if (focusRegion(document, regionId)) setFocusedRegion(regionId);
+  };
+
+  const focusFirstWithPrefix = (prefix: string) => {
+    const element = firstByTestIdPrefix(document, prefix);
+    if (!element) return;
+    element.focus();
+    const region = regionOfElement(element);
+    if (region) setFocusedRegion(region.id);
+  };
+
+  const activateFocusedRow = () => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return;
+    const testId = active.getAttribute('data-testid') ?? '';
+    if (!testId.startsWith('project-select-') && !testId.startsWith('session-open-')) return;
+    active.click();
+  };
+
+  const toggleTasksPanel = () => {
+    const placement = placementOf(host, 'tasks');
+    if (placement && host.slots[placement].visible) {
+      togglePanelSlot(placement);
+      return;
+    }
+    dockPanel('tasks', placement ?? 'right');
+  };
+
+  const openOverlay = (overlayId: OverlayId) => {
+    if (overlaysRef.current.includes(overlayId)) return;
+    // The overlay records what had the focus, so closing it restores the
+    // focus it interrupted.
+    const active = document.activeElement;
+    overlayRestoreRef.current[overlayId] = active instanceof HTMLElement ? active : null;
+    setOverlays((current) => (current.includes(overlayId) ? current : [...current, overlayId]));
+  };
+
+  const closeOverlay = () => {
+    const stack = overlaysRef.current;
+    if (stack.length === 0) return;
+    const top = stack[stack.length - 1];
+    const restore = overlayRestoreRef.current[top];
+    delete overlayRestoreRef.current[top];
+    setOverlays(stack.slice(0, -1));
+    if (restore && restore.isConnected) restore.focus();
+  };
+
+  const runAction = (actionId: string) => {
+    switch (actionId) {
+      case 'prompt.submit':
+        void submitPrompt();
+        return;
+      case 'prompt.newline':
+        setPromptDraft((draft) => `${draft}\n`);
+        return;
+      case 'overlay.cancel':
+        closeOverlay();
+        return;
+      case 'project.switcher.open':
+        focusFirstWithPrefix('project-select-');
+        return;
+      case 'session.switcher.open':
+        focusFirstWithPrefix('session-open-');
+        return;
+      case 'item.activate':
+        activateFocusedRow();
+        return;
+      case 'tasks.toggle':
+        toggleTasksPanel();
+        return;
+      case 'sidepanel.toggle':
+        togglePanelSlot(host.selected);
+        return;
+      case 'sidepanel.focus':
+        focusRegionById('sidePanel');
+        return;
+      case 'prompt.planMode.toggle':
+        setPlanMode((value) => !value);
+        return;
+      case 'help.open':
+        openOverlay('help');
+        return;
+      case 'keybinds.open':
+        openOverlay('keybinds');
+        return;
+      case 'session.create':
+        void createSession();
+        return;
+      case 'connection.reconnect':
+        void reconnect();
+        return;
+      default:
+        break;
+    }
+    if (actionId.startsWith('region.focus.')) {
+      const index = Number.parseInt(actionId.slice('region.focus.'.length), 10) - 1;
+      const region = REGIONS[index];
+      if (region) focusRegionById(region.id);
+    }
+  };
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    const target = event.target as Element | null;
+    // The bindings surface owns the key while it is capturing one.
+    if (target?.closest('[data-keymap-capture]')) return;
+
+    const stack = overlaysRef.current;
+    // `Tab` is the region's traversal rather than a chord, and an open
+    // overlay traps it.
+    if (event.key === 'Tab' && stack.length === 0) {
+      const regionId = focusedRegionRef.current;
+      if (regionId && moveFocusWithinRegion(document, regionId, event.shiftKey ? -1 : 1)) {
+        event.preventDefault();
+      }
+      return;
+    }
+
+    const chord = normalizeChord(event);
+    const scopes: Scope[] = [];
+    if (stack.length > 0) {
+      // An open overlay owns the chord it binds, and the base view's
+      // region map does not fire behind it — the overlay holds the
+      // focus, not a region.
+      scopes.push(OVERLAY_SCOPE);
+    } else {
+      const region = regionOfElement(target) ?? regionById(focusedRegionRef.current);
+      if (region) scopes.push(regionScope(region.id));
+    }
+    scopes.push(GLOBAL_SCOPE);
+
+    const actionId = resolveAction(effectiveMapRef.current, scopes, chord);
+    if (!actionId) return;
+    const declaration = ALL_ACTION_DECLARATIONS.find((entry) => entry.id === actionId);
+    // Only a captured chord swallows the event. A chord that is not
+    // captured leaves ordinary typing and native editing untouched.
+    if (declaration?.captured) event.preventDefault();
+    runAction(actionId);
+  };
+
+  // The handler is refreshed after every render; the listener itself is
+  // installed once.
+  useEffect(() => {
+    keyHandlerRef.current = handleKeyDown;
+  });
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => keyHandlerRef.current(event);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
+
+  // The focus follows the focused element, and the indicator is redrawn
+  // after every render because the regions mount and unmount with the
+  // frame.
+  useEffect(() => {
+    const onFocusIn = (event: FocusEvent) => {
+      const region = regionOfElement(event.target as Element | null);
+      setFocusedRegion((current) => (region && region.id !== current ? region.id : current));
+    };
+    document.addEventListener('focusin', onFocusIn);
+    return () => document.removeEventListener('focusin', onFocusIn);
+  }, []);
+  // The mouse route of a region: a click on the region's own surface
+  // focuses it. A click on one of its controls is the control's own
+  // business.
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      const region = regionOfElement(target);
+      if (!region || !target) return;
+      const container = target.closest(`[data-testid="${region.testId}"]`);
+      const control = target.closest('button, a, input, select, textarea, [tabindex]');
+      if (control && control !== container) return;
+      focusRegion(document, region.id);
+      setFocusedRegion(region.id);
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, []);
+  useEffect(() => {
+    prepareRegionContainers(document);
+    applyFocusIndicator(document, focusedRegion);
+    // The focused region keeps the roving `tabindex`: exactly one of its
+    // controls is tabbable, and the traversal walks the rest.
+    const container = focusedRegion ? regionContainer(document, focusedRegion) : null;
+    if (container) applyRovingTabIndex(container, activeElementWithin(container));
+  });
+  // A region that unmounts must not leave the focus on `document.body`.
+  useEffect(() => {
+    const regionId = focusedRegionRef.current;
+    if (!regionId) return;
+    if (!regionContainer(document, regionId)) {
+      focusFallback(document, regionId);
+      return;
+    }
+    const active = document.activeElement;
+    if (!active || active === document.body) focusRegion(document, regionId);
+  });
+
+  // An overlay takes the focus when it opens. The overlay beneath it
+  // keeps the focus when one closes.
+  const overlayCount = useRef(0);
+  useEffect(() => {
+    if (overlays.length > overlayCount.current) {
+      const top = overlays[overlays.length - 1];
+      const overlay = document.querySelector(`[data-testid="overlay-${top}"]`);
+      const control = overlay?.querySelector<HTMLElement>('button, input, textarea, [tabindex]');
+      control?.focus();
+    }
+    overlayCount.current = overlays.length;
+  }, [overlays]);
+
+  // ── The keymap's own operations ────────────────────────────────────────
+  const commitKeymap = (overrides: Record<string, string[]>) => {
+    setKeymap((previous) => ({ ...previous, overrides }));
+    saveKeymap(browserStorage(), overrides);
+  };
+  const remapBinding = (actionId: string, chord: string): string | null => {
+    const result = remapAction(keymap.overrides, ALL_ACTION_DECLARATIONS, actionId, chord);
+    if (result.refusal) return result.refusal;
+    commitKeymap(result.overrides);
+    return null;
+  };
+  const resetKeymap = () => {
+    clearKeymap(browserStorage());
+    setKeymap((previous) => ({ ...previous, overrides: {} }));
+  };
+  const applyKeymapDocument = (text: string): string | null => {
+    const result = importDocument(text, ALL_ACTION_DECLARATIONS);
+    if (result.error) return result.error;
+    commitKeymap(result.overrides);
+    return null;
+  };
+  const captureChord = (event: ReactKeyboardEvent) =>
+    neutralChord({
+      key: event.key,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+    });
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -671,12 +1008,25 @@ export function App() {
           <p className="eyebrow">LOCAL DESKTOP</p>
           <h1>CodeGG</h1>
         </div>
-        <span className={`status ${connection.state}`} data-testid="connection-status">
-          {connection.state}
-        </span>
+        <div className="app-header-actions">
+          <button type="button" data-testid="help-button" onClick={() => openOverlay('help')}>
+            Keyboard help
+          </button>
+          <button type="button" data-testid="keybinds-open-button" onClick={() => openOverlay('keybinds')}>
+            Key bindings
+          </button>
+          <span className={`status ${connection.state}`} data-testid="connection-status">
+            {connection.state}
+          </span>
+        </div>
       </header>
 
-      <div className="app-catalog">
+      <div className="app-catalog" data-testid="catalog-region">
+        {keymap.notices.map((notice) => (
+          <p className="keymap-notice" role="status" data-testid="keymap-notice" key={notice.message}>
+            {notice.message}
+          </p>
+        ))}
         <section className="panel">
           <h2>Daemon</h2>
           <dl>
@@ -702,6 +1052,13 @@ export function App() {
           <h2>
             Projects <small>{displayedProjects.length} / 50</small>
           </h2>
+          <button
+            type="button"
+            data-testid="project-switcher-button"
+            onClick={() => focusFirstWithPrefix('project-select-')}
+          >
+            Open project switcher
+          </button>
           {displayedProjects.length ? (
             <ul data-testid="project-list">
               {displayedProjects.map((project) => (
@@ -751,6 +1108,13 @@ export function App() {
               ))}
             </ul>
             <h3>Sessions</h3>
+            <button
+              type="button"
+              data-testid="session-switcher-button"
+              onClick={() => focusFirstWithPrefix('session-open-')}
+            >
+              Open session switcher
+            </button>
             {sessions.length ? (
               <ul data-testid="session-list">
                 {sessions.map((session) => (
@@ -794,6 +1158,28 @@ export function App() {
             {routeError}
           </p>
         )}
+        <section className="panel">
+          <h2>View</h2>
+          <div className="view-actions">
+            <button
+              type="button"
+              data-testid="sidepanel-toggle-button"
+              onClick={() => togglePanelSlot(host.selected)}
+            >
+              Toggle side panel
+            </button>
+            <button
+              type="button"
+              data-testid="sidepanel-focus-button"
+              onClick={() => focusRegionById('sidePanel')}
+            >
+              Focus side panel
+            </button>
+            <button type="button" data-testid="tasks-toggle-button" onClick={toggleTasksPanel}>
+              Toggle tasks panel
+            </button>
+          </div>
+        </section>
         <PanelControls host={host} onDock={dockPanel} onToggle={togglePanelSlot} />
         {detail && (
           <>
@@ -863,6 +1249,42 @@ export function App() {
           }}
         />
       </div>
+
+      {overlays.includes('help') && (
+        <div className="overlay-layer" data-testid="overlay-help">
+          <section className="help-overlay" role="dialog" aria-label="Keyboard help" data-testid="help-overlay">
+            <header className="overlay-head">
+              <h2>Keyboard</h2>
+              <button type="button" data-testid="overlay-close-button" onClick={closeOverlay}>
+                Close
+              </button>
+            </header>
+            <ul data-testid="help-list">
+              {ALL_ACTION_DECLARATIONS.map((declaration) => (
+                <li key={declaration.id} data-testid={`help-entry-${declaration.id}`}>
+                  <span>{declaration.label}</span>
+                  <kbd>{(bindingSummary[declaration.id] ?? []).join(', ') || 'unbound'}</kbd>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      )}
+
+      {overlays.includes('keybinds') && (
+        <div className="overlay-layer" data-testid="overlay-keybinds">
+          <KeybindingsPanel
+            declarations={ALL_ACTION_DECLARATIONS}
+            bindings={bindingSummary}
+            captureChord={captureChord}
+            onRemap={remapBinding}
+            onReset={resetKeymap}
+            exportText={exportDocument(keymap.overrides)}
+            onImport={applyKeymapDocument}
+            onClose={closeOverlay}
+          />
+        </div>
+      )}
     </main>
   );
 }

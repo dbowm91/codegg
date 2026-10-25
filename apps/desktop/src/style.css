@@ -326,3 +326,145 @@ pre {
 }
 
 .tool-detail-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+
+/*
+ * The focus indicator (M007-C).
+ *
+ * The indicator has two halves: the focused *region* container carries
+ * `data-focus-region` and an outline, and the focused *control* carries
+ * the `focus-ring` class. The control's ring is drawn from the class and
+ * not only from `:focus-visible`, because a mouse user must see where
+ * the focus is too.
+ */
+[data-focus-region] {
+  outline: 2px solid var(--surface-accent);
+  outline-offset: -2px;
+}
+
+.focus-ring,
+.focus-ring:focus {
+  outline: 2px solid var(--surface-accent);
+  outline-offset: 2px;
+}
+
+/* The header's own actions, and the rail's view actions. */
+.app-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.app-header-actions button { padding: 7px 12px; font-size: 13px; }
+.view-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.view-actions button { padding: 7px 12px; font-size: 13px; }
+
+/* The keymap's own notice: a stored document that could not be read. */
+.keymap-notice {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-status-bad-bg);
+  border-radius: 8px;
+  background: var(--surface-panel);
+  color: var(--surface-status-bad-fg);
+  font-size: 13px;
+}
+
+/*
+ * The overlays. An overlay is a fixed layer over the shell: it owns the
+ * focus while it is open, and `escape` pops exactly one of them.
+ */
+.overlay-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 20px;
+  background: rgba(16, 20, 27, .72);
+  overflow-y: auto;
+}
+
+.help-overlay, .keybindings-panel {
+  width: min(760px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--surface-panel);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  padding: 20px 22px;
+}
+
+.overlay-head, .keybindings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.overlay-head h2, .keybindings-panel-header h2 { margin: 0; }
+
+.help-overlay li { align-items: baseline; gap: 12px; }
+.help-overlay kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--surface-muted-strong);
+}
+
+/*
+ * The bindings surface. The list is a listbox with a roving `tabindex`,
+ * and the capture field is the one element that owns a key while it is
+ * capturing one.
+ */
+.keybindings-search, .keybindings-import {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--surface-muted-strong);
+}
+
+.keybindings-list { margin-bottom: 12px; }
+.keybindings-list li { display: block; padding: 0; border-top: 0; }
+.keybindings-list button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--surface-fg);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-weight: 500;
+}
+.keybindings-list button[aria-selected="true"] {
+  background: var(--surface-row-hover-bg);
+  border-color: var(--surface-border);
+}
+.keybindings-action-chord {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--surface-muted-strong);
+}
+
+.keybindings-capture { margin: 12px 0; }
+.keybindings-capture input { width: 100%; }
+.keybindings-hint, .keybindings-capture p {
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--surface-muted-strong);
+}
+.keybindings-conflict {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--surface-status-bad-bg);
+  color: var(--surface-status-bad-fg);
+  font-size: 13px;
+}
+.keybindings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.keybindings-actions button { padding: 7px 12px; font-size: 13px; }
+.keybindings-export, .keybindings-import textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
