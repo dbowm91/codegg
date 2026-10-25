@@ -284,10 +284,9 @@ Three properties carry the contract:
   Because the granted root is the shared **parent** rather than the linked
   worktree's own directory, the child can also write another linked
   worktree's `HEAD`; `git worktree add` runs the repository's `post-checkout`
-  hook, and the child's argv does not pin `core.hooksPath`. ADR-0048's
-  amendment records that consequence as an **open capability question**: the
-  maintainer has not chosen a disposition, so the milestone stops at the
-  documentation correction. Narrowing the grant to the linked worktree's own
+  hook. ADR-0048's amendment records that consequence as an **open capability
+  question**, and the maintainer has since chosen a disposition for it —
+  **defence in depth**, below. Narrowing the grant to the linked worktree's own
   directory would need a new ADR. See
   `scripts/check_contained_worktree_grant.py`, which asserts that the ADR,
   the code comments, and the delivered grant name the same single path —
@@ -295,6 +294,20 @@ Three properties carry the contract:
   own condition against synthetic write roots, so neutering the condition
   (`&& false`) or widening it (`!write.starts_with(administration_root)`)
   is detected rather than matched as text.
+- **The child's argv pins `core.hooksPath`.** The maintainer's chosen
+  disposition for the shared root's reach is **defence in depth**: the child's
+  argv carries `-c core.hooksPath=/dev/null`, ahead of the subcommand and on
+  **both** steps of the operation, so the repository's own hooks cannot run
+  inside the containment at all. The pin is on the argv rather than in the
+  environment on purpose — Git's command-scope configuration variables
+  (`GIT_CONFIG_COUNT` and friends) are **hard-denied** by the child's
+  environment policy, so a pin carried there would be dropped before the child
+  saw it. This removes the most obvious path to the reach; it does **not**
+  close it, because the shared root stays writable and the sandbox remains the
+  security property. `scripts/check_contained_worktree_hooks_path.py` enforces
+  the wiring and refuses the hard-denied route by name;
+  `tests/contained_worktree_hooks_path.rs` proves the behaviour against a
+  control in which the pin pair is removed from the production argv.
 - **Containment is asserted, not requested.** The launch's *obtained*
   enforcement is read after the launch; a request is a hope. The grant itself
   is asserted against the built launch description, not against the
