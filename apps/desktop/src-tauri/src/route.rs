@@ -801,6 +801,25 @@ impl HostState {
     }
 }
 
+/// The wire name of a command kind.
+fn command_kind_name(kind: CommandKindDto) -> String {
+    match kind {
+        CommandKindDto::DaemonEffect => "daemon_effect".to_string(),
+        CommandKindDto::FrontendEffect => "frontend_effect".to_string(),
+    }
+}
+
+/// The wire name of a command outcome status.
+fn command_outcome_name(status: codegg_protocol::core::CommandOutcomeStatusDto) -> String {
+    use codegg_protocol::core::CommandOutcomeStatusDto;
+    match status {
+        CommandOutcomeStatusDto::Completed => "completed".to_string(),
+        CommandOutcomeStatusDto::Refused => "refused".to_string(),
+        CommandOutcomeStatusDto::Failed => "failed".to_string(),
+        CommandOutcomeStatusDto::Cancelled => "cancelled".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2534,24 +2553,5 @@ mod tests {
             "unexpected error: {error}"
         );
         server.await.expect("server");
-    }
-}
-
-/// The wire name of a command kind.
-fn command_kind_name(kind: CommandKindDto) -> String {
-    match kind {
-        CommandKindDto::DaemonEffect => "daemon_effect".to_string(),
-        CommandKindDto::FrontendEffect => "frontend_effect".to_string(),
-    }
-}
-
-/// The wire name of a command outcome status.
-fn command_outcome_name(status: codegg_protocol::core::CommandOutcomeStatusDto) -> String {
-    use codegg_protocol::core::CommandOutcomeStatusDto;
-    match status {
-        CommandOutcomeStatusDto::Completed => "completed".to_string(),
-        CommandOutcomeStatusDto::Refused => "refused".to_string(),
-        CommandOutcomeStatusDto::Failed => "failed".to_string(),
-        CommandOutcomeStatusDto::Cancelled => "cancelled".to_string(),
     }
 }
