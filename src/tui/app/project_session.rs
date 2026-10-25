@@ -208,7 +208,11 @@ impl App {
             // project; routing stays keyed by project_id.
             if let Some(pid) = self.active_project_id().map(str::to_string) {
                 if self.presence.needs_refresh(&pid) {
-                    crate::tui::commands::presence::start_refresh_presence(self, pid);
+                    crate::tui::commands::presence::start_refresh_presence(
+                        self,
+                        pid,
+                        crate::tui::commands::presence::PresenceRefresh::User,
+                    );
                 }
             }
             // Project Collaboration M002: bounded chat refresh for the
@@ -251,7 +255,11 @@ impl App {
         self.presence.on_reconnect();
         self.routing_registry.bump_reconnect_epoch();
         if let Some(project_id) = self.active_project_id().map(str::to_string) {
-            crate::tui::commands::presence::start_refresh_presence(self, project_id);
+            crate::tui::commands::presence::start_refresh_presence(
+                self,
+                project_id,
+                crate::tui::commands::presence::PresenceRefresh::User,
+            );
         }
         // Presence M003: observer reconnect replays from the authoritative
         // cursor. Bump the observer epoch (drops pre-reconnect
@@ -302,7 +310,11 @@ impl App {
         if self.presence.note_hint(&project_id) {
             let is_active = self.active_project_id() == Some(project_id.as_str());
             if is_active {
-                crate::tui::commands::presence::start_refresh_presence(self, project_id);
+                crate::tui::commands::presence::start_refresh_presence(
+                    self,
+                    project_id,
+                    crate::tui::commands::presence::PresenceRefresh::Hint,
+                );
             }
         }
     }

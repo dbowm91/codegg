@@ -324,7 +324,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             );
         }
         TuiCommand::RefreshPresence { project_id } => {
-            super::super::commands::presence::start_refresh_presence(app, project_id);
+            super::super::commands::presence::start_refresh_presence(
+                app,
+                project_id,
+                super::super::commands::presence::PresenceRefresh::User,
+            );
         }
         TuiCommand::PresenceSnapshotLoaded {
             request_id,
@@ -355,7 +359,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 // refresh on foreground.
                 let is_active = app.active_project_id() == Some(project_id.as_str());
                 if is_active {
-                    super::super::commands::presence::start_refresh_presence(app, project_id);
+                    super::super::commands::presence::start_refresh_presence(
+                        app,
+                        project_id,
+                        super::super::commands::presence::PresenceRefresh::Hint,
+                    );
                 }
             }
         }

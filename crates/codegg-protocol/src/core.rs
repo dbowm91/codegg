@@ -1214,16 +1214,13 @@ pub struct CommandCatalogScopeDto {
     /// and the daemon cannot guess it: the daemon resolves the *project* and
     /// the *workspace* from its own durable binding, but the session is the
     /// caller's selection. The desktop leaves it absent, and a
-    /// session-scoped command then refuses with a typed reason rather than
-    /// acting on a session the caller did not name.
+    /// session-scoped command then refuses with a typed reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
 
-/// One argument form of a command.
-///
-/// The form is the classification unit: a command's argument can select a
-/// different effect, so the kind lives on the form.
+/// One argument form of a command. The form is the classification unit: a
+/// command's argument can select a different effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandFormDto {
     /// The form's selector. Empty is the command's default form.
@@ -1238,12 +1235,17 @@ pub struct CommandFormDto {
     ///
     /// This is the daemon's own answer, not the frontend's guess: a
     /// frontend that asks for a form the daemon does not serve gets a
-    /// typed refusal. A frontend that reads this flag can show the command
-    /// as unavailable instead of dispatching into a refusal. It is `true`
-    /// for every frontend-effect form, because the frontend serves those
-    /// itself.
+    /// typed refusal, and can show the command as unavailable instead.
     #[serde(default)]
     pub daemon_served: bool,
+    /// The frontend action that serves this form, when the form is a
+    /// frontend effect.
+    ///
+    /// The kind says *who* owns the effect; this says *what* the frontend
+    /// has to do, and the name is the action's wire name. The field is
+    /// additive, so an older client still decodes the catalog.
+    #[serde(default)]
+    pub action: Option<String>,
 }
 
 /// One command's catalog entry.

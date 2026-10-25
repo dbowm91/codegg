@@ -268,7 +268,11 @@ pub(crate) fn switch_active_tab(
         .and_then(|t| t.project_id.clone())
     {
         if app.presence.needs_refresh(&new_project) {
-            super::presence::start_refresh_presence(app, new_project);
+            super::presence::start_refresh_presence(
+                app,
+                new_project,
+                super::presence::PresenceRefresh::User,
+            );
         }
     }
 

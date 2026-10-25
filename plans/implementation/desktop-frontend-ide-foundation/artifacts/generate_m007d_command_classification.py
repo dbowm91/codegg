@@ -1100,7 +1100,12 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("| namespace | what an id names | where it lives | who resolves it |")
     write("|---|---|---|---|")
-    write("| the declared frontend-effect set | the action that serves a **catalog command form** | `crates/codegg-core/src/frontend_action.rs` — 29 `FrontendAction` variants, keyed by `(command_id, form)` | the palette, through `action_for_form(command_id, form)` |")
+    write(
+        "| the declared frontend-effect set | the action that serves a **catalog command form** "
+        f"| `crates/codegg-core/src/frontend_action.rs` — {len(set(frontend_actions.values()))} "
+        "`FrontendAction` variants, keyed by `(command_id, form)` "
+        "| the palette, through `action_for_form(command_id, form)` |"
+    )
     write("| the desktop keymap | a **gesture** the desktop dispatches | `apps/desktop/src/keymap.ts` — the editor's 22 `editor.*` ids, the palette's `command.palette.open`, and the rest | the desktop's one dispatch, in `App.tsx` |")
     write("")
     write("**How the palette resolves an action id.** It does not resolve a keymap id.")

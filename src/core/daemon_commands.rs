@@ -13,20 +13,8 @@
 //!
 //! ## What is refused, and why
 //!
-//! A refusal is typed and produces **no** `Run`:
-//!
-//! | code | meaning |
-//! |---|---|
-//! | `unknown_command` | the command identity is not in the catalog |
-//! | `unknown_form` | the command has no such argument form |
-//! | `not_daemon_effect` | the form is a frontend effect; the frontend owns it |
-//! | `stale_catalog` | the request names a catalog version the daemon no longer serves |
-//! | `argument_too_long` | the argument exceeds the bound |
-//! | `capability_required` | the catalog entry names no `command.execute` capability |
-//! | `run_store_unavailable` | the daemon cannot record the run, so it refuses to execute |
-//! | `catalog_over_bound` | the daemon's own catalog exceeds its bounds |
-//! | `result_over_bound` | the produced result exceeds its bounds |
-//! | `command_not_served` | the daemon does not serve this command's effect yet |
+//! A refusal is typed and produces **no** `Run`. Each code is a
+//! `REFUSAL_*` constant below, and the constant carries what it means.
 //!
 //! ## The inner request is authorized on its own terms
 //!
@@ -83,11 +71,8 @@ pub const REFUSAL_NO_SESSION: &str = "no_session";
 /// daemon does not serve the command, which is false.
 pub const REFUSAL_ARGUMENT_UNREADABLE: &str = "argument_unreadable";
 
-/// The daemon-side context a command's effect is built from.
-///
-/// The daemon owns the effect, so it resolves what it can from its own
-/// durable binding and reads the rest from the request's scope: the
-/// project, the workspace, and the session the caller named.
+/// The daemon-side context a command's effect is built from: the project,
+/// the workspace, and the session the caller named.
 pub struct CommandContext<'a> {
     /// The project the command acts in.
     pub project_id: &'a str,
@@ -97,6 +82,22 @@ pub struct CommandContext<'a> {
     pub session_id: Option<&'a str>,
     /// The command's argument.
     pub argument: &'a str,
+    /// The authority the effect resolves for an identity the caller named.
+    pub authority: Option<CommandAuthority<'a>>,
+}
+
+/// The binding the daemon resolved for an identity the caller named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandAuthority<'a> {
+    pub project_id: &'a str,
+    pub workspace_id: &'a str,
+    pub session_id: Option<&'a str>,
+}
+
+/// The identifier the argument names: its first whitespace-separated token.
+fn argument_identifier(argument: &str) -> &str {
+    let trimmed = argument.trim_start();
+    trimmed.split_whitespace().next().unwrap_or_default()
 }
 
 /// The number in the argument's second token.
@@ -179,13 +180,8 @@ pub enum CommandEffect {
 /// scope and the argument. A form with no row is refused with
 /// `command_not_served`: the daemon does not guess what a command means.
 ///
-/// The rows are built from JSON rather than from typed constructors so that
-/// one row is one line, and so that a row which names a shape the protocol
-/// does not have fails *closed* — the deserialisation fails, the entry
-/// yields nothing, and the command is refused with `command_not_served`
-/// instead of dispatching a half-built request. The closedness is proved by
-/// the `every_row_builds` test, so a wrong shape fails a test rather than
-/// quietly becoming a refusal.
+/// The rows are built from JSON, and a row that names a shape the protocol
+/// does not have fails *closed*.
 pub fn build_inner_request(
     command_id: &str,
     form: &str,
@@ -196,7 +192,7 @@ pub fn build_inner_request(
     let session = ctx.session_id;
     let argument = ctx.argument;
     let trimmed = argument.trim_start();
-    let first = trimmed.split_whitespace().next().unwrap_or_default();
+    let first = argument_identifier(argument);
     let rest = trimmed[first.len()..].trim_start();
     let shape = match (command_id, form) {
         // ── assets and the project ──
@@ -223,9 +219,7 @@ pub fn build_inner_request(
         // session here would show the user a different policy than the
         // one they saw before the migration.
         //
-        // `approval` and `reasoning` have no such question: both of
-        // their requests are unit variants that carry no session at all,
-        // so the scope's session cannot change what they answer.
+        // `approval` and `reasoning` carry no session at all.
         ("policy", "") => json!({
             "type": "execution_policy_get",
             "session_id": null,
@@ -253,29 +247,10 @@ pub fn build_inner_request(
         }
 
         // ── the daemon's own catalogues ──
-        ("skills", "") => json!({
-            "type": "skill_catalogue_list",
-            "request": { "project_id": project_id, "max_entries": null },
-        }),
+        //
+        // M007-017: `skills`, `worktree` and `tool_contracts` are frontend effects.
         ("models_refresh", "") => json!({ "type": "models_refresh" }),
         ("nodes", "") => json!({ "type": "node_telemetry", "node_id": null }),
-        ("worktree", "") => json!({
-            "type": "managed_worktree_list",
-            "workspace_id": workspace_id,
-            "repository_id": null,
-            "run_id": null,
-            "include_removed": false,
-        }),
-        ("tool_contracts", "") => {
-            let Some(session_id) = session else {
-                return Some(CommandEffect::NeedsSession);
-            };
-            json!({
-                "type": "tool_program_list",
-                "session_id": session_id,
-                "state_filter": null,
-            })
-        }
 
         // ── sessions ──
         //
@@ -305,12 +280,7 @@ pub fn build_inner_request(
             }
             json!({ "type": "session_export", "session_id": first })
         }
-        ("status", "") => {
-            let Some(session_id) = session else {
-                return Some(CommandEffect::NeedsSession);
-            };
-            json!({ "type": "session_lifecycle_get", "session_id": session_id })
-        }
+        // M007-017: `status` is a frontend effect now, so its row is gone.
 
         // ── goals, tasks and schedules ──
         //
@@ -367,6 +337,16 @@ pub fn build_inner_request(
         ("memory_forget", "") => json!({ "type": "memory_forget", "id": argument }),
 
         // ── collaboration ──
+        //
+        // M007-017: the presence panel's own effect gets its own form. The
+        // panel refreshes a **named** project, so the project travels in the
+        // argument rather than in the scope.
+        ("collaborators", "presence") => {
+            if first.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
+            }
+            json!({ "type": "presence_snapshot_get", "project_id": first })
+        }
         ("collaborators", "") => json!({
             "type": "team_principal_list",
             "limit": null,
@@ -568,7 +548,8 @@ pub fn build_inner_request(
         }
 
         // ── the human shell ──
-        ("shell_list", "") => json!({ "type": "human_shell_run_capabilities" }),
+        //
+        // M007-017: `shell_list` is a frontend effect now.
         ("shell_show", "") | ("shell_expand", "") => json!({
             "type": "human_shell_run_read",
             "request": {
@@ -580,15 +561,25 @@ pub fn build_inner_request(
                 "max_bytes": 65536,
             }
         }),
-        ("shell_kill", "") => json!({
-            "type": "human_shell_run_cancel",
-            "request": {
-                "run_id": first,
-                "project_id": project_id,
-                "workspace_id": workspace_id,
-                "session_id": session,
+        // The cancel's authority is the **run's own** binding, not the
+        // caller's scope: the daemon resolved it before this row was built.
+        ("shell_kill", "") => {
+            if first.is_empty() {
+                return Some(CommandEffect::UnreadableArgument);
             }
-        }),
+            let Some(authority) = ctx.authority else {
+                return Some(CommandEffect::UnreadableArgument);
+            };
+            json!({
+                "type": "human_shell_run_cancel",
+                "request": {
+                    "run_id": first,
+                    "project_id": authority.project_id,
+                    "workspace_id": authority.workspace_id,
+                    "session_id": authority.session_id,
+                }
+            })
+        }
 
         // ── the interactive terminal ──
         //
@@ -596,7 +587,9 @@ pub fn build_inner_request(
         // default is the bound the caller asked for, and a bound written
         // into the row would silently change how many terminals the
         // listing shows.
-        ("terminal_list", "") | ("terminal_show", "") => json!({
+        //
+        // M007-017: `terminal_show` is a frontend effect now.
+        ("terminal_list", "") => json!({
             "type": "interactive_process_list",
             "workspace_id": workspace_id,
             "limit": null,
@@ -632,15 +625,15 @@ pub fn build_inner_request(
 /// the form is unknown. So does a row whose argument the caller got
 /// wrong: the daemon refuses *that* call, with `argument_unreadable`.
 ///
-/// Serve-ability is a property of the **form**, not of one call's
-/// argument, so it is answered from the row's presence rather than from
-/// whether a probe argument happens to satisfy it.
+/// Serve-ability is a property of the **form**, not of one call's argument.
 pub fn serves_form(command_id: &str, form: &str) -> bool {
     let ctx = CommandContext {
         project_id: "probe",
         workspace_id: "probe",
         session_id: Some("probe"),
         argument: "",
+
+        authority: None,
     };
     build_inner_request(command_id, form, &ctx).is_some()
 }
@@ -737,6 +730,12 @@ impl CoreDaemon {
                         // table has a row for. A frontend-effect form has no
                         // row: the frontend owns it.
                         daemon_served: serves_form(command.command_id, form.form),
+                        // The action the frontend performs.
+                        action: codegg_core::frontend_action::action_for_form(
+                            command.command_id,
+                            form.form,
+                        )
+                        .map(|action| action.as_str().to_string()),
                     })
                     .collect(),
             })
@@ -745,6 +744,24 @@ impl CoreDaemon {
             catalog_version: catalog.version,
             commands,
         })
+    }
+
+    /// Resolve the authority an effect is authorized against, when the effect
+    /// acts on an identity the caller named.
+    async fn resolve_command_authority(
+        &self,
+        command_id: &str,
+        form: &str,
+        argument: &str,
+    ) -> Option<crate::shell::daemon::HumanShellRunScope> {
+        if command_id != "shell_kill" || !form.is_empty() {
+            return None;
+        }
+        let run_id = argument_identifier(argument);
+        if run_id.is_empty() {
+            return None;
+        }
+        self.human_shell_runs.scope_for(run_id).await
     }
 
     /// Execute one daemon-effect command form.
@@ -833,11 +850,22 @@ impl CoreDaemon {
         // The effect table is the daemon's own map from a command form to the
         // request that serves it. A form with no row is refused: the daemon
         // does not guess what a command means.
+        //
+        // The daemon resolves the binding before the row is built.
+        let resolved_authority = self
+            .resolve_command_authority(command.command_id, form.form, &request.argument)
+            .await;
+        let command_authority = resolved_authority.as_ref().map(|scope| CommandAuthority {
+            project_id: scope.project_id.as_str(),
+            workspace_id: scope.workspace_id.as_str(),
+            session_id: scope.session_id.as_deref(),
+        });
         let ctx = CommandContext {
             project_id: &request.scope.project_id,
             workspace_id: &request.scope.workspace_id,
             session_id: request.scope.session_id.as_deref(),
             argument: &request.argument,
+            authority: command_authority,
         };
         match build_inner_request(command.command_id, form.form, &ctx) {
             None => {
@@ -875,10 +903,7 @@ impl CoreDaemon {
 
         // M007-D: the daemon audits every daemon-effect command as a
         // canonical `Run` (ADR-0052), and the run lands in the
-        // **workspace's own** run store — `<workspace_root>/.codegg/runs`,
-        // the same store the tools write to and the work-plan binding
-        // reads. An injected store overrides that root, so a test can
-        // audit in memory.
+        // **workspace's own** run store — `<workspace_root>/.codegg/runs`.
         //
         // Fail closed: without a store the execution would be unaudited,
         // and an unaudited daemon effect is not permitted.
@@ -1245,15 +1270,11 @@ mod tests {
         ("approval", "", ""),
         ("reasoning", "", ""),
         ("network", "", "offline 7"),
-        ("skills", "", ""),
         ("models_refresh", "", ""),
         ("nodes", "", ""),
-        ("worktree", "", ""),
-        ("tool_contracts", "", ""),
         ("share", "", "session-1"),
         ("unshare", "", "session-1"),
         ("export", "", "session-1"),
-        ("status", "", ""),
         ("tasks", "", "200"),
         ("task", "", "200"),
         ("schedules", "", ""),
@@ -1265,6 +1286,7 @@ mod tests {
         ("memory_remember", "", ""),
         ("memory_forget", "", ""),
         ("collaborators", "", ""),
+        ("collaborators", "presence", "probe-project"),
         ("team", "", ""),
         ("control", "", ""),
         ("observe", "", "session-1"),
@@ -1281,12 +1303,10 @@ mod tests {
         ("edit_undo", "", ""),
         ("edit_reapply", "", ""),
         ("edit_checkpoints", "", ""),
-        ("shell_list", "", ""),
         ("shell_show", "", "probe"),
         ("shell_expand", "", "probe"),
         ("shell_kill", "", "probe"),
         ("terminal_list", "", ""),
-        ("terminal_show", "", ""),
         ("terminal_send", "", "probe ZGF0YQ=="),
         ("lsp_status", "", ""),
         ("lsp_errors", "", ""),
@@ -1357,6 +1377,12 @@ mod tests {
                 workspace_id: "workspace",
                 session_id: Some("session"),
                 argument,
+                // A row that acts on a named identity carries its binding.
+                authority: Some(CommandAuthority {
+                    project_id: "project",
+                    workspace_id: "workspace",
+                    session_id: Some("session"),
+                }),
             };
             let effect = build_inner_request(command_id, form, &ctx)
                 .unwrap_or_else(|| panic!("{command_id}/{form} must have a row"));
@@ -1381,6 +1407,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "channel-1 not-a-number",
+
+            authority: None,
         };
         let effect = build_inner_request("chat_sync", "", &ctx);
         assert!(
@@ -1416,6 +1444,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: None,
             argument: "",
+
+            authority: None,
         };
         let effect = build_inner_request("share", "", &ctx).expect("share has a row");
         assert!(
@@ -1423,10 +1453,10 @@ mod tests {
             "share acts on a session and must refuse without one"
         );
         // A row that does not act on a session still builds.
-        let effect = build_inner_request("skills", "", &ctx).expect("skills has a row");
+        let effect = build_inner_request("policy", "", &ctx).expect("policy has a row");
         assert!(
             matches!(effect, CommandEffect::Ready(_)),
-            "skills does not act on a session and must build without one"
+            "policy does not act on a session and must build without one"
         );
     }
 
@@ -1434,7 +1464,111 @@ mod tests {
     #[test]
     fn a_form_with_no_row_is_not_served() {
         assert!(!serves_form("not_a_command", ""));
-        assert!(!serves_form("skills", "not_a_form"));
+        assert!(!serves_form("reload", "not_a_form"));
+    }
+
+    /// The cancel's authority is the **run's own** binding, not the caller's.
+    #[test]
+    fn the_cancel_is_authorized_against_the_runs_own_binding() {
+        let ctx = CommandContext {
+            project_id: "caller-project",
+            workspace_id: "caller-workspace",
+            session_id: Some("caller-session"),
+            argument: "run-1",
+            authority: Some(CommandAuthority {
+                project_id: "run-project",
+                workspace_id: "run-workspace",
+                session_id: Some("run-session"),
+            }),
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("shell_kill", "", &ctx)
+        else {
+            panic!("shell_kill must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::HumanShellRunCancel { request }
+                    if request.run_id == "run-1"
+                        && request.project_id == "run-project"
+                        && request.workspace_id == "run-workspace"
+                        && request.session_id.as_deref() == Some("run-session")
+            ),
+            "the cancel must name the run's own binding, not the caller's scope"
+        );
+    }
+
+    /// A run the daemon does not hold has no binding, so the row refuses.
+    #[test]
+    fn a_cancel_with_no_resolved_run_refuses_the_call_and_stays_served() {
+        let ctx = CommandContext {
+            project_id: "caller-project",
+            workspace_id: "caller-workspace",
+            session_id: Some("caller-session"),
+            argument: "run-1",
+            authority: None,
+        };
+        assert!(
+            matches!(
+                build_inner_request("shell_kill", "", &ctx),
+                Some(CommandEffect::UnreadableArgument)
+            ),
+            "a cancel the daemon cannot resolve must refuse the call"
+        );
+        assert!(
+            serves_form("shell_kill", ""),
+            "a cancel whose run is unknown is still a served form"
+        );
+        let ctx = CommandContext {
+            argument: "",
+            ..ctx
+        };
+        assert!(
+            matches!(
+                build_inner_request("shell_kill", "", &ctx),
+                Some(CommandEffect::UnreadableArgument)
+            ),
+            "a cancel that names no run must refuse the call"
+        );
+    }
+
+    /// The presence panel's project travels in the argument.
+    #[test]
+    fn the_presence_row_carries_its_project_in_the_argument() {
+        let ctx = CommandContext {
+            project_id: "scope-project",
+            workspace_id: "scope-workspace",
+            session_id: Some("scope-session"),
+            argument: "panel-project",
+            authority: None,
+        };
+        let Some(CommandEffect::Ready(request)) =
+            build_inner_request("collaborators", "presence", &ctx)
+        else {
+            panic!("the presence form must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::PresenceSnapshotGet { project_id } if project_id == "panel-project"
+            ),
+            "the presence row must read the project the argument names"
+        );
+        let ctx = CommandContext {
+            argument: "",
+            ..ctx
+        };
+        assert!(
+            matches!(
+                build_inner_request("collaborators", "presence", &ctx),
+                Some(CommandEffect::UnreadableArgument)
+            ),
+            "a presence read with no project must refuse the call"
+        );
+        assert!(
+            serves_form("collaborators", "presence"),
+            "a presence read with no project is still a served form"
+        );
     }
 
     /// The Collaboration rows carry their identifiers in the argument.
@@ -1450,6 +1584,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "turn-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("stop", "", &ctx) else {
             panic!("stop must build a request");
@@ -1468,6 +1604,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "channel-1 message-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_action_list", "", &ctx)
         else {
@@ -1490,6 +1628,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "channel-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_action_list", "", &ctx)
         else {
@@ -1518,6 +1658,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "subscription-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("stop_observing", "", &ctx)
         else {
@@ -1537,6 +1679,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "schedule-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("task_del", "", &ctx) else {
             panic!("task_del must build a request");
@@ -1570,6 +1714,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("policy", "", &ctx) else {
             panic!("policy must build a request");
@@ -1614,6 +1760,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("attached-session"),
             argument: "named-session",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("share", "", &ctx) else {
             panic!("share must build a request");
@@ -1689,6 +1837,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "offline 7",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("network", "", &ctx) else {
             panic!("network must build a request");
@@ -1745,6 +1895,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "200",
+
+            authority: None,
         };
         for command_id in ["tasks", "task"] {
             let Some(CommandEffect::Ready(request)) = build_inner_request(command_id, "", &ctx)
@@ -1789,6 +1941,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "channel-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_history", "", &ctx)
         else {
@@ -1809,6 +1963,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "channel-1 42",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_sync", "", &ctx) else {
             panic!("chat_sync must build a request");
@@ -1828,6 +1984,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "channel-1 42",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("chat_read", "", &ctx) else {
             panic!("chat_read must build a request");
@@ -1847,6 +2005,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "handle-1 42",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_attach", "", &ctx)
         else {
@@ -1867,6 +2027,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "handle-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_attach", "", &ctx)
         else {
@@ -1887,6 +2049,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "attachment-1 42",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("terminal_resume", "", &ctx)
         else {
@@ -1908,6 +2072,8 @@ mod tests {
             workspace_id: "workspace",
             session_id: Some("session"),
             argument: "job-1",
+
+            authority: None,
         };
         let Some(CommandEffect::Ready(request)) = build_inner_request("test", "", &ctx) else {
             panic!("test must build a request");

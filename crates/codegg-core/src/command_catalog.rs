@@ -6,8 +6,7 @@
 //! description, domain, kind, required capability and argument shape, and
 //! the daemon executes the daemon-effect forms under `command.execute`.
 //!
-//! The catalog is plain data. It references no frontend type, no protocol
-//! type and no UI concern, so `codegg-core` stays UI-free
+//! The catalog is plain data, so `codegg-core` stays UI-free
 //! (`scripts/check-core-boundary.sh`).
 //!
 //! ## The classification unit is the form
@@ -240,7 +239,7 @@ impl std::error::Error for CatalogBoundError {}
 
 /// The one catalog. Every command the daemon knows about.
 static THE_CATALOG: CommandCatalog = CommandCatalog {
-    version: 1,
+    version: 2,
     commands: &[
         CommandDescriptor {
             command_id: "project_init",
@@ -321,12 +320,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "View status",
             category: CommandCategory::System,
             domain: CommandDomain::Diagnostics,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },
@@ -825,12 +824,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Inspect effective skills and shadowed alternatives (/skills [name])",
             category: CommandCategory::System,
             domain: CommandDomain::Memory,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "[name]",
                     argument_required: true,
                 },
@@ -2277,12 +2276,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "List recent shell commands",
             category: CommandCategory::System,
             domain: CommandDomain::Execution,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },
@@ -2493,12 +2492,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Show an interactive terminal (args: <handle>)",
             category: CommandCategory::System,
             domain: CommandDomain::Execution,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "<handle>",
                     argument_required: true,
                 },
@@ -2771,6 +2770,13 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
                     kind: CommandKind::DaemonEffect,
                     argument_hint: "",
                     argument_required: false,
+                },
+                // M007-017: the presence panel's own effect.
+                CommandForm {
+                    form: "presence",
+                    kind: CommandKind::DaemonEffect,
+                    argument_hint: "<project-id>",
+                    argument_required: true,
                 },
             ],
         },
@@ -3141,12 +3147,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "Show tool contract diagnostics (/tool-contracts)",
             category: CommandCategory::System,
             domain: CommandDomain::Provider,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },
@@ -3159,12 +3165,12 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             description: "List worktrees for the active workspace (/worktree)",
             category: CommandCategory::System,
             domain: CommandDomain::System,
-            kind: CommandKind::DaemonEffect,
-            capability: Some(CommandCapability::CommandExecute),
+            kind: CommandKind::FrontendEffect,
+            capability: None,
             forms: &[
                 CommandForm {
                     form: "",
-                    kind: CommandKind::DaemonEffect,
+                    kind: CommandKind::FrontendEffect,
                     argument_hint: "",
                     argument_required: false,
                 },

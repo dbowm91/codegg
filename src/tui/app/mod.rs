@@ -12763,7 +12763,11 @@ impl App {
         // leak the previous project's collaborators.
         if let Some(pid) = project_id.clone() {
             if self.presence.needs_refresh(&pid) {
-                crate::tui::commands::presence::start_refresh_presence(self, pid);
+                crate::tui::commands::presence::start_refresh_presence(
+                    self,
+                    pid,
+                    crate::tui::commands::presence::PresenceRefresh::User,
+                );
             }
         }
 
@@ -13649,7 +13653,11 @@ impl App {
     /// Public so tests and the `/collaborators` dispatcher can route
     /// through this method without exposing the private command module.
     pub fn refresh_presence(&mut self, project_id: String) {
-        crate::tui::commands::presence::start_refresh_presence(self, project_id);
+        crate::tui::commands::presence::start_refresh_presence(
+            self,
+            project_id,
+            crate::tui::commands::presence::PresenceRefresh::User,
+        );
     }
 
     /// Presence M002: apply a snapshot completion. Public for the same
