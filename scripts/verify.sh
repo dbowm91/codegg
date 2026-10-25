@@ -71,6 +71,17 @@ run_guards() {
     echo "==> ./scripts/check-desktop-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-desktop-boundary.sh)
 
+    # The desktop tree is a separate Cargo workspace that the root check
+    # never compiles, so the hosted desktop qualification is the only
+    # automated gate it has. A guard which is not run automatically cannot
+    # protect anything, so this one runs here with its self-test: it fails
+    # closed when the desktop tree falls out of that gate.
+    echo "==> python3 scripts/check_desktop_gate_wiring.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_gate_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 
@@ -100,6 +111,19 @@ run_guards() {
 
     echo "==> python3 scripts/check_daemon_cwd_usage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_cwd_usage.py)
+
+    # The scratch reclaim path decides on four facts — containment, real
+    # directory, ownership, and the owner record — and it removes a tree only
+    # when it holds no entries at all. A reclaim failure that wears the
+    # provisioning text, a removal that skips the owner-record check, and a
+    # report that disagrees with the validator are all silent: they are wrong
+    # answers, not crashes. A guard which is not run automatically cannot
+    # protect anything, so it runs here with its self-test.
+    echo "==> python3 scripts/check_scratch_reclaim_invariants.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_scratch_reclaim_invariants.py --self-test)
+
+    echo "==> python3 scripts/check_scratch_reclaim_invariants.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_scratch_reclaim_invariants.py)
 
     # The trusted Git route owns every CodeGG-owned Git child, and the
     # hostile-metadata detector is the mediation that refuses a repository

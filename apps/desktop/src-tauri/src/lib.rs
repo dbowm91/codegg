@@ -54,6 +54,7 @@ struct HostState {
     /// - disconnect / native close / app exit: serial invalidation + generation
     ///   bump + subscription take + client clear;
     /// - subscription install: connection snapshot + owner publication.
+    ///
     /// Slow work (network connect, autostart, snapshot requests, forwarder
     /// abort/join) runs outside the gate. Forwarders never acquire this gate.
     lifecycle: Mutex<()>,
@@ -111,6 +112,9 @@ pub(crate) struct TestBarrier {
 }
 
 impl TestBarrier {
+    /// Test-only constructor: production never builds a barrier, it passes
+    /// `None` to the barrier-aware entry points.
+    #[cfg(test)]
     pub(crate) fn fresh() -> Self {
         Self {
             entered: Arc::new(Notify::new()),
@@ -220,6 +224,7 @@ impl HostState {
     /// generation. Callers must have fenced concurrent attempts already.
     /// Preserved for the live trajectory; production connect uses
     /// [`Self::commit_prepared_connection`] for atomic supersession.
+    #[cfg(test)]
     pub(crate) async fn install_connection(
         &self,
         client: LocalSocketClient,
@@ -363,14 +368,12 @@ impl HostState {
                             | CoreEvent::ProjectArchived { .. }
                             | CoreEvent::ProjectRestored { .. }
                             | CoreEvent::ProjectHealthChanged { .. }
-                    ) {
-                        if !sink.send_event(DesktopEvent {
-                            version: 1,
-                            event_seq: envelope.event_seq,
-                            kind: "project_catalog_changed",
-                        }) {
-                            break;
-                        }
+                    ) && !sink.send_event(DesktopEvent {
+                        version: 1,
+                        event_seq: envelope.event_seq,
+                        kind: "project_catalog_changed",
+                    }) {
+                        break;
                     }
                 }
                 // Clear ownership only if this task is still the stored owner.
@@ -411,11 +414,6 @@ impl HostState {
         self.fake_connected.store(true, MemOrder::Release);
         self.connection_generation
             .store(generation, MemOrder::Release);
-    }
-
-    fn mark_fake_disconnected(&self) {
-        use std::sync::atomic::Ordering as MemOrder;
-        self.fake_connected.store(false, MemOrder::Release);
     }
 
     fn is_fake_connected(&self) -> bool {
@@ -521,14 +519,12 @@ impl HostState {
                             | CoreEvent::ProjectArchived { .. }
                             | CoreEvent::ProjectRestored { .. }
                             | CoreEvent::ProjectHealthChanged { .. }
-                    ) {
-                        if !sink.send_event(DesktopEvent {
-                            version: 1,
-                            event_seq: envelope.event_seq,
-                            kind: "project_catalog_changed",
-                        }) {
-                            break;
-                        }
+                    ) && !sink.send_event(DesktopEvent {
+                        version: 1,
+                        event_seq: envelope.event_seq,
+                        kind: "project_catalog_changed",
+                    }) {
+                        break;
                     }
                 }
                 task_state

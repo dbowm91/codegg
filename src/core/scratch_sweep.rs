@@ -398,6 +398,11 @@ pub async fn sweep_scratch_once_with_budget(
             return report;
         }
     };
+    // A digest is attempted at most once per pass. A digest can be named by
+    // more than one entry — the live tree and a tombstone left by an earlier
+    // pass — and those are one tree, not two: attempting it twice reported
+    // the same digest twice in a single pass.
+    let mut attempted: HashSet<String> = HashSet::new();
     for tree in trees {
         if owned.contains(&tree.digest) {
             continue;
@@ -408,6 +413,9 @@ pub async fn sweep_scratch_once_with_budget(
             continue;
         };
         if now_ms.saturating_sub(modified_ms) < grace_ms {
+            continue;
+        }
+        if !attempted.insert(tree.digest.clone()) {
             continue;
         }
         match check_sweep_bounds(&mut report, started, budget) {
@@ -700,7 +708,17 @@ pub async fn reclaim_session_scratch_for_operator(
         drop(tx);
         return Ok(outcome);
     }
-    let removed = crate::scratch::reclaim_session_scratch_for_operator(digest_hex)?;
+    let removed = match crate::scratch::reclaim_session_scratch_for_operator(digest_hex) {
+        Ok(removed) => removed,
+        Err(crate::scratch::ScratchError::Unreclaimable { reason, .. }) => {
+            // The validator refused the tree. The operator action removes
+            // nothing and reports the reason; a refusal is not a failure,
+            // and the operator needs the reason rather than an error text.
+            outcome.refusal = Some(reason);
+            false
+        }
+        Err(error) => return Err(error.into()),
+    };
     tx.commit_with(SweepError::Store).await?;
     outcome.removed = removed;
     Ok(outcome)
@@ -797,12 +815,7 @@ mod tests {
     /// redirect is thread-local, so concurrent tests never see each other's
     /// tree.
     fn scratch_root(label: &str) -> crate::scratch::TestScratchRoot {
-        let base = std::fs::canonicalize(std::env::temp_dir())
-            .unwrap_or_else(|_| std::env::temp_dir().to_path_buf());
-        crate::scratch::TestScratchRoot::install(base.join(format!(
-            "cg-sweep-{label}-{}",
-            &uuid::Uuid::new_v4().simple().to_string()[..6]
-        )))
+        crate::scratch::isolated_scratch_root(label)
     }
 
     async fn sweep_pool() -> SqlitePool {
@@ -1310,6 +1323,78 @@ mod tests {
         assert!(!root.exists(), "the orphan tree is reclaimed");
     }
 
+    /// The tombstone names the sessions root holds for one digest.
+    fn tombstone_names(sessions_root: &std::path::Path, digest_hex: &str) -> Vec<String> {
+        let prefix = format!(".reclaim-{digest_hex}-");
+        let Ok(entries) = std::fs::read_dir(sessions_root) else {
+            return Vec::new();
+        };
+        let mut names = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// A tree the validator refuses permanently is counted as **refused**,
+    /// not as a failure, and its tombstone keeps the same name across passes.
+    ///
+    /// A refusal arms no pass-level retry: the pass reports zero failures, so
+    /// the sweep does not spin on a tree it will never accept.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_permanently_refused_orphan_is_refused_not_failed_and_keeps_its_name() {
+        let _root = scratch_root("refused-orphan");
+        let pool = sweep_pool().await;
+        let runs = InMemoryAgentRunStore::new();
+        let jobs = InMemoryJobStore::new();
+        let orphan_id = format!("orphan-{}", uuid::Uuid::new_v4());
+        let root = crate::scratch::session_scratch_dir(&orphan_id).expect("create the tree");
+        // The shape a daemon killed mid-`remove_dir_all` leaves behind: the
+        // content is still there, but the owner record is gone. The tree
+        // cannot be proven owned, so the validator refuses it.
+        std::fs::remove_file(root.join(crate::scratch::OWNER_RECORD_NAME))
+            .expect("drop the owner record");
+        std::fs::write(root.join("artifact.bin"), b"hello").expect("write an artifact");
+        backdate_tree(&root, 48 * 60 * 60 * 1000);
+        let sessions_root = root.parent().expect("the sessions root").to_path_buf();
+        let digest_hex = crate::scratch::session_scratch_digest_hex(&orphan_id);
+
+        let mut names_after_first_pass: Option<Vec<String>> = None;
+        for pass in 1..=2 {
+            let report = sweep_scratch_once(
+                &pool,
+                &runs,
+                &jobs,
+                policy(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await;
+
+            assert_eq!(report.failed, 0, "pass {pass} must not fail: {report:?}");
+            assert_eq!(
+                report.refused, 1,
+                "pass {pass} must count the refusal: {report:?}"
+            );
+
+            let names = tombstone_names(&sessions_root, &digest_hex);
+            assert_eq!(
+                names.len(),
+                1,
+                "pass {pass} must leave exactly one tombstone: {names:?}"
+            );
+            match &names_after_first_pass {
+                None => names_after_first_pass = Some(names),
+                Some(previous) => assert_eq!(
+                    previous, &names,
+                    "the tombstone's name must be stable across passes"
+                ),
+            }
+        }
+    }
+
     /// An orphan inside the grace period is left alone: the grace absorbs the
     /// window in which a tree exists before its durable session row is
     /// visible to the sweeper.
@@ -1488,6 +1573,114 @@ mod tests {
         assert!(outcome.removed, "outcome: {outcome:?}");
         assert!(!outcome.leased, "outcome: {outcome:?}");
         assert!(!root.exists(), "the tree is removed");
+    }
+
+    /// An orphan whose owner record is missing and that holds **no entries**
+    /// is already reclaimed: there is nothing left to dispose of, and the
+    /// pass reports no failure.
+    ///
+    /// This is the shape a daemon killed mid-`remove_dir_all` leaves behind,
+    /// and reclaiming it is what makes the reclaim path resumable.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_sweep_reclaims_an_empty_orphan_with_no_owner_record() {
+        let _root = scratch_root("empty-record-less-orphan");
+        let pool = sweep_pool().await;
+        let runs = InMemoryAgentRunStore::new();
+        let jobs = InMemoryJobStore::new();
+        let orphan_id = format!("orphan-{}", uuid::Uuid::new_v4());
+        let root = crate::scratch::session_scratch_dir(&orphan_id).expect("create the tree");
+        std::fs::remove_file(root.join(crate::scratch::OWNER_RECORD_NAME))
+            .expect("drop the owner record");
+        backdate_tree(&root, 48 * 60 * 60 * 1000);
+        let sessions_root = root.parent().expect("the sessions root").to_path_buf();
+        let digest_hex = crate::scratch::session_scratch_digest_hex(&orphan_id);
+
+        let report = sweep_scratch_once(
+            &pool,
+            &runs,
+            &jobs,
+            policy(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
+
+        assert_eq!(report.failed, 0, "report: {report:?}");
+        assert_eq!(report.reclaimed_orphan, 1, "report: {report:?}");
+        assert!(
+            tombstone_names(&sessions_root, &digest_hex).is_empty(),
+            "the reclaimed tree must leave no tombstone behind"
+        );
+    }
+
+    /// The operator disposition removes an empty tree whose owner record is
+    /// missing: there is nothing left to dispose of.
+    #[tokio::test]
+    async fn the_operator_reclaim_removes_an_empty_tree_with_no_owner_record() {
+        let _root = scratch_root("operator-empty-record");
+        let pool = sweep_pool().await;
+        let runs = InMemoryAgentRunStore::new();
+        let jobs = InMemoryJobStore::new();
+        let session_id = create_session(&pool).await;
+        let root = crate::scratch::session_scratch_dir(&session_id).expect("create the tree");
+        std::fs::remove_file(root.join(crate::scratch::OWNER_RECORD_NAME))
+            .expect("drop the owner record");
+        let digest = crate::scratch::session_scratch_digest_hex(&session_id);
+
+        let outcome = reclaim_session_scratch_for_operator(&pool, &runs, &jobs, &digest, true)
+            .await
+            .expect("the reclaim completes");
+
+        assert!(outcome.removed, "outcome: {outcome:?}");
+        assert!(!root.exists(), "the tree is removed");
+    }
+
+    /// The operator disposition refuses a content-bearing tree whose owner
+    /// record is missing, and it says which rule refused it.
+    ///
+    /// The operator path relaxes the **entry-content** refusals only. A tree
+    /// the daemon cannot prove it owns is refused by the operator path too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_operator_reclaim_refuses_a_content_bearing_tree_with_no_owner_record() {
+        let _root = scratch_root("operator-content-record");
+        let pool = sweep_pool().await;
+        let runs = InMemoryAgentRunStore::new();
+        let jobs = InMemoryJobStore::new();
+        let session_id = create_session(&pool).await;
+        let root = crate::scratch::session_scratch_dir(&session_id).expect("create the tree");
+        std::fs::remove_file(root.join(crate::scratch::OWNER_RECORD_NAME))
+            .expect("drop the owner record");
+        std::fs::write(root.join("artifact.bin"), b"hello").expect("write an artifact");
+        let digest = crate::scratch::session_scratch_digest_hex(&session_id);
+
+        let outcome = reclaim_session_scratch_for_operator(&pool, &runs, &jobs, &digest, true)
+            .await
+            .expect("the reclaim completes");
+
+        assert!(!outcome.removed, "outcome: {outcome:?}");
+        assert_eq!(
+            outcome.refusal,
+            Some(crate::scratch::ReclaimRefusal::OwnershipUnverifiable),
+            "the operator must be told which rule refused the tree: {outcome:?}"
+        );
+        assert!(
+            !outcome.reclaimable,
+            "a tree the daemon cannot prove it owns is not reclaimable: {outcome:?}"
+        );
+        // The content is still there: the refusal removed nothing.
+        let sessions_root = root.parent().expect("the sessions root").to_path_buf();
+        let tombstone = tombstone_names(&sessions_root, &digest);
+        assert_eq!(
+            tombstone.len(),
+            1,
+            "the refused tree stays under a tombstone"
+        );
+        let survivor = sessions_root.join(&tombstone[0]);
+        assert!(
+            survivor.join("artifact.bin").exists(),
+            "the refused tree's content must survive: {survivor:?}"
+        );
     }
 
     /// The operator disposition refuses a tree that is still in use.

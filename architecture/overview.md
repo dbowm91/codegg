@@ -577,9 +577,56 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 339 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 92 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 55 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 340 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 94 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 57 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+
+### Count reconciliation — M008 (2026-10-24)
+
+Three code-count rows moved when the managed-agent-scratch M008 line landed its
+corrective pass. *Integration test files* is **339** (`tests/*.rs` +
+`tests/*/*.inc`, with the `tests/common/` helper tree excluded — the count moved
+by one, the new `tests/scheduler_jobs/scratch_record_less_tree.inc`, which
+drives a full sweep pass over a tree whose owner record is missing). *Guard
+scripts (all)* is **93** (`ls scripts/check_*` — the new
+`scripts/check_scratch_reclaim_invariants.py`, which enforces the reclaim
+path's error taxonomy, its single removal routine, the emptiness proof that
+authorises a removal, and the one shared rule the census and the validator
+both use). *CI guard scripts* is **56** (the `ci.yml` list, which gained the
+same guard and its self-test). The quick-only difference is unchanged at
+**14** guards CI does not run: the new guard runs in **both** `verify.sh quick`
+and CI, so it adds no quick-only entry. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — desktop parity merge (2026-10-24)
+
+One code-count row moved when the desktop parity work merged into `main`.
+*Integration test files* is **340** (`tests/*.rs` + `tests/*/*.inc`, with the
+`tests/common/` helper tree excluded — the count moved by one, the new
+`tests/frontend_parity/tui_reconstruction.inc`, which reconstructs a session
+from the TUI's own projection and compares it against the desktop's). *Guard
+scripts (all)* is **93** (`ls scripts/check_*` — unchanged: the desktop parity
+work adds no guard), *CI guard scripts* is **56** (the `ci.yml` list, unchanged),
+and the quick-only difference is unchanged at **14**. The *quick* guard count
+is **70**. Every other code-count row was re-checked against its own listed
+`Source` and is unchanged.
+
+### Count reconciliation — M007-A desktop gate guard (2026-10-24)
+
+Two code-count rows moved when the desktop build and hosted gate line added the
+guard that keeps the desktop tree inside an automated gate. *Guard scripts
+(all)* is **94** (`ls scripts/check_*` — the new
+`scripts/check_desktop_gate_wiring.py`, which fails closed when the hosted
+desktop qualification stops covering the desktop tree: a dispatch-only
+trigger, a path filter that no longer names `apps/desktop/**`, a missing
+`clippy` step for the desktop host, or a missing local entry point).
+*CI guard scripts* is **57** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained the same guard and its self-test). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
+entry. The *quick* guard count is **71**. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
+
 
 ## Feature gates
 

@@ -127,6 +127,18 @@ jobs:
       - name: Daemon working-directory usage guard
         run: python3 scripts/check_daemon_cwd_usage.py
 
+      # The scratch reclaim path decides on four facts — containment, real
+      # directory, ownership, and the owner record — and it removes a tree
+      # only when it holds no entries at all. A reclaim failure that wears the
+      # provisioning text, a removal that skips the owner-record check, and a
+      # report that disagrees with the validator are all silent: they are
+      # wrong answers, not crashes.
+      - name: Scratch reclaim invariants guard (self-test)
+        run: python3 scripts/check_scratch_reclaim_invariants.py --self-test
+
+      - name: Scratch reclaim invariants guard
+        run: python3 scripts/check_scratch_reclaim_invariants.py
+
       # The trusted Git route owns every CodeGG-owned Git child. The
       # hostile-metadata detector is the mediation that refuses a
       # repository which declares a configuration surface the route cannot
@@ -400,6 +412,18 @@ jobs:
 
       - name: Blackboard contract matrix guard self-test
         run: python3 scripts/check_blackboard_contract_matrix.py --self-test
+
+      # The desktop tree is a separate Cargo workspace that the root check
+      # never compiles, so the hosted desktop qualification is the only
+      # automated gate it has. This guard fails closed when that gate
+      # stops covering the desktop tree, and it runs with its self-test:
+      # a guard that cannot be shown to fail on an injected defect is not
+      # evidence.
+      - name: Desktop gate wiring guard (self-test)
+        run: python3 scripts/check_desktop_gate_wiring.py --self-test
+
+      - name: Desktop gate wiring guard
+        run: python3 scripts/check_desktop_gate_wiring.py
 
       - name: Formatting
         run: cargo fmt --check --all

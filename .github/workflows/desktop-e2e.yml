@@ -32,6 +32,14 @@ name: Desktop E2E
 # `permission-list` assertion holds. The product behaviour is unchanged.
 #
 # The triggers are restored with the path filters preserved at the pause.
+#
+# The checks below run through apps/desktop/scripts/verify-desktop.sh — the
+# one local entry point that owns the desktop step list — so the hosted lane
+# and the maintainer's machine cannot drift. The script is what a contributor
+# runs before pushing; this workflow is what runs it for them. The lane's
+# lint gate is also stated literally in the host-checks step, because that
+# is where the gate guard reads it from; the script proves the two copies
+# still agree.
 
 on:
   push:
@@ -119,8 +127,15 @@ jobs:
           git config --global user.name "CI Test"
           git config --global user.email "ci@test.example.com"
 
+      # ── The desktop gate ────────────────────────────────────────────────
+      # The checks below run through apps/desktop/scripts/verify-desktop.sh:
+      # one entry point owns the step list, so the hosted lane and the
+      # maintainer's machine (the same script, run locally) cannot drift.
+      # The script prints its own step-by-step log and says which steps it
+      # skipped and why.
+
       - name: Desktop production boundary guard
-        run: ./scripts/check-desktop-boundary.sh
+        run: apps/desktop/scripts/verify-desktop.sh boundary
 
       - name: Build root daemon binary
         # The root workspace strips debuginfo in BOTH the dev and test cargo
@@ -131,36 +146,35 @@ jobs:
         run: cargo build --locked --config 'profile.dev.strip="none"'
 
       - name: Desktop renderer checks
-        working-directory: apps/desktop
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-          npm run bindings:check
-          npm run build
+        run: apps/desktop/scripts/verify-desktop.sh renderer
 
       # tauri.conf.json bundles binaries/codegg as a resource; the Tauri
       # build script requires it to exist. Stage this revision's binary
       # (gitignored; C001 operator contract).
       - name: Stage daemon resource for the desktop bundle
-        working-directory: apps/desktop
         env:
           CODEGG_DAEMON_EXECUTABLE: ${{ github.workspace }}/target/debug/codegg
-        run: npm run stage:daemon
+        run: apps/desktop/scripts/verify-desktop.sh stage-daemon
 
       - name: Desktop host checks (production configuration)
         run: |
-          rustup run 1.90.0 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
-          rustup run 1.90.0 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+          # This lane's lint gate, in the pinned toolchain. The script's
+          # `host` phase runs the same three host commands (test, fmt and
+          # this lint) and proves they still agree with this file, so the
+          # local gate and this lane cannot drift.
+          rustup run 1.90.0 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+          apps/desktop/scripts/verify-desktop.sh host
 
       # Builds the fixture helper plus the desktop-e2e feature app binary
       # (the only configuration containing the embedded WebDriver server),
-      # then runs the visible-window trajectory under a fake display.
+      # then runs the visible-window trajectory under a fake display (the
+      # script uses xvfb when the runner has no display of its own, and
+      # skips the step with the reason when it has none at all).
       # CODEGG_DAEMON_EXECUTABLE pins the daemon to this revision.
       - name: Built-app WebDriver trajectory
         env:
           CODEGG_DAEMON_EXECUTABLE: ${{ github.workspace }}/target/debug/codegg
-        run: xvfb-run -a apps/desktop/e2e/run-e2e.sh
+        run: apps/desktop/scripts/verify-desktop.sh e2e
 
       - name: Upload E2E logs
         if: always()

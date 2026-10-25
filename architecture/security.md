@@ -586,8 +586,13 @@ nothing, opens no file for reading, and never follows a link; only
 `symlink_metadata` and directory listing are used. Its report carries no
 absolute path, no file name, no file content, and no session identity: the
 digest is one-way by design. The census reuses the reclaim validator's own
-entry rule, so a report cannot claim a tree is reclaimable when the validator
-would refuse it. That verdict is **tri-state**: a tree the walk did not
+rule, so a report cannot claim a tree is reclaimable when the validator
+would refuse it. That rule includes the **owner record**: a tree whose record
+is missing and that holds content is reported as not reclaimable, with the
+reason `ownership_unverifiable`; a tree whose record is missing and that holds
+no entries at all is reported as reclaimable, because the reclaim path would
+remove it. The verdict is derived from the validator's rule rather than
+restated beside it, so the two cannot drift apart. That verdict is **tri-state**: a tree the walk did not
 finish reading, or one that vanished while it was being read, carries no
 verdict at all rather than a false "reclaimable" — a partial walk can never
 claim a tree the validator has not been shown to accept. The walk is bounded
@@ -623,6 +628,23 @@ not become a busy loop. The policy is configurable (`scratch.enabled`,
 `scratch.orphan_grace_hours`), and every value is clamped upward at its floor
 rather than rejected. The daemon reads the policy once, at construction, so a
 policy change needs a daemon restart.
+**The record-less tree (M008).** A daemon can be killed between creating a
+scratch tree and its owner record reaching disk, or in the middle of removing
+one. Both leave a tree whose owner record is missing, and they are different
+shapes. A tree that holds **no entries at all** is already reclaimed: there
+is nothing left to dispose of, and the removal happens inside the owner-only
+sessions root, so the reclaim path removes it and the pass reports no
+failure. A tree that holds **content** cannot be proven owned, so the
+validator refuses it with the reason `ownership_unverifiable` — by the
+automatic path and by the operator path alike — and removes nothing. A
+refusal is counted as a **refusal**, not as a failure, so it arms no
+pass-level retry, and the tree's tombstone keeps the **same name** across
+passes: a pass that ends in a refusal leaves the sessions root's set of
+tombstone names unchanged, so the next pass reaches the same tree rather than
+a renamed copy of it. A digest is attempted at most once per pass, so a tree
+that has both a live tree and a tombstone is reported once. A reclaim failure
+is never reported as a provisioning failure: the error taxonomy names the
+operation that failed, and an error that escapes a reclaim says so.
 **Operator disposition (M007).** A tree the automatic path refuses — one
 holding a planted symlink or a non-regular entry — stays parked under its
 tombstone, visible to `codegg daemon scratch-usage`.
@@ -632,7 +654,11 @@ operator path relaxes the **entry-content** refusals only — a link is removed
 by name, and `remove_dir_all` does not follow symbolic links, so the link's
 target is untouched. The ownership check, the containment check, and the
 owner-record check are unchanged, so the operator path can only ever remove a
-tree the daemon itself created and still owns. The lease is honoured exactly
+tree the daemon itself created and still owns. A tree whose owner record
+is missing is therefore removed by the operator path only when it holds no
+entries at all; a content-bearing one is refused with the reason
+`ownership_unverifiable`, and the operator command reports that reason
+instead of removing anything. The lease is honoured exactly
 as the sweep honours it. Every attempt is audited as `scratch_reclaim`, with
 bounded metadata: the digest, the entry and byte counts, the verdict, the
 refusal reason, and the outcome. It is served on the local daemon socket only.

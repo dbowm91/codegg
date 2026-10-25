@@ -22,14 +22,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
-use std::sync::OnceLock;
 
-use parking_lot::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use codegg::core::instance::{connect_or_start_daemon, ConnectOrStartOptions, DaemonPaths};
 use tokio::process::Command;
 use tokio::time::sleep;
+
+use super::common::isolated_env::IsolatedEnv;
 
 fn temp_root(label: &str) -> PathBuf {
     // The scratch root refuses a symlinked path component, and on macOS the
@@ -64,86 +64,6 @@ fn codegg_binary() -> PathBuf {
         }
     }
     PathBuf::from("./target/debug/codegg")
-}
-
-/// An isolated environment: its own `HOME` (so the scratch cache root is
-/// isolated), its own daemon home, and its own data home.
-///
-/// The XDG variables are isolated too. On Linux they are what `dirs` reads
-/// for the cache, config, data, and state roots, and a runner that sets
-/// them would otherwise give two tests in this binary the **same** config
-/// directory — so a config file one test wrote would silently change what
-/// another test's daemon does.
-struct IsolatedEnv {
-    _lock: MutexGuard<'static, ()>,
-    old_home: Option<std::ffi::OsString>,
-    old_daemon_home: Option<std::ffi::OsString>,
-    old_data_home: Option<std::ffi::OsString>,
-    old_xdg_cache: Option<std::ffi::OsString>,
-    old_xdg_config: Option<std::ffi::OsString>,
-    old_xdg_data: Option<std::ffi::OsString>,
-    old_xdg_state: Option<std::ffi::OsString>,
-}
-
-impl IsolatedEnv {
-    fn new(root: &Path) -> Self {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock();
-        let old_home = std::env::var_os("HOME");
-        let old_daemon_home = std::env::var_os("CODEGG_DAEMON_HOME");
-        let old_data_home = std::env::var_os("CODEGG_DATA_HOME");
-        let old_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
-        let old_xdg_config = std::env::var_os("XDG_CONFIG_HOME");
-        let old_xdg_data = std::env::var_os("XDG_DATA_HOME");
-        let old_xdg_state = std::env::var_os("XDG_STATE_HOME");
-        let home = root.join("home");
-        std::env::set_var("HOME", &home);
-        std::env::set_var("CODEGG_DAEMON_HOME", root.join("daemon"));
-        std::env::set_var("CODEGG_DATA_HOME", root.join("data"));
-        // Every XDG root is redirected into the isolated home, so the daemon
-        // resolves its config, cache, data, and state roots the same way the
-        // test process does — whatever the runner's environment says.
-        for (key, leaf) in [
-            ("XDG_CACHE_HOME", "cache"),
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_DATA_HOME", "data"),
-            ("XDG_STATE_HOME", "state"),
-        ] {
-            let path = home.join(leaf);
-            std::fs::create_dir_all(&path).ok();
-            std::env::set_var(key, path);
-        }
-        std::fs::create_dir_all(&home).ok();
-        Self {
-            _lock: lock,
-            old_home,
-            old_daemon_home,
-            old_data_home,
-            old_xdg_cache,
-            old_xdg_config,
-            old_xdg_data,
-            old_xdg_state,
-        }
-    }
-}
-
-impl Drop for IsolatedEnv {
-    fn drop(&mut self) {
-        for (key, value) in [
-            ("HOME", self.old_home.take()),
-            ("CODEGG_DAEMON_HOME", self.old_daemon_home.take()),
-            ("CODEGG_DATA_HOME", self.old_data_home.take()),
-            ("XDG_CACHE_HOME", self.old_xdg_cache.take()),
-            ("XDG_CONFIG_HOME", self.old_xdg_config.take()),
-            ("XDG_DATA_HOME", self.old_xdg_data.take()),
-            ("XDG_STATE_HOME", self.old_xdg_state.take()),
-        ] {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
 }
 
 /// The sessions root the daemon will census, under the isolated `HOME`.

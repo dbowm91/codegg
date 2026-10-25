@@ -197,6 +197,18 @@ pull requests again, with the path filters the pause preserved verbatim in the
 workflow's own header. The workflow name no longer carries the "(paused)"
 marker.
 
+**Where this lane sits in the M007 line.** The owner directed that the desktop
+carry a TUI-parity GUI — a main chat region with a side panel, the same `/`
+commands the TUI exposes, and an editor — keyboard-first and fully operable by
+mouse. That work is the **M007** line, decomposed M007-A…M007-E at
+`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md#milestone-007--desktop-gui-parity-line`,
+and `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` was
+**accepted on 2026-10-24** for the one point in it that changes who may do
+what. The restoration described above is M007-A's work; what M007-A still
+owes is the desktop Rust host's automated gate — the `clippy -D warnings` step
+the host has never had — and a local entry point that runs the desktop's own
+checks. A green lane is a restored premise, not a completed gate.
+
 The trajectory, the spec files, the `desktop-e2e` Cargo feature and its
 authority boundary, and the `check-desktop-boundary.sh` guard all stand; what
 changed is the *hosted qualification*, which now runs again against a lane
@@ -212,6 +224,16 @@ was asked on the **second** attempt, which is the branch the local macOS run
 never exercises. The mock's insist plus the spec's answer-every-permission
 loop is therefore proven to converge on the platform that actually produces
 the redirect offer.
+
+The macOS branch of the same failure was reproduced locally, before the fix
+landed, and it behaved exactly as the harness analysis above predicts: the
+lifecycle phase **5 passing**, the autostart phase **2 passing**, and the
+session phase **3 passing, 4 failing**, with every one of the four failures an
+absent element (`[data-testid="projection-state"]`,
+`[data-testid="control-refresh-button"]`, `[data-testid="route-session"]`,
+`[data-testid="connection-generation"]`). The turn never reached a provider,
+because the phase's fake `HOME` was not resolved physically and therefore sat
+under the `/var` → `/private/var` symlink.
 
 Before that run, the desktop foundation's evidence was the `CI / verify` lane
 plus the local `apps/desktop` host and renderer checks — which the root
@@ -317,7 +339,43 @@ live-turn leg in the M004 `session` phase above, which asserts the typed
 `model_unselected` fail-closed path before arming a loopback mock model
 server and then a real assistant turn with a denied write.
 
+**The editor and the graphical surfaces are deferred but now planned.** The
+M007 line delivers, in order: the desktop build and hosted gate (M007-A), a
+main chat region with a dockable side panel (M007-B), keyboard-first input
+with mouse parity (M007-C), the shared `/` command surface (M007-D,
+unblocked by ADR-0052's acceptance on 2026-10-24), and a first-party editor
+over the shared `DocumentController` and the native LSP read surface
+(M007-E). Until those milestones land, none of them is implemented and this
+list is accurate.
+
+The renderer has gained a panel set over a projected session — activity, git,
+skills, subagents, tasks, tool detail, transcript and turn summary — and now
+renders `projection.messages`, `projection.transcript`, `projection.subagents`,
+`projection.jobs`, `projection.todos` and `projection.pendingPermissions`. It
+is still a single-`App()` component in one 760-pixel column with **no keyboard
+handling at all**, and it is still a control-plane console rather than a chat
+application. **M007-B** is what splits that column into a main chat region and
+a dockable side panel; **M007-C** is what gives it a keymap; **M007-D** is
+what gives it the `/` surface; **M007-E** is what gives it the editor.
+
+**A third-party editor engine remains deferred.** Monaco and equivalents are
+out of scope for M007: adopting one changes the renderer's Content Security
+Policy, its worker model, and the bundle and signing boundary that §8
+currently pins to local assets only, so it needs its own ADR.
+
 ## Developer commands
+
+**One entry point runs the desktop's gate.** From the repository root,
+`apps/desktop/scripts/verify-desktop.sh` runs, in order: the desktop boundary
+guard, the renderer checks (`npm ci`, `npm run typecheck`, `npm test`,
+`npm run bindings:check`, `npm run build`), the daemon staging, the host
+checks (`cargo test --lib`, `cargo fmt --check`, `cargo clippy --all-targets
+--locked -- -D warnings`, all on the pinned 1.90.0 toolchain), and — only when
+a display is available — the built-app trajectory. It prints which steps it
+skipped and why. The hosted lane calls the same script, phase by phase, so
+the two cannot drift; the script fails closed if the workflow's own lint line
+and its copy disagree. Each phase is individually invocable
+(`verify-desktop.sh boundary`, `renderer`, `stage-daemon`, `host`, `e2e`).
 
 From `apps/desktop`, run `npm ci`, `npm run typecheck`, `npm test`,
 `npm run bindings:check`, and `npm run build`. With Tauri system libraries
