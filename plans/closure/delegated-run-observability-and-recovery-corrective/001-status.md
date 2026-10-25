@@ -996,3 +996,78 @@ byte-identical to `main`'s, and `main`'s own `CI` job on the commit that
 introduced it is green, because the hosted runner is Linux. The gate is
 `main`'s to tighten — `#![cfg(target_os = "linux")]` — and it is not folded
 into this line.
+
+## 19. The sixth and seventh merges with `main` (2026-10-25)
+
+`origin/main` advanced twice more while this line waited to land.
+
+**The sixth merge** brought `69ceec814` — PRs #195, #197 and #198, the M007-D
+daemon-owned command catalog under ADR-0052, its closure records, and the
+owner-directed corrective registrations. **Three files conflicted, and all
+three were documentation**: `AGENTS.md`, `architecture/overview.md` and
+`docs/comment-budget.toml`. Every code file merged cleanly, because the two
+lines' code sets do not overlap at all — `main`'s desktop command-parity work
+touches no file this line owns, and this line's delegated-run work touches no
+file `main`'s owns. The conflicted values were published counts and a
+comment-budget manifest, and every one of them was resolved by **measuring the
+merged tree** rather than by taking a side.
+
+Four rows moved, each re-measured against its own listed `Source`:
+
+- *`codegg-core` modules* is **58**. `main` added `command_catalog` and
+  `frontend_action`; this line added its two delegated-run modules. **Both
+  parents measure 56**, and the merged tree is their union.
+- *Integration test files* is **351** — the base **342**, plus this line's
+  **eight** and `main`'s **one**, with no overlap.
+- *Guard scripts (all)* is **102** — the base **97**, plus this line's **three**
+  and `main`'s **two**, with no overlap.
+- *CI guard scripts* is **68**, and `AGENTS.md`'s published counts moved to
+  **82** for `quick` and **68** for CI.
+
+The **quick-only difference is unchanged at 14**, re-derived rather than
+carried over: it is the same fourteen names, because all **eight** of the two
+lines' guard *entries* added to the two lanes run in **both** `quick` and CI —
+`main`'s two new scripts, this line's three new delegated-run guards, and this
+line's three pre-existing projection guards newly wired into both lanes. The
+quick lane's `==>` lines moved from **135** to **139** (`run_guards` **135**,
+`run_quick` **4**).
+
+`main`'s own M007-D section in `architecture/overview.md` records
+*`codegg-core` modules* as **56**. That is `main`'s measurement of `main`'s
+tree and stands as the record of that milestone; the Verified-counts row holds
+the merged tree's measured **58**. The section is not rewritten — the two
+lines' reconciliation sections are kept, and a new one records this
+reconciliation.
+
+The comment budget was re-banked on the merged tree, after `cargo fmt --all` —
+which produced **no** edit, `main`'s merged code being already formatted: the
+merged tree measures **127,700** comment lines, **1,127,120** words and a
+**0.1341** recorded ceiling, with the bank diff confined to the files either
+line touched plus the global block.
+
+`plans/registry.md` auto-merged coherently. Its `## Source verification`
+section is newest-first, and the merged tree carries both sides' dated entries
+in that order, with no duplication and no loss.
+
+**The seventh merge** brought `02030facc` (PR #199, plan 017's owner
+decisions). It touched three documentation files and nothing else — a closure
+record, the desktop frontend roadmap, and `plans/registry.md`. **No count
+moved**, so no published figure changed and no re-measurement was needed. The
+merge auto-merged cleanly.
+
+**This pass was scoped to the documentation.** No Rust test suite was re-run
+locally for either merge: both are documentation-only reconciliations that
+bring in `main`'s own already-green code, and the hosted `Workspace tests`
+sweep on the new head is the authority on that code. `scripts/verify.sh quick`
+— the canonical gate — **passed with exit 0** on the final committed tree, and
+every published row was re-checked against a fresh
+`python3 scripts/measure_overview_counts.py`: **0 numeric mismatches across
+all 25 rows**.
+
+**The hosted lane is green on every job for these merges.** The head
+`624fde51f` ran `CI` / `verify` (run `40205331523`, 21m33s), `Windows process
+launcher` (run `40205331618`, 30m52s), `Desktop E2E` (run `40205331550`,
+15m24s), and the `Linux M004 process and IPC qualification` workflow —
+`process-ipc` (30m56s) and `restricted-userns-fails-closed` (14m37s), both on
+run `40205331480`. GitGuardian passed; `git-cost-pilot` and
+`c014-negative-reproduction` are skipped by design.
