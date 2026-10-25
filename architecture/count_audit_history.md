@@ -726,7 +726,101 @@ composer's files and the branch's own files were already banked at their
 current values.
 
 
-### Tenth amendment — 2026-10-24, delegated-run corrective, merge reconciliation with `main` (M008)
+## 2026-10-24 — C005's diff-consumer runtime target
+
+This is **not** a reconciliation: `main` did not advance, and no row moved
+because of an advance. One row moved because of a change on this line — the
+standalone integration target `tests/git_consistency_consumers_c005.rs`, which
+closes the Linux sandbox C005 closure record's last open finding.
+
+*Integration test files* moved **338 → 339**, re-measured on the tree with
+`python3 scripts/measure_overview_counts.py` rather than incremented. The
+other 24 rows were confirmed unchanged by measurement. The new target is a
+root-package integration test file, so the measure is unchanged; what changed
+is the population it counts.
+
+Two things moved with the row and are recorded here because both are gates
+rather than prose:
+
+- **`docs/test-ownership.toml` gained the `root_git_consistency_consumers_c005`
+  group.** Without it `scripts/check_test_ownership.py` fails with *"test
+  target codegg/git_consistency_consumers_c005 exists but no group owns it"* —
+  an unowned target can never be selected by a scoped run, so the guard's
+  failure is the point rather than an obstacle.
+- **The comment budget was re-banked on this tree.** The new target crosses
+  the unlisted floor, so it is listed in `docs/comment-budget.toml` with its
+  measured ceiling. On the tree this section describes, the corpus measured
+  **124,362** comment lines — **below** the 124,865 pre-reduction baseline,
+  the same relation the fourth, fifth and sixth reconciliations recorded.
+
+  That relation **does not survive the seventh reconciliation**, and the
+  tenth amendment below says so with the numbers. `main`'s subsequent work —
+  the desktop parity and M008 lines — took its own tree to **125,161**
+  comment lines, which is already **above** the 124,865 reference, and the
+  merged tree measures **125,212**. The baseline is a historical reference
+  from the C007 comment-reduction workstream, not a guard: no script, the
+  budget file, or the CI workflow enforces it. What the ratchet *does*
+  enforce is that no recorded ceiling may be exceeded, and the re-bank records
+  the merged tree's measurement exactly as measured.
+
+### Tenth amendment — 2026-10-24, M005 writer containment corrective, seventh reconciliation with `main`
+
+`origin/main` advanced again, to `4aa07fa72`, which carried PRs #184, #187, #188, #189 and #190 — the delegated-run line's reconciliation, the desktop parity merge, the M007-A desktop gate guard, and the managed-agent-scratch M008 corrective. The branch had to be reconciled with it, and two files conflicted.
+
+Three rows moved, each re-measured against its own listed `Source` in the merged tree rather than carried over from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 340 (main) / 339 (branch) | **341** | The union. `main` added `tests/frontend_parity/tui_reconstruction.inc` and the managed-agent-scratch tree's `tests/scheduler_jobs/scratch_record_less_tree.inc`; this branch added `tests/git_consistency_consumers_c005.rs`. |
+| Guard scripts (all) | 93 (main) / 92 (branch) | **94** | The union. `main` added `scripts/check_scratch_reclaim_invariants.py` and `scripts/check_desktop_gate_wiring.py`; this branch added none. |
+| CI guard scripts | 56 (main) / 55 (branch) | **57** | The union of the two workflows' distinct `scripts/check_*` names. Both of `main`'s new guards run in **both** `quick` and CI, so the *quick runs 14 guards CI does not* difference is unchanged at **14**, and the *quick* guard count is **71**. |
+
+`AGENTS.md`'s published counts moved with them — **71 quick / 57 CI** — and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow, not carried over. The quick lane's `==>` lines moved from 113 to **117** (`run_guards` **113**, `run_quick` **4**), because `main` added guard steps and their self-tests.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment budget's relation to the pre-reduction baseline changed, and it is worth stating plainly.** The corpus is a ratchet — no recorded ceiling may be exceeded — and the merged tree measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio, which the re-bank records exactly as measured.
+
+The **124,865** figure is the pre-reduction corpus from the C007 comment-reduction workstream. It is a **historical reference, not a guard**: no script, no entry in `docs/comment-budget.toml`, and no CI step enforces it. The corpus crossed it before this merge — `main`'s own tree banked **125,161** before this change, already **296 lines above** the reference — so this merge did not cross it and did not cause it. The fourth, fifth, sixth and ninth amendments each recorded the corpus *below* the baseline because it *was* below on those trees; that relation simply no longer holds now that `main`'s subsequent lines have spent more comment lines than the reduction freed. Recording it as still-below would be false, so it is recorded as measured.
+
+**`main` and this branch share the fence.** `main`'s `2222697d6` — *"carry a git read's consistency class to the client"* — was written against the guard this line merged, and it **propagates** the Phase 3 git read's class rather than admitting it, because the desktop's git read is a display read rather than a generation-bound consumer. Its commit message notes that the desktop's status and branch reads consult refs and the index rather than the object store, so their composite class is `NoObjectGeneration` — a class the fence refuses outright. That is the same refusal the new standalone integration target asserts from outside the crate, and the two agree.
+
+### Eleventh amendment — 2026-10-24, M005 writer containment corrective, eighth reconciliation with `main`
+
+`origin/main` advanced again, to `6e8a6bb60`, which carried PRs #185 and #191 — the desktop chat region and side panel (M007-B) and the panel layer's authority guard. Nothing conflicted textually, but the auto-merge produced **two** copies of the three count rows in `architecture/overview.md` — this branch's and `main`'s — which is the shape a count table takes when both sides moved the same rows without the same values. The duplicate was collapsed to one row set carrying the merged tree's measurement.
+
+Two rows moved, each re-measured against its own listed `Source` in the merged tree rather than carried over from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Guard scripts (all) | 94 | **95** | `main` added `scripts/check_desktop_panel_authority.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 57 | **58** | The CI workflow gained the same guard and its self-test. The measure is unchanged. |
+| Integration test files | 341 | **341** | Unchanged, and worth stating rather than leaving implicit: `main`'s M007-B work added no integration test file. |
+
+The *quick* guard count moved **71 → 72**, and the *quick runs 14 guards CI does not* difference is unchanged at **14**: the new guard runs in **both** `quick` and CI, so it adds no quick-only entry. The quick lane's `==>` lines moved from 117 to **119** (`run_guards` **115**, `run_quick` **4**). `AGENTS.md`'s published counts moved with them, to **72 quick / 58 CI**, and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow rather than carried over.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment corpus did not move, and the relation to the 124,865 reference did not change.** The merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio; the re-bank moved no per-file ceiling, because `main`'s new commits added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the tenth amendment already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
+
+### Twelfth amendment — 2026-10-25, M005 writer containment corrective, ninth reconciliation with `main`
+
+`origin/main` advanced again, to `cb4ceed9d`, which carried PRs #192 and #194 — the desktop keyboard-first input model (M007-C) and the desktop editor surface (M007-E). One file conflicted: `architecture/overview.md`, in the three count rows.
+
+Two rows moved, each re-measured against its own listed `Source` in the merged tree rather than carried over from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Guard scripts (all) | 95 (branch) / 95 (main) | **96** | The union: `main` added `scripts/check_desktop_editor_surface_authority.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 58 (branch) / 58 (main) | **59** | The union of the two workflows' distinct `scripts/check_*` names. The measure is unchanged. |
+| Integration test files | 341 (branch) / 340 (main) | **341** | The union: this branch's `tests/git_consistency_consumers_c005.rs`. `main`'s two desktop milestones added no integration test file. |
+
+The *quick* guard count moved **72 → 73**, and the *quick runs 14 guards CI does not* difference is unchanged at **14**: the new guard runs in **both** `quick` and CI, so it adds no quick-only entry. The quick lane's `==>` lines moved from 119 to **121** (`run_guards` **117**, `run_quick` **4**). `AGENTS.md`'s published counts moved with them, to **73 quick / 59 CI**, and were re-derived from `scripts/verify.sh quick`'s `run_guards` block and the CI workflow rather than carried over.
+
+Every other row was **confirmed unchanged** by measurement, not by assumption: architecture docs 92, distinct production tool names 75, tool source files 83, LSP server definitions 39, `codegg-core` modules 54, `AppEvent` variants 61, `CoreRequest` variants 268 (242 struct + 26 unit), `CoreResponse` variants 176 (175 struct + 1 unit), `CoreEvent` variants 92, `ProjectionEvent` variants 47, authorized operations 262, identity newtypes 19, built-in slash commands 169, built-in agents 10, bundled themes 50, TUI state modules 33 (34 `.rs` files incl. `mod.rs`), database tables 95 statements / 91 tables, storage layout version 88, Git operation variants 54, Git risk classes 11, and workspace member crates 11 (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`** — and it is named here rather than left implicit, because this is the row the fourth reconciliation had to qualify with a split note.
+
+**The comment corpus did not move.** The merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio; the re-bank moved no per-file ceiling, because `main`'s two desktop milestones added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the tenth amendment already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
+### Thirteenth amendment — 2026-10-24, delegated-run corrective, merge reconciliation with `main` (M008)
 
 Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
 the delegated-run corrective branch moved three code-count rows, because both
@@ -763,7 +857,7 @@ re-bank raised the global block and moved only the per-file ceilings of files
 `src/core/daemon_scratch.rs` — so the bank diff stays confined to touched
 files plus the global block, as the ratchet requires.
 
-### Eleventh amendment — 2026-10-25, delegated-run corrective, third reconciliation with `main`
+### Fourteenth amendment — 2026-10-25, delegated-run corrective, third reconciliation with `main`
 
 `origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
 surface), which carried the desktop parity line's three new guards and its own
@@ -804,3 +898,48 @@ only the per-file ceilings of files **either** line touched — `main`'s
 `src/core/{daemon,daemon_family,daemon_reads,tests/git_fixture}.rs`,
 `src/scratch.rs` and the two `tests/frontend_parity/` files — so the bank diff
 stays confined to touched files plus the global block, as the ratchet requires.
+
+### Fifteenth amendment — 2026-10-25, delegated-run corrective, fourth reconciliation with `main`
+
+`origin/main` advanced to `682ae762a` (PR #193, the contained-worktree C008
+line) and the delegated-run corrective branch was merged with it. That line
+added **one** integration test file and **no** guard, so only one of the three
+rows moved:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 348 | **349** | `main`'s `tests/git_consistency_consumers_c005.rs`, the C005 diff-consumer fence's runtime target. |
+| Guard scripts (all) | 99 | **99** | Unchanged. The measure is `scripts/check_*`, unchanged, and PR #193 added no guard. |
+| CI guard scripts | 65 | **65** | Unchanged. PR #193 added no guard, so the CI surface did not move either. |
+| `AGENTS.md`'s published counts | 79 quick / 65 CI | **79 quick / 65 CI** | Unchanged, and therefore needing no correction at the source. |
+
+The **quick-only difference is unchanged at 14**, re-derived by differencing
+the guards `run_guards()` names against the guards `.github/workflows/ci.yml`
+names rather than carried over.
+
+**`main`'s duplicated count rows were collapsed.** `origin/main`'s own copy of
+`architecture/overview.md` carried the three count rows **twice** — once as
+341 / 96 / 59 and again as 340 / 96 / 59 — a merge artifact from PR #193. The
+merged tree carries **one** block holding the merged tree's measured values.
+This is `main`'s defect, corrected here as a consequence of the merge; this
+branch made no change to `main`'s content.
+
+**The amendment ordinals were made unique.** `main` and this branch had each
+appended an amendment numbered *tenth* after their common ninth — `main`'s is
+the M005 writer containment corrective's seventh reconciliation, this branch's
+is the delegated-run corrective's M008 merge reconciliation. `main`'s three
+amendments keep their published ordinals, because `main`'s own later text
+refers to "the tenth amendment" **by that name** and renaming it would rewrite
+a published record. This branch's two amendments were renumbered *tenth* →
+**thirteenth** and *eleventh* → **fourteenth**, so the sequence is unique and
+continues after `main`'s twelfth. The renumbering changes no recorded
+measurement: every figure, guard count and comment-budget value in the two
+renamed sections is unchanged.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: the merged tree measures **126,430** comment lines, **1,115,780**
+words and a **0.1338** recorded ceiling. The re-bank raised the global block
+and moved only the per-file ceilings of files **either** line touched — the
+C008 line's own `tests/git_consistency_consumers_c005.rs` and the files this
+branch's previous reconciliation had already banked — so the bank diff stays
+confined to touched files plus the global block.
