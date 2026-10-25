@@ -972,7 +972,26 @@ mod tests {
             &self,
             request: RequestEnvelope<CoreRequest>,
         ) -> Result<CoreResponse, crate::error::AppError> {
-            Ok(match request.payload {
+            // M007-D: the expanded detail fetch is daemon-owned, so it
+            // arrives as the command execution. The daemon builds the inner
+            // request from the scope and the argument, and the fake
+            // resolves it with the daemon's own builder — so the request it
+            // answers is the daemon's request, not a copy of it.
+            let (payload, execute) = match request.payload {
+                CoreRequest::CommandExecute { request: execute } => {
+                    match crate::tui::command_route::inner_request_for_test(&execute) {
+                        Some(inner) => (inner, Some(execute)),
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "unsupported_in_test".to_string(),
+                                message: format!("{} has no daemon row", execute.command_id),
+                            })
+                        }
+                    }
+                }
+                payload => (payload, None),
+            };
+            let response = match payload {
                 CoreRequest::WorkspaceDashboard { .. } => {
                     self.dashboard_requests.fetch_add(1, Ordering::SeqCst);
                     CoreResponse::WorkspaceDashboard {
@@ -996,6 +1015,12 @@ mod tests {
                     code: "unsupported_in_test".to_string(),
                     message: "fake dashboard client".to_string(),
                 },
+            };
+            Ok(match execute {
+                Some(execute) => {
+                    crate::tui::command_route::command_execute_response_for_test(&execute, response)
+                }
+                None => response,
             })
         }
 

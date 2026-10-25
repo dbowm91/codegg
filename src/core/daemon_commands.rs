@@ -52,7 +52,7 @@ use serde_json::json;
 
 use codegg_core::run_store::{
     ActualBackend, BackendRecord, PlannedBackend, RiskRecord, RunCompletion, RunDraft,
-    RunInvocation, RunKind, RunOwnership, RunStatus,
+    RunInvocation, RunKind, RunOwnership, RunStatus, RunStore,
 };
 
 /// The command identity is not in the catalog.
@@ -873,18 +873,37 @@ impl CoreDaemon {
             Some(CommandEffect::Ready(_)) => {}
         }
 
-        let Some(store) = self.run_store.as_ref() else {
-            // Fail closed: without a run store the execution would be
-            // unaudited, and an unaudited daemon effect is not permitted.
-            return Ok(refusal(
-                &request.command_id,
-                REFUSAL_RUN_STORE_UNAVAILABLE,
-                "the daemon cannot record the run for this command".to_string(),
-                started_at_ms,
-            ));
+        // M007-D: the daemon audits every daemon-effect command as a
+        // canonical `Run` (ADR-0052), and the run lands in the
+        // **workspace's own** run store — `<workspace_root>/.codegg/runs`,
+        // the same store the tools write to and the work-plan binding
+        // reads. An injected store overrides that root, so a test can
+        // audit in memory.
+        //
+        // Fail closed: without a store the execution would be unaudited,
+        // and an unaudited daemon effect is not permitted.
+        let workspace_root = self.command_workspace_root(&request.scope).await;
+        let workspace_store;
+        let store: &dyn RunStore = match self.run_store.as_ref() {
+            Some(store) => store.as_ref(),
+            None => {
+                if workspace_root.as_os_str().is_empty() {
+                    return Ok(refusal(
+                        &request.command_id,
+                        REFUSAL_RUN_STORE_UNAVAILABLE,
+                        "the command's workspace could not be resolved, so its run cannot be \
+                         recorded"
+                            .to_string(),
+                        started_at_ms,
+                    ));
+                }
+                workspace_store = codegg_core::run_store::FsRunStore::new(
+                    crate::work_plan_repository_binding::run_store_root(&workspace_root),
+                );
+                &workspace_store
+            }
         };
 
-        let workspace_root = self.command_workspace_root(&request.scope).await;
         let draft = RunDraft {
             kind: RunKind::Command,
             invocation: RunInvocation {

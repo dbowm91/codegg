@@ -60,6 +60,54 @@ pub fn refusal_parts(result: &codegg_protocol::core::CommandExecuteResultDto) ->
     }
 }
 
+/// Resolve a command execution to the request the daemon would run.
+///
+/// M007-D: the daemon builds the inner request from the scope and the
+/// argument, so a test double that answers a command execution answers the
+/// **daemon's** request rather than a copy of it. A double that parses the
+/// argument itself can drift from the daemon's row; this cannot.
+#[cfg(test)]
+pub(crate) fn inner_request_for_test(request: &CommandExecuteRequestDto) -> Option<CoreRequest> {
+    let ctx = crate::core::daemon_commands::CommandContext {
+        project_id: &request.scope.project_id,
+        workspace_id: &request.scope.workspace_id,
+        session_id: request.scope.session_id.as_deref(),
+        argument: &request.argument,
+    };
+    match crate::core::daemon_commands::build_inner_request(
+        &request.command_id,
+        &request.form,
+        &ctx,
+    ) {
+        Some(crate::core::daemon_commands::CommandEffect::Ready(inner)) => Some(*inner),
+        _ => None,
+    }
+}
+
+/// Wrap an inner response the way the daemon's executor does.
+///
+/// The daemon's executor returns the inner response verbatim, so a double
+/// that wraps its answer this way is indistinguishable from the daemon.
+#[cfg(test)]
+pub(crate) fn command_execute_response_for_test(
+    request: &CommandExecuteRequestDto,
+    inner: CoreResponse,
+) -> CoreResponse {
+    CoreResponse::CommandExecute {
+        result: codegg_protocol::core::CommandExecuteResultDto {
+            run_id: "run-1".to_string(),
+            command_id: request.command_id.clone(),
+            status: codegg_protocol::core::CommandOutcomeStatusDto::Completed,
+            summary: "ok".to_string(),
+            lines: Vec::new(),
+            report: None,
+            started_at_ms: 0,
+            completed_at_ms: 1,
+            response: serde_json::to_value(&inner).ok(),
+        },
+    }
+}
+
 /// Where one command form goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandRoute {

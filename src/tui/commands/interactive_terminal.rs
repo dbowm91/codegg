@@ -2850,6 +2850,63 @@ mod tests {
                 CoreRequest::InteractiveProcessDetach { attachment_id } => {
                     self.protocol.detach(CLIENT_ID, &attachment_id).await
                 }
+                // M007-D: the terminal surface's effects are daemon-owned
+                // now, so they arrive as the command execution rather than
+                // as the protocol request. The daemon builds the inner
+                // request from the scope and the argument, and the double
+                // uses the daemon's own builder — so the encoding this
+                // test exercises is the daemon's encoding and not a copy
+                // of it — and then answers the inner request with the
+                // real protocol.
+                CoreRequest::CommandExecute { request } => {
+                    let inner = match crate::tui::command_route::inner_request_for_test(&request) {
+                        Some(inner) => inner,
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "fixture_unsupported".to_string(),
+                                message: format!("{} has no daemon row", request.command_id),
+                            })
+                        }
+                    };
+                    let inner_response = match inner {
+                        CoreRequest::InteractiveProcessList {
+                            workspace_id,
+                            limit,
+                        } => {
+                            self.protocol
+                                .list(CLIENT_ID, workspace_id.as_deref(), limit)
+                                .await
+                        }
+                        CoreRequest::InteractiveProcessAttach {
+                            handle,
+                            from_seq,
+                            max_bytes,
+                        } => {
+                            self.protocol
+                                .attach(CLIENT_ID, &handle, from_seq, max_bytes)
+                                .await
+                        }
+                        CoreRequest::InteractiveProcessResume {
+                            attachment_id,
+                            from_seq,
+                            max_bytes,
+                        } => {
+                            self.protocol
+                                .resume(CLIENT_ID, &attachment_id, from_seq, max_bytes)
+                                .await
+                        }
+                        other => CoreResponse::Error {
+                            code: "fixture_unsupported".to_string(),
+                            message: format!("{other:?}"),
+                        },
+                    };
+                    // The inner response travels verbatim, exactly as the
+                    // daemon's executor returns it.
+                    crate::tui::command_route::command_execute_response_for_test(
+                        &request,
+                        inner_response,
+                    )
+                }
                 other => CoreResponse::Error {
                     code: "fixture_unsupported".to_string(),
                     message: format!("{other:?}"),

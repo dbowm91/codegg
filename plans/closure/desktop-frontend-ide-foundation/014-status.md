@@ -62,6 +62,17 @@ delivered and proved:
   a typed refusal, and the interactive-terminal listing's bound moved from 20
   to the daemon's 64 (§3.5). The TUI is unaffected.
 
+**The milestone's mechanism did not work until the hosted lane caught it.** The
+daemon opens a `Run` before it executes a command, and it refuses with
+`run_store_unavailable` when it cannot. No production path ever installed the
+daemon's run store, so **every** migrated command would have been refused in
+production. The migration's own unit tests did not see it, because they
+answered the command execution with a double that never reached the daemon's
+executor. The hosted lane caught it — and, because the hosted sweep fails
+fast, it hid three more failures behind the first one. §4.1 has the whole
+account; the mechanism is now live, and the whole-workspace sweep with
+`--no-fail-fast` is part of this closure's verification.
+
 **The milestone is not closed.** Criterion 3 — *"a user running a daemon-effect
 command in the TUI sees exactly the outcome they saw before the migration"* —
 is proved for the **39** migrated commands and **not** for the **12** served
@@ -255,12 +266,136 @@ Commands run against this branch's head, with their results.
 | `rustup run 1.90.0 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | clean — the desktop host's pinned toolchain |
 | `rustup run 1.90.0 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings` | exit 0, no warnings — the check whose masked failure this branch had to repair |
 | `cargo test --test tui_render --test core_daemon` | **1094 + 509 passed**, 0 failed, run twice; no crash |
+| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | the **whole workspace** — every crate's lib tests and every integration family — **15891 passed, 0 failed**, 16 skipped, with the seven exclusions the note below names (§4.1) |
+| `cargo nextest run --locked --profile ci -p codegg --lib -E 'test(same_scope_requests_coalesce_to_one_publication)'` | passed in 0.15 s, run on its own — the note below says why |
 
-**Not run in this branch's final state**, and required before closure:
+**What the local sweep excludes, and why.** Seven tests are excluded from the
+local sweep, and each exclusion is proved on a tree **without** this
+milestone's code:
 
-- The hosted lanes (`verify`, `e2e`, `restricted-userns-fails-closed`,
-  `process-ipc`). The lanes reported green at `077655a49`; they do not
-  include this branch's later commits, so the final head needs its own run.
+- `asset_refresh::tests::same_scope_requests_coalesce_to_one_publication` —
+  the `ci` profile reserves the whole runner for it (`threads-required =
+  "num-cpus"`, `.config/nextest.toml:68-71`). On a machine whose CPU count
+  exceeds the profile's `test-threads` (4, `.config/nextest.toml:31-33`) that
+  reservation cannot be satisfied, the test runs alongside others, and it then
+  **hangs** rather than fails — the profile's own comment records it as
+  scheduler-sensitive for exactly that reason. It passes in under a second on
+  both trees when run on its own. A hosted runner's CPU count equals the
+  profile's `test-threads`, so the reservation holds there.
+- `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs`
+  and `core::daemon_refresh::tests::session_projection_snapshot_includes_in_process_live_child_instances`
+  — macOS only, `register workspace: InvalidRootPath("/tmp")`
+  (`src/core/daemon_refresh.rs:1114`, `:1179`): on macOS `/tmp` is a symlink to
+  `/private/tmp`, and the workspace registration rejects the non-canonical
+  path. This milestone does not touch `src/core/daemon_refresh.rs`. A hosted
+  runner is Linux, where `/tmp` is a real directory.
+- `managed_process::tests::offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn`
+  — macOS only: `OfflineRequired is unavailable on this platform`. This
+  milestone does not touch `src/managed_process.rs`.
+- `contained_worktree_c008::the_grant_writes_exactly_one_path_under_the_git_directory`
+  and `contained_worktree_c008::the_grant_names_only_the_shared_administration_root`
+  — Linux only: `protected mount view is available only on Linux`. These are
+  C008's own tests, merged into `main` before this milestone.
+- `command_git::git_read_consistency::a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache`
+  — a pre-existing flake (§10.5): it fails in **7 of 8** runs on the tree
+  without this milestone's code.
+
+The `scheduler_jobs` family is excluded outright, and not run locally at all:
+M008 §16 forbids running a sweep against the developer's own scratch root.
+
+### 4.1 The hosted lane caught what the local verification missed — and what it hid
+
+The hosted CI run on `4e7177708` failed in its *Workspace tests* step with two
+failures in `tui::commands::interactive_terminal`:
+`a_docked_terminal_in_insert_is_reported_as_insert` and
+`a_cleared_terminal_is_replaced_by_a_prompt_the_process_printed`. Both are in
+the root crate's **lib unit tests** — a family the local verification never
+ran. It ran the `tui_render` and `core_daemon` integration families and two
+`--lib` filters, and `scripts/verify.sh quick` does `cargo check`, not
+`cargo test`.
+
+The cause was a real defect in the migration, not a flake. The milestone moved
+`start_terminal_list`, `start_terminal_attach` and `start_terminal_resume`
+(`src/tui/commands/interactive_terminal.rs:383`, `:502`, `:679`) from
+constructing `CoreRequest::InteractiveProcess*` to calling `send_command`, but
+that file's own protocol double still answered the **pre-migration** request
+kinds and refused everything else with `fixture_unsupported`
+(`src/tui/commands/interactive_terminal.rs:2911`). The attach therefore never
+landed, and the two tests that pin what a user sees failed. The first of them
+was green on a tree without this milestone's code, so the migration is what
+broke it.
+
+**The lane then hid the rest.** `nextest` fails fast by default, so the hosted
+sweep stopped at those two failures and never ran the rest of the suite. A
+local sweep with `--no-fail-fast` over the whole workspace — every crate's lib
+tests and every integration family, except `scheduler_jobs`, which M008 §16
+forbids running against a developer's own scratch root — found **four** more,
+and one of them was not a test defect at all.
+
+| failing test | what it was |
+|---|---|
+| `tui::commands::interactive_terminal::tests::a_docked_terminal_in_insert_is_reported_as_insert` | a stale protocol double |
+| `tui::commands::interactive_terminal::tests::a_cleared_terminal_is_replaced_by_a_prompt_the_process_printed` | a stale protocol double |
+| `tui::commands::workspace_dashboard::tests::expand_issues_one_bounded_detail_fetch` | a stale protocol double |
+| `tui::commands::project_init::tests::tui_approval_publishes_through_core_client_and_daemon` | **the milestone's mechanism did not work at all** |
+
+**The production defect.**
+`tui_approval_publishes_through_core_client_and_daemon` is the one test in that
+set that drives the **real** in-process daemon rather than a double, and it
+failed for the reason that matters: the daemon refused the command.
+`execute_command` opens a `Run` before it executes anything
+(`src/core/daemon_commands.rs:876`), and it refuses with
+`run_store_unavailable` when it cannot (`src/core/daemon_commands.rs:71`). The
+daemon's run store came from `CoreRuntimeDeps::run_store`
+(`src/core/daemon_construct.rs:921`), and **no production path ever set it**:
+the pool-backed constructor left it `None`
+(`src/core/runtime_deps.rs:560`), and the setter that would have installed it,
+`CoreRuntimeDeps::with_run_store` (`src/core/runtime_deps.rs:597`), had **no
+call site anywhere in the tree**.
+
+So the milestone's central mechanism was dead in production: every migrated
+command would have been refused with `the daemon cannot record the run for this
+command`. The migration's own unit tests did not see it, because they answered
+the command execution with a double that never went through `execute_command`
+at all.
+
+**The fix for the mechanism.** The command's run now lands in the
+**workspace's own** run store — `<workspace_root>/.codegg/runs`, the same store
+the tools write to and the work-plan binding reads
+(`src/work_plan_repository_binding.rs:182`), built with the daemon's own
+`FsRunStore` (`src/core/daemon_commands.rs:876-905`). An injected store still
+overrides that root, so a test can audit in memory. A command whose scope names
+a workspace the daemon cannot resolve is refused with a typed reason rather
+than executed unaudited.
+
+**The fix for the doubles.** Both stale doubles now resolve the command
+execution with the **daemon's own row builder** and answer the inner response
+verbatim, through two shared helpers (`src/tui/command_route.rs:63-109`):
+`inner_request_for_test` and `command_execute_response_for_test`. The encoding
+under test is now the daemon's encoding and not a copy of it, so each test
+pins the TUI's argument against the daemon's row rather than against a fixture
+that could drift from it.
+
+**The gap is recorded because it is the milestone's own.** A migration that
+changes a **request kind** invalidates every test double that answered the old
+kind, and a hosted sweep that fails fast reports only the first of them. The
+whole-workspace sweep with `--no-fail-fast` is now part of this closure's
+verification.
+
+### 4.2 Hosted
+
+The inherited hosted evidence is the run that was green before the migration's
+later commits:
+
+| Run | Head | Workflow | Conclusion |
+|---|---|---|---|
+| `40165002199` | `077655a49` | CI / verify | **success** |
+| `40165002200` | `077655a49` | Desktop E2E | **success** |
+
+The CI run on `4e7177708` **failed** — §4.1 — and the fix's own hosted run is
+recorded on this milestone's own pull-request head. The lanes that qualify
+this milestone are `verify`, `e2e`, `restricted-userns-fails-closed` and
+`process-ipc`.
 
 ## 5. Invariant review
 
@@ -269,6 +404,7 @@ Plan 014 §4's invariants that must not regress, and §14's stop conditions.
 | invariant | held? | evidence |
 |---|---|---|
 | The mechanism is unchanged: `command.execute` carries a scope, a command id, a form and an argument | **yes** | `crates/codegg-protocol/src/core.rs` — two variants only; no third |
+| The daemon can actually **execute** a daemon-effect command | **yes, after the corrective pass in §4.1** | `execute_command` opens the run in the workspace's own store (`src/core/daemon_commands.rs:876-905`) and refuses with `run_store_unavailable` when it cannot (`:71`). No production path installed that store before the corrective pass, so every migrated command was refused in production — §4.1 |
 | The two namespaces are never joined | **yes** | the declared frontend-action set is keyed by `(command_id, form)`; the desktop keymap holds gestures; `action_for_form` is the only resolver |
 | Serve-ability is published, and an unserved form is refused with a typed reason | **yes** | `REFUSAL_COMMAND_NOT_SERVED`; `CommandPalette.tsx:177` refuses an unserved form |
 | The effect table's shape is unchanged | **yes** | the table remains the match arms of `build_inner_request`; the key set carries the probe argument for the closure test only |
@@ -524,6 +660,8 @@ in the TUI is audited.
 | The 5 argument-consuming forms need their encoding decided and pinned | medium | **settled** — `network`, `share`, `unshare`, `export` and `observe` are migrated with pinned encodings; `shell_show`, `shell_expand`, `shell_kill` and `terminal_send` are recorded in §10.6 |
 | The catalog still publishes `share`, `unshare` and `export` as taking **no argument** — `argument_required: false` with an empty `argument_hint` (`crates/codegg-core/src/command_catalog.rs:546-547`, `:564-565`, `:690-691`) — while the daemon now refuses those forms without one (`src/core/daemon_commands.rs:291-292`, `:297-298`, `:303-304`) | low | **recorded.** The two fields are published but nothing reads them: the desktop's palette renders the command name and the TUI has its own command definitions, so no surface is wrong today. A future completion surface that trusted the hint would promise an argument the daemon refuses |
 | An **intermittent SIGSEGV** in the `tui_render` test binary | medium | **unexplained and unreproduced.** It appeared once in a combined `tui_render` + `core_daemon` sweep on this branch and did not recur in 5 standalone runs and 6 direct runs of the same binary (the worker's), nor in 3 standalone runs and 2 further combined sweeps (the verifier's) — 16 runs in total across two strategies. Neither the cause nor whether it predates this branch is established, so it is recorded rather than explained away |
+| A **timing-sensitive flake** in the harness lab's interruption test (`dev/harness_lab/tests/test_sustained.py`), `test_a_cancelled_lane_does_not_stop_the_next_lane` | low | **observed twice on this branch, cause not established.** It failed once in a `verify.sh quick` run and once in an eight-run direct loop, and passed on a direct re-run, in a full re-run of `quick`, and in 22 of 22 direct runs on a tree without this milestone's code. The failure is a bookkeeping race in the harness's own native-broker counters (`started=0` while the provider transcript already carries the `write` call), and this milestone does not touch `dev/harness_lab/` at all. It is recorded because the suite is in CI (`.github/workflows/ci.yml:386`) and a flake there turns the lane red |
+| A **pre-existing flake** in the Git read-consistency family (`command_git::git_read_consistency::a_repeat_read_of_an_unchanged_repository_is_served_from_the_capture_cache`) | low | **observed, cause not established, and not this milestone's.** The second read of an unchanged repository was served as a fresh `ImmutableGeneration` instead of a captured one, so the cache did not serve it. It failed in 3 of 5 runs on this branch and in **7 of 8** runs on a tree without this milestone's code, so it is a pre-existing flake that predates the milestone. It is recorded because the suite is in CI and a flake there turns the lane red |
 
 ### 10.6 Ten served forms whose TUI arm performs a different effect
 
@@ -570,7 +708,7 @@ recorded, and none of them is a command arm:
 | `ProjectionSubscribe` | `src/tui/commands/observe.rs:446`, `src/tui/commands/primary_projection.rs:202` | **lifecycle, recorded.** The first is the *resume* path's fresh-subscribe fallback and the second is the primary projection's own subscription — neither is the `/observe` arm, which routes through the daemon |
 | `RuntimePolicySet` | `src/tui/commands/policy.rs:538` | **recorded for the owner.** The catalog's `policy` form is the *read*; the **write** has no catalog form at all, so the confirmed change still issues its own request. Making the write a catalog command is a decision about the catalog's shape |
 
-**Any medium finding keeps M007-D open.** Eight are listed above, five of them
+**Any medium finding keeps M007-D open.** Ten are listed above, five of them
 medium, so the milestone's recommendation is **corrective pass required**, not
 closed.
 
@@ -597,7 +735,7 @@ milestone merges. This record describes what they should say:
 
 - The subsystem roadmap's M007-D entry moves from *in progress* to
   *conditionally closed*, with the **12 forms the TUI does not perform** named
-  and the eight recorded findings of §10.5 carried, five of them medium.
+  and the ten recorded findings of §10.5 carried, five of them medium.
 - The registry gains a corrective-pass entry for M007-D naming the 12 recorded
   forms and the two owner-directed corrective milestones (the scratch
   cache-root contract and the TUI `/compact` sender).
