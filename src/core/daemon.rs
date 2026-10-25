@@ -113,6 +113,13 @@ pub struct CoreDaemon {
     pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
     /// Process-local canonical editor document buffers and connection leases.
     pub documents: Arc<crate::document_service::DocumentService>,
+    /// M007-D: the daemon-owned run store.
+    ///
+    /// The daemon audits every daemon-effect command as a canonical `Run`
+    /// (ADR-0052). `None` means the daemon cannot record the run, and it
+    /// then **refuses** to execute a command rather than executing it
+    /// unaudited.
+    pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     /// C005 (ADR-0022 §4): single-flight admission for daemon-owned
     /// directory scans. One permit per daemon: a contended scan answers
     /// `busy` instead of queueing unbounded blocking workers. The permit
@@ -905,7 +912,7 @@ impl CoreDaemon {
     /// project-scoped operations additionally need a resolved project
     /// plus a current membership grant. Legacy in-memory daemons without
     /// a pool are local-only and decide under the broad local policy.
-    async fn authorize_request(
+    pub(crate) async fn authorize_request(
         &self,
         authority: &codegg_core::transport_auth::RequestAuthorityContext,
         request_id: &str,
@@ -1685,6 +1692,13 @@ impl CoreDaemon {
             // does. Their `DirectProject` scope resolves through this arm.
             CoreRequest::GitRead { request } => Some(request.project_id.as_str()),
             CoreRequest::SkillCatalogueList { request } => Some(request.project_id.as_str()),
+            // M007-D: the command catalog read and the daemon-effect command
+            // executor both name their project directly, exactly as the
+            // listing above does. Without this arm the `DirectProject` scope
+            // resolves to `None` and a team principal is denied for a
+            // missing scope instead of for a missing grant.
+            CoreRequest::CommandCatalog { scope } => Some(scope.project_id.as_str()),
+            CoreRequest::CommandExecute { request } => Some(request.scope.project_id.as_str()),
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
@@ -4562,11 +4576,39 @@ impl CoreDaemon {
         let owned_request_id = request.request_id.clone();
         let payload = request.payload;
         let family = super::daemon_family::DaemonRequestFamily::of(&payload);
+        Box::pin(self.dispatch_family_request(
+            family,
+            payload,
+            &owned_request_id,
+            trusted_client_id,
+            authority,
+            authz_decision,
+        ))
+        .await
+    }
+
+    /// Route one request to its owning family handler.
+    ///
+    /// This is the single family router: the request path calls it, and so
+    /// does the M007-D command executor, which serves an inner request on
+    /// behalf of a daemon-effect command. Sharing it means a command's
+    /// effect is served by exactly the handler that serves the equivalent
+    /// request, and that the inner request is authorized on its own
+    /// terms rather than inheriting the command's decision.
+    pub(crate) async fn dispatch_family_request(
+        &self,
+        family: super::daemon_family::DaemonRequestFamily,
+        payload: CoreRequest,
+        request_id: &str,
+        trusted_client_id: &str,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: codegg_core::authorization::AuthorizationDecision,
+    ) -> Result<CoreResponse, AppError> {
         match family {
             super::daemon_family::DaemonRequestFamily::Assets => {
                 Box::pin(self.handle_assets_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4576,7 +4618,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Providers => {
                 Box::pin(self.handle_providers_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4586,7 +4628,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Sessions => {
                 Box::pin(self.handle_sessions_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4596,7 +4638,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Turns => {
                 Box::pin(self.handle_turns_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     None,
                     trusted_client_id,
                     authority,
@@ -4607,7 +4649,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Jobs => {
                 Box::pin(self.handle_jobs_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4617,7 +4659,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Projects => {
                 Box::pin(self.handle_projects_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4627,7 +4669,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Goals => {
                 Box::pin(self.handle_goals_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4637,7 +4679,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Projection => {
                 Box::pin(self.handle_projection_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4647,7 +4689,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Ops => {
                 Box::pin(self.handle_ops_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4657,7 +4699,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Documents => {
                 Box::pin(self.handle_document_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4667,7 +4709,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::ProjectInitialization => {
                 Box::pin(self.handle_project_init_request(
                     payload,
-                    &owned_request_id,
+                    request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -4692,6 +4734,18 @@ impl CoreDaemon {
             }
             super::daemon_family::DaemonRequestFamily::Skills => {
                 Box::pin(self.handle_skill_catalogue_request(payload)).await
+            }
+            // M007-D: the daemon-owned command catalog and the daemon-effect
+            // command executor.
+            super::daemon_family::DaemonRequestFamily::Commands => {
+                Box::pin(self.handle_command_request(
+                    payload,
+                    request_id,
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

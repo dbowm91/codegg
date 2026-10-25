@@ -50,6 +50,12 @@ import {
   regionContainer,
   regionOfElement,
 } from './focus';
+// M007-D: the command palette. The chord that opens it is declared in the
+// keymap (M007-C), not in a second table of this milestone's own.
+import { CommandPalette } from './commands';
+// M007-017: the desktop's half of a declared frontend action. The daemon
+// publishes the action's wire name; the desktop answers to it.
+import { answerFrontendAction } from './commands/frontendActions';
 import type {
   ConnectionSnapshot,
   GitBranchListView,
@@ -92,6 +98,10 @@ export function App() {
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeBusy, setRouteBusy] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  // M007-D: the command palette. It is fed by the daemon's catalog and
+  // holds no command list of its own.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteNotice, setPaletteNotice] = useState<string | null>(null);
   const [controller, setController] = useState<ControllerSummaryView | null>(null);
   const [responding, setResponding] = useState<string[]>([]);
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, string>>({});
@@ -854,6 +864,12 @@ export function App() {
       case 'keybinds.open':
         openOverlay('keybinds');
         return;
+      // M007-D: the command palette's chord is declared in the keymap, and
+      // only there: the desktop has one keymap, one dispatch and one
+      // conflict rule.
+      case 'command.palette.open':
+        setPaletteOpen(true);
+        return;
       case 'session.create':
         void createSession();
         return;
@@ -1023,6 +1039,9 @@ export function App() {
           </button>
           <button type="button" data-testid="keybinds-open-button" onClick={() => openOverlay('keybinds')}>
             Key bindings
+          </button>
+          <button type="button" data-testid="command-palette-open-button" onClick={() => setPaletteOpen(true)}>
+            Commands
           </button>
           <span className={`status ${connection.state}`} data-testid="connection-status">
             {connection.state}
@@ -1257,6 +1276,42 @@ export function App() {
           onRefreshControl={() => {
             if (currentToken) void refreshControl(currentToken.routeGeneration);
           }}
+        />
+        {paletteNotice ? <p className="cg-palette-notice">{paletteNotice}</p> : null}
+        <CommandPalette
+          open={paletteOpen}
+          routeGeneration={currentToken?.routeGeneration}
+          onClose={() => setPaletteOpen(false)}
+          onFrontendEffect={(command, form) => {
+            // M007-017: a frontend effect is dispatched by the action the
+            // daemon's catalog published on the form, never by the command's
+            // spelling. An action the desktop does not know is reported
+            // honestly rather than guessed at.
+            const action = form.action;
+            if (action === null) {
+              setPaletteNotice(
+                `${command.name} is a frontend effect; the desktop does not implement it yet`,
+              );
+              return;
+            }
+            const answer = answerFrontendAction(action, {
+              presentation: projection,
+              catalogue: skills,
+              catalogueError: skillsError,
+            });
+            if (answer.performed) {
+              setPaletteNotice(answer.message);
+              return;
+            }
+            setPaletteNotice(
+              answer.reason === null
+                ? `${command.name} is a frontend effect; the desktop does not implement it yet`
+                : `${command.name} is a frontend effect; the desktop does not implement it yet — ${answer.reason}`,
+            );
+          }}
+          onDaemonResult={(result) =>
+            setPaletteNotice(result.status === 'completed' ? result.summary : result.lines.join('\n'))
+          }
         />
       </div>
 

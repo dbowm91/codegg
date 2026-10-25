@@ -360,6 +360,7 @@ fn run_kind_from_str(s: &str) -> Option<crate::run_store::RunKind> {
         "search" => RunKind::Search,
         "python" => RunKind::Python,
         "native_tool" => RunKind::NativeTool,
+        "command" => RunKind::Command,
         _ => return None,
     })
 }
@@ -433,6 +434,7 @@ fn run_kind_to_str(k: &crate::run_store::RunKind) -> &'static str {
         RunKind::Search => "search",
         RunKind::Python => "python",
         RunKind::NativeTool => "native_tool",
+        RunKind::Command => "command",
     }
 }
 

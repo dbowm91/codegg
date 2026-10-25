@@ -135,21 +135,45 @@ pub(crate) fn start_snapshot_refresh(app: &mut App, reason: PolicySnapshotReason
     };
     let request_id = app.policy_ui.request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The approval preference and the
+    // effective policy are two catalog commands, so they are executed as
+    // two `command.execute` requests. The scope names the session the
+    // reading is made in; neither row reads a session out of it.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "policy_snapshot",
         async move {
-            let preference = match core_client
-                .request(crate::core::new_request(
-                    format!("policy-preference-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ApprovalPreferenceGet,
-                ))
-                .await
+            let preference = match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "approval",
+                "",
+                "",
+            )
+            .await
             {
                 Ok(CoreResponse::ApprovalPreference { preference }) => Some(preference),
                 Ok(CoreResponse::Error { code, message }) => {
+                    return Some(TuiCommand::PolicySnapshotLoaded {
+                        request_id,
+                        reason,
+                        preference: None,
+                        snapshot: None,
+                        error: Some(format!(
+                            "Policy preference read failed ({}): {}",
+                            code, message
+                        )),
+                    });
+                }
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result; the code and the reason
+                // are recovered from it so the text a user reads does not
+                // change.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (code, message) = crate::tui::command_route::refusal_parts(&result);
                     return Some(TuiCommand::PolicySnapshotLoaded {
                         request_id,
                         reason,
@@ -182,11 +206,7 @@ pub(crate) fn start_snapshot_refresh(app: &mut App, reason: PolicySnapshotReason
                     });
                 }
             };
-            match core_client
-                .request(crate::core::new_request(
-                    format!("policy-effective-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ExecutionPolicyGet { session_id: None },
-                ))
+            match crate::tui::command_route::send_command(&core_client, scope, "policy", "", "")
                 .await
             {
                 Ok(CoreResponse::ExecutionPolicy { snapshot }) => {
@@ -199,6 +219,19 @@ pub(crate) fn start_snapshot_refresh(app: &mut App, reason: PolicySnapshotReason
                     })
                 }
                 Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::PolicySnapshotLoaded {
+                        request_id,
+                        reason,
+                        preference: None,
+                        snapshot: None,
+                        error: Some(format!(
+                            "Effective policy read failed ({}): {}",
+                            code, message
+                        )),
+                    })
+                }
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (code, message) = crate::tui::command_route::refusal_parts(&result);
                     Some(TuiCommand::PolicySnapshotLoaded {
                         request_id,
                         reason,
@@ -491,6 +524,8 @@ pub(crate) fn start_policy_update(
     };
     let request_id = app.policy_ui.request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the refresh is the catalog's `policy` command.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -537,11 +572,9 @@ pub(crate) fn start_policy_update(
             // The set response carries the new revision; refresh the
             // effective snapshot (enforcement + reviewer availability)
             // so the cache never shows a request as enforcement truth.
-            match core_client
-                .request(crate::core::new_request(
-                    format!("policy-effective-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ExecutionPolicyGet { session_id: None },
-                ))
+            //
+            // M007-D: the refresh is the catalog's `policy` command.
+            match crate::tui::command_route::send_command(&core_client, scope, "policy", "", "")
                 .await
             {
                 Ok(CoreResponse::ExecutionPolicy { snapshot }) => {
@@ -574,6 +607,15 @@ pub(crate) fn request_network_intent_change(app: &mut App, intent: NetworkIntent
             .error("Network policy update unavailable: no core connection");
         return;
     };
+    // M007-D: the daemon owns the effect. The intent travels as the
+    // command's argument and the revision the caller holds as its second
+    // token, so the compare-and-swap the policy read published survives
+    // the migration.
+    let argument = match expected_revision {
+        Some(revision) => format!("{} {}", intent.as_str(), revision),
+        None => intent.as_str().to_owned(),
+    };
+    let scope = crate::tui::command_route::scope_for(app);
     let request_id = app.policy_ui.request.begin();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
@@ -582,18 +624,28 @@ pub(crate) fn request_network_intent_change(app: &mut App, intent: NetworkIntent
         TuiTaskKind::Command,
         "network_intent_update",
         async move {
-            let preference = match core_client
-                .request(crate::core::new_request(
-                    format!("network-intent-set-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::NetworkIntentSet {
-                        network_intent: intent.as_str().to_owned(),
-                        expected_revision,
-                    },
-                ))
-                .await
+            let preference = match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "network",
+                "",
+                &argument,
+            )
+            .await
             {
                 Ok(CoreResponse::ApprovalPreference { preference }) => preference,
                 Ok(CoreResponse::Error { code, message }) => {
+                    return Some(TuiCommand::PolicyUpdateFinished {
+                        request_id,
+                        preference: None,
+                        snapshot: None,
+                        error: Some(policy_update_error_hint(&code, &message)),
+                    });
+                }
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (code, message) = crate::tui::command_route::refusal_parts(&result);
                     return Some(TuiCommand::PolicyUpdateFinished {
                         request_id,
                         preference: None,
@@ -618,12 +670,14 @@ pub(crate) fn request_network_intent_change(app: &mut App, intent: NetworkIntent
                     });
                 }
             };
-            let snapshot = match core_client
-                .request(crate::core::new_request(
-                    format!("network-intent-effective-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ExecutionPolicyGet { session_id: None },
-                ))
-                .await
+            let snapshot = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "policy",
+                "",
+                "",
+            )
+            .await
             {
                 Ok(CoreResponse::ExecutionPolicy { snapshot }) => Some(snapshot),
                 _ => None,

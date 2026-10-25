@@ -12,6 +12,7 @@ pub mod client_registry;
 pub mod daemon;
 pub mod daemon_assets;
 pub mod daemon_bootstrap;
+pub mod daemon_commands;
 pub mod daemon_construct;
 pub mod daemon_continuation;
 pub mod daemon_control;

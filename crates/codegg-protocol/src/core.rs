@@ -1184,6 +1184,187 @@ pub struct ExecutionPolicySnapshotDto {
     pub reviewer_detail: String,
 }
 
+// ── M007-D: the daemon-owned command catalog ────────────────────────────
+
+/// Which authority owns a command form's effect.
+///
+/// There are exactly two kinds (ADR-0052 item 3): the daemon executes a
+/// daemon effect under the `command.execute` capability and audits it as a
+/// canonical `Run`; a frontend dispatches a frontend effect locally from
+/// the declared frontend-action set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandKindDto {
+    DaemonEffect,
+    FrontendEffect,
+}
+
+/// The scope a command catalog or execution is bound to.
+///
+/// It mirrors [`AssetRefreshScopeDto`]: the daemon resolves the project and
+/// workspace from its own durable binding, so a request carries identifiers
+/// and never a filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandCatalogScopeDto {
+    pub project_id: String,
+    pub workspace_id: String,
+    /// The session the command acts on, when it acts on one.
+    ///
+    /// A session-scoped command needs the session the user is looking at,
+    /// and the daemon cannot guess it: the daemon resolves the *project* and
+    /// the *workspace* from its own durable binding, but the session is the
+    /// caller's selection. The desktop leaves it absent, and a
+    /// session-scoped command then refuses with a typed reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// One argument form of a command. The form is the classification unit: a
+/// command's argument can select a different effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandFormDto {
+    /// The form's selector. Empty is the command's default form.
+    pub form: String,
+    /// Whether this form's effect lives in the daemon or in the frontend.
+    pub kind: CommandKindDto,
+    /// A one-line hint describing the form's argument.
+    pub argument_hint: String,
+    /// Whether the form requires an argument.
+    pub argument_required: bool,
+    /// Whether the daemon's effect table serves this form.
+    ///
+    /// This is the daemon's own answer, not the frontend's guess: a
+    /// frontend that asks for a form the daemon does not serve gets a
+    /// typed refusal, and can show the command as unavailable instead.
+    #[serde(default)]
+    pub daemon_served: bool,
+    /// The frontend action that serves this form, when the form is a
+    /// frontend effect.
+    ///
+    /// The kind says *who* owns the effect; this says *what* the frontend
+    /// has to do, and the name is the action's wire name. The field is
+    /// additive, so an older client still decodes the catalog.
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+/// One command's catalog entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandDescriptorDto {
+    /// The command's stable identity, shared by every frontend.
+    pub command_id: String,
+    /// The canonical display name, including its leading slash.
+    pub name: String,
+    /// Alternate spellings that resolve to the same command.
+    pub aliases: Vec<String>,
+    /// One-line description.
+    pub description: String,
+    /// The discovery domain.
+    pub domain: String,
+    /// The kind of the command's default form.
+    pub kind: CommandKindDto,
+    /// The capability a daemon-effect form requires, as the capability's
+    /// canonical name. `None` for a wholly frontend-effect command.
+    pub capability: Option<String>,
+    /// The command's forms.
+    pub forms: Vec<CommandFormDto>,
+}
+
+/// The daemon's command catalog.
+///
+/// Bounded: at most 256 commands and 512 forms, and at most 256 KiB
+/// serialized. An over-bound catalog is **refused**, never truncated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandCatalogDto {
+    /// Monotonically increasing version, bumped when the catalog changes.
+    pub catalog_version: u64,
+    /// Every command the daemon knows about.
+    pub commands: Vec<CommandDescriptorDto>,
+}
+
+/// One command execution request.
+///
+/// The `catalog_version` is the version the frontend saw. A version that
+/// differs from the daemon's current one is refused with `StaleCatalog`
+/// and the current version, so the frontend refetches and re-issues rather
+/// than guessing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandExecuteRequestDto {
+    /// The scope the execution is bound to.
+    pub scope: CommandCatalogScopeDto,
+    /// The command's stable identity.
+    pub command_id: String,
+    /// The form's selector. Empty is the command's default form.
+    pub form: String,
+    /// The form's argument. At most 4 KiB.
+    pub argument: String,
+    /// The catalog version the frontend resolved the command against.
+    pub catalog_version: u64,
+}
+
+/// How a command execution ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandOutcomeStatusDto {
+    Completed,
+    Refused,
+    Failed,
+    Cancelled,
+}
+
+/// The structured report of one command execution.
+///
+/// It mirrors [`AssetRefreshReportDto`] so that `/reload` satisfies
+/// `plans/000-long-term-specification.md:379` unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandReportDto {
+    #[serde(default)]
+    pub added: usize,
+    #[serde(default)]
+    pub removed: usize,
+    #[serde(default)]
+    pub changed: usize,
+    #[serde(default)]
+    pub shadowed: usize,
+    #[serde(default)]
+    pub invalid: usize,
+}
+
+/// The result of one command execution.
+///
+/// Bounded: at most 256 lines and 64 KiB serialized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandExecuteResultDto {
+    /// The canonical `Run` the execution was audited as. Empty when the
+    /// execution was refused before a run was opened.
+    pub run_id: String,
+    /// The command's stable identity.
+    pub command_id: String,
+    /// How the execution ended.
+    pub status: CommandOutcomeStatusDto,
+    /// A one-line summary of the outcome.
+    pub summary: String,
+    /// The structured output lines the frontend renders.
+    pub lines: Vec<String>,
+    /// The structured report, when the command produces one.
+    pub report: Option<CommandReportDto>,
+    /// When the execution started.
+    pub started_at_ms: i64,
+    /// When the execution finished.
+    pub completed_at_ms: i64,
+    /// The response the command's effect produced, exactly as the daemon's
+    /// own request handler serializes it.
+    ///
+    /// The daemon owns the effect *and* the authoritative data; the
+    /// frontend keeps the formatting. Carrying the inner response is what
+    /// lets a frontend render the result with the presentation code it
+    /// already had: the TUI's existing match on the inner response still
+    /// fires, so the text a user sees does not change. A frontend that
+    /// does not read it renders `lines` and `summary` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {
     pub protocol_version: u32,
@@ -2162,6 +2343,21 @@ pub enum CoreResponse {
     SkillCatalogueList {
         result: crate::skill::SkillCatalogueDto,
     },
+    /// M007-D: the daemon's command catalog.
+    ///
+    /// The daemon owns the catalog (ADR-0052), so the desktop and the TUI
+    /// read the same list. The response is bounded, and an over-bound
+    /// catalog is refused rather than truncated.
+    CommandCatalog {
+        catalog: CommandCatalogDto,
+    },
+    /// M007-D: the result of one daemon-effect command execution.
+    ///
+    /// The execution was authorized in the daemon under `command.execute`
+    /// and audited as a canonical `Run`; `run_id` names that run.
+    CommandExecute {
+        result: CommandExecuteResultDto,
+    },
 }
 
 /// Bounded projection metadata returned by the durable session promotion
@@ -2436,6 +2632,23 @@ pub enum CoreRequest {
     /// is metadata only — no skill body, no filesystem path.
     SkillCatalogueList {
         request: crate::skill::SkillCatalogueRequestDto,
+    },
+    /// M007-D: read the daemon's command catalog.
+    ///
+    /// The catalog is the single definition of what commands exist; no
+    /// frontend compiles a second list. The response is bounded, and the
+    /// daemon refuses an over-bound catalog rather than truncating it.
+    CommandCatalog {
+        scope: CommandCatalogScopeDto,
+    },
+    /// M007-D: execute one daemon-effect command form.
+    ///
+    /// The daemon authorizes the request under `command.execute` — the
+    /// capability the catalog entry names — and audits it as a canonical
+    /// `Run`. A frontend-effect command id is refused: the daemon does not
+    /// execute what the frontend owns.
+    CommandExecute {
+        request: CommandExecuteRequestDto,
     },
     AssetRefresh {
         request: AssetRefreshRequestDto,

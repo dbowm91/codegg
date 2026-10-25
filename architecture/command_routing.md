@@ -11,6 +11,33 @@ typed command pipeline; it does not reinterpret command text or intent.
 > `src/command_intent/plan.rs`. This document describes that canonical
 > mapping; the facade is documented only for source compatibility.
 
+## This is not slash-command routing
+
+**`codegg <verb>` and `/verb` are different surfaces, and this document is
+about neither of them.** It documents the dispatch of the **typed command
+pipeline** — the `CommandPlan` the planner produces for a tool-shaped
+intent — to the executor that will run it. It has nothing to do with the
+user-typed slash command.
+
+The slash command's own surface is:
+
+- `architecture/command.md` — the **catalog**: the daemon's single
+  definition of every command, its kinds, and its argument forms.
+- `crates/codegg-core/src/command_catalog.rs` — that definition itself.
+- `src/core/daemon_commands.rs` — the daemon's executor: a catalog form
+  dispatched to a daemon request under `command.execute`.
+- `src/tui/command_route.rs` — the TUI's route from a typed line to a
+  catalog form and back to a `CoreRequest::CommandExecute`.
+
+The two surfaces share the word "command" and nothing else. A slash
+command is identified by a **catalog identity** and executed either by the
+daemon (a daemon effect) or by the frontend (a frontend effect). A
+`CommandPlan` is a **plan** for an execution, produced by the planner from
+a tool-shaped intent, and dispatched by `dispatch_target()`. Nothing in
+this document applies to a slash command, and nothing in `command.md`
+applies to a `CommandPlan`. A reader who conflates `codegg <verb>` with
+`/verb` will reach the wrong document every time.
+
 ## Purpose
 
 Map a `CommandPlan`'s `ExecutionBackend` to a `CommandDispatchTarget` enum variant
@@ -405,3 +432,12 @@ backend mapping table; the 7 `validate_for_active_routing()` checks; the
 4-field `DispatchOutcome`; the unconditional `RawShell → "raw_shell"` mapping in
 `run_kind_for_outcome()`; `TestScope::BashDispatch`'s allowlist bypass; and the
 `delegated_run_id` ownership contract.
+
+Re-verified 2026-10-25: this document still describes the typed command
+pipeline and nothing else. The added section is a **pointer**, not a second
+description: the slash command's surface is `architecture/command.md`, the
+catalog is `crates/codegg-core/src/command_catalog.rs`, the daemon's
+executor is `src/core/daemon_commands.rs`, and the TUI's route is
+`src/tui/command_route.rs`. `src/command_routing.rs` is still a 30-line
+zero-logic compatibility facade and `CommandPlan::dispatch_target()` in
+`src/command_intent/plan.rs` is still the sole production mapping.

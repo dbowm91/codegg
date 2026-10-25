@@ -1005,3 +1005,54 @@ ratchet: the merged tree measures **126,467** comment lines, **1,116,139**
 words and a **0.1338** recorded ceiling. The re-bank raised the global block
 and moved only the per-file ceilings of files **either** line touched, so the
 bank diff stays confined to touched files plus the global block.
+
+### Eighteenth amendment — 2026-10-25, delegated-run corrective, sixth reconciliation with `main`
+
+`origin/main` advanced to `69ceec814` (PRs #195, #197 and #198 — the desktop
+command-parity line M007-D under ADR-0052, its closure records, and the
+owner-directed corrective registrations) and the delegated-run corrective branch
+was merged with it. The merge carried **no change to this line's own Rust code** —
+the delegated notice fix in §13 of the closure record is byte-identical across it
+— and four rows moved, each re-measured against its own listed `Source` on the
+merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| `codegg-core` modules | 56 | **58** | `main`'s `command_catalog` and `frontend_action` modules, plus this line's two delegated-run modules. Both parents measure 56; the merged tree measures 58. |
+| Integration test files | 350 | **351** | `main`'s `tests/core_daemon/command_catalog_m007d.inc`. The two sides' changed test-file sets overlap on no file, so the union is additive (base 342 + 8 + 1). |
+| Guard scripts (all) | 100 | **102** | `main`'s `scripts/check_command_catalog_ownership.py` and `scripts/check_frontend_action_set.py`, beside this line's three delegated-run guards. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 66 | **68** | The workflow gained both of `main`'s guards and both of their self-tests. The measure is unchanged. |
+| `AGENTS.md`'s published counts | 80 quick / 66 CI | **82 quick / 68 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. |
+
+The **quick-only difference is unchanged at 14** guards CI does not run, and the
+quick-only set was **re-derived** rather than carried over: it is the same
+fourteen names, because all **eight** of the two lines' guard *entries* added to
+the two lanes run in **both** `quick` and CI — `main`'s two new scripts, this
+line's three new delegated-run guards, and this line's three pre-existing
+projection guards newly wired into both lanes. The quick lane's `==>` lines
+moved from **135** to **139** (`run_guards` **135**, `run_quick` **4**).
+
+**All three conflicts were documentation.** `AGENTS.md`,
+`architecture/overview.md` and `docs/comment-budget.toml` conflicted, and every
+code file merged cleanly — the two lines' code sets do not overlap, because
+`main`'s desktop command-parity work touches no file this line owns. The
+conflicted values were published counts and a comment-budget manifest, and each
+was resolved by measuring the merged tree rather than by taking a side.
+
+**`main`'s own M007-D section was left as the record of that milestone.** It
+states *`codegg-core` modules* **56**, which is `main`'s measurement of `main`'s
+tree; the Verified-counts row holds the merged tree's measured **58**.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: the merged tree measures **127,700** comment lines, **1,127,120** words
+and a **0.1341** recorded ceiling. The re-bank raised the global block and moved
+only the per-file ceilings of files **either** line touched, so the bank diff
+stays confined to touched files plus the global block. `cargo fmt --all`
+produced **no** edit on the merged tree — `main`'s merged code was already
+formatted.
+
+**`plans/registry.md` auto-merged coherently.** Its `## Source verification`
+section is newest-first, and the merged tree carries both sides' entries in that
+order — `main`'s M007-E, terminology-amendment, M007-C, M007-B and M007-A
+entries first, then this line's four delegated-run entries and the shared
+ADR-0052 entry — with no duplication and no loss.

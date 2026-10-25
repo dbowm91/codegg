@@ -467,16 +467,16 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering: **260 native operations** — 260 match arms carrying 260
-distinct operation names, covering all **266 `CoreRequest` variants**
-(240 struct-bodied + 26 unit). The three numbers are different
+rendering: **264 native operations** — 264 match arms carrying 264
+distinct operation names, covering all **270 `CoreRequest` variants**
+(244 struct-bodied + 26 unit). The three numbers are different
 things and are not interchangeable:
 
-- **266** — `CoreRequest` variants in `crates/codegg-protocol/src/core.rs`.
-- **260** — distinct operation names, one per `operation_descriptor`
+- **270** — `CoreRequest` variants in `crates/codegg-protocol/src/core.rs`.
+- **264** — distinct operation names, one per `operation_descriptor`
   arm. Several variants share one operation name (for example
   `document_read` covers `DocumentOpen`, `DocumentSnapshotGet`,
-  `DocumentStatusGet`, and `DocumentClose`), so 260 names cover 266
+  `DocumentStatusGet`, and `DocumentClose`), so 264 names cover 270
   variants.
 - **250** — entries in `representative_requests()`. That list is a
   **sample**, not the operation set: it carries one request per
@@ -535,6 +535,8 @@ approval preferences and never project-keyed):
 | `chat_redact` | direct_project | `project.chat` |
 | `chat_send` | direct_project | `project.chat` |
 | `chat_sync` | direct_project | `project.chat` |
+| `command_catalog` | direct_project | `project.read` |
+| `command_run` | direct_project | `command.execute` |
 | `connection_delete` | opaque | `project.configure` |
 | `connection_disable` | opaque | `project.configure` |
 | `connection_enable` | opaque | `project.configure` |
@@ -856,7 +858,31 @@ once the turn is admitted. It is not a `CoreRequest` operation and so carries
 no `operation_descriptor` row; it is covered by the synthetic
 `user_prompt_queue_deliver` name in `INSTRUMENTED_OPERATIONS`.
 
-## Verification
+### Command execution authority (M007-D, ADR-0052)
+
+A daemon-effect command is an **effect**, so it carries the dedicated
+`command.execute` capability rather than a generic project grant
+(`crates/codegg-core/src/authorization/policy.rs:166`, operation name
+`command_run`, scope kind `direct_project`). Three properties are
+load-bearing:
+
+- **The capability is a property of the catalog entry, and the daemon
+  re-checks it.** A client cannot widen it. The catalog's entry names the
+  capability the form requires, and the daemon resolves the form against
+  its own catalog before it executes anything — a request that names a
+  form the daemon does not serve is refused with a typed reason, not
+  executed.
+- **Reading the catalog is not executing a command.** `command_catalog`
+  takes the same `project.read` grant the skill catalogue takes
+  (`policy.rs:156`): knowing that `/reload` exists says nothing about
+  what it may change. A catalog read creates **no** canonical `Run`.
+- **A frontend effect creates no `Run` at all.** It is a declared,
+  finite, non-mutating action the frontend executes locally
+  (`crates/codegg-core/src/frontend_action.rs`); it is not an effect, so
+  it is not audited as one. A **daemon effect** is audited as a canonical
+  `Run`, and that audit is the effect's only one — the dispatch itself is
+  not audited a second time.
+
 
 ```bash
 cargo test -p codegg-core --lib authorization
@@ -999,3 +1025,12 @@ four chat-policy rows, the seventeen work-order rows and the
 `work_plan_*`/`work_order_bind_repository` rows, each cross-checked against
 the `ScopeKind`/`Capability` arguments of its `OperationDescriptor::new`
 call, plus the 226-row table structure.
+
+Re-verified 2026-10-25 against
+`crates/codegg-core/src/authorization/policy.rs`: the `operation_descriptor`
+arms were re-counted (**264** distinct operation names) and the
+`CoreRequest` variants were re-counted (**270**: 244 struct-bodied + 26
+unit) by enumerating the declarations rather than by copying a figure. The
+two figures this document previously published — 266 variants and 260
+operations — were stale, and the matrix's own `command_catalog` and
+`command_run` rows were missing.

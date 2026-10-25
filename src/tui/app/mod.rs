@@ -6765,7 +6765,7 @@ impl App {
                 crate::tui::commands::work_orders::start_tasks_command(self);
             }
             B::Task => {
-                crate::tui::commands::work_orders::open_task_view(self);
+                crate::tui::commands::work_orders::open_task_view(self, "task");
             }
             B::Workspace => {
                 // M005: `/workspace` opens the non-modal primary Workspace
@@ -6799,7 +6799,12 @@ impl App {
             }
             B::Memory => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemorySummary);
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::MemorySummary {
+                            command_id: "memory".to_string(),
+                        },
+                    );
                 } else {
                     self.handle_memory_command(None);
                 }
@@ -6815,7 +6820,12 @@ impl App {
             B::MemoryList => {
                 let query = argument.to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemorySummary);
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::MemorySummary {
+                            command_id: "memory_list".to_string(),
+                        },
+                    );
                 } else {
                     self.handle_memory_command(Some(("list", &query)));
                 }
@@ -12778,7 +12788,11 @@ impl App {
         // leak the previous project's collaborators.
         if let Some(pid) = project_id.clone() {
             if self.presence.needs_refresh(&pid) {
-                crate::tui::commands::presence::start_refresh_presence(self, pid);
+                crate::tui::commands::presence::start_refresh_presence(
+                    self,
+                    pid,
+                    crate::tui::commands::presence::PresenceRefresh::User,
+                );
             }
         }
 
@@ -13664,7 +13678,11 @@ impl App {
     /// Public so tests and the `/collaborators` dispatcher can route
     /// through this method without exposing the private command module.
     pub fn refresh_presence(&mut self, project_id: String) {
-        crate::tui::commands::presence::start_refresh_presence(self, project_id);
+        crate::tui::commands::presence::start_refresh_presence(
+            self,
+            project_id,
+            crate::tui::commands::presence::PresenceRefresh::User,
+        );
     }
 
     /// Presence M002: apply a snapshot completion. Public for the same
@@ -14740,14 +14758,21 @@ impl App {
             .info("Refreshing model cache in background...");
         let core_client = self.core_client.clone();
         let cmd_tx = self.tui_cmd_tx.clone();
+        // M007-D: the daemon owns the effect. The refresh is the
+        // catalog's `models_refresh` command.
+        let scope = crate::tui::command_route::scope_for(self);
         if let (Some(core_client), Some(tx)) = (core_client, cmd_tx) {
             self.task_registry
                 .spawn(TuiTaskKind::Command, "refresh-models", async move {
-                    let request = crate::core::new_request(
-                        format!("models-refresh-{}", uuid::Uuid::new_v4()),
-                        CoreRequest::ModelsRefresh,
-                    );
-                    match core_client.request(request).await {
+                    match crate::tui::command_route::send_command(
+                        &core_client,
+                        scope,
+                        "models_refresh",
+                        "",
+                        "",
+                    )
+                    .await
+                    {
                         Ok(crate::protocol::core::CoreResponse::Json { data }) => {
                             let models = data
                                 .get("models")

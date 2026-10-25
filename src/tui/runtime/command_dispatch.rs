@@ -324,7 +324,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             );
         }
         TuiCommand::RefreshPresence { project_id } => {
-            super::super::commands::presence::start_refresh_presence(app, project_id);
+            super::super::commands::presence::start_refresh_presence(
+                app,
+                project_id,
+                super::super::commands::presence::PresenceRefresh::User,
+            );
         }
         TuiCommand::PresenceSnapshotLoaded {
             request_id,
@@ -355,7 +359,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 // refresh on foreground.
                 let is_active = app.active_project_id() == Some(project_id.as_str());
                 if is_active {
-                    super::super::commands::presence::start_refresh_presence(app, project_id);
+                    super::super::commands::presence::start_refresh_presence(
+                        app,
+                        project_id,
+                        super::super::commands::presence::PresenceRefresh::Hint,
+                    );
                 }
             }
         }
@@ -746,8 +754,8 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::WorktreeList => {
             start_worktree_list(app);
         }
-        TuiCommand::MemorySummary => {
-            start_memory_summary(app);
+        TuiCommand::MemorySummary { command_id } => {
+            start_memory_summary(app, command_id);
         }
         TuiCommand::MemorySearch { query } => {
             start_memory_search(app, query);
@@ -2703,6 +2711,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             let core_client = app.core_client.clone();
             let sid = session_id.clone();
             let wid = workspace_id.clone();
+            // M007-D: the daemon owns the effect. The command named the
+            // session and the workspace, so the scope carries those two
+            // rather than the app's attached session.
+            let mut scope = crate::tui::command_route::scope_for(app);
+            scope.session_id = Some(sid.clone());
+            scope.workspace_id = wid.clone();
             let tx = app.tui_cmd_tx.clone();
             crate::tui::async_cmd::spawn_tui_task(tx, "edit_undo_latest", async move {
                 let Some(core_client) = core_client else {
@@ -2712,14 +2726,15 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                         error: Some("Core unavailable".into()),
                     });
                 };
+                // M007-D: the undo is executed as the catalog's
+                // `edit_undo` command; the response the presentation reads
+                // is the one the daemon produced.
                 let req = crate::core::new_request(
                     format!("edit-undo-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::EditCheckpointUndoLatest {
-                        workspace_id: wid,
-                        session_id: sid.clone(),
-                    },
+                    crate::tui::command_route::command_execute(scope, "edit_undo", "", ""),
                 );
-                match core_client.request(req).await {
+                match crate::tui::command_route::unwrap_inner_result(core_client.request(req).await)
+                {
                     Ok(CoreResponse::EditCheckpointUndoResult { result }) => {
                         Some(TuiCommand::EditUndoFinished {
                             session_id: sid,
@@ -2754,6 +2769,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             let core_client = app.core_client.clone();
             let sid = session_id.clone();
             let wid = workspace_id.clone();
+            // M007-D: the daemon owns the effect. The command named the
+            // session and the workspace, so the scope carries those two
+            // rather than the app's attached session.
+            let mut scope = crate::tui::command_route::scope_for(app);
+            scope.session_id = Some(sid.clone());
+            scope.workspace_id = wid.clone();
             let tx = app.tui_cmd_tx.clone();
             crate::tui::async_cmd::spawn_tui_task(tx, "edit_reapply_latest", async move {
                 let Some(core_client) = core_client else {
@@ -2763,14 +2784,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                         error: Some("Core unavailable".into()),
                     });
                 };
+                // M007-D: the reapply is executed as the catalog's
+                // `edit_reapply` command.
                 let req = crate::core::new_request(
                     format!("edit-reapply-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::EditCheckpointReapplyLatest {
-                        workspace_id: wid,
-                        session_id: sid.clone(),
-                    },
+                    crate::tui::command_route::command_execute(scope, "edit_reapply", "", ""),
                 );
-                match core_client.request(req).await {
+                match crate::tui::command_route::unwrap_inner_result(core_client.request(req).await)
+                {
                     Ok(CoreResponse::EditCheckpointReapplyResult { result }) => {
                         Some(TuiCommand::EditReapplyFinished {
                             session_id: sid,
@@ -2914,6 +2935,15 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             let sid = session_id.clone();
             let wid = workspace_id.clone();
             let tx = app.tui_cmd_tx.clone();
+            // M007-D: the daemon owns the effect. The checkpoint listing
+            // is the catalog's `edit_checkpoints` command, and the scope
+            // names the workspace and the session it reads.
+            let scope = crate::tui::command_route::scope_for(app);
+            let scope = crate::protocol::core::CommandCatalogScopeDto {
+                workspace_id: wid.clone(),
+                session_id: Some(sid.clone()),
+                ..scope
+            };
             crate::tui::async_cmd::spawn_tui_task(tx, "edit_checkpoint_list", async move {
                 let Some(core_client) = core_client else {
                     return Some(TuiCommand::EditCheckpointListFinished {
@@ -2922,15 +2952,15 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                         error: Some("Core unavailable".into()),
                     });
                 };
-                let req = crate::core::new_request(
-                    format!("edit-list-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::EditCheckpointList {
-                        workspace_id: wid,
-                        session_id: sid.clone(),
-                        limit: Some(20),
-                    },
-                );
-                match core_client.request(req).await {
+                match crate::tui::command_route::send_command(
+                    &core_client,
+                    scope,
+                    "edit_checkpoints",
+                    "",
+                    "",
+                )
+                .await
+                {
                     Ok(CoreResponse::EditCheckpointList { checkpoints }) => {
                         Some(TuiCommand::EditCheckpointListFinished {
                             session_id: sid,

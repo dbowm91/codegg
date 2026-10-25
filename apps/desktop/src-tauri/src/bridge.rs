@@ -665,6 +665,121 @@ pub struct SkillCatalogueView {
     pub truncated: bool,
 }
 
+/// One argument form of a command, as the daemon's catalog describes it.
+///
+/// The form is the classification unit: a command's argument can select a
+/// different effect, so the renderer reads the kind off the form.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandFormView {
+    /// The form's selector. Empty is the command's default form.
+    pub form: String,
+    /// `daemon_effect` or `frontend_effect`.
+    pub kind: String,
+    /// A one-line hint describing the form's argument.
+    pub argument_hint: String,
+    /// Whether the form requires an argument.
+    pub argument_required: bool,
+    /// Whether the daemon's effect table serves this form.
+    ///
+    /// The renderer reads this to show a command the daemon does not serve
+    /// as unavailable, instead of dispatching into a refusal.
+    pub daemon_served: bool,
+    /// The declared frontend action's stable wire name, or `None` for a
+    /// daemon-effect form.
+    ///
+    /// M007-017: the daemon publishes the action's name on the form, so the
+    /// renderer dispatches by the daemon's own answer and never guesses an
+    /// action from a command spelling. The host forwards it; it does not
+    /// derive it, because the daemon owns the action set.
+    pub action: Option<String>,
+}
+
+/// One command in the daemon's catalog.
+///
+/// The renderer holds no command list of its own: every name, alias and
+/// kind it shows comes from here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandDescriptorView {
+    /// The command's stable identity, shared by every frontend.
+    pub command_id: String,
+    /// The canonical display name, including its leading slash.
+    pub name: String,
+    /// Alternate spellings that resolve to the same command.
+    pub aliases: Vec<String>,
+    /// One-line description.
+    pub description: String,
+    /// The discovery domain.
+    pub domain: String,
+    /// The kind of the command's default form.
+    pub kind: String,
+    /// The capability a daemon-effect form requires. Absent for a wholly
+    /// frontend-effect command.
+    pub capability: Option<String>,
+    /// The command's forms.
+    pub forms: Vec<CommandFormView>,
+}
+
+/// The daemon's command catalog.
+///
+/// The list is bounded by the daemon, and the version is what an execution
+/// must quote: a version the daemon no longer serves is refused rather
+/// than executed against a stale classification.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCatalogView {
+    /// The catalog version an execution must quote.
+    pub catalog_version: u64,
+    /// Every command the daemon knows about.
+    pub commands: Vec<CommandDescriptorView>,
+}
+
+/// The structured report of one command execution.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandReportView {
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+    pub shadowed: usize,
+    pub invalid: usize,
+}
+
+/// The result of one daemon-effect command execution.
+///
+/// A refusal produces the same shape with `status` `refused` and an empty
+/// `runId`: the daemon refused before it opened a run.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExecuteView {
+    /// The canonical run the execution was audited as.
+    pub run_id: String,
+    /// The command's stable identity.
+    pub command_id: String,
+    /// `completed`, `refused`, `failed` or `cancelled`.
+    pub status: String,
+    /// A one-line summary of the outcome.
+    pub summary: String,
+    /// The structured output lines.
+    pub lines: Vec<String>,
+    /// The structured report, when the command produces one.
+    pub report: Option<CommandReportView>,
+    /// When the execution started.
+    pub started_at_ms: i64,
+    /// When the execution finished.
+    pub completed_at_ms: i64,
+    /// The response the command's effect produced, exactly as the daemon's
+    /// own request handler serializes it.
+    ///
+    /// The daemon owns the effect *and* the authoritative data; the
+    /// frontend keeps the formatting. Carrying the inner response is what
+    /// makes the desktop's presentation parity with the TUI's real rather
+    /// than approximate: the renderer can format the same authoritative
+    /// data the TUI formats.
+    pub response: Option<serde_json::Value>,
+}
+
 /// Bounded presentation of one session projection for the renderer.
 /// Atomic-replace semantics: each view is an independent owned value;
 /// a resync publishes a wholly new view rather than patching the old.

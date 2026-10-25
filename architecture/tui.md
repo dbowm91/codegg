@@ -26,6 +26,43 @@ The TUI routes session, history, task, memory, and worktree actions through
 `CoreClient` so the same logic can run in-process, over stdio, or over a
 socket transport.
 
+### The command surface (M007-D)
+
+The TUI's built-in registry is a **cache** of the daemon's catalog, not a
+second definition of it. The daemon's catalog
+(`crates/codegg-core/src/command_catalog.rs`) owns each command's identity,
+name, aliases, description, **kind** and argument shape; the TUI's 169
+cached rows mirror it. The TUI's own dynamic sources (config commands,
+project `.command` files, plugin commands) stay **local** and outside the
+catalog — a dynamic source is a separate trust class, and ADR-0052 defers it.
+
+**The dispatch split.** A typed line resolves to a **catalog form**, and the
+form's kind decides who runs it:
+
+- a **daemon effect** is executed by the daemon. The arm issues
+  `CoreRequest::CommandExecute` and the daemon's **inner response** feeds
+  the arm's **existing** presentation code. The observable outcome does not
+  change: the daemon owns the effect and the authoritative data, the
+  frontend keeps the formatting. The mechanism is `src/tui/command_route.rs`
+  (`route_for()` `:68`, `scope_for()` `:106`, `command_execute()` `:125`,
+  `send_command()` `:148`, `unwrap_inner_response()` `:171`).
+- a **frontend effect** is executed locally against the **declared**
+  frontend-action set (`crates/codegg-core/src/frontend_action.rs`), never
+  against an open enum. It creates **no** canonical `Run`.
+
+**`/` recognition has three sites**, and they are not the same question.
+`src/tui/app/prompt_turn.rs:36` refuses to post a slash line into a shared
+chat channel as prompt text; `:71` refuses it when the observer blocks a
+prompt submit; `:116` is the actual dispatch, where a recognised slash line
+becomes a command and the composer is cleared. Free text that merely
+*resembles* a command stays prompt text: there is no fall-through.
+
+**Two namespaces.** The desktop's keymap and the declared frontend-action
+set both hold "actions", and they are **different** namespaces that are
+never joined. An *action* is a frontend-local binding; a *command* is a
+daemon-owned catalog entry. The palette resolves by catalog identity and
+never by comparing a string against a keymap id.
+
 ### Daemon event stream (socket mode)
 
 `CoreClient::subscribe()` is the TUI's only view of daemon-pushed state. In
@@ -7739,3 +7776,11 @@ restart could change the outcome. Guarded by
 
 Model navigation is `Tab`/`BackTab` (`move_model`), while `Up`/`Down` move the
 connection highlight.
+
+Re-verified 2026-10-25 against `src/tui/command_route.rs` (`route_for`,
+`scope_for`, `command_execute`, `send_command`, `unwrap_inner_response`),
+`src/tui/app/prompt_turn.rs:36`, `:71` and `:116`, `src/tui/app/commands.rs`,
+`src/tui/command.rs` and `crates/codegg-core/src/command_catalog.rs`: the
+three `/`-recognition sites are the three questions they are documented as,
+and the cached built-in rows and `BuiltinSlashAction` variants are unchanged
+from `origin/main` (`cb4ceed9d`).

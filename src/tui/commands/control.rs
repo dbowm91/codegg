@@ -159,6 +159,14 @@ fn start_control_get(app: &mut App, session_id: String) {
     let reconnect_epoch = epoch_of(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The control surface is the
+    // catalog's `control` command, and the session it reads is the one
+    // the caller named.
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        session_id: Some(session_id.clone()),
+        ..scope
+    };
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -178,13 +186,9 @@ fn start_control_get(app: &mut App, session_id: String) {
                     reconnect_epoch,
                 });
             };
-            let req = crate::core::new_request(
-                format!("control-get-{}", uuid::Uuid::new_v4()),
-                CoreRequest::SessionControlGet {
-                    session_id: session_id.clone(),
-                },
-            );
-            match core_client.request(req).await {
+            match crate::tui::command_route::send_command(&core_client, scope, "control", "", "")
+                .await
+            {
                 Ok(CoreResponse::SessionControl {
                     controller,
                     requests,
@@ -211,6 +215,22 @@ fn start_control_get(app: &mut App, session_id: String) {
                     unsupported: code == "unimplemented",
                     reconnect_epoch,
                 }),
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (code, message) = crate::tui::command_route::refusal_parts(&result);
+                    Some(TuiCommand::ControlLoaded {
+                        request_id,
+                        session_id,
+                        controller: None,
+                        requests: Vec::new(),
+                        truncated: false,
+                        error: Some(message),
+                        unauthorized: unauthorized_of(&code),
+                        unsupported: code == "unimplemented",
+                        reconnect_epoch,
+                    })
+                }
                 Ok(other) => Some(TuiCommand::ControlLoaded {
                     request_id,
                     session_id,

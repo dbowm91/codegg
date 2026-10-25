@@ -64,12 +64,8 @@ pub struct HumanShellRunService {
     ///
     /// A human-originated shell command is a process launch, and it is
     /// refused under the restricted shared profile exactly like a model
-    /// tool's. The distinction the C001 contract draws is between a
-    /// CodeGG human *originating* a process and an unrelated external OS
-    /// process — the human's own command is still CodeGG-initiated, so it
-    /// is still inside the boundary.
-    ///
-    /// `None` means the daemon has no durable reservation authority.
+    /// tool's. `None` means the daemon has no durable reservation
+    /// authority.
     process_admission: Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>,
 }
 
@@ -428,6 +424,18 @@ impl HumanShellRunService {
             resync_required,
             output_truncated: run.output_truncated,
         }
+    }
+
+    /// The run's own binding, for a run this daemon still holds.
+    ///
+    /// A cancel's authority is the **run's own** binding. The runs are in
+    /// memory, so this answers `None` for a run the daemon does not hold.
+    pub async fn scope_for(&self, run_id: &str) -> Option<HumanShellRunScope> {
+        let mut inner = self.inner.lock().await;
+        Self::prune(&mut inner);
+        let record = inner.runs.get(run_id).cloned()?;
+        let run = record.lock();
+        Some(run.scope.clone())
     }
 
     pub async fn cancel(&self, scope: &HumanShellRunScope, run_id: &str) -> CoreResponse {

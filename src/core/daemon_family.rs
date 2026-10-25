@@ -30,6 +30,7 @@
 //! | `scratch` | `daemon_scratch.rs::handle_scratch_request` | M006: the read-only scratch usage census over the daemon-owned disposable cache |
 //! | `git` | `daemon_reads.rs::handle_git_request` | Phase 3: read-only git facts (status, diff summary, branch list) for a project's bound repository |
 //! | `skills` | `daemon_reads.rs::handle_skill_catalogue_request` | Phase 3: the skill catalogue a project can discover |
+//! | `commands` | `daemon_commands.rs::handle_command_request` | M007-D: the daemon-owned command catalog and the daemon-effect command executor |
 
 use crate::protocol::core::CoreRequest;
 
@@ -64,6 +65,10 @@ pub enum DaemonRequestFamily {
     /// Phase 3. Read authority only: the skill catalogue a project can
     /// discover.
     Skills,
+    /// M007-D. The daemon owns the command catalog and executes the
+    /// daemon-effect command forms under `command.execute`, auditing each
+    /// one as a canonical `Run` (ADR-0052).
+    Commands,
 }
 
 impl DaemonRequestFamily {
@@ -102,6 +107,13 @@ impl DaemonRequestFamily {
             // the catalogue from the canonical skill registry.
             CoreRequest::GitRead { .. } => Self::Git,
             CoreRequest::SkillCatalogueList { .. } => Self::Skills,
+            // M007-D: the daemon-owned command catalog and the daemon-effect
+            // command executor. Both are project-scoped: the scope names the
+            // project and the workspace the catalog is read for and the
+            // command runs in.
+            CoreRequest::CommandCatalog { .. } | CoreRequest::CommandExecute { .. } => {
+                Self::Commands
+            }
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -387,6 +399,7 @@ impl DaemonRequestFamily {
             Self::Scratch => "src/core/daemon_scratch.rs::handle_scratch_request",
             Self::Git => "src/core/daemon_reads.rs::handle_git_request",
             Self::Skills => "src/core/daemon_reads.rs::handle_skill_catalogue_request",
+            Self::Commands => "src/core/daemon_commands.rs::handle_command_request",
         }
     }
 }
