@@ -45,9 +45,10 @@ WHAT THIS GUARD DOES
 
 WHAT THIS GUARD DELIBERATELY DOES NOT DO
     It does not decide whether the shared root's reach over other linked
-    worktrees' ``HEAD`` files is acceptable. That is an **open capability
-    question** recorded in ADR-0048's amendment; the maintainer has not chosen
-    a disposition, and this guard does not choose one either.
+    worktrees' ``HEAD`` files is acceptable, and it does not enforce the
+    disposition the maintainer chose for it. That disposition is **defence in
+    depth** — a pinned ``core.hooksPath`` — and it is enforced by
+    ``scripts/check_contained_worktree_hooks_path.py``.
 
     It does not narrow the grant. Narrowing the accepted path to the linked
     worktree's own administration directory is a **new ADR**.

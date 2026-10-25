@@ -166,7 +166,8 @@ result would be a false security claim.
    `<common-gitdir>/worktrees/` — the **shared** administration root. That
    root is the **parent** of every linked worktree's own administration
    directory, so the child may write another linked worktree's `HEAD` under
-   it; the amendment below records that consequence as an open question.
+   it; the amendment below records that consequence, and the disposition
+   chosen for it.
    Every other path under the Git metadata, including `refs`, `objects`,
    `index`, `config`, `hooks` and `packed-refs`, is read-only to the child.
    The narrower grant — the linked worktree's own administration directory
@@ -181,8 +182,9 @@ result would be a false security claim.
 5. **The sandbox is the security property, not the configuration.** The child
    runs with a sanitized environment, `GIT_CONFIG_NOSYSTEM=1`,
    `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`,
-   `GIT_TERMINAL_PROMPT=0`. The repository's own configuration may still
-   define filters, hooks, merge drivers, fsmonitor, diff drivers and credential
+   `GIT_TERMINAL_PROMPT=0`, and its argv pins `core.hooksPath`, so the
+   repository's own hooks cannot run. The repository's own configuration may
+   still define filters, merge drivers, fsmonitor, diff drivers and credential
    helpers. The child therefore remains **untrusted code**, and it is the
    sandbox — not the absence of that configuration — that keeps it from the
    host. No claim of "no filter could run" is made; the claim is "a filter that
@@ -487,10 +489,15 @@ shared root rather than as a linked worktree's own directory.
 The shared root is the **parent** of every linked worktree's administration
 directory, so the child can write **any** of them — including another linked
 worktree's `HEAD`. The path to that write is real: `git worktree add` runs
-the repository's `post-checkout` hook, and the contained child's argv does not
-pin `core.hooksPath`. A repository that declares such a hook therefore runs
-it inside the containment, and the hook can repoint another worktree's branch
-pointer.
+the repository's `post-checkout` hook, and at the time of this amendment the
+contained child's argv did not pin `core.hooksPath`. A repository that declares
+such a hook therefore ran it inside the containment, and the hook could
+repoint another worktree's branch pointer.
+
+> **Superseded in part.** The hooks-path pin that closes this path is recorded
+> in "Amendment: the hooks-path pin" below, and the disposition chosen for
+> this consequence is in "Disposition: defence in depth — the hooks-path pin".
+> The reach itself is unchanged: the shared root is still writable.
 
 This is not a new capability of the child. It is what the accepted path
 always permitted, and the clause did not say so. It is recorded here because
@@ -503,30 +510,118 @@ What is **not** affected: the child's own `refs` remain read-only.
 `<common-gitdir>/worktrees`. The child cannot create a branch, and clause 2
 still holds as written.
 
-### Disposition: an open capability question, not an acceptance
+### Disposition: defence in depth — the hooks-path pin
 
-**The maintainer has not chosen a disposition for this consequence, so this
-amendment does not record one.** The consequence is recorded here as an **open
-capability question**, and the milestone that corrected the prose stops at
-the documentation correction rather than recording an acceptance that was not
-made.
+**The maintainer has chosen: defence in depth.** The shared administration root
+stays writable, and the reach over other linked worktrees' `HEAD` files stays an
+accepted consequence of this ADR's accepted path — it is not narrowed, and
+narrowing it remains a **new ADR** rather than an edit to this one. What the
+maintainer chose is that the most obvious path to that reach is removed: the
+contained child's argv pins `core.hooksPath`, so the repository's own hooks
+cannot run inside the containment at all.
 
-The question is whether the shared root's reach over **other** linked
-worktrees' `HEAD` files is an acceptable consequence of ADR-0048's accepted
-path. The candidates are listed for the maintainer to choose among; this
-amendment selects none of them:
+The pin is `-c core.hooksPath=/dev/null`, on the **argv**, ahead of the
+subcommand. It is deliberately **not** carried by the environment: Git's
+command-scope configuration variables (`GIT_CONFIG_COUNT` and friends) are
+**hard-denied** by the child's environment policy, so a pin carried there would
+be silently dropped and the disposition would be a no-op. A `-c` on the argv is
+the same mechanism the daemon's own trusted Git reads already use, and it
+outranks the repository's own local configuration.
 
-* **Accept as recorded** — the shared root stays, and the reach over other
-  worktrees' `HEAD` files becomes an accepted, documented consequence of this
-  ADR.
-* **Narrow the grant** to the linked worktree's own administration directory.
-  This **changes the accepted contract** and requires a **new ADR**; it is not
-  an edit to this one, and this milestone does not do it.
-* **Defence in depth** — pin `core.hooksPath` for the contained child, so the
-  repository's `post-checkout` hook does not run inside the containment. This
-  removes the most obvious path to the capability; it does not close it,
-  because the shared root stays writable.
+**What this disposition does not do.** It does not close the capability. The
+shared root stays writable, so the child can still write another linked
+worktree's `HEAD`; what it can no longer do is get there through the
+repository's hook. The sandbox remains the security property, and a hostile
+`filter.*.smudge` still runs — clause 5's other configuration surfaces are
+unchanged. The pin removes one obvious path, not all of them.
 
-Until the maintainer chooses, the milestone
+The disposition is implemented, guarded and proved:
+
+* `src/git_contained_worktree.rs` — the constant
+  `WORKTREE_CHILD_HOOKS_PATH_PIN` and the argv builder that applies it to
+  **both** steps of the operation.
+* `scripts/check_contained_worktree_hooks_path.py` — the static guard, which
+  also refuses an environment-carried pin and checks that this section records
+  the disposition as chosen.
+* `tests/contained_worktree_hooks_path.rs` — the behavioural proof: the
+  repository's `post-checkout` hook runs under the production argv with the
+  pin pair removed, and does **not** run under the production argv.
+
+The milestone
 `plans/implementation/linux-trusted-git-cost-corrective/009-contained-worktree-grant-precision.md`
-records this as an open question and stops at the documentation correction.
+records the disposition in its closure record.
+
+## Amendment: the hooks-path pin (2026-10-25)
+
+Amended 2026-10-25, after the maintainer chose a disposition for the capability
+the shared administration root carries. This amendment records that choice, the
+mechanism that implements it, and what it does **not** change. It does not
+narrow the grant, does not change the accepted path, and does not weaken a
+clause.
+
+### What changed
+
+**Clause 5** now says that the child's argv pins `core.hooksPath`, and no
+longer lists *hooks* among the repository configuration surfaces that still
+apply. The other surfaces are unchanged: a hostile `filter.*.smudge` still
+runs, and it is the sandbox that contains it.
+
+**Clause 3** no longer says the consequence is recorded "as an open question".
+The consequence is recorded, and the disposition chosen for it is named.
+
+**The disposition section** now records the choice itself, in place of the
+three candidates the earlier amendment listed for the maintainer to choose
+among. The three candidates remain true as history: the chosen one is the
+third, "defence in depth".
+
+### The mechanism, and why it is on the argv
+
+The pin is `-c core.hooksPath=/dev/null`, carried on the child's **argv**,
+ahead of the subcommand, and applied to **both** steps of the operation.
+
+It is not carried by the environment, and that is a substantive choice rather
+than a stylistic one. Git's command-scope configuration can also be carried by
+`GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, and that
+mechanism does outrank the repository's own configuration file — but those
+variables are **hard-denied** by the child's environment policy, so a pin
+carried there would be dropped before the child ever saw it, and the
+disposition would be a no-op that reads like a control. A `-c` on the argv is
+the mechanism the daemon's own trusted Git reads already use
+(`egggit::add_trusted_git_overrides`), and it outranks the repository's local
+configuration.
+
+### What does not change
+
+* **The accepted path.** `<common-gitdir>/worktrees/` only, with the branch
+  owned by the daemon.
+* **The writable set.** Still exactly `{checkout, scratch,
+  <common-gitdir>/worktrees/}`.
+* **The capability.** The shared root stays writable, so the child can still
+  write another linked worktree's `HEAD`. The pin removes the most obvious
+  path to that write; it does not close it. The sandbox remains the security
+  property.
+* **Clause 2.** The child's own `refs` remain read-only, so it still writes
+  **no ref** and cannot create a branch.
+* **The operation.** Still one operation in two steps, the attach step still
+  runs last with the daemon's fixed target.
+
+### What proves it
+
+The disposition is enforced from three directions, and each one fails on its
+own:
+
+* `scripts/check_contained_worktree_hooks_path.py` — the static guard. It
+  checks that the pin constant is declared with the pinned key and a value
+  that names no hook directory, that the argv builder applies it ahead of
+  every step-specific subcommand, that the child's environment carries **no**
+  command-scope pin (the hard-denied route), that this ADR records the
+  disposition as chosen, and that the behavioural proof exists.
+* `tests/contained_worktree_hooks_path.rs` — the behavioural proof. It runs
+  the repository's `post-checkout` hook under the production argv with the pin
+  pair removed (the hook runs) and under the production argv (the hook does
+  not), so the claim cannot be satisfied by a child that never ran hooks for
+  an unrelated reason.
+* `tests/contained_worktree_c008.rs` — the containment test. Its hook
+  assertion is now the negative one: the repository's hook does not run at
+  all, which is a *stronger* statement than the one it made before, when the
+  hook was required to run and merely be contained.

@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C009 — Contained Worktree Grant Precision
 
-Status: closed — C009 closed (`plans/closure/linux-trusted-git-cost-corrective/009-status.md`). ADR-0048, the two code comments and the containment test now all name the shared administration root; the obtained-root check compares paths for equality; and the new guard rejects an injected divergence in either direction. The amendment records the consequence that the child can write another linked worktree's `HEAD` and records the maintainer's disposition as **not chosen** — narrowing the grant would need a new ADR.
+Status: closed — C009 closed (`plans/closure/linux-trusted-git-cost-corrective/009-status.md`). ADR-0048, the two code comments and the containment test now all name the shared administration root; the obtained-root check compares paths for equality; and the new guard rejects an injected divergence in either direction. The amendment records the consequence that the child can write another linked worktree's `HEAD`, and the maintainer's disposition for it is now **chosen**: **defence in depth** — the contained child's argv pins `core.hooksPath`, so the repository's own hooks cannot run inside the containment. The grant is unchanged, so narrowing it would still need a new ADR.
 Review baseline: `f1b83a7a7` (`origin/main`, 2026-10-23) — the tree §3's evidence was gathered against
 Implementation baseline: `f2639b5d2` (`origin/main`, 2026-10-23) — the tree this work is applied to
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`
@@ -275,7 +275,7 @@ The hosted native-containment lane (`linux-m004-native.yml`, job `process-ipc`) 
 
 Report rather than improvise if:
 
-- **The maintainer has not chosen a disposition for the "another worktree's `HEAD` is writable" consequence.** The amendment must then record it as an open question and this milestone must stop after WP1's documentation correction, rather than recording an acceptance that was not made. Narrowing the grant is a **new ADR** and is out of scope.
+- **The maintainer has not chosen a disposition for the "another worktree's `HEAD` is writable" consequence.** The amendment must then record it as an open question and this milestone must stop after WP1's documentation correction, rather than recording an acceptance that was not made. Narrowing the grant is a **new ADR** and is out of scope. *(This condition was met: the milestone stopped at WP1. The maintainer chose the disposition afterwards — **defence in depth**, a pinned `core.hooksPath` — and it is recorded in the closure record's §14 (A14) and in ADR-0048.)*
 - **The obtained-root check's precision change causes a backend that previously passed to fail.** That backend was not obtaining the required root; report it rather than loosening the check.
 - **Renaming the test changes a filter used by CI or by another lane's path filter.** Report the coupling before renaming; the hosted lane's path filters are a real dependency.
 - **The guard cannot determine the ADR's named path** from the ADR's text. Report it — the guard must compare against the ADR, not against a copy of the path.

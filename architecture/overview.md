@@ -597,8 +597,8 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 342 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 98 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 61 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 99 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 62 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -638,6 +638,37 @@ sandbox C005 closure record's last open finding. *Integration test files* is
 **341**, re-measured on the tree with `python3 scripts/measure_overview_counts.py`
 rather than incremented. Every other row was confirmed unchanged by
 measurement.
+
+### Count reconciliation — the C009 hooks-path disposition (2026-10-25)
+
+Three rows moved because of a change on this line — the contained worktree
+child's argv now pins `core.hooksPath`, with a static guard and a standalone
+integration target proving it. *Guard scripts (all)* is **97**, *CI guard
+scripts* is **60** (the workflow gained the same guard and its self-test), and
+*Integration test files* is **342** — the standalone target
+`tests/contained_worktree_hooks_path.rs`. Every row was re-measured on the tree
+with `python3 scripts/measure_overview_counts.py` rather than incremented. The
+*quick* guard count moved **73 → 74**, the *quick runs 14 guards CI does not*
+difference is unchanged at **14** (the new guard runs in both lanes), and
+`AGENTS.md`'s published counts moved to **74 quick / 60 CI**. The quick lane's
+`==>` lines moved from 121 to **123** (`run_guards` **119**, `run_quick` **4**).
+Every other row was confirmed unchanged by measurement.
+
+The comment corpus moved **125,212 → 125,249** comment lines and **1,103,943 →
+1,104,302** words, at a **0.1337** ratio. The move is the cost of the new
+target's documentation; it is partly offset by two genuine per-file reductions
+in the same diff — `src/git_contained_worktree.rs` **284 → 280** and
+`tests/contained_worktree_c008.rs` **171 → 170** — where three comment blocks
+in the source duplicated what the named functions already say, and the
+containment test's obtained-root block repeated the same paragraph the source
+documents. The corpus remains **above** the 124,865 pre-reduction figure, which
+is a historical reference and not a guard.
+
+The table itself was also **repaired**: it carried **two** copies of the three
+count rows — one set at **341** and one at **340** — a merge artifact from an
+earlier reconciliation, in which both sides moved the same rows without the
+same values. The duplicate was collapsed to one row set carrying the tree's
+measurement, which is the shape the table is supposed to have.
 
 ### Count reconciliation — the ninth reconciliation with `main` (2026-10-25)
 
@@ -1174,7 +1205,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (97 guards) and additionally covers audit coverage/invariants, authorization matrix, command catalog ownership, discovery invariants, frontend action set, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (99 guards) and additionally covers audit coverage/invariants, authorization matrix, command catalog ownership, discovery invariants, frontend action set, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 

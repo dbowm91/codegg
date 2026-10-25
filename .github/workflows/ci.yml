@@ -180,6 +180,12 @@ jobs:
       - name: Contained worktree grant guard
         run: python3 scripts/check_contained_worktree_grant.py
 
+      - name: Contained worktree hooks-path guard (self-test)
+        run: python3 scripts/check_contained_worktree_hooks_path.py --self-test
+
+      - name: Contained worktree hooks-path guard
+        run: python3 scripts/check_contained_worktree_hooks_path.py
+
       - name: Writer-fence completeness guard (self-test)
         run: python3 scripts/check_writer_fence_completeness.py --self-test
 
