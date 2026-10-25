@@ -173,7 +173,7 @@ impl Tool for TerminalTool {
     }
 
     fn description(&self) -> &str {
-        "Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Command plus args join verbatim with spaces and run via `sh -c` — quote a `sh -c` script inside `command` (args are not re-quoted); stdout and stderr are both returned followed by `[exit code: N]`. Bash is the canonical model shell — prefer it for pipelines; human interactive terminals run in the TUI over the daemon interactive-process service"
+        "Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Command plus args join verbatim with spaces and run via `sh -c` — quote a `sh -c` script inside `command` (args are not re-quoted); stdout and stderr are both returned followed by `[exit code: N]`. Correct form is `command:\"echo hi\"` with empty `args`, or `command:'sh -c \"echo hi\"'` with empty `args`; do not pass `command:\"sh\"` with `args:[\"-c\", \"echo hi\"]` — args join verbatim so `sh -c echo hi` runs `echo` with `$0=hi` and prints nothing. Bash is the canonical model shell — prefer it for pipelines; human interactive terminals run in the TUI over the daemon interactive-process service"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -356,6 +356,20 @@ impl TerminalTool {
             "\n\n[exit code: {}]",
             output.exit_status.code().unwrap_or(-1)
         ));
+
+        // Model-facing guard for the `sh -c` double-wrap footgun: `command`
+        // plus `args` join verbatim, so `command:"sh"` with
+        // `args:["-c", "<script>"]` runs via `sh -c "sh -c <script>"` and the
+        // inner `sh -c echo hi` form prints nothing. Advisory only — the
+        // command above already ran. Prefer `command:"echo hi"` (empty args)
+        // or `command:'sh -c "echo hi"'` (empty args).
+        if command == "sh" && args.first().is_some_and(|first| first == "-c") {
+            result.push_str(&format!(
+                "\n\n[hint: `command:\"sh\"` with `args:[\"-c\", ...]` joined verbatim to `{full_command}`; \
+                that `sh -c <script>` without inner quoting runs the script name as a command with `$0` set and usually prints nothing. \
+                Use `command:\"echo hi\"` with empty `args`, or `command:'sh -c \"echo hi\"'` with empty `args` instead.]"
+            ));
+        }
 
         Ok(result)
     }

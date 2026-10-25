@@ -346,3 +346,70 @@ fn tool_program_rejects_mutation_tools() {
         );
     }
 }
+
+#[test]
+fn eggsact_deterministic_tools_pass_manifest() {
+    let registry = ToolRegistry::with_defaults();
+    let broker = ToolBroker::new(&registry);
+    let names: Vec<String> = [
+        "text_equal",
+        "text_diff_explain",
+        "text_replace_check",
+        "validate_json",
+        "validate_toml",
+        "command_preflight",
+        "path_normalize",
+        "text_security_inspect",
+        "text_inspect",
+        "config_preflight",
+        "identifier_inspect",
+        "structured_data_compare",
+        "text_fingerprint",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let resolved = program_manifest::resolve_manifest(&broker, &names);
+    assert!(
+        resolved.rejected.is_empty(),
+        "eggsact validators must pass the manifest gate, rejections: {:?}",
+        resolved.rejected
+    );
+    assert_eq!(
+        resolved.allowed_tools.len(),
+        13,
+        "all 13 pure validators must be allowlisted"
+    );
+    for contract in &resolved.allowed_tools {
+        assert_eq!(
+            contract.caller_policy,
+            ToolCallerPolicy::DirectOrProgrammatic,
+            "eggsact tool '{}' must be DirectOrProgrammatic",
+            contract.name
+        );
+        assert_eq!(
+            contract.effect_class,
+            ToolEffectClass::ReadOnly,
+            "eggsact tool '{}' must be ReadOnly",
+            contract.name
+        );
+    }
+}
+
+#[test]
+fn tool_program_description_names_programmable_allowlist() {
+    let tool = codegg::tool::tool_program::ToolProgramTool::new();
+    let description = tool.description();
+    assert!(
+        !description.contains("path_normalize"),
+        "tool_program description must not cite path_normalize as DirectOnly: {description}"
+    );
+    assert!(
+        description.contains("DirectOrProgrammatic"),
+        "tool_program description must name the programmable allowlist: {description}"
+    );
+    assert!(
+        description.contains("ReadOnly"),
+        "tool_program description must name the read-only effect classes: {description}"
+    );
+}

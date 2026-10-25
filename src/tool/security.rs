@@ -28,7 +28,7 @@ impl Tool for SecurityTool {
     }
 
     fn description(&self) -> &str {
-        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary)."
+        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict) and covers shell risk (rm -rf / returns critical); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary) and cover secrets/unsafe-deps/CORS/supply-chain, not shell — test strings without execution context are not findings there."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -42,7 +42,7 @@ impl Tool for SecurityTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Command string to classify (for classify_command)"
+                    "description": "Command string to classify for shell risk (for classify_command; rm -rf / returns critical)"
                 },
                 "path": {
                     "type": "string",
@@ -50,7 +50,7 @@ impl Tool for SecurityTool {
                 },
                 "text": {
                     "type": "string",
-                    "description": "Text content to inspect (for inspect_text)"
+                    "description": "Text content to inspect for secrets/unsafe-deps/CORS/supply-chain, not shell (for inspect_text; shell strings without execution context are not findings)"
                 },
                 "profile": {
                     "type": "string",
@@ -203,7 +203,7 @@ mod tests {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Command string to classify (for classify_command)"
+                    "description": "Command string to classify for shell risk (for classify_command; rm -rf / returns critical)"
                 },
                 "path": {
                     "type": "string",
@@ -211,7 +211,7 @@ mod tests {
                 },
                 "text": {
                     "type": "string",
-                    "description": "Text content to inspect (for inspect_text)"
+                    "description": "Text content to inspect for secrets/unsafe-deps/CORS/supply-chain, not shell (for inspect_text; shell strings without execution context are not findings)"
                 },
                 "profile": {
                     "type": "string",

@@ -47,6 +47,26 @@ impl EggsactTool {
             runtime,
         }
     }
+
+    /// Shared output schema for the deterministic result envelope.
+    ///
+    /// All 13 validators are pure functions over their inputs (no
+    /// filesystem reads, no external state); the envelope carries the
+    /// `ok` flag plus optional machine-code/result/findings fields.
+    /// No property is required so the schema stays permissive for
+    /// future envelope extensions.
+    fn contract_output_schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "description": "Deterministic eggsact result envelope (ok plus optional machine_code, result, findings).",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "machine_code": { "type": "string" },
+                "result": {},
+                "findings": { "type": "array" }
+            }
+        })
+    }
 }
 
 #[async_trait]
@@ -73,6 +93,33 @@ impl Tool for EggsactTool {
 
     fn expose_in_definitions(&self) -> bool {
         self.expose
+    }
+
+    /// Program-callable contract for the pure validator class.
+    ///
+    /// All 13 eggsact validators are pure functions over their inputs
+    /// (no filesystem or external reads), so every instance shares the
+    /// same contract: `DirectOrProgrammatic` (keeps direct model calls
+    /// working), `ReadOnly` (severity 0, the only class admissible under
+    /// both the `read_only` broker ceiling and the `ReadOnly|ReadValidate`
+    /// manifest gate; `SafeRepeat` would pass the context gate but fail
+    /// the manifest gate), `Idempotent`, and a permissive envelope
+    /// output schema.
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> crate::tool::contract::ToolContract {
+        let contract = crate::tool::contract::ToolContract {
+            name: tool_name.to_string(),
+            caller_policy: crate::tool::contract::ToolCallerPolicy::DirectOrProgrammatic,
+            effect_class: crate::tool::contract::ToolEffectClass::ReadOnly,
+            idempotency: crate::tool::contract::IdempotencyClass::Idempotent,
+            output_schema: Some(Self::contract_output_schema()),
+            ..crate::tool::contract::ToolContract::legacy(tool_name, input_schema)
+        };
+        debug_assert!(contract.validate().is_ok());
+        contract
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
@@ -155,7 +202,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "validate_json",
         "validate_json",
-        "Validate JSON syntax and report precise parse errors or structure info. Use before writing or editing JSON files.",
+        "Validate JSON syntax and report precise parse errors or structure info. Use before writing or editing JSON files. Pass real newlines, not literal backslash-n sequences.",
         simple_schema(json!({
             "text": { "type": "string", "description": "JSON text to validate" },
         }), &["text"]),
@@ -168,7 +215,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "validate_toml",
         "validate_toml",
-        "Validate TOML files (Cargo.toml, pyproject.toml, etc.) and report parse errors with line/column. Use before writing or editing TOML.",
+        "Validate TOML files (Cargo.toml, pyproject.toml, etc.) and report parse errors with line/column. Use before writing or editing TOML. Pass real newlines, not literal backslash-n sequences.",
         simple_schema(json!({
             "text": { "type": "string", "description": "TOML text to validate" },
         }), &["text"]),
@@ -181,7 +228,7 @@ pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>) -> (Vec<EggsactTool>, V
     always_visible.push(EggsactTool::new(
         "command_preflight",
         "command_preflight",
-        "Analyze a shell command before execution: parse argv, detect features (network, filesystem, env, process), find risk patterns, and return a verdict. Use before running bash commands.",
+        "Analyze a shell command before execution: parse argv, detect features (network, filesystem, env, process), find risk patterns, and return an ADVISORY verdict; never blocks except typed contract failures under block_on_definite. Use before running bash commands.",
         simple_schema(json!({
             "command": { "type": "string", "description": "Shell command to analyze" },
         }), &["command"]),

@@ -421,7 +421,10 @@ impl PreflightService {
             findings.push(PreflightFinding {
                 severity: PreflightSeverity::Warn,
                 machine_code: result.machine_code.clone(),
-                message: format!("Advisory command risk: {}", truncate(output, 200)),
+                message: format!(
+                    "Advisory command risk (advisory-block): {}",
+                    truncate(&sanitize_advisory_output(output), 200)
+                ),
                 location: None,
                 source_tool: "command_preflight".to_string(),
             });
@@ -429,7 +432,10 @@ impl PreflightService {
             findings.push(PreflightFinding {
                 severity: PreflightSeverity::Warn,
                 machine_code: result.machine_code.clone(),
-                message: format!("Command preflight: {}", truncate(output, 200)),
+                message: format!(
+                    "Command preflight: {}",
+                    truncate(&sanitize_advisory_output(output), 200)
+                ),
                 location: None,
                 source_tool: "command_preflight".to_string(),
             });
@@ -492,7 +498,10 @@ impl PreflightService {
             findings.push(PreflightFinding {
                 severity: PreflightSeverity::Warn, // Unicode defaults to warn, not block
                 machine_code: result.machine_code.clone(),
-                message: format!("Text security: {}", truncate(output, 200)),
+                message: format!(
+                    "Text security (advisory): {}",
+                    truncate(&sanitize_advisory_output(output), 200)
+                ),
                 location: None,
                 source_tool: "text_security_inspect".to_string(),
             });
@@ -500,7 +509,10 @@ impl PreflightService {
             findings.push(PreflightFinding {
                 severity: PreflightSeverity::Annotate,
                 machine_code: result.machine_code.clone(),
-                message: format!("Text security note: {}", truncate(output, 200)),
+                message: format!(
+                    "Text security note: {}",
+                    truncate(&sanitize_advisory_output(output), 200)
+                ),
                 location: None,
                 source_tool: "text_security_inspect".to_string(),
             });
@@ -615,6 +627,30 @@ fn structured_location(result: &EggsactCallResult) -> Option<PreflightLocation> 
 /// Truncate a string to max chars with ellipsis (UTF-8 safe).
 fn truncate(s: &str, max: usize) -> String {
     truncate_utf8_safe(s, max, "...").text
+}
+
+/// Rewrite raw enforcement-sounding tokens from the underlying deterministic
+/// tool output so an advisory finding never reads as an enforcement verdict.
+/// Detection is unchanged (callers still match on the raw `output`/structured
+/// fields); only the surfaced text changes. Severity stays `Warn`.
+fn sanitize_advisory_output(output: &str) -> String {
+    output
+        .replace("verdict: block", "verdict: advisory-block")
+        .replace("verdict:block", "verdict:advisory-block")
+        .replace("\"verdict\": \"block\"", "\"verdict\": \"advisory-block\"")
+        .replace("\"verdict\":\"block\"", "\"verdict\":\"advisory-block\"")
+        .replace("risk: high", "risk: advisory-high")
+        .replace("risk:high", "risk:advisory-high")
+        .replace("\"risk\": \"high\"", "\"risk\": \"advisory-high\"")
+        .replace("\"risk\":\"high\"", "\"risk\":\"advisory-high\"")
+        .replace(
+            "\"risk_level\": \"high\"",
+            "\"risk_level\": \"advisory-high\"",
+        )
+        .replace(
+            "\"risk_level\":\"high\"",
+            "\"risk_level\":\"advisory-high\"",
+        )
 }
 
 #[cfg(test)]

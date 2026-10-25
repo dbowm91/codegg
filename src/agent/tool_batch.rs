@@ -246,6 +246,37 @@ fn is_affirmatively_read_only_name(name: &str, input: &serde_json::Value) -> boo
     )
 }
 
+/// Whether this call is a bounded blocking wait that must never hold a batch
+/// execution permit.
+///
+/// `task` `wait`/`wait_group` and `job` `wait` long-poll up to their own
+/// `timeout_ms` while occupying the future that holds the permit. At
+/// `effective_parallelism == 1` that single held permit head-of-line-blocks
+/// every sibling behind the 30s admission deadline — the exact wedge in
+/// `agentfindings.md` §3.3, where one 60s `task wait` timed out seven
+/// siblings that never started executing. Kept narrow on purpose: only the
+/// two wait actions that block are matched, on the exact tool names the
+/// registry serves (`task`, `job`); every other action on those tools
+/// (`status`, `get`, `cancel`, `output`, …) still takes the normal permit.
+fn is_blocking_wait_call(tc: &ToolCall) -> bool {
+    let action = tc.arguments.get("action").and_then(|value| value.as_str());
+    matches!(
+        (tc.name.as_str(), action),
+        ("task", Some("wait" | "wait_group")) | ("job", Some("wait"))
+    )
+}
+
+/// Model-facing rejection for a blocking wait that shared a batch with other
+/// work. Deterministic: names the tool and action, states how many siblings
+/// it was batched with, and tells the model the one recovery step —
+/// re-issue the wait on its own. Mirrors the admission-timeout message style
+/// (what happened, what did not happen, what to do next).
+fn mixed_batch_wait_rejection(tool_name: &str, action: &str, work_count: usize) -> String {
+    format!(
+        "tool '{tool_name}' action '{action}' is a blocking wait and cannot share a batch with {work_count} other call(s): the wait was not started — re-issue it on its own after this batch completes. Blocking waits hold no batch execution slot but are still bounded by their own timeout_ms."
+    )
+}
+
 /// Whether a wired command preflight should force a human decision.
 ///
 /// Preflight is advisory and carries authority only when it actually found
@@ -1743,6 +1774,62 @@ impl AgentLoop {
             tool_results.push(result);
         }
 
+        // Fix 3.3 guardrail: a blocking wait batched with other work must not
+        // run in that batch. Waits bypass the execution semaphore below, so a
+        // mixed batch would no longer wedge — but the model still issued a
+        // shape that used to wedge seven siblings at effective_parallelism 1,
+        // so reject the wait deterministically and tell it to re-issue solo
+        // while the real work proceeds. Only the semaphore-bound lane counts
+        // as work here: `mcp__` calls never take an execution permit, so a
+        // wait batched with MCP-only calls cannot head-of-line-block anyone
+        // and is left alone. The MCP lane above is unchanged.
+        let regular_tools = {
+            let has_wait = regular_tools
+                .iter()
+                .any(|(_, tc, _, _)| is_blocking_wait_call(tc));
+            let has_work = regular_tools
+                .iter()
+                .any(|(_, tc, _, _)| !is_blocking_wait_call(tc));
+            if !(has_wait && has_work) {
+                regular_tools
+            } else {
+                let work_count = regular_tools
+                    .iter()
+                    .filter(|(_, tc, _, _)| !is_blocking_wait_call(tc))
+                    .count();
+                let mut work_tools = Vec::with_capacity(work_count);
+                for (idx, tc, receipt, command_preflight) in regular_tools {
+                    if is_blocking_wait_call(&tc) {
+                        let action = tc
+                            .arguments
+                            .get("action")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("wait");
+                        tracing::warn!(
+                            tool = %tc.name,
+                            action,
+                            work_count,
+                            "blocking wait batched with other work; rejecting the wait for solo re-issue"
+                        );
+                        tool_results.push((
+                            idx,
+                            tc.id.to_string(),
+                            ToolExecutionOutcome {
+                                status:
+                                    crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                                model_text: mixed_batch_wait_rejection(
+                                    &tc.name, action, work_count,
+                                ),
+                            },
+                        ));
+                    } else {
+                        work_tools.push((idx, tc, receipt, command_preflight));
+                    }
+                }
+                work_tools
+            }
+        };
+
         let mut results = Vec::with_capacity(regular_tool_count);
         let sem = Arc::new(tokio::sync::Semaphore::new(effective_max));
         let batch_queue_depth = Arc::new(AtomicUsize::new(0));
@@ -1783,6 +1870,7 @@ impl AgentLoop {
                 command_preflight,
                 transport_execution_audit.clone(),
             );
+            let is_wait_lane = is_blocking_wait_call(&tc);
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
             let batch_queue_depth = Arc::clone(&batch_queue_depth);
@@ -1800,17 +1888,31 @@ impl AgentLoop {
                 // Admission and execution have separate clocks. Cancellation
                 // of the owning batch drops this future and the guard, so a
                 // queued call cannot acquire a later permit after cancellation.
-                let permit = match acquire_batch_permit(
-                    Arc::clone(&sem),
-                    Arc::clone(&batch_queue_depth),
-                    id.to_string(),
-                    admission_timeout,
-                    effective_max,
-                )
-                .await
-                {
-                    Ok(permit) => permit,
-                    Err(error) => return (idx_for_results, id, Err(error)),
+                //
+                // Fix 3.3: blocking waits never take an execution permit, so a
+                // long-polling `task`/`job` wait cannot head-of-line-block
+                // siblings at effective_parallelism 1. The `Option` holds the
+                // permit for work calls and is `None` for waits; every
+                // `drop(permit)` below (plugin Deny/Blocked early drops and
+                // the terminal drop) releases `Some` and no-ops on `None`, so
+                // the wait lane needs no special casing at any drop site.
+                // Waits stay bounded by their own timeout plus the per-tool
+                // timeout wrapper further down.
+                let permit: Option<tokio::sync::OwnedSemaphorePermit> = if is_wait_lane {
+                    None
+                } else {
+                    match acquire_batch_permit(
+                        Arc::clone(&sem),
+                        Arc::clone(&batch_queue_depth),
+                        id.to_string(),
+                        admission_timeout,
+                        effective_max,
+                    )
+                    .await
+                    {
+                        Ok(permit) => Some(permit),
+                        Err(error) => return (idx_for_results, id, Err(error)),
+                    }
                 };
 
                 let pre_ctx = crate::hooks::HookContext {
@@ -3061,5 +3163,114 @@ mod batch_admission_tests {
             release.await.expect("release task");
             assert_eq!(queue_depth.load(Ordering::Acquire), 0);
         }
+    }
+
+    fn blocking_wait_call(name: &str, action: Option<&str>) -> ToolCall {
+        let mut arguments = serde_json::json!({});
+        if let Some(action) = action {
+            arguments["action"] = serde_json::json!(action);
+        }
+        ToolCall {
+            id: Arc::new("test-call".to_string()),
+            name: Arc::new(name.to_string()),
+            arguments,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_wait_predicate_matches_only_task_and_job_waits() {
+        for (name, action) in [
+            ("task", Some("wait")),
+            ("task", Some("wait_group")),
+            ("job", Some("wait")),
+        ] {
+            assert!(
+                is_blocking_wait_call(&blocking_wait_call(name, action)),
+                "{name} {action:?} must bypass the execution semaphore"
+            );
+        }
+        for (name, action) in [
+            ("task", Some("spawn")),
+            ("task", Some("status")),
+            ("task", Some("get")),
+            ("task", Some("cancel")),
+            ("task", Some("status_group")),
+            ("task", Some("cancel_group")),
+            ("job", Some("status")),
+            ("job", Some("cancel")),
+            ("job", Some("output")),
+            ("job", None),
+            ("task", None),
+            ("read", None),
+            ("bash", None),
+            ("mcp__server__tool", None),
+        ] {
+            assert!(
+                !is_blocking_wait_call(&blocking_wait_call(name, action)),
+                "{name} {action:?} must still take an execution permit"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mixed_batch_wait_rejection_tells_model_to_reissue_solo() {
+        let message = mixed_batch_wait_rejection("task", "wait", 7);
+        assert!(message.contains("task"));
+        assert!(message.contains("wait"));
+        assert!(message.contains('7'));
+        assert!(message.contains("was not started"));
+        assert!(message.contains("re-issue it on its own"));
+        assert!(message.contains("hold no batch execution slot"));
+        assert!(message.contains("bounded"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_lane_is_exempt_while_work_still_contends_for_permits() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = Arc::clone(&semaphore)
+            .acquire_owned()
+            .await
+            .expect("hold the only execution permit");
+        let queue_depth = Arc::new(AtomicUsize::new(0));
+        let wait_call = blocking_wait_call("task", Some("wait"));
+        let work_call = blocking_wait_call("read", None);
+        // Dispatch skips `acquire_batch_permit` for wait-lane calls, so the
+        // held permit gates nothing on that lane: queue accounting is never
+        // touched and the semaphore stays fully held.
+        assert!(is_blocking_wait_call(&wait_call));
+        assert!(!is_blocking_wait_call(&work_call));
+        assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        assert_eq!(semaphore.available_permits(), 0);
+        // Work on the same full semaphore still contends and reports the
+        // admission timeout without starting, exactly as before the fix.
+        let work = acquire_batch_permit(
+            Arc::clone(&semaphore),
+            Arc::clone(&queue_depth),
+            "queued-read".into(),
+            Duration::from_millis(10),
+            1,
+        )
+        .await;
+        assert!(matches!(work, Err(ToolError::Timeout(_))));
+        assert!(
+            work.unwrap_err()
+                .to_string()
+                .contains("did not start executing"),
+            "work admission failure must keep the model-facing wording"
+        );
+        assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(held);
+        let admitted = acquire_batch_permit(
+            Arc::clone(&semaphore),
+            Arc::clone(&queue_depth),
+            "queued-read".into(),
+            Duration::from_secs(1),
+            1,
+        )
+        .await
+        .expect("work admits after release");
+        drop(admitted);
+        assert_eq!(queue_depth.load(Ordering::Acquire), 0);
     }
 }

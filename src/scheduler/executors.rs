@@ -1254,6 +1254,14 @@ impl JobExecutor for SubagentJobExecutor {
                     format!("agent run preparation failed: {error}"),
                 );
             }
+            // Fix 3.1: the parent's `task get` showed no progress while the
+            // child was live. The durable sink records a heartbeat per call;
+            // the event sink forwards the message. Same sink the
+            // python/tool-program executors already use.
+            let _ = ctx
+                .progress
+                .progress(ctx.job_id(), "subagent: preparing delegated run")
+                .await;
             // M005 corrective C007 §6.4: the shared branch is entered on the
             // **placement**, not on `needs_isolation`. A run that asked for
             // the shared profile gets the shared checkout even when its own
@@ -1577,6 +1585,15 @@ impl JobExecutor for SubagentJobExecutor {
                 );
             }
             self.publish_run_projection(run_id).await;
+            // Fix 3.1: heartbeat the Running transition, same sink as above.
+            // Per-delegated-tool-call progress is not cheap from here — the
+            // model loop lives in the worker pool behind `send_and_wait` —
+            // so the lifecycle transitions plus the terminal outcome below
+            // are the progress trail.
+            let _ = ctx
+                .progress
+                .progress(ctx.job_id(), "subagent: running delegated run")
+                .await;
         }
 
         let durable_context = if let Some(run_id) = run_id.as_ref() {
@@ -1794,6 +1811,10 @@ impl JobExecutor for SubagentJobExecutor {
             false
         };
 
+        let _ = ctx
+            .progress
+            .progress(ctx.job_id(), "subagent: executing delegated run")
+            .await;
         let result = if run_id_for_lifecycle.is_some() {
             self.pool
                 .spawner()
@@ -1912,6 +1933,20 @@ impl JobExecutor for SubagentJobExecutor {
                 if let Some(run_id) = run_id_for_lifecycle.as_ref() {
                     self.publish_run_projection(run_id).await;
                 }
+                // Fix 3.1: heartbeat the terminal outcome so a finished run
+                // is observable even before the parent polls `task get`.
+                let outcome_word = match status {
+                    ExecutorStatus::Completed => "completed",
+                    ExecutorStatus::Cancelled => "cancelled",
+                    _ => "failed",
+                };
+                let _ = ctx
+                    .progress
+                    .progress(
+                        ctx.job_id(),
+                        &format!("subagent: delegated run {outcome_word}"),
+                    )
+                    .await;
                 ExecutorCompletion {
                     status,
                     summary: result.result,
@@ -2013,6 +2048,22 @@ impl JobExecutor for SubagentJobExecutor {
                 // lease for good — the checkout would never return to
                 // `ready`.
                 self.release_shared_checkout(shared_checkout.as_ref()).await;
+                // Fix 3.1: heartbeat the error-path outcome too, with the
+                // pool error bounded — the message is observational, not a
+                // second result record.
+                let detail: String = e.chars().take(200).collect();
+                let outcome_word = if ctx.cancellation.is_cancelled() {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                let _ = ctx
+                    .progress
+                    .progress(
+                        ctx.job_id(),
+                        &format!("subagent: delegated run {outcome_word}: {detail}"),
+                    )
+                    .await;
                 failure_completion(
                     started,
                     if ctx.cancellation.is_cancelled() {

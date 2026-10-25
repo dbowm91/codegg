@@ -156,8 +156,8 @@ impl Tool for ToolProgramTool {
         "Submit a read-only program that calls tools. The program is compiled to a safe IR, \
          validated against the tool manifest, and executed in a sandboxed interpreter. \
          Only tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
-         read-only effect class (ReadOnly, ReadValidate, SafeRepeat) may be called; \
-         DirectOnly tools (e.g. path_normalize) and mutating tools are rejected. \
+         read-only effect class (ReadOnly, ReadValidate) and an output schema may be called; \
+         DirectOnly and mutating tools are rejected. \
          Intermediate tool call outputs stay in the program artifact ledger and do not \
          enter the parent transcript."
     }
@@ -179,7 +179,7 @@ impl Tool for ToolProgramTool {
                     "items": { "type": "string" },
                     "description": "Tool names this program may call. All tools must hold \
                         a DirectOrProgrammatic or ProgrammaticOnly caller policy with a \
-                        read-only effect class (ReadOnly, ReadValidate, or SafeRepeat) \
+                        read-only effect class (ReadOnly or ReadValidate) \
                         and have output schemas."
                 },
                 "description": {
@@ -297,7 +297,7 @@ impl Tool for ToolProgramTool {
             }
             output.push_str(
                 "\nOnly tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
-                 read-only effect class (ReadOnly, ReadValidate, SafeRepeat) may be called; \
+                 read-only effect class (ReadOnly, ReadValidate) may be called; \
                  DirectOnly and mutating tools are rejected.",
             );
         }

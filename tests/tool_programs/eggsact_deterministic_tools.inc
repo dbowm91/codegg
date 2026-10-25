@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use codegg::eggsact::adapter::{EggsactConfig, EggsactRuntime};
+use codegg::tool::contract::{IdempotencyClass, ToolCallerPolicy, ToolEffectClass};
 use codegg::tool::deterministic::build_eggsact_tools;
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};
 
@@ -489,4 +490,99 @@ fn every_upstream_profile_is_accepted_by_the_runtime() {
             "upstream profile {profile:?} did not parse"
         );
     }
+}
+
+// ── 3.2: program-callable contract for the pure validator class ──
+
+#[test]
+fn eggsact_tools_are_programmable_with_read_only_contract() {
+    let runtime = test_runtime();
+    let (visible, deferred) = build_eggsact_tools(runtime);
+    let all: Vec<_> = visible.iter().chain(deferred.iter()).collect();
+    assert_eq!(all.len(), 13, "pure validator class must stay at 13 tools");
+    for tool in &all {
+        let contract = tool.contract(tool.name(), tool.parameters());
+        assert_eq!(
+            contract.caller_policy,
+            ToolCallerPolicy::DirectOrProgrammatic,
+            "Tool '{}' must be DirectOrProgrammatic",
+            tool.name()
+        );
+        assert_eq!(
+            contract.effect_class,
+            ToolEffectClass::ReadOnly,
+            "Tool '{}' must be ReadOnly to satisfy both the manifest and the read_only grant ceiling",
+            tool.name()
+        );
+        assert_eq!(
+            contract.idempotency,
+            IdempotencyClass::Idempotent,
+            "Tool '{}' must be Idempotent",
+            tool.name()
+        );
+        assert!(
+            contract.output_schema.is_some(),
+            "Tool '{}' must have an output schema for the manifest gate",
+            tool.name()
+        );
+        assert!(
+            contract.validate().is_ok(),
+            "Tool '{}' contract must validate",
+            tool.name()
+        );
+    }
+}
+
+#[test]
+fn validate_json_and_toml_hint_at_real_newlines() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let validate_json = visible
+        .iter()
+        .find(|t| t.name() == "validate_json")
+        .expect("validate_json must exist");
+    assert!(
+        validate_json.description().contains("real newlines"),
+        "validate_json must hint at real newlines: {}",
+        validate_json.description()
+    );
+    assert!(
+        validate_json.description().contains("backslash-n"),
+        "validate_json must name the backslash-n footgun: {}",
+        validate_json.description()
+    );
+    let validate_toml = visible
+        .iter()
+        .find(|t| t.name() == "validate_toml")
+        .expect("validate_toml must exist");
+    assert!(
+        validate_toml.description().contains("real newlines"),
+        "validate_toml must hint at real newlines: {}",
+        validate_toml.description()
+    );
+    assert!(
+        validate_toml.description().contains("backslash-n"),
+        "validate_toml must name the backslash-n footgun: {}",
+        validate_toml.description()
+    );
+}
+
+#[test]
+fn command_preflight_description_is_advisory() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let tool = visible
+        .iter()
+        .find(|t| t.name() == "command_preflight")
+        .expect("command_preflight must exist");
+    assert!(
+        tool.description().contains("ADVISORY"),
+        "command_preflight must label its verdict ADVISORY: {}",
+        tool.description()
+    );
+    assert!(
+        tool.description().contains("block_on_definite"),
+        "command_preflight must name the block_on_definite exception: {}",
+        tool.description()
+    );
 }

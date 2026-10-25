@@ -6040,6 +6040,18 @@ mod tests {
         );
         task_properties["group_id"]["description"] =
             serde_json::json!("Durable AgentRunGroupId for group actions");
+        // The agentfindings workstream documented the wait clamp and solo-issue
+        // guidance on `timeout_ms` after the M003 receipt was frozen. It is a
+        // post-M003 edit like the rest, so restore the frozen wording here.
+        let live_timeout_description = task_properties["timeout_ms"]["description"]
+            .as_str()
+            .expect("timeout_ms description");
+        assert_eq!(
+            live_timeout_description,
+            "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
+        );
+        task_properties["timeout_ms"]["description"] =
+            serde_json::json!("Bounded wait timeout in milliseconds");
         historical_schemas.insert("task".to_string(), historical_task_schema);
 
         // Reconstruct the frozen test-tool schema. These two fields were
@@ -6178,10 +6190,20 @@ mod tests {
                 serde_json::json!("Unified diff patch content"),
             ),
             Some(serde_json::json!(
-                "File contents for mode=create; unified diff for mode=update; rename header for mode=move"
+                "File contents for mode=create; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
             )),
             "unexpected post-M003 apply_patch.content description"
         );
+        // 3.5 made `patch` optional so `mode: delete` takes path only
+        // (delete ignores the body; callers may pass an empty string for
+        // compat). The M003-era schema required both fields, so restore it
+        // here and fail loudly if the live schema drifts again.
+        assert_eq!(
+            historical_apply_patch_schema["required"],
+            serde_json::json!(["path"]),
+            "unexpected post-M003 apply_patch required"
+        );
+        historical_apply_patch_schema["required"] = serde_json::json!(["path", "patch"]);
         historical_schemas.insert("apply_patch".to_string(), historical_apply_patch_schema);
 
         let mut historical_verify_schema = registry

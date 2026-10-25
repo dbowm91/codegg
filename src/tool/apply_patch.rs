@@ -20,6 +20,7 @@ const MAX_PATCH_SIZE: usize = 100_000;
 #[derive(Debug, Deserialize)]
 struct ApplyPatchInput {
     path: String,
+    #[serde(default)]
     patch: String,
     #[serde(default)]
     mode: Option<String>,
@@ -94,7 +95,7 @@ impl Tool for ApplyPatchTool {
                     "description": "Operation mode (default: update)"
                 }
             },
-            "required": ["path", "patch"]
+            "required": ["path"]
         })
     }
 

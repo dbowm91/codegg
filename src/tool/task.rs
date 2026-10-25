@@ -451,6 +451,33 @@ fn next_durable_depth(parent_depth: Option<u32>, max_depth: u32) -> Result<u32, 
     Ok(depth)
 }
 
+fn mailbox_state_str(state: &codegg_core::agent_run_control::MailboxState) -> &'static str {
+    match state {
+        codegg_core::agent_run_control::MailboxState::Queued => "queued",
+        codegg_core::agent_run_control::MailboxState::Delivered => "delivered",
+        codegg_core::agent_run_control::MailboxState::Acknowledged => "acknowledged",
+        codegg_core::agent_run_control::MailboxState::Superseded => "superseded",
+    }
+}
+
+/// Seconds since `since_ms` (a millisecond wall-clock timestamp), or
+/// `None` when the clock is unreadable. Progress ages are observational:
+/// a missing clock degrades the field to null rather than failing `get`.
+fn age_secs(since_ms: i64) -> Option<u64> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    now_ms
+        .checked_sub(since_ms.max(0) as u128)
+        .map(|age_ms| (age_ms / 1000) as u64)
+}
+
+/// Bounds for the parent-visible transcript tail in `task action=get`:
+/// the last few rows, hard-capped in characters.
+const TRANSCRIPT_TAIL_LINES: usize = 20;
+const TRANSCRIPT_TAIL_CHARS: usize = 2000;
+
 fn format_control_outcome(outcome: ControlOutcome) -> String {
     match outcome {
         ControlOutcome::Queued(message) => format!(
@@ -458,12 +485,14 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
             message.run_id,
             message.kind.as_str(),
             message.sequence,
-            match message.state {
-                codegg_core::agent_run_control::MailboxState::Queued => "queued",
-                codegg_core::agent_run_control::MailboxState::Delivered => "delivered",
-                codegg_core::agent_run_control::MailboxState::Acknowledged => "acknowledged",
-                codegg_core::agent_run_control::MailboxState::Superseded => "superseded",
-            }
+            mailbox_state_str(&message.state),
+        ),
+        ControlOutcome::DeliveryPending { message, reason } => format!(
+            "Control queued (delivery pending: {reason})\nRun: {}\nKind: {}\nSequence: {}\nState: {}",
+            message.run_id,
+            message.kind.as_str(),
+            message.sequence,
+            mailbox_state_str(&message.state),
         ),
         ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
         ControlOutcome::Status(run) => append_run_failure(
@@ -1310,14 +1339,21 @@ impl TaskTool {
     /// named field so its bound is observable. A run with no recorded
     /// result says so plainly: an empty string would read like "the child
     /// produced nothing".
-    fn format_durable_task_get(
+    ///
+    /// Parent-visible progress fields are additive: `live_attached` (a live
+    /// run loop is currently attached), `cancellation_requested`, the
+    /// scheduler job's state and age (queue-vs-executing), and a bounded
+    /// transcript tail. Every progress source degrades to a null/absent
+    /// marker when it is unavailable — a missing transcript store or job
+    /// row never fails `get`.
+    async fn format_durable_task_get(
         &self,
         task: &codegg_core::agent_run::AgentTaskRecord,
         run: &codegg_core::agent_run::AgentRunRecord,
         recorded: Option<codegg_core::run_result::AgentRunResult>,
     ) -> String {
         let result_ref = run.result_ref.clone().unwrap_or_default();
-        let text = append_run_failure(
+        let mut text = append_run_failure(
             format!(
                 "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
                 task.task_id,
@@ -1327,6 +1363,114 @@ impl TaskTool {
             ),
             run,
         );
+        // Parent-visible liveness: whether a live run loop is attached right
+        // now. A non-terminal run with no live loop is queued or between
+        // attempts, not executing. Absent without a control service.
+        let live_attached = match &self.run_control {
+            Some(control) => control.is_live(&run.run_id).await,
+            None => false,
+        };
+        let cancellation_requested = run.cancellation_requested;
+        // Queue-vs-executing age from the scheduler job row, when the run
+        // names one and the submission boundary is available. The attempt's
+        // heartbeat lives in the attempt rows, which the submission boundary
+        // does not expose, so only the job row's own timestamps are read;
+        // the run's attempt linkage is reported instead. Unavailable reads
+        // degrade to nulls rather than failing `get`.
+        let mut job_state: Option<String> = None;
+        let mut job_age_secs: Option<u64> = None;
+        let mut job_cancel_requested = false;
+        if let (Some(job_id), Some(submission)) = (run.job_id.clone(), self.submission.clone()) {
+            if let Ok(Some(job)) = submission.existing_job(&job_id).await {
+                job_state = Some(job.state.as_str().to_string());
+                job_age_secs = age_secs(job.created_at.timestamp_millis());
+                job_cancel_requested = job.cancel_requested_at.is_some();
+            }
+        }
+        let attempt_id = run
+            .attempt_id
+            .as_ref()
+            .map(|attempt| attempt.as_str().to_string());
+        let run_age_secs = age_secs(run.created_at);
+        let run_started_age_secs = run.started_at.and_then(age_secs);
+        // Bounded transcript tail: the last rows, hard-capped in
+        // characters. `absent` is typed — a run recorded before transcripts
+        // existed reads as "no transcript recorded", not as an empty one.
+        let mut transcript_state = "unavailable";
+        let mut transcript_tail = String::new();
+        let mut transcript_tail_truncated = false;
+        let mut transcript_total_entries: Option<i64> = None;
+        if let Some(store) = self.transcript_store.clone() {
+            match store.read(&run.run_id, 0, 1).await {
+                Ok(codegg_core::agent_run_transcript::AgentRunTranscriptRead::Present(page)) => {
+                    transcript_total_entries = Some(page.total_entries);
+                    if page.total_entries == 0 {
+                        transcript_state = "empty";
+                    } else {
+                        let from = page
+                            .total_entries
+                            .saturating_sub(TRANSCRIPT_TAIL_LINES as i64);
+                        match store.read(&run.run_id, from, TRANSCRIPT_TAIL_LINES).await {
+                            Ok(
+                                codegg_core::agent_run_transcript::AgentRunTranscriptRead::Present(
+                                    tail,
+                                ),
+                            ) => {
+                                transcript_state = "present";
+                                transcript_tail_truncated = page.total_entries
+                                    > TRANSCRIPT_TAIL_LINES as i64
+                                    || tail.has_more;
+                                let joined = tail
+                                    .entries
+                                    .iter()
+                                    .map(|entry| {
+                                        format!(
+                                            "{} [{}:{}] {}",
+                                            entry.ordinal,
+                                            entry.role.as_str(),
+                                            entry.kind.as_str(),
+                                            entry.redacted_body
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                if joined.len() > TRANSCRIPT_TAIL_CHARS {
+                                    let mut end = TRANSCRIPT_TAIL_CHARS;
+                                    while end > 0 && !joined.is_char_boundary(end) {
+                                        end -= 1;
+                                    }
+                                    transcript_tail = joined[..end].to_string();
+                                    transcript_tail_truncated = true;
+                                } else {
+                                    transcript_tail = joined;
+                                }
+                            }
+                            Ok(
+                                codegg_core::agent_run_transcript::AgentRunTranscriptRead::Absent,
+                            ) => {
+                                transcript_state = "absent";
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                Ok(codegg_core::agent_run_transcript::AgentRunTranscriptRead::Absent) => {
+                    transcript_state = "absent";
+                }
+                Err(_) => {}
+            }
+        }
+        text.push_str(&format!(
+            "\nLive attached: {live_attached}\nCancellation requested: {cancellation_requested}\nJob: {}",
+            match (&job_state, job_age_secs) {
+                (Some(state), Some(age)) => format!("{state} (age {age}s)"),
+                (Some(state), None) => state.clone(),
+                (None, _) => "unknown".to_string(),
+            },
+        ));
+        if !transcript_tail.is_empty() {
+            text.push_str(&format!("\nRecent transcript:\n{transcript_tail}"));
+        }
         let (state, note, body, recorded_status) = match recorded {
             Some(result) if !result.summary.trim().is_empty() => (
                 "recorded",
@@ -1359,6 +1503,18 @@ impl TaskTool {
             "recorded_result_status": recorded_status,
             "recorded_result_bytes": body.as_deref().map(str::len).unwrap_or(0),
             "recorded_result_limit_bytes": codegg_core::run_result::MAX_RESULT_SUMMARY_BYTES,
+            "live_attached": live_attached,
+            "cancellation_requested": cancellation_requested,
+            "job_state": job_state,
+            "job_age_secs": job_age_secs,
+            "job_cancel_requested": job_cancel_requested,
+            "attempt_id": attempt_id,
+            "run_age_secs": run_age_secs,
+            "run_started_age_secs": run_started_age_secs,
+            "transcript_state": transcript_state,
+            "transcript_tail": transcript_tail,
+            "transcript_tail_truncated": transcript_tail_truncated,
+            "transcript_total_entries": transcript_total_entries,
         })
         .to_string()
     }
@@ -1488,7 +1644,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. On the durable delegated path (a daemon-scheduled subagent) the child's completion is pushed as a durable terminal notice at the next turn boundary, so that promise holds there; the legacy in-process path has no such push. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration. A durable child that failed with a transient failure (provider rate limit or transient upstream error, deadline or budget exhaustion, or a tool permission refusal) can be continued with action=continue: it starts one new attempt of the same run, seeded with the child's recorded transcript, under the same tools, paths, sandbox, worktree and model as the first attempt. The bound is one continuation per terminal failure, only the parent that spawned the child may continue it, and a continuation cannot widen the child's authority. Use it when the failure was transient and the work is still wanted; an authentication failure or a cancellation is never continued, and a child that has already been continued is not continued again. Waits hold no batch execution slot: never batch a wait with work — issue waits solo or they head-of-line-block their siblings. The wait timeout is clamped to 30s."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1569,7 +1725,7 @@ impl Tool for TaskTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Bounded wait timeout in milliseconds"
+                    "description": "Bounded wait timeout in milliseconds, clamped to 30000 (30s). Issue waits solo, never batched with other work: a wait holds no batch execution slot and head-of-line-blocks its siblings."
                 },
                 "requests": {
                     "type": "array",
@@ -2451,7 +2607,7 @@ impl TaskTool {
                             .get_result(&run.run_id)
                             .await
                             .map_err(|e| ToolError::Execution(e.to_string()))?;
-                        self.format_durable_task_get(&task, &run, recorded)
+                        self.format_durable_task_get(&task, &run, recorded).await
                     }
                     None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
                 });

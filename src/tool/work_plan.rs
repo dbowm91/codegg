@@ -101,7 +101,7 @@ impl Tool for WorkPlanGetTool {
     }
 
     fn description(&self) -> &str {
-        "Read the durable WorkPlan projection: current/actionable items by default with bounded pagination"
+        "Read the durable WorkPlan projection: current/actionable items by default with bounded pagination. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -250,7 +250,7 @@ impl Tool for WorkPlanUpdateItemTool {
     }
 
     fn description(&self) -> &str {
-        "Update one WorkPlan item: status/blocker/next-action with revision checking (no host-evidence fabrication)"
+        "Update one WorkPlan item: status/blocker/next-action with revision checking (no host-evidence fabrication). Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
     }
 
     fn parameters(&self) -> serde_json::Value {

@@ -54,7 +54,7 @@ impl Tool for ListTool {
     }
 
     fn description(&self) -> &str {
-        "List directory tree with ignore patterns (node_modules, .git, etc.). Limited to 300 files by default."
+        "List directory tree with ignore patterns (node_modules, .git, etc.). Limited to 300 files by default. Workspace-scoped; resolves against the session workspace root."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -138,7 +138,7 @@ impl Tool for ListTool {
 
         if !dir_for_task.is_dir() {
             return Err(ToolError::Execution(format!(
-                "not a directory: {}",
+                "not a directory: {} (not under workspace root or not a directory in the session workspace; relative paths resolve against the session workspace root)",
                 dir_for_task.display()
             )));
         }

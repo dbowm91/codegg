@@ -29,7 +29,7 @@ impl Tool for GoalGetTool {
     }
 
     fn description(&self) -> &str {
-        "Get the current active goal for this session"
+        "Get the current active goal for this session. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -99,7 +99,7 @@ impl Tool for GoalUpdateProgressTool {
     }
 
     fn description(&self) -> &str {
-        "Update progress on the current active goal"
+        "Update progress on the current active goal. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -224,7 +224,7 @@ impl Tool for GoalRequestCompletionTool {
     }
 
     fn description(&self) -> &str {
-        "Request host verification and completion of the current active goal. Fails closed with `No active goal` when the host has established none — `goal_get` reports the same state as `{\"active\":false}`; use `todowrite` for in-turn steps instead."
+        "Request host verification and completion of the current active goal. Fails closed with `No active goal` when the host has established none — `goal_get` reports the same state as `{\"active\":false}`; use `todowrite` for in-turn steps instead. Map: goal is the session intent, work_plan is the actionable slice within it, work_order is the future-session queue, and todowrite tracks in-turn steps."
     }
 
     fn parameters(&self) -> serde_json::Value {
