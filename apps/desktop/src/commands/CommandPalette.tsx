@@ -22,6 +22,7 @@ import type {
   CommandCatalogView,
   CommandDescriptorView,
   CommandExecuteView,
+  CommandFormView,
 } from '../bridge-types';
 import { bridge } from '../bridge';
 
@@ -32,8 +33,14 @@ export interface CommandPaletteProps {
   routeGeneration: number | undefined;
   /** Close the palette. */
   onClose: () => void;
-  /** A frontend effect the palette dispatched locally. */
-  onFrontendEffect?: (command: CommandDescriptorView) => void;
+  /**
+   * A frontend effect the palette dispatched locally.
+   *
+   * The form comes with the command because the daemon publishes the
+   * declared action's wire name on the form: the renderer dispatches by
+   * the daemon's own answer, never by the command's spelling.
+   */
+  onFrontendEffect?: (command: CommandDescriptorView, form: CommandFormView) => void;
   /** A daemon-effect execution the daemon answered. */
   onDaemonResult?: (result: CommandExecuteView) => void;
 }
@@ -156,6 +163,60 @@ export function CommandPalette({
 
   const rows = useMemo(() => filterCommands(catalog, typed), [catalog, typed]);
 
+  /**
+   * The argument a row carries.
+   *
+   * A typed line names one command, so the typed argument belongs to that
+   * command alone. A row the typed line does not name runs with no
+   * argument, which is its default form.
+   */
+  const argumentFor = useCallback(
+    (command: CommandDescriptorView): string => {
+      const resolved = catalog ? resolveTypedLine(catalog, typed) : null;
+      if (!resolved || resolved.command.commandId !== command.commandId) return '';
+      return resolved.argument;
+    },
+    [catalog, typed],
+  );
+
+  const run = useCallback(
+    async (command: CommandDescriptorView, argument: string) => {
+      if (!catalog || routeGeneration === undefined) return;
+      const form = resolveForm(command, argument);
+      const shape = command.forms.find((candidate) => candidate.form === form);
+      if (!shape) return;
+      if (shape.kind === 'frontend_effect') {
+        // A frontend effect never reaches the daemon: the frontend owns it.
+        onFrontendEffect?.(command, shape);
+        onClose();
+        return;
+      }
+      if (!shape.daemonServed) {
+        // The daemon's catalog says it does not serve this form yet. The
+        // renderer says so rather than dispatching into a refusal.
+        setError(`${command.name} is not served by the daemon yet`);
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        const result = await bridge.commandExecute(
+          command.commandId,
+          form,
+          argument,
+          catalog.catalogVersion,
+          routeGeneration,
+        );
+        onDaemonResult?.(result);
+      } catch (cause: unknown) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [catalog, onClose, onFrontendEffect, onDaemonResult, routeGeneration],
+  );
+
   const submit = useCallback(async () => {
     if (!catalog || routeGeneration === undefined) return;
     const resolved = resolveTypedLine(catalog, typed);
@@ -165,38 +226,8 @@ export function CommandPalette({
       onClose();
       return;
     }
-    const form = resolveForm(resolved.command, resolved.argument);
-    const shape = resolved.command.forms.find((candidate) => candidate.form === form);
-    if (!shape) return;
-    if (shape.kind === 'frontend_effect') {
-      // A frontend effect never reaches the daemon: the frontend owns it.
-      onFrontendEffect?.(resolved.command);
-      onClose();
-      return;
-    }
-    if (!shape.daemonServed) {
-      // The daemon's catalog says it does not serve this form yet. The
-      // renderer says so rather than dispatching into a refusal.
-      setError(`${resolved.command.name} is not served by the daemon yet`);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await bridge.commandExecute(
-        resolved.command.commandId,
-        form,
-        resolved.argument,
-        catalog.catalogVersion,
-        routeGeneration,
-      );
-      onDaemonResult?.(result);
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
-  }, [catalog, onClose, onFrontendEffect, onDaemonResult, routeGeneration, typed]);
+    await run(resolved.command, resolved.argument);
+  }, [catalog, onClose, run, typed]);
 
   if (!open) return null;
 
@@ -221,22 +252,30 @@ export function CommandPalette({
       />
       {error ? <p className="cg-palette-error">{error}</p> : null}
       <ul className="cg-palette-list">
-        {rows.map((command) => (
-          <li
-            key={command.commandId}
-            className={
-              isDispatchable(command)
-                ? 'cg-palette-row'
-                : 'cg-palette-row cg-palette-row-unavailable'
-            }
-          >
-            <span className="cg-palette-name">{command.name}</span>
-            <span className="cg-palette-description">{command.description}</span>
-            {isDispatchable(command) ? null : (
-              <span className="cg-palette-unavailable">not served by the daemon yet</span>
-            )}
-          </li>
-        ))}
+        {rows.map((command) => {
+          const dispatchable = isDispatchable(command);
+          return (
+            <li
+              key={command.commandId}
+              className={dispatchable ? undefined : 'cg-palette-row-unavailable'}
+            >
+              {/* The row is a button, so every catalog command is reachable
+                  by mouse as well as by keyboard. */}
+              <button
+                type="button"
+                className="cg-palette-row"
+                disabled={!dispatchable}
+                onClick={() => void run(command, argumentFor(command))}
+              >
+                <span className="cg-palette-name">{command.name}</span>
+                <span className="cg-palette-description">{command.description}</span>
+              </button>
+              {dispatchable ? null : (
+                <span className="cg-palette-unavailable">not served by the daemon yet</span>
+              )}
+            </li>
+          );
+        })}
       </ul>
       {busy ? <p className="cg-palette-busy">Running…</p> : null}
     </div>

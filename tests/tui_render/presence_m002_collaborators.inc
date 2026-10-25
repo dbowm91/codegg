@@ -1,9 +1,7 @@
 //! Presence M002 — TUI collaborator and presence surface.
 //!
 //! TUI-side projection proof: daemon-owned snapshots render as bounded
-//! per-project collaborator state with stable ordering, stale/reconnect
-//! guards, privacy-identical unavailable rendering, and dialog focus
-//! that never mutates sessions.
+//! per-project collaborator state with stable ordering and stale guards.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,8 +10,9 @@ use async_trait::async_trait;
 use codegg::core::CoreClient;
 use codegg::error::AppError;
 use codegg::protocol::core::{
-    CoreEvent, CoreRequest, CoreResponse, EventEnvelope, PresenceActivityDto,
-    PresenceCapabilitiesDto, PresencePrincipalDto, PresenceSnapshotDto, RequestEnvelope,
+    CommandExecuteResultDto, CommandOutcomeStatusDto, CoreEvent, CoreRequest, CoreResponse,
+    EventEnvelope, PresenceActivityDto, PresenceCapabilitiesDto, PresencePrincipalDto,
+    PresenceSnapshotDto, RequestEnvelope,
 };
 use codegg::tui::app::TuiCommand;
 use tokio::sync::mpsc;
@@ -50,6 +49,29 @@ impl FakePresenceClient {
             max_contributions: 4096,
         }
     }
+
+    /// The answer for one project's snapshot.
+    fn snapshot_response(&self, project_id: &str) -> CoreResponse {
+        if self
+            .unauthorized
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p == project_id)
+        {
+            return CoreResponse::Error {
+                code: "project_not_found".to_string(),
+                message: "not found".to_string(),
+            };
+        }
+        match self.snapshots.lock().unwrap().get(project_id).cloned() {
+            Some(snapshot) => CoreResponse::PresenceSnapshot { snapshot },
+            None => CoreResponse::Error {
+                code: "project_not_found".to_string(),
+                message: "not found".to_string(),
+            },
+        }
+    }
 }
 
 #[async_trait]
@@ -62,20 +84,50 @@ impl CoreClient for FakePresenceClient {
             CoreRequest::PresenceCapabilities => Ok(CoreResponse::PresenceCapabilities {
                 capabilities: self.capabilities(),
             }),
-            CoreRequest::PresenceSnapshotGet { project_id } => {
-                if self.unauthorized.lock().unwrap().contains(&project_id) {
+            // M007-017: the read is a catalog form now, so the request is
+            CoreRequest::CommandExecute { request } => {
+                let ctx = codegg::core::daemon_commands::CommandContext {
+                    project_id: &request.scope.project_id,
+                    workspace_id: &request.scope.workspace_id,
+                    session_id: request.scope.session_id.as_deref(),
+                    argument: &request.argument,
+                    authority: None,
+                };
+                let Some(codegg::core::daemon_commands::CommandEffect::Ready(inner)) =
+                    codegg::core::daemon_commands::build_inner_request(
+                        &request.command_id,
+                        &request.form,
+                        &ctx,
+                    )
+                else {
                     return Ok(CoreResponse::Error {
-                        code: "project_not_found".to_string(),
-                        message: "not found".to_string(),
+                        code: "fixture_unsupported".to_string(),
+                        message: format!("{} has no daemon row", request.command_id),
                     });
-                }
-                match self.snapshots.lock().unwrap().get(&project_id).cloned() {
-                    Some(snapshot) => Ok(CoreResponse::PresenceSnapshot { snapshot }),
-                    None => Ok(CoreResponse::Error {
-                        code: "project_not_found".to_string(),
-                        message: "not found".to_string(),
-                    }),
-                }
+                };
+                let CoreRequest::PresenceSnapshotGet { project_id } = *inner else {
+                    return Ok(CoreResponse::Error {
+                        code: "fixture_unsupported".to_string(),
+                        message: "the command's row is not a presence read".to_string(),
+                    });
+                };
+                let inner = self.snapshot_response(&project_id);
+                Ok(CoreResponse::CommandExecute {
+                    result: CommandExecuteResultDto {
+                        run_id: "run-1".to_string(),
+                        command_id: request.command_id.clone(),
+                        status: CommandOutcomeStatusDto::Completed,
+                        summary: "ok".to_string(),
+                        lines: Vec::new(),
+                        report: None,
+                        started_at_ms: 0,
+                        completed_at_ms: 1,
+                        response: Some(serde_json::to_value(&inner).expect("the response encodes")),
+                    },
+                })
+            }
+            CoreRequest::PresenceSnapshotGet { project_id } => {
+                Ok(self.snapshot_response(&project_id))
             }
             _ => Ok(CoreResponse::Error {
                 code: "unsupported".to_string(),
@@ -281,7 +333,7 @@ fn app_reconnect_resyncs_active_project() {
     let new_epoch = app.presence.on_reconnect();
     assert_ne!(epoch, new_epoch);
     assert!(app.presence.get("proj-a").unwrap().needs_resync);
-    // Full reconnect path also bumps the routing epoch for stale-completion
+    // Full reconnect path also bumps the routing epoch
     // rejection. Give the app a fake client so the auto-refresh it triggers
     // negotiates support instead of marking unsupported.
     let mut app2 = app_with_project("proj-a");

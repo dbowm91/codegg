@@ -87,6 +87,7 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     ("chat_read", "", "Collaboration"),
     ("observe", "", "Collaboration"),
     ("collaborators", "", "Collaboration"),
+    ("collaborators", "presence", "Collaboration"),
 ];
 
 /// The families the migrated commands cover.
@@ -1033,5 +1034,5 @@ fn a_frontend_effect_is_dispatched_from_the_declared_action() {
             }
         }
     }
-    assert_eq!(checked, 32, "32 forms are frontend effects");
+    assert_eq!(checked, 38, "38 forms are frontend effects");
 }

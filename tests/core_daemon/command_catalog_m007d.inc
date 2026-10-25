@@ -7,14 +7,12 @@
 //! * the daemon serves its own catalog, and the catalog it serves is the
 //!   catalog the domain module holds;
 //! * a command execution is **refused** — with a typed reason and no run —
-//!   when the command is unknown, when the form is a frontend effect, when
-//!   the catalog version is stale, or when the argument is over its bound;
-//! * a daemon-effect execution is audited as a canonical `Run`, and the run
-//!   survives the execution's outcome.
+//!   when the command is unknown, the form is a frontend effect, the
+//!   catalog version is stale, or the argument is over its bound;
+//! * a daemon-effect execution is audited as a canonical `Run`.
 //!
 //! The TUI half — that the TUI's commands keep their identity, their labels
-//! and their keys — is covered by the TUI's own regression tests and by
-//! `scripts/check_command_catalog_ownership.py`.
+//! and their keys — is covered by the TUI's own regression tests.
 
 use super::common;
 
@@ -162,8 +160,8 @@ async fn command_catalog_serves_the_daemon_catalog() {
     }
 }
 
-/// The catalog's classification is the reviewed one: 161 commands, 166
-/// forms, 134 daemon-effect forms and 32 frontend-effect forms.
+/// The catalog's classification is the reviewed one: 161 commands, 167
+/// forms, 129 daemon-effect forms and 38 frontend-effect forms.
 #[tokio::test]
 async fn command_catalog_carries_the_reviewed_classification() {
     let pool = migrated_pool().await;
@@ -191,11 +189,11 @@ async fn command_catalog_carries_the_reviewed_classification() {
     );
     assert_eq!(
         daemon_effect + frontend_effect,
-        166,
-        "the catalog holds 166 command forms"
+        167,
+        "the catalog holds 167 command forms"
     );
-    assert_eq!(daemon_effect, 134, "134 forms are daemon effects");
-    assert_eq!(frontend_effect, 32, "32 forms are frontend effects");
+    assert_eq!(daemon_effect, 129, "129 forms are daemon effects");
+    assert_eq!(frontend_effect, 38, "38 forms are frontend effects");
 }
 
 /// An unknown command identity is refused, with a reason and no run.
@@ -561,6 +559,53 @@ async fn command_catalog_publishes_the_daemons_serve_ability() {
             }
         }
     }
-    assert_eq!(frontend, 32, "32 forms are frontend effects");
+    assert_eq!(frontend, 38, "38 forms are frontend effects");
     assert!(served > 0, "the daemon must publish the forms it serves");
+}
+
+/// The catalog publishes the action that serves each frontend-effect form:
+/// the kind says **who** owns the effect, the action says **what** to do.
+#[tokio::test]
+async fn command_catalog_publishes_the_action_of_every_frontend_effect() {
+    let pool = migrated_pool().await;
+    let daemon = daemon_with_run_store(pool, std::env::temp_dir().join("m007d-actions"));
+    let catalog = read_catalog(&daemon).await;
+
+    let mut frontend = 0usize;
+    for command in &catalog.commands {
+        for form in &command.forms {
+            match form.kind {
+                codegg_protocol::core::CommandKindDto::FrontendEffect => {
+                    let published = form.action.as_deref().unwrap_or_else(|| {
+                        panic!(
+                            "{}/{} is a frontend effect and must name the action that serves it",
+                            command.command_id, form.form
+                        )
+                    });
+                    let declared = codegg_core::frontend_action::action_for_form(
+                        &command.command_id,
+                        &form.form,
+                    )
+                    .map(|action| action.as_str().to_string());
+                    assert_eq!(
+                        Some(published.to_string()),
+                        declared,
+                        "{}/{} must publish the declared action's own wire name",
+                        command.command_id,
+                        form.form
+                    );
+                    frontend += 1;
+                }
+                codegg_protocol::core::CommandKindDto::DaemonEffect => {
+                    assert!(
+                        form.action.is_none(),
+                        "{}/{} is a daemon effect and names no frontend action",
+                        command.command_id,
+                        form.form
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(frontend, 38, "38 forms are frontend effects");
 }

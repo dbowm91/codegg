@@ -73,6 +73,7 @@ pub(crate) fn inner_request_for_test(request: &CommandExecuteRequestDto) -> Opti
         workspace_id: &request.scope.workspace_id,
         session_id: request.scope.session_id.as_deref(),
         argument: &request.argument,
+        authority: None,
     };
     match crate::core::daemon_commands::build_inner_request(
         &request.command_id,

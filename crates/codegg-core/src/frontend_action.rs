@@ -1,16 +1,13 @@
 //! M007-D: the declared frontend-action set.
 //!
 //! ADR-0052 (accepted 2026-10-24) gives the frontend one bounded set of
-//! actions it may dispatch locally. Every **frontend-effect** form in the
-//! daemon's catalog resolves to exactly one declared action here, and every
-//! declared action resolves to at least one frontend-effect form.
+//! actions it may dispatch locally. Every **frontend-effect** form resolves
+//! to exactly one declared action, and every action to at least one form.
 //!
 //! A frontend that dispatches an action outside this set is a defect:
-//! `scripts/check_frontend_action_set.py` proves the set is closed and that
-//! no declared action reaches daemon-owned state.
+//! `scripts/check_frontend_action_set.py` proves the set is closed.
 //!
-//! The set is plain data with no frontend type in it, so `codegg-core`
-//! stays UI-free.
+//! The set is plain data with no frontend type in it.
 
 use serde::{Deserialize, Serialize};
 
@@ -19,10 +16,9 @@ use crate::command_catalog::{the_catalog, CommandKind};
 /// What a declared frontend action is allowed to do.
 ///
 /// Every action in this set is **non-mutating** with respect to
-/// daemon-owned state. The one action that launches something is marked
+/// daemon-owned state. The one that launches something is marked
 /// [`FrontendActionDisposition::ProcessLaunching`], and it launches a
-/// frontend-local process (the user's own editor), not a CodeGG-managed
-/// one.
+/// frontend-local process (the user's own editor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendActionDisposition {
@@ -68,6 +64,12 @@ pub enum FrontendAction {
     OpenWorkspaceDashboard,
     ShowToolBackends,
     FocusTerminal,
+    ShowSkills,
+    ShowStatus,
+    ShowToolContracts,
+    ShowWorktrees,
+    ShowShellRuns,
+    ShowTerminal,
 }
 
 impl FrontendAction {
@@ -103,6 +105,12 @@ impl FrontendAction {
             Self::OpenWorkspaceDashboard => "open_workspace_dashboard",
             Self::ShowToolBackends => "show_tool_backends",
             Self::FocusTerminal => "focus_terminal",
+            Self::ShowSkills => "show_skills",
+            Self::ShowStatus => "show_status",
+            Self::ShowToolContracts => "show_tool_contracts",
+            Self::ShowWorktrees => "show_worktrees",
+            Self::ShowShellRuns => "show_shell_runs",
+            Self::ShowTerminal => "show_terminal",
         }
     }
 
@@ -137,6 +145,12 @@ impl FrontendAction {
         FrontendAction::OpenWorkspaceDashboard,
         FrontendAction::ShowToolBackends,
         FrontendAction::FocusTerminal,
+        FrontendAction::ShowSkills,
+        FrontendAction::ShowStatus,
+        FrontendAction::ShowToolContracts,
+        FrontendAction::ShowWorktrees,
+        FrontendAction::ShowShellRuns,
+        FrontendAction::ShowTerminal,
     ];
 }
 
@@ -303,6 +317,40 @@ static THE_FRONTEND_ACTION_SET: &[FrontendActionDeclaration] = &[
         action: FrontendAction::FocusTerminal,
         disposition: FrontendActionDisposition::NonMutating,
         forms: &[("terminal_focus", "")],
+    },
+    // The six forms M007-017 reclassified from daemon effects to frontend
+    // effects. Each arm performs its own effect, so each gets its own
+    // action. `terminal_show` is **not** `focus_terminal`: it opens the
+    // terminal box on a handle; `/terminal-focus` only takes the keyboard.
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowSkills,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("skills", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowStatus,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("status", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowToolContracts,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("tool_contracts", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowWorktrees,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("worktree", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowShellRuns,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("shell_list", "")],
+    },
+    FrontendActionDeclaration {
+        action: FrontendAction::ShowTerminal,
+        disposition: FrontendActionDisposition::NonMutating,
+        forms: &[("terminal_show", "")],
     },
 ];
 

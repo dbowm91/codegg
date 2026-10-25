@@ -431,6 +431,11 @@ export interface CommandFormView {
   // this to show a command the daemon does not serve as unavailable, rather
   // than dispatching into a refusal.
   daemonServed: boolean;
+  // The stable wire name of the declared frontend action this form resolves
+  // to, or null when the form is a daemon effect. The daemon publishes it, so
+  // the renderer dispatches by the daemon's own answer and never guesses an
+  // action from a command spelling.
+  action: string | null;
 }
 
 // One command in the daemon's catalog.
