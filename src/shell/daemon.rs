@@ -1184,7 +1184,7 @@ mod tests {
         ];
         for (origin, name) in origins {
             assert_eq!(
-                serde_json::to_value(&origin).unwrap(),
+                serde_json::to_value(origin).unwrap(),
                 serde_json::json!(name)
             );
             assert_eq!(origin_name(origin), name);
