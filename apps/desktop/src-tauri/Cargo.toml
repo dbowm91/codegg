@@ -14,6 +14,7 @@ tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
 codegg-client = { path = "../../../crates/codegg-client" }
+codegg-document = { path = "../../../crates/codegg-document" }
 codegg-protocol = { path = "../../../crates/codegg-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,3 +33,4 @@ uuid = { version = "1", features = ["v4"] }
 desktop-e2e = ["tauri-plugin-wdio-webdriver"]
 
 [dev-dependencies]
+async-trait = "0.1"

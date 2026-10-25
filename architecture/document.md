@@ -121,6 +121,52 @@ navigation are still reachable only from the agent tool path. That gap is
 M006-B and needs an ADR covering the delivery path and project-scoped
 authorization.
 
+## The desktop host as the second frontend consumer (M007-E)
+
+M007-E makes the desktop host the **second** frontend consumer of this
+foundation. The desktop host module is `apps/desktop/src-tauri/src/document.rs`;
+it constructs a `DocumentController` over the shared client exactly as the
+TUI's `TuiDocumentSession` does, and it changes **none** of the M005
+limitations: one writer per document, process-local and unpersisted local
+drafts, disk-authoritative agent reads, no CRDT/OT, the rejected LSP-preview
+apply into a dirty buffer, and the orphaned-draft-on-restart behaviour all
+hold unchanged.
+
+The shape is the TUI seam's shape, transposed to a host:
+
+- the host holds a **bounded viewport window** of the document, not the
+  document;
+- every mutating path is a `TextTransaction` applied through
+  `DocumentController` — `DocumentOpen`, `DocumentChange`, `DocumentSave`,
+  `DocumentStatusGet` — so the daemon grants and enforces the writer lease,
+  the base-revision check and the workspace containment. The host module
+  contains **no** `std::fs` and **no** `tokio::fs` call, and the guard
+  rejects one;
+- the undo/redo stack holds only *inverse* transactions, is depth- and
+  byte-capped, and is cleared on every reconciliation transition — so an
+  undo after a resync is **refused**, not applied against a moved base;
+- a save conflict is surfaced as a conflict and is **never** auto-resolved,
+  and the local draft is retained; a document that vanished under local edits
+  is surfaced as gone-with-draft, and the draft is retained.
+
+The guard that protects this is `scripts/check_desktop_editor_authority.py`.
+It fails on a host-side buffer construction, a host-side whole-document
+array, a host-side filesystem read, a host-side text field, a renderer-side
+text field, a renderer-side whole-document array, a renderer viewport
+concatenated into a retained array, a renderer-side filesystem read, a
+`contract-drift` mismatch between the Rust `*View` structs the host serves and
+their TypeScript interfaces, a guard that is not wired into the gate, and a
+guard that would be vacuous. It carries a `--self-test` that injects each of
+those eleven defect classes and proves the guard rejects it.
+
+The renderer gains one affordance class for this: `surface` — "a custom
+editing surface: an element that owns a caret and is focused by a click, but
+holds **no text of its own**". The editor's viewport cannot be an `editing`
+affordance, because a native text field would keep a second copy of the text.
+
+The LSP half is the **second** consumer of the ADR-0012 read surface and is
+covered in `architecture/lsp.md`.
+
 ## LSP, save, and external disk changes
 
 `egglsp` records each open document as `Disk` or `Managed`. Document service

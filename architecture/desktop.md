@@ -20,6 +20,17 @@ Tauri assets and IPC; it does not allow CDN scripts or `unsafe-eval`. The
 renderer does not access the local daemon transport or accept a raw
 `CoreRequest`.
 
+**The editor adds no renderer permission and no CSP relaxation.** The
+editor's surface is a bounded viewport over text the **daemon** owns: the
+host opens the document through the shared `DocumentController`, the renderer
+receives a window of lines and sends **edits**, not content. It declares no
+Tauri capability of its own, registers no plugin, and the production CSP and
+the empty `main` permission list are unchanged. The renderer's **own** write
+authority is nil — `scripts/check_desktop_editor_authority.py` fails on a
+renderer-side filesystem read, a renderer-side text field, a retained
+whole-document array and a viewport concatenated into one, and
+`scripts/check-desktop-boundary.sh` still holds.
+
 ## Bridge
 
 The Rust host owns one optional `LocalSocketClient` plus one explicit
@@ -399,7 +410,7 @@ activation: the desktop is a window, and the shortcuts belong to it.
 
 ## Deferred surfaces
 
-Editor and terminal, provider credentials, plugin UI, remote daemon access,
+Terminal, provider credentials, plugin UI, remote daemon access,
 signing, and distribution automation are not implemented. The live-turn
 built-app trajectory (assistant text, tool activity, permission round-trip
 against a deterministic offline provider) **is** implemented — see the
@@ -407,14 +418,23 @@ live-turn leg in the M004 `session` phase above, which asserts the typed
 `model_unselected` fail-closed path before arming a loopback mock model
 server and then a real assistant turn with a denied write.
 
-**The editor and the graphical surfaces are deferred but now planned.** The
-M007 line delivers, in order: the desktop build and hosted gate (M007-A), a
+**The editor is implemented; the terminal and the remaining graphical
+surfaces are deferred.** The
+M007 line delivered, in order: the desktop build and hosted gate (M007-A), a
 main chat region with a dockable side panel (M007-B), keyboard-first input
 with mouse parity (M007-C), the shared `/` command surface (M007-D,
 unblocked by ADR-0052's acceptance on 2026-10-24), and a first-party editor
 over the shared `DocumentController` and the native LSP read surface
-(M007-E). Until those milestones land, none of them is implemented and this
-list is accurate.
+(M007-E). The **editor surface** is implemented: the desktop opens a project
+document, edits it, undoes and redoes the edit, saves it, and reads LSP
+diagnostics, completion and navigation — over the **shared** document
+foundation, with the daemon owning the buffer and the host holding only a
+bounded viewport slice.
+
+The **graphical terminal**, a Git UI and the other graphical surfaces remain
+deferred. A third-party editor engine remains deferred too, and would need
+its own ADR, because adopting one changes the renderer's CSP, worker and
+bundle boundary.
 
 The renderer has gained a panel set over a projected session — activity, git,
 skills, subagents, tasks, tool detail, transcript and turn summary — and now

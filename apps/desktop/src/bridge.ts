@@ -17,6 +17,16 @@ import type {
   SubscriptionHandle,
   SubscriptionInfo,
 } from './bridge-types';
+import type {
+  EditorCompletionView,
+  EditorDiagnosticsView,
+  EditorEditView,
+  EditorNavigationView,
+  EditorOpenView,
+  EditorStateView,
+  EditorTreeView,
+  EditorViewportView,
+} from './editor/contract';
 
 export const bridge = {
   connect: () => invoke<ConnectionSnapshot>('desktop_connect'),
@@ -61,6 +71,33 @@ export const bridge = {
     invoke<GitReadView>('desktop_git_read', { operation, routeGeneration }),
   skillCatalogue: (routeGeneration: number) =>
     invoke<SkillCatalogueView>('desktop_skill_catalogue', { routeGeneration }),
+  // The editor (M007-E). Every call is a bounded operation with a bounded
+  // DTO: the host never serves the document, only the visible window it
+  // cut from its own snapshot. The renderer names a movement or an edit
+  // range; the host owns the byte arithmetic.
+  documentOpen: (path: string, routeGeneration: number) =>
+    invoke<EditorOpenView>('desktop_document_open', { path, routeGeneration }),
+  documentViewport: (firstLine: number | null, lineCount: number | null) =>
+    invoke<EditorViewportView>('desktop_document_viewport', { firstLine, lineCount }),
+  documentCursor: (movement: string, extend: boolean) =>
+    invoke<EditorViewportView>('desktop_document_cursor', { movement, extend }),
+  documentEdit: (start: number, end: number, insert: string) =>
+    invoke<EditorEditView>('desktop_document_edit', { start, end, insert }),
+  documentUndo: () => invoke<EditorEditView>('desktop_document_undo'),
+  documentRedo: () => invoke<EditorEditView>('desktop_document_redo'),
+  documentSave: () => invoke<EditorStateView>('desktop_document_save'),
+  documentReload: () => invoke<EditorStateView>('desktop_document_reload'),
+  documentResync: () => invoke<EditorStateView>('desktop_document_resync'),
+  documentClose: () => invoke<EditorStateView>('desktop_document_close'),
+  documentState: () => invoke<EditorStateView>('desktop_document_state'),
+  documentTree: (prefix: string, routeGeneration: number) =>
+    invoke<EditorTreeView>('desktop_document_tree', { prefix, routeGeneration }),
+  documentDiagnostics: (routeGeneration: number) =>
+    invoke<EditorDiagnosticsView>('desktop_document_diagnostics', { routeGeneration }),
+  documentCompletion: (trigger: string | null) =>
+    invoke<EditorCompletionView>('desktop_document_completion', { trigger }),
+  documentNavigate: (operation: string) =>
+    invoke<EditorNavigationView>('desktop_document_navigate', { operation }),
   disconnect: () => invoke<void>('desktop_disconnect'),
   unsubscribe: (subscriptionId: string) =>
     invoke<void>('desktop_unsubscribe_events', { subscriptionId }),

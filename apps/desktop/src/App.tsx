@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ArtifactExcerptView, ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
+import { useEditorSession } from './editor/session';
 import { GitPanel } from './panels/GitPanel';
 import { KeybindingsPanel } from './panels/KeybindingsPanel';
 import { SkillsPanel } from './panels/SkillsPanel';
@@ -183,6 +184,14 @@ export function App() {
   const overlayRestoreRef = useRef<Record<string, HTMLElement | null>>({});
 
   const currentToken: RouteTokenView | null = detail?.routeToken ?? null;
+  // The editor (M007-E). The session owns every editor host call and the
+  // bounded viewport slice the host sends; the panel layer only renders
+  // what the session gives it.
+  const editor = useEditorSession({
+    routeGeneration: currentToken?.routeGeneration ?? null,
+    enabled: Boolean(currentToken?.workspaceId),
+    effectiveMap,
+  });
   // The route's own state, readable from the connection effect without
   // making that effect depend on `detail` (which would re-run it on
   // every route change).
@@ -1227,6 +1236,7 @@ export function App() {
               currentToken && projection
                 ? () => void refreshTodos(currentToken.routeGeneration, projection.sessionId)
                 : undefined,
+            editor,
           }}
           frameRef={frameRef}
           onResize={resizePanel}
