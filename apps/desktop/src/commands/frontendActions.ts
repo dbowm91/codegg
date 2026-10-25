@@ -57,7 +57,7 @@ export const UNCARRIED_ACTIONS: Readonly<Record<string, string | undefined>> = {
   show_tool_contracts:
     'the session projection publishes the tools a turn used, not the registry contracts',
   show_shell_runs: 'the session projection publishes no human-shell runs',
-  focus_terminal: 'the desktop has no terminal surface to focus',
+  show_terminal: 'the desktop has no terminal surface to focus',
 };
 
 /**
