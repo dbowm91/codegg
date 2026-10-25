@@ -74,38 +74,38 @@ it issues none.
 
 | command | form | kind | domain | route | arm | requests |
 |---|---|---|---|---|---|---|
-| `/init` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5670` | — |
+| `/init` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5670` | `CommandExecute` |
 | `/connect` | `—` | frontend | Provider | frontend → `OpenConnectDialog` | `src/tui/app/mod.rs:5963` | `ProjectList` |
 | `/connections` | `—` | frontend | Provider | frontend → `OpenConnectionSelectionDialog` | `src/tui/app/mod.rs:5967` | `ProjectList` |
 | `/exit` | `—` | frontend | System | frontend → `Quit` | `src/tui/app/mod.rs:5759` | — |
 | `/status` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:5971` | — |
-| `/policy` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5991` | `ExecutionPolicyGet` |
-| `/approval` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6006` | `ExecutionPolicyGet` |
-| `/sandbox` | `—` | daemon | System | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6030` | `ExecutionPolicyGet` |
-| `/network` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6056` | `ExecutionPolicyGet`, `NetworkIntentSet` |
+| `/policy` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5991` | `CommandExecute` |
+| `/approval` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6006` | `CommandExecute` |
+| `/sandbox` | `—` | daemon | System | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6030` | `CommandExecute` |
+| `/network` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6056` | `CommandExecute` |
 | `/themes` | `—` | frontend | System | frontend → `SetTheme` | `src/tui/app/mod.rs:6114` | `ProjectList` |
 | `/help` | `—` | frontend | System | frontend → `OpenHelpDialog` | `src/tui/app/mod.rs:5763` | `ProjectList` |
 | `/sessions` | `—` | frontend | Session | frontend → `OpenSessionDialog` | `src/tui/app/mod.rs:6487` | `ProjectList` |
 | `/projects` | `—` | frontend | Project | frontend → `OpenProjectPicker` | `src/tui/app/mod.rs:6490` | `ProjectList` |
 | `/new` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:5951` | `ProjectList`, `SessionCreate` |
-| `/stop` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6493` | — |
+| `/stop` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6493` | `CommandExecute` |
 | `/start` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6496` | `SessionCreate` |
-| `/share` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6499` | `ProjectList`, `SessionShare` |
-| `/unshare` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6525` | `SessionUnshare` |
+| `/share` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6499` | `CommandExecute`, `ProjectList` |
+| `/unshare` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6525` | `CommandExecute` |
 | `/rename` | `—` | frontend | Session | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6536` | — |
 | `/compact` | `—` | daemon | Session | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:5958` | — |
 | `/timeline` | `—` | frontend | Session | frontend → `ShowTimeline` | `src/tui/app/mod.rs:6541` | — |
 | `/fork` | `—` | frontend | Session | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6668` | — |
 | `/undo` | `—` | frontend | Session | frontend → `UndoLocalMessages` | `src/tui/app/mod.rs:6544` | — |
 | `/redo` | `—` | frontend | Session | frontend → `RedoLocalMessages` | `src/tui/app/mod.rs:6551` | — |
-| `/export` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6558` | `SessionExport` |
+| `/export` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6558` | `CommandExecute` |
 | `/import` | `—` | daemon | Session | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6572` | `ProjectList` |
 | `/timestamps` | `—` | frontend | Session | frontend → `ToggleTimestamps` | `src/tui/app/mod.rs:6579` | — |
 | `/thinking` | `—` | frontend | Session | frontend → `ToggleThinking` | `src/tui/app/mod.rs:6588` | — |
 | `/reasoning` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6602` | — |
 | `/expand-all` | `—` | frontend | Session | frontend → `ExpandAllDisclosures` | `src/tui/app/mod.rs:6597` | — |
-| `/models-refresh` | `—` | daemon | Provider | daemon → served | `src/tui/app/mod.rs:6658` | — |
-| `/reload` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5683` | — |
+| `/models-refresh` | `—` | daemon | Provider | daemon → served | `src/tui/app/mod.rs:6658` | `CommandExecute` |
+| `/reload` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:5683` | `CommandExecute` |
 | `/skills` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:5689` | — |
 | `/variants` | `—` | frontend | System | frontend → `ShowAdvisory` | `src/tui/app/mod.rs:6661` | — |
 | `/agents` | `—` | frontend | Agent | frontend → `OpenAgentsDialog` | `src/tui/app/mod.rs:5798` | `ProjectList` |
@@ -128,28 +128,28 @@ it issues none.
 | `/tui` | `—` | frontend | System | frontend → `ToggleFullscreen` | `src/tui/app/mod.rs:6117` | — |
 | `/tts` | `—` | frontend | System | frontend → `ToggleTts` | `src/tui/app/mod.rs:6123` | `NotificationSpeak` |
 | `/loop` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6727` | `ScheduleCreate` |
-| `/tasks` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6758` | `ScheduleGet`, `ScheduleList`, `WorkOrderLaneList`, `WorkOrderList`, `WorkOrderSummary` |
-| `/task` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6767` | `WorkOrderLaneList`, `WorkOrderList`, `WorkOrderSummary` |
-| `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6770` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatPolicyGet`, `ChatProjectPolicySet`, `PresenceSnapshotGet`, … (19) |
-| `/schedules` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:6777` | `ScheduleGet`, `ScheduleList` |
-| `/task-del` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6784` | `ScheduleList` |
-| `/memory` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6800` | `SessionMessagesLoad` |
-| `/memory-search` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6812` | `SessionMessagesLoad` |
-| `/memory-list` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6820` | `SessionMessagesLoad` |
-| `/memory-remember` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6833` | `SessionMessagesLoad` |
-| `/memory-forget` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6841` | `SessionMessagesLoad` |
+| `/tasks` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6758` | `CommandExecute`, `ScheduleGet`, `WorkOrderLaneList`, `WorkOrderSummary` |
+| `/task` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6767` | `CommandExecute`, `WorkOrderLaneList`, `WorkOrderSummary` |
+| `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6770` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatPolicyGet`, `ChatProjectPolicySet`, `PresenceSnapshotGet`, … (16) |
+| `/schedules` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:6777` | `CommandExecute`, `ScheduleGet` |
+| `/task-del` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6784` | `CommandExecute` |
+| `/memory` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6800` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-search` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6812` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-list` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6820` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-remember` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6833` | `CommandExecute`, `SessionMessagesLoad` |
+| `/memory-forget` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6841` | `CommandExecute`, `SessionMessagesLoad` |
 | `/memory-consolidate` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6849` | `SessionMessagesLoad` |
 | `/habits` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6852` | — |
 | `/habit-dismiss` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6862` | — |
-| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (38) |
+| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (32) |
 | `/skill-proposals` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6938` | — |
 | `/skill-proposal` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6975` | — |
-| `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7143` | `GoalCheckpoint`, `GoalSetBudget` |
+| `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7143` | `CommandExecute`, `GoalCheckpoint`, `GoalSetBudget` |
 | `/plan` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7285` | — |
 | `/state` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7399` | — |
-| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8165` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (38) |
+| `/diff` | `—` | daemon | GitReview | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8165` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (37) |
 | `/tests` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8174` | — |
-| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8179` | `WorkspaceRegister` |
+| `/test` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8179` | `CommandExecute`, `WorkspaceRegister` |
 | `/revert` | `—` | daemon | GitReview | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8192` | — |
 | `/research` | `—` | daemon | Research | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8323` | — |
 | `/research-runs` | `—` | daemon | Research | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8334` | `ProjectList` |
@@ -159,7 +159,7 @@ it issues none.
 | `/doctor` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7470` | — |
 | `/logs` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7483` | — |
 | `/lsp-status` | `—` | daemon | Diagnostics | daemon → served | `src/tui/app/mod.rs:7496` | — |
-| `/nodes` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:7504` | — |
+| `/nodes` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:7504` | `CommandExecute` |
 | `/lsp-previews` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7511` | — |
 | `/lsp-preview` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7520` | — |
 | `/lsp-preview-clear` | `—` | daemon | Diagnostics | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:7537` | — |
@@ -195,18 +195,18 @@ it issues none.
 | `/shell-include` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8476` | `HumanShellPromotionStage` |
 | `/shell-rerun` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8520` | — |
 | `/shell-kill` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8536` | — |
-| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8879` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (43) |
+| `/shell-ask` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8879` | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (42) |
 | `/shell-expand` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8600` | — |
 | `/terminal` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8675` | — |
 | `/terminal-clear` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:8709` | `InteractiveProcessInput` |
 | `/terminal-create` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8630` | — |
-| `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8644` | `InteractiveProcessList` |
-| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8647` | — |
+| `/terminal-list` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8644` | `CommandExecute` |
+| `/terminal-attach` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8647` | `CommandExecute` |
 | `/terminal-show` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8660` | — |
 | `/terminal-focus` | `—` | frontend | Execution | frontend → `FocusTerminal` | `src/tui/app/mod.rs:8736` | — |
 | `/terminal-send` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8745` | `InteractiveProcessInput` |
 | `/terminal-resize` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8762` | — |
-| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8788` | — |
+| `/terminal-resume` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:8788` | `CommandExecute` |
 | `/terminal-detach` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8797` | — |
 | `/terminal-terminate` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8806` | — |
 | `/terminal-remove` | `—` | daemon | Execution | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8815` | — |
@@ -218,26 +218,26 @@ it issues none.
 | `/plugin-remove` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8859` | — |
 | `/plugin-install` | `—` | daemon | System | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:8869` | — |
 | `/collaborators` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6126` | `PresenceSnapshotGet` |
-| `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6142` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `TeamMembershipAdd`, `TeamMembershipList`, `TeamMembershipRevoke`, … (10) |
-| `/control` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6154` | `SessionControlGet`, `SessionControlRelease`, `SessionControlRequest`, `SessionControlTakeover`, `SessionControlTransfer` |
-| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `ProjectionResume` |
-| `/stop-observing` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6197` | — |
+| `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6142` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `CommandExecute`, `TeamMembershipAdd`, `TeamMembershipRevoke`, … (9) |
+| `/control` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6154` | `CommandExecute`, `SessionControlRelease`, `SessionControlRequest`, `SessionControlTakeover`, `SessionControlTransfer` |
+| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `CommandExecute`, `ProjectionResume` |
+| `/stop-observing` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6197` | `CommandExecute` |
 | `/panels` | `—` | frontend | System | frontend → `OpenPanelManager` | `src/tui/app/mod.rs:6203` | — |
-| `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6215` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatPolicyGet`, `ChatProjectPolicySet`, `PresenceSnapshotGet`, … (18) |
+| `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6215` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatPolicyGet`, `ChatProjectPolicySet`, `CommandExecute`, … (16) |
 | `/chat-send` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6227` | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-reply` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6240` | `ChatChannelEnsure`, `ChatSend` |
-| `/chat-history` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6271` | `ChatChannelEnsure`, `ChatHistory` |
-| `/chat-sync` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6291` | `ChatChannelEnsure`, `ChatHistory` |
-| `/chat-read` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6303` | — |
+| `/chat-history` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6271` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/chat-sync` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6291` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/chat-read` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6303` | `CommandExecute` |
 | `/chat-edit` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6315` | `ChatEdit` |
 | `/chat-redact` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6345` | `ChatRedact` |
 | `/chat-composing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6370` | `ChatComposingList`, `ChatComposingSet` |
 | `/chat-action-task` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6393` | `ChatActionSubmit`, `ChatChannelEnsure` |
 | `/chat-action-review` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6429` | `ChatActionSubmit`, `ChatChannelEnsure` |
-| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6464` | `ChatChannelEnsure`, `ChatHistory` |
-| `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8201` | `EditCheckpointUndo` |
-| `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8247` | `EditCheckpointReapply` |
-| `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8293` | `EditCheckpointList` |
+| `/chat-action-list` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6464` | `ChatChannelEnsure`, `ChatHistory`, `CommandExecute` |
+| `/edit-undo` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8201` | `CommandExecute`, `EditCheckpointUndo` |
+| `/edit-reapply` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8247` | `CommandExecute`, `EditCheckpointReapply` |
+| `/edit-checkpoints` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:8293` | `CommandExecute` |
 | `/tool-contracts` | `—` | daemon | Provider | daemon → served | `src/tui/app/mod.rs:7487` | — |
 | `/worktree` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6685` | — |
 
@@ -269,7 +269,7 @@ inventory of exactly this set.
 
 | command | form | family | the requests its TUI arm issues |
 |---|---|---|---|
-| `/sandbox` | `—` | System | `ExecutionPolicyGet` |
+| `/sandbox` | `—` | System | `CommandExecute` |
 | `/new` | `—` | Session | `ProjectList`, `SessionCreate` |
 | `/start` | `—` | Session | `SessionCreate` |
 | `/compact` | `—` | Session | — |
@@ -286,11 +286,11 @@ inventory of exactly this set.
 | `/memory-consolidate` | `—` | Memory | `SessionMessagesLoad` |
 | `/habits` | `—` | Memory | — |
 | `/habit-dismiss` | `—` | Memory | — |
-| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (38) |
+| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (32) |
 | `/skill-proposals` | `—` | Memory | — |
 | `/skill-proposal` | `—` | Memory | — |
 | `/plan` | `—` | Execution | — |
-| `/diff` | `—` | GitReview | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (38) |
+| `/diff` | `—` | GitReview | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (37) |
 | `/tests` | `—` | Execution | — |
 | `/revert` | `—` | GitReview | — |
 | `/research` | `—` | Research | — |
@@ -330,7 +330,7 @@ inventory of exactly this set.
 | `/security-review-cancel` | `—` | Agent | — |
 | `/shell-include` | `—` | Execution | `HumanShellPromotionStage` |
 | `/shell-rerun` | `—` | Execution | — |
-| `/shell-ask` | `—` | Execution | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (43) |
+| `/shell-ask` | `—` | Execution | `ChatChannelEnsure`, `ChatEdit`, `ChatHistory`, `ChatHistoryOlder`, `ChatRedact`, `ChatSend`, … (42) |
 | `/terminal` | `—` | Execution | — |
 | `/terminal-clear` | `—` | Execution | `InteractiveProcessInput` |
 | `/terminal-create` | `—` | Execution | — |
@@ -423,28 +423,47 @@ keeps the formatting.
 
 | command | family | the TUI effect call |
 |---|---|---|
+| `/approval` | System | `CoreRequest::CommandExecute` (`approval`) |
 | `/chat-action-list` | Collaboration | `CoreRequest::CommandExecute` (`chat_action_list`) |
 | `/chat-history` | Collaboration | `CoreRequest::CommandExecute` (`chat_history`) |
 | `/chat-read` | Collaboration | `CoreRequest::CommandExecute` (`chat_read`) |
 | `/chat-sync` | Collaboration | `CoreRequest::CommandExecute` (`chat_sync`) |
+| `/collaborators` | Collaboration | `CoreRequest::CommandExecute` (`collaborators`) |
+| `/control` | Session | `CoreRequest::CommandExecute` (`control`) |
+| `/edit-checkpoints` | Session | `CoreRequest::CommandExecute` (`edit_checkpoints`) |
 | `/edit-reapply` | Session | `CoreRequest::CommandExecute` (`edit_reapply`) |
 | `/edit-undo` | Session | `CoreRequest::CommandExecute` (`edit_undo`) |
+| `/export` | Session | `CoreRequest::CommandExecute` (`export`) |
 | `/goal` | Execution | `CoreRequest::CommandExecute` (`goal`) |
 | `/memory` | Memory | `CoreRequest::CommandExecute` (`memory`) |
 | `/memory-forget` | Memory | `CoreRequest::CommandExecute` (`memory_forget`) |
 | `/memory-list` | Memory | `CoreRequest::CommandExecute` (`memory_list`) |
 | `/memory-remember` | Memory | `CoreRequest::CommandExecute` (`memory_remember`) |
 | `/memory-search` | Memory | `CoreRequest::CommandExecute` (`memory_search`) |
+| `/models-refresh` | Provider | `CoreRequest::CommandExecute` (`models_refresh`) |
+| `/network` | System | `CoreRequest::CommandExecute` (`network`) |
 | `/nodes` | System | `CoreRequest::CommandExecute` (`nodes`) |
+| `/observe` | Collaboration | `CoreRequest::CommandExecute` (`observe`) |
+| `/policy` | System | `CoreRequest::CommandExecute` (`policy`) |
+| `/init` | System | `CoreRequest::CommandExecute` (`project_init`) |
+| `/reasoning` | Session | `CoreRequest::CommandExecute` (`reasoning`) |
 | `/reload` | System | `CoreRequest::CommandExecute` (`reload`) |
+| `/schedules` | Agent | `CoreRequest::CommandExecute` (`schedules`) |
+| `/share` | Session | `CoreRequest::CommandExecute` (`share`) |
+| `/state` | Execution | `CoreRequest::CommandExecute` (`state`) |
 | `/stop` | Collaboration | `CoreRequest::CommandExecute` (`stop`) |
 | `/stop-observing` | Collaboration | `CoreRequest::CommandExecute` (`stop_observing`) |
+| `/task` | Execution | `CoreRequest::CommandExecute` (`task`) |
 | `/task-del` | Execution | `CoreRequest::CommandExecute` (`task_del`) |
+| `/tasks` | Execution | `CoreRequest::CommandExecute` (`tasks`) |
+| `/team` | System | `CoreRequest::CommandExecute` (`team`) |
 | `/terminal-attach` | Execution | `CoreRequest::CommandExecute` (`terminal_attach`) |
+| `/terminal-list` | Execution | `CoreRequest::CommandExecute` (`terminal_list`) |
 | `/terminal-resume` | Execution | `CoreRequest::CommandExecute` (`terminal_resume`) |
 | `/test` | Execution | `CoreRequest::CommandExecute` (`test`) |
+| `/unshare` | Session | `CoreRequest::CommandExecute` (`unshare`) |
 
-**20 of the 134 daemon-effect forms are migrated.**
+**39 of the 134 daemon-effect forms are migrated.**
 The rest keep their local arm, and each one is listed above with the route
 it takes. The migration is one site per command: the request construction
 becomes a `CommandExecute` and the response is unwrapped, so the

@@ -55,6 +55,15 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
     let reconnect_epoch = app.observer.reconnect_epoch;
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The subscription is the
+    // catalog's `observe` command, and the session it follows is the one
+    // the caller named — so it travels as the command's argument.
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        project_id: project_id.clone(),
+        ..scope
+    };
+    let argument = session_id.clone();
 
     spawn_registered_tui_task(
         tx,
@@ -109,18 +118,15 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
             // 2. Authorized session subscribe. Authorization is enforced
             //    daemon-side (`session.observe`); denials arrive as
             //    `project_not_found` and are indistinguishable from absent.
-            let sub_request = crate::core::new_request(
-                format!("observe-subscribe-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectionSubscribe {
-                    request: codegg_protocol::projection::replay::ProjectionSubscriptionRequest {
-                        scope: codegg_protocol::projection::replay::ProjectionStreamKind::Session,
-                        scope_id: session_id.clone(),
-                        cursor: None,
-                        projection_version: 1,
-                    },
-                },
-            );
-            match core_client.request(sub_request).await {
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "observe",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::ProjectionSubscribed {
                     subscription_id,
                     cursor,

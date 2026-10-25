@@ -593,7 +593,7 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) -> PanelFill {
         // Mounts the Task view and then refreshes it, so the box is real and
         // incomplete — the same shape as `Research`.
         P::TaskView => {
-            crate::tui::commands::work_orders::open_task_view(app);
+            crate::tui::commands::work_orders::open_task_view(app, "task");
             PanelFill::StillLoading
         }
         // Reports for itself: a clean tree, a missing git root, and a failed

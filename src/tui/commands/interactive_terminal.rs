@@ -393,20 +393,29 @@ pub(crate) fn start_terminal_list(app: &mut App) {
     };
     let request_id = app.dialog_state.terminal_request.begin();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The listing is the catalog's
+    // `terminal_list` command, and the workspace it reads is the one the
+    // caller resolved.
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        workspace_id: workspace_id.clone(),
+        ..scope
+    };
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "terminal_list",
         async move {
-            let request = crate::core::new_request(
-                format!("terminal-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::InteractiveProcessList {
-                    workspace_id: Some(workspace_id),
-                    limit: None,
-                },
-            );
-            let result = match core_client.request(request).await {
+            let result = match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "terminal_list",
+                "",
+                "",
+            )
+            .await
+            {
                 Ok(CoreResponse::InteractiveProcessList {
                     processes,
                     truncated,

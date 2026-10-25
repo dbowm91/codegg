@@ -113,6 +113,20 @@ fn argument_number(rest: &str) -> Result<Option<u64>, ()> {
     rest.parse::<u64>().map(Some).map_err(|_| ())
 }
 
+/// The listing bound in the argument's first token.
+///
+/// `Ok(None)` — the argument names no bound, so the row reads an absent
+/// value and the daemon's own default applies. `Ok(Some(n))` — the first
+/// token is the bound. `Err(())` — the first token is not a number, so
+/// the row cannot read it and the call is refused as
+/// `argument_unreadable` rather than as an unserved command.
+fn argument_bound(first: &str) -> Result<Option<u32>, ()> {
+    if first.is_empty() {
+        return Ok(None);
+    }
+    first.parse::<u32>().map(Some).map_err(|_| ())
+}
+
 /// Build a daemon request from its wire shape.
 ///
 /// The requests are built from JSON rather than from typed constructors so
@@ -201,17 +215,42 @@ pub fn build_inner_request(
         }),
 
         // ── the effective policy and the preferences ──
+        //
+        // M007-D, decision shape one: the `policy` row names **no**
+        // session. The effective runtime policy is a global reading, and
+        // the TUI asks for it with `session_id: None`; a session-scoped
+        // read answers a different question, so passing the scope's
+        // session here would show the user a different policy than the
+        // one they saw before the migration.
+        //
+        // `approval` and `reasoning` have no such question: both of
+        // their requests are unit variants that carry no session at all,
+        // so the scope's session cannot change what they answer.
         ("policy", "") => json!({
             "type": "execution_policy_get",
-            "session_id": session,
+            "session_id": null,
         }),
         ("approval", "") => json!({ "type": "approval_preference_get" }),
         ("reasoning", "") => json!({ "type": "reasoning_preference_get" }),
-        ("network", "") => json!({
-            "type": "network_intent_set",
-            "network_intent": first,
-            "expected_revision": null,
-        }),
+        // The network intent travels as the argument's first token and
+        // the revision the caller holds as its second. The revision is
+        // the compare-and-swap the policy read published, so dropping it
+        // would turn a checked write into an unchecked one.
+        ("network", "") => {
+            let expected_revision = match argument_number(rest) {
+                Ok(revision) => revision,
+                Err(()) => return Some(CommandEffect::UnreadableArgument),
+            };
+            let expected_revision = match expected_revision {
+                Some(revision) => serde_json::json!(revision),
+                None => serde_json::Value::Null,
+            };
+            json!({
+                "type": "network_intent_set",
+                "network_intent": first,
+                "expected_revision": expected_revision,
+            })
+        }
 
         // ── the daemon's own catalogues ──
         ("skills", "") => json!({
@@ -239,23 +278,32 @@ pub fn build_inner_request(
         }
 
         // ── sessions ──
+        //
+        // M007-D, decision shape two: the session a share, an unshare or
+        // an export acts on is the one the **caller** named, not the one
+        // the scope happens to carry. The scope's session is the attached
+        // session, and the share surface can name another one, so the
+        // session id travels as the argument — the same place the turn id
+        // travels for `stop`. A call that names no session is refused
+        // with `no_session`: the daemon serves the form, it just cannot
+        // guess which session the caller meant.
         ("share", "") => {
-            let Some(session_id) = session else {
+            if first.is_empty() {
                 return Some(CommandEffect::NeedsSession);
-            };
-            json!({ "type": "session_share", "session_id": session_id })
+            }
+            json!({ "type": "session_share", "session_id": first })
         }
         ("unshare", "") => {
-            let Some(session_id) = session else {
+            if first.is_empty() {
                 return Some(CommandEffect::NeedsSession);
-            };
-            json!({ "type": "session_unshare", "session_id": session_id })
+            }
+            json!({ "type": "session_unshare", "session_id": first })
         }
         ("export", "") => {
-            let Some(session_id) = session else {
+            if first.is_empty() {
                 return Some(CommandEffect::NeedsSession);
-            };
-            json!({ "type": "session_export", "session_id": session_id })
+            }
+            json!({ "type": "session_export", "session_id": first })
         }
         ("status", "") => {
             let Some(session_id) = session else {
@@ -265,13 +313,28 @@ pub fn build_inner_request(
         }
 
         // ── goals, tasks and schedules ──
-        ("tasks", "") | ("task", "") => json!({
-            "type": "work_order_list",
-            "project_id": project_id,
-            "state_filter": null,
-            "cursor": null,
-            "limit": 20,
-        }),
+        //
+        // The task listing's bound travels as the argument's first token.
+        // The bound is a *reading* bound — how many work orders the
+        // caller wants to see — and it belongs to the caller, so the
+        // daemon does not pick one for it.
+        ("tasks", "") | ("task", "") => {
+            let limit = match argument_bound(first) {
+                Ok(Some(limit)) => serde_json::json!(limit),
+                // A caller that names no bound gets the daemon's own
+                // reading bound, which is the one the row carried before
+                // the bound became the caller's to choose.
+                Ok(None) => serde_json::json!(20),
+                Err(()) => return Some(CommandEffect::UnreadableArgument),
+            };
+            json!({
+                "type": "work_order_list",
+                "project_id": project_id,
+                "state_filter": null,
+                "cursor": null,
+                "limit": limit,
+            })
+        }
         ("schedules", "") => json!({
             "type": "schedule_list",
             "workspace_id": workspace_id,
@@ -319,15 +382,20 @@ pub fn build_inner_request(
             };
             json!({ "type": "session_control_get", "session_id": session_id })
         }
+        // The observation the user asked for names the session it
+        // follows. The scope's session is the *attached* session, and
+        // `/observe <session-id>` names another one, so the session id
+        // travels as the argument — the same place the share rows carry
+        // theirs.
         ("observe", "") => {
-            let Some(session_id) = session else {
+            if first.is_empty() {
                 return Some(CommandEffect::NeedsSession);
-            };
+            }
             json!({
                 "type": "projection_subscribe",
                 "request": {
                     "scope": "session",
-                    "scope_id": session_id,
+                    "scope_id": first,
                     "cursor": null,
                     "projection_version": 1,
                 }
@@ -523,10 +591,15 @@ pub fn build_inner_request(
         }),
 
         // ── the interactive terminal ──
+        //
+        // The listing carries no bound of its own: the daemon's own
+        // default is the bound the caller asked for, and a bound written
+        // into the row would silently change how many terminals the
+        // listing shows.
         ("terminal_list", "") | ("terminal_show", "") => json!({
             "type": "interactive_process_list",
             "workspace_id": workspace_id,
-            "limit": 20,
+            "limit": null,
         }),
         ("terminal_send", "") => json!({
             "type": "interactive_process_input",
@@ -1152,18 +1225,18 @@ mod tests {
         ("policy", "", ""),
         ("approval", "", ""),
         ("reasoning", "", ""),
-        ("network", "", ""),
+        ("network", "", "offline 7"),
         ("skills", "", ""),
         ("models_refresh", "", ""),
         ("nodes", "", ""),
         ("worktree", "", ""),
         ("tool_contracts", "", ""),
-        ("share", "", ""),
-        ("unshare", "", ""),
-        ("export", "", ""),
+        ("share", "", "session-1"),
+        ("unshare", "", "session-1"),
+        ("export", "", "session-1"),
         ("status", "", ""),
-        ("tasks", "", ""),
-        ("task", "", ""),
+        ("tasks", "", "200"),
+        ("task", "", "200"),
         ("schedules", "", ""),
         ("goal", "", ""),
         ("state", "", ""),
@@ -1175,7 +1248,7 @@ mod tests {
         ("collaborators", "", ""),
         ("team", "", ""),
         ("control", "", ""),
-        ("observe", "", ""),
+        ("observe", "", "session-1"),
         ("stop", "", ""),
         ("chat_action_list", "", ""),
         ("stop_observing", "", ""),
@@ -1190,12 +1263,12 @@ mod tests {
         ("edit_reapply", "", ""),
         ("edit_checkpoints", "", ""),
         ("shell_list", "", ""),
-        ("shell_show", "", ""),
-        ("shell_expand", "", ""),
-        ("shell_kill", "", ""),
+        ("shell_show", "", "probe"),
+        ("shell_expand", "", "probe"),
+        ("shell_kill", "", "probe"),
         ("terminal_list", "", ""),
         ("terminal_show", "", ""),
-        ("terminal_send", "", ""),
+        ("terminal_send", "", "probe ZGF0YQ=="),
         ("lsp_status", "", ""),
         ("lsp_errors", "", ""),
     ];
@@ -1456,6 +1529,232 @@ mod tests {
             ),
             "the schedule-delete row must name the schedule the frontend resolved"
         );
+    }
+
+    /// The policy rows name no session, and the preference rows cannot.
+    ///
+    /// M007-D, decision shape one. The effective runtime policy is a
+    /// **global** reading: the TUI asks for it with no session, and a
+    /// session-scoped read answers a different question. So the `policy`
+    /// row names no session even when the scope carries one — otherwise
+    /// the migration would show the user a different policy than the one
+    /// they saw before.
+    ///
+    /// `approval` and `reasoning` are unit variants: their requests carry
+    /// no session field at all, so the scope's session cannot change what
+    /// they answer. The test pins that too, because a future change that
+    /// gave one of them a session field would otherwise pass unnoticed.
+    #[test]
+    fn the_policy_rows_name_no_session() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("policy", "", &ctx) else {
+            panic!("policy must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ExecutionPolicyGet { session_id } if session_id.is_none()
+            ),
+            "the policy row must read the global effective policy, not a session's"
+        );
+
+        let Some(CommandEffect::Ready(request)) = build_inner_request("approval", "", &ctx) else {
+            panic!("approval must build a request");
+        };
+        assert!(
+            matches!(request.as_ref(), CoreRequest::ApprovalPreferenceGet),
+            "the approval row must read the approval preference"
+        );
+
+        let Some(CommandEffect::Ready(request)) = build_inner_request("reasoning", "", &ctx) else {
+            panic!("reasoning must build a request");
+        };
+        assert!(
+            matches!(request.as_ref(), CoreRequest::ReasoningPreferenceGet),
+            "the reasoning row must read the reasoning preference"
+        );
+    }
+
+    /// The rows that act on a session the **caller** named carry that
+    /// session in the argument.
+    ///
+    /// M007-D, decision shape two. The scope's session is the *attached*
+    /// session; the share surface and `/observe` name another one. So the
+    /// session id travels as the argument, and a call that names none is
+    /// refused with `no_session` rather than silently retargeted at the
+    /// attached session.
+    #[test]
+    fn the_session_named_rows_carry_their_session_in_the_argument() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("attached-session"),
+            argument: "named-session",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("share", "", &ctx) else {
+            panic!("share must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::SessionShare { session_id } if session_id == "named-session"
+            ),
+            "the share row must act on the session the caller named"
+        );
+
+        let Some(CommandEffect::Ready(request)) = build_inner_request("unshare", "", &ctx) else {
+            panic!("unshare must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::SessionUnshare { session_id } if session_id == "named-session"
+            ),
+            "the unshare row must act on the session the caller named"
+        );
+
+        let Some(CommandEffect::Ready(request)) = build_inner_request("export", "", &ctx) else {
+            panic!("export must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::SessionExport { session_id } if session_id == "named-session"
+            ),
+            "the export row must act on the session the caller named"
+        );
+
+        let Some(CommandEffect::Ready(request)) = build_inner_request("observe", "", &ctx) else {
+            panic!("observe must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ProjectionSubscribe { request }
+                    if request.scope_id == "named-session"
+            ),
+            "the observe row must follow the session the caller named"
+        );
+
+        // A call that names no session is refused as such.
+        let ctx = CommandContext {
+            argument: "",
+            ..ctx
+        };
+        for command_id in ["share", "unshare", "export", "observe"] {
+            assert!(
+                matches!(
+                    build_inner_request(command_id, "", &ctx),
+                    Some(CommandEffect::NeedsSession)
+                ),
+                "{command_id} acts on a session and must refuse when the caller names none"
+            );
+        }
+    }
+
+    /// The network row carries the intent and the revision the caller
+    /// holds.
+    ///
+    /// The revision is the compare-and-swap the policy read published.
+    /// Dropping it would turn a checked write into an unchecked one, so
+    /// the encoding is pinned: the intent first, the revision second.
+    #[test]
+    fn the_network_row_carries_the_intent_and_the_revision() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "offline 7",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("network", "", &ctx) else {
+            panic!("network must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::NetworkIntentSet { network_intent, expected_revision }
+                    if network_intent == "offline" && *expected_revision == Some(7)
+            ),
+            "the network row must set the named intent against the revision the caller holds"
+        );
+
+        // An intent with no revision is still a write; it just carries no
+        // compare-and-swap.
+        let ctx = CommandContext {
+            argument: "offline",
+            ..ctx
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("network", "", &ctx) else {
+            panic!("network must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::NetworkIntentSet { network_intent, expected_revision }
+                    if network_intent == "offline" && expected_revision.is_none()
+            ),
+            "an intent with no revision must carry no compare-and-swap"
+        );
+
+        // A revision that is not a number is the argument's own refusal.
+        let ctx = CommandContext {
+            argument: "offline later",
+            ..ctx
+        };
+        assert!(
+            matches!(
+                build_inner_request("network", "", &ctx),
+                Some(CommandEffect::UnreadableArgument)
+            ),
+            "a revision the daemon cannot read must be its own outcome"
+        );
+    }
+
+    /// The task rows carry the listing bound in the argument.
+    ///
+    /// The bound is how many work orders the caller wants to see, so it
+    /// belongs to the caller; the daemon does not pick one for it.
+    #[test]
+    fn the_task_rows_carry_their_bound_in_the_argument() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "200",
+        };
+        for command_id in ["tasks", "task"] {
+            let Some(CommandEffect::Ready(request)) = build_inner_request(command_id, "", &ctx)
+            else {
+                panic!("{command_id} must build a request");
+            };
+            assert!(
+                matches!(
+                    request.as_ref(),
+                    CoreRequest::WorkOrderList { limit, .. } if *limit == Some(200)
+                ),
+                "the {command_id} row must list as many work orders as the caller asked for"
+            );
+        }
+
+        // A bound that is not a number is the argument's own refusal.
+        let ctx = CommandContext {
+            argument: "many",
+            ..ctx
+        };
+        for command_id in ["tasks", "task"] {
+            assert!(
+                matches!(
+                    build_inner_request(command_id, "", &ctx),
+                    Some(CommandEffect::UnreadableArgument)
+                ),
+                "a bound the daemon cannot read must be its own outcome"
+            );
+        }
     }
 
     /// The rows whose argument carries an identifier and a cursor.

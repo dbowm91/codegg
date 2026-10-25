@@ -351,6 +351,19 @@ const FAMILIES: &[&str] = &[
     "System",
 ];
 
+/// The probe argument a form needs, for the rows whose effect reads the
+/// argument rather than the scope.
+///
+/// A row that acts on a session the **caller** named reads it from the
+/// argument, so the probe has to name one. A row that reads only the scope
+/// needs no argument.
+fn probe_argument(command_id: &str) -> &'static str {
+    match command_id {
+        "share" | "unshare" | "export" | "observe" => "probe-session",
+        _ => "",
+    }
+}
+
 /// The catalog's daemon-effect forms in one family, with the flag that says
 /// whether the daemon's effect table serves them.
 async fn family_forms(daemon: &CoreDaemon, family: &str) -> Vec<(String, String, bool)> {
@@ -415,7 +428,14 @@ async fn command_catalog_serves_every_form_it_marks_served() {
     let mut checked = 0usize;
     for family in FAMILIES {
         for (command_id, form, daemon_served) in family_forms(&daemon, family).await {
-            let result = execute(&daemon, &command_id, &form, "", version).await;
+            let result = execute(
+                &daemon,
+                &command_id,
+                &form,
+                probe_argument(&command_id),
+                version,
+            )
+            .await;
             let refused_as_unserved = result
                 .lines
                 .iter()

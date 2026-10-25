@@ -20,6 +20,15 @@ pub(crate) fn start_project_init_draft(app: &mut App) {
     };
     let client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The draft preview is the
+    // catalog's `project_init` command, and the scope names the project
+    // and the workspace the preview is taken in — the ones the caller
+    // resolved, not the ones the attached session happens to carry.
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        project_id: project_id.clone(),
+        workspace_id: workspace_id.clone(),
+        session_id: crate::tui::command_route::scope_for(app).session_id,
+    };
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -28,16 +37,22 @@ pub(crate) fn start_project_init_draft(app: &mut App) {
         async move {
             let result = async {
                 let client = client.ok_or_else(|| "Core unavailable".to_string())?;
-                let req = crate::core::new_request(
-                    format!("project-init-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ProjectInitDraftGet {
-                        project_id,
-                        workspace_id,
-                    },
-                );
-                match client.request(req).await.map_err(|e| e.to_string())? {
+                match crate::tui::command_route::send_command(
+                    &client,
+                    scope,
+                    "project_init",
+                    "",
+                    "",
+                )
+                .await
+                .map_err(|e| e.to_string())?
+                {
                     CoreResponse::ProjectInitDraft { draft } => Ok(draft),
                     CoreResponse::Error { code, message } => {
+                        Err(format!("/init failed ({code}): {message}"))
+                    }
+                    CoreResponse::CommandExecute { result } => {
+                        let (code, message) = crate::tui::command_route::refusal_parts(&result);
                         Err(format!("/init failed ({code}): {message}"))
                     }
                     _ => Err("Unexpected daemon response for /init preview".into()),

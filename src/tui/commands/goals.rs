@@ -304,6 +304,14 @@ pub(crate) fn start_goal_budget_raise(
 pub(crate) fn start_refresh_session_state(app: &mut App, session_id: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The active goal is the
+    // catalog's `state` command, and the session it reads is the one the
+    // caller named.
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        session_id: Some(session_id.clone()),
+        ..scope
+    };
 
     spawn_registered_tui_task(
         tx,
@@ -370,31 +378,26 @@ pub(crate) fn start_refresh_session_state(app: &mut App, session_id: String) {
                 }
             };
             // Hydrate the active goal.
-            let active_goal = match core_client
-                .request(crate::core::new_request(
-                    format!("active-goal-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ActiveGoalLoad {
-                        session_id: session_id.clone(),
-                    },
-                ))
-                .await
-            {
-                Ok(CoreResponse::Json { data }) => {
-                    if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(goal_val) = data.get("goal") {
-                            serde_json::from_value::<crate::bus::events::GoalSnapshot>(
-                                goal_val.clone(),
-                            )
-                            .ok()
+            let active_goal =
+                match crate::tui::command_route::send_command(&core_client, scope, "state", "", "")
+                    .await
+                {
+                    Ok(CoreResponse::Json { data }) => {
+                        if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
+                            if let Some(goal_val) = data.get("goal") {
+                                serde_json::from_value::<crate::bus::events::GoalSnapshot>(
+                                    goal_val.clone(),
+                                )
+                                .ok()
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
                     }
-                }
-                _ => None,
-            };
+                    _ => None,
+                };
             Some(TuiCommand::SessionStateRefreshed {
                 todos,
                 active_goal,
@@ -515,14 +518,13 @@ pub(crate) async fn handle_refresh_session_state(app: &mut App, session_id: Stri
         }
     }
     // Hydrate the active goal.
-    if let Ok(CoreResponse::Json { data }) = core_client
-        .request(crate::core::new_request(
-            format!("active-goal-{}", uuid::Uuid::new_v4()),
-            CoreRequest::ActiveGoalLoad {
-                session_id: session_id.clone(),
-            },
-        ))
-        .await
+    let scope = crate::tui::command_route::scope_for(app);
+    let scope = crate::protocol::core::CommandCatalogScopeDto {
+        session_id: Some(session_id.clone()),
+        ..scope
+    };
+    if let Ok(CoreResponse::Json { data }) =
+        crate::tui::command_route::send_command(&core_client, scope, "state", "", "").await
     {
         if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
             if let Some(goal_val) = data.get("goal") {

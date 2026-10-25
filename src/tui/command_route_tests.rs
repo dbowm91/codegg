@@ -50,15 +50,34 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     // System
     ("reload", "", "System"),
     ("nodes", "", "System"),
+    ("project_init", "", "System"),
+    ("policy", "", "System"),
+    ("approval", "", "System"),
+    ("network", "", "System"),
+    ("team", "", "System"),
     // Execution
     ("goal", "", "Execution"),
     ("task_del", "", "Execution"),
     ("terminal_attach", "", "Execution"),
     ("terminal_resume", "", "Execution"),
+    ("terminal_list", "", "Execution"),
     ("test", "", "Execution"),
+    ("tasks", "", "Execution"),
+    ("task", "", "Execution"),
+    ("state", "", "Execution"),
+    // Agent
+    ("schedules", "", "Agent"),
+    // Provider
+    ("models_refresh", "", "Provider"),
     // Session
     ("edit_undo", "", "Session"),
     ("edit_reapply", "", "Session"),
+    ("edit_checkpoints", "", "Session"),
+    ("share", "", "Session"),
+    ("unshare", "", "Session"),
+    ("export", "", "Session"),
+    ("reasoning", "", "Session"),
+    ("control", "", "Session"),
     // Collaboration
     ("stop", "", "Collaboration"),
     ("chat_action_list", "", "Collaboration"),
@@ -66,10 +85,20 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     ("chat_history", "", "Collaboration"),
     ("chat_sync", "", "Collaboration"),
     ("chat_read", "", "Collaboration"),
+    ("observe", "", "Collaboration"),
+    ("collaborators", "", "Collaboration"),
 ];
 
 /// The families the migrated commands cover.
-const FAMILIES: &[&str] = &["Memory", "System", "Execution", "Session", "Collaboration"];
+const FAMILIES: &[&str] = &[
+    "Memory",
+    "System",
+    "Execution",
+    "Agent",
+    "Provider",
+    "Session",
+    "Collaboration",
+];
 
 /// A client that records the requests it is given and answers a command
 /// execution with the inner response the daemon would have produced.
@@ -120,6 +149,50 @@ impl CoreClient for RecordingClient {
                     updated_at_ms: 0,
                 }],
             },
+            // The Task view asks the daemon whether it can serve work
+            // orders before it lists them.
+            CoreRequest::WorkOrderCapabilities => CoreResponse::WorkOrderCapabilities {
+                capabilities: crate::protocol::work_order::WorkOrderCapabilitiesDto {
+                    supported: true,
+                    protocol_version: 1,
+                    max_title_chars: 200,
+                    max_prompt_bytes: 65536,
+                    max_batch_items: 32,
+                    max_list_limit: 200,
+                    max_repeat_count: 100,
+                    max_lanes_per_project: 32,
+                    max_lane_members: 32,
+                },
+            },
+            // The observation surface negotiates its capabilities before it
+            // subscribes; a daemon that does not advertise the projection
+            // makes the arm degrade to the unavailable state instead of
+            // issuing the command.
+            CoreRequest::ProjectionCapabilities => CoreResponse::ProjectionCapabilitiesResponse {
+                supported: true,
+                projection_version: 1,
+                max_events_per_batch: 128,
+                max_event_bytes: 65536,
+                max_subscriptions_per_client: 8,
+                max_subscriptions_per_daemon: 64,
+                retention_session_max_events: 1024,
+                retention_project_max_events: 1024,
+            },
+            // The team surface negotiates its capabilities before it
+            // lists anything.
+            CoreRequest::TeamCapabilities => CoreResponse::TeamCapabilities {
+                capabilities: crate::protocol::core::TeamCapabilitiesDto {
+                    supported: true,
+                    protocol_version: 1,
+                    max_list_limit: 100,
+                },
+            },
+            // A migrated command's effect arrives as the command
+            // execution's own inner response, so the recorder answers
+            // per command id.
+            CoreRequest::CommandExecute { request } => {
+                command_execute_response(&request.command_id)
+            }
             _ => CoreResponse::CommandExecute {
                 result: CommandExecuteResultDto {
                     run_id: "run-1".to_string(),
@@ -175,6 +248,58 @@ fn chat_channel(project_id: &str) -> ChatChannelDto {
         name: "general".to_string(),
         created_by: "principal-1".to_string(),
         created_at_ms: 0,
+    }
+}
+
+/// The command execution the recorder answers with, per command id.
+///
+/// The daemon's executor returns the inner response verbatim, so the
+/// recorder answers the response the command's own effect would have
+/// produced. Only the commands whose *shape* the arm must reach are
+/// answered specially; every other command answers a generic JSON
+/// payload, which is enough for an arm that only has to issue it.
+fn command_execute_response(command_id: &str) -> CoreResponse {
+    let inner = match command_id {
+        "schedules" => serde_json::json!({
+            "type": "schedule_list",
+            "schedules": [{
+                "schedule_id": "schedule-1",
+                "workspace_id": "workspace-1",
+                "session_id": null,
+                "kind": "loop",
+                "state": "active",
+                "overlap_policy": "skip",
+                "missed_run_policy": "skip",
+                "next_run_at_ms": null,
+                "last_occurrence_at_ms": null,
+                "created_at_ms": 0,
+                "updated_at_ms": 0,
+            }],
+        }),
+        "approval" => serde_json::json!({
+            "type": "approval_preference",
+            "preference": {
+                "principal_id": "principal-1",
+                "approval_mode": "interactive",
+                "sandbox_profile": "read_only",
+                "revision": 1,
+                "updated_at_ms": 0,
+            },
+        }),
+        _ => serde_json::json!({ "type": "json", "data": { "ok": true } }),
+    };
+    CoreResponse::CommandExecute {
+        result: CommandExecuteResultDto {
+            run_id: "run-1".to_string(),
+            command_id: command_id.to_string(),
+            status: codegg_protocol::core::CommandOutcomeStatusDto::Completed,
+            summary: "ok".to_string(),
+            lines: Vec::new(),
+            report: None,
+            started_at_ms: 0,
+            completed_at_ms: 1,
+            response: Some(inner),
+        },
     }
 }
 
@@ -597,8 +722,259 @@ async fn the_collaboration_family_is_executed_by_the_daemon() {
     );
 }
 
-// ── 3. The outcome ───────────────────────────────────────────────────
-/// The response the TUI's presentation receives is the daemon's inner
+/// An app with a project, a workspace and a session bound, so the
+/// commands that act on a project have something to act on.
+fn app_with_project(recorder: Arc<RecordingClient>) -> App {
+    let mut app = app_with_recorder(recorder);
+    app.project_tabs = crate::tui::app::state::ProjectTabs::from_compat(
+        "/tmp/m007d",
+        Some("project-1".to_string()),
+        Some("workspace-1".to_string()),
+        Some("session-1".to_string()),
+        "",
+        "",
+    );
+    app.session_state.session = Some(crate::session::Session {
+        id: "session-1".to_string(),
+        project_id: "project-1".to_string(),
+        workspace_id: Some("workspace-1".to_string()),
+        ..Default::default()
+    });
+    app
+}
+
+/// The policy reads are executed by the daemon, and neither carries a
+/// session.
+///
+/// M007-D, decision shape one, on the TUI's side: the effective policy
+/// is a global reading, so the command carries no argument and the daemon
+/// reads no session out of the scope. The approval preference is a unit
+/// read for the same reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_policy_reads_are_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::policy::start_snapshot_refresh(
+        &mut app,
+        crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
+    );
+    wait_for_command(&recorder, "approval").await;
+    assert_eq!(
+        recorded_for(&recorder, "approval"),
+        Some(("approval".to_string(), String::new(), String::new())),
+        "the approval preference read must be executed as the catalog's approval command"
+    );
+    wait_for_command(&recorder, "policy").await;
+    assert_eq!(
+        recorded_for(&recorder, "policy"),
+        Some(("policy".to_string(), String::new(), String::new())),
+        "the effective policy read must be executed as the catalog's policy command"
+    );
+}
+
+/// The network write carries the intent, and the revision when the caller
+/// holds one.
+///
+/// The revision is the compare-and-swap the policy read published, so
+/// dropping it would turn a checked write into an unchecked one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_network_write_carries_the_intent_and_the_revision() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::policy::request_network_intent_change(
+        &mut app,
+        codegg_core::approval::NetworkIntent::OfflineRequired,
+    );
+    wait_for_command(&recorder, "network").await;
+    assert_eq!(
+        recorded_for(&recorder, "network"),
+        Some((
+            "network".to_string(),
+            String::new(),
+            "offline_required".to_string()
+        )),
+        "the network write must carry the intent as its argument"
+    );
+}
+
+/// The share, unshare and export commands carry the session they act on.
+///
+/// M007-D, decision shape two, on the TUI's side: the session travels as
+/// the argument, because the share surface can name a session other than
+/// the attached one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_session_named_commands_carry_their_session_in_the_argument() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::sessions::start_share_session(&mut app, "session-1".to_string());
+    wait_for_command(&recorder, "share").await;
+    assert_eq!(
+        recorded_for(&recorder, "share"),
+        Some(("share".to_string(), String::new(), "session-1".to_string())),
+        "the share must carry the session it acts on as its argument"
+    );
+
+    crate::tui::commands::sessions::start_unshare_session(&mut app, "session-1".to_string());
+    wait_for_command(&recorder, "unshare").await;
+    assert_eq!(
+        recorded_for(&recorder, "unshare"),
+        Some((
+            "unshare".to_string(),
+            String::new(),
+            "session-1".to_string()
+        )),
+        "the unshare must carry the session it acts on as its argument"
+    );
+
+    crate::tui::commands::sessions::start_export_session(&mut app, "session-1".to_string());
+    wait_for_command(&recorder, "export").await;
+    assert_eq!(
+        recorded_for(&recorder, "export"),
+        Some(("export".to_string(), String::new(), "session-1".to_string())),
+        "the export must carry the session it acts on as its argument"
+    );
+}
+
+/// The observation carries the session it follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_observe_command_carries_the_session_in_the_argument() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::observe::start_observe(
+        &mut app,
+        "project-1".to_string(),
+        "session-1".to_string(),
+    );
+    wait_for_command(&recorder, "observe").await;
+    assert_eq!(
+        recorded_for(&recorder, "observe"),
+        Some((
+            "observe".to_string(),
+            String::new(),
+            "session-1".to_string()
+        )),
+        "the observation must carry the session it follows as its argument"
+    );
+}
+
+/// The task listing carries the bound it asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_task_command_carries_its_bound_in_the_argument() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::work_orders::open_task_view(&mut app, "task");
+    wait_for_command(&recorder, "task").await;
+    assert_eq!(
+        recorded_for(&recorder, "task"),
+        Some(("task".to_string(), String::new(), "200".to_string())),
+        "the task listing must carry the bound it asked for as its argument"
+    );
+}
+
+/// The Agent family: the schedule listing is executed by the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_agent_family_is_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::tasks::start_list_tasks(&mut app);
+    wait_for_command(&recorder, "schedules").await;
+    assert_eq!(
+        recorded_for(&recorder, "schedules"),
+        Some(("schedules".to_string(), String::new(), String::new())),
+        "the schedule listing must be executed as the catalog's schedules command"
+    );
+}
+
+/// The Provider family: the model refresh is executed by the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_provider_family_is_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    app.refresh_models();
+    wait_for_command(&recorder, "models_refresh").await;
+    assert_eq!(
+        recorded_for(&recorder, "models_refresh"),
+        Some(("models_refresh".to_string(), String::new(), String::new())),
+        "the model refresh must be executed as the catalog's models_refresh command"
+    );
+}
+
+/// The remaining System-family commands are executed by the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_project_and_team_commands_are_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::team::dispatch_team_command(&mut app, "");
+    wait_for_command(&recorder, "team").await;
+    assert_eq!(
+        recorded_for(&recorder, "team"),
+        Some(("team".to_string(), String::new(), String::new())),
+        "the membership listing must be executed as the catalog's team command"
+    );
+}
+
+/// The remaining Session-family commands are executed by the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_remaining_session_commands_are_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::reasoning::start_preference_refresh(&mut app);
+    wait_for_command(&recorder, "reasoning").await;
+    assert_eq!(
+        recorded_for(&recorder, "reasoning"),
+        Some(("reasoning".to_string(), String::new(), String::new())),
+        "the reasoning selection must be executed as the catalog's reasoning command"
+    );
+
+    crate::tui::commands::control::dispatch_control_command(&mut app, "");
+    wait_for_command(&recorder, "control").await;
+    assert_eq!(
+        recorded_for(&recorder, "control"),
+        Some(("control".to_string(), String::new(), String::new())),
+        "the control surface must be executed as the catalog's control command"
+    );
+
+    crate::tui::runtime::command_dispatch::dispatch_tui_command(
+        &mut app,
+        crate::tui::app::TuiCommand::EditCheckpointList {
+            session_id: "session-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+        },
+    )
+    .await;
+    wait_for_command(&recorder, "edit_checkpoints").await;
+    assert_eq!(
+        recorded_for(&recorder, "edit_checkpoints"),
+        Some(("edit_checkpoints".to_string(), String::new(), String::new())),
+        "the checkpoint listing must be executed as the catalog's edit_checkpoints command"
+    );
+}
+
+/// The principal listing is executed by the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_principal_listing_is_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_project(recorder.clone());
+
+    crate::tui::commands::team::dispatch_team_command(&mut app, "principals");
+    wait_for_command(&recorder, "collaborators").await;
+    assert_eq!(
+        recorded_for(&recorder, "collaborators"),
+        Some(("collaborators".to_string(), String::new(), String::new())),
+        "the principal listing must be executed as the catalog's collaborators command"
+    );
+}
+
+// ── 3. The outcome ───────────────────────────────────────────────────/// The response the TUI's presentation receives is the daemon's inner
 /// response, verbatim.
 ///
 /// This is the outcome-preservation claim: the daemon owns the effect and

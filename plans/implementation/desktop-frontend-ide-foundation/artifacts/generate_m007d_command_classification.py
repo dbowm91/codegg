@@ -227,6 +227,11 @@ def parse_registry(text: str) -> dict[str, str]:
 
 FN_RE = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(")
 REQ_RE = re.compile(r"CoreRequest::([A-Za-z0-9_]+)\s*\{([^{}]*)\}")
+# The command execution carries its request DTO, so its block holds a
+# nested struct literal and the flat pattern above cannot see it. Every
+# migrated arm builds one, so a scan that misses it reports those arms as
+# issuing no daemon request at all.
+CMD_RE = re.compile(r"CoreRequest::CommandExecute\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
 CALL_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*\(")
 KEYWORDS = {
     "if", "for", "while", "match", "fn", "Some", "None", "Ok", "Err", "Vec", "String",
@@ -250,6 +255,12 @@ def requests_in(body: str) -> set[str]:
         if ":" not in block:
             continue
         found.add(variant)
+    for block in CMD_RE.findall(body):
+        if ".." in block or "=>" in block:
+            continue
+        if ":" not in block:
+            continue
+        found.add("CommandExecute")
     return found
 
 

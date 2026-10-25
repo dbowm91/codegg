@@ -39,6 +39,27 @@ use codegg_protocol::core::{
     CommandCatalogScopeDto, CommandExecuteRequestDto, CoreRequest, CoreResponse,
 };
 
+/// The refusal's code and reason, recovered from a refused execution.
+///
+/// A migrated call site sees a refusal wrapped in the command execution's
+/// result rather than as a bare error response, so the code and the
+/// message have to be recovered from the summary to keep the text a user
+/// reads the same as it was before the migration.
+///
+/// The summary a refusal carries is `"{code}: {reason}"`, and a code never
+/// contains a colon, so the first colon is the boundary.
+pub fn refusal_parts(result: &codegg_protocol::core::CommandExecuteResultDto) -> (String, String) {
+    let line = result
+        .lines
+        .first()
+        .cloned()
+        .unwrap_or_else(|| result.summary.clone());
+    match line.split_once(": ") {
+        Some((code, reason)) => (code.to_string(), reason.to_string()),
+        None => (String::new(), line),
+    }
+}
+
 /// Where one command form goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandRoute {

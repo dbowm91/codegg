@@ -389,6 +389,13 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
         };
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The listing is the catalog's
+    // `tasks` command, and the bound travels as the command's argument.
+    let command_scope = crate::tui::command_route::scope_for(app);
+    let command_scope = crate::protocol::core::CommandCatalogScopeDto {
+        project_id: project_id.clone(),
+        ..command_scope
+    };
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
@@ -400,23 +407,23 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
         async move {
             let error_or_tasks = match core_client {
                 None => Err("Core unavailable".to_string()),
-                Some(core_client) => match core_client
-                    .request(crate::core::new_request(
-                        format!(
-                            "workspace-dashboard-expand-{request_id}-{}",
-                            uuid::Uuid::new_v4()
-                        ),
-                        CoreRequest::WorkOrderList {
-                            project_id: project_id.clone(),
-                            state_filter: None,
-                            cursor: None,
-                            limit: Some(MAX_DASHBOARD_EXPANDED_TASKS as u32),
-                        },
-                    ))
-                    .await
+                Some(core_client) => match crate::tui::command_route::send_command(
+                    &core_client,
+                    command_scope,
+                    "tasks",
+                    "",
+                    &MAX_DASHBOARD_EXPANDED_TASKS.to_string(),
+                )
+                .await
                 {
                     Ok(CoreResponse::WorkOrderList { work_orders, .. }) => Ok(work_orders),
                     Ok(CoreResponse::Error { code, message }) => {
+                        Err(format!("Task detail failed: {code}: {message}"))
+                    }
+                    // A refusal that never reached the effect arrives as
+                    // the command execution's own result.
+                    Ok(CoreResponse::CommandExecute { result }) => {
+                        let (code, message) = crate::tui::command_route::refusal_parts(&result);
                         Err(format!("Task detail failed: {code}: {message}"))
                     }
                     Ok(_) => Err("Unexpected task detail response".to_string()),
@@ -512,7 +519,7 @@ pub(crate) fn open_selected_dashboard_project(app: &mut App) {
     // The Task view is the project Task/session summary view: running
     // rows open materialized sessions through canonical routing and
     // future rows fetch detail (M003 semantics, reused here).
-    crate::tui::commands::work_orders::open_task_view(app);
+    crate::tui::commands::work_orders::open_task_view(app, "task");
 }
 
 // ── Event / reconnect hints ──────────────────────────────────────────

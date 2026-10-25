@@ -907,6 +907,11 @@ pub(crate) fn start_bulk_export(app: &mut App, session_ids: Vec<String>) {
     let count = session_ids.len();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. Each exported session is the
+    // catalog's `export` command, and the session it acts on travels as
+    // the command's argument — so a bulk export opens one `Run` per
+    // exported session, which is what it did.
+    let scope = crate::tui::command_route::scope_for(app);
 
     spawn_registered_tui_task(
         tx,
@@ -926,19 +931,37 @@ pub(crate) fn start_bulk_export(app: &mut App, session_ids: Vec<String>) {
             };
             let mut succeeded = 0usize;
             let mut failed = 0usize;
+            // M007-D: the daemon owns the effect. Each exported session is
+            // the catalog's `export` command, and the session it acts on
+            // travels as the command's argument — so a bulk export opens
+            // one `Run` per exported session, which is what it did.
             for id in &session_ids {
-                let request = crate::core::new_request(
-                    format!("session-export-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::SessionExport {
-                        session_id: id.clone(),
-                    },
-                );
-                match core_client.request(request).await {
+                match crate::tui::command_route::send_command(
+                    &core_client,
+                    scope.clone(),
+                    "export",
+                    "",
+                    id,
+                )
+                .await
+                {
                     Ok(CoreResponse::Json { .. }) => {
                         tracing::info!("exported session {}", id);
                         succeeded += 1;
                     }
                     Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "failed to export session {} via core ({}): {}",
+                            id,
+                            code,
+                            message
+                        );
+                        failed += 1;
+                    }
+                    // A refusal that never reached the effect arrives as
+                    // the command execution's own result.
+                    Ok(CoreResponse::CommandExecute { result }) => {
+                        let (code, message) = crate::tui::command_route::refusal_parts(&result);
                         tracing::warn!(
                             "failed to export session {} via core ({}): {}",
                             id,
@@ -1125,6 +1148,11 @@ pub(crate) fn start_undo_delete(app: &mut App, session_id: String) {
 pub(crate) fn start_share_session(app: &mut App, session_id: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The session the share acts on
+    // is the one the caller named, so it travels as the command's
+    // argument; the scope names where the share is made.
+    let scope = crate::tui::command_route::scope_for(app);
+    let argument = session_id.clone();
 
     spawn_registered_tui_task(
         tx,
@@ -1139,13 +1167,15 @@ pub(crate) fn start_share_session(app: &mut App, session_id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let request = crate::core::new_request(
-                format!("session-share-{}", uuid::Uuid::new_v4()),
-                CoreRequest::SessionShare {
-                    session_id: session_id.clone(),
-                },
-            );
-            match core_client.request(request).await {
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "share",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::Session { session }) => Some(TuiCommand::ShareSessionFinished {
                     session_id,
                     session: Some(session),
@@ -1156,6 +1186,16 @@ pub(crate) fn start_share_session(app: &mut App, session_id: String) {
                     session: None,
                     error: Some(format!("Failed to share: {}", message)),
                 }),
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (_code, message) = crate::tui::command_route::refusal_parts(&result);
+                    Some(TuiCommand::ShareSessionFinished {
+                        session_id,
+                        session: None,
+                        error: Some(format!("Failed to share: {}", message)),
+                    })
+                }
                 Ok(_other) => Some(TuiCommand::ShareSessionFinished {
                     session_id,
                     session: None,
@@ -1200,6 +1240,11 @@ pub(crate) fn apply_share_session_finished(
 pub(crate) fn start_unshare_session(app: &mut App, session_id: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The session the unshare acts
+    // on is the one the caller named, so it travels as the command's
+    // argument.
+    let scope = crate::tui::command_route::scope_for(app);
+    let argument = session_id.clone();
 
     spawn_registered_tui_task(
         tx,
@@ -1214,19 +1259,31 @@ pub(crate) fn start_unshare_session(app: &mut App, session_id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let request = crate::core::new_request(
-                format!("session-unshare-{}", uuid::Uuid::new_v4()),
-                CoreRequest::SessionUnshare {
-                    session_id: session_id.clone(),
-                },
-            );
-            match core_client.request(request).await {
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "unshare",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::Session { session }) => Some(TuiCommand::UnshareSessionFinished {
                     session_id,
                     session: Some(session),
                     error: None,
                 }),
                 Ok(CoreResponse::Error { message, .. }) => {
+                    Some(TuiCommand::UnshareSessionFinished {
+                        session_id,
+                        session: None,
+                        error: Some(format!("Failed to unshare: {}", message)),
+                    })
+                }
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (_code, message) = crate::tui::command_route::refusal_parts(&result);
                     Some(TuiCommand::UnshareSessionFinished {
                         session_id,
                         session: None,
@@ -1269,6 +1326,11 @@ pub(crate) fn apply_unshare_session_finished(
 pub(crate) fn start_export_session(app: &mut App, session_id: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect. The session the export acts
+    // on is the one the caller named, so it travels as the command's
+    // argument.
+    let scope = crate::tui::command_route::scope_for(app);
+    let argument = session_id.clone();
 
     spawn_registered_tui_task(
         tx,
@@ -1283,13 +1345,15 @@ pub(crate) fn start_export_session(app: &mut App, session_id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let request = crate::core::new_request(
-                format!("session-export-{}", uuid::Uuid::new_v4()),
-                CoreRequest::SessionExport {
-                    session_id: session_id.clone(),
-                },
-            );
-            match core_client.request(request).await {
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "export",
+                "",
+                &argument,
+            )
+            .await
+            {
                 Ok(CoreResponse::Json { data: export }) => {
                     let json = serde_json::to_string_pretty(&export).unwrap_or_default();
                     Some(TuiCommand::ExportSessionFinished {
@@ -1299,6 +1363,16 @@ pub(crate) fn start_export_session(app: &mut App, session_id: String) {
                     })
                 }
                 Ok(CoreResponse::Error { message, .. }) => {
+                    Some(TuiCommand::ExportSessionFinished {
+                        session_id,
+                        json: None,
+                        error: Some(format!("Failed to export: {}", message)),
+                    })
+                }
+                // A refusal that never reached the effect arrives as the
+                // command execution's own result.
+                Ok(CoreResponse::CommandExecute { result }) => {
+                    let (_code, message) = crate::tui::command_route::refusal_parts(&result);
                     Some(TuiCommand::ExportSessionFinished {
                         session_id,
                         json: None,
