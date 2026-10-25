@@ -233,9 +233,9 @@ Coverage has four distinct categories (M004):
   operation names and therefore have no `operation_descriptor` row:
   `provider_connection_use` (the synthetic provider-scope decision
   from `authorize_provider_use`) and `user_prompt_queue_deliver` (the
-  daemon-internal queue delivery). Every one of the **257** real
-  operations is classified in exactly one of the two lists — **111**
-  instrumented operations and **146** uninstrumented operations — and
+  daemon-internal queue delivery). Every one of the **264** real
+  operations is classified in exactly one of the two lists — **113**
+  instrumented operations and **151** uninstrumented operations — and
   `scripts/check_audit_coverage.py` fails closed if any operation is
   classified in neither;
 - executor-owned live hooks (`EXECUTOR_LIVE_AUDIT_HOOKS`):

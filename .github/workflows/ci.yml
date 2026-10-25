@@ -413,6 +413,18 @@ jobs:
       - name: Blackboard contract matrix guard self-test
         run: python3 scripts/check_blackboard_contract_matrix.py --self-test
 
+      # The desktop tree is a separate Cargo workspace that the root check
+      # never compiles, so the hosted desktop qualification is the only
+      # automated gate it has. This guard fails closed when that gate
+      # stops covering the desktop tree, and it runs with its self-test:
+      # a guard that cannot be shown to fail on an injected defect is not
+      # evidence.
+      - name: Desktop gate wiring guard (self-test)
+        run: python3 scripts/check_desktop_gate_wiring.py --self-test
+
+      - name: Desktop gate wiring guard
+        run: python3 scripts/check_desktop_gate_wiring.py
+
       - name: Formatting
         run: cargo fmt --check --all
 

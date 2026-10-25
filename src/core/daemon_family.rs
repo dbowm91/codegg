@@ -28,6 +28,8 @@
 //! | `project_init` | `daemon_project_init.rs::handle_project_init_request` | bounded project instruction draft and guarded root publication |
 //! | `lsp` | `daemon_lsp.rs::handle_lsp_request` | M006-B: bounded LSP reads and the authoritative diagnostics pull over the daemon-owned `LspService` |
 //! | `scratch` | `daemon_scratch.rs::handle_scratch_request` | M006: the read-only scratch usage census over the daemon-owned disposable cache |
+//! | `git` | `daemon_reads.rs::handle_git_request` | Phase 3: read-only git facts (status, diff summary, branch list) for a project's bound repository |
+//! | `skills` | `daemon_reads.rs::handle_skill_catalogue_request` | Phase 3: the skill catalogue a project can discover |
 
 use crate::protocol::core::CoreRequest;
 
@@ -56,6 +58,12 @@ pub enum DaemonRequestFamily {
     /// M006. Measurement only: the scratch census reads the daemon's own
     /// disposable cache and mutates nothing.
     Scratch,
+    /// Phase 3. Read authority only: read-only git facts (status, diff
+    /// summary, branch list) for the repository a project is bound to.
+    Git,
+    /// Phase 3. Read authority only: the skill catalogue a project can
+    /// discover.
+    Skills,
 }
 
 impl DaemonRequestFamily {
@@ -89,6 +97,11 @@ impl DaemonRequestFamily {
             // operator disposition removes one tree, and it owns no project
             // authority either.
             CoreRequest::ScratchUsage { .. } | CoreRequest::ScratchReclaim { .. } => Self::Scratch,
+            // Phase 3: the read-only project-scoped fact reads. Both are
+            // reads: the git facts come from the read-only git fact layer,
+            // the catalogue from the canonical skill registry.
+            CoreRequest::GitRead { .. } => Self::Git,
+            CoreRequest::SkillCatalogueList { .. } => Self::Skills,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -372,6 +385,8 @@ impl DaemonRequestFamily {
             }
             Self::Lsp => "src/core/daemon_lsp.rs::handle_lsp_request",
             Self::Scratch => "src/core/daemon_scratch.rs::handle_scratch_request",
+            Self::Git => "src/core/daemon_reads.rs::handle_git_request",
+            Self::Skills => "src/core/daemon_reads.rs::handle_skill_catalogue_request",
         }
     }
 }

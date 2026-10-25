@@ -1,0 +1,726 @@
+{
+  "snapshot": {
+    "protocol_version": 1,
+    "event_seq": 42,
+    "generated_at_ms": 1760000000000,
+    "primary_session_id": "session-parity-golden",
+    "project_id": "project-parity",
+    "workspace_id": "workspace-parity",
+    "primary_session": {
+      "session_id": "session-parity-golden",
+      "project_id": "project-parity",
+      "workspace_id": "workspace-parity",
+      "title": "Parity golden session",
+      "status": "busy",
+      "selected_model": "anthropic/claude-sonnet-4",
+      "selected_agent": "build",
+      "has_active_turn": true,
+      "pending_permission_count": 1,
+      "pending_question_count": 1,
+      "input_tokens": 1200,
+      "output_tokens": 340,
+      "active_subagents": 1,
+      "time_created_at": 1759999000000,
+      "time_updated_at": 1760000000000,
+      "recent_summary": "the previous turn asked what the parser does today"
+    },
+    "secondary_sessions": [],
+    "workspace": {
+      "workspace_id": "workspace-parity",
+      "canonical_root": "/tmp/workspace-parity",
+      "display_name": "Parity Workspace",
+      "created_at": 1759990000000,
+      "last_opened_at": 1760000000000,
+      "archived_at": null,
+      "active_sessions": 1,
+      "services_active": true,
+      "active_leases": 1,
+      "config_revision": 3,
+      "health": {
+        "overall": "ok",
+        "catalog_state": "ok",
+        "workspace_state": "ok",
+        "assets_state": "ok",
+        "services_state": "ok",
+        "diagnostics": []
+      }
+    },
+    "active_turn": {
+      "turn_id": "turn-active",
+      "status": "awaiting_permission",
+      "started_at": 1759999990000,
+      "updated_at": 1760000000000,
+      "stop_reason": null,
+      "error": null,
+      "messages": [
+        {
+          "message_id": "msg-user-1",
+          "parent_turn_id": "turn-active",
+          "role": "user",
+          "text": "Refactor the parser and keep the public API stable.",
+          "tool_call_id": null,
+          "visibility": "public",
+          "created_at": 1759999991000,
+          "truncated": false
+        },
+        {
+          "message_id": "msg-assistant-1",
+          "parent_turn_id": "turn-active",
+          "role": "assistant",
+          "text": "Reading src/parser.rs before editing it.",
+          "tool_call_id": null,
+          "visibility": "public",
+          "created_at": 1759999992000,
+          "truncated": false
+        },
+        {
+          "message_id": "msg-tool-1",
+          "parent_turn_id": "turn-active",
+          "role": "tool",
+          "text": "read 42 line(s) from src/parser.rs",
+          "tool_call_id": "tool-read-1",
+          "visibility": "public",
+          "created_at": 1759999993000,
+          "truncated": false
+        },
+        {
+          "message_id": "msg-internal-1",
+          "parent_turn_id": "turn-active",
+          "role": "reasoning",
+          "text": "INTERNAL-ONLY scratchpad text that must never cross a frontend boundary.",
+          "tool_call_id": null,
+          "visibility": "internal",
+          "created_at": 1759999993500,
+          "truncated": false
+        },
+        {
+          "message_id": "msg-system-1",
+          "parent_turn_id": "turn-active",
+          "role": "system",
+          "text": "SYSTEM-ONLY text: a system message is not a conversational role.",
+          "tool_call_id": null,
+          "visibility": "public",
+          "created_at": 1759999993600,
+          "truncated": false
+        }
+      ],
+      "tools": [
+        {
+          "tool_id": "tool-read-1",
+          "tool_name": "read",
+          "status": "completed",
+          "arguments": {
+            "kind": "summary",
+            "summary": "path=src/parser.rs mode=r"
+          },
+          "output": {
+            "kind": "summary",
+            "summary": "ok 42 line(s)"
+          },
+          "visibility": "public",
+          "started_at": 1759999992000,
+          "completed_at": 1759999993000,
+          "duration_ms": 1000
+        },
+        {
+          "tool_id": "tool-bash-1",
+          "tool_name": "bash",
+          "status": "started",
+          "arguments": {
+            "kind": "summary",
+            "summary": "cmd=cargo test --workspace"
+          },
+          "output": {
+            "kind": "pending"
+          },
+          "visibility": "public",
+          "started_at": 1759999994000,
+          "completed_at": null,
+          "duration_ms": null
+        },
+        {
+          "tool_id": "tool-client-local-1",
+          "tool_name": "internal_probe",
+          "status": "started",
+          "arguments": {
+            "kind": "summary",
+            "summary": "probe=client-local"
+          },
+          "output": {
+            "kind": "pending"
+          },
+          "visibility": "client_local",
+          "started_at": 1759999995000,
+          "completed_at": null,
+          "duration_ms": null
+        }
+      ],
+      "pending_permissions": [
+        {
+          "permission_id": "perm-pending-1",
+          "tool": "bash",
+          "path": null,
+          "status": "pending",
+          "created_at": 1759999994500,
+          "resolved_at": null
+        },
+        {
+          "permission_id": "perm-resolved-1",
+          "tool": "write",
+          "path": "src/parser.rs",
+          "status": "allowed",
+          "created_at": 1759999994000,
+          "resolved_at": 1759999994200
+        }
+      ],
+      "pending_questions": [
+        {
+          "question_id": "question-pending-1",
+          "header": "Pick a branch",
+          "prompt": "Which branch should the refactor land on?",
+          "status": "pending",
+          "created_at": 1759999994600,
+          "resolved_at": null
+        },
+        {
+          "question_id": "question-resolved-1",
+          "header": "Already answered",
+          "prompt": "This question was answered before the snapshot was taken.",
+          "status": "denied",
+          "created_at": 1759999993000,
+          "resolved_at": 1759999993200
+        }
+      ],
+      "agent_tree": [
+        {
+          "child_instance_id": "",
+          "originating_turn_id": "turn-active",
+          "task_id": 77,
+          "agent": "reviewer",
+          "description": "A legacy turn-local child with no durable child identity.",
+          "status": "running",
+          "parent_task_id": null,
+          "created_at": 1759999990000,
+          "completed_at": null,
+          "result_summary": null,
+          "display_name": null,
+          "profile": null,
+          "usefulness": null,
+          "run_id": null
+        }
+      ],
+      "subagent_count": 2,
+      "input_tokens": 1200,
+      "output_tokens": 340,
+      "cached_tokens": 100,
+      "reasoning_tokens": 64,
+      "context_limit": 200000
+    },
+    "subagents": [
+      {
+        "child_instance_id": "child-sally",
+        "originating_turn_id": "turn-active",
+        "task_id": 11,
+        "agent": "explore",
+        "description": "Explore the parser call sites.",
+        "status": "running",
+        "parent_task_id": null,
+        "created_at": 1759999980000,
+        "completed_at": null,
+        "result_summary": null,
+        "display_name": "Sally",
+        "profile": "Generalist who has seen something like this before",
+        "usefulness": null,
+        "run_id": "run-child-1"
+      },
+      {
+        "child_instance_id": "child-bob",
+        "originating_turn_id": "turn-active",
+        "task_id": 12,
+        "agent": "reviewer",
+        "description": "Review the diff once it lands.",
+        "status": "completed",
+        "parent_task_id": null,
+        "created_at": 1759999981000,
+        "completed_at": 1759999999000,
+        "result_summary": "no findings",
+        "display_name": "Bob",
+        "profile": null,
+        "usefulness": null,
+        "run_id": null
+      }
+    ],
+    "recent_turns": [
+      {
+        "turn_id": "turn-recent-1",
+        "status": "completed",
+        "started_at": 1759998000000,
+        "updated_at": 1759998500000,
+        "stop_reason": "end_turn",
+        "error": null,
+        "messages": [
+          {
+            "message_id": "msg-recent-user-1",
+            "parent_turn_id": "turn-recent-1",
+            "role": "user",
+            "text": "What does the parser do today?",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759998001000,
+            "truncated": false
+          },
+          {
+            "message_id": "msg-recent-assistant-1",
+            "parent_turn_id": "turn-recent-1",
+            "role": "assistant",
+            "text": "It turns a token stream into a syntax tree.",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759998002000,
+            "truncated": false
+          }
+        ],
+        "tools": [],
+        "pending_permissions": [],
+        "pending_questions": [],
+        "agent_tree": [],
+        "subagent_count": 0,
+        "input_tokens": 400,
+        "output_tokens": 90,
+        "cached_tokens": null,
+        "reasoning_tokens": null,
+        "context_limit": 200000
+      },
+      {
+        "turn_id": "turn-recent-2",
+        "status": "completed",
+        "started_at": 1759997998000,
+        "updated_at": 1759998498000,
+        "stop_reason": "end_turn",
+        "error": null,
+        "messages": [
+          {
+            "message_id": "msg-recent-user-2",
+            "parent_turn_id": "turn-recent-2",
+            "role": "user",
+            "text": "Earlier question number 2.",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759997999000,
+            "truncated": false
+          }
+        ],
+        "tools": [],
+        "pending_permissions": [],
+        "pending_questions": [],
+        "agent_tree": [],
+        "subagent_count": 0,
+        "input_tokens": 400,
+        "output_tokens": 90,
+        "cached_tokens": null,
+        "reasoning_tokens": null,
+        "context_limit": 200000
+      },
+      {
+        "turn_id": "turn-recent-3",
+        "status": "completed",
+        "started_at": 1759997997000,
+        "updated_at": 1759998497000,
+        "stop_reason": "end_turn",
+        "error": null,
+        "messages": [
+          {
+            "message_id": "msg-recent-user-3",
+            "parent_turn_id": "turn-recent-3",
+            "role": "user",
+            "text": "Earlier question number 3.",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759997998000,
+            "truncated": false
+          }
+        ],
+        "tools": [],
+        "pending_permissions": [],
+        "pending_questions": [],
+        "agent_tree": [],
+        "subagent_count": 0,
+        "input_tokens": 400,
+        "output_tokens": 90,
+        "cached_tokens": null,
+        "reasoning_tokens": null,
+        "context_limit": 200000
+      },
+      {
+        "turn_id": "turn-recent-4",
+        "status": "completed",
+        "started_at": 1759997996000,
+        "updated_at": 1759998496000,
+        "stop_reason": "end_turn",
+        "error": null,
+        "messages": [
+          {
+            "message_id": "msg-recent-user-4",
+            "parent_turn_id": "turn-recent-4",
+            "role": "user",
+            "text": "Earlier question number 4.",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759997997000,
+            "truncated": false
+          }
+        ],
+        "tools": [],
+        "pending_permissions": [],
+        "pending_questions": [],
+        "agent_tree": [],
+        "subagent_count": 0,
+        "input_tokens": 400,
+        "output_tokens": 90,
+        "cached_tokens": null,
+        "reasoning_tokens": null,
+        "context_limit": 200000
+      },
+      {
+        "turn_id": "turn-recent-5",
+        "status": "completed",
+        "started_at": 1759997995000,
+        "updated_at": 1759998495000,
+        "stop_reason": "end_turn",
+        "error": null,
+        "messages": [
+          {
+            "message_id": "msg-recent-user-5",
+            "parent_turn_id": "turn-recent-5",
+            "role": "user",
+            "text": "Earlier question number 5.",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759997996000,
+            "truncated": false
+          }
+        ],
+        "tools": [],
+        "pending_permissions": [],
+        "pending_questions": [],
+        "agent_tree": [],
+        "subagent_count": 0,
+        "input_tokens": 400,
+        "output_tokens": 90,
+        "cached_tokens": null,
+        "reasoning_tokens": null,
+        "context_limit": 200000
+      },
+      {
+        "turn_id": "turn-recent-6",
+        "status": "completed",
+        "started_at": 1759997994000,
+        "updated_at": 1759998494000,
+        "stop_reason": "end_turn",
+        "error": null,
+        "messages": [
+          {
+            "message_id": "msg-recent-user-6",
+            "parent_turn_id": "turn-recent-6",
+            "role": "user",
+            "text": "Earlier question number 6.",
+            "tool_call_id": null,
+            "visibility": "public",
+            "created_at": 1759997995000,
+            "truncated": false
+          }
+        ],
+        "tools": [],
+        "pending_permissions": [],
+        "pending_questions": [],
+        "agent_tree": [],
+        "subagent_count": 0,
+        "input_tokens": 400,
+        "output_tokens": 90,
+        "cached_tokens": null,
+        "reasoning_tokens": null,
+        "context_limit": 200000
+      }
+    ],
+    "runs": [],
+    "jobs": [
+      {
+        "job_id": "job-build-1",
+        "workspace_id": "workspace-parity",
+        "kind": "build",
+        "state": "running",
+        "summary": "cargo build --workspace",
+        "session_id": "session-parity-golden",
+        "turn_id": "turn-active",
+        "active_attempt_id": "attempt-build-1",
+        "error_class": null,
+        "updated_at": 1760000000000
+      }
+    ],
+    "tool_programs": [
+      {
+        "program_id": "program-1",
+        "job_id": "job-program-1",
+        "state": "running",
+        "phase": "executing",
+        "language": "restricted_python",
+        "parent_turn_id": "turn-active",
+        "parent_agent_id": null,
+        "calls_completed": 2,
+        "child_jobs_running": 0,
+        "submitted_at": 1759999997000,
+        "started_at": 1759999997500,
+        "completed_at": null,
+        "failure_class": null,
+        "terminal_handle": null,
+        "last_progress": "calling validate()"
+      }
+    ],
+    "agent_runs": [
+      {
+        "run_id": "run-child-1",
+        "task_id": "task-uuid-1",
+        "project_id": "project-parity",
+        "repository_id": null,
+        "workspace_id": "workspace-parity",
+        "job_id": null,
+        "parent_run_id": null,
+        "agent": "explore",
+        "status": "running",
+        "depth": 1,
+        "worktree_id": "worktree-1",
+        "branch": "feature/parity",
+        "base_commit": "0000000000000000000000000000000000000000",
+        "result_commit": null,
+        "validation_summary": null,
+        "group_id": "group-1",
+        "attention_required": false,
+        "terminal_summary": null,
+        "control_status": "available",
+        "progress": "scanning the call sites",
+        "failure_class": null,
+        "updated_at": 1760000000000
+      },
+      {
+        "run_id": "run-detached-1",
+        "task_id": "task-uuid-2",
+        "project_id": "project-parity",
+        "repository_id": null,
+        "workspace_id": "workspace-parity",
+        "job_id": null,
+        "parent_run_id": null,
+        "agent": "explore",
+        "status": "running",
+        "depth": 1,
+        "worktree_id": "worktree-1",
+        "branch": "feature/parity",
+        "base_commit": "0000000000000000000000000000000000000000",
+        "result_commit": null,
+        "validation_summary": null,
+        "group_id": "group-1",
+        "attention_required": false,
+        "terminal_summary": null,
+        "control_status": "available",
+        "progress": "background sweep",
+        "failure_class": null,
+        "updated_at": 1759999999000
+      }
+    ],
+    "worktrees": [
+      {
+        "worktree_id": "worktree-1",
+        "owner_run_id": "run-child-1",
+        "branch": "feature/parity",
+        "base_commit": "0000000000000000000000000000000000000000",
+        "state": "ready",
+        "health": "healthy",
+        "dirty": true,
+        "conflicted": false,
+        "retained_for_attention": false,
+        "updated_at": 1760000000000
+      }
+    ],
+    "run_groups": [
+      {
+        "group_id": "group-1",
+        "owner_run_id": "run-child-1",
+        "owner_kind": "run",
+        "owner_session_id": "session-parity-golden",
+        "owner_turn_id": "turn-active",
+        "status": "running",
+        "join_policy": "any",
+        "member_run_ids": [
+          "run-child-1",
+          "run-detached-1"
+        ],
+        "successful": 0,
+        "failed": 0,
+        "active": 2,
+        "winner_run_id": null,
+        "cancel_remaining_on_satisfaction": false,
+        "updated_at": 1760000000000,
+        "workstream_claims": [],
+        "workstream_dependencies": [],
+        "workstream_claims_updated_at": null
+      }
+    ],
+    "convergences": [
+      {
+        "convergence_id": "convergence-1",
+        "owner_summary": "Converge on one parser refactor.",
+        "status": "running",
+        "cycle_ordinal": 1,
+        "max_cycles": 3,
+        "remaining_cycles": 2,
+        "producer_run_ids": [
+          "run-child-1",
+          "run-detached-1"
+        ],
+        "producer_completed": 0,
+        "producer_failed": 0,
+        "producer_cancelled": 0,
+        "producer_active": 2,
+        "verifier_run_id": null,
+        "verdict_kind": null,
+        "verdict_summary": null,
+        "awaiting_decision": false,
+        "terminal_reason_class": null,
+        "selected_run_id": null,
+        "selected_result_commit": null,
+        "last_finding_count": 0
+      }
+    ],
+    "diagnostics": []
+  },
+  "expected": {
+    "sessionId": "session-parity-golden",
+    "turnStatus": "awaiting_permission",
+    "pendingPermissionCount": 1,
+    "pendingQuestionCount": 1,
+    "subagents": [
+      {
+        "name": "Sally",
+        "state": "running"
+      },
+      {
+        "name": "Bob",
+        "state": "completed"
+      }
+    ],
+    "agentTree": [
+      {
+        "name": "reviewer",
+        "state": "running"
+      }
+    ],
+    "agentRuns": [
+      {
+        "id": "run-child-1",
+        "state": "running"
+      },
+      {
+        "id": "run-detached-1",
+        "state": "running"
+      }
+    ],
+    "toolPrograms": [
+      {
+        "id": "program-1",
+        "state": "running"
+      }
+    ],
+    "jobs": [
+      {
+        "id": "job-build-1",
+        "state": "running"
+      }
+    ],
+    "runGroups": [
+      {
+        "id": "group-1",
+        "state": "running"
+      }
+    ],
+    "convergences": [
+      {
+        "id": "convergence-1",
+        "state": "running"
+      }
+    ]
+  },
+  "desktopExpected": {
+    "messages": [
+      {
+        "role": "user",
+        "text": "Refactor the parser and keep the public API stable."
+      },
+      {
+        "role": "assistant",
+        "text": "Reading src/parser.rs before editing it."
+      },
+      {
+        "role": "tool",
+        "text": "read 42 line(s) from src/parser.rs"
+      }
+    ],
+    "truncatedMessages": 0,
+    "tools": [
+      {
+        "toolName": "read",
+        "status": "completed"
+      },
+      {
+        "toolName": "bash",
+        "status": "started"
+      }
+    ],
+    "transcript": [
+      {
+        "turnId": "turn-recent-5",
+        "role": "user",
+        "text": "Earlier question number 5."
+      },
+      {
+        "turnId": "turn-recent-4",
+        "role": "user",
+        "text": "Earlier question number 4."
+      },
+      {
+        "turnId": "turn-recent-3",
+        "role": "user",
+        "text": "Earlier question number 3."
+      },
+      {
+        "turnId": "turn-recent-2",
+        "role": "user",
+        "text": "Earlier question number 2."
+      },
+      {
+        "turnId": "turn-recent-1",
+        "role": "user",
+        "text": "What does the parser do today?"
+      },
+      {
+        "turnId": "turn-recent-1",
+        "role": "assistant",
+        "text": "It turns a token stream into a syntax tree."
+      },
+      {
+        "turnId": "turn-active",
+        "role": "user",
+        "text": "Refactor the parser and keep the public API stable."
+      },
+      {
+        "turnId": "turn-active",
+        "role": "assistant",
+        "text": "Reading src/parser.rs before editing it."
+      },
+      {
+        "turnId": "turn-active",
+        "role": "tool",
+        "text": "read 42 line(s) from src/parser.rs"
+      }
+    ],
+    "truncatedTranscriptMessages": 0
+  }
+}

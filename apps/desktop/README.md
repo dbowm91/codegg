@@ -15,6 +15,20 @@ npm run bindings:check
 npm run build
 ```
 
+The whole desktop gate — the boundary guard, the renderer checks, the daemon
+staging, the host checks (`cargo test --lib`, `cargo fmt --check`, `cargo
+clippy --all-targets --locked -- -D warnings`) and, when a display is
+available, the built-app trajectory — has one entry point, run from the
+repository root:
+
+```bash
+apps/desktop/scripts/verify-desktop.sh
+```
+
+It prints which steps it skipped and why, and the hosted lane calls the same
+script, so the local gate and the hosted lane cannot drift. Individual
+phases are invocable: `boundary`, `renderer`, `stage-daemon`, `host`, `e2e`.
+
 For local Tauri development, set `CODEGG_DAEMON_EXECUTABLE` to a built root
 `codegg` executable and run `npm run tauri dev`. The host uses that explicit
 binary path for daemon autostart. To package the existing executable as a

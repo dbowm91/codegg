@@ -2,7 +2,9 @@
 
 Status: ready for handoff
 
-Repository baseline: `c4fa30aeba439894b048768d4829dea0cfa0b84b`
+Repository baseline: `c5d3f4dc4c35ae702a7bbaf14009526295d6ac8a` — the merged tree carrying
+the desktop-parity work (`cd9c2fab4 feat(desktop): project the whole session snapshot and
+render it`)
 
 Source roadmap:
 
@@ -45,8 +47,9 @@ Applicable ADRs and architecture:
   surface is a reviewed DTO set, not a raw `CoreRequest` channel.
 - `plans/adrs/ADR-0011-editor-document-ownership-and-frontend-replication.md` (accepted);
   `plans/adrs/ADR-0012-…` (accepted) — the desktop's bridge DTO contract.
-- `architecture/desktop.md` — trust boundary, bridge DTO surface, deferred surfaces, paused
-  hosted lane. `architecture/tui.md` — the TUI's key dispatch authority, focus model, input modes
+- `architecture/desktop.md` — trust boundary, bridge DTO surface, deferred surfaces, and the
+  hosted qualification (un-paused at `:154`, green at `:217`).
+  `architecture/tui.md` — the TUI's key dispatch authority, focus model, input modes
   and keybinding panel; **read-only for this milestone**. `architecture/overview.md` — the
   desktop entry in the workspace map.
 - `plans/registry.md:131` — "TUI editor Helix keybinding parity | closed (M001–M013 and M015–M020
@@ -57,16 +60,22 @@ Predecessor closure (hard dependency, **not yet satisfied at the baseline**):
 
 - M001…M006-E are closed; their closure records are in `plans/closure/`.
 - **M007-A** — `plans/implementation/desktop-frontend-ide-foundation/011-desktop-build-and-hosted-gate.md`.
-  Not present in the baseline tree (the directory holds `001`…`009` only). Until M007-A lands, the
-  desktop tree is compiled by **no** automated gate: `Cargo.toml:6` excludes
+  The plan file **is present** in the baseline tree (the directory holds `001`…`009` and
+  `011`…`015`), but it is `Status: ready for handoff` and **unimplemented**. Until M007-A
+  lands, the desktop tree is compiled by **no** automated gate: `Cargo.toml:6` excludes
   `apps/desktop/src-tauri` from the root workspace, `scripts/verify.sh` contains no `npm`,
   `node` or `apps/desktop` reference (its only desktop step is
-  `./scripts/check-desktop-boundary.sh`), and the hosted lane is paused and red
-  (`architecture/desktop.md:154-198`).
+  `./scripts/check-desktop-boundary.sh`), and the hosted `e2e` lane — **green** since
+  2026-10-24 (`architecture/desktop.md:217`) — is a restored premise, not the desktop Rust
+  host's `clippy -D warnings` gate (`architecture/desktop.md:207-210`).
 - **M007-B** — `plans/implementation/desktop-frontend-ide-foundation/012-desktop-chat-region-and-side-panel.md`.
-  Also not present in the baseline tree. A keymap binds to regions that do not exist yet, so
+  The plan file **is present** in the baseline tree and is likewise `Status: ready for
+  handoff` and **unimplemented**. A keymap binds to regions that do not exist yet, so
   M007-C is **not implementable** until M007-B's region model and `data-testid` conventions are
-  in the tree.
+  in the tree. **The desktop-parity work does not satisfy this dependency**: it delivered
+  *panel-level* surfaces under `apps/desktop/src/panels/`, and there is still **no region
+  model, no region container and no region-level `data-testid`** anywhere in
+  `apps/desktop/src/`.
 
 Primary class: capability
 
@@ -149,11 +158,15 @@ desktop's trust boundary and bridge DTO surface.
 
 | Dependency | Why it is hard | Evidence |
 |---|---|---|
-| **M007-A** — desktop build and hosted gate | The desktop tree is compiled by no automated gate today, so "the desktop typechecks and its tests pass" is an unverifiable claim and §15 cannot be satisfied. | `Cargo.toml:6`, `scripts/verify.sh`, `architecture/desktop.md:154-198` |
-| **M007-B** — desktop chat region and side panel | A keymap binds to regions. M007-B establishes the region model, the region order, the focus containers and the `data-testid` conventions this milestone's affordance declarations reference. Without it there is nothing to focus and nothing to bind. | roadmap §7 M007 decomposition table |
+| **M007-A** — desktop build and hosted gate | The desktop tree is compiled by no automated gate today, so "the desktop typechecks and its tests pass" is an unverifiable claim and §15 cannot be satisfied. | `Cargo.toml:6`, `scripts/verify.sh`, `architecture/desktop.md:207-210` |
+| **M007-B** — desktop chat region and side panel | A keymap binds to regions. M007-B establishes the region model, the region order, the focus containers and the `data-testid` conventions this milestone's affordance declarations reference. Without it there is nothing to focus and nothing to bind. The desktop-parity work delivered **panel-level** surfaces (`apps/desktop/src/panels/*.tsx`), not regions: there is still **no region model, no region container and no region-level `data-testid`** in the tree. | roadmap §7 M007 decomposition table |
 
-Both plan files (`011-…`, `012-…`) are absent from the baseline tree. M007-C's implementer must
-confirm both are closed before starting and record the evidence.
+**Both plan files are present in the baseline tree** —
+`plans/implementation/desktop-frontend-ide-foundation/011-desktop-build-and-hosted-gate.md`
+and `plans/implementation/desktop-frontend-ide-foundation/012-desktop-chat-region-and-side-panel.md`
+both exist, and both are still `Status: ready for handoff` and **unimplemented**. Their
+presence is not their closure: M007-C's implementer must confirm **both are closed**
+before starting and record the evidence.
 
 **Stable interface dependencies.** The TUI's `ActionKey` set — `pub enum ActionKey` at
 `src/tui/input.rs:259`, **61 variants** (§3.2) — is the source vocabulary for the concept-parity
@@ -163,9 +176,11 @@ remap/export/import capability (`src/tui/components/dialogs/keybind.rs`, 782 lin
 behavioural model for the desktop's customisation surface; its *terminal UI* is not copied.
 
 **Readiness risks.** The desktop renderer has never had a keyboard handler (§3.1), so there is no
-in-tree convention to follow and this milestone establishes one. The hosted lane is red
-(`architecture/desktop.md:154-198`), so M007-C cannot rely on hosted CI as evidence; it relies on
-M007-A's gate running locally and in CI.
+in-tree convention to follow and this milestone establishes one. The hosted `e2e` lane is
+**green** (`architecture/desktop.md:217`), but it is a restored premise and **not** a
+substitute for M007-A's gate: the desktop Rust host still has no `clippy -D warnings` step and
+`scripts/verify.sh quick` still compiles nothing under `apps/desktop/src-tauri`. M007-C
+relies on M007-A's gate running locally and in CI.
 
 ---
 
@@ -179,28 +194,34 @@ $ grep -rn "onKeyDown\|onKeyUp\|onKeyPress\|addEventListener" apps/desktop/src/
 ```
 
 There is **no** `onKeyDown`, `onKeyUp`, `onKeyPress`, or `addEventListener` for any key event
-anywhere under `apps/desktop/src/`. There are **twelve** `onClick` bindings, every one of them on
-a `<button>`. Every interaction in the desktop today is a mouse click on a button.
+anywhere under `apps/desktop/src/`, and no `KeyboardEvent` type is named there either. There are
+**twelve** `onClick` bindings in `App.tsx` and four more in the panel modules — **16** across
+`apps/desktop/src/`. Every interaction in the desktop today is a mouse click on a button.
 
-The whole renderer is one component: `apps/desktop/src/App.tsx:15` is `export function App()`, and
-the entire render is `apps/desktop/src/App.tsx:382-406` — a single `<main>` of stacked
-`<section className="panel">` cards (projects at `:387`, workspaces and sessions at `:389-390`,
-session creation at `:391`, the composer at `:392`). There is no region abstraction, no focus
+The whole renderer is still one component: `apps/desktop/src/App.tsx:28` is
+`export function App()`, and the entire render is `apps/desktop/src/App.tsx:594-630` — a single
+`<main>` of stacked `<section className="panel">` cards (projects at `:599`, workspaces and
+sessions at `:601-602`, session creation at `:603`, the composer at `:604`), followed by the
+baseline's panel modules composed inline (`:623-628`). There is no region abstraction, no focus
 management, no overlay layer, and no keymap.
 
 The renderer's data path is a bridge over the daemon, already structured for M007-B:
 
-- `apps/desktop/src/bridge.ts:22-71` — the whole bridge surface: `connect`, `snapshot`,
-  `projects`, `projectDetail`, `workspaceSelect`, `sessionList`, `sessionOpen`, `sessionCreate`,
-  `promptSubmit`, `artifactRead`, `controlRefresh`, `permissionRespond`, `questionRespond`,
-  `projectionStart`/`Stop`/`Current`, `subscribeProjection`, `subscribe`, `disconnect`,
-  `unsubscribe`.
-- `apps/desktop/src/bridge-types.ts:151-170` — `SessionPresentationView` already carries `runs`
-  (`:160`), `jobs` (`:161`), `subagents` (`:162`), `recent_turns` (`:163`),
-  `pending_permissions` (`:164`) and `pending_questions` (`:165`). The renderer renders none of
-  them yet; M007-B's tasks panel will.
+- `apps/desktop/src/bridge.ts:22-94` — the whole bridge surface, now **23** distinct
+  `desktop_*` invoke targets: `connect`, `snapshot`, `projects`, `projectDetail`,
+  `workspaceSelect`, `sessionList`, `sessionOpen`, `sessionCreate`, `promptSubmit`,
+  `artifactRead`, `controlRefresh`, `permissionRespond`, `questionRespond`,
+  `projectionStart`/`Stop`/`Current`, `projectionSubscribe`, `todoRefresh`, `gitRead`,
+  `skillCatalogue`, `subscribeProjection`, `subscribe`, `disconnect`, `unsubscribe`. The
+  three the desktop-parity work added are `todoRefresh` (`:53-54`), `gitRead` (`:60-61`) and
+  `skillCatalogue` (`:62-63`).
+- `apps/desktop/src/bridge-types.ts:284-324` — `SessionPresentationView` already carries `runs`
+  (`:298`), `jobs` (`:299`), `subagents` (`:301`), `agentTree` (`:304`), `recentTurns` (`:310`),
+  `todos` (`:317`), `pendingPermissions` (`:318`) and `pendingQuestions` (`:319`). **The
+  baseline already renders `jobs` and `subagents`** (`App.tsx:626`, `:628`); `runs` and
+  `recentTurns` are still received and dropped, and M007-B's tasks panel closes that pair.
 - `apps/desktop/src/App.test.tsx:1-4` — vitest with `@testing-library/react`, the `bridge` module
-  mocked at `apps/desktop/src/App.test.tsx:6-29`. The renderer's test harness exists and works.
+  mocked at `apps/desktop/src/App.test.tsx:6-31`. The renderer's test harness exists and works.
 
 ### 3.2 The TUI's bindable action catalog
 
@@ -301,9 +322,9 @@ the key to press again.
 ### 3.4 The desktop's exit path, boundary and toolchain
 
 The desktop has **no renderer-initiated exit**: the window's close and destroy are handled by the
-Rust host (`apps/desktop/src-tauri/src/lib.rs:1036`,
+Rust host (`apps/desktop/src-tauri/src/lib.rs:1084`,
 `tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed`, and
-`apps/desktop/src-tauri/src/lib.rs:1080`, `tauri::RunEvent::ExitRequested { .. } |
+`apps/desktop/src-tauri/src/lib.rs:1128`, `tauri::RunEvent::ExitRequested { .. } |
 tauri::RunEvent::Exit`), and there is no `desktop_quit` command in `apps/desktop/src/bridge.ts`.
 Consequence: **the desktop has no exit chord**, and this plan does not add one — `mod+q` would
 shadow the OS's own quit accelerator, which §4 forbids without a deliberate override rule and
@@ -538,15 +559,15 @@ equivalent for.
 
 | Canonical concept (`plans/000-long-term-specification.md:550-562`) | Carried in M007-C? | Desktop action identity | Default binding | Mouse affordance |
 |---|---|---|---|---|
-| `Space f` — project picker (`:552`, `:397`) | **yes** — the desktop already renders a project list (`apps/desktop/src/App.tsx:387`) | `project.switcher.open` | `mod+p` | button `project-switcher-button` |
+| `Space f` — project picker (`:552`, `:397`) | **yes** — the desktop already renders a project list (`apps/desktop/src/App.tsx:599`) | `project.switcher.open` | `mod+p` | button `project-switcher-button` |
 | `Enter` — open/focus project tab (`:553`) | **yes** — as "activate the focused row" | `item.activate` | `enter` | button family `[data-testid^="project-select-"], [data-testid^="session-open-"]` |
 | `gt` / `gT` — next/previous project tab (`:554`) | **no** — the desktop has no project-tab set; M007-B's side panel is one region. Recorded, not dropped. | — | — | — |
-| `Space s` — project session picker (`:555`) | **yes** — the desktop already renders a session list (`apps/desktop/src/App.tsx:390`) | `session.switcher.open` | `mod+shift+s` | button `session-switcher-button` |
-| `Space p` — collaborators/presence (`:556`) | **no** — the desktop's projection DTO carries no presence data (`apps/desktop/src/bridge-types.ts:151-170`) | — | — | — |
+| `Space s` — project session picker (`:555`) | **yes** — the desktop already renders a session list (`apps/desktop/src/App.tsx:602`) | `session.switcher.open` | `mod+shift+s` | button `session-switcher-button` |
+| `Space p` — collaborators/presence (`:556`) | **no** — the desktop's projection DTO carries no presence data (`apps/desktop/src/bridge-types.ts:284-324`) | — | — | — |
 | `Space o` — observe selected session (`:557`) | **no** — the desktop has no observe workflow; `plans/000-long-term-specification.md:430` describes the TUI's observer mode | — | — | — |
 | `Space c` — focus project chat (`:558`) | **no** — no project-chat surface in the desktop | — | — | — |
-| `Space j` — project jobs (`:559`) | **partial** — `jobs` arrives in the projection DTO (`apps/desktop/src/bridge-types.ts:161`) and M007-B renders it in the tasks panel. The *picker* is the panel itself. | `tasks.toggle` | `mod+t` | button `tasks-toggle-button` |
-| `Space a` — agent tree (`:560`) | **partial** — `subagents` arrives (`apps/desktop/src/bridge-types.ts:162`); M007-B renders it in the tasks panel | `tasks.toggle` (same surface) | — | — |
+| `Space j` — project jobs (`:559`) | **partial** — `jobs` arrives in the projection DTO (`apps/desktop/src/bridge-types.ts:299`) and **the baseline already renders it** in the tasks panel (`App.tsx:628` → `TaskPanel.tsx:42`). The *picker* is the panel itself. | `tasks.toggle` | `mod+t` | button `tasks-toggle-button` |
+| `Space a` — agent tree (`:560`) | **partial** — `subagents` arrives (`apps/desktop/src/bridge-types.ts:301`) and **the baseline already renders it** (`App.tsx:626` → `SubagentPanel.tsx:23`) | `tasks.toggle` (same surface) | — | — |
 
 **The TUI actions the desktop carries.**
 
@@ -657,7 +678,12 @@ keyboard-first rather than keyboard-*capable*.
 
 - **A region registry.** Regions are declared with an order and a stable `data-testid`
   (`region-chat`, `region-sidepanel`, `region-composer`, plus overlays). M007-B's region model is
-  the source; this milestone adds the focus layer over it.
+  the source; this milestone adds the focus layer over it. **The `data-testid` values the
+  baseline already creates are panel-level, not region-level** — `task-surface`,
+  `subagent-surface`, `activity-surface`, `transcript-surface`, `turn-summary-surface`,
+  `tool-detail-surface`, `git-surface` and `skills-surface`
+  (`apps/desktop/src/panels/*.tsx`) — so they are **not** the region affordances this
+  milestone's `mod+1`…`mod+9` bindings target. The region containers are M007-B's to create.
 - **Region focus.** `mod+1`…`mod+9` focuses the *n*-th region directly, moving DOM focus to the
   region's current control.
 - **In-region traversal.** `Tab` / `Shift+Tab` move within the focused region and **wrap** at the
@@ -988,9 +1014,12 @@ The implementing agent **stops and reports** rather than deciding any of the fol
    without inventing canonical vocabulary.** The canonical documents have no term for *keymap* or
    *chord* (§3.5); inventing a canonical term is a terminology amendment and is the owner's step
    (§12).
-8. **M007-A's gate or M007-B's region model is not present in the tree.** The M007-A and M007-B
-   plan files are absent from the baseline tree; their absence is not a formality — M007-C cannot
-   be verified without M007-A, and it has nothing to bind without M007-B.
+8. **M007-A's gate or M007-B's region model is not present in the tree.** Both plan files are
+   present in the baseline tree and both are still unimplemented; their **presence** is not a
+   formality — M007-C cannot be verified without M007-A's gate, and it has nothing to bind
+   without M007-B's region model. The desktop-parity work's panel modules
+   (`apps/desktop/src/panels/*.tsx`) are **panel-level** surfaces: they do not stand in for a
+   region model, a region container or a region-level `data-testid`.
 9. **A conflict rule, a focus rule or a focus-order rule cannot be made deterministic.** The
    desktop's conflict resolution, region focus order and in-region traversal must each have
    exactly one answer; a rule with two answers is a defect.
@@ -1083,7 +1112,7 @@ roadmap's rows other than M007-C, and `plans/registry.md`'s rows other than this
 **Desktop tree notes.** `apps/desktop/package.json` pins React 19.3.0, Tauri 2.12.1, TypeScript
 7.0.2, Vite 8.3.2 and vitest 5.0.3. The renderer's harness is vitest + `@testing-library/react`
 (`apps/desktop/src/App.test.tsx:1-4`) with the bridge mocked
-(`apps/desktop/src/App.test.tsx:6-29`), and the Vitest environment is jsdom, so `localStorage` is
+(`apps/desktop/src/App.test.tsx:6-31`), and the Vitest environment is jsdom, so `localStorage` is
 available — the persistence tests need no extra harness, but they must clear the store between
 tests. `apps/desktop/scripts/check-bindings.mjs` reads `src-tauri/src/bridge.rs` and
 `src/bridge-types.ts` against a **fixed** expected field map: adding a field to either side

@@ -1,4 +1,4 @@
-name: Desktop E2E (paused)
+name: Desktop E2E
 
 # Built-app visible-window qualification for the desktop foundation (C003).
 # Runs the real Tauri window (embedded WebDriver provider) against an
@@ -11,45 +11,62 @@ name: Desktop E2E (paused)
 # (WebKitGTK + xvfb) is the routine hosted qualification. Windows remains
 # M002-gated; macOS runs stay valuable local evidence.
 #
-# ── PAUSED 2026-10-23 ───────────────────────────────────────────────────────
-# Development on the desktop foundation line is paused, so this qualification
-# no longer runs on push or on pull requests. It is **manual dispatch only**
-# until that line resumes.
-#
-# The pause is recorded in evidence, not asserted. The lane had already been
-# red on `main` for days: `main`'s own most recent run, 39679968444 at
-# 53d9fc9fd, fails with
+# ── RESTORED 2026-10-24 ─────────────────────────────────────────────────────
+# The lane was paused on 2026-10-23 because it was red on `main`: run
+# 39679968444 at 53d9fc9fd failed with
 #
 #   element ("[data-testid="permission-list"]") still not existing after 120000ms
 #   at apps/desktop/e2e/specs/m004-session.e2e.ts:169:5
 #
-# — the same file, the same line and the same timeout, and `main`'s history
-# behind it is nine consecutive failures with one older success. The defect
-# belongs to the desktop line and is not repairable from another line, so
-# continuing to spend a hosted run on it every time the desktop tree changes
-# buys no signal.
+# The cause was a stale *fixture* premise, not a product defect. The desktop
+# fixture's mock model answered the first `write` call with its final text,
+# but since 39e1445b6 the daemon answers a temp-root write with an actionable
+# scratch-path redirect *before* asking the human, and only reaches the human
+# when the model repeats the same restricted path. The fixture therefore never
+# produced the `PermissionPending` the spec asserts, so the spec waited out
+# its timeout on a permission that was never going to arrive.
 #
-# To restore the qualification when development resumes: re-add the `push`
-# and `pull_request` triggers with the path filters preserved below, and drop
-# the "(paused)" from this workflow's name. Nothing else in this file changes.
+# The fixture now repeats the same denied write on its second request, which
+# exercises the intended one-offer-per-target rule: the first attempt is
+# answered with the redirect, the repeat reaches the human, and the spec's
+# `permission-list` assertion holds. The product behaviour is unchanged.
 #
-# The path filters, preserved for that restoration:
+# The triggers are restored with the path filters preserved at the pause.
 #
-#   push (branches: [main]):
-#     apps/desktop/**
-#     crates/codegg-client/**
-#     crates/codegg-protocol/**
-#     crates/codegg-core/src/projection_replay/**
-#     crates/codegg-core/src/storage/**
-#     src/core/transport/**
-#     src/core/daemon_turns.rs
-#     src/core/daemon_projects.rs
-#     src/core/daemon.rs
-#     .github/workflows/desktop-e2e.yml
-#
-#   pull_request (any branch): the same list.
+# The checks below run through apps/desktop/scripts/verify-desktop.sh — the
+# one local entry point that owns the desktop step list — so the hosted lane
+# and the maintainer's machine cannot drift. The script is what a contributor
+# runs before pushing; this workflow is what runs it for them. The lane's
+# lint gate is also stated literally in the host-checks step, because that
+# is where the gate guard reads it from; the script proves the two copies
+# still agree.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/codegg-client/**'
+      - 'crates/codegg-protocol/**'
+      - 'crates/codegg-core/src/projection_replay/**'
+      - 'crates/codegg-core/src/storage/**'
+      - 'src/core/transport/**'
+      - 'src/core/daemon_turns.rs'
+      - 'src/core/daemon_projects.rs'
+      - 'src/core/daemon.rs'
+      - '.github/workflows/desktop-e2e.yml'
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/codegg-client/**'
+      - 'crates/codegg-protocol/**'
+      - 'crates/codegg-core/src/projection_replay/**'
+      - 'crates/codegg-core/src/storage/**'
+      - 'src/core/transport/**'
+      - 'src/core/daemon_turns.rs'
+      - 'src/core/daemon_projects.rs'
+      - 'src/core/daemon.rs'
+      - '.github/workflows/desktop-e2e.yml'
   workflow_dispatch:
 
 # Pinned to 24.04: Tauri 2.12 documents WebKitGTK 4.1 system dependencies
@@ -110,8 +127,15 @@ jobs:
           git config --global user.name "CI Test"
           git config --global user.email "ci@test.example.com"
 
+      # ── The desktop gate ────────────────────────────────────────────────
+      # The checks below run through apps/desktop/scripts/verify-desktop.sh:
+      # one entry point owns the step list, so the hosted lane and the
+      # maintainer's machine (the same script, run locally) cannot drift.
+      # The script prints its own step-by-step log and says which steps it
+      # skipped and why.
+
       - name: Desktop production boundary guard
-        run: ./scripts/check-desktop-boundary.sh
+        run: apps/desktop/scripts/verify-desktop.sh boundary
 
       - name: Build root daemon binary
         # The root workspace strips debuginfo in BOTH the dev and test cargo
@@ -122,36 +146,35 @@ jobs:
         run: cargo build --locked --config 'profile.dev.strip="none"'
 
       - name: Desktop renderer checks
-        working-directory: apps/desktop
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-          npm run bindings:check
-          npm run build
+        run: apps/desktop/scripts/verify-desktop.sh renderer
 
       # tauri.conf.json bundles binaries/codegg as a resource; the Tauri
       # build script requires it to exist. Stage this revision's binary
       # (gitignored; C001 operator contract).
       - name: Stage daemon resource for the desktop bundle
-        working-directory: apps/desktop
         env:
           CODEGG_DAEMON_EXECUTABLE: ${{ github.workspace }}/target/debug/codegg
-        run: npm run stage:daemon
+        run: apps/desktop/scripts/verify-desktop.sh stage-daemon
 
       - name: Desktop host checks (production configuration)
         run: |
-          rustup run 1.90.0 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
-          rustup run 1.90.0 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+          # This lane's lint gate, in the pinned toolchain. The script's
+          # `host` phase runs the same three host commands (test, fmt and
+          # this lint) and proves they still agree with this file, so the
+          # local gate and this lane cannot drift.
+          rustup run 1.90.0 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+          apps/desktop/scripts/verify-desktop.sh host
 
       # Builds the fixture helper plus the desktop-e2e feature app binary
       # (the only configuration containing the embedded WebDriver server),
-      # then runs the visible-window trajectory under a fake display.
+      # then runs the visible-window trajectory under a fake display (the
+      # script uses xvfb when the runner has no display of its own, and
+      # skips the step with the reason when it has none at all).
       # CODEGG_DAEMON_EXECUTABLE pins the daemon to this revision.
       - name: Built-app WebDriver trajectory
         env:
           CODEGG_DAEMON_EXECUTABLE: ${{ github.workspace }}/target/debug/codegg
-        run: xvfb-run -a apps/desktop/e2e/run-e2e.sh
+        run: apps/desktop/scripts/verify-desktop.sh e2e
 
       - name: Upload E2E logs
         if: always()

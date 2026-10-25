@@ -71,6 +71,17 @@ run_guards() {
     echo "==> ./scripts/check-desktop-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-desktop-boundary.sh)
 
+    # The desktop tree is a separate Cargo workspace that the root check
+    # never compiles, so the hosted desktop qualification is the only
+    # automated gate it has. A guard which is not run automatically cannot
+    # protect anything, so this one runs here with its self-test: it fails
+    # closed when the desktop tree falls out of that gate.
+    echo "==> python3 scripts/check_desktop_gate_wiring.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_gate_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 
