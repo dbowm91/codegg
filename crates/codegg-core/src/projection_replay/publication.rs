@@ -8,8 +8,7 @@ pub fn projection_events_from_core(
     let mut result = Vec::new();
 
     // M006-B: LSP diagnostics are project-scoped and are emitted on the
-    // `Project` stream only — never the session one. Handled before the
-    // session-keyed match below so it cannot be swept along with it.
+    // `Project` stream only. Handled before the session-keyed match.
     if let CoreEvent::LspDiagnosticsUpdated {
         project_id, file, ..
     } = &envelope.payload
@@ -209,11 +208,10 @@ pub fn projection_events_from_core(
                     created_at: envelope.timestamp_ms,
                     completed_at: None,
                     result_summary: None,
-                    // Replayed verbatim from the recorded event. This is the
-                    // determinism contract: a replay that re-drew the name
-                    // would make the historical view disagree with the live
-                    // one about what a given subagent was called. The
-                    // descriptors are carried under the same contract.
+                    // Replayed verbatim from the recorded event. A replay
+                    // that re-drew the name would make the historical view
+                    // disagree with the live one about what a given
+                    // subagent was called.
                     display_name: display_name.clone(),
                     profile: profile.clone(),
                     usefulness: usefulness.clone(),
@@ -398,26 +396,53 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone(), None, event))
         }
-        CoreEvent::SessionUpdated { session_id, .. } => {
-            let event = ProjectionEvent::SessionActivated {
-                summary: codegg_protocol::projection::dto::SessionSummaryProjection {
-                    session_id: session_id.clone(),
-                    project_id: String::new(),
-                    workspace_id: String::new(),
-                    title: String::new(),
-                    status: "active".into(),
-                    selected_model: None,
-                    selected_agent: None,
-                    has_active_turn: false,
-                    pending_permission_count: 0,
-                    pending_question_count: 0,
-                    input_tokens: None,
-                    output_tokens: None,
-                    active_subagents: 0,
-                    time_created_at: None,
-                    time_updated_at: Some(envelope.timestamp_ms),
-                    recent_summary: None,
-                },
+        CoreEvent::SessionUpdated {
+            session_id,
+            title,
+            summary,
+        } => {
+            // The stub summary is withdrawn: an update with no summary
+            let Some(mut carried) = summary.clone() else {
+                return result;
+            };
+            if carried.session_id.is_empty() {
+                carried.session_id = session_id.clone();
+            }
+            if carried.title.is_empty() {
+                carried.title = title.clone().unwrap_or_default();
+            }
+            carried.time_updated_at = Some(envelope.timestamp_ms);
+            let event = ProjectionEvent::SessionActivated { summary: carried };
+            Some((session_id.clone(), None, event))
+        }
+        CoreEvent::ModelSelected { session_id, model } => {
+            let event = ProjectionEvent::ModelSelected {
+                model: model.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
+        CoreEvent::AgentSelected { session_id, agent } => {
+            let event = ProjectionEvent::AgentSelected {
+                agent: agent.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
+        CoreEvent::HumanShellRunUpserted { session_id, run } => {
+            let event = ProjectionEvent::ShellRunUpserted {
+                run: run.clone(),
+                at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone(), None, event))
+        }
+        CoreEvent::ToolContractsUpdated {
+            session_id,
+            contracts,
+        } => {
+            let event = ProjectionEvent::ToolContractsUpdated {
+                contracts: contracts.clone(),
+                at: envelope.timestamp_ms,
             };
             Some((session_id.clone(), None, event))
         }
@@ -655,14 +680,11 @@ pub fn projection_events_from_core(
         }
         // Idle-delivery completion (C004 fanout, ADR-0031): one
         // `BackgroundJobCompleted` per logical terminal adapts to the
-        // existing session job list so desktop/remote projection
-        // consumers observe the terminal with no new event type and no
-        // new authority. `workspace_id` stays empty by the same
-        // convention as the arms above: the envelope carries no
-        // workspace and this pure function must not fabricate one
-        // (session binding owns scope). Length bounds are enforced by
-        // `JobProjection::normalise` in the reducer; the summary is
-        // already bounded at the notice commit.
+        // existing session job list so consumers observe the terminal
+        // with no new event type and no new authority. `workspace_id`
+        // stays empty by the same convention as the arms above: the
+        // envelope carries no workspace and this pure function must not
+        // fabricate one. Length bounds are enforced by the reducer.
         CoreEvent::BackgroundJobCompleted {
             session_id,
             job_id,
@@ -784,13 +806,12 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone().unwrap_or_default(), None, event))
         }
-        // M006-B: project-scoped, and routed on the **Project** stream only.
+        // M006-B: project-scoped, routed on the **Project** stream only.
         //
         // Every other arm above is session-keyed and pushed to both streams.
         // Diagnostics must not be: the session reducer has no place for
         // project file state, and the payload carries source content that
-        // belongs to the project's own authorization, not a session's. The
-        // projection envelope is built in the early return above.
+        // belongs to the project's own authorization, not a session's.
         CoreEvent::LspDiagnosticsUpdated { .. } => None,
         _ => None,
     };
@@ -839,8 +860,7 @@ mod tests {
                 description: "map the auth flow".into(),
                 display_name: display_name.map(str::to_string),
                 // Mirrors the real publisher: a pool name has a descriptor
-                // behind it, a fallback name has none. Replay must carry
-                // whatever the recording captured, not invent it.
+                // behind it, a fallback name has none.
                 profile: display_name.map(|_| "Reconnaissance generalist.".to_string()),
                 usefulness: display_name.map(|_| "Useful for broad recon.".to_string()),
                 run_id: Some("run-42".into()),
@@ -881,8 +901,7 @@ mod tests {
                 job_id: "job-1".into(),
                 attempt_id: "attempt-1".into(),
                 // The lifecycle event carries no scope of its own here: the
-                // envelope is the trusted owner, which is exactly what this
-                // fixture exercises.
+                // envelope is the trusted owner.
                 session_id: None,
                 workspace_id: None,
                 kind: None,
@@ -917,8 +936,7 @@ mod tests {
                 job_id: "job-1".into(),
                 attempt_id: "attempt-1".into(),
                 // The lifecycle event carries no scope of its own here: the
-                // envelope is the trusted owner, which is exactly what this
-                // fixture exercises.
+                // envelope is the trusted owner.
                 session_id: None,
                 workspace_id: None,
                 kind: None,
@@ -952,5 +970,110 @@ mod tests {
         let node = started_node(&started_envelope(None));
         assert_eq!(node.display_name, None);
         assert_eq!(node.agent, "explore", "the agent type is the fallback");
+    }
+
+    fn summary() -> codegg_protocol::projection::dto::SessionSummaryProjection {
+        codegg_protocol::projection::dto::SessionSummaryProjection {
+            session_id: "s1".into(),
+            project_id: "p1".into(),
+            workspace_id: "w1".into(),
+            title: "Fix login redirect loop".into(),
+            status: "Running".into(),
+            selected_model: Some("anthropic/claude".into()),
+            selected_agent: Some("explore".into()),
+            has_active_turn: true,
+            pending_permission_count: 1,
+            pending_question_count: 2,
+            input_tokens: Some(11),
+            output_tokens: Some(22),
+            active_subagents: 3,
+            time_created_at: Some(1),
+            time_updated_at: Some(2),
+            recent_summary: None,
+        }
+    }
+
+    fn session_updated_envelope(
+        summary: Option<codegg_protocol::projection::dto::SessionSummaryProjection>,
+    ) -> EventEnvelope<CoreEvent> {
+        EventEnvelope {
+            protocol_version: 1,
+            event_seq: 9,
+            timestamp_ms: 1_700_000_000_001,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::SessionUpdated {
+                session_id: "s1".into(),
+                title: Some("Fix login redirect loop".into()),
+                summary,
+            },
+        }
+    }
+
+    /// A session update publishes the session's own summary, so a reader
+    /// of the projection is not left with a stub that erases the title,
+    /// the status, the model and the token counts.
+    #[test]
+    fn a_session_update_publishes_the_carried_summary() {
+        let envelope = session_updated_envelope(Some(summary()));
+        let events = projection_events_from_core(&envelope);
+        let published = events
+            .into_iter()
+            .find_map(|(_, env)| match env.payload {
+                ProjectionEvent::SessionActivated { summary } => Some(summary),
+                _ => None,
+            })
+            .expect("a SessionActivated projection event");
+        assert_eq!(published.title, "Fix login redirect loop");
+        assert_eq!(published.status, "Running");
+        assert_eq!(
+            published.selected_model.as_deref(),
+            Some("anthropic/claude")
+        );
+        assert_eq!(published.selected_agent.as_deref(), Some("explore"));
+        assert_eq!(published.input_tokens, Some(11));
+        assert_eq!(published.output_tokens, Some(22));
+        assert_eq!(published.active_subagents, 3);
+    }
+
+    /// An update that carries no summary publishes nothing. The stub
+    /// summary is withdrawn: publishing an empty one would replace the
+    /// summary the projection already holds.
+    #[test]
+    fn a_session_update_without_a_summary_publishes_nothing() {
+        let envelope = session_updated_envelope(None);
+        let events = projection_events_from_core(&envelope);
+        assert!(
+            !events
+                .iter()
+                .any(|(_, env)| matches!(env.payload, ProjectionEvent::SessionActivated { .. })),
+            "an update with no summary must not publish a session summary"
+        );
+    }
+
+    /// The model's selection is published, so the projection's model is
+    /// live rather than a snapshot of one moment.
+    #[test]
+    fn a_model_selection_publishes_the_selection() {
+        let envelope = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 10,
+            timestamp_ms: 1_700_000_000_002,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::ModelSelected {
+                session_id: "s1".into(),
+                model: "anthropic/claude".into(),
+            },
+        };
+        let events = projection_events_from_core(&envelope);
+        let published = events
+            .into_iter()
+            .find_map(|(_, env)| match env.payload {
+                ProjectionEvent::ModelSelected { model, .. } => Some(model),
+                _ => None,
+            })
+            .expect("a ModelSelected projection event");
+        assert_eq!(published, "anthropic/claude");
     }
 }

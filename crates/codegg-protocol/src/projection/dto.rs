@@ -163,10 +163,8 @@ impl SessionSummaryProjection {
 
 /// Bounded projection of a single turn inside a session.
 ///
-/// The reducer preserves one active turn per session and up to
-/// `MAX_PROJECTION_RECENT_TOOLS` tools inside that turn. Older
-/// completed turns collapse into the [`SessionSummaryProjection::recent_summary`]
-/// field of the session.
+/// The reducer keeps one active turn per session; older completed turns
+/// collapse into [`SessionSummaryProjection::recent_summary`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnProjection {
     pub turn_id: String,
@@ -1019,6 +1017,60 @@ impl RunProjection {
     }
 }
 
+/// Bounded projection of one human-shell command run.
+///
+/// The run's **output** is not carried: the daemon serves it on demand.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellRunProjection {
+    pub run_id: String,
+    pub command: String,
+    pub cwd: String,
+    pub origin: String,
+    pub status: String,
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
+    #[serde(default)]
+    pub completed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+}
+
+impl ShellRunProjection {
+    pub fn normalise(&mut self) {
+        self.command = truncate_str(&self.command, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.cwd = truncate_str(&self.cwd, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.origin = truncate_str(&self.origin, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.status = truncate_str(&self.status, MAX_PROJECTION_STRING_BYTES).into_owned();
+    }
+}
+
+/// Bounded projection of one tool contract.
+///
+/// The contract's **schemas** are not carried: the projection publishes
+/// the policy a frontend renders, not the tool's input grammar.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolContractProjection {
+    pub name: String,
+    pub caller_policy: String,
+    pub effect_class: String,
+    pub idempotency: String,
+    pub implementation_id: String,
+}
+
+impl ToolContractProjection {
+    pub fn normalise(&mut self) {
+        self.name = truncate_str(&self.name, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.caller_policy =
+            truncate_str(&self.caller_policy, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.effect_class =
+            truncate_str(&self.effect_class, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.idempotency =
+            truncate_str(&self.idempotency, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.implementation_id =
+            truncate_str(&self.implementation_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+    }
+}
+
 /// Bounded projection of a durable job (Phase 4 contract).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobProjection {
@@ -1048,9 +1100,8 @@ impl JobProjection {
 
 /// Bounded reference to a runtime artifact (output, log, projection).
 ///
-/// Carries only an opaque handle and the bounded size / kind so
-/// consumers can request the body through an authorised API without
-/// embedding it inline.
+/// Carries only an opaque handle and the bounded size / kind, so the body
+/// is fetched through an authorised API rather than embedded inline.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactHandleProjection {
     pub artifact_id: String,
@@ -1226,12 +1277,8 @@ impl ToolProgramCallPage {
 }
 
 /// Full detail view of a background tool program. Extends
-/// [`ToolProgramSummary`] with manifest metadata, hashes,
-/// checkpoint state, and paginated call history.
-///
-/// This is the response to a `ToolProgramInspect` request. It
-/// deliberately does NOT include raw source code or unbounded
-/// output bodies.
+/// [`ToolProgramSummary`] with manifest metadata, hashes, checkpoint state,
+/// and paginated call history — and no raw source or unbounded output bodies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolProgramDetail {
     /// Summary fields (same shape as the projection snapshot entry).

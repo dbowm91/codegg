@@ -40,6 +40,8 @@ const expected = {
   AgentRunView: { source: 'bridge', fields: ['run_id', 'task_id', 'agent', 'status', 'depth', 'parent_run_id', 'worktree_id', 'branch', 'result_commit', 'group_id', 'control_status', 'attention_required', 'progress', 'terminal_summary', 'failure_class', 'updated_at'] },
   ToolProgramView: { source: 'bridge', fields: ['program_id', 'job_id', 'state', 'phase', 'language', 'parent_turn_id', 'calls_completed', 'child_jobs_running', 'submitted_at', 'started_at', 'completed_at', 'failure_class', 'terminal_handle', 'last_progress'] },
   WorktreeView: { source: 'bridge', fields: ['worktree_id', 'owner_run_id', 'branch', 'state', 'health', 'dirty', 'conflicted', 'retained_for_attention', 'updated_at'] },
+  ShellRunView: { source: 'bridge', fields: ['run_id', 'command', 'cwd', 'origin', 'status'] },
+  ToolContractView: { source: 'bridge', fields: ['name', 'caller_policy', 'effect_class', 'idempotency'] },
   RunGroupView: { source: 'bridge', fields: ['group_id', 'owner_run_id', 'owner_kind', 'status', 'join_policy', 'member_count', 'successful', 'failed', 'active', 'winner_run_id', 'cancel_remaining_on_satisfaction', 'updated_at'] },
   ConvergenceView: { source: 'bridge', fields: ['convergence_id', 'owner_summary', 'status', 'cycle_ordinal', 'max_cycles', 'remaining_cycles', 'producer_completed', 'producer_failed', 'producer_cancelled', 'producer_active', 'verifier_run_id', 'verdict_kind', 'verdict_summary', 'awaiting_decision', 'terminal_reason_class', 'selected_run_id', 'last_finding_count'] },
   PendingPermissionView: { source: 'bridge', fields: ['permission_id', 'tool', 'scope_summary', 'status'] },
@@ -50,7 +52,7 @@ const expected = {
   ArtifactExcerptView: { source: 'bridge', fields: ['handle', 'start', 'end', 'content_type', 'content', 'truncated', 'redacted'] },
   ControllerSummaryView: { source: 'bridge', fields: ['turn_id', 'controller_principal', 'revision'] },
   CursorDiagnosticView: { source: 'bridge', fields: ['event_seq', 'driver_cursor_seq', 'subscription_known'] },
-  SessionPresentationView: { source: 'bridge', fields: ['session_id', 'project_id', 'workspace_id', 'state', 'turn', 'messages', 'truncated_messages', 'transcript', 'truncated_transcript_messages', 'tools', 'runs', 'jobs', 'subagents', 'agent_tree', 'agent_runs', 'tool_programs', 'worktrees', 'run_groups', 'convergences', 'recent_turns', 'todos', 'pending_permissions', 'pending_questions', 'controller', 'artifact_handles', 'cursor', 'resync_reason'] },
+  SessionPresentationView: { source: 'bridge', fields: ['session_id', 'project_id', 'workspace_id', 'state', 'selected_model', 'selected_agent', 'turn', 'messages', 'truncated_messages', 'transcript', 'truncated_transcript_messages', 'tools', 'runs', 'jobs', 'subagents', 'agent_tree', 'agent_runs', 'tool_programs', 'worktrees', 'run_groups', 'convergences', 'shell_runs', 'tool_contracts', 'recent_turns', 'todos', 'pending_permissions', 'pending_questions', 'controller', 'artifact_handles', 'cursor', 'resync_reason'] },
   // Phase 3 read-only project facts: the git fact sets and the skill
   // catalogue the daemon reads for the route-selected project.
   GitStatusView: { source: 'bridge', fields: ['branch', 'is_dirty', 'commit_hash', 'stash_count', 'consistency'] },

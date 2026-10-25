@@ -30,9 +30,9 @@ use codegg_client::{DriverSnapshotView, DriverState};
 use codegg_protocol::projection::dto::{
     AgentRunGroupSummaryProjection, AgentRunSummary, AgentTreeNodeProjection,
     ConvergenceSummaryProjection, MessageProjection, MessageRole, PermissionProjection,
-    PermissionStatus, QuestionProjection, RunProjection, ToolArgumentProjection,
-    ToolOutputProjection, ToolProgramSummary, ToolProjection, TurnProjection, VisibilityClass,
-    WorktreeSummaryProjection,
+    PermissionStatus, QuestionProjection, RunProjection, ShellRunProjection,
+    ToolArgumentProjection, ToolContractProjection, ToolOutputProjection, ToolProgramSummary,
+    ToolProjection, TurnProjection, VisibilityClass, WorktreeSummaryProjection,
 };
 use codegg_protocol::projection::snapshot::SessionProjectionSnapshot;
 use serde::Serialize;
@@ -40,8 +40,8 @@ use serde::Serialize;
 use super::bridge::{
     AgentRunView, ArtifactHandleView, ConvergenceView, CursorDiagnosticView, JobSummaryView,
     MessageView, PendingPermissionView, PendingQuestionView, RunGroupView, RunSummaryView,
-    SessionPresentationView, SubagentSummaryView, ToolProgramView, ToolSummaryView,
-    TranscriptMessageView, TurnSummaryView, WorktreeView,
+    SessionPresentationView, ShellRunView, SubagentSummaryView, ToolContractView, ToolProgramView,
+    ToolSummaryView, TranscriptMessageView, TurnSummaryView, WorktreeView,
 };
 
 /// Renderer cap on visible messages from the current/most-recent turn.
@@ -92,6 +92,14 @@ pub const MAX_VISIBLE_RUN_GROUPS: usize = 16;
 /// `MAX_PROJECTION_CONVERGENCES` = 32
 /// (crates/codegg-protocol/src/projection/limits.rs:123).
 pub const MAX_VISIBLE_CONVERGENCES: usize = 16;
+/// Renderer cap on human-shell command runs. Daemon cap:
+/// `MAX_PROJECTION_SHELL_RUNS` = 32
+/// (crates/codegg-protocol/src/projection/limits.rs:54).
+pub const MAX_VISIBLE_SHELL_RUNS: usize = 16;
+/// Renderer cap on tool contracts. Daemon cap:
+/// `MAX_PROJECTION_TOOL_CONTRACTS` = 64
+/// (crates/codegg-protocol/src/projection/limits.rs:57).
+pub const MAX_VISIBLE_TOOL_CONTRACTS: usize = 32;
 /// Renderer cap on surfaced artifact handles.
 pub const MAX_ARTIFACT_HANDLES: usize = 16;
 /// Renderer cap on pending permission/question summaries per view.
@@ -422,6 +430,31 @@ fn convergence_view(convergence: &ConvergenceSummaryProjection) -> ConvergenceVi
     }
 }
 
+/// One human-shell command run. The run's output bytes never cross: the
+/// daemon serves them on demand through its own read, and the projection
+/// publishes the listing.
+fn shell_run_view(run: &ShellRunProjection) -> ShellRunView {
+    ShellRunView {
+        run_id: run.run_id.clone(),
+        command: run.command.clone(),
+        cwd: run.cwd.clone(),
+        origin: run.origin.clone(),
+        status: run.status.clone(),
+    }
+}
+
+/// One tool contract the session's own registry holds. The contract's
+/// schemas stay behind the daemon: the projection publishes the policy a
+/// frontend renders.
+fn tool_contract_view(contract: &ToolContractProjection) -> ToolContractView {
+    ToolContractView {
+        name: contract.name.clone(),
+        caller_policy: contract.caller_policy.clone(),
+        effect_class: contract.effect_class.clone(),
+        idempotency: contract.idempotency.clone(),
+    }
+}
+
 /// One transcript message, tagged with the turn that owns it.
 fn transcript_message_view(
     turn: &TurnProjection,
@@ -595,6 +628,10 @@ pub fn present_snapshot(
         project_id: snapshot.project_id.clone(),
         workspace_id: snapshot.workspace_id.clone(),
         state: driver_state_name(state).into(),
+        // The selected model and agent are the daemon's own answer for the
+        // session; the renderer never derives them.
+        selected_model: snapshot.primary_session.selected_model.clone(),
+        selected_agent: snapshot.primary_session.selected_agent.clone(),
         turn: current_turn.map(turn_summary),
         messages,
         truncated_messages,
@@ -697,6 +734,23 @@ pub fn present_snapshot(
             .rev()
             .map(convergence_view)
             .collect(),
+        // The daemon's own registry order, oldest first: the reducer
+        // appends a run as it happens, so the newest run is last.
+        shell_runs: snapshot
+            .shell_runs
+            .iter()
+            .rev()
+            .take(MAX_VISIBLE_SHELL_RUNS)
+            .rev()
+            .map(shell_run_view)
+            .collect(),
+        // The contracts keep the order the daemon published them in.
+        tool_contracts: snapshot
+            .tool_contracts
+            .iter()
+            .take(MAX_VISIBLE_TOOL_CONTRACTS)
+            .map(tool_contract_view)
+            .collect(),
         recent_turns: snapshot
             .recent_turns
             .iter()
@@ -744,6 +798,8 @@ pub fn present_driver(view: &DriverSnapshotView) -> SessionPresentationView {
             project_id: String::new(),
             workspace_id: String::new(),
             state: driver_state_name(view.state).into(),
+            selected_model: None,
+            selected_agent: None,
             turn: None,
             messages: Vec::new(),
             truncated_messages: 0,
@@ -759,6 +815,8 @@ pub fn present_driver(view: &DriverSnapshotView) -> SessionPresentationView {
             worktrees: Vec::new(),
             run_groups: Vec::new(),
             convergences: Vec::new(),
+            shell_runs: Vec::new(),
+            tool_contracts: Vec::new(),
             recent_turns: Vec::new(),
             todos: None,
             pending_permissions: Vec::new(),
@@ -783,6 +841,36 @@ mod tests {
         ToolStatus, TurnStatus,
     };
     use std::collections::VecDeque;
+
+    /// One human-shell run as the daemon publishes it.
+    fn shell_run(run_id: &str, command: &str, status: &str) -> ShellRunProjection {
+        ShellRunProjection {
+            run_id: run_id.into(),
+            command: command.into(),
+            cwd: "/repo".into(),
+            origin: "bang".into(),
+            status: status.into(),
+            started_at_ms: Some(1),
+            completed_at_ms: None,
+            exit_code: None,
+        }
+    }
+
+    /// One tool contract as the daemon publishes it.
+    fn tool_contract(
+        name: &str,
+        caller: &str,
+        effect: &str,
+        idempotency: &str,
+    ) -> ToolContractProjection {
+        ToolContractProjection {
+            name: name.into(),
+            caller_policy: caller.into(),
+            effect_class: effect.into(),
+            idempotency: idempotency.into(),
+            implementation_id: format!("impl-{name}"),
+        }
+    }
 
     fn message(
         id: &str,
@@ -1425,6 +1513,8 @@ mod tests {
             "projectId": "proj-a",
             "workspaceId": "ws-1",
             "state": "attached",
+            "selectedModel": null,
+            "selectedAgent": null,
             "turn": {
                 "turnId": "turn-1",
                 "status": "active",
@@ -1488,6 +1578,8 @@ mod tests {
             "worktrees": [],
             "runGroups": [],
             "convergences": [],
+            "shellRuns": [],
+            "toolContracts": [],
             "recentTurns": [],
             "todos": null,
             "pendingPermissions": [
@@ -1843,5 +1935,66 @@ mod tests {
         assert_eq!(presented.convergences.len(), 1);
         assert_eq!(presented.convergences[0].convergence_id, "conv-1");
         assert_eq!(presented.convergences[0].remaining_cycles, 2);
+    }
+
+    #[test]
+    fn the_published_surfaces_reach_the_presentation_view() {
+        let mut snapshot = base_snapshot();
+        snapshot.primary_session.selected_model = Some("gpt-5".into());
+        snapshot.primary_session.selected_agent = Some("worker".into());
+        snapshot
+            .shell_runs
+            .push_back(shell_run("run-1", "cargo test", "running"));
+        snapshot.tool_contracts.push_back(tool_contract(
+            "read",
+            "direct_only",
+            "read_only",
+            "idempotent",
+        ));
+        snapshot.tool_contracts.push_back(tool_contract(
+            "bash",
+            "direct_or_programmatic",
+            "process_exec",
+            "non_idempotent",
+        ));
+
+        let presented = present_snapshot(&snapshot, DriverState::Attached, None, None, true);
+
+        assert_eq!(presented.selected_model.as_deref(), Some("gpt-5"));
+        assert_eq!(presented.selected_agent.as_deref(), Some("worker"));
+        assert_eq!(presented.shell_runs.len(), 1);
+        assert_eq!(presented.shell_runs[0].run_id, "run-1");
+        assert_eq!(presented.shell_runs[0].command, "cargo test");
+        assert_eq!(presented.shell_runs[0].status, "running");
+        assert_eq!(presented.shell_runs[0].origin, "bang");
+        assert_eq!(presented.shell_runs[0].cwd, "/repo");
+        assert_eq!(presented.tool_contracts.len(), 2);
+        assert_eq!(presented.tool_contracts[0].name, "read");
+        assert_eq!(presented.tool_contracts[0].caller_policy, "direct_only");
+        assert_eq!(presented.tool_contracts[0].effect_class, "read_only");
+        assert_eq!(presented.tool_contracts[0].idempotency, "idempotent");
+        assert_eq!(presented.tool_contracts[1].name, "bash");
+        assert_eq!(presented.tool_contracts[1].effect_class, "process_exec");
+        assert_eq!(presented.tool_contracts[1].idempotency, "non_idempotent");
+    }
+
+    #[test]
+    fn the_shell_run_window_keeps_the_newest_runs() {
+        let mut snapshot = base_snapshot();
+        for index in 0..(MAX_VISIBLE_SHELL_RUNS + 2) {
+            snapshot
+                .shell_runs
+                .push_back(shell_run(&format!("run-{index}"), "echo hi", "exited"));
+        }
+
+        let presented = present_snapshot(&snapshot, DriverState::Attached, None, None, true);
+
+        assert_eq!(presented.shell_runs.len(), MAX_VISIBLE_SHELL_RUNS);
+        // The window is the newest runs, oldest first within it.
+        assert_eq!(presented.shell_runs[0].run_id, "run-2");
+        assert_eq!(
+            presented.shell_runs[MAX_VISIBLE_SHELL_RUNS - 1].run_id,
+            format!("run-{}", MAX_VISIBLE_SHELL_RUNS + 1)
+        );
     }
 }

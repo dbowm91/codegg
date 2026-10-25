@@ -1181,6 +1181,14 @@ impl ProjectionReducer {
                 snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
                 ApplyOutcome::Applied
             }
+            ProjectionEvent::ShellRunUpserted { run, at: _ } => {
+                snapshot.upsert_shell_run(run.clone());
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::ToolContractsUpdated { contracts, at: _ } => {
+                snapshot.set_tool_contracts(contracts.clone());
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::Diagnostic { code, message } => {
                 let mut diag = ProjectionDiagnostic::new(
                     clip_str(code, MAX_PROJECTION_STRING_BYTES),
@@ -1587,6 +1595,7 @@ mod tests {
         MessageProjection, MessageRole, PermissionProjection, ToolArgumentProjection,
         TurnProjection, VisibilityClass,
     };
+    use crate::projection::limits::{MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS};
     use crate::projection::snapshot::SessionProjectionSnapshot;
 
     #[test]
@@ -2368,6 +2377,193 @@ mod tests {
         assert_eq!(
             first, replay,
             "replaying the child lifecycle must be deterministic"
+        );
+    }
+
+    fn shell_run(index: usize) -> crate::projection::dto::ShellRunProjection {
+        crate::projection::dto::ShellRunProjection {
+            run_id: format!("run-{index}"),
+            command: format!("echo {index}"),
+            cwd: "/tmp".into(),
+            origin: "bang".into(),
+            status: "running".into(),
+            started_at_ms: Some(index as i64),
+            completed_at_ms: None,
+            exit_code: None,
+        }
+    }
+
+    #[test]
+    fn a_shell_run_upsert_lands_on_the_snapshot() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let outcome = reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                None,
+                ProjectionEvent::ShellRunUpserted {
+                    run: shell_run(1),
+                    at: 0,
+                },
+            ),
+        );
+
+        assert_eq!(outcome, ApplyOutcome::Applied);
+        assert_eq!(snap.shell_runs.len(), 1);
+        assert_eq!(
+            snap.shell_runs.front().map(|run| run.run_id.as_str()),
+            Some("run-1")
+        );
+        assert_eq!(
+            snap.shell_runs.front().map(|run| run.command.as_str()),
+            Some("echo 1")
+        );
+    }
+
+    #[test]
+    fn a_shell_run_upsert_replaces_the_same_run() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        for (seq, status) in [(1_u64, "running"), (2, "exited")] {
+            let mut run = shell_run(1);
+            run.status = status.to_string();
+            reducer.apply(
+                &mut snap,
+                ReducerEventInput::session(
+                    seq,
+                    0,
+                    "s",
+                    None,
+                    ProjectionEvent::ShellRunUpserted { run, at: 0 },
+                ),
+            );
+        }
+
+        assert_eq!(
+            snap.shell_runs.len(),
+            1,
+            "the same run is upserted, not duplicated"
+        );
+        assert_eq!(
+            snap.shell_runs.front().map(|run| run.status.as_str()),
+            Some("exited")
+        );
+    }
+
+    #[test]
+    fn the_shell_run_collection_is_bounded() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        for index in 0..(MAX_PROJECTION_SHELL_RUNS + 5) {
+            reducer.apply(
+                &mut snap,
+                ReducerEventInput::session(
+                    index as u64 + 1,
+                    0,
+                    "s",
+                    None,
+                    ProjectionEvent::ShellRunUpserted {
+                        run: shell_run(index),
+                        at: 0,
+                    },
+                ),
+            );
+        }
+
+        assert_eq!(snap.shell_runs.len(), MAX_PROJECTION_SHELL_RUNS);
+    }
+
+    #[test]
+    fn tool_contracts_replace_the_collection_and_are_bounded() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let contracts: Vec<crate::projection::dto::ToolContractProjection> = (0
+            ..(MAX_PROJECTION_TOOL_CONTRACTS + 5))
+            .map(|index| crate::projection::dto::ToolContractProjection {
+                name: format!("tool-{index}"),
+                caller_policy: "direct".into(),
+                effect_class: "Read".into(),
+                idempotency: "Yes".into(),
+                implementation_id: "builtin".into(),
+            })
+            .collect();
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                None,
+                ProjectionEvent::ToolContractsUpdated {
+                    contracts: contracts.clone(),
+                    at: 0,
+                },
+            ),
+        );
+
+        assert_eq!(snap.tool_contracts.len(), MAX_PROJECTION_TOOL_CONTRACTS);
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                2,
+                0,
+                "s",
+                None,
+                ProjectionEvent::ToolContractsUpdated {
+                    contracts: vec![crate::projection::dto::ToolContractProjection {
+                        name: "only".into(),
+                        caller_policy: "direct".into(),
+                        effect_class: "Read".into(),
+                        idempotency: "Yes".into(),
+                        implementation_id: "builtin".into(),
+                    }],
+                    at: 0,
+                },
+            ),
+        );
+
+        assert_eq!(
+            snap.tool_contracts.len(),
+            1,
+            "the contracts are replaced, not appended"
+        );
+        assert_eq!(
+            snap.tool_contracts.front().map(|c| c.name.as_str()),
+            Some("only")
+        );
+    }
+
+    #[test]
+    fn a_model_selection_sets_the_primary_session_model() {
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let outcome = reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                None,
+                ProjectionEvent::ModelSelected {
+                    model: "anthropic/claude".into(),
+                    at: 0,
+                },
+            ),
+        );
+
+        assert_eq!(outcome, ApplyOutcome::Applied);
+        assert_eq!(
+            snap.primary_session.selected_model.as_deref(),
+            Some("anthropic/claude")
         );
     }
 }

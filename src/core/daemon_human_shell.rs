@@ -4,6 +4,7 @@ use crate::core::daemon::CoreDaemon;
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
 use codegg_core::project_storage::{BindingStatus, ProjectStorage};
+use codegg_protocol::human_shell::HumanShellRunMetadataDto;
 use sha2::Digest;
 
 impl CoreDaemon {
@@ -355,4 +356,37 @@ fn error(code: &str, message: &str) -> CoreResponse {
         code: code.to_owned(),
         message: message.to_owned(),
     }
+}
+
+/// The publisher that announces the daemon's human-shell run lifecycle.
+///
+/// Every run is announced, including a run with no session: the event
+/// carries the run's own session id, and the projection's safe-publication
+/// gate drops a run it cannot attribute. The announcement is spawned onto
+/// the current Tokio runtime, so a run's lifecycle never waits for it.
+pub fn human_shell_run_publisher(
+    event_log: std::sync::Arc<crate::core::event_log::EventLog>,
+) -> std::sync::Arc<dyn Fn(HumanShellRunMetadataDto) + Send + Sync> {
+    std::sync::Arc::new(move |meta: HumanShellRunMetadataDto| {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                run_id = %meta.run_id,
+                "the human shell run publisher has no tokio runtime"
+            );
+            return;
+        };
+        let session_id = meta.session_id.clone().unwrap_or_default();
+        let envelope_session = (!session_id.is_empty()).then(|| session_id.clone());
+        let run = crate::shell::daemon::run_projection(&meta);
+        let event_log = event_log.clone();
+        handle.spawn(async move {
+            event_log
+                .publish(
+                    envelope_session,
+                    None,
+                    crate::protocol::core::CoreEvent::HumanShellRunUpserted { session_id, run },
+                )
+                .await;
+        });
+    })
 }

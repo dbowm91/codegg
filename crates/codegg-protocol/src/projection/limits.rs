@@ -49,6 +49,13 @@ pub const MAX_PROJECTION_JOBS: usize = 32;
 /// per session.
 pub const MAX_PROJECTION_TOOL_PROGRAMS: usize = 32;
 
+/// Maximum number of human-shell command run projections retained per
+/// session.
+pub const MAX_PROJECTION_SHELL_RUNS: usize = 32;
+
+/// Maximum number of tool contract projections retained per session.
+pub const MAX_PROJECTION_TOOL_CONTRACTS: usize = 64;
+
 /// Maximum number of call entries returned in a single
 /// [`crate::projection::dto::ToolProgramCallPage`].
 pub const MAX_PROJECTION_CALL_PAGE_SIZE: usize = 32;
@@ -80,16 +87,13 @@ pub const MAX_PROJECTION_DISPLAY_NAME_BYTES: usize = 32;
 /// Maximum byte length of any one subagent descriptor (`profile` or
 /// `usefulness`) in the projection.
 ///
-/// **Not** [`MAX_PROJECTION_STRING_BYTES`]. That bound is for an arbitrary
-/// producer's arbitrary field; a node already carries up to 4 KB of
-/// `description`, so reusing it would leave the per-descriptor bound
-/// unenforced — sixteen descriptors at 4 KB each is a 64 KB snapshot.
+/// **Not** [`MAX_PROJECTION_STRING_BYTES`]: that bound is for an arbitrary
+/// producer's field, and a node already carries up to 4 KB of `description`,
+/// so reusing it would leave the per-descriptor bound unenforced.
 ///
-/// Sized above the curated pool's own maximum rather than at it. Measured over
-/// all 46 entries at `e8a6b5ca2`: the longest `profile` is 223 bytes (Greg) and
-/// the longest `usefulness` is 107 (Susan). 256 leaves authoring headroom while
-/// still truncating a runaway producer, and it does not truncate a single
-/// descriptor the pool ships today.
+/// Sized above the curated pool's own maximum: measured over all 46 entries at
+/// `e8a6b5ca2` the longest `profile` is 223 bytes, so 256 leaves authoring
+/// headroom while still truncating a runaway producer.
 pub const MAX_PROJECTION_DESCRIPTOR_BYTES: usize = 256;
 
 /// Total descriptor bytes one turn's agent tree may carry, across every node.

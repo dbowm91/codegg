@@ -73,6 +73,18 @@ pub struct HumanShellRunMetadataDto {
     pub status: HumanShellRunStatusDto,
     #[serde(default)]
     pub exit_code: Option<i32>,
+    /// When the run started, in epoch milliseconds.
+    ///
+    /// The run id is a UUID, so it does not order the runs. A listing
+    /// needs this to show the most recent run first.
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
+    /// When the run reached a terminal status, in epoch milliseconds.
+    ///
+    /// A listing shows how long a run took, and the start alone cannot
+    /// say that.
+    #[serde(default)]
+    pub completed_at_ms: Option<i64>,
     pub expires_at_ms: i64,
 }
 

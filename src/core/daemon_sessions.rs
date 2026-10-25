@@ -1,7 +1,7 @@
 //! M002: `sessions` request family for `CoreDaemon`.
 
 use crate::error::AppError;
-use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 
 use super::daemon::CoreDaemon;
 
@@ -173,9 +173,23 @@ impl CoreDaemon {
                                     &selection,
                                 )
                             {
+                                let mut changed = false;
                                 if let Some(runtime) = self.sessions.get(&req.session_id) {
                                     let mut selected = runtime.selected_model.write().await;
-                                    *selected = Some(canonical);
+                                    changed = selected.as_deref() != Some(canonical.as_str());
+                                    *selected = Some(canonical.clone());
+                                }
+                                if changed {
+                                    self.event_log
+                                        .publish(
+                                            Some(req.session_id.clone()),
+                                            None,
+                                            CoreEvent::ModelSelected {
+                                                session_id: req.session_id.clone(),
+                                                model: canonical,
+                                            },
+                                        )
+                                        .await;
                                 }
                             }
                             if let Some(pool) = self.pool.clone() {

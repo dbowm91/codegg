@@ -8,6 +8,8 @@ const projection = (overrides: Partial<SessionPresentationView> = {}): SessionPr
   projectId: 'p0',
   workspaceId: 'w0',
   state: 'attached',
+  selectedModel: null,
+  selectedAgent: null,
   turn: {
     turnId: 'turn-1',
     status: 'active',
@@ -38,6 +40,8 @@ const projection = (overrides: Partial<SessionPresentationView> = {}): SessionPr
   worktrees: [],
   runGroups: [],
   convergences: [],
+  shellRuns: [],
+  toolContracts: [],
   recentTurns: [],
   todos: null,
   pendingPermissions: [],

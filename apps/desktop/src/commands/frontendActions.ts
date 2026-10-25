@@ -18,6 +18,13 @@
 // The wire names are the daemon's (`FrontendAction::as_str()` in
 // `crates/codegg-core/src/frontend_action.rs`). The desktop answers to the
 // names the daemon declares and does not extend the set.
+//
+// M007-018: the daemon publishes the session's selected model, its shell
+// command runs and its tool contracts, so `show_tool_contracts` and
+// `show_shell_runs` are performed from the projection the renderer already
+// holds, and `show_status` names the model. The dispatch stays
+// synchronous: an action reports what the renderer was given, and never
+// reads the daemon again.
 
 import type { SessionPresentationView, SkillCatalogueView } from '../bridge-types';
 
@@ -52,11 +59,12 @@ export interface FrontendActionContext {
  * missing — never what the command means. A reason names the gap in the
  * data the daemon publishes to the renderer, so the message does not read as
  * a temporary refusal.
+ *
+ * The desktop carries every other declared action: the daemon publishes
+ * the session's selected model, its shell command runs and its tool
+ * contracts, and the desktop renders what it published.
  */
 export const UNCARRIED_ACTIONS: Readonly<Record<string, string | undefined>> = {
-  show_tool_contracts:
-    'the session projection publishes the tools a turn used, not the registry contracts',
-  show_shell_runs: 'the session projection publishes no human-shell runs',
   show_terminal: 'the desktop has no terminal surface to focus',
 };
 
@@ -89,15 +97,18 @@ function skillsReport(context: FrontendActionContext): string {
  * The desktop's report of the session's status.
  *
  * The token counters are the current turn's — the projection carries the
- * turn's counters, not a session-cumulative pair — and the model is absent:
- * the projection publishes no model, so this report does not name one.
+ * turn's counters, not a session-cumulative pair. The model is the
+ * daemon's own selection, as the session summary published it; a
+ * selection the daemon has not published is reported as such rather than
+ * as a model name.
  */
 function statusReport(context: FrontendActionContext): string {
   const presentation = context.presentation;
   if (!presentation) return 'status: no session attached';
   const input = presentation.turn?.inputTokens ?? 0;
   const output = presentation.turn?.outputTokens ?? 0;
-  return `status: ${presentation.state} | tokens: ${input}↑ ${output}↓`;
+  const model = presentation.selectedModel ?? 'none selected';
+  return `status: ${presentation.state} | model: ${model} | tokens: ${input}↑ ${output}↓`;
 }
 
 /** The desktop's report of the managed worktrees the projection carries. */
@@ -112,6 +123,50 @@ function worktreesReport(context: FrontendActionContext): string {
   const rest = worktrees.length - shown.length;
   const tail = rest > 0 ? `, +${rest} more` : '';
   return `worktrees: ${worktrees.length} managed (${shown.join(', ')}${tail})`;
+}
+
+/**
+ * The desktop's report of the tool contracts the daemon published.
+ *
+ * The four fields are the ones the TUI's `/tool-contracts` renders — the
+ * tool's name, its caller policy, its effect class and its idempotency
+ * class — so the two frontends say the same thing about the same tool.
+ * The contracts keep the order the daemon published them in.
+ */
+function toolContractsReport(context: FrontendActionContext): string {
+  const contracts = context.presentation?.toolContracts ?? [];
+  if (contracts.length === 0) return 'tool contracts: none published';
+  const limit = 8;
+  const shown = contracts.slice(0, limit).map((contract) => {
+    return (
+      `${contract.name} caller=${contract.callerPolicy} ` +
+      `effect=${contract.effectClass} idempotent=${contract.idempotency}`
+    );
+  });
+  const rest = contracts.length - shown.length;
+  const tail = rest > 0 ? `, +${rest} more` : '';
+  return `tool contracts: ${contracts.length} published (${shown.join(', ')}${tail})`;
+}
+
+/**
+ * The desktop's report of the shell command runs the daemon published.
+ *
+ * The runs are shown newest first: the daemon appends a run as it
+ * happens, so the newest run is last in the published list. The run's
+ * command, its status and its working directory are what the report
+ * names.
+ */
+function shellRunsReport(context: FrontendActionContext): string {
+  const runs = context.presentation?.shellRuns ?? [];
+  if (runs.length === 0) return 'shell runs: none published';
+  const limit = 8;
+  const newestFirst = [...runs].reverse();
+  const shown = newestFirst.slice(0, limit).map((run) => {
+    return `${run.command} (${run.status}) in ${run.cwd}`;
+  });
+  const rest = runs.length - shown.length;
+  const tail = rest > 0 ? `, +${rest} more` : '';
+  return `shell runs: ${runs.length} published (${shown.join(', ')}${tail})`;
 }
 
 /**
@@ -132,6 +187,10 @@ export function answerFrontendAction(
       return { performed: true, message: statusReport(context), reason: null };
     case 'show_worktrees':
       return { performed: true, message: worktreesReport(context), reason: null };
+    case 'show_tool_contracts':
+      return { performed: true, message: toolContractsReport(context), reason: null };
+    case 'show_shell_runs':
+      return { performed: true, message: shellRunsReport(context), reason: null };
     default:
       return {
         performed: false,

@@ -78,6 +78,8 @@ const presentation = () => ({
   projectId: 'p0',
   workspaceId: 'w0',
   state: 'attached',
+  selectedModel: 'gpt-5',
+  selectedAgent: null,
   turn: {
     turnId: 'turn-1',
     status: 'active',
@@ -120,6 +122,23 @@ const presentation = () => ({
   ],
   runGroups: [],
   convergences: [],
+  shellRuns: [
+    {
+      runId: 'run-1',
+      command: 'cargo test',
+      cwd: '/repo',
+      origin: 'bang',
+      status: 'exited',
+    },
+  ],
+  toolContracts: [
+    {
+      name: 'read',
+      callerPolicy: 'direct_only',
+      effectClass: 'read_only',
+      idempotency: 'idempotent',
+    },
+  ],
   recentTurns: [],
   todos: null,
   pendingPermissions: [],
@@ -133,9 +152,10 @@ const presentation = () => ({
 /**
  * A catalog whose forms carry the daemon's published action.
  *
- * The four commands stand for the six forms the correction moves to the
- * frontend: one the desktop performs, two it knows it cannot perform, and
- * one whose form published no action at all.
+ * The commands stand for the six forms the correction moves to the
+ * frontend: the ones the desktop performs from what the daemon
+ * published, the one it knows it cannot perform, and one whose form
+ * published no action at all.
  */
 const catalog = (): CommandCatalogView => ({
   catalogVersion: 7,
@@ -213,6 +233,44 @@ const catalog = (): CommandCatalogView => ({
           argumentRequired: false,
           daemonServed: true,
           action: 'show_tool_contracts',
+        },
+      ],
+    },
+    {
+      commandId: 'fixture-runs',
+      name: '/fixture-runs',
+      aliases: [],
+      description: 'Inspect the shell command runs',
+      domain: 'Diagnostics',
+      kind: 'frontend_effect',
+      capability: null,
+      forms: [
+        {
+          form: '',
+          kind: 'frontend_effect',
+          argumentHint: '',
+          argumentRequired: false,
+          daemonServed: true,
+          action: 'show_shell_runs',
+        },
+      ],
+    },
+    {
+      commandId: 'fixture-terminal',
+      name: '/fixture-terminal',
+      aliases: [],
+      description: 'Focus the terminal',
+      domain: 'System',
+      kind: 'frontend_effect',
+      capability: null,
+      forms: [
+        {
+          form: '',
+          kind: 'frontend_effect',
+          argumentHint: '',
+          argumentRequired: false,
+          daemonServed: true,
+          action: 'show_terminal',
         },
       ],
     },
@@ -355,7 +413,7 @@ describe('the desktop frontend-action dispatch', () => {
     await selectRoute();
     await runFromPalette('/fixture-status');
     await waitFor(() =>
-      expect(screen.getByText('status: attached | tokens: 10↑ 20↓')).toBeInTheDocument(),
+      expect(screen.getByText('status: attached | model: gpt-5 | tokens: 10↑ 20↓')).toBeInTheDocument(),
     );
     expect(bridge.commandExecute).not.toHaveBeenCalled();
   });
@@ -370,14 +428,40 @@ describe('the desktop frontend-action dispatch', () => {
     expect(bridge.commandExecute).not.toHaveBeenCalled();
   });
 
-  it('says which data the desktop is missing for an action it cannot carry', async () => {
+  it('performs the tool contracts action from the contracts the projection carries', async () => {
     render(<App />);
     await selectRoute();
     await runFromPalette('/fixture-contracts');
     await waitFor(() =>
       expect(
         screen.getByText(
-          '/fixture-contracts is a frontend effect; the desktop does not implement it yet — the session projection publishes the tools a turn used, not the registry contracts',
+          'tool contracts: 1 published (read caller=direct_only effect=read_only idempotent=idempotent)',
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(bridge.commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('performs the shell runs action from the runs the projection carries', async () => {
+    render(<App />);
+    await selectRoute();
+    await runFromPalette('/fixture-runs');
+    await waitFor(() =>
+      expect(
+        screen.getByText('shell runs: 1 published (cargo test (exited) in /repo)'),
+      ).toBeInTheDocument(),
+    );
+    expect(bridge.commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('says which data the desktop is missing for an action it cannot carry', async () => {
+    render(<App />);
+    await selectRoute();
+    await runFromPalette('/fixture-terminal');
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          '/fixture-terminal is a frontend effect; the desktop does not implement it yet — the desktop has no terminal surface to focus',
         ),
       ).toBeInTheDocument(),
     );

@@ -2393,7 +2393,9 @@ impl App {
                 }
                 true
             }
-            E::SessionUpdated { session_id, title } => {
+            E::SessionUpdated {
+                session_id, title, ..
+            } => {
                 // The daemon auto-titler writes the new title and carries
                 // it on the event when it knows it — apply directly with
                 // no round trip. Id-only events (agent/model selection,

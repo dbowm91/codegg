@@ -17,9 +17,7 @@
 //!      -> committed / aborted / ambiguous, from the recorded evidence)
 //!
 //! Socket/daemon entry points (`src/main.rs`) currently run steps 2-4 without
-//! step 1 (pre-existing shape; unchanged by this polish milestone). Do not
-//! reorder startup merely because extraction makes it possible; desirable
-//! behavior changes belong in separate correctness plans.
+//! step 1. Do not reorder startup merely because extraction makes it possible.
 //! ```
 
 use std::sync::Arc;
@@ -34,8 +32,8 @@ impl CoreDaemon {
     /// Rehydrate the workspace registry from its backing store. Daemon
     /// construction synchronously creates a registry with the store
     /// attached; the in-memory cache is empty until this method is called.
-    /// Existing CLI/socket entry points invoke this after `with_deps` so
-    /// existing `workspace` rows survive restarts.
+    /// CLI/socket entry points invoke this after `with_deps` so existing
+    /// `workspace` rows survive restarts.
     pub async fn hydrate_workspace_registry(
         &self,
     ) -> Result<(), codegg_core::workspace::WorkspaceError> {
@@ -157,9 +155,8 @@ impl CoreDaemon {
     /// Apply the bridge fallback to a single `AppEvent` and return the
     /// resulting `(session_id, turn_id, core_event)` triple, or `None` if
     /// the event has no corresponding `CoreEvent`. If the bridged event
-    /// has an empty or missing `turn_id`, look up the active turn for the
-    /// session and attach its `turn_id` to the event so every event
-    /// belonging to a turn carries the same identity.
+    /// has an empty or missing `turn_id`, attach the active turn's id so
+    /// every event belonging to a turn carries the same identity.
     pub(crate) async fn bridge_app_event(
         &self,
         app_event: crate::bus::events::AppEvent,
@@ -170,6 +167,30 @@ impl CoreDaemon {
     )> {
         let mut core_event = super::map_app_event_to_core_event(app_event)?;
         let (session_id, mut turn_id) = super::core_event_metadata(&core_event);
+        // A session update publishes the session's own summary, so a
+        // reader is not left with a stub that erases what it holds.
+        if let crate::protocol::core::CoreEvent::SessionUpdated {
+            session_id,
+            title,
+            summary,
+        } = &core_event
+        {
+            if summary.is_none() {
+                let record = self.session_record(session_id).await;
+                let runtime = self.sessions.get(session_id);
+                let filled = super::session_summary::session_summary(
+                    session_id,
+                    record.as_ref(),
+                    runtime.as_deref(),
+                )
+                .await;
+                core_event = crate::protocol::core::CoreEvent::SessionUpdated {
+                    session_id: session_id.clone(),
+                    title: title.clone(),
+                    summary: Some(filled),
+                };
+            }
+        }
         let turn_id_empty = match &turn_id {
             Some(t) => t.is_empty(),
             None => true,

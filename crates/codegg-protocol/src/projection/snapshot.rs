@@ -11,13 +11,14 @@ use std::collections::VecDeque;
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
     AgentRunGroupSummaryProjection, AgentRunSummary, ConvergenceSummaryProjection, JobProjection,
-    RunProjection, SessionSummaryProjection, ToolProgramSummary, WorkspaceSummaryProjection,
-    WorktreeSummaryProjection,
+    RunProjection, SessionSummaryProjection, ShellRunProjection, ToolContractProjection,
+    ToolProgramSummary, WorkspaceSummaryProjection, WorktreeSummaryProjection,
 };
 use crate::projection::limits::{
     MAX_PROJECTION_AGENT_RUNS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS,
     MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_SESSION_SUBAGENTS,
-    MAX_PROJECTION_TOOL_PROGRAMS, MAX_PROJECTION_WORKTREES,
+    MAX_PROJECTION_SHELL_RUNS, MAX_PROJECTION_TOOL_CONTRACTS, MAX_PROJECTION_TOOL_PROGRAMS,
+    MAX_PROJECTION_WORKTREES,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -60,6 +61,12 @@ pub struct SessionProjectionSnapshot {
     pub recent_turns: VecDeque<crate::projection::dto::TurnProjection>,
     /// Active and recently completed runs.
     pub runs: VecDeque<RunProjection>,
+    /// Human-shell command runs the session owns.
+    #[serde(default)]
+    pub shell_runs: VecDeque<crate::projection::dto::ShellRunProjection>,
+    /// The tool contracts available to the session.
+    #[serde(default)]
+    pub tool_contracts: VecDeque<crate::projection::dto::ToolContractProjection>,
     /// Active and recently observed durable jobs.
     pub jobs: VecDeque<JobProjection>,
     /// Active and recently completed background tool programs.
@@ -81,9 +88,8 @@ pub struct SessionProjectionSnapshot {
 }
 
 impl SessionProjectionSnapshot {
-    /// Build a minimal snapshot used as a starting point for reducers
-    /// and adapters. The `diagnostics`, `recent_turns`, `runs`, `jobs`,
-    /// and `secondary_sessions` collections are empty.
+    /// Build a minimal snapshot used as a starting point for reducers and
+    /// adapters; its collections are empty.
     pub fn empty(session_id: &str, project_id: &str, workspace_id: &str) -> Self {
         Self {
             protocol_version: PROJECTION_PROTOCOL_VERSION,
@@ -128,6 +134,8 @@ impl SessionProjectionSnapshot {
             subagents: VecDeque::new(),
             recent_turns: VecDeque::new(),
             runs: VecDeque::new(),
+            shell_runs: VecDeque::new(),
+            tool_contracts: VecDeque::new(),
             jobs: VecDeque::new(),
             tool_programs: VecDeque::new(),
             agent_runs: VecDeque::new(),
@@ -205,12 +213,8 @@ impl SessionProjectionSnapshot {
 
     /// Upsert a job, dropping the oldest if the cap is reached.
     ///
-    /// The upsert *merges*: facts already observed for a job are kept
-    /// when the incoming projection does not carry them. A lifecycle
-    /// event that knows only the job id and the attempt id must not
-    /// erase the kind and the workspace the creation event recorded —
-    /// a job whose kind is blank cannot be classified, and a job whose
-    /// workspace is blank cannot be authorized against one.
+    /// The upsert *merges*, so a lifecycle event that knows only the job and
+    /// attempt id cannot erase the kind and workspace the creation recorded.
     pub fn upsert_job(&mut self, job: JobProjection) {
         if let Some(slot) = self.jobs.iter_mut().find(|j| j.job_id == job.job_id) {
             let prior_terminal = terminal_job_state(&slot.state);
@@ -266,6 +270,29 @@ impl SessionProjectionSnapshot {
             self.jobs.pop_front();
         }
         self.jobs.push_back(job);
+    }
+
+    /// Upsert one human-shell command run, dropping the oldest if the
+    /// cap is reached.
+    pub fn upsert_shell_run(&mut self, mut run: ShellRunProjection) {
+        run.normalise();
+        if let Some(slot) = self.shell_runs.iter_mut().find(|r| r.run_id == run.run_id) {
+            *slot = run;
+            return;
+        }
+        if self.shell_runs.len() >= MAX_PROJECTION_SHELL_RUNS {
+            self.shell_runs.pop_front();
+        }
+        self.shell_runs.push_back(run);
+    }
+
+    /// Replace the session's tool contracts, keeping the bound.
+    pub fn set_tool_contracts(&mut self, mut contracts: Vec<ToolContractProjection>) {
+        for contract in contracts.iter_mut() {
+            contract.normalise();
+        }
+        contracts.truncate(MAX_PROJECTION_TOOL_CONTRACTS);
+        self.tool_contracts = contracts.into();
     }
 
     /// Upsert a tool program summary, dropping the oldest if the cap

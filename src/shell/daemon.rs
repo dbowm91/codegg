@@ -2,14 +2,15 @@
 
 use sha2::Digest;
 use std::collections::{HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
 use codegg_protocol::core::CoreResponse;
 use codegg_protocol::human_shell::{
-    HumanShellOutputChunkDto, HumanShellRunCreateRequestDto, HumanShellRunMetadataDto,
-    HumanShellRunStatusDto, HUMAN_SHELL_MAX_COMMAND_BYTES, HUMAN_SHELL_MAX_READ_BYTES,
-    HUMAN_SHELL_PROTOCOL_VERSION,
+    HumanShellOriginDto, HumanShellOutputChunkDto, HumanShellRunCreateRequestDto,
+    HumanShellRunMetadataDto, HumanShellRunStatusDto, HUMAN_SHELL_MAX_COMMAND_BYTES,
+    HUMAN_SHELL_MAX_READ_BYTES, HUMAN_SHELL_PROTOCOL_VERSION,
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -55,18 +56,18 @@ struct RegistryInner {
     submissions: HashMap<(String, String), String>,
 }
 
-/// Ephemeral run authority and bounded output retention. Runs and handles
-/// disappear on daemon restart; no command is replayed.
+/// Ephemeral run authority and bounded output retention; no command is replayed.
 pub struct HumanShellRunService {
     inner: tokio::sync::Mutex<RegistryInner>,
     admission: Arc<crate::scheduler::admission::AdmissionController>,
-    /// M005 corrective C005: the daemon's process admission authority.
-    ///
-    /// A human-originated shell command is a process launch, and it is
-    /// refused under the restricted shared profile exactly like a model
-    /// tool's. `None` means the daemon has no durable reservation
-    /// authority.
+    /// M005 corrective C005: the daemon's process admission authority. A
+    /// human-originated shell command is a process launch, refused under
+    /// the restricted shared profile; `None` means no durable authority.
     process_admission: Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>,
+    /// The daemon's lifecycle publisher. `None` means nothing listens.
+    /// Every run is published, including a run with no session: the
+    /// consumer keeps the runs it can attribute.
+    publisher: Option<Arc<dyn Fn(HumanShellRunMetadataDto) + Send + Sync>>,
 }
 
 impl HumanShellRunService {
@@ -75,6 +76,7 @@ impl HumanShellRunService {
             inner: tokio::sync::Mutex::new(RegistryInner::default()),
             admission,
             process_admission: None,
+            publisher: None,
         }
     }
 
@@ -85,6 +87,15 @@ impl HumanShellRunService {
         service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
     ) {
         self.process_admission = Some(service);
+    }
+
+    /// Install the publisher that announces this service's run lifecycle.
+    pub fn with_publisher(
+        mut self,
+        publisher: Arc<dyn Fn(HumanShellRunMetadataDto) + Send + Sync>,
+    ) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     pub async fn create(
@@ -219,11 +230,9 @@ impl HumanShellRunService {
             env_policy: crate::shell::types::ShellEnvPolicy::Clean,
         };
         let (event_tx, mut event_rx) = mpsc::channel(128);
-        // M005 corrective C005: a human-originated shell command is a
-        // process launch. The restricted shared-checkout profile refuses it
-        // before the process exists, exactly as it refuses a model tool's
-        // shell. The scope is the daemon-resolved workspace root the run
-        // was bound to — never the command's own text.
+        // M005 corrective C005: the restricted shared-checkout profile
+        // refuses a human-originated shell command before the process
+        // exists, exactly as it refuses a model tool's shell.
         // c005-denial: human-shell-gate
         if let Some(service) = self.process_admission.as_ref() {
             let admission = service
@@ -248,9 +257,7 @@ impl HumanShellRunService {
         if let Some(spec) = sandbox {
             runtime = runtime.with_sandbox(spec);
         }
-        // M005 corrective C005: the shell runtime carries the same policy
-        // the human-shell gate consulted, so the refusal also happens at
-        // the launch owner.
+        // M005 corrective C005: the runtime carries the gate's policy too.
         if let Some(service) = self.process_admission.as_ref() {
             if let Some(policy) = crate::tool::process_admission::build_process_admission(
                 Some(service.clone()),
@@ -264,10 +271,8 @@ impl HumanShellRunService {
             Ok(handle) => handle,
             Err(message) => return error("human_shell_start_failed", &message),
         };
-        // M005 corrective C005: the live shell is a persistent process, and
-        // a persistent process that was started under an older authority
-        // must block a later shared reservation of the same checkout. The
-        // registry is what the reservation preflight reads.
+        // M005 corrective C005: a persistent shell started under an older
+        // authority must block a later shared reservation of its checkout.
         let process_id = format!("human_shell:{run_id}");
         if let Some(service) = self.process_admission.as_ref() {
             service
@@ -289,6 +294,8 @@ impl HumanShellRunService {
             origin: request.origin,
             status: HumanShellRunStatusDto::Running,
             exit_code: None,
+            started_at_ms: Some(now),
+            completed_at_ms: None,
             expires_at_ms: now.saturating_add(RUN_TTL_MS),
         };
         let record = Arc::new(Mutex::new(RunRecord {
@@ -307,16 +314,18 @@ impl HumanShellRunService {
             run_id.clone(),
         );
         inner.runs.insert(run_id.clone(), record.clone());
-        // M005 corrective C005: the registry entry is released when the
-        // run ends, so a drained process stops blocking a reservation.
+        // M005 corrective C005: the registry entry is released when the run ends.
         let release_registry = self
             .process_admission
             .as_ref()
             .map(|service| (service.clone(), process_id.clone()));
+        let publisher = self.publisher.clone();
+        let task_publisher = publisher.clone();
         tokio::spawn(async move {
             let _permit = permit;
             while let Some(event) = event_rx.recv().await {
                 let mut run = record.lock();
+                let before = run.meta.status.clone();
                 match event {
                     crate::shell::ShellEvent::Stdout { bytes, .. } => {
                         append_output(&mut run, false, &bytes)
@@ -331,29 +340,46 @@ impl HumanShellRunService {
                             HumanShellRunStatusDto::Cancelled
                         };
                         run.meta.exit_code = status;
+                        run.meta.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
                         run.handle = None;
                     }
                     crate::shell::ShellEvent::TimedOut { .. } => {
                         run.meta.status = HumanShellRunStatusDto::TimedOut;
+                        run.meta.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
                         run.handle = None;
                     }
                     crate::shell::ShellEvent::FailedToStart { .. } => {
                         run.meta.status = HumanShellRunStatusDto::Failed;
+                        run.meta.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
                         run.handle = None;
                     }
                     crate::shell::ShellEvent::Started { .. } => {}
                 }
+                let snapshot = (run.meta.status != before).then(|| run.meta.clone());
+                drop(run);
+                if let Some(snapshot) = snapshot {
+                    publish_run(&task_publisher, &snapshot);
+                }
             }
             let mut run = record.lock();
-            if run.meta.status == HumanShellRunStatusDto::Running {
+            let snapshot = if run.meta.status == HumanShellRunStatusDto::Running {
                 run.meta.status = HumanShellRunStatusDto::Lost;
+                run.meta.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
                 run.handle = None;
-            }
+                Some(run.meta.clone())
+            } else {
+                None
+            };
             drop(run);
+            if let Some(snapshot) = snapshot {
+                publish_run(&task_publisher, &snapshot);
+            }
             if let Some((service, process_id)) = release_registry {
                 service.processes().release(&process_id);
             }
         });
+        drop(inner);
+        publish_run(&publisher, &meta);
         CoreResponse::HumanShellRunCreated {
             run: meta,
             duplicate: false,
@@ -426,9 +452,31 @@ impl HumanShellRunService {
         }
     }
 
+    /// The session's runs, newest first; a run with no start timestamp
+    /// sorts last. The daemon's registry is the authority for which runs
+    /// exist, and the listing carries no output: `read` serves that.
+    pub async fn list_for_session(&self, session_id: &str) -> Vec<HumanShellRunMetadataDto> {
+        let mut inner = self.inner.lock().await;
+        Self::prune(&mut inner);
+        let mut runs: Vec<HumanShellRunMetadataDto> = inner
+            .runs
+            .values()
+            .filter_map(|record| {
+                let run = record.lock();
+                (run.scope.session_id.as_deref() == Some(session_id)).then(|| run.meta.clone())
+            })
+            .collect();
+        runs.sort_by(|left, right| {
+            run_order_key(right)
+                .cmp(&run_order_key(left))
+                .then_with(|| left.run_id.cmp(&right.run_id))
+        });
+        runs
+    }
+
     /// The run's own binding, for a run this daemon still holds.
     ///
-    /// A cancel's authority is the **run's own** binding. The runs are in
+    /// A cancel's authority is the **run's own** binding; the runs live in
     /// memory, so this answers `None` for a run the daemon does not hold.
     pub async fn scope_for(&self, run_id: &str) -> Option<HumanShellRunScope> {
         let mut inner = self.inner.lock().await;
@@ -484,6 +532,58 @@ impl HumanShellRunService {
     }
 }
 
+/// The projection's bounded view of one run.
+pub fn run_projection(
+    meta: &HumanShellRunMetadataDto,
+) -> codegg_protocol::projection::dto::ShellRunProjection {
+    codegg_protocol::projection::dto::ShellRunProjection {
+        run_id: meta.run_id.clone(),
+        command: meta.command.clone(),
+        cwd: meta.cwd.clone(),
+        origin: origin_name(meta.origin).to_owned(),
+        status: status_name(&meta.status).to_owned(),
+        started_at_ms: meta.started_at_ms,
+        completed_at_ms: meta.completed_at_ms,
+        exit_code: meta.exit_code,
+    }
+}
+
+/// Announce one run's metadata. A panicking publisher is contained, so a
+/// run's lifecycle never depends on it.
+fn publish_run(
+    publisher: &Option<Arc<dyn Fn(HumanShellRunMetadataDto) + Send + Sync>>,
+    meta: &HumanShellRunMetadataDto,
+) {
+    let Some(publisher) = publisher.as_ref() else {
+        return;
+    };
+    if std::panic::catch_unwind(AssertUnwindSafe(|| publisher(meta.clone()))).is_err() {
+        tracing::warn!(run_id = %meta.run_id, "the human shell run publisher panicked");
+    }
+}
+
+fn run_order_key(meta: &HumanShellRunMetadataDto) -> (i64, i64) {
+    (meta.started_at_ms.unwrap_or(i64::MIN), meta.expires_at_ms)
+}
+
+fn status_name(status: &HumanShellRunStatusDto) -> &'static str {
+    match status {
+        HumanShellRunStatusDto::Running => "running",
+        HumanShellRunStatusDto::Exited => "exited",
+        HumanShellRunStatusDto::TimedOut => "timed_out",
+        HumanShellRunStatusDto::Cancelled => "cancelled",
+        HumanShellRunStatusDto::Failed => "failed",
+        HumanShellRunStatusDto::Lost => "lost",
+    }
+}
+
+fn origin_name(origin: HumanShellOriginDto) -> &'static str {
+    match origin {
+        HumanShellOriginDto::Bang => "bang",
+        HumanShellOriginDto::BangBang => "bang_bang",
+    }
+}
+
 fn append_output(run: &mut RunRecord, stderr: bool, bytes: &[u8]) {
     for part in bytes.chunks(HUMAN_SHELL_MAX_READ_BYTES) {
         let sequence = run.next_sequence;
@@ -522,6 +622,16 @@ mod tests {
         HumanShellRunService::new(Arc::new(
             crate::scheduler::admission::AdmissionController::new(config),
         ))
+    }
+
+    fn service_with_publisher(
+        publisher: Arc<dyn Fn(HumanShellRunMetadataDto) + Send + Sync>,
+    ) -> HumanShellRunService {
+        let config = crate::scheduler::config::ResolvedSchedulerConfig::default();
+        HumanShellRunService::new(Arc::new(
+            crate::scheduler::admission::AdmissionController::new(config),
+        ))
+        .with_publisher(publisher)
     }
 
     fn create_request(
@@ -572,6 +682,63 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         String::from_utf8_lossy(&output).into_owned()
+    }
+
+    fn scoped_request(
+        submission_id: &str,
+        scope: &HumanShellRunScope,
+        command: &str,
+    ) -> HumanShellRunCreateRequestDto {
+        let mut request = create_request(
+            submission_id,
+            &scope.project_id,
+            &scope.workspace_id,
+            command,
+        );
+        request.session_id = scope.session_id.clone();
+        request
+    }
+
+    async fn create_run(
+        service: &HumanShellRunService,
+        scope: &HumanShellRunScope,
+        cwd: &std::path::Path,
+        submission_id: &str,
+        command: &str,
+    ) -> HumanShellRunMetadataDto {
+        let response = service
+            .create(
+                scope.clone(),
+                scoped_request(submission_id, scope, command),
+                cwd.to_path_buf(),
+                "daemon".into(),
+                "sh".into(),
+                None,
+            )
+            .await;
+        match response {
+            CoreResponse::HumanShellRunCreated { run, .. } => run,
+            other => panic!("unexpected create response: {other:?}"),
+        }
+    }
+
+    async fn wait_for_terminal(
+        service: &HumanShellRunService,
+        scope: &HumanShellRunScope,
+        run_id: &str,
+    ) -> HumanShellRunStatusDto {
+        for _ in 0..200 {
+            if let CoreResponse::HumanShellRunOutput { run, .. } = service
+                .read(scope, run_id, 0, HUMAN_SHELL_MAX_READ_BYTES)
+                .await
+            {
+                if run.status != HumanShellRunStatusDto::Running {
+                    return run.status;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the run never reached a terminal status");
     }
 
     #[tokio::test]
@@ -857,6 +1024,8 @@ mod tests {
                 origin: HumanShellOriginDto::Bang,
                 status: HumanShellRunStatusDto::Running,
                 exit_code: None,
+                started_at_ms: None,
+                completed_at_ms: None,
                 expires_at_ms: 0,
             },
             scope,
@@ -872,5 +1041,153 @@ mod tests {
         assert!(run.retained_bytes <= MAX_OUTPUT_BYTES);
         assert!(run.output_truncated);
         assert!(run.chunks.front().unwrap().sequence > 1);
+    }
+
+    #[tokio::test]
+    async fn list_for_session_returns_the_session_runs_newest_first_without_output() {
+        let service = service();
+        let dir = tempfile::tempdir().unwrap();
+        let scope = HumanShellRunScope {
+            principal_id: "p".into(),
+            project_id: "project".into(),
+            workspace_id: "workspace".into(),
+            session_id: Some("session-a".into()),
+        };
+        let other = HumanShellRunScope {
+            session_id: Some("session-b".into()),
+            ..scope.clone()
+        };
+        let first = create_run(
+            &service,
+            &scope,
+            dir.path(),
+            "first",
+            "printf z; printf z; printf 9",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let second = create_run(&service, &scope, dir.path(), "second", "printf y").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let third = create_run(&service, &other, dir.path(), "third", "printf x").await;
+
+        let listed = service.list_for_session("session-a").await;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].run_id, second.run_id);
+        assert_eq!(listed[1].run_id, first.run_id);
+        assert!(listed[0].started_at_ms > listed[1].started_at_ms);
+        assert!(listed
+            .iter()
+            .all(|run| run.session_id.as_deref() == Some("session-a")));
+
+        let other_listed = service.list_for_session("session-b").await;
+        assert_eq!(other_listed.len(), 1);
+        assert_eq!(other_listed[0].run_id, third.run_id);
+        assert!(service.list_for_session("session-c").await.is_empty());
+
+        let output = read_to_exit(&service, &scope, &first.run_id).await;
+        assert!(output.contains("zz9"));
+        let serialised = serde_json::to_string(&listed[1]).unwrap();
+        assert!(!serialised.contains("zz9"));
+        assert!(!serialised.contains("bytes"));
+        assert!(!serialised.contains("chunks"));
+    }
+
+    #[tokio::test]
+    async fn the_publisher_observes_the_creation_and_the_terminal_status() {
+        let observed: Arc<Mutex<Vec<HumanShellRunMetadataDto>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = observed.clone();
+        let service = service_with_publisher(Arc::new(move |meta: HumanShellRunMetadataDto| {
+            sink.lock().push(meta);
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let scope = HumanShellRunScope {
+            principal_id: "p".into(),
+            project_id: "project".into(),
+            workspace_id: "workspace".into(),
+            session_id: Some("session-a".into()),
+        };
+        let run = create_run(&service, &scope, dir.path(), "publisher", "printf done").await;
+
+        let mut terminal = None;
+        for _ in 0..200 {
+            {
+                let seen = observed.lock();
+                if let Some(status) = seen
+                    .iter()
+                    .find(|meta| {
+                        meta.run_id == run.run_id && meta.status != HumanShellRunStatusDto::Running
+                    })
+                    .map(|meta| meta.status.clone())
+                {
+                    terminal = Some(status);
+                }
+            }
+            if terminal.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(terminal, Some(HumanShellRunStatusDto::Exited));
+
+        let seen = observed.lock();
+        assert!(seen.iter().any(|meta| {
+            meta.run_id == run.run_id && meta.status == HumanShellRunStatusDto::Running
+        }));
+        assert!(seen.iter().any(|meta| {
+            meta.run_id == run.run_id && meta.status == HumanShellRunStatusDto::Exited
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_publisher_cannot_fail_a_run() {
+        let service = service_with_publisher(Arc::new(|_meta: HumanShellRunMetadataDto| {
+            panic!("this publisher is broken");
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let scope = HumanShellRunScope {
+            principal_id: "p".into(),
+            project_id: "project".into(),
+            workspace_id: "workspace".into(),
+            session_id: Some("session-a".into()),
+        };
+        let run = create_run(&service, &scope, dir.path(), "broken", "printf ok").await;
+        assert_eq!(
+            wait_for_terminal(&service, &scope, &run.run_id).await,
+            HumanShellRunStatusDto::Exited
+        );
+        let listed = service.list_for_session("session-a").await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, HumanShellRunStatusDto::Exited);
+        assert_eq!(listed[0].exit_code, Some(0));
+    }
+
+    #[test]
+    fn projection_names_match_the_serde_names() {
+        let statuses = [
+            (HumanShellRunStatusDto::Running, "running"),
+            (HumanShellRunStatusDto::Exited, "exited"),
+            (HumanShellRunStatusDto::TimedOut, "timed_out"),
+            (HumanShellRunStatusDto::Cancelled, "cancelled"),
+            (HumanShellRunStatusDto::Failed, "failed"),
+            (HumanShellRunStatusDto::Lost, "lost"),
+        ];
+        for (status, name) in statuses {
+            assert_eq!(
+                serde_json::to_value(&status).unwrap(),
+                serde_json::json!(name)
+            );
+            assert_eq!(status_name(&status), name);
+        }
+        let origins = [
+            (HumanShellOriginDto::Bang, "bang"),
+            (HumanShellOriginDto::BangBang, "bang_bang"),
+        ];
+        for (origin, name) in origins {
+            assert_eq!(
+                serde_json::to_value(origin).unwrap(),
+                serde_json::json!(name)
+            );
+            assert_eq!(origin_name(origin), name);
+        }
     }
 }

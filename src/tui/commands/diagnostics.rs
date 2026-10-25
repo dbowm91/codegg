@@ -1,12 +1,12 @@
 //! Diagnostics and doctor command handlers.
 
+use crate::protocol::projection::dto::ToolContractProjection;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
-/// How long the cached footer LSP status is reused before the event loop
-/// asks for another refresh.
+/// How long the cached footer LSP status is reused.
 pub const LSP_STATUS_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Enqueue an LSP status refresh when the cached value has aged out.
@@ -49,8 +49,7 @@ pub(crate) fn refresh_lsp_status(app: &mut App) {
     );
 }
 
-/// Start the off-render-path fetch of the multi-line LSP detail summary
-/// shown as a toast by `/lsp-status`.
+/// Start the off-render-path fetch of the multi-line `/lsp-status` toast.
 pub(crate) fn request_lsp_status_detail(app: &mut App) {
     let Some(lsp_tool) = app.lsp_tool.clone() else {
         app.messages_state.toasts.info("LSP not available");
@@ -72,8 +71,7 @@ pub(crate) fn request_lsp_status_detail(app: &mut App) {
 /// Eggwork M002: ask the daemon for the configured nodes' host telemetry.
 ///
 /// The read is off the render path and goes through the shared guarded task
-/// registry, so a completion that arrives after the user moved on is
-/// droppable rather than painting a stale answer.
+/// registry, so a late completion is droppable rather than stale.
 pub(crate) fn request_node_telemetry(app: &mut App) {
     let Some(client) = app.core_client.clone() else {
         app.messages_state
@@ -81,8 +79,7 @@ pub(crate) fn request_node_telemetry(app: &mut App) {
             .warning("Not connected to a daemon; node telemetry is unavailable");
         return;
     };
-    // M007-D: the scope names the project, the workspace and the session
-    // the command acts on.
+    // M007-D: the scope names the project, workspace and session.
     let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
@@ -91,9 +88,8 @@ pub(crate) fn request_node_telemetry(app: &mut App) {
         TuiTaskKind::Command,
         "node_telemetry",
         async move {
-            // M007-D: the daemon owns the effect. The node telemetry read
-            // is executed as the catalog's `nodes` command, and the response
-            // the presentation reads is the one the daemon produced.
+            // M007-D: the daemon owns the effect. The telemetry read runs as the
+            // catalog's `nodes` command; the presented response is the daemon's.
             let request = crate::core::new_request(
                 uuid::Uuid::new_v4().to_string(),
                 crate::tui::command_route::command_execute(scope, "nodes", "", ""),
@@ -107,9 +103,8 @@ pub(crate) fn request_node_telemetry(app: &mut App) {
                     Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
                         (Vec::new(), Some(format!("{code}: {message}")))
                     }
-                    // An older daemon answers with some other shape. Treat that
-                    // as an absent surface, not as a failure the user must act
-                    // on: the read simply is not available there.
+                    // An older daemon answers with some other shape. Treat that as an
+                    // absent surface, not a failure the user must act on.
                     Ok(_) => (Vec::new(), None),
                     Err(error) => (Vec::new(), Some(error.to_string())),
                 };
@@ -121,7 +116,7 @@ pub(crate) fn request_node_telemetry(app: &mut App) {
 /// Render the node telemetry snapshots as one bounded, readable summary.
 ///
 /// The rendering keeps the node's own words for "not reported": a dimension
-/// the node could not measure is shown as `unsupported`, never as `0`.
+/// it could not measure shows as `unsupported`, never as `0`.
 pub(crate) fn format_node_telemetry(nodes: &[crate::protocol::dto::NodeTelemetryDto]) -> String {
     if nodes.is_empty() {
         return "No remote nodes are configured".to_string();
@@ -168,8 +163,7 @@ fn telemetry_state_label(state: crate::protocol::dto::NodeTelemetryStateDto) -> 
     }
 }
 
-/// Render a percentage metric, keeping "not reported" distinct from a real
-/// zero.
+/// Render a percentage metric, keeping "not reported" distinct from a real zero.
 fn metric_pct(
     state: Option<crate::protocol::dto::NodeMetricStateDto>,
     value: Option<f64>,
@@ -347,33 +341,35 @@ pub(crate) fn apply_doctor_result(app: &mut App, summary: String, is_error: bool
     }
 }
 
+/// Render the tool contracts the daemon publishes for this session.
+///
+/// The published caller policy is the string this list has always shown
+/// (`direct`, `direct+program`, `program-only`); the published effect and
+/// idempotency are the contract's own names. The count is the published
+/// collection's own.
 pub(crate) fn handle_tool_contracts(app: &mut App) {
-    use crate::tool::broker::ToolBroker;
-    use crate::tool::contract::ToolCallerPolicy;
-
-    let registry = crate::tool::ToolRegistry::with_defaults();
-    let broker = ToolBroker::new(&registry);
-    let catalog = broker.catalog();
+    let published = app
+        .projection_client
+        .active_snapshot()
+        .map(|(_, snapshot)| snapshot.tool_contracts.clone());
+    let Some(contracts) = published else {
+        app.messages_state
+            .toasts
+            .warning("The daemon's tool contracts are unavailable");
+        return;
+    };
 
     let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("Tool contracts ({} tools):", catalog.len()));
+    lines.push(format!("Tool contracts ({} tools):", contracts.len()));
     lines.push(String::new());
 
-    let mut names: Vec<&str> = catalog.tool_names().collect();
-    names.sort();
+    let mut ordered: Vec<&ToolContractProjection> = contracts.iter().collect();
+    ordered.sort_by(|a, b| a.name.cmp(&b.name));
 
-    for name in names {
-        let contract = catalog.get(name).unwrap();
-        let caller = match contract.caller_policy {
-            ToolCallerPolicy::DirectOnly => "direct",
-            ToolCallerPolicy::DirectOrProgrammatic => "direct+program",
-            ToolCallerPolicy::ProgrammaticOnly => "program-only",
-        };
-        let effect = format!("{:?}", contract.effect_class);
-        let idempotent = format!("{:?}", contract.idempotency);
+    for contract in ordered {
         lines.push(format!(
             "  {:<24} caller={:<16} effect={:<20} idempotent={}",
-            name, caller, effect, idempotent
+            contract.name, contract.caller_policy, contract.effect_class, contract.idempotency
         ));
     }
 
@@ -381,4 +377,113 @@ pub(crate) fn handle_tool_contracts(app: &mut App) {
         crate::tui::components::dialogs::info::InfoType::DoctorReport,
         lines,
     );
+}
+
+#[cfg(test)]
+mod tool_contract_projection_tests {
+    use super::handle_tool_contracts;
+    use crate::protocol::projection::dto::ToolContractProjection;
+    use crate::protocol::projection::replay::{
+        ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        ProjectionSubscriptionId,
+    };
+    use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
+    use crate::tui::app::App;
+    use crate::tui::components::dialogs::info::InfoDialog;
+
+    fn published_contract(
+        name: &str,
+        caller_policy: &str,
+        effect_class: &str,
+        idempotency: &str,
+    ) -> ToolContractProjection {
+        ToolContractProjection {
+            name: name.to_string(),
+            caller_policy: caller_policy.to_string(),
+            effect_class: effect_class.to_string(),
+            idempotency: idempotency.to_string(),
+            implementation_id: format!("builtin.{name}"),
+        }
+    }
+
+    fn app_with_published_contracts(contracts: Vec<ToolContractProjection>) -> App {
+        let mut app = App::new_for_testing("/tmp".into());
+        let mut snapshot = SessionProjectionSnapshot::empty("sess", "proj", "ws");
+        snapshot.set_tool_contracts(contracts);
+        app.projection_client.controller_mut().install_subscription(
+            ProjectionSubscriptionId::new("sub-1"),
+            ProjectionStreamDescriptor {
+                stream_id: ProjectionStreamId::new("stream-1").expect("a valid stream id"),
+                kind: ProjectionStreamKind::Session,
+                project_id: "proj".into(),
+                workspace_id: Some("ws".into()),
+                session_id: Some("sess".into()),
+                projection_version: 1,
+                retention_floor_seq: 0,
+                high_water_seq: 0,
+                latest_checkpoint_seq: None,
+            },
+            snapshot,
+        );
+        app
+    }
+
+    fn dialog_text(app: &mut App) -> String {
+        app.focus_manager
+            .dialog_mut_any::<InfoDialog>()
+            .expect("the contracts opened an info dialog")
+            .content_lines()
+            .join("\n")
+    }
+
+    #[test]
+    fn tool_contracts_render_the_published_contracts() {
+        let mut app = app_with_published_contracts(vec![
+            published_contract("glob", "program-only", "ReadOnly", "Idempotent"),
+            published_contract("bash", "direct", "Mutating", "NonIdempotent"),
+        ]);
+
+        handle_tool_contracts(&mut app);
+
+        let text = dialog_text(&mut app);
+        assert!(
+            text.contains("Tool contracts (2 tools):"),
+            "the count is the published collection's: {text}"
+        );
+        let bash_row = text
+            .lines()
+            .find(|line| line.contains("bash"))
+            .expect("a row for bash");
+        assert!(
+            bash_row.contains("caller=direct"),
+            "the row carries it: {bash_row}"
+        );
+        let glob_row = text
+            .lines()
+            .find(|line| line.contains("glob"))
+            .expect("a row for glob");
+        assert!(
+            glob_row.contains("caller=program-only"),
+            "the row carries it: {glob_row}"
+        );
+    }
+
+    #[test]
+    fn tool_contracts_say_so_when_no_daemon_is_attached() {
+        let mut app = App::new_for_testing("/tmp".into());
+
+        handle_tool_contracts(&mut app);
+
+        let text = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|toast| toast.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("daemon's tool contracts are unavailable"),
+            "an unattached projection is named, not faked: {text}"
+        );
+    }
 }

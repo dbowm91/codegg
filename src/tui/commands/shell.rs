@@ -1,12 +1,11 @@
-//! Shell command handlers for the TUI.
-//!
-//! Contains handlers for human shell execution, shell event processing,
-//! shell output inclusion, rerunning, killing, listing, and showing shell commands.
+//! Shell command handlers for the TUI: execution, events, inclusion, rerun, kill, list, show.
 
 use super::super::task_lifecycle::TuiTaskKind;
+use crate::protocol::projection::dto::ShellRunProjection;
 use crate::tui as app;
 use crate::tui::app::send_tui;
 use crate::util::truncate::truncate_prefix;
+use std::collections::VecDeque;
 
 pub(crate) fn handle_run_human_shell(
     app: &mut app::App,
@@ -293,12 +292,27 @@ fn shell_binding_matches_current(app: &app::App, id: u64) -> bool {
         .is_some_and(|binding| binding == &current_shell_binding(app))
 }
 
+/// Drop the bindings whose local entry is gone. A binding outlives its
+/// run: it is the only join to the daemon's run id.
+fn prune_remote_shell_bindings(app: &mut app::App) {
+    let stale: Vec<u64> = app
+        .remote_shell_runs
+        .keys()
+        .copied()
+        .filter(|local_id| {
+            app.shell_store
+                .get(crate::shell::types::ShellCommandId(*local_id))
+                .is_none()
+        })
+        .collect();
+    for local_id in stale {
+        app.remote_shell_runs.remove(&local_id);
+    }
+}
+
 pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
-    // Mirror the event into the durable command-run store used by the
-    // Phase 1 projection pipeline. This must happen for every event
-    // variant (Started/Stdout/Stderr/Exited/TimedOut/FailedToStart)
-    // so that the bridge has all the bytes it needs when it finalizes
-    // the run on a terminal event.
+    // Mirror every event into the durable command-run store, so the bridge has
+    // the bytes it needs when it finalizes the run on a terminal event.
     app.command_run_bridge
         .observe(&mut app.command_run_store, &event);
 
@@ -343,14 +357,14 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
             status,
             elapsed,
         } => {
-            // Do not overwrite Killed status from a late exited event
+            // Never overwrite Killed from a late exited event
             if let Some(entry) = app.shell_store.get(*id) {
                 if entry.status == crate::shell::types::ShellStatus::Killed {
                     return;
                 }
             }
             app.shell_handles.remove(&id.0);
-            app.remote_shell_runs.remove(&id.0);
+            prune_remote_shell_bindings(app);
             let cancelled = status.is_none();
             if cancelled {
                 app.shell_store.mark_killed(*id, *elapsed);
@@ -381,7 +395,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 cell.truncated = Some(truncated);
             });
 
-            // Populate projection metadata from the command-run store
+            // Projection metadata from the command-run store
             if let Some(run) = app
                 .command_run_store
                 .get_run(crate::shell::projection::CommandRunId(id.0))
@@ -479,7 +493,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         }
         crate::shell::ShellEvent::TimedOut { id, elapsed } => {
             app.shell_handles.remove(&id.0);
-            app.remote_shell_runs.remove(&id.0);
+            prune_remote_shell_bindings(app);
             app.shell_store.mark_timeout(*id, *elapsed);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("timed_out".to_string());
@@ -488,7 +502,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         }
         crate::shell::ShellEvent::FailedToStart { id, error } => {
             app.shell_handles.remove(&id.0);
-            app.remote_shell_runs.remove(&id.0);
+            prune_remote_shell_bindings(app);
             app.shell_store.mark_failed_to_start(*id);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("failed".to_string());
@@ -922,8 +936,7 @@ fn project_for_model(text: &str) -> Result<String, String> {
     }
     let mut projection = ProjectionResult::empty("human-shell-promotion", ProjectionKind::Raw);
     // Redact the complete bounded source before applying the smaller model
-    // budget. This prevents a secret that straddles the output boundary from
-    // escaping as a truncated, unmatched prefix.
+    // budget, so a secret straddling the output boundary cannot escape.
     projection.text = sanitized;
     projection.output_bytes = projection.text.len();
     apply_redaction_hook(&mut projection, ProjectionTarget::ModelContext);
@@ -969,8 +982,8 @@ fn stage_remote_shell_projection(app: &mut app::App, text: String) -> bool {
     true
 }
 
-/// Send a prepared projection to the authoritative daemon session owner.
-/// The UI must wait for the typed response before displaying it as staged.
+/// Send a prepared projection to the daemon session owner and wait for
+/// the typed response before showing it as staged.
 fn stage_local_shell_projection(app: &mut app::App, source_id: u64, projection: String) -> bool {
     let Some(client) = app.core_client.clone() else {
         return false;
@@ -1016,8 +1029,7 @@ fn stage_local_shell_projection(app: &mut app::App, source_id: u64, projection: 
             let response = match client.request(request).await {
                 Ok(response) => response,
                 Err(first_error) => {
-                    // A lost response is ambiguous. Retry the same durable
-                    // identity so the owner can return its prior outcome.
+                    // A lost response is ambiguous: retry the same durable identity.
                     let retry = crate::core::new_request(
                         uuid::Uuid::new_v4().to_string(),
                         crate::protocol::core::CoreRequest::HumanShellPromotionStage {
@@ -1144,6 +1156,11 @@ pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {
 }
 
 pub(crate) fn handle_shell_kill(app: &mut app::App, id: u64) {
+    let still_running = app
+        .shell_store
+        .get(crate::shell::types::ShellCommandId(id))
+        .is_some_and(|entry| entry.status == crate::shell::types::ShellStatus::Running);
+    let binding = app.remote_shell_runs.get(&id).cloned();
     if let Some(handle) = app.shell_handles.remove(&id) {
         handle.kill();
         let cmd_id = crate::shell::types::ShellCommandId(id);
@@ -1156,7 +1173,7 @@ pub(crate) fn handle_shell_kill(app: &mut app::App, id: u64) {
         app.messages_state
             .toasts
             .info(&format!("Killed shell command {}", id));
-    } else if let Some(binding) = app.remote_shell_runs.get(&id).cloned() {
+    } else if let Some(binding) = binding.filter(|_| still_running) {
         let Some(client) = app.core_client.clone() else {
             app.messages_state
                 .toasts
@@ -1202,69 +1219,23 @@ pub(crate) fn handle_shell_kill(app: &mut app::App, id: u64) {
 }
 
 pub(crate) fn handle_shell_list(app: &mut app::App) {
-    let recent = app.shell_store.list_recent(10);
-    if recent.is_empty() {
+    let promoted = promoted_run_ids(app);
+    let rendered = app
+        .projection_client
+        .active_snapshot()
+        .map(|(_, snapshot)| shell_run_rows(&snapshot.shell_runs, &promoted));
+    let Some(lines) = rendered else {
+        app.messages_state
+            .toasts
+            .warning("The daemon's shell command list is unavailable");
+        return;
+    };
+    if lines.is_empty() {
         app.messages_state
             .toasts
             .info("No shell commands in history");
         return;
     }
-    let lines: Vec<String> = recent
-        .iter()
-        .map(|e| {
-            let status_str = match e.status {
-                crate::shell::types::ShellStatus::Running => {
-                    let elapsed_str = e
-                        .elapsed
-                        .map(|d| format!("{:.1}s", d.as_secs_f64()))
-                        .unwrap_or_else(|| "0.0s".to_string());
-                    format!("running {}", elapsed_str)
-                }
-                crate::shell::types::ShellStatus::Exited => match e.exit_code {
-                    Some(code) => {
-                        let elapsed_str = e
-                            .elapsed
-                            .map(|d| format!("{:.1}s", d.as_secs_f64()))
-                            .unwrap_or_default();
-                        if elapsed_str.is_empty() {
-                            format!("done exit={}", code)
-                        } else {
-                            format!("done exit={} {}", code, elapsed_str)
-                        }
-                    }
-                    None => "done".to_string(),
-                },
-                crate::shell::types::ShellStatus::TimedOut => {
-                    let elapsed_str = e
-                        .elapsed
-                        .map(|d| format!("{:.0}s", d.as_secs_f64()))
-                        .unwrap_or_default();
-                    if elapsed_str.is_empty() {
-                        "timeout".to_string()
-                    } else {
-                        format!("timeout {}", elapsed_str)
-                    }
-                }
-                crate::shell::types::ShellStatus::FailedToStart => "failed".to_string(),
-                crate::shell::types::ShellStatus::Killed => {
-                    let elapsed_str = e
-                        .elapsed
-                        .map(|d| format!("{:.1}s", d.as_secs_f64()))
-                        .unwrap_or_default();
-                    if elapsed_str.is_empty() {
-                        "killed".to_string()
-                    } else {
-                        format!("killed {}", elapsed_str)
-                    }
-                }
-            };
-            let promoted_str = if e.promoted { " [promoted]" } else { "" };
-            format!(
-                "[{}] {}{} $ {}",
-                e.id.0, status_str, promoted_str, e.command
-            )
-        })
-        .collect();
     if lines.len() > 5 {
         app.open_info_dialog(
             crate::tui::components::dialogs::info::InfoType::ShellShow,
@@ -1273,6 +1244,79 @@ pub(crate) fn handle_shell_list(app: &mut app::App) {
     } else {
         app.messages_state.toasts.info(&lines.join("\n"));
     }
+}
+
+/// The daemon's run ids this frontend promoted: its own annotation,
+/// matched to the published rows by run id.
+fn promoted_run_ids(app: &app::App) -> std::collections::HashSet<String> {
+    app.remote_shell_runs
+        .iter()
+        .filter(|(local_id, _)| {
+            app.shell_store
+                .get(crate::shell::types::ShellCommandId(**local_id))
+                .is_some_and(|entry| entry.promoted)
+        })
+        .map(|(_, binding)| binding.run_id.clone())
+        .collect()
+}
+
+/// Render the daemon's published runs as this list always rendered them:
+/// the most recent first, at most ten rows, the status spelled as this list
+/// spells it (`done`, `timeout`, `killed`), plus this frontend's marker.
+fn shell_run_rows(
+    runs: &VecDeque<ShellRunProjection>,
+    promoted: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut ordered: Vec<&ShellRunProjection> = runs.iter().collect();
+    ordered.sort_by_key(|run| std::cmp::Reverse(run.started_at_ms.unwrap_or(i64::MIN)));
+    ordered
+        .into_iter()
+        .take(10)
+        .map(|run| shell_run_row(run, promoted))
+        .collect()
+}
+
+fn shell_run_row(run: &ShellRunProjection, promoted: &std::collections::HashSet<String>) -> String {
+    let elapsed = run
+        .started_at_ms
+        .zip(run.completed_at_ms)
+        .map(|(started, completed)| (completed.saturating_sub(started) as f64) / 1000.0);
+    let status = match run.status.as_str() {
+        "running" => format!("running {}", tenths(elapsed)),
+        "exited" => match run.exit_code {
+            Some(code) => match elapsed {
+                Some(seconds) => format!("done exit={} {:.1}s", code, seconds),
+                None => format!("done exit={}", code),
+            },
+            None => "done".to_string(),
+        },
+        "timed_out" => match elapsed {
+            Some(seconds) => format!("timeout {:.0}s", seconds),
+            None => "timeout".to_string(),
+        },
+        "cancelled" => match elapsed {
+            Some(seconds) => format!("killed {:.1}s", seconds),
+            None => "killed".to_string(),
+        },
+        "failed" => "failed".to_string(),
+        "lost" => "lost".to_string(),
+        other => other.to_string(),
+    };
+    let promoted_str = if promoted.contains(&run.run_id) {
+        " [promoted]"
+    } else {
+        ""
+    };
+    format!(
+        "[{}] {}{} $ {}",
+        run.run_id, status, promoted_str, run.command
+    )
+}
+
+fn tenths(elapsed: Option<f64>) -> String {
+    elapsed
+        .map(|seconds| format!("{:.1}s", seconds))
+        .unwrap_or_else(|| "0.0s".to_string())
 }
 
 pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
@@ -1310,13 +1354,12 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
     ));
     lines.push(format!("Capture:  {:?}", entry.capture_policy));
 
-    // Projection metadata from the durable command-run store
+    // Projection metadata from the durable run store
     let cmd_run_id = crate::shell::projection::CommandRunId(id);
     if let Some(run) = app.command_run_store.get_run(cmd_run_id) {
         lines.push(String::new());
         lines.push("── projection ──".to_string());
 
-        // Raw retention info
         let stdout_total = run.stdout.total_bytes;
         let stdout_retained = run.stdout.retained_bytes;
         let stderr_total = run.stderr.total_bytes;
@@ -1338,7 +1381,6 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
         }
         lines.push(format!("Exit:     {}", run.exit.label()));
 
-        // Projection result
         let shell_output_config = app.shell_output_config.clone();
         let result = crate::shell::projector::config_command_projection(
             run,
@@ -1353,7 +1395,6 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
             crate::shell::projector::format_bytes(result.output_bytes as u64)
         ));
 
-        // Omitted ranges
         if !result.omitted.is_empty() {
             lines.push(format!("Omitted:  {} range(s)", result.omitted.len()));
             for (i, omitted) in result.omitted.iter().enumerate() {
@@ -1368,7 +1409,6 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
             }
         }
 
-        // Expansion handles
         if !result.expansion_handles.is_empty() {
             lines.push(format!("Handles: {}", result.expansion_handles.len()));
             for handle in &result.expansion_handles {
@@ -1376,7 +1416,6 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
             }
         }
 
-        // Warnings
         if !result.warnings.is_empty() {
             lines.push("Warnings:".to_string());
             for w in &result.warnings {
@@ -1481,7 +1520,7 @@ pub(crate) fn handle_shell_expand(
 
     let cmd_id = CommandRunId(id);
 
-    // Check if the command exists in the legacy store for a friendly message
+    // The command is in the legacy store: a friendly message
     let has_legacy = app
         .shell_store
         .get(crate::shell::types::ShellCommandId(id))
@@ -1504,7 +1543,7 @@ pub(crate) fn handle_shell_expand(
         }
     });
 
-    // Try expansion from the durable command-run store
+    // Try expansion from the durable run store
     match app
         .command_run_store
         .expand_stream(cmd_id, &stream, byte_range)
@@ -1556,15 +1595,14 @@ pub(crate) fn handle_shell_expand(
             show_shell_detail(app, id, lines, "j/k scroll  |  / search  |  Esc close");
         }
         None => {
-            // Command exists in legacy store but not in durable store
-            // This can happen if the bridge hasn't finalized yet
+            // In the legacy store, not the durable one: the bridge has not finalized it
             if app.command_run_store.get_run(cmd_id).is_none() {
                 app.messages_state.toasts.warning(&format!(
                     "Command {} has no durable output yet (still running or not captured)",
                     id
                 ));
             } else {
-                // Run exists but stream name is invalid
+                // Run exists, stream name invalid
                 app.messages_state.toasts.warning(&format!(
                     "Invalid stream '{}' for command {}. Use stdout, stderr, or combined.",
                     stream, id
@@ -1605,5 +1643,185 @@ mod promotion_tests {
         );
         let projected = project_for_model(&text).unwrap();
         assert!(!projected.contains(secret));
+    }
+}
+
+#[cfg(test)]
+mod shell_list_projection_tests {
+    use super::handle_shell_list;
+    use crate::protocol::projection::dto::ShellRunProjection;
+    use crate::protocol::projection::replay::{
+        ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        ProjectionSubscriptionId,
+    };
+    use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
+    use crate::tui::app::App;
+
+    fn published_run(run_id: &str, command: &str, started_at_ms: i64) -> ShellRunProjection {
+        ShellRunProjection {
+            run_id: run_id.to_string(),
+            command: command.to_string(),
+            cwd: "/tmp".to_string(),
+            origin: "bang".to_string(),
+            status: "exited".to_string(),
+            started_at_ms: Some(started_at_ms),
+            completed_at_ms: Some(started_at_ms + 1_200),
+            exit_code: Some(0),
+        }
+    }
+
+    fn app_with_published_runs(runs: Vec<ShellRunProjection>) -> App {
+        let mut app = App::new_for_testing("/tmp".into());
+        let mut snapshot = SessionProjectionSnapshot::empty("sess", "proj", "ws");
+        for run in runs {
+            snapshot.upsert_shell_run(run);
+        }
+        app.projection_client.controller_mut().install_subscription(
+            ProjectionSubscriptionId::new("sub-1"),
+            ProjectionStreamDescriptor {
+                stream_id: ProjectionStreamId::new("stream-1").expect("a valid stream id"),
+                kind: ProjectionStreamKind::Session,
+                project_id: "proj".into(),
+                workspace_id: Some("ws".into()),
+                session_id: Some("sess".into()),
+                projection_version: 1,
+                retention_floor_seq: 0,
+                high_water_seq: 0,
+                latest_checkpoint_seq: None,
+            },
+            snapshot,
+        );
+        app
+    }
+
+    fn toast_text(app: &App) -> String {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|toast| toast.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn shell_list_renders_the_published_runs_in_the_daemons_order() {
+        let mut app = app_with_published_runs(vec![
+            published_run("run-new", "echo newer", 2_000),
+            published_run("run-old", "echo older", 1_000),
+        ]);
+
+        handle_shell_list(&mut app);
+
+        let text = toast_text(&app);
+        let newer = text.find("echo newer").expect("the newer run is listed");
+        let older = text.find("echo older").expect("the older run is listed");
+        assert!(newer < older, "the daemon's order is kept: {text}");
+        let row = text
+            .lines()
+            .find(|line| line.contains("echo newer"))
+            .expect("a row for the newer run");
+        assert!(row.contains("[run-new]"), "the row names the run: {row}");
+        assert!(row.contains("done exit=0 1.2s"), "the row spells it: {row}");
+    }
+
+    #[test]
+    fn shell_list_says_so_when_the_daemon_published_nothing() {
+        let mut app = app_with_published_runs(vec![]);
+
+        handle_shell_list(&mut app);
+
+        let text = toast_text(&app);
+        assert!(
+            text.contains("No shell commands in history"),
+            "an empty published list reads as empty: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_list_says_so_when_no_daemon_is_attached() {
+        let mut app = App::new_for_testing("/tmp".into());
+
+        handle_shell_list(&mut app);
+
+        let text = toast_text(&app);
+        assert!(
+            text.contains("daemon's shell command list is unavailable"),
+            "an unattached projection is named, not faked: {text}"
+        );
+    }
+
+    fn local_entry(app: &mut App, local_id: u64, command: &str) {
+        let request = crate::shell::types::ShellRequest {
+            id: crate::shell::types::ShellCommandId(local_id),
+            origin: crate::shell::types::ShellOrigin::HumanPromoted,
+            command: command.to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: std::time::Duration::from_secs(300),
+            capture_policy: crate::shell::types::ShellCapturePolicy::StoreAndPromote,
+            env_policy: crate::shell::types::ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&request);
+    }
+
+    fn bind_run(app: &mut App, local_id: u64, run_id: &str) {
+        app.remote_shell_runs.insert(
+            local_id,
+            crate::shell::daemon::RemoteShellRunBinding {
+                run_id: run_id.to_string(),
+                project_id: "proj".to_string(),
+                workspace_id: "ws".to_string(),
+                session_id: Some("sess".to_string()),
+            },
+        );
+    }
+
+    #[test]
+    fn shell_list_marks_the_runs_this_frontend_promoted() {
+        let mut app = app_with_published_runs(vec![
+            published_run("run-promoted", "echo promoted", 2_000),
+            published_run("run-plain", "echo plain", 1_000),
+        ]);
+        local_entry(&mut app, 1, "echo promoted");
+        app.shell_store
+            .mark_promoted(crate::shell::types::ShellCommandId(1));
+        bind_run(&mut app, 1, "run-promoted");
+        local_entry(&mut app, 2, "echo plain");
+        bind_run(&mut app, 2, "run-plain");
+
+        handle_shell_list(&mut app);
+
+        let text = toast_text(&app);
+        let promoted = text
+            .lines()
+            .find(|line| line.contains("echo promoted"))
+            .expect("a row for the promoted run");
+        assert!(
+            promoted.contains("[promoted]"),
+            "the frontend's own marker is overlaid: {promoted}"
+        );
+        let plain = text
+            .lines()
+            .find(|line| line.contains("echo plain"))
+            .expect("a row for the plain run");
+        assert!(
+            !plain.contains("[promoted]"),
+            "an unpromoted run carries no marker: {plain}"
+        );
+    }
+
+    #[test]
+    fn shell_list_leaves_the_marker_off_when_the_run_cannot_be_matched() {
+        let mut app = app_with_published_runs(vec![published_run("run-1", "echo one", 2_000)]);
+        local_entry(&mut app, 1, "echo one");
+        app.shell_store
+            .mark_promoted(crate::shell::types::ShellCommandId(1));
+
+        handle_shell_list(&mut app);
+
+        let text = toast_text(&app);
+        assert!(
+            !text.contains("[promoted]"),
+            "a run with no daemon binding is not claimed: {text}"
+        );
     }
 }

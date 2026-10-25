@@ -113,10 +113,8 @@ impl ProjectionEnvelope {
 }
 
 /// The set of mutations a reducer can apply to a session projection
-/// snapshot.
-///
-/// Variants are intentionally additive: introducing a new variant
-/// MUST NOT cause existing reducers to reject older events.
+/// snapshot. Variants are intentionally additive: a new variant MUST NOT
+/// cause existing reducers to reject older events.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectionEvent {
@@ -384,6 +382,16 @@ pub enum ProjectionEvent {
     ModelSelected { model: String, at: i64 },
     /// Selected agent changed.
     AgentSelected { agent: String, at: i64 },
+    /// A human-shell command run changed.
+    ShellRunUpserted {
+        run: crate::projection::dto::ShellRunProjection,
+        at: i64,
+    },
+    /// The session's tool contracts changed.
+    ToolContractsUpdated {
+        contracts: Vec<crate::projection::dto::ToolContractProjection>,
+        at: i64,
+    },
     /// Projection diagnostic — used by adapters and reducers to
     /// surface impossible or out-of-order transitions without
     /// mutating session state. The reducer appends the diagnostic to

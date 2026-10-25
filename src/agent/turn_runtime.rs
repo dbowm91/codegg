@@ -3,6 +3,7 @@ use std::sync::Arc;
 use futures_util::FutureExt;
 
 use crate::config::schema::Config;
+use crate::core::session_tool_contracts::SessionToolContractStore;
 use crate::error::AppError;
 use crate::provider::{ChatRequest, ProviderRequestContext, ResponseFormat};
 
@@ -109,6 +110,8 @@ pub struct TurnRunInput {
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
     /// Event log for publishing turn lifecycle events to remote clients.
     pub event_log: Arc<super::super::core::event_log::EventLog>,
+    /// Daemon-owned store of the session's own tool contracts.
+    pub session_tool_contracts: Arc<SessionToolContractStore>,
     /// Unique identifier for this turn, used in event publishing.
     pub turn_id: String,
     /// Shared LSP service for injecting LSP context into the system prompt.
@@ -289,6 +292,41 @@ pub fn turn_usage_from_run(
     }
 }
 
+/// The session's tool-contract summary, taken from the registry the turn
+/// runs against.
+///
+/// The strings are the ones the TUI's `/tool-contracts` renders: the
+/// caller policy as `direct`, `direct+program` or `program-only`, and the
+/// effect class, the idempotency class and the implementation id in their
+/// `Debug` form.
+pub fn tool_contract_projections(
+    registry: &crate::tool::ToolRegistry,
+) -> Vec<crate::protocol::projection::dto::ToolContractProjection> {
+    use crate::protocol::projection::dto::ToolContractProjection;
+    use crate::tool::contract::ToolCallerPolicy;
+
+    let broker = crate::tool::ToolBroker::new(registry);
+    let catalog = broker.catalog();
+    let mut names: Vec<&str> = catalog.tool_names().collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|name| catalog.get(name))
+        .map(|contract| ToolContractProjection {
+            name: contract.name.clone(),
+            caller_policy: match contract.caller_policy {
+                ToolCallerPolicy::DirectOnly => "direct",
+                ToolCallerPolicy::DirectOrProgrammatic => "direct+program",
+                ToolCallerPolicy::ProgrammaticOnly => "program-only",
+            }
+            .to_string(),
+            effect_class: format!("{:?}", contract.effect_class),
+            idempotency: format!("{:?}", contract.idempotency),
+            implementation_id: contract.implementation_id.clone(),
+        })
+        .collect()
+}
+
 /// The turn runtime trait abstracts the full agent turn lifecycle.
 #[async_trait::async_trait]
 // Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
@@ -362,6 +400,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             subagent_pool,
             memory_store,
             event_log,
+            session_tool_contracts,
             turn_id,
             lsp_service: _,
             document_service,
@@ -405,12 +444,8 @@ impl TurnRuntime for DefaultTurnRuntime {
         if let Err(error) = notification_service.recover_from_pool().await {
             tracing::warn!(error = %error, "failed to recover tool-program notifications");
         }
-        // M001/C001: generic job terminal notices share the daemon pool.
-        // C001 singleton: when the daemon injected its lifetime-owned handle,
-        // reuse it (pointer identity); otherwise fall back to per-turn
-        // construction for legacy/test turns. The shared handle keeps
-        // watchers live across turn close and prevents competing scheduler
-        // notification pointers.
+        // M001/C001: generic job terminal notices share the daemon pool; the
+        // injected daemon handle is reused by pointer identity.
         let job_notification_service = match shared_job_notification_service {
             Some(shared) => shared,
             None => Arc::new(match pool.clone() {
@@ -429,11 +464,8 @@ impl TurnRuntime for DefaultTurnRuntime {
                 .await;
         }
         // M004/C001: daemon-owned CI watch service over the same pool and the
-        // M001 notifier (terminal watches reuse the verified notice/lease
-        // machinery). C001 reuses the daemon singleton when injected; the
-        // fallback constructs a per-turn instance for legacy/test paths. No
-        // pool (headless exec) degrades to in-memory rows for the turn
-        // lifetime; production daemons always have a pool.
+        // M001 notifier. The daemon singleton is reused when injected; the
+        // fallback constructs a per-turn instance for legacy/test paths.
         let ci_watch_service = match shared_ci_watch_service {
             Some(shared) => shared,
             None => Arc::new(match pool.clone() {
@@ -458,19 +490,15 @@ impl TurnRuntime for DefaultTurnRuntime {
         let is_semantic_model = semantic_router.has_virtual_model(&model);
         let execution_model = if let Some(router) = semantic_router.registry().get(&model) {
             // The default route supplies the already-selected execution
-            // provider for this turn. The selector provider is a read-only
-            // dependency used only by SemanticRouter::resolve; it must never
-            // become the concrete request provider by virtue of its prefix.
+            // provider; the selector provider is read-only.
             router.default_model.clone()
         } else {
             model.clone()
         };
         // Provider identity is read through the one helper that knows the
-        // runtime `<provider>/<model>` grammar. A durable model id carries
-        // the connection-scoped provider kind, which may arrive in its
-        // storage-key form (`other:opencode_go`) — neither that key nor a
-        // bare string split is a registry id, so there is no "default to
-        // openai" fallback to fall into: an empty segment is simply unknown.
+        // runtime `<provider>/<model>` grammar; a durable model id carries
+        // the connection-scoped provider kind (`other:opencode_go`), which
+        // is not a registry id.
         let provider_name =
             crate::core::session_selection::runtime_model_provider_segment(&execution_model)
                 .to_string();
@@ -479,10 +507,9 @@ impl TurnRuntime for DefaultTurnRuntime {
             None => execution_model.clone(),
         };
 
-        // The registry is built under this turn's credential authority, so
-        // registration happens after the provider this turn will actually
-        // call is known: the connection binding pins its own account, and an
-        // unbound turn refuses an ambiguous store instead of guessing.
+        // The registry is built under this turn's credential authority: the
+        // connection binding pins its own account, and an unbound turn
+        // refuses an ambiguous store instead of guessing.
         let mut registry = crate::provider::ProviderRegistry::new();
         crate::provider::register_builtin_with_config_for_turn(
             &mut registry,
@@ -550,9 +577,8 @@ impl TurnRuntime for DefaultTurnRuntime {
         let (search_runtime_base, _search_report) =
             crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
 
-        // Derive one coherent turn-scoped MCP view before constructing either
-        // native tools or the agent loop. Resource discovery and ordinary
-        // search wrappers must observe the same active plugin contributions.
+        // Derive one turn-scoped MCP view before the native tools or the agent
+        // loop, so both observe the same plugin contributions.
         let configured_mcp_service = search_runtime_base.mcp();
         let mcp_service = if let Some(global_mcp) = configured_mcp_service {
             let configured = global_mcp.read().await.clone_configured_servers();
@@ -609,12 +635,8 @@ impl TurnRuntime for DefaultTurnRuntime {
                 },
                 search_runtime: Some(search_runtime.clone()),
                 // Hand the research tool this turn's own provider and model
-                // (the same ones the title background task reuses at
-                // `title_provider`) so evidence extraction, claim
-                // construction, and semantic verification run model-backed
-                // instead of degrading to their deterministic fallbacks.
-                // `clone_box` + `Arc::from` converts the turn's boxed
-                // provider into the shared handle `with_provider` takes.
+                // (the ones the title background task reuses) so evidence
+                // extraction and semantic verification stay model-backed.
                 research_provider: Some(Arc::from(provider.clone_box())),
                 research_model: Some(model.clone()),
                 // M005: thread the daemon-resolved sandbox profile into
@@ -649,6 +671,21 @@ impl TurnRuntime for DefaultTurnRuntime {
                 ));
             }
         }
+
+        // The registry is complete: the contracts the turn runs against are
+        // recorded for the daemon and published for every subscriber.
+        let contracts = tool_contract_projections(&tool_registry);
+        session_tool_contracts.set(&session_id, contracts.clone());
+        event_log
+            .publish(
+                Some(session_id.clone()),
+                Some(turn_id.clone()),
+                crate::protocol::core::CoreEvent::ToolContractsUpdated {
+                    session_id: session_id.clone(),
+                    contracts,
+                },
+            )
+            .await;
 
         // ── Memory context ───────────────────────────────────────────
         let memory_context = memory_store
@@ -686,11 +723,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                 crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone())
             })?;
 
-        // SecurityReview is a host-owned preparation stage layered over the
-        // ordinary AgentLoop. It supplies bounded deterministic evidence and
-        // turns the same evidence into task-aware LSP context. Provider
-        // streaming, tools, permissions, cancellation, and scheduling remain
-        // owned by the normal loop below.
+        // SecurityReview is a host-owned preparation stage over the ordinary
+        // AgentLoop: it supplies bounded deterministic evidence and turns it
+        // into task-aware LSP context.
         let mut lsp_context_input = lsp_context_input;
         let security_bundle = if selected_agent.runtime_kind
             == Some(crate::agent::AgentRuntimeKind::SecurityReview)
@@ -739,10 +774,8 @@ impl TurnRuntime for DefaultTurnRuntime {
             None
         };
 
-        // Research is a host-owned bounded coordinator layered over the same
-        // AgentLoop. The plan is deterministic and only describes the
-        // evidence work; the ordinary task tool, scheduler, permissions, and
-        // cancellation remain authoritative for any child execution.
+        // Research is a host-owned bounded coordinator over the same AgentLoop.
+        // The plan only describes the evidence work.
         let research_plan =
             if selected_agent.runtime_kind == Some(crate::agent::AgentRuntimeKind::Research) {
                 let question = latest_user_question(&messages_dto)
@@ -815,8 +848,6 @@ impl TurnRuntime for DefaultTurnRuntime {
             })
             .unwrap_or_default();
         // Collect every behavior-affecting runtime context before compilation.
-        // PromptCompiler owns the only flattening step; the block metadata is
-        // retained in the compiler fingerprint used by ContextPlan.
         let mut runtime_blocks = Vec::new();
         runtime_blocks.push(crate::agent::prompt::PromptBlock::required(
             crate::agent::prompt::PromptBlockKind::CapabilityContract,
@@ -860,8 +891,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         }
 
         // Current-state projection (M002 §6.8): typed Goal fields are the
-        // authority; the append-only journal contributes a bounded latest
-        // tail, never the stale head prefix.
+        // authority.
         let goal_context = if let Some(ref p) = pool {
             let goal_store = crate::goal::GoalStore::new(p.clone());
             match goal_store.active_for_session(&session_id).await {
@@ -944,8 +974,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 agents: &agents,
                 is_plan_mode: plan_mode,
                 snapshot: asset_snapshot.as_deref(),
-                // The mutable runtime pin is owned by AgentLoop; the
-                // immutable snapshot remains the compiler's asset identity.
+                // The mutable runtime pin is owned by AgentLoop.
                 pin: pin.as_ref(),
                 execution: Some(&execution),
                 adapter_fingerprint: Some(&resolved_adapter.fingerprint),
@@ -965,14 +994,11 @@ impl TurnRuntime for DefaultTurnRuntime {
         let title_is_specialized = selected_agent.name == crate::agent::title::TITLE_AGENT_NAME
             || selected_agent.runtime_kind == Some(crate::agent::AgentRuntimeKind::Title);
 
-        // Early async title: name the session while the turn still runs.
-        // A long agentic turn can take minutes; waiting for `Ok(events)`
-        // would leave every fresh session "Untitled" for the whole run.
-        // This attempt uses the user excerpt only and never blocks or
-        // fails the turn. The post-completion trigger below retries with
-        // the full assistant output if this attempt loses: the helper
-        // re-checks the stored title before writing, so the loser is a
-        // silent no-op and a raced manual rename always wins.
+        // Early async title: name the session while the turn still runs — a
+        // long agentic turn can take minutes, and waiting would leave every
+        // fresh session "Untitled" for the whole run. This attempt uses the
+        // user excerpt only; the retry below uses the full assistant output,
+        // and the helper re-checks the stored title so a manual rename wins.
         if !title_is_specialized {
             if let Some(pool) = title_pool.clone() {
                 if !title_user_excerpt.trim().is_empty() {
@@ -1098,8 +1124,8 @@ impl TurnRuntime for DefaultTurnRuntime {
         let m004_lsp_scope_for_spawn = m004_lsp_scope;
         let title_model = request.model.clone();
         tokio::spawn(async move {
-            // A panic inside the agent-loop task must not vanish with the
-            // detached JoinHandle: catch it, log it, and surface TurnFailed.
+            // A panic in the agent-loop task must not vanish: catch it and
+            // surface TurnFailed.
             let outcome = std::panic::AssertUnwindSafe(async {
                 let result = agent_loop.run(request).await;
                 result.and_then(|events| {
@@ -1127,11 +1153,10 @@ impl TurnRuntime for DefaultTurnRuntime {
             match result {
                 Err(e) => {
                     tracing::error!("Agent loop error: {}", e);
-                    // The category and the usage are attached HERE, not in
-                    // the daemon: this is the only place that still knows
-                    // what the failure was and what the run had already
-                    // spent. The message keeps the provider text for the
-                    // local transcript; the category never carries it.
+                    // The category and the usage are attached HERE: this is
+                    // the only place that still knows what the failure was
+                    // and what the run had spent. The message keeps the
+                    // provider text; the category never carries it.
                     let failure_category = classify_turn_failure(&e);
                     let failure_usage = turn_usage_from_run(&agent_loop.run_usage());
                     event_log_for_spawn
@@ -1154,16 +1179,11 @@ impl TurnRuntime for DefaultTurnRuntime {
                     );
                 }
                 Ok(events) => {
-                    // Usage rides along on the completion event: the TUI
-                    // footer is the only consumer that crosses the process
-                    // boundary, and `AppEvent::AgentFinished` is deliberately
-                    // not mapped there (see `core::map_app_event_to_core_event`).
+                    // Usage rides along on the completion event: the TUI footer
+                    // is the only consumer that crosses the process boundary.
                     let (stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                         crate::agent::turn_completion::turn_usage(&events);
-                    // The resolved context window travels with the usage:
-                    // the footer percentage is measured against it, and
-                    // without it the meter has no denominator and can only
-                    // show "unknown" for a model it cannot guess at.
+                    // The resolved context window travels with the usage.
                     let context_limit = agent_loop.context_limit();
                     event_log_for_spawn
                         .publish(
@@ -1181,13 +1201,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                             },
                         )
                         .await;
-                    // Title-agent auto-naming retry: best-effort
-                    // background title when the session still carries
-                    // the creation default (i.e. the early turn-start
-                    // attempt above did not win). Retries with the full
-                    // assistant output. Never blocks or fails the turn;
-                    // the title helper re-checks the stored title before
-                    // writing so a raced manual rename wins.
+                    // Title-agent auto-naming retry: best-effort background
+                    // title when the session still carries the creation default.
+                    // It never fails the turn, and a manual rename still wins.
                     if !title_is_specialized {
                         if let Some(pool) = title_pool {
                             let terminal =
@@ -1777,13 +1793,9 @@ mod tier_resolution_tests {
     #[test]
     fn turn_runtime_truncation_notes_visible_for_small_model() {
         // Small tier must keep truncation notes visible — Small is a
-        // content-breadth filter, not a verbosity filter. We assert
-        // this at the renderer level (the wiring that actually
-        // exercises Small in the production path) by constructing an
-        // `LspContextRenderConfig` with `model_tier: Small` (the same
-        // shape the runtime produces when `model_tier_for_profile`
-        // returns Small for a tool-fragile model) and rendering a
-        // packet that carries truncation notes.
+        // content-breadth filter, not a verbosity filter — so we assert it
+        // at the renderer level with the `model_tier: Small` config the
+        // runtime produces for a tool-fragile model.
         use egglsp::context::{
             LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
             LspContextRequest, LspContextScore, LspContextTruncation, LspEvidenceFreshness,
@@ -1993,6 +2005,75 @@ mod tier_resolution_tests {
         assert!(
             none.is_none(),
             "status-only path with no clients must return None, got {none:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tool_contract_summary_tests {
+    use super::*;
+    use crate::tool::contract::{
+        IdempotencyClass, ToolCallerPolicy, ToolContract, ToolEffectClass,
+    };
+    use crate::tool::Tool;
+
+    struct ProbeTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ProbeTool {
+        fn name(&self) -> &str {
+            "probe_read"
+        }
+
+        fn description(&self) -> &str {
+            "A read-only probe that pins the published contract strings."
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+        ) -> Result<String, crate::error::ToolError> {
+            Ok("ok".to_string())
+        }
+
+        fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
+            let mut contract = ToolContract::legacy(tool_name, input_schema);
+            contract.caller_policy = ToolCallerPolicy::DirectOrProgrammatic;
+            contract.effect_class = ToolEffectClass::ReadOnly;
+            contract.idempotency = IdempotencyClass::Idempotent;
+            contract.implementation_id = "test/probe_read".to_string();
+            contract
+        }
+    }
+
+    #[test]
+    fn the_recorded_summary_names_the_registrys_own_tools() {
+        let mut registry = crate::tool::ToolRegistry::new();
+        registry.register(ProbeTool);
+
+        let store = SessionToolContractStore::new();
+        store.set("session-probe", tool_contract_projections(&registry));
+
+        let recorded = store.get("session-probe");
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the summary must cover the registry's own tools, got {recorded:?}"
+        );
+        assert_eq!(recorded[0].name, "probe_read");
+        assert_eq!(recorded[0].caller_policy, "direct+program");
+        assert_eq!(recorded[0].effect_class, "ReadOnly");
+        assert_eq!(recorded[0].idempotency, "Idempotent");
+        assert_eq!(recorded[0].implementation_id, "test/probe_read");
+        assert!(
+            ["direct", "direct+program", "program-only"]
+                .contains(&recorded[0].caller_policy.as_str()),
+            "the published caller policy must be one of the three spellings, got {}",
+            recorded[0].caller_policy
         );
     }
 }

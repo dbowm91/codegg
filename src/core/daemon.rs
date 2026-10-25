@@ -30,6 +30,8 @@ pub struct CoreDaemon {
     /// rather than folding it onto a known level.
     pub reasoning_capabilities: crate::protocol::core::ReasoningCapabilitiesDto,
     pub event_log: Arc<super::event_log::EventLog>,
+    /// The daemon-owned summary of each session's own tool contracts.
+    pub session_tool_contracts: Arc<super::session_tool_contracts::SessionToolContractStore>,
     /// M006-B: digest-keyed per-project diagnostics tracking.
     ///
     /// Shared by the publisher and by the `LspDiagnosticsGet` resync
@@ -439,10 +441,9 @@ impl CoreDaemon {
         let authority = self.request_authority_for_client(client_id);
         let principal = authority.principal().clone();
         let Some(pool) = self.pool.clone() else {
-            // Pool-less local daemons have no team state; resolve through
-            // the projection seam's session binding when available so
-            // local observation keeps working without fabricating a
-            // project.
+            // Pool-less local daemons have no team state; resolve through the
+            // projection seam's session binding when available, never
+            // fabricating a project.
             if let Some(seam) = self.projection_seam.as_ref() {
                 if let Some(storage) = seam.project_storage() {
                     if let Ok(Some(record)) = storage.session_binding(session_id).await {
@@ -5994,6 +5995,7 @@ mod tests {
                 Some("s1".into()),
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
+                    summary: None,
                     session_id: "s1".into(),
                     title: None,
                 },
@@ -6034,6 +6036,7 @@ mod tests {
                 Some("s1".into()),
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
+                    summary: None,
                     session_id: "s1".into(),
                     title: None,
                 },
@@ -6078,6 +6081,7 @@ mod tests {
                 Some("s1".into()),
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
+                    summary: None,
                     session_id: "s1".into(),
                     title: None,
                 },

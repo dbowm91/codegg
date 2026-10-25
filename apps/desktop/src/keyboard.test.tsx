@@ -74,6 +74,8 @@ const presentation = (sessionId: string) => ({
   projectId: 'p0',
   workspaceId: 'w0',
   state: 'attached' as const,
+  selectedModel: null,
+  selectedAgent: null,
   turn: {
     turnId: 'turn-1',
     status: 'active',
@@ -104,6 +106,8 @@ const presentation = (sessionId: string) => ({
   worktrees: [],
   runGroups: [],
   convergences: [],
+  shellRuns: [],
+  toolContracts: [],
   recentTurns: [],
   todos: null,
   pendingPermissions: [],

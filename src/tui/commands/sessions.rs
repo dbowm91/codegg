@@ -3169,6 +3169,7 @@ mod tests {
         app.open_dialog(crate::tui::Dialog::Session);
 
         let handled = app.apply_core_event(CoreEvent::SessionUpdated {
+            summary: None,
             session_id: "sess-1".into(),
             title: Some("Fix login redirect loop".into()),
         });
