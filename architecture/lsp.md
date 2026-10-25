@@ -62,7 +62,7 @@ authoritative language server is daemon-owned, and a frontend cannot own
 one. It is also, today, **mostly unserved**.
 
 - **2** forms are served: `/lsp-status` and `/lsp-errors`
-  (`src/core/daemon_commands.rs:538` — one row serves both).
+  (`src/core/daemon_commands.rs:611` — one row serves both).
 - **24** forms have **no daemon request at all**. The daemon owns the
   language server but exposes no request for the preview surface, the
   repair and review surfaces, the cache controls, the restart and stop
