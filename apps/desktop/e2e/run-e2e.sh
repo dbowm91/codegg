@@ -94,6 +94,17 @@ run_phase() {
   local saved_home="$HOME"
   export HOME="$home/fake-home"
   mkdir -p "$HOME"
+  # Resolve the fake home PHYSICALLY. The daemon's managed-scratch
+  # allocator refuses any path that contains a symlinked component
+  # (`src/scratch.rs:911-918` — the scratch tree must not be redirectable),
+  # and it derives the scratch root from the cache directory under HOME.
+  # macOS puts TMPDIR under the `/var` -> `private/var` symlink, so an
+  # unresolved fake home makes the daemon fail the whole turn with
+  # "managed scratch path is not a real directory" before any provider is
+  # called. Only HOME needs to be physical: the phase home itself stays
+  # unresolved because the fixture's temp-scope guard checks it as given.
+  HOME="$(cd "$HOME" && pwd -P)"
+  export HOME
   echo "==> phase $name: home $home"
   "$fixture_bin" serve >"$home/server.log" 2>&1 &
   server_pid=$!
@@ -114,17 +125,17 @@ run_phase() {
     echo "phase $name FAILED" >&2
     status=1
   fi
-  echo "==> phase $name: shutting down fixture"
-  fixture_rpc "$CODEGG_E2E_SOCKET" shutdown >/dev/null 2>&1 || true
-  for _ in $(seq 1 50); do
-    kill -0 "$server_pid" 2>/dev/null || break
-    sleep 0.2
-  done
-  kill -9 "$server_pid" 2>/dev/null || true
-  wait "$server_pid" 2>/dev/null || true
   # Keep the fixture server log and the isolated daemon log beside the
   # runner logs (supplementary artifacts for post-mortems); the phase home
   # itself is always removed.
+  #
+  # These copies MUST happen BEFORE the fixture is shut down: the fixture's
+  # own shutdown removes the whole phase home
+  # (`desktop_e2e_fixture.rs` — `remove_dir_all(&self.home)`), so copying
+  # afterwards silently found nothing and the lane produced NO fixture or
+  # daemon log at all. The mock-model request counter — the discriminator for
+  # a permission that never reaches the human — lives in that file, so a
+  # red hosted run had no way to show it.
   mkdir -p "$app_root/e2e/logs"
   cp "$home/server.log" "$app_root/e2e/logs/$name-fixture.log" 2>/dev/null || true
   if [[ -f "$home/daemon-home/daemon.log" ]]; then
@@ -136,6 +147,14 @@ run_phase() {
   if [[ -f "$app_root/e2e/logs/wdio.log" ]]; then
     cp "$app_root/e2e/logs/wdio.log" "$app_root/e2e/logs/$name-wdio.log" 2>/dev/null || true
   fi
+  echo "==> phase $name: shutting down fixture"
+  fixture_rpc "$CODEGG_E2E_SOCKET" shutdown >/dev/null 2>&1 || true
+  for _ in $(seq 1 50); do
+    kill -0 "$server_pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  kill -9 "$server_pid" 2>/dev/null || true
+  wait "$server_pid" 2>/dev/null || true
   rm -rf "$home"
   unset CODEGG_E2E_HOME CODEGG_E2E_SOCKET CODEGG_DAEMON_HOME CODEGG_E2E_STATE_FILE CODEGG_E2E_WDIO_PORT
   export HOME="$saved_home"

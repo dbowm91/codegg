@@ -41,7 +41,10 @@ name is a SHA-256 digest of the host session identity; allocation is lazy,
 idempotent across reconnect/restart, refuses symlinked path components, and
 uses mode 0700 on Unix. The tree is observable with `codegg daemon
 scratch-usage`, a read-only measurement that changes nothing and does not
-change this contract. The daemon's retention sweep reclaims a session's tree
+change this contract. A tree whose owner record is missing is reclaimed only
+when it holds no entries at all; a tree that holds content cannot be proven
+owned, so it is refused with the reason `ownership_unverifiable` and nothing
+removes it. The daemon's retention sweep reclaims a session's tree
 once that session has been idle past the configured retention window, so
 "disposable" is bounded rather than merely stated: the sweep decides from
 durable timestamps and never walks a tree to decide. Windows inherits the

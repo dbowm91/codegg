@@ -301,6 +301,7 @@ fn refusal_to_dto(refusal: ReclaimRefusal) -> ScratchReclaimRefusalDto {
     match refusal {
         ReclaimRefusal::Symlink => ScratchReclaimRefusalDto::SymbolicLink,
         ReclaimRefusal::NonRegular => ScratchReclaimRefusalDto::NonRegularEntry,
+        ReclaimRefusal::OwnershipUnverifiable => ScratchReclaimRefusalDto::OwnershipUnverifiable,
     }
 }
 
