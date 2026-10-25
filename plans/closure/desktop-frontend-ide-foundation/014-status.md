@@ -384,18 +384,23 @@ verification.
 
 ### 4.2 Hosted
 
-The inherited hosted evidence is the run that was green before the migration's
-later commits:
+The hosted runs this milestone has produced, in order:
 
 | Run | Head | Workflow | Conclusion |
 |---|---|---|---|
-| `40165002199` | `077655a49` | CI / verify | **success** |
+| `40165002199` | `077655a49` | CI / verify | **success** — the migration's first green run, before the later commits |
 | `40165002200` | `077655a49` | Desktop E2E | **success** |
+| `40174346498` | `4e7177708` | Desktop E2E | **success** |
+| `40174346492` | `4e7177708` | Linux M004 process and IPC qualification | **success** |
+| `40174346502` | `4e7177708` | CI / verify | **failure** — the two `tui::commands::interactive_terminal` tests; §4.1 |
 
-The CI run on `4e7177708` **failed** — §4.1 — and the fix's own hosted run is
-recorded on this milestone's own pull-request head. The lanes that qualify
-this milestone are `verify`, `e2e`, `restricted-userns-fails-closed` and
-`process-ipc`.
+The corrective pass's own hosted run is recorded on this milestone's own
+pull-request head, in the same way closure 013 records its own: the run ids
+belong to the pull request, not to this document, and naming them here would
+name a head this commit is not.
+
+The lanes that qualify this milestone are `verify`, `e2e`,
+`restricted-userns-fails-closed` and `process-ipc`.
 
 ## 5. Invariant review
 

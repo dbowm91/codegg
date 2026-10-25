@@ -596,7 +596,7 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 342 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Integration test files | 343 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
 | Guard scripts (all) | 99 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 62 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
@@ -638,6 +638,27 @@ sandbox C005 closure record's last open finding. *Integration test files* is
 **341**, re-measured on the tree with `python3 scripts/measure_overview_counts.py`
 rather than incremented. Every other row was confirmed unchanged by
 measurement.
+
+### Count reconciliation — the M007-D merge with `main` (2026-10-25)
+
+`main` moved to `76b046fd3` (PR #196, the C009 hooks-path disposition) while
+the M007-D branch was open, and three rows moved when the branch absorbed it.
+*Integration test files* is **343** (`tests/*.rs` + `tests/*/*.inc`, with the
+`tests/common/` helper tree excluded — `main`'s **342** plus this line's
+`tests/core_daemon/command_catalog_m007d.inc`). *Guard scripts (all)* is
+**99** (`ls scripts/check_*` — `main`'s **97** plus the command-catalog
+ownership guard and the frontend-action-set guard this line added), and *CI
+guard scripts* is **62** (`main`'s **60** plus the same two, which run in both
+lanes). The *quick* guard count moved **74 → 76**, and the *quick runs 14
+guards CI does not* difference is unchanged at **14** (both new guards run in
+both lanes). `AGENTS.md`'s published counts moved to **76 quick / 62 CI**.
+Every row was re-measured on the merged tree with
+`python3 scripts/measure_overview_counts.py` rather than incremented.
+
+The comment corpus moved **125,249 → 126,485** comment lines and **1,104,302 →
+1,115,299** words, at a **0.1340** ratio. The move is the cost of this line's
+own documentation — the closure record and the command catalog's eight
+architecture documents — not of `main`'s change.
 
 ### Count reconciliation — the C009 hooks-path disposition (2026-10-25)
 
