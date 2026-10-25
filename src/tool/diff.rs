@@ -196,7 +196,9 @@ impl Tool for DiffTool {
     }
 
     fn description(&self) -> &str {
-        "Show differences between two versions of a file. Supports unified diff format."
+        "Show the unified diff between the given original text and the current file at \
+         path. The original parameter is required: pass the full prior file contents; \
+         the tool compares it against the file on disk and truncates long output."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -209,7 +211,7 @@ impl Tool for DiffTool {
                 },
                 "original": {
                     "type": "string",
-                    "description": "Original content (if comparing against a different version)"
+                    "description": "Required: full prior file contents to compare against the file at path"
                 },
                 "line_range": {
                     "type": "object",
@@ -226,7 +228,7 @@ impl Tool for DiffTool {
                     }
                 }
             },
-            "required": ["path"]
+            "required": ["path", "original"]
         })
     }
 

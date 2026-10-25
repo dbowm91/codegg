@@ -126,7 +126,12 @@ impl Tool for GoalUpdateProgressTool {
             .active_for_session(&self.session_id)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?
-            .ok_or_else(|| ToolError::Execution("No active goal".to_string()))?;
+            .ok_or_else(|| {
+                ToolError::Execution(
+                    "No active goal for this session (goal_get reports {\"active\":false}); use todowrite for in-turn steps"
+                        .to_string(),
+                )
+            })?;
 
         let update = GoalProgressUpdate {
             current_phase: input
@@ -219,7 +224,7 @@ impl Tool for GoalRequestCompletionTool {
     }
 
     fn description(&self) -> &str {
-        "Request host verification and completion of the current active goal"
+        "Request host verification and completion of the current active goal. Fails closed with `No active goal` when the host has established none — `goal_get` reports the same state as `{\"active\":false}`; use `todowrite` for in-turn steps instead."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -283,7 +288,12 @@ impl Tool for GoalRequestCompletionTool {
             .active_for_session(&self.session_id)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?
-            .ok_or_else(|| ToolError::Execution("No active goal".to_string()))?;
+            .ok_or_else(|| {
+                ToolError::Execution(
+                    "No active goal for this session (goal_get reports {\"active\":false}); use todowrite for in-turn steps"
+                        .to_string(),
+                )
+            })?;
 
         let proposal = match GoalCompletionProposal::from_request(CompletionRequest {
             evidence: evidence.to_string(),

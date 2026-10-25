@@ -669,6 +669,29 @@ fn build_report(
         })
         .collect();
 
+    // The dispatched `cargo` argv resolved to a `rustup` toolchain shim
+    // (PATH resolves `cargo` to the shim while the agent shell finds
+    // `~/.cargo/bin/cargo`), so no test binary ever ran. Shim usage text
+    // mimics cargo/clap error prefixes — without this the run reports
+    // `rust_compile_error` on code that was never compiled. Lead with a
+    // spawn-class entry that names the environment cause and the fix.
+    if parse_state.toolchain_shim_seen {
+        failures.insert(
+            0,
+            crate::test_runner::types::TestFailure {
+                name: Some("toolchain-shim".to_string()),
+                file: None,
+                line: None,
+                message: "test dispatch executed a rustup shim instead of cargo \
+                    (saw rustup usage / '[+toolchain]' in output); not a compile error in \
+                    the code under test. Resolve the real cargo binary before dispatch \
+                    (e.g. ~/.cargo/bin/cargo) and retry"
+                    .to_string(),
+                failure_class: FailureClass::SpawnError,
+            },
+        );
+    }
+
     if failures.is_empty() && exit_code != Some(0) && status != TestStatus::Passed {
         failures.push(crate::test_runner::types::TestFailure {
             name: None,
@@ -706,6 +729,10 @@ fn build_report(
 }
 
 fn build_summary(parse_state: &TestParseState, exit_code: Option<i32>) -> String {
+    if parse_state.toolchain_shim_seen && parse_state.tests_seen == 0 {
+        return "environment error: dispatched `cargo` resolved to a rustup shim; no tests ran"
+            .into();
+    }
     if parse_state.tests_seen == 0 && parse_state.tests_passed == 0 && parse_state.tests_failed == 0
     {
         return match exit_code {

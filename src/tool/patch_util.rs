@@ -21,7 +21,7 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
         saw_hunk = true;
         let old_start = parse_hunk_old_start(line).ok_or_else(|| {
             format!(
-                "invalid hunk header at patch line {}: expected @@ -<line>[,<count>] +<line>[,<count>] @@",
+                "invalid hunk header at patch line {}: expected @@ -<line>[,<count>] +<line>[,<count>] @@ (e.g. \"@@ -1,3 +1,3 @@\"); mode=update takes a unified diff, not a \"*** Begin Patch ***\" wrapper",
                 patch_idx + 1
             )
         })?;
@@ -80,7 +80,7 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
     }
 
     if !saw_hunk {
-        return Err("patch does not contain any hunks".to_string());
+        return Err("patch does not contain any hunks: mode=update takes a unified diff with @@ -<line>[,<count>] +<line>[,<count>] @@ hunk headers (e.g. \"@@ -1,3 +1,3 @@\"); a \"*** Begin Patch ***\" wrapper alone is not accepted".to_string());
     }
 
     while orig_idx < original_lines.len() {

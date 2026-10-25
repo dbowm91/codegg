@@ -71,12 +71,14 @@ impl Tool for BatchFetchTool {
                             "max_cache_age_seconds": { "type": "integer", "minimum": 0, "maximum": 2592000 }
                         }
                     },
-                    "description": "Tagged web or repository fetch items; must be non-empty"
+                    "description": "Tagged web or repository fetch items; must be non-empty. Every count/size field \
+                     (line_start, line_end, context_before, context_after, max_chars) is an integer count: \
+                     whole-valued floats (500.0) are coerced to that integer; fractional values are rejected."
                 },
                 "max_items": { "type": "number", "description": "Maximum items" },
                 "max_chars_per_item": {
                     "type": "number",
-                    "description": "Maximum characters per item (default: 10000, max: 50000)"
+                    "description": "Maximum characters per item; whole-valued floats (e.g. 500.0) are accepted as the integer (default: 10000, max: 50000)"
                 },
                 "max_total_chars": { "type": "number", "description": "Aggregate character budget" },
                 "continue_on_error": { "type": "boolean", "description": "Continue after an item failure" }

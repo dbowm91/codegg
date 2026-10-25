@@ -106,8 +106,20 @@ impl Tool for JobTool {
             .unwrap_or("unknown")
             .to_string();
         let success = !matches!(status.as_str(), "failed" | "timed_out" | "denied" | "error");
+        // The pre-change output was a bare `job <status>` with the summary
+        // only in the structured value, so background-job stdout was not
+        // retrievable from the transcript. Surface the bounded terminal
+        // summary (or the still-running hint) inline.
+        let mut output = format!("job {status}");
+        if let Some(summary) = value.get("summary").and_then(|s| s.as_str()) {
+            if !summary.is_empty() {
+                output.push_str(&format!("\n{summary}"));
+            }
+        } else if let Some(message) = value.get("message").and_then(|s| s.as_str()) {
+            output.push_str(&format!("\n{message}"));
+        }
         Ok(StructuredToolResult {
-            output: format!("job {status}"),
+            output,
             value: Some(value),
             success,
             provenance: Some(ToolProvenance {

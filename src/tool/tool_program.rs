@@ -155,8 +155,11 @@ impl Tool for ToolProgramTool {
     fn description(&self) -> &str {
         "Submit a read-only program that calls tools. The program is compiled to a safe IR, \
          validated against the tool manifest, and executed in a sandboxed interpreter. \
-         Only read-only and deterministic tools may be called. Intermediate tool call outputs \
-         stay in the program artifact ledger and do not enter the parent transcript."
+         Only tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
+         read-only effect class (ReadOnly, ReadValidate, SafeRepeat) may be called; \
+         DirectOnly tools (e.g. path_normalize) and mutating tools are rejected. \
+         Intermediate tool call outputs stay in the program artifact ledger and do not \
+         enter the parent transcript."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -174,8 +177,10 @@ impl Tool for ToolProgramTool {
                 "tools": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Tool names this program may call. All tools must be \
-                        in the read-only palette and have output schemas."
+                    "description": "Tool names this program may call. All tools must hold \
+                        a DirectOrProgrammatic or ProgrammaticOnly caller policy with a \
+                        read-only effect class (ReadOnly, ReadValidate, or SafeRepeat) \
+                        and have output schemas."
                 },
                 "description": {
                     "type": "string",
@@ -279,8 +284,25 @@ impl Tool for ToolProgramTool {
             .unwrap_or("unknown")
             .to_string();
         let success = matches!(display.as_str(), "completed" | "submitted");
+        // A bare `program status: failed` leaves agents with nothing to
+        // debug (no contract predicate, no source diagnostic). Surface
+        // the recorded error/output inline so the failure is actionable
+        // without a second round-trip.
+        let mut output = format!("program status: {display}");
+        if !success {
+            if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+                output.push_str(&format!("\nerror: {error}"));
+            } else if let Some(detail) = value.get("output").and_then(|o| o.as_str()) {
+                output.push_str(&format!("\noutput: {detail}"));
+            }
+            output.push_str(
+                "\nOnly tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
+                 read-only effect class (ReadOnly, ReadValidate, SafeRepeat) may be called; \
+                 DirectOnly and mutating tools are rejected.",
+            );
+        }
         Ok(StructuredToolResult {
-            output: format!("program status: {}", display),
+            output,
             value: Some(value),
             success,
             provenance: Some(ToolProvenance {

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::json;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use crate::agent::EMERGENCY_DEFAULT_MODEL;
 use crate::config::schema::Config;
@@ -41,7 +42,27 @@ impl ReviewTool {
         self
     }
 
-    async fn get_diff(&self, staged: bool) -> Result<String, ToolError> {
+    /// Effective repository root: the broker execution-context cwd
+    /// (workspace root installed by `BrokerAdapter`) when it names a
+    /// directory, else the registry-installed tool root. A context-free
+    /// direct call with no installed root fails closed with the
+    /// workspace-root error rather than reading the daemon's cwd.
+    /// `git_query` resolves the same way; the earlier asymmetry (where
+    /// `review` ignored the context) is removed.
+    fn effective_root(&self, ctx: Option<&ToolExecutionContext>) -> PathBuf {
+        if let Some(context) = ctx {
+            if context.cwd.is_dir() {
+                return context.cwd.clone();
+            }
+        }
+        self.workdir.clone()
+    }
+
+    async fn get_diff_with_context(
+        &self,
+        staged: bool,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let svc = GitExecutionService::new();
         let operation = if staged {
             GitOperation::DiffStaged {
@@ -58,8 +79,9 @@ impl ReviewTool {
                 paths: Vec::new(),
             }
         };
+        let root = self.effective_root(ctx);
         let result = svc
-            .execute(&operation, &self.workdir)
+            .execute(&operation, &root)
             .await
             .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
         // Prefer the typed DiffText payload; fall back to stdout when the
@@ -204,7 +226,10 @@ impl Tool for ReviewTool {
     }
 
     fn description(&self) -> &str {
-        "Read-only tool that analyzes git diff and provides structured code review feedback"
+        "Read-only tool that analyzes the git diff for the session workspace and provides \
+         structured code review feedback. Reads the working-tree diff through the \
+         session workspace root, not the process cwd; fails when no workspace is \
+         bound (use git_query status to check the binding)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -250,7 +275,7 @@ impl ReviewTool {
         context: Option<&ToolExecutionContext>,
     ) -> Result<String, ToolError> {
         let staged = input["staged"].as_bool().unwrap_or(true);
-        let diff = self.get_diff(staged).await?;
+        let diff = self.get_diff_with_context(staged, context).await?;
         let provider_context = provider_request_context(context);
         let review = self
             .analyze_diff_with_context(&diff, provider_context)

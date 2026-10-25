@@ -173,7 +173,7 @@ impl Tool for TerminalTool {
     }
 
     fn description(&self) -> &str {
-        "Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Bash is the canonical model shell; human interactive terminals run in the TUI over the daemon interactive-process service"
+        "Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Command plus args join verbatim with spaces and run via `sh -c` — quote a `sh -c` script inside `command` (args are not re-quoted); stdout and stderr are both returned followed by `[exit code: N]`. Bash is the canonical model shell — prefer it for pipelines; human interactive terminals run in the TUI over the daemon interactive-process service"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -404,6 +404,13 @@ mod tests {
             "printf --label café"
         );
         assert_eq!(TerminalTool::effective_script("true", &[]), "true");
+        // Args join verbatim with spaces: a `sh -c` script must arrive
+        // quoted inside `command` (or as one pre-quoted arg), because
+        // `sh -c echo hi` runs `echo` with `$0=hi` and prints nothing.
+        assert_eq!(
+            TerminalTool::effective_script("sh", &["-c".to_string(), "echo hi".to_string()]),
+            "sh -c echo hi"
+        );
     }
 
     #[test]

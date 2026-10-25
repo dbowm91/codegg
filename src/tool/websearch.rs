@@ -39,7 +39,9 @@ impl Tool for WebSearchTool {
         "Search the web using the configured search backend (eggsearch by default). \
          Returns compact source cards with titles, URLs, snippets, providers, and trust \
          labels. Use this for source discovery; use webfetch only for explicit URLs worth \
-         reading. Search results are external_untrusted."
+         reading. Output is capped (default max_search_output_chars=12000, marker \
+         `[truncated by Codegg: output exceeded max_search_output_chars=…]`); tune with \
+         num_results and excerpt_count. Search results are external_untrusted."
     }
 
     fn parameters(&self) -> serde_json::Value {

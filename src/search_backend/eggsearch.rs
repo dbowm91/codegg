@@ -27,6 +27,30 @@ const EGGSEARCH_MAX_CACHE_AGE_SECONDS: u64 = 2_592_000;
 /// `eggsearch_unavailable` instead of consulting a process-global slot.
 pub(crate) type McpHandle = std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpService>>;
 
+/// Read a whole-valued JSON number as `u64`.
+///
+/// Model-facing count/size fields are declared `"type": "number"` (see
+/// `crate::tool::util::json_usize`), so a model that follows the schema
+/// literally sends `500.0` for a count. `Value::as_u64()` rejects that,
+/// which made `batch_fetch` fail on `500.0` while other `repo_*` paths
+/// silently defaulted. Accept whole-valued floats (`500.0` → `500`);
+/// still reject fractional values (`1.5`), negatives, and non-finite
+/// numbers rather than rounding caller bugs away.
+fn tolerant_u64(value: &Value) -> Option<u64> {
+    let number = value.as_number()?;
+    if let Some(exact) = number.as_u64() {
+        return Some(exact);
+    }
+    let float = number.as_f64()?;
+    if !float.is_finite() || float < 0.0 || float.fract() != 0.0 {
+        return None;
+    }
+    if float > u64::MAX as f64 {
+        return None;
+    }
+    Some(float as u64)
+}
+
 fn copy_fields(args: &mut Value, input: &Value, fields: &[&str]) {
     for field in fields {
         if let Some(value) = input.get(*field).filter(|value| !value.is_null()) {
@@ -73,9 +97,8 @@ fn optional_u64_in_range(
     let Some(value) = input.get(field).filter(|value| !value.is_null()) else {
         return Ok(None);
     };
-    let number = value
-        .as_u64()
-        .ok_or_else(|| ToolError::Execution(format!("'{field}' must be a non-negative integer")))?;
+    let number = tolerant_u64(value)
+        .ok_or_else(|| ToolError::Execution(format!("'{field}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)")))?;
     if let Some(maximum) = maximum {
         if number > maximum {
             return Err(ToolError::Execution(format!(
@@ -272,14 +295,14 @@ fn add_repository_locator(args: &mut Value, locator: RepositoryLocator) {
 }
 
 fn range_alias(input: &Value, current: &str, legacy: &str) -> Result<Option<u64>, ToolError> {
-    let current_value = input.get(current).and_then(Value::as_u64);
-    let legacy_value = input.get(legacy).and_then(Value::as_u64);
+    let current_value = input.get(current).and_then(tolerant_u64);
+    let legacy_value = input.get(legacy).and_then(tolerant_u64);
     if input
         .get(current)
         .is_some_and(|_value| current_value.is_none())
     {
         return Err(ToolError::Execution(format!(
-            "'{current}' must be a non-negative integer"
+            "'{current}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)"
         )));
     }
     if input
@@ -287,7 +310,7 @@ fn range_alias(input: &Value, current: &str, legacy: &str) -> Result<Option<u64>
         .is_some_and(|_value| legacy_value.is_none())
     {
         return Err(ToolError::Execution(format!(
-            "'{legacy}' must be a non-negative integer"
+            "'{legacy}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)"
         )));
     }
     if let (Some(current_value), Some(legacy_value)) = (current_value, legacy_value) {
@@ -310,7 +333,7 @@ fn build_web_search_args(input: &Value) -> Result<Value, ToolError> {
     let max_results = input
         .get("num_results")
         .or_else(|| input.get("max_results"))
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(8)
         .min(30);
     let mut args = json!({"query": query, "max_results": max_results});
@@ -343,7 +366,7 @@ fn build_web_fetch_args(input: &Value) -> Result<Value, ToolError> {
     let max_chars = input
         .get("max_length")
         .or_else(|| input.get("max_chars"))
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10_000);
     let mut args = json!({"url": url, "max_chars": max_chars});
     args["extract_mode"] = input
@@ -539,8 +562,8 @@ fn build_batch_fetch_args(input: &Value) -> Result<Value, ToolError> {
 fn bounded_u64(input: &Value, field: &str, default: u64, cap: u64) -> Result<u64, ToolError> {
     match input.get(field) {
         None => Ok(default),
-        Some(value) => value.as_u64().map(|value| value.min(cap)).ok_or_else(|| {
-            ToolError::Execution(format!("'{field}' must be a non-negative integer"))
+        Some(value) => tolerant_u64(value).map(|value| value.min(cap)).ok_or_else(|| {
+            ToolError::Execution(format!("'{field}' must be a non-negative integer (whole-valued floats such as 500.0 are accepted)"))
         }),
     }
 }
@@ -823,7 +846,7 @@ pub async fn call_repo_search_structured_with_host_scope(
     translate_provider_list(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10)
         .min(30));
     apply_internal_response_detail(input, &mut args)?;
@@ -994,7 +1017,7 @@ pub async fn call_repo_map_structured_with_host_scope(
     let depth = input
         .get("max_depth")
         .or_else(|| input.get("depth"))
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(2)
         .min(3);
     args["max_depth"] = json!(depth);
@@ -1082,7 +1105,7 @@ pub async fn call_security_search_structured(
     }
     args["max_results"] = json!(input
         .get("max_results")
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10)
         .min(20));
     apply_internal_response_detail(input, &mut args)?;
@@ -1153,7 +1176,7 @@ pub async fn call_research_search_structured(
     translate_legacy_research_domains(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
-        .and_then(Value::as_u64)
+        .and_then(tolerant_u64)
         .unwrap_or(10)
         .min(15));
     apply_internal_response_detail(input, &mut args)?;
@@ -1436,6 +1459,37 @@ pub async fn call_provider_status_with_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_valued_floats_coerce_to_integers() {
+        assert_eq!(tolerant_u64(&json!(500.0)), Some(500));
+        assert_eq!(tolerant_u64(&json!(1.0)), Some(1));
+        assert_eq!(tolerant_u64(&json!(12)), Some(12));
+        assert_eq!(tolerant_u64(&json!(1.5)), None);
+        assert_eq!(tolerant_u64(&json!(-1.0)), None);
+        assert_eq!(tolerant_u64(&json!("500")), None);
+    }
+
+    #[test]
+    fn batch_fetch_bounds_accept_whole_valued_floats() {
+        assert_eq!(
+            bounded_u64(
+                &json!({"max_chars_per_item": 500.0}),
+                "max_chars_per_item",
+                10_000,
+                50_000
+            )
+            .unwrap(),
+            500
+        );
+        assert!(bounded_u64(
+            &json!({"max_chars_per_item": 1.5}),
+            "max_chars_per_item",
+            10_000,
+            50_000
+        )
+        .is_err());
+    }
 
     #[test]
     fn provider_hint_auto_omits_selection() {

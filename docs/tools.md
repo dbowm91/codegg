@@ -436,6 +436,37 @@ codegg doctor providers            # configured providers, read-only
 Inside the TUI, `/tool-backends` reports which tools are disabled and why, and
 `/tool-contracts` reports the registered contracts.
 
+## Which surface to use
+
+Overlapping tools exist because reads, mutations, and plans need different
+authority. The rule is: bounded reads first, then the executor that owns the
+effect.
+
+| Need | Use | Not |
+|------|-----|-----|
+| Git state or history | `git_query` (`status`, `diff`, `log`, `branches`; no `workdir` argument) | `git` (mutations and recovery, needs `workdir`) |
+| Bounded file diff for review | `diff` (requires `path` **and** full prior `original` text) | `review` (LLM synthesis over the working-tree diff) |
+| Run shell text | `bash` (model exec; stdout is projected) | `terminal` (one-shot `sh -c`; args join verbatim, quote scripts inside `command`; stdout+stderr then `[exit code: N]`) |
+| In-turn steps and todos | `todowrite` / `todoread` | `goal_*` (durable session goals), `work_plan_*` (durable plan projection), `work_order` (cross-session future work) |
+| Discover tools or skills | `tool_search` (paged; `query: ""` browses; `name` + `detail=schema` needs no query) | `skill` (loads one skill by exact name; no listing operation) |
+| Call several read-only tools deterministically | `tool_program` (only `DirectOrProgrammatic`/`ProgrammaticOnly` + read-only effect class) | Direct calls (no shared ledger or contract snapshot) |
+
+Counts and sizes are integers: whole-valued floats (`500.0`) are coerced to
+that integer everywhere counts are parsed (`max_items`,
+`max_chars_per_item`, `line_start`, `focus_max_chunks`, `max_results`,
+`max_depth`, `offset`, `limit`, …); fractional values are rejected or fall
+back to the default, so prefer sending integers. Tool
+Programs accept only contracts whose caller policy is `DirectOrProgrammatic`
+or `ProgrammaticOnly` with a read-only effect class (`ReadOnly`,
+`ReadValidate`, `SafeRepeat`); `DirectOnly` and mutating tools are rejected
+with an explicit error.
+
+Search output is capped per tool (defaults: `websearch` 12000,
+`repo_search`/`repo_map` 15000, `research_search` 15000 chars) with a
+`[truncated by Codegg: output exceeded <budget>=…]` marker; tune with
+`max_results`/`num_results` (`websearch`), `max_results` + filters
+(`repo_search`), or `max_results`/`depth` (`research_search`).
+
 ## See also
 
 - `architecture/git.md` — typed Git operations and risk classification

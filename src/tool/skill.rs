@@ -48,7 +48,9 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill (SKILL.md) by name into context. Returns the skill content and list of resource files."
+        "Load a skill (SKILL.md) by name into context. Returns the skill content and list of resource files. \
+         Skills are discovered by exact name from the pinned asset snapshot or the session workspace; there is \
+         no skill-listing operation — find the right name in .opencode/skills/ or docs first."
     }
 
     fn parameters(&self) -> serde_json::Value {

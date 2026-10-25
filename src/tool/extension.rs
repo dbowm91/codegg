@@ -105,7 +105,7 @@ impl Tool for ExtensionSearchTool {
         "extension_search"
     }
     fn description(&self) -> &str {
-        "Search the resolved extension catalog. Results are metadata only; installation requires an explicit host action."
+        "Search the resolved extension catalog. Results are metadata only; installation requires an explicit host action. An empty result means the query matched nothing in the resolved catalog (backend failures error instead of returning empty)."
     }
     fn parameters(&self) -> serde_json::Value {
         json!({"type":"object","properties":{"query":{"type":"string","maxLength":256},"component":{"type":"string","enum":["skill","mcp","tool","browser"]},"limit":{"type":"integer","minimum":1,"maximum":16}},"required":["query"]})
@@ -140,9 +140,9 @@ impl Tool for ExtensionSearchTool {
         }
         let limit = object
             .get("limit")
-            .and_then(|v| v.as_u64())
+            .and_then(crate::tool::util::json_usize)
             .unwrap_or(8)
-            .clamp(1, 16) as usize;
+            .clamp(1, 16);
         let entries = self
             .service
             .search_extensions(query, component, limit)

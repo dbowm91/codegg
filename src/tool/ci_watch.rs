@@ -58,7 +58,7 @@ impl Tool for CiWatchTool {
                 "action": {
                     "type": "string",
                     "enum": ["create", "status", "cancel", "list"],
-                    "description": "Control action. create registers a watch; status reports (and advances when due); cancel stops watching; list shows this session's bounded watches."
+                    "description": "Control action. create registers a watch (requires owner, repo, plus exactly one of run_id or commit_sha); status reports (and advances when due); cancel stops watching; list shows this session's bounded watches."
                 },
                 "owner": {
                     "type": "string",
@@ -112,15 +112,21 @@ impl Tool for CiWatchTool {
         // M005 C005: refuse a process launch under the restricted shared
         // profile, before the tool runs and before any process exists.
         crate::tool::process_admission::admit_tool_process("ci_watch", ctx.as_ref()).await?;
-        let value = self.execute_impl(input, ctx).await?;
-        let status = value
-            .get("state")
-            .and_then(|s| s.as_str())
-            .or_else(|| value.get("status").and_then(|s| s.as_str()))
-            .unwrap_or("unknown")
-            .to_string();
+        let value = self.execute_impl(input.clone(), ctx).await?;
+        let output = if input.get("action").and_then(|a| a.as_str()) == Some("list") {
+            let count = value.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
+            format!("ci watch list: {count} watches")
+        } else {
+            let status = value
+                .get("state")
+                .and_then(|s| s.as_str())
+                .or_else(|| value.get("status").and_then(|s| s.as_str()))
+                .unwrap_or("unknown")
+                .to_string();
+            format!("ci watch {status}")
+        };
         Ok(StructuredToolResult {
-            output: format!("ci watch {status}"),
+            output,
             value: Some(value),
             success: true,
             provenance: Some(ToolProvenance {

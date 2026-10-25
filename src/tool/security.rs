@@ -28,7 +28,7 @@ impl Tool for SecurityTool {
     }
 
     fn description(&self) -> &str {
-        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles."
+        "Deterministic security scanning tool. Classifies commands, inspects text/files, and runs security profiles. Shapes differ per action: classify_command returns a classification (risk/categories verdict); inspect_text/inspect_file/run_profile return a SecurityReport envelope (profile/findings/summary)."
     }
 
     fn parameters(&self) -> serde_json::Value {

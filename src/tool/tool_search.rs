@@ -232,7 +232,7 @@ impl Tool for ToolSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query to find relevant tools (searches name and description)"
+                    "description": "Search query to find relevant tools (searches name and description). Optional when name plus detail=schema is supplied for an exact lookup; otherwise required (use query='' to browse)."
                 },
                 "name": {
                     "type": "string",
@@ -255,7 +255,7 @@ impl Tool for ToolSearchTool {
                     "description": "Maximum compact descriptors to return (default 10, maximum 50)"
                 }
             },
-            "required": ["query"]
+            "required": []
         })
     }
 
@@ -264,19 +264,35 @@ impl Tool for ToolSearchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let query = input["query"]
-            .as_str()
-            .ok_or_else(|| ToolError::Execution("query required".into()))?;
         let exact_name = input["name"]
             .as_str()
             .map(str::trim)
-            .filter(|name| !name.is_empty());
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned);
+        // `query` is optional for an exact `name` + `detail=schema` lookup
+        // (agents asking "give me this tool's schema" should not have to
+        // invent a throwaway query string); every other call still needs
+        // a query, with `""` browsing the authorized set.
+        let query = match input["query"].as_str() {
+            Some(query) => query.to_string(),
+            None if exact_name.is_some() => String::new(),
+            None => {
+                return Err(ToolError::Execution(
+                    "query required (or supply name plus detail=schema for an exact lookup)".into(),
+                ));
+            }
+        };
+        let query = query.as_str();
         let detail = input["detail"].as_str().unwrap_or("summary");
-        let offset = input["offset"].as_u64().unwrap_or(0).min(usize::MAX as u64) as usize;
-        let limit = input["limit"]
-            .as_u64()
-            .unwrap_or(MAX_SEARCH_RESULTS as u64)
-            .clamp(1, MAX_SEARCH_PAGE as u64) as usize;
+        let offset = input
+            .get("offset")
+            .and_then(crate::tool::util::json_usize)
+            .unwrap_or(0);
+        let limit = input
+            .get("limit")
+            .and_then(crate::tool::util::json_usize)
+            .unwrap_or(MAX_SEARCH_RESULTS)
+            .clamp(1, MAX_SEARCH_PAGE);
         if query.len() > MAX_QUERY_BYTES {
             return Err(ToolError::Execution(format!(
                 "query exceeds maximum size of {MAX_QUERY_BYTES} bytes"
@@ -288,8 +304,8 @@ impl Tool for ToolSearchTool {
             ));
         }
 
-        let results = match exact_name {
-            Some(name) => self.catalog.get(name).into_iter().collect(),
+        let results = match &exact_name {
+            Some(name) => self.catalog.get(name.as_str()).into_iter().collect(),
             None if query.trim().is_empty() => self.catalog.list(),
             None => self.catalog.search(query),
         };

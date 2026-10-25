@@ -68,7 +68,12 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Create, update, delete, or move a workspace file. mode=create takes file contents; mode=update takes a unified diff; delete and move use their existing path/rename contracts."
+        "Create, update, delete, or move a workspace file. mode=update takes a unified diff \
+         with one @@ -<start>[,<count>] +<start>[,<count>] @@ hunk header per hunk (e.g. \
+         \"@@ -1,3 +1,3 @@\"); a \"*** Begin Patch ***\" wrapper is not accepted — send bare hunks. \
+         mode=create takes file contents; mode=delete takes no body \
+         (path only; pass an empty string for patch); mode=move takes a rename header (\"rename from <old>\" plus \
+         \"rename to <new>\", or \"--- a/<old>\" plus \"+++ b/<new>\")."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -81,7 +86,7 @@ impl Tool for ApplyPatchTool {
                 },
                 "patch": {
                     "type": "string",
-                    "description": "File contents for mode=create; unified diff for mode=update; rename header for mode=move"
+                    "description": "File contents for mode=create; unified diff with @@ -<start>[,<count>] +<start>[,<count>] @@ hunk headers for mode=update (e.g. \"@@ -1,3 +1,3 @@\"); bare hunks only, no \"*** Begin Patch ***\" wrapper; empty string for mode=delete; \"rename from <old>\" plus \"rename to <new>\" (or \"--- a/<old>\" plus \"+++ b/<new>\") for mode=move"
                 },
                 "mode": {
                     "type": "string",
