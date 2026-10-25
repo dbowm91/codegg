@@ -1071,3 +1071,13 @@ launcher` (run `40205331618`, 30m52s), `Desktop E2E` (run `40205331550`,
 `process-ipc` (30m56s) and `restricted-userns-fails-closed` (14m37s), both on
 run `40205331480`. GitGuardian passed; `git-cost-pilot` and
 `c014-negative-reproduction` are skipped by design.
+
+**PR #186 was merged into `main`.** The pull request was merged at
+**2026-10-25 15:21:15Z** as merge commit `6fe02b161`, whose second parent is
+the merge head `624fde51f`. The sixth and seventh merges went in with it: the
+reconciled published counts, the re-banked comment budget, the new
+reconciliation section in `architecture/overview.md`, and the eighteenth
+amendment in `architecture/count_audit_history.md` are all in `main`. This
+section was appended **after** that merge — the merge landed while the
+reconciliation was still running — so it reaches `main` by a follow-up
+change rather than in PR #186 itself.
