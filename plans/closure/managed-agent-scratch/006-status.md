@@ -325,6 +325,55 @@ Local verification on the same head, on macOS/arm64: `cargo fmt --all
 `cargo test --locked --test scratch_retention_sweep` 4 passed, and
 `cargo test --locked -p codegg-protocol` 289 passed.
 
+### 2026-10-21 — the merged head, and the runs it carries
+
+The entry above names head `011e8d92`, which was the head of PR #154 when
+that entry was written. It is left exactly as written. PR #154 has since
+merged to `main` at 15:38:32 as `9c9ffb76`, carrying head `987f5527` —
+the correction commit plus the evidence commit. The code under test is
+byte-identical to what the runs above exercised. The merged head carries
+its own runs, recorded here so the merged head is not left without
+evidence of its own:
+
+| Run | Workflow | Result |
+|---|---|---|
+| `39613336178` | CI | **success** — 15719 tests run, 15719 passed, 7 skipped; every step green |
+| `39613335838` | Windows process launcher | **success** — managed scratch lifecycle 20 passed / 0 failed |
+| `39613336041` | Desktop E2E | **failure** — pre-existing, not this change |
+| `39612447003` | CI (`workflow_dispatch`) | **success** — 15734 tests run, 15734 passed, 7 skipped |
+| `39612451487` | Windows process launcher (`workflow_dispatch`) | **success** |
+
+The dispatched CI run is a **superset** of the pull-request run: its
+`detect-live-eggwork-changes.sh` step reported `live_required=true`, so the
+live-Eggwork fixtures were built and their tests were included, against
+`live_required=false` on the pull-request run. The 15-run difference
+between 15719 and 15734 is that fixture set, not a code difference.
+
+The dispatched runs exist because the evidence commit touched only
+`plans/**`, which CI's path gate skips. `workflow_dispatch` on `ci.yml` and
+`windows-process-launcher.yml` is the fallback that attaches runs to a head;
+`desktop-e2e.yml` has no `workflow_dispatch` trigger, so its evidence above
+carries over from the code-identical `011e8d92` head.
+
+The merge to `main` then ran the workflows again, on the merged tree itself:
+
+| Run | Workflow | Result |
+|---|---|---|
+| `39627518536` | CI (push to `main`) | **success** — 15734 tests run, 15734 passed, 7 skipped; every step green |
+| `39627518478` | Windows process launcher (push to `main`) | **success** — managed scratch lifecycle 20 passed / 0 failed |
+| `39627518469` | Desktop E2E (push to `main`) | **failure** — pre-existing, not this change |
+
+This is the run that matters most for the record: it is the merged tree,
+not a branch head, and `live_required=true` there means the live-Eggwork
+fixture set was included.
+
+The merged tree was also re-verified locally, on macOS/arm64, at
+`origin/main` = `9c9ffb76`: `cargo fmt --all -- --check` clean,
+`cargo test --locked -p codegg --lib scratch::` 24 passed,
+`cargo test --locked --test scratch_usage_census` 2 passed,
+`cargo test --locked --test scratch_retention_sweep` 4 passed, and
+`cargo test --locked -p codegg-protocol` 289 passed.
+
 ## 14. Handoff notes
 
 - **M007's WP0 can now run.** The census exists, is read-only, and is
