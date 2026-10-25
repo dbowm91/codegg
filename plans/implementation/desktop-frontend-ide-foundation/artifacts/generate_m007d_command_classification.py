@@ -604,10 +604,13 @@ _missing(
 #   `CoreRequest::CommandExecute` and the daemon's inner response.
 # * **mechanical** — the effect request's fields are the scope's plus at
 #   most one argument, so the daemon's effect table can build it. The
-#   encoding is named, so the row is a decision and not a guess.
-# * **not mechanical** — the effect request carries a value the scope and
-#   the argument cannot produce: a runtime cursor, a revision, a free-text
-#   body, a structured payload, or a second effect beside the first.
+#   encoding is named, so the row is a decision and not a guess. The
+#   argument's convention is one token, or a token pair where the second is
+#   a number — `<channel>`, `<channel> <seq>`, `<handle> <from_seq>`.
+# * **not mechanical** — the effect request carries a value that convention
+#   cannot produce: free text, a structured payload, a list, a boolean, or a
+#   second effect beside the first. A runtime *scalar* is not disqualifying;
+#   the argument carries it.
 # * **subsystem move** — the arm is a subsystem in its own right. Moving it
 #   is a milestone with its own ownership question, not a table row.
 # * **misclassified** — the arm's effect is the frontend's own, so the
@@ -640,10 +643,9 @@ _arm(
     "not mechanical",
     "the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review` (M007-H)",
 )
-
-# The collaboration forms. The chat ones carry a runtime value the scope
-# cannot produce: a cursor, a revision, a free-text body, a structured
-# payload, or an idempotency key.
+# The collaboration forms. The chat ones split: three carry a channel and a
+# number, and the argument's convention carries both; the rest carry free
+# text, a structured payload, a list or a second effect.
 _arm(
     "/stop-observing",
     "migrated",
@@ -652,7 +654,7 @@ _arm(
 _arm(
     "/chat-send",
     "not mechanical",
-    "the body is free text, and the request also carries mentions, references and a runtime idempotency key",
+    "the body is free text, and the request also carries mentions, references and a runtime idempotency key — none of which the argument's convention can carry",
 )
 _arm(
     "/chat-reply",
@@ -661,33 +663,33 @@ _arm(
 )
 _arm(
     "/chat-history",
-    "not mechanical",
-    "the arm issues two request shapes (`chat_history` and `chat_history_older`) selected by the negotiated `backward_paging` capability, and one effect-table row per form cannot express that choice",
+    "mechanical",
+    "the arm's newest-window request is `chat_history_older` with an unanchored cursor, which the row can build from `<channel>`; the incapable-daemon fallback stays where it is",
 )
 _arm(
     "/chat-sync",
-    "not mechanical",
-    "`from_seq` is the TUI's cached cursor, and the arm falls back to a history request when the daemon cannot sync",
+    "mechanical",
+    "`ChatSync` takes the channel and the cursor, so the row can build it from `<channel> <from_seq>`",
 )
 _arm(
     "/chat-read",
-    "not mechanical",
-    "`last_read_seq` is a runtime sequence number, not a scope field",
+    "mechanical",
+    "`ChatReadSet` takes the channel and the sequence, so the row can build it from `<channel> <last_read_seq>`",
 )
 _arm(
     "/chat-edit",
     "not mechanical",
-    "the body is free text and `expected_revision` is a runtime revision",
+    "the request carries four values — the channel, the message id, the revision and a free-text body — and the argument's convention has room for two",
 )
 _arm(
     "/chat-redact",
     "not mechanical",
-    "the reason is free text and `expected_revision` is a runtime revision",
+    "the request carries four values — the channel, the message id, the revision and a free-text reason — and the argument's convention has room for two",
 )
 _arm(
     "/chat-composing",
     "not mechanical",
-    "the arm has two effects (the composing list and the composing set), and the set's flag is a runtime value",
+    "the arm has two effects (the composing list and the composing set), and the set's flag is a boolean the argument's convention cannot carry",
 )
 _arm(
     "/chat-action-task",
@@ -714,7 +716,7 @@ _arm(
 _arm(
     "/shell-include",
     "not mechanical",
-    "`HumanShellPromotionStage` carries three runtime identifiers beside the session",
+    "`HumanShellPromotionStage` carries three identifiers beside the session, and the argument's convention has room for one",
 )
 _arm(
     "/task-del",
@@ -723,23 +725,23 @@ _arm(
 )
 _arm(
     "/terminal-attach",
-    "not mechanical",
-    "`from_seq` is the TUI's retained resume cursor",
+    "mechanical",
+    "`InteractiveProcessAttach` takes the handle and the cursor, so the row can build it from `<handle> <from_seq>`",
 )
 _arm(
     "/terminal-clear",
     "not mechanical",
-    "the request carries a byte payload the TUI composes, which the scope and the argument cannot produce",
+    "the request carries a byte payload the TUI composes — the pending input — and the argument's convention cannot carry bytes",
 )
 _arm(
     "/terminal-resume",
-    "not mechanical",
-    "`from_seq` is a runtime cursor",
+    "mechanical",
+    "`InteractiveProcessResume` takes the attachment and the cursor, so the row can build it from `<attachment-id> <from_seq>`",
 )
 _arm(
     "/test",
-    "not mechanical",
-    "`JobWait` needs a runtime job id and `WorkspaceRegister` a filesystem path",
+    "mechanical",
+    "the arm's effect is the job wait, and `JobWait` takes one identifier — the job id — which travels as the argument; the workspace registration stays a prerequisite",
 )
 
 # The git-review and memory forms are subsystem moves.
@@ -751,7 +753,7 @@ _arm(
 _arm(
     "/memory-consolidate",
     "not mechanical",
-    "the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store",
+    "the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store, which the daemon does not own",
 )
 _arm(
     "/skill-promote",
@@ -1121,13 +1123,19 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     arm_misclassified = [
         row for row in with_request if ARM_VERDICTS.get(row["name"], ("",))[0] == "misclassified"
     ]
-    kind_corrections = len({row["name"] for row in misclassified}) + len(
+    # One declared action per *command* covers that command's forms: the
+    # declared set is keyed by `(command_id, form)`, but one declaration may
+    # list several forms under one action. The catalog's kind is the
+    # *per-form* field, so every misclassified form needs its own change —
+    # and `/agents` alone carries five of them.
+    action_corrections = len({row["name"] for row in misclassified}) + len(
         {row["name"] for row in arm_misclassified}
     )
+    kind_corrections = len(misclassified) + len(arm_misclassified)
     write("The kind correction is **not applied here**: a frontend-effect form needs a")
     write("declared `FrontendAction`, and the declared set's model is a UI action the")
     write(
-        f"frontend performs. {kind_corrections} new actions and {kind_corrections} catalog"
+        f"frontend performs. {action_corrections} new actions and {kind_corrections} catalog"
     )
     write("kind changes are their own change, recorded as a follow-up rather than")
     write("smuggled into this milestone.")
@@ -1149,10 +1157,18 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  capabilities, root, restart and stop, a cache status and clear, a doctor, and")
     write("  the repair, review, impact, test-repair, interface, cross-repair and")
     write("  call-neighbours workflows. The daemon's `egglsp` instance is authoritative and")
-    write("  the TUI's `LspTool` is a second, non-authoritative one, so every `/lsp-*`")
-    write("  arm already refuses in the daemon-connected configuration. | **yes** — the")
-    write("  authoritative language server's command surface is a new ownership boundary,")
-    write("  and ADR-0052 does not cover it |")
+    write("  the TUI's `LspTool` is a second, non-authoritative one. The catalog declares")
+    write("  26 `/lsp-*` forms; the daemon serves 2 of them and does not serve the other")
+    write("  24. **Which behaviour refuses where:** the TUI's own `/lsp-*` arms refuse")
+    write("  locally, with the toast `LSP not available`, because `app.lsp_tool` is `None`")
+    write("  — the TUI never builds a second `LspTool` in production, and only the tests")
+    write("  populate it. The one arm that would reach the daemon (`/lsp-preview-apply`)")
+    write("  reaches it only *after* the same `lsp_tool` check, so it refuses too. The")
+    write("  desktop palette shows the same forms as unavailable because the daemon does")
+    write("  not serve them. Both refusals state the same fact — the authoritative")
+    write("  language server is the daemon's — so the palette's unavailable row is")
+    write("  correct, not a gap. | **yes** — the authoritative language server's command")
+    write("  surface is a new ownership boundary, and ADR-0052 does not cover it |")
     write("| M007-G | the daemon's plugin catalogue: list, info, enable, disable, doctor,")
     write("  remove and install over the plugin registry the daemon actually loads. The")
     write("  TUI's `PluginManager` is its own instance and the daemon has none. | **yes** —")
@@ -1177,10 +1193,13 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("* **mechanical** — the effect request's fields are the scope's plus at most")
     write("  one argument, so the daemon's effect table can build it. The encoding is")
-    write("  named, so the row is a decision and not a guess.")
-    write("* **not mechanical** — the effect request carries a value the scope and the")
-    write("  argument cannot produce: a runtime cursor, a revision, a free-text body, a")
-    write("  structured payload, or a second effect beside the first.")
+    write("  named, so the row is a decision and not a guess. The argument's convention")
+    write("  is one token, or a token pair whose second token is a number — `<channel>`,")
+    write("  `<channel> <seq>`, `<handle> <from_seq>`.")
+    write("* **not mechanical** — the effect request carries a value that convention")
+    write("  cannot produce: free text, a structured payload, a list, a boolean, or a")
+    write("  second effect beside the first. A runtime *scalar* is not disqualifying —")
+    write("  the argument carries it.")
     write("* **subsystem move** — the arm is a subsystem in its own right. Moving it is")
     write("  a milestone, and it is named in the follow-up table above.")
     write("* **misclassified** — the arm's effect is the frontend's own, so the")

@@ -527,7 +527,7 @@ no daemon request.
 
 The kind correction is **not applied here**: a frontend-effect form needs a
 declared `FrontendAction`, and the declared set's model is a UI action the
-frontend performs. 24 new actions and 24 catalog
+frontend performs. 24 new actions and 28 catalog
 kind changes are their own change, recorded as a follow-up rather than
 smuggled into this milestone.
 
@@ -597,10 +597,18 @@ smuggled into this milestone.
   capabilities, root, restart and stop, a cache status and clear, a doctor, and
   the repair, review, impact, test-repair, interface, cross-repair and
   call-neighbours workflows. The daemon's `egglsp` instance is authoritative and
-  the TUI's `LspTool` is a second, non-authoritative one, so every `/lsp-*`
-  arm already refuses in the daemon-connected configuration. | **yes** — the
-  authoritative language server's command surface is a new ownership boundary,
-  and ADR-0052 does not cover it |
+  the TUI's `LspTool` is a second, non-authoritative one. The catalog declares
+  26 `/lsp-*` forms; the daemon serves 2 of them and does not serve the other
+  24. **Which behaviour refuses where:** the TUI's own `/lsp-*` arms refuse
+  locally, with the toast `LSP not available`, because `app.lsp_tool` is `None`
+  — the TUI never builds a second `LspTool` in production, and only the tests
+  populate it. The one arm that would reach the daemon (`/lsp-preview-apply`)
+  reaches it only *after* the same `lsp_tool` check, so it refuses too. The
+  desktop palette shows the same forms as unavailable because the daemon does
+  not serve them. Both refusals state the same fact — the authoritative
+  language server is the daemon's — so the palette's unavailable row is
+  correct, not a gap. | **yes** — the authoritative language server's command
+  surface is a new ownership boundary, and ADR-0052 does not cover it |
 | M007-G | the daemon's plugin catalogue: list, info, enable, disable, doctor,
   remove and install over the plugin registry the daemon actually loads. The
   TUI's `PluginManager` is its own instance and the daemon has none. | **yes** —
@@ -625,16 +633,19 @@ arm issues a daemon request anyway, are one of four things — the fifth,
 
 * **mechanical** — the effect request's fields are the scope's plus at most
   one argument, so the daemon's effect table can build it. The encoding is
-  named, so the row is a decision and not a guess.
-* **not mechanical** — the effect request carries a value the scope and the
-  argument cannot produce: a runtime cursor, a revision, a free-text body, a
-  structured payload, or a second effect beside the first.
+  named, so the row is a decision and not a guess. The argument's convention
+  is one token, or a token pair whose second token is a number — `<channel>`,
+  `<channel> <seq>`, `<handle> <from_seq>`.
+* **not mechanical** — the effect request carries a value that convention
+  cannot produce: free text, a structured payload, a list, a boolean, or a
+  second effect beside the first. A runtime *scalar* is not disqualifying —
+  the argument carries it.
 * **subsystem move** — the arm is a subsystem in its own right. Moving it is
   a milestone, and it is named in the follow-up table above.
 * **misclassified** — the arm's effect is the frontend's own, so the
   catalog's kind is wrong and the corrected kind is named.
 
-**9 misclassified, 22 not mechanical, 3 subsystem move**, out of 34 daemon-effect forms whose TUI arm issues a
+**6 mechanical, 9 misclassified, 16 not mechanical, 3 subsystem move**, out of 34 daemon-effect forms whose TUI arm issues a
 daemon request but which the daemon does not serve.
 
 The accounting is complete: **134 daemon-effect forms = 45 served + 34 mechanical-unserved + 55 with no daemon request**, and every one of them is named.
@@ -652,27 +663,27 @@ The accounting is complete: **134 daemon-effect forms = 45 served + 34 mechanica
 | `/agents` | Agent | misclassified | the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/agent` | Agent | misclassified | the TUI selects from its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/loop` | Execution | not mechanical | `ScheduleCreate` carries a structured spec (kind, job template, overlap and missed-run policies, labels) that the scope cannot derive |
-| `/memory-consolidate` | Memory | not mechanical | the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store |
+| `/memory-consolidate` | Memory | not mechanical | the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store, which the daemon does not own |
 | `/skill-promote` | Memory | subsystem move | the arm drives 44 daemon requests; moving it is a subsystem, not a table row |
 | `/diff` | GitReview | subsystem move | the arm drives 40 daemon requests; moving it is a subsystem, not a table row |
-| `/test` | Execution | not mechanical | `JobWait` needs a runtime job id and `WorkspaceRegister` a filesystem path |
+| `/test` | Execution | mechanical | the arm's effect is the job wait, and `JobWait` takes one identifier — the job id — which travels as the argument; the workspace registration stays a prerequisite |
 | `/research-runs` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/research-open` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/research-show` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
 | `/security-review-show` | Agent | not mechanical | the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review` (M007-H) |
-| `/shell-include` | Execution | not mechanical | `HumanShellPromotionStage` carries three runtime identifiers beside the session |
+| `/shell-include` | Execution | not mechanical | `HumanShellPromotionStage` carries three identifiers beside the session, and the argument's convention has room for one |
 | `/shell-ask` | Execution | subsystem move | the arm drives 45 daemon requests; moving it is a subsystem, not a table row |
-| `/terminal-clear` | Execution | not mechanical | the request carries a byte payload the TUI composes, which the scope and the argument cannot produce |
-| `/terminal-attach` | Execution | not mechanical | `from_seq` is the TUI's retained resume cursor |
-| `/terminal-resume` | Execution | not mechanical | `from_seq` is a runtime cursor |
-| `/chat-send` | Collaboration | not mechanical | the body is free text, and the request also carries mentions, references and a runtime idempotency key |
+| `/terminal-clear` | Execution | not mechanical | the request carries a byte payload the TUI composes — the pending input — and the argument's convention cannot carry bytes |
+| `/terminal-attach` | Execution | mechanical | `InteractiveProcessAttach` takes the handle and the cursor, so the row can build it from `<handle> <from_seq>` |
+| `/terminal-resume` | Execution | mechanical | `InteractiveProcessResume` takes the attachment and the cursor, so the row can build it from `<attachment-id> <from_seq>` |
+| `/chat-send` | Collaboration | not mechanical | the body is free text, and the request also carries mentions, references and a runtime idempotency key — none of which the argument's convention can carry |
 | `/chat-reply` | Collaboration | not mechanical | the body is free text, and the request also carries the reply's thread root, mentions, references and a runtime idempotency key |
-| `/chat-history` | Collaboration | not mechanical | the arm issues two request shapes (`chat_history` and `chat_history_older`) selected by the negotiated `backward_paging` capability, and one effect-table row per form cannot express that choice |
-| `/chat-sync` | Collaboration | not mechanical | `from_seq` is the TUI's cached cursor, and the arm falls back to a history request when the daemon cannot sync |
-| `/chat-read` | Collaboration | not mechanical | `last_read_seq` is a runtime sequence number, not a scope field |
-| `/chat-edit` | Collaboration | not mechanical | the body is free text and `expected_revision` is a runtime revision |
-| `/chat-redact` | Collaboration | not mechanical | the reason is free text and `expected_revision` is a runtime revision |
-| `/chat-composing` | Collaboration | not mechanical | the arm has two effects (the composing list and the composing set), and the set's flag is a runtime value |
+| `/chat-history` | Collaboration | mechanical | the arm's newest-window request is `chat_history_older` with an unanchored cursor, which the row can build from `<channel>`; the incapable-daemon fallback stays where it is |
+| `/chat-sync` | Collaboration | mechanical | `ChatSync` takes the channel and the cursor, so the row can build it from `<channel> <from_seq>` |
+| `/chat-read` | Collaboration | mechanical | `ChatReadSet` takes the channel and the sequence, so the row can build it from `<channel> <last_read_seq>` |
+| `/chat-edit` | Collaboration | not mechanical | the request carries four values — the channel, the message id, the revision and a free-text body — and the argument's convention has room for two |
+| `/chat-redact` | Collaboration | not mechanical | the request carries four values — the channel, the message id, the revision and a free-text reason — and the argument's convention has room for two |
+| `/chat-composing` | Collaboration | not mechanical | the arm has two effects (the composing list and the composing set), and the set's flag is a boolean the argument's convention cannot carry |
 | `/chat-action-task` | Collaboration | not mechanical | the action is a structured payload assembled from the arguments, and the request carries a runtime idempotency key |
 | `/chat-action-review` | Collaboration | not mechanical | the action is a structured payload assembled from the arguments, and the request carries a runtime idempotency key |
 
