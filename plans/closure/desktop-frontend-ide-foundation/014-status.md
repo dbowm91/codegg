@@ -60,15 +60,16 @@ delivered and proved:
 
 **The milestone is not closed.** Criterion 3 — *"a user running a daemon-effect
 command in the TUI sees exactly the outcome they saw before the migration"* —
-is proved for the **20** migrated commands and **not** for the remaining
-**31** served-but-unmigrated forms. The gap is a *migration* gap, not a design
-gap: the daemon's effect table already has a row for each of the 31, and each
-row's request shape is decided. What is missing is the TUI-side rewiring, and
-for five of them the argument's encoding.
+is proved for the **39** migrated commands and **not** for the **12** served
+forms the TUI does not perform. The gap is a *migration* gap, not a design
+gap: the daemon's effect table already has a row for each of the 51 served
+forms, and each row's request shape is decided. What is missing for the
+remaining twelve is the TUI-side rewiring, and for each of them the reason it
+cannot be rewired is recorded.
 
-§10 records the outstanding work form by form, with the shapes of decision
-it needs — including the one decision already taken (§10.2: the two served
-`/lsp-*` forms stay unmigrated, and why).
+§10 records the outstanding work form by form, with the shapes of decision it
+needed — including the two now settled (§10.3) and the one already taken
+(§10.2: the two served `/lsp-*` forms stay unmigrated, and why).
 
 ## 2. Requirement-to-evidence matrix
 
@@ -79,7 +80,7 @@ branch.
 |---|---|---|---|
 | 1 | the desktop shows the daemon's catalog, and the renderer holds no command names | **met** | `apps/desktop/src/commands/CommandPalette.tsx` renders the catalog the host serves; `scripts/check_command_catalog_ownership.py` fails the build on a command-name literal in the renderer, in any quoting style (9 defect classes) |
 | 2 | a desktop daemon-effect command is authorized under `command.execute` and produces a `Run` | **met** | `tests/core_daemon/command_catalog_m007d.inc::command_execute_audits_a_daemon_effect_as_a_run`; the executor is fail-closed without a run store (`src/core/daemon_commands.rs`, `REFUSAL_RUN_STORE_UNAVAILABLE`) |
-| 3 | a TUI daemon-effect command keeps its outcome, and produces a `Run` | **partial — 20 of 51** | `src/tui/command_route_tests.rs` — the per-family regression coverage, one pinned encoding test per migrated command; `src/core/daemon_commands.rs` — the daemon-side encoding pins; §10 lists the 31 outstanding forms |
+| 3 | a TUI daemon-effect command keeps its outcome, and produces a `Run` | **partial — 39 of 51** | `src/tui/command_route_tests.rs` — the per-family regression coverage, one pinned encoding test per migrated command; `src/core/daemon_commands.rs` — the daemon-side encoding pins; §10.1 lists the 19 forms migrated in this pass and §10.6 the 12 the TUI does not perform |
 | 4 | a frontend-effect command has the same local effect and **no** `Run` | **met** | `tests/core_daemon/command_catalog_m007d.inc::command_execute_refuses_a_frontend_effect`; `crates/codegg-core/src/frontend_action.rs` declares the finite action set |
 | 5 | free text that resembles a command is submitted as prompt text | **met** | the TUI recognises a command only on its registry; `src/tui/command_route.rs::route_for` returns `NotServed` for an unknown command or form |
 | 6 | exactly one catalog; a guard fails on a second | **met** | `scripts/check_command_catalog_ownership.py` — clean, and `--self-test` rejects 9 injected defect classes |
@@ -123,13 +124,16 @@ publishes the daemon's own serve-ability per form.
 
 ### 3.3 The TUI migration
 
-**20** commands execute through `CoreRequest::CommandExecute`:
+**39** commands execute through `CoreRequest::CommandExecute`:
 `/memory`, `/memory-list`, `/memory-search`, `/memory-remember`,
-`/memory-forget` (Memory); `/reload`, `/nodes` (System); `/goal`,
-`/task-del` (System/Execution); `/edit-undo`, `/edit-reapply` (Session);
-`/stop`, `/chat-action-list`, `/stop-observing`, `/chat-history`,
-`/chat-sync`, `/chat-read` (Collaboration); `/terminal-attach`,
-`/terminal-resume`, `/test` (Execution).
+`/memory-forget` (Memory); `/reload`, `/nodes`, `/init`, `/policy`,
+`/approval`, `/network`, `/team` (System); `/goal`, `/task-del`,
+`/terminal-attach`, `/terminal-resume`, `/terminal-list`, `/test`, `/tasks`,
+`/task`, `/state` (Execution); `/schedules` (Agent); `/models-refresh`
+(Provider); `/edit-undo`, `/edit-reapply`, `/edit-checkpoints`, `/share`,
+`/unshare`, `/export`, `/reasoning`, `/control` (Session); `/stop`,
+`/chat-action-list`, `/stop-observing`, `/chat-history`, `/chat-sync`,
+`/chat-read`, `/observe`, `/collaborators` (Collaboration).
 
 Each one's argument encoding is **pinned by a test** — the daemon-side test
 names what the daemon builds from a given argument, and the TUI-side test
@@ -137,6 +141,10 @@ names what the frontend sends. That is the evidence criterion 3 rests on: a
 frontend that encoded the argument differently would address the wrong turn,
 channel, schedule or attachment, and the pinned encoding makes that a red
 build rather than a silent mis-targeting.
+
+The **19 forms migrated in this pass** and the **12 recorded findings** they
+left behind are §10.1's table and §10.6's table, and the **two decision
+shapes** the rewiring needed are §10.3's settled rulings.
 
 ### 3.4 The classification artifact
 
@@ -159,8 +167,8 @@ Commands run against this branch's head, with their results.
 | `scripts/verify.sh quick` | **Quick verification passed** |
 | `cargo fmt --all` | clean (rustfmt is part of `quick`) |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | clean, no warnings |
-| `cargo test --locked -p codegg --lib command_route` | **19 passed**, 0 failed |
-| `cargo test --locked -p codegg --lib daemon_commands` | **8 passed**, 0 failed |
+| `cargo test --locked -p codegg --lib command_route` | **29 passed**, 0 failed |
+| `cargo test --locked -p codegg --lib daemon_commands` | **12 passed**, 0 failed |
 | `cargo test --locked --test core_daemon -- command_catalog_m007d` | **11 passed**, 0 failed |
 | `cargo test --locked --test tui_render` | **1094 passed**, 0 failed |
 | `cargo test --locked -p codegg-core -p codegg-protocol` | passed |
@@ -169,7 +177,7 @@ Commands run against this branch's head, with their results.
 | `python3 scripts/check_frontend_action_set.py` | `frontend-action set: clean` |
 | `python3 scripts/check_comment_budget.py` | `comment budget guard passed` (after `--bank`) |
 | `python3 plans/implementation/desktop-frontend-ide-foundation/artifacts/generate_m007d_command_classification.py --check` | `check passed: … matches the tree` |
-| the owner's read-only migration instrument, `/tmp/m007d_verify_migration.py` | 51 effect-table rows, 20 migrated commands, 22 routed call sites; every migrated command is routed through the daemon's effect table, and the four paths that bypass the catalog are the ones §10.4 records |
+| the owner's read-only migration instrument, `/tmp/m007d_verify_migration.py` | 51 effect-table rows, **39** migrated commands, **40** routed call sites; the **12** served forms the TUI does not perform are exactly the ones §10.1 and §10.6 record, and the paths that still construct a migrated form's request are the ones §10.4 and §10.7 record |
 | `cd apps/desktop && npx tsc --noEmit` | clean |
 | `cd apps/desktop && node scripts/check-bindings.mjs` | `desktop bridge DTO fields match` |
 | `cd apps/desktop && npx vitest run` | **29** files, **218** tests, all passed |
@@ -193,7 +201,7 @@ Plan 014 §4's invariants that must not regress, and §14's stop conditions.
 | The effect table's shape is unchanged | **yes** | the table remains the match arms of `build_inner_request`; the key set carries the probe argument for the closure test only |
 | The 256-byte description bound | **yes** | `crates/codegg-core/src/command_catalog.rs` — the bound, re-baselined with the evidence plan 014's protocol table records |
 | The TUI's command names, aliases and descriptions | **yes** | no change to `src/tui/command.rs` or `src/tui/app/commands.rs` |
-| The TUI's observable behaviour | **yes for the 20 migrated commands** | the daemon's inner response travels verbatim; the pinned encoding tests are the evidence. For the 31 outstanding forms the TUI still runs its own arm, so its behaviour is unchanged there too |
+| The TUI's observable behaviour | **yes for the 39 migrated commands** | the daemon's inner response travels verbatim; the pinned encoding tests are the evidence. For the 12 served forms the TUI does not perform, and for the 55 no-request forms, the TUI still runs its own arm, so its behaviour is unchanged there too |
 | No new authorization capability | **yes** | `command.execute` is the only capability the catalog names |
 | No second catalog, no generic host passthrough | **yes** | `scripts/check_command_catalog_ownership.py`; `scripts/check-desktop-boundary.sh` unchanged |
 
@@ -206,9 +214,12 @@ introduced; `/compact` keeps its current behaviour and its missing daemon
 route is a recorded discrepancy.
 
 **One stop condition is not yet discharged**: *"the TUI's observable behaviour
-would change"*. Migrating the 31 outstanding forms is where that risk lives —
-two shapes of it are already visible (§10.2). The migration of the 20
-commands is done; the remaining 31 are the work this milestone still owes.
+would change"*. Migrating a served form is where that risk lives — the two
+shapes of it are now **settled and pinned** (§10.3), and the twelve forms
+whose arms perform a different effect are **recorded** rather than rewired
+(§10.6). The migration of the 39 commands is done; the remaining twelve are
+the work this milestone still owes, and each one needs an owner-visible
+decision rather than a rewiring.
 
 ## 6. Failure, cancellation, restart, and contention semantics
 
@@ -224,15 +235,17 @@ commands is done; the remaining 31 are the work this milestone still owes.
 
 ## 7. Migration and compatibility review
 
-- The TUI's own arm is kept for every command that is not migrated: **31**
-  served-but-unmigrated forms and the 55 no-request forms all keep their
-  local execution, so the TUI's behaviour is unchanged for all of them.
+- The TUI's own arm is kept for every command that is not migrated: the **12**
+  served forms the TUI does not perform (§10.6) and the 55 no-request forms
+  all keep their local execution, so the TUI's behaviour is unchanged for all
+  of them.
 - The desktop refuses an unserved form rather than dispatching it, so a
   desktop user sees a typed refusal where the TUI still works locally. That
   asymmetry is recorded in the artifact's §8.
 - The two served `/lsp-*` forms are the one place where the daemon serves a
   form the TUI does not use: the desktop dispatches them through the daemon,
-  and the TUI's own arms remain a recorded discrepancy (§10.2).
+  and the TUI's own arms remain a recorded discrepancy (§10.2). §10.6's ten
+  forms are the same shape, and the table names each one's reason.
 
 ## 8. Security review
 
@@ -258,34 +271,51 @@ commands is done; the remaining 31 are the work this milestone still owes.
 
 ## 10. Unresolved findings
 
-### 10.1 The 31 served-but-unmigrated forms
+### 10.1 The 31 served-but-unmigrated forms: **19 migrated, 12 recorded**
 
-The daemon's effect table has a row for each of these; the TUI's arm still
-issues the request itself. Migrating them is the outstanding work.
+The daemon's effect table has a row for each of these. **19** of them now
+execute through `CoreRequest::CommandExecute`; the remaining **12** are
+recorded findings, each with its reason named below and in §10.6.
 
-**26 forms whose row reads only the scope** — the rewiring carries no
-encoding decision, so the argument is empty and the scope supplies
-everything:
+**19 forms migrated.** The first line is the encoding the argument carries;
+a scope-only row carries none.
+
+| command | argument encoding | note |
+|---|---|---|
+| `project_init` | — | the scope names the project and the workspace the preview is taken in |
+| `policy` | — | **decision shape one**, §10.3 |
+| `approval` | — | a unit read; the scope's session cannot change what it answers |
+| `reasoning` | — | a unit read, for the same reason |
+| `network` | `<intent> [<revision>]` | the revision is the compare-and-swap the policy read published |
+| `models_refresh` | — | a unit read |
+| `share` | `<session-id>` | **decision shape two**, §10.3 |
+| `unshare` | `<session-id>` | **decision shape two**, §10.3 |
+| `export` | `<session-id>` | **decision shape two**, §10.3 |
+| `observe` | `<session-id>` | the session the user named, not the attached one |
+| `tasks` | `[<limit>]` | the listing bound belongs to the caller |
+| `task` | `[<limit>]` | the same bound, under the id the user typed |
+| `schedules` | — | the scope names the workspace the schedules are read in |
+| `state` | — | the scope names the session the goal is read in |
+| `collaborators` | — | the principal listing; see §10.6 for the `/collaborators` arm |
+| `team` | — | the scope names the project the membership is read in |
+| `control` | — | the scope names the session the control surface is read in |
+| `edit_checkpoints` | — | the scope names the workspace and the session |
+| `terminal_list` | — | the scope names the workspace the terminals are read in |
+
+`tasks`/`task` are a **shared arm**: one row serves two forms, and each is
+executed under the id the user typed — the same rule `/memory` and
+`/memory-list` already follow.
+
+**12 forms recorded, not migrated.** Each is a form the daemon *serves* and
+the TUI's own arm does *not* perform, so migrating the arm would change what
+the user sees:
 
 ```
-project_init  policy  approval  reasoning  skills  models_refresh  worktree
-tool_contracts  share  unshare  export  status  tasks  task  schedules  state
-collaborators  team  control  observe  edit_checkpoints  shell_list
-terminal_list  terminal_show  lsp_status  lsp_errors
+lsp_status  lsp_errors  skills  status  tool_contracts  worktree
+shell_list  shell_show  shell_expand  shell_kill  terminal_show  terminal_send
 ```
 
-**5 forms whose row consumes the argument** — each needs its encoding decided
-and pinned:
-
-```
-network  shell_show  shell_expand  shell_kill  terminal_send
-```
-
-`tasks`/`task`, `shell_show`/`shell_expand` and `terminal_list`/`terminal_show`
-are **shared arms**: one row serves two forms.
-
-`/lsp-status` and `/lsp-errors` are in this list, and they are **decided**:
-they stay unmigrated, for the reason §10.2 gives.
+The reasons are in §10.2 (`/lsp-*`) and §10.6 (the other ten).
 
 ### 10.2 The two served `/lsp-*` forms: **decided — not migrated in this milestone**
 
@@ -329,27 +359,69 @@ narrower reading of the tree, and both are corrected in the artifact:
   production". That was wrong — the earlier reading missed `src/main.rs`. The
   row now names the mode split.
 
-### 10.3 Two shapes of decision the scope-only group needs
+### 10.3 The two shapes of decision: **both settled and pinned**
 
 "Scope-only" is not automatically behaviour-preserving, and two shapes of it
-are visible in the rows. Both are *recorded*, not guessed at:
+were visible in the rows. Both are now **decided**, each with a pinned test on
+both sides.
 
-- **A row that carries the session, where the TUI's request carries none.**
-  The `policy` and `approval` rows build `execution_policy_get` with the
-  scope's session, while the TUI's own sites pass `session_id: None`
-  (`src/tui/commands/policy.rs`). Migrating them as the rows stand would
-  change *which* policy the user is shown. The row must either pass no
-  session, or the scope must carry the session the TUI meant — a decision,
-  not a rewiring.
-- **A row that acts on a session the caller chose, not the attached one.**
-  The `share`, `unshare` and `export` rows act on the scope's session, while
-  the TUI's arms act on a session the user selected in a dialog
-  (`src/tui/commands/sessions.rs`). Migrating them as the rows stand would
-  share the *wrong* session. The session id must travel in the argument.
+#### Shape one — a row that carried the session where the TUI's request carried none
+
+The `policy` row built `execution_policy_get` with the scope's session, while
+every TUI `ExecutionPolicyGet` site passes `session_id: None`
+(`src/tui/commands/policy.rs`). Migrating the row as it stood would have
+changed *which* policy the user is shown.
+
+**The decision: the `policy` row names no session.** The effective runtime
+policy is a *global* reading, and the TUI asks for it with no session; a
+session-scoped read answers a different question. So the row now builds
+`execution_policy_get { session_id: null }` and the scope's session cannot
+change the answer. The scope still names the project and the workspace the
+reading is authorised against.
+
+`approval` and `reasoning` turned out **not** to have this problem, and the
+reason is structural rather than incidental: `approval_preference_get` and
+`reasoning_preference_get` are **unit variants** — their requests carry no
+session field at all, so the scope's session cannot change what they answer.
+The daemon-side pin asserts that, so a future change that gave one of them a
+session field would fail rather than pass unnoticed.
+
+Pinned by `the_policy_rows_name_no_session`
+(`src/core/daemon_commands.rs`) on the daemon side and
+`the_policy_reads_are_executed_by_the_daemon`
+(`src/tui/command_route_tests.rs`) on the TUI side.
+
+#### Shape two — a row that acted on a session the caller chose
+
+The `share`, `unshare` and `export` rows acted on the scope's session, while
+the TUI's arms act on a session the user selected in a dialog
+(`src/tui/commands/sessions.rs`). Migrating the rows as they stood would have
+shared the *wrong* session.
+
+**The decision: the session id travels as the argument.** The rows now read it
+from the argument's first token and build `session_share` / `session_unshare`
+/ `session_export` from it; a call that names no session is refused with
+`no_session` — the daemon serves the form, it just cannot guess which session
+the caller meant. This is the same place the turn id travels for `stop`, and
+it is the only shape that is correct for a surface that can name a session
+other than the attached one. **No new row was needed**: the three existing
+rows carry the session now.
+
+`observe` has the same shape and the same decision: `/observe <session-id>`
+names a session that need not be the attached one, so its row reads the
+session from the argument too.
+
+Pinned by `the_session_named_rows_carry_their_session_in_the_argument` and
+`the_observe_command_carries_the_session_in_the_argument` on the daemon side,
+and by `the_session_named_commands_carry_their_session_in_the_argument` and
+`the_observe_command_carries_the_session_in_the_argument` on the TUI side.
 
 ### 10.4 Four daemon-owned requests still bypass the catalog
 
-These are **not** gaps in the 20 migrated commands' arms: every migrated arm
+(The 19 forms this pass migrated added three more paths of the same kind;
+they are §10.7's table.)
+
+These are **not** gaps in the 39 migrated commands' arms: every migrated arm
 routes through the daemon and no longer constructs its own request. These are
 *other* paths in the TUI that reach a daemon-owned request directly, outside
 the catalog, and therefore open **no `Run`**. Criterion 3's letter does not
@@ -375,7 +447,52 @@ in the TUI is audited.
 | The three **subsystem moves** — the git-review diff view, the skill-promotion workflow and the human-shell ask workflow — are workflows of dozens of daemon requests each | medium | recorded as M007-I, with an ADR required: each is a new ownership boundary ADR-0052 does not cover |
 | `/compact` keeps its current behaviour; the daemon has no compaction route | low | a recorded discrepancy requiring an owner-visible decision (plan 014 §14) |
 | The 19 forms the verdict calls misclassified are still classified as daemon effects in the catalog | low | folded into the 28 kind changes above |
-| The 9 argument-consuming forms need their encoding decided and pinned | medium | §10.1 — the outstanding migration work |
+| The 5 argument-consuming forms need their encoding decided and pinned | medium | **settled** — `network`, `share`, `unshare`, `export` and `observe` are migrated with pinned encodings; `shell_show`, `shell_expand`, `shell_kill` and `terminal_send` are recorded in §10.6 |
+
+### 10.6 Ten served forms whose TUI arm performs a different effect
+
+These ten forms are **served** by the daemon and **not** migrated, and the
+reason is the same in every case: the daemon's row serves a request that is
+*not* the one the TUI's own arm performs. Migrating the arm would therefore
+change what the user sees, which plan 014 §14 forbids.
+
+| form | the daemon's row serves | the TUI's arm performs | disposition |
+|---|---|---|---|
+| `skills` | `skill_catalogue_list` — the daemon's resolved skill catalogue | a read of the TUI's own asset snapshot (`app.agent_state.snapshot`) | **recorded.** Two different sources; the daemon's is authoritative and the TUI's is not, so the arm would start showing a different list |
+| `status` | `session_lifecycle_get` | a locally assembled status string (session status, token counters, the policy status line) | **recorded.** The daemon's request carries no part of what the arm shows |
+| `tool_contracts` | `tool_program_list` — the daemon's *tool programs* | a read of the TUI's **local** tool registry (`ToolBroker::new(&ToolRegistry::with_defaults())`) | **recorded.** Different things: tool contracts are not tool programs |
+| `worktree` | `managed_worktree_list` | `worktree_list` by project directory — a different request | **recorded.** The daemon's managed-worktree listing and the TUI's checkout listing are different surfaces |
+| `shell_list` | `human_shell_run_capabilities` | a read of the TUI's **local** shell store | **recorded.** The daemon's request is the human-shell capability probe the `!`-shell path issues, not the `/shell-list` listing |
+| `shell_show` | `human_shell_run_read` | a read of the TUI's local shell store | **recorded, and structurally so.** The daemon's request is issued by the `!`-shell path's **polling loop**, one read per poll; routing it through `command.execute` would open a canonical `Run` per poll |
+| `shell_expand` | `human_shell_run_read` | the same local store, expanded | **recorded**, for the same reason |
+| `shell_kill` | `human_shell_run_cancel` | a local kill for a local run, and a cancel for a remote one | **recorded.** The cancel's authority is the **run's own** project, workspace and session — the ones the binding carries — not the caller's scope, so a scope-built row could address the wrong run |
+| `terminal_show` | `interactive_process_list` | a purely frontend-local action: switch the view to the named terminal | **recorded.** The arm performs no daemon request at all |
+| `terminal_send` | `interactive_process_input` | the interactive terminal's **input path**, shared by the `/terminal-send` arm and the live typing path | **recorded, and structurally so.** The path issues one request per keystroke, so routing it through `command.execute` would open a canonical `Run` per keystroke |
+
+None of the ten is a defect in what was migrated. All ten are recorded here so
+that the closure does not read as a claim that every served form is used by
+the TUI: **the daemon serves 51 forms and the TUI now executes 39 of them.**
+
+**One more recorded discrepancy, specific to `/collaborators`.** The
+`collaborators` row serves `team_principal_list`, and that request is now
+executed through the daemon — but the TUI reaches it through
+`/team principals`, not through the `/collaborators` arm. The
+`/collaborators` arm shows the **presence** panel, whose request is
+`presence_snapshot_get` — a request the catalog does not name. So the
+`collaborators` form is migrated, and the presence panel is a separate,
+unnamed effect recorded here.
+
+### 10.7 The bypasses the 19 migrations added
+
+The 19 migrations removed the TUI's own construction of the requests they
+serve. The paths that still reach a daemon-owned request directly are
+recorded, and none of them is a command arm:
+
+| request | sites | disposition |
+|---|---|---|
+| `ApprovalPreferenceGet` | `src/tui/commands/work_orders.rs:100`, `:378` | **recorded.** These are the Task composer's **model prefetch**, not the `/approval` arm. The `/approval` arm's own read routes through the daemon; routing a prefetch as well would open a `Run` per prefetch for a read that is a side effect of another surface |
+| `ProjectionSubscribe` | `src/tui/commands/observe.rs:446`, `src/tui/commands/primary_projection.rs:202` | **lifecycle, recorded.** The first is the *resume* path's fresh-subscribe fallback and the second is the primary projection's own subscription — neither is the `/observe` arm, which routes through the daemon |
+| `RuntimePolicySet` | `src/tui/commands/policy.rs:538` | **recorded for the owner.** The catalog's `policy` form is the *read*; the **write** has no catalog form at all, so the confirmed change still issues its own request. Making the write a catalog command is a decision about the catalog's shape |
 
 **Any medium finding keeps M007-D open.** Six are listed above, so the
 milestone's recommendation is **corrective pass required**, not closed.
@@ -385,7 +502,8 @@ milestone's recommendation is **corrective pass required**, not closed.
 - **M007-D — the daemon-owned command catalog and the cross-frontend
   execution path.** The mechanism, the two namespaces, the serve-ability
   publication, the guards and the desktop consumption are done. The **TUI
-  migration is 20 of 51**; the remainder is §10.1's 31 forms.
+  migration is 39 of the 51 served forms**; the **12 forms the TUI does not
+  perform** are §10.1's and §10.6's recorded findings.
 - **M007-E — the editor's own commands.** The three integration points were
   closed at `410929a31`.
 - **M007-F — the daemon's LSP command surface.** Recorded; ADR required.
@@ -401,11 +519,11 @@ owner-directed corrective milestones are the owner's to write, after this
 milestone merges. This record describes what they should say:
 
 - The subsystem roadmap's M007-D entry moves from *in progress* to
-  *conditionally closed*, with the 31 outstanding migration forms named and
-  the six medium findings carried.
-- The registry gains a corrective-pass entry for M007-D naming the 31 forms
-  and the two owner-directed corrective milestones (the scratch cache-root
-  contract and the TUI `/compact` sender).
+  *conditionally closed*, with the **12 forms the TUI does not perform** named
+  and the six medium findings carried.
+- The registry gains a corrective-pass entry for M007-D naming the 12 recorded
+  forms and the two owner-directed corrective milestones (the scratch
+  cache-root contract and the TUI `/compact` sender).
 
 ## 13. Handoff notes
 
@@ -414,14 +532,17 @@ milestone merges. This record describes what they should say:
   `src/tui/command_route_tests.rs`, and each is asserted in its family's test
   with the exact argument it must carry. The daemon-side half of each pin is
   in `src/core/daemon_commands.rs`'s test module — `the_identifier_rows_carry_their_identifier_in_the_argument`,
-  `the_collaboration_rows_carry_their_identifiers_in_the_argument` and
-  `the_cursor_rows_carry_their_identifier_and_cursor_in_the_argument`.
+  `the_collaboration_rows_carry_their_identifiers_in_the_argument`,
+  `the_cursor_rows_carry_their_identifier_and_cursor_in_the_argument`,
+  `the_policy_rows_name_no_session`,
+  `the_session_named_rows_carry_their_session_in_the_argument`,
+  `the_network_row_carries_the_intent_and_the_revision` and
+  `the_task_rows_carry_their_bound_in_the_argument`.
 - **`serves_form` is presence-based now.** A row that returns
   `CommandEffect::UnreadableArgument` still counts as served, and the
   catalog publishes `daemon_served: true` for it. A caller that got the
   argument wrong is told the argument was wrong.
-- **The next batch's shape is settled**: 26 rows read only the scope, 5 read
-  the argument, and §10.2's two shapes need a decision before those rows are
-  rewired. The decision is the owner's or the implementer's to make; the
-  milestone's own rule is that a guessed encoding is worse than a recorded
-  one.
+- **The next batch's shape is settled**: §10.3's two decision shapes are
+  decided and pinned, and §10.6's ten forms are recorded with their reasons.
+  The rule that produced both is the milestone's own: a guessed encoding is
+  worse than a recorded one.
