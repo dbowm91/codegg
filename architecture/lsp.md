@@ -54,6 +54,37 @@ daemon's `DocumentService`, hold document operation gates before the workspace
 lock, and reject dirty managed buffers, so save/change and preview apply cannot
 interleave their disk checks.
 
+### The `/lsp-*` command forms (M007-D)
+
+The daemon's command catalog classifies **27** `/lsp-*` forms as
+**daemon effects**, and that classification is **correct**: the
+authoritative language server is daemon-owned, and a frontend cannot own
+one. It is also, today, **mostly unserved**.
+
+- **2** forms are served: `/lsp-status` and `/lsp-errors`.
+- **25** forms have **no daemon request at all**. The daemon owns the
+  language server but exposes no request for the preview surface, the
+  repair and review surfaces, the cache controls, the restart and stop
+  controls, or the diagnostics-context surface.
+
+The TUI's own `/lsp-*` arms therefore **keep their local execution** and
+drive `egglsp` directly. That is recorded, not hidden: the daemon's
+catalog publishes the classification and publishes, per form, whether the
+daemon can serve it (`daemon_served`), and a frontend refuses an unserved
+form rather than dispatching it. The desktop palette shows the unserved
+forms as unavailable.
+
+**This document must not claim a daemon route that does not exist.** The
+classification and the per-form verdict are recorded in the M007-D
+classification artifact
+(`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md` §10),
+which routes the 25 to a follow-up milestone: giving the daemon an LSP
+command surface is a new capability with its own ADR, and it is **not**
+built inside a desktop-parity milestone.
+
+`NotReady` is a separate fact and keeps its own meaning here: it means
+**no warm server** — start one — and not "this command is unsupported".
+
 ### Preview runtime ownership and checked apply
 
 The daemon-resolved `Arc<LspService>` is threaded from `TurnRunInput` through
@@ -4880,3 +4911,11 @@ Confirmed accurate, no change needed:
   (`server_request.rs:52`) match the source.
 - The `operations/` module tree and the listed `LspOperations` methods match
   `crates/egglsp/src/operations/`.
+
+Re-verified 2026-10-25 against
+`crates/codegg-core/src/command_catalog.rs` and the M007-D classification
+artifact (`plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md`
+§3 and §10): the catalog classifies **27** `/lsp-*` forms as daemon
+effects, **2** are served (`/lsp-status`, `/lsp-errors`) and **25** have no
+daemon request. This document makes no claim of a daemon route for those
+25.

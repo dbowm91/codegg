@@ -196,6 +196,9 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Module | Purpose | Source | Deep dive |
 |--------|---------|--------|-----------|
 | Core | `CoreClient` facade, transport adapters, daemon lifecycle, request handling | `src/core/` | [core.md](core.md) |
+| Command Catalog | **The daemon's single definition of every command** — identity, name, aliases, description, kind, argument forms, and the catalog's bounds | `crates/codegg-core/src/command_catalog.rs` | [command.md](command.md) |
+| Frontend Actions | The **declared, finite** set of actions a frontend may execute for a frontend-effect form — closed and non-mutating | `crates/codegg-core/src/frontend_action.rs` | [command.md](command.md) |
+| Command Executor | The daemon's table-driven dispatch from a catalog form to a daemon request, its serve-ability predicate, and its audit as a canonical `Run` | `src/core/daemon_commands.rs` | [command.md](command.md) |
 | Workspace | Workspace registry, canonical root tracking, immutable `Arc`-wrapped execution context | `crates/codegg-core/src/workspace.rs` | [workspace.md](workspace.md) |
 | Workspace Services | Per-workspace service bundles, single-flight activation, user-scoped catalog | `crates/codegg-core/src/workspace_services.rs` | [workspace_services.md](workspace_services.md) |
 | Jobs | Durable jobs, attempts, schedules, recovery, idempotency | `crates/codegg-core/src/jobs/` | [jobs.md](jobs.md) |
@@ -703,17 +706,17 @@ execution takes the dedicated `command.execute` capability, which was already
 in the enum because the human-shell run family uses it. *Integration test
 files* is **341** (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/`
 helper tree excluded — the new `tests/core_daemon/command_catalog_m007d.inc`).
-*Guard scripts (all)* is **97** (`ls scripts/check_*` — the new
+*Guard scripts (all)* is **98** (`ls scripts/check_*` — the new
 `scripts/check_command_catalog_ownership.py`, which proves the daemon's catalog
 and the TUI's command surface are the same set, that only the catalog can
 execute a command, and that no frontend holds a second catalog, and the new
 `scripts/check_frontend_action_set.py`, which proves the frontend's
 dispatchable set is declared, finite, closed and non-mutating). *CI guard
-scripts* is **60** (the distinct `scripts/check_*` names in
+scripts* is **61** (the distinct `scripts/check_*` names in
 `.github/workflows/ci.yml` — it gained both guards and both self-tests). The
 quick-only difference is unchanged at **14** guards CI does not run: the new
 guards run in **both** `verify.sh quick` and CI, so they add no quick-only
-entry. The *quick* guard count is **74**. Every other code-count row was
+entry. The *quick* guard count is **75**. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
 
 
@@ -1217,3 +1220,11 @@ unchanged.
 
 *Guard scripts (all)* is **81** (the new `scripts/check_destructive_risk_signal_coverage.py`),
 and *CI guard scripts* is **41** (that one guard's two `ci.yml` steps — the guard and its
+
+Re-verified 2026-10-25 against the M007-D branch with
+`scripts/measure_overview_counts.py`: the `## Verified counts` rows read
+**270** `CoreRequest` variants, **264** native operations, **341** integration
+test files, **98** guard scripts, **61** CI guard scripts and **92**
+architecture documents. The count-reconciliation prose under this section
+was corrected to the same figures — it had understated each guard count by
+one.

@@ -548,7 +548,55 @@ The `projection/` submodule defines:
   (`workstream.rs`)
 - Golden fixtures (`fixtures.rs`)
 
-## Identity-Aware Additive Protocol
+## The Command Family (M007-D)
+
+ADR-0052 gave the daemon one **catalog** and two **request variants**. The
+family is `DaemonRequestFamily::Commands` (`src/core/daemon_family.rs:71`),
+routed to `src/core/daemon_commands.rs::handle_command_request`
+(`src/core/daemon_family.rs:402`). It sits **beside** the existing families
+and changes none of them.
+
+**Two variants, and only two.**
+
+- `CoreRequest::CommandCatalog` (`crates/codegg-protocol/src/core.rs:2349`)
+  — the daemon's catalog, as `CommandCatalogDto` (`:1276`).
+- `CoreRequest::CommandExecute` (`crates/codegg-protocol/src/core.rs:2356`)
+  — one execution of one catalog form, as `CommandExecuteRequestDto`
+  (`:1290`), answered by `CommandExecuteResultDto` (`:1335`).
+
+A third variant would be a wider protocol surface than ADR-0052 authorized,
+so the milestone stops rather than adding one.
+
+**The scope.** `CommandCatalogScopeDto` (`core.rs:1208`) carries the
+`project_id`, the `workspace_id`, and an **optional** `session_id`. The
+session is absent by default and the daemon refuses a session-scoped
+command with a typed reason rather than acting on a session the caller did
+not name: the daemon resolves the project and the workspace from its own
+durable binding, but the session is the caller's selection.
+
+**The result carries the daemon's inner response.**
+`CommandExecuteResultDto::response` (`core.rs:1363`) is the command's
+**own** response, exactly as the daemon's request handler serializes it,
+alongside the bounded presentation fields (`summary`, `lines`, `report`).
+The daemon owns the effect *and* the authoritative data; the frontend keeps
+the formatting. A frontend that reads `response` formats the same data the
+TUI formats — which is what makes presentation parity real rather than
+approximate — and a frontend that does not read it renders `summary` and
+`lines` instead.
+
+**Serve-ability is published, not guessed.** `CommandFormDto::daemon_served`
+(`core.rs:1246`) says whether the daemon can execute that form. A frontend
+reads the flag and refuses an unserved form itself, rather than dispatching
+into a refusal.
+
+**The bounds** live in `crates/codegg-core/src/command_catalog.rs`
+(`bounds`, `:186`): 256 commands, 512 forms, 256 KiB of serialized catalog,
+256 bytes per description, 8 aliases per command, 32 forms per command, 64
+bytes per command identity, 4 KiB per argument, 256 result lines and 64 KiB
+of serialized result. An over-bound catalog is **refused** with a typed
+`CatalogBoundError` (`check_catalog_bounds()`, `:3234`, enforced at
+`src/core/daemon_commands.rs:500`) — never silently truncated.
+
 
 Protocol version 2 remains wire-compatible. `ProjectContextDto` and
 `SessionBindingDto` expose stable project/workspace identities while
@@ -767,3 +815,12 @@ Verified 2026-10-23 against `crates/codegg-protocol/src/lib.rs`,
   `projection::consumer::HeadlessProjectionConsumer`; and the
   `MAX_DOCUMENT_TEXT_BYTES` 8 MiB bound.
 
+Re-verified 2026-10-25 against `crates/codegg-protocol/src/core.rs`
+(`CommandKindDto` `:1197`, `CommandCatalogScopeDto` `:1208`,
+`CommandFormDto` `:1228`, `CommandDescriptorDto` `:1251`,
+`CommandCatalogDto` `:1276`, `CommandExecuteRequestDto` `:1290`,
+`CommandExecuteResultDto` `:1335`, `CoreRequest::CommandCatalog` `:2349`,
+`CoreRequest::CommandExecute` `:2356`), `src/core/daemon_family.rs`
+(`DaemonRequestFamily::Commands` `:71`, its handler mapping `:402`) and
+`src/core/daemon_commands.rs` (the bounds check `:500`): the command family
+adds exactly **two** `CoreRequest` variants and changes no existing one.

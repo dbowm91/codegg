@@ -9,10 +9,32 @@ Parses user-typed `/command args` into structured `Command` objects,
 resolves them from built-in, config, and file sources, and executes
 template substitution or process-backed execution.
 
+**The catalog's owner is the daemon.** The single definition of a command —
+its identity, its name and aliases, its description, its **kind**, and the
+shape of its argument forms — is the daemon's catalog in
+`crates/codegg-core/src/command_catalog.rs`. The TUI's built-in registry is
+a **cache** of that catalog, not a second definition of it. A command's
+*kind* decides who runs it: a **daemon effect** is executed by the daemon
+under `command.execute` and audited as a canonical `Run`; a **frontend
+effect** is executed locally by the frontend against the declared
+frontend-action set and creates **no** `Run`.
+
 ## Where It Lives
 
+- `crates/codegg-core/src/command_catalog.rs` — **the catalog**: the single
+  definition of every command, its forms, its kinds, and the catalog's
+  bounds. `the_catalog()` (`:3178`) is the accessor of record.
+- `crates/codegg-core/src/frontend_action.rs` — the **declared
+  frontend-action set**: the finite set of actions a frontend may execute
+  for a frontend-effect form (`FrontendAction`, `:41`; `action_for_form()`,
+  `:323`).
+- `src/core/daemon_commands.rs` — the daemon's **executor**: the
+  table-driven dispatch from a catalog form to a daemon request
+  (`build_inner_request()`, `:148`), the serve-ability predicate
+  (`serves_form()`, `:429`), and the audit as a canonical `Run`.
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 169 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry`: a **cache** of the daemon's
+  catalog with 169 built-in rows, plus the TUI's own local dynamic sources
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,13 +42,23 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 169 hardcoded commands (highest priority)
+1. **Built-in commands**: 169 rows cached from the daemon's catalog (highest
+   priority)
 2. **Config commands**: From the `commands` section of the config file
    (`codegg.jsonc` / `codegg.json` / `config.json`)3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
 
 Built-in commands take precedence — duplicates from config/files are
 skipped.
+
+**The built-in rows are a cache, not a definition.** The daemon's catalog
+owns each row's identity, name, aliases, description, kind, and argument
+shape; the TUI's registry mirrors it. Rows 2 and 3 are the TUI's **own
+local dynamic sources**: they stay local, are outside the daemon's catalog,
+and cannot change daemon authorization or execution scope. ADR-0052 defers
+dynamic command sources deliberately — a dynamic source has different trust
+properties from a built-in one — so the desktop does not expose them and a
+plugin- or MCP-contributed command is **not** a catalog command.
 
 `/skills [name]` is a read-only TUI inspection command backed by the active
 workspace's immutable asset snapshot. It reports effective skills and shadow counts;
@@ -246,14 +278,23 @@ pub struct CommandRegistry {
 }
 ```
 
-`COMMAND_REGISTRY` exposes the immutable built-in/global catalog for
+`COMMAND_REGISTRY` exposes the immutable built-in/global rows for
 compatibility and tests. Each TUI `App` owns a `CommandRegistry` containing
-those definitions plus project-local commands discovered from its active
+those rows plus project-local commands discovered from its active
 tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
+They are also **outside** the daemon's catalog: a dynamic source is a
+separate trust class, and the desktop does not expose it.
 
 ### Built-in Commands (169 total)
+
+The **169** is the length of the TUI's cached built-in rows. It is a count
+of the *cache*, and it is deliberately **not** the count of commands the
+product has: the daemon's catalog is the definition, and it carries **161**
+commands over **166** argument forms — 134 daemon-effect forms and 32
+frontend-effect forms. The two numbers answer different questions and both
+are guarded.
 
 Representative built-ins:
 
@@ -395,6 +436,22 @@ supports: `description`, `agent`, `model`, `template`, `runtime`,
 
 ## Invariants & Gotchas
 
+- **One catalog, not two.** The daemon's catalog in
+  `crates/codegg-core/src/command_catalog.rs` is the single definition of
+  every command's identity, name, aliases, description, kind and argument
+  shape. The TUI's registry is a cache of it; the desktop renderer holds
+  **no** command list, **no** command names, and **no** command-kind table.
+  `scripts/check_command_catalog_ownership.py` fails the build if a second
+  catalog appears in the daemon, the TUI, the desktop host, or the renderer.
+- **A command's name is addressable by its own identity.** Two commands may
+  share one effect and still be two commands: `/memory` and `/memory-list`
+  share a memory-summary effect, and each is executed under the id the user
+  typed. A shared effect is not a shared identity.
+- **A kind is never inferred.** A form's kind comes from the catalog. The
+  daemon may never execute a frontend-effect form, and the frontend may
+  never execute a daemon-effect form directly — a daemon effect goes
+  through `CoreRequest::CommandExecute`, and the daemon authorizes it under
+  `command.execute` and audits it as a canonical `Run`.
 - **Built-in count is 169**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
@@ -600,3 +657,15 @@ this document were corrected to 161 against the enum, and the four
 built-in-total claims to 169 against the registry; the **2026-10-21** paragraph
 above is left as it was written, because it is a dated historical record of
 that merge rather than a live claim.
+
+Re-verified 2026-10-25 against `crates/codegg-core/src/command_catalog.rs`
+(`CommandKind` `:37`, `CommandCatalog` `:175`, `the_catalog()` `:3178`,
+`bounds` `:186`, `check_catalog_bounds()` `:3234`),
+`crates/codegg-core/src/frontend_action.rs` (`FrontendAction` `:41`,
+`action_for_form()` `:323`), `src/core/daemon_commands.rs`
+(`build_inner_request()` `:148`, `serves_form()` `:429`) and
+`src/tui/command.rs`: the cached built-in rows still number **169** and
+`BuiltinSlashAction` still has **161** variants, byte-identical to
+`origin/main` (`cb4ceed9d`). The daemon's catalog carries **161** commands
+over **166** argument forms — 134 daemon-effect forms and 32 frontend-effect
+forms.
