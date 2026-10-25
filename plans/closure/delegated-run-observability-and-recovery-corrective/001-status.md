@@ -885,3 +885,31 @@ here as a consequence of the merge and recorded where they belong:
 The comment budget was re-banked on the merged tree — **126,430** comment
 lines, **1,115,780** words, a **0.1338** recorded ceiling — and the bank diff
 is one new per-file entry for `main`'s new test file plus the global block.
+
+## 16. The hosted outcome on the merged head (2026-10-25)
+
+The hosted run on the merged head `1c967a836` is **green on every job**:
+
+| job | run | result |
+|---|---|---|
+| `CI` / `verify` | `40167530179` | **pass**, 27m39s |
+| `Windows process launcher` | `40167530136` | **pass**, 32m0s |
+| `Desktop E2E` | `40167530139` | **pass**, 14m1s |
+| `Linux M004 process and IPC qualification` — `process-ipc` | `40167530274` | **pass**, 36m15s |
+| `Linux M004 process and IPC qualification` — `restricted-userns-fails-closed` | `40167530274` | **pass**, 17m30s |
+| `GitGuardian Security Checks` | — | **pass** |
+
+`git-cost-pilot` and `c014-negative-reproduction` are skipped by design.
+
+**The Windows `process launcher` job is green for the first time.** §14 said
+the inherited red job was `main`'s own mis-gated scratch test, that `main` had
+since fixed it in `5f9f9bc7d`, and that this branch inherits the fix through
+the merge — and it deliberately did **not** claim in advance that the job
+would then be green, because that claim belonged to the run. The run made it.
+This is the first time this line's hosted lane has been **fully** green,
+including the Windows qualification.
+
+The delegated-notice family that produced the fifth hosted-CI finding now
+passes on the hosted runner too: the `verify` job's `Workspace tests` step ran
+the full **16 360**-test workspace sweep and the delegated-notice members were
+among the `PASS` results.

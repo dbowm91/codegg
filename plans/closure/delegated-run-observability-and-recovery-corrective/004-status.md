@@ -763,6 +763,13 @@ separation is worth recording so they are not re-investigated:
   environment-dependent**: they reproduce identically at `origin/main`, and
   `/tmp` is a symlink on macOS, which `canonicalize_workspace_root` refuses.
   The hosted runner is Linux, where they do not apply.
+- The **2–3 of the 94 `interactive_terminal` members** that fail per local run
+  of `cargo test -p codegg --lib interactive_terminal` are **flaky in both
+  trees**: each of them passes when run alone, each run fails a *different*
+  subset, and the identical filter fails the same way at `origin/main` (92
+  passed / 2 failed there too, with different names). They are `main`'s flake,
+  inherited through the merges. The hosted runner's Linux sweep runs all 94 of
+  them and every one logs `PASS`.
 
 With those separated, the whole delegation-affected surface is green locally:
 `agent_loop` 561, `session_family` 98, `projection_replay` 69, `tui_render`
