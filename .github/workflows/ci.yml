@@ -451,6 +451,17 @@ jobs:
       - name: Desktop panel authority guard
         run: python3 scripts/check_desktop_panel_authority.py
 
+      # The editor's text authority: the host may serve the bounded viewport
+      # window it cut from the controller's own snapshot, and the renderer may
+      # hold that window and no second copy of the text. The guard runs with
+      # its self-test: a guard that cannot be shown to fail on an injected
+      # defect is not evidence.
+      - name: Desktop editor authority guard (self-test)
+        run: python3 scripts/check_desktop_editor_authority.py --self-test
+
+      - name: Desktop editor authority guard
+        run: python3 scripts/check_desktop_editor_authority.py
+
       - name: Formatting
         run: cargo fmt --check --all
 

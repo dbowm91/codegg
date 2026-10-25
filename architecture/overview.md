@@ -643,6 +643,30 @@ guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
 entry. The *quick* guard count is **71**. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
 
+### Count reconciliation — M007-E desktop editor surface (2026-10-25)
+
+Two code-count rows moved when the desktop editor milestone added the guard
+that keeps the editor's text authority where it belongs. *Guard scripts (all)*
+is **96** (`ls scripts/check_*` — the new
+`scripts/check_desktop_editor_authority.py`, which holds the desktop editor's
+**one** bounded viewport slice as a recorded pair and refuses a host that
+serves a second copy of the text, a renderer that keeps a whole-document
+string or line array of its own, a viewport concatenated into one document
+string, a renderer filesystem or network read, or a DTO contract that drifts
+from the host's structs). *CI guard scripts* is **59** (the distinct
+`scripts/check_*` names in `.github/workflows/ci.yml` — it gained the same
+guard and its self-test). The quick-only difference is unchanged at **14**
+guards CI does not run: the new guard runs in **both** `verify.sh quick` and
+CI, so it adds no quick-only entry. The *quick* guard count is **73**.
+*Integration test files* is unchanged at **340** — the guard adds a script, and
+the milestone's host test lives under the desktop crate's own `tests/`
+directory, which the root `tests/*.rs` Source does not count. The **desktop
+panel authority guard's recorded bridge baseline** moved from **23** to **38**
+targets in the same change, because the editor's fifteen bounded commands are
+new bridge targets and that guard's own contract says a new target is a
+deliberate edit to it, in the same change that adds it. Every other code-count
+row was re-checked against its own listed `Source` and is unchanged.
+
 ### Count reconciliation — M007-B desktop panel authority guard (2026-10-24)
 
 Two code-count rows moved when the desktop chat-region milestone added the

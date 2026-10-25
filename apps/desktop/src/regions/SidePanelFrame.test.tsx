@@ -4,12 +4,14 @@ import { createRef } from 'react';
 import { PanelControls, SidePanelFrame } from './SidePanelFrame';
 import { dock, initialPanelHostState } from '../panels/host';
 import type { PanelProps } from '../panels/registry';
+import { emptyEditorPanelProps } from '../editor/fixtures';
 
 const panelProps: PanelProps = {
   projection: null,
   controller: null,
   todoBusy: false,
   todoError: null,
+  editor: emptyEditorPanelProps(),
 };
 
 describe('the desktop side-panel frame', () => {

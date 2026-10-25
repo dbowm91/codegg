@@ -60,8 +60,14 @@ export const KEYMAP_VERSION = 1;
  *     region, which focuses it.
  *   - `editing` — an editable element; the mouse route is to click into
  *     it and use the element's own editing affordance.
+ *   - `surface` — a custom editing surface (M007-E): an element that owns
+ *     a caret and is focused by a click, but holds **no text of its own**.
+ *     The editor's viewport is one. It is not an `editing` element, and it
+ *     cannot be one: a native text field would keep a second copy of the
+ *     text, which the editor's text authority forbids. The mouse route is
+ *     a click into the surface, and the action's chord applies there.
  */
-export type AffordanceClass = 'button' | 'region' | 'editing';
+export type AffordanceClass = 'button' | 'region' | 'editing' | 'surface';
 
 /**
  * The mouse route of an action.
@@ -141,6 +147,17 @@ export const OVERLAY_SCOPE: Scope = { kind: 'overlay' };
 export function regionScope(regionId: string): Scope {
   return { kind: 'region', region: regionId };
 }
+
+/**
+ * The scope the editor's own chords belong to (M007-E).
+ *
+ * The editor is a frontend-local surface, so its bindings are **actions**
+ * like any other, and they live in this table with the rest of the catalog.
+ * The scope is the editor's viewport — the editing surface that owns the
+ * caret — so an editor chord reaches the editor only while the editor has
+ * the focus, and never shadows a global chord.
+ */
+export const EDITOR_SCOPE: Scope = regionScope('editor');
 
 /** The key a scope is stored under. */
 export function scopeKey(scope: Scope): string {
@@ -314,7 +331,240 @@ export const ACTION_DECLARATIONS: readonly ActionDeclaration[] = [
     affordance: { class: 'button', testIdPrefixes: ['reconnect-button'] },
     captured: false,
   },
+  // The editor's own actions (M007-E).
+  //
+  // The editor is a frontend-local surface, so its bindings are actions like
+  // any other: they live in this table, under the editor's scope, and they
+  // are remappable and conflict-checked with everything else. The editor
+  // holds no chord table of its own.
+  //
+  // A movement and its selection-extending variant are two actions, not one
+  // action with two chords: the chords are alternatives for the *same*
+  // action, and moving the caret and extending the selection are different
+  // actions with different outcomes.
+  {
+    id: 'editor.cursor.left',
+    label: 'Move the caret left',
+    description: 'Move the caret one character to the left.',
+    defaultBindings: [{ chord: 'arrowleft', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.right',
+    label: 'Move the caret right',
+    description: 'Move the caret one character to the right.',
+    defaultBindings: [{ chord: 'arrowright', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.up',
+    label: 'Move the caret up',
+    description: 'Move the caret one line up.',
+    defaultBindings: [{ chord: 'arrowup', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.down',
+    label: 'Move the caret down',
+    description: 'Move the caret one line down.',
+    defaultBindings: [{ chord: 'arrowdown', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.lineStart',
+    label: 'Move the caret to the line start',
+    description: 'Move the caret to the start of the line it is on.',
+    defaultBindings: [{ chord: 'home', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.lineEnd',
+    label: 'Move the caret to the line end',
+    description: 'Move the caret to the end of the line it is on.',
+    defaultBindings: [{ chord: 'end', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.pageUp',
+    label: 'Move the caret up one page',
+    description: 'Move the caret up by one viewport of lines.',
+    defaultBindings: [{ chord: 'pageup', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.cursor.pageDown',
+    label: 'Move the caret down one page',
+    description: 'Move the caret down by one viewport of lines.',
+    defaultBindings: [{ chord: 'pagedown', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.left',
+    label: 'Extend the selection left',
+    description: 'Extend the selection one character to the left.',
+    defaultBindings: [{ chord: 'shift+arrowleft', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.right',
+    label: 'Extend the selection right',
+    description: 'Extend the selection one character to the right.',
+    defaultBindings: [{ chord: 'shift+arrowright', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.up',
+    label: 'Extend the selection up',
+    description: 'Extend the selection one line up.',
+    defaultBindings: [{ chord: 'shift+arrowup', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.down',
+    label: 'Extend the selection down',
+    description: 'Extend the selection one line down.',
+    defaultBindings: [{ chord: 'shift+arrowdown', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.lineStart',
+    label: 'Extend the selection to the line start',
+    description: 'Extend the selection to the start of the caret’s line.',
+    defaultBindings: [{ chord: 'shift+home', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.lineEnd',
+    label: 'Extend the selection to the line end',
+    description: 'Extend the selection to the end of the caret’s line.',
+    defaultBindings: [{ chord: 'shift+end', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.pageUp',
+    label: 'Extend the selection up one page',
+    description: 'Extend the selection up by one viewport of lines.',
+    defaultBindings: [{ chord: 'shift+pageup', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.select.pageDown',
+    label: 'Extend the selection down one page',
+    description: 'Extend the selection down by one viewport of lines.',
+    defaultBindings: [{ chord: 'shift+pagedown', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.deleteBackward',
+    label: 'Delete backwards',
+    description: 'Delete the character before the caret, or the selection.',
+    defaultBindings: [{ chord: 'backspace', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.deleteForward',
+    label: 'Delete forwards',
+    description: 'Delete the character after the caret, or the selection.',
+    defaultBindings: [{ chord: 'delete', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.insertNewline',
+    label: 'Insert a newline',
+    description: 'Insert a line break at the caret.',
+    defaultBindings: [{ chord: 'enter', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.undo',
+    label: 'Undo the last edit',
+    description: 'Undo the newest edit the editor made.',
+    defaultBindings: [{ chord: 'mod+z', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.redo',
+    label: 'Redo the last undone edit',
+    description: 'Redo the newest edit the editor undid.',
+    defaultBindings: [
+      { chord: 'mod+shift+z', scope: EDITOR_SCOPE },
+      { chord: 'mod+y', scope: EDITOR_SCOPE },
+    ],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
+  {
+    id: 'editor.save',
+    label: 'Save the document',
+    description: 'Save the open document through the daemon.',
+    defaultBindings: [{ chord: 'mod+s', scope: EDITOR_SCOPE }],
+    overrideScope: EDITOR_SCOPE,
+    affordance: { class: 'surface', testIdPrefixes: ['editor-viewport'] },
+    captured: true,
+  },
 ];
+
+/**
+ * The editor's printable insert is **not** a chord, and so it is not an
+ * action (M007-E).
+ *
+ * An action is a frontend-local **binding**, and a binding is a chord. A
+ * printable character is not a chord — it is the whole class of characters a
+ * keyboard can produce, and there is no single token to declare. The insert
+ * is therefore the editor viewport's own *editing affordance*, the same
+ * class of affordance the composer's draft carries: the mouse route is to
+ * click into the viewport and type.
+ *
+ * It is recorded here rather than left implicit, because the distinction is
+ * load-bearing: the canonical vocabulary separates an **action** (a
+ * frontend-local binding) from a **command** (an entry in the daemon-owned
+ * catalog), and an insert that is not a chord is neither.
+ */
+export const EDITOR_INSERT_AFFORDANCE: Affordance = {
+  class: 'editing',
+  testIdPrefixes: ['editor-viewport'],
+};
 
 /**
  * The region-focus actions.
@@ -495,11 +745,6 @@ export interface ReservedChord {
  * shadowed by accident.
  */
 export const RESERVED_CHORDS: readonly ReservedChord[] = [
-  {
-    chord: 'mod+s',
-    reservedFor: 'M007-E (editor save)',
-    reason: 'no editor in M007-C; binding it would capture the WebView save accelerator with no target.',
-  },
   {
     chord: 'mod+f',
     reservedFor: 'a future in-app find',

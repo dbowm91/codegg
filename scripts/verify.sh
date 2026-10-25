@@ -112,6 +112,19 @@ run_guards() {
     echo "==> python3 scripts/check_desktop_panel_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_desktop_panel_authority.py)
 
+    # The editor's text authority: the host may serve the bounded viewport
+    # window it cut from the controller's own snapshot, and the renderer may
+    # hold that window and no second copy of the text. The editor's DTO
+    # mirror is checked here too, because the shared bindings check reads
+    # the bridge module only. The guard runs with its self-test, because a
+    # guard that cannot be shown to fail on an injected defect is not
+    # evidence.
+    echo "==> python3 scripts/check_desktop_editor_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_editor_authority.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_editor_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_editor_authority.py)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 

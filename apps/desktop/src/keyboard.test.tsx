@@ -217,6 +217,13 @@ describe('the desktop input model', () => {
     await pressKey('k', MOD);
     expect(screen.getByTestId('keybindings-panel')).toBeInTheDocument();
 
+    // The editor is a docked panel, so its affordances are live only while
+    // it is docked. Dock it, the way the overlay is opened above.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('panel-tab-editor'));
+    });
+    expect(screen.getByTestId('editor-viewport')).toBeInTheDocument();
+
     const map = buildEffectiveMap(ALL_ACTION_DECLARATIONS, {});
     for (const declaration of ALL_ACTION_DECLARATIONS) {
       // The chord route: the action holds at least one chord.
@@ -233,6 +240,12 @@ describe('the desktop input model', () => {
         expect(element, declaration.id).toBeVisible();
         if (declaration.affordance.class === 'editing') {
           expect(['INPUT', 'TEXTAREA'], declaration.id).toContain(element.tagName);
+          expect(element, declaration.id).not.toBeDisabled();
+        } else if (declaration.affordance.class === 'surface') {
+          // A custom editing surface: it owns a caret and is focused by a
+          // click, so it is focusable — and it holds no text of its own, so
+          // it is not a native text field.
+          expect(element.getAttribute('tabindex'), declaration.id).not.toBeNull();
           expect(element, declaration.id).not.toBeDisabled();
         } else if (declaration.affordance.class === 'button') {
           // An activatable control: a button, or a toggle the user clicks.

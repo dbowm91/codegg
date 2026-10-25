@@ -468,3 +468,37 @@ pre {
   font-family: ui-monospace, monospace;
   font-size: 12px;
 }
+
+/* The editor surface (M007-E). The viewport is a monospace column with a
+ * gutter; the selection uses the app's one selection surface, and the caret
+ * is drawn with the accent token rather than a colour of its own. */
+.editor-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.editor-surface { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.editor-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.editor-path { color: var(--surface-muted-strong); font-family: ui-monospace, monospace; font-size: 12px; }
+.editor-state { border-radius: 99px; padding: 4px 10px; background: var(--surface-status-neutral); font-size: 11px; text-transform: uppercase; }
+.editor-state[data-state='conflict'],
+.editor-state[data-state='resync_required'] { background: var(--surface-status-bad-bg); color: var(--surface-status-bad-fg); }
+.editor-state[data-state='synced'] { background: var(--surface-status-ok-bg); color: var(--surface-status-ok-fg); }
+.editor-conflict { background: var(--surface-status-bad-bg); color: var(--surface-status-bad-fg); border-radius: 99px; padding: 4px 10px; font-size: 11px; }
+.editor-error { margin: 0; color: var(--surface-status-bad-fg); }
+.editor-body { display: flex; gap: 10px; flex: 1 1 auto; min-height: 0; }
+.editor-tree { flex: 0 0 180px; overflow-y: auto; border: 1px solid var(--surface-border); border-radius: 8px; padding: 8px; }
+.editor-tree-list, .editor-tree-children { list-style: none; margin: 0; padding: 0; }
+.editor-tree-entry { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.editor-tree-name { font-family: ui-monospace, monospace; font-size: 12px; }
+.editor-tree-open { padding: 2px 6px; font-size: 11px; }
+.editor-tree-status, .editor-empty { color: var(--surface-muted); font-size: 12px; }
+.editor-viewport { flex: 1 1 auto; min-width: 0; overflow: auto; border: 1px solid var(--surface-border); border-radius: 8px; padding: 8px; background: var(--surface-bg); font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; white-space: pre; }
+.editor-viewport:focus { outline: 2px solid var(--surface-accent); outline-offset: -2px; }
+.editor-line { display: flex; gap: 12px; }
+.editor-line.is-caret-line { background: var(--surface-row-hover-bg); }
+.editor-gutter { flex: 0 0 auto; min-width: 3ch; text-align: right; color: var(--surface-muted); user-select: none; }
+.editor-line-body { white-space: pre; }
+.editor-selection { background: var(--surface-selection-bg); color: var(--surface-selection-fg); }
+.editor-caret { display: inline-block; width: 2px; height: 1.2em; vertical-align: text-bottom; background: var(--surface-accent); }
+.editor-footer { display: flex; gap: 10px; flex-wrap: wrap; }
+.editor-footer section { flex: 1 1 200px; min-width: 0; border: 1px solid var(--surface-border); border-radius: 8px; padding: 8px; }
+.editor-footer h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--surface-muted); }
+.editor-footer ul { list-style: none; margin: 0; padding: 0; max-height: 140px; overflow-y: auto; }
+.editor-footer li { display: flex; gap: 8px; font-size: 12px; }
