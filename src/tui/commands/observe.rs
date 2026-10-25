@@ -569,19 +569,25 @@ fn stop_subscription_best_effort(
         return;
     };
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
         "observe_unsubscribe",
         async move {
-            let req = crate::core::new_request(
-                format!("observe-unsubscribe-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectionUnsubscribe {
-                    subscription_id: subscription_id.clone(),
-                },
-            );
-            if let Err(e) = core_client.request(req).await {
+            // M007-D: the subscription id the daemon issued travels as the
+            // command's argument.
+            if let Err(e) = crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "stop_observing",
+                "",
+                subscription_id.as_str(),
+            )
+            .await
+            {
                 tracing::warn!(
                     error = %e,
                     subscription_id = ?subscription_id,

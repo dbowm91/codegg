@@ -595,6 +595,213 @@ _missing(
 )
 
 
+# ── The verdict for the forms the daemon does not serve yet ────────────────
+#
+# A daemon-effect form whose TUI arm issues a daemon request is one of five
+# things, and the artifact says which:
+#
+# * **migrated** — the form is served now. Its effect travels through
+#   `CoreRequest::CommandExecute` and the daemon's inner response.
+# * **mechanical** — the effect request's fields are the scope's plus at
+#   most one argument, so the daemon's effect table can build it. The
+#   encoding is named, so the row is a decision and not a guess.
+# * **not mechanical** — the effect request carries a value the scope and
+#   the argument cannot produce: a runtime cursor, a revision, a free-text
+#   body, a structured payload, or a second effect beside the first.
+# * **subsystem move** — the arm is a subsystem in its own right. Moving it
+#   is a milestone with its own ownership question, not a table row.
+# * **misclassified** — the arm's effect is the frontend's own, so the
+#   catalog's kind is wrong.
+#
+# The verdict is keyed by the command's *name*, because a command's forms
+# share one effect.
+ARM_VERDICTS: dict[str, tuple[str, str]] = {}
+
+
+def _arm(name: str, verdict: str, reason: str) -> None:
+    ARM_VERDICTS[name] = (verdict, reason)
+
+
+# The agent registry is the TUI's own: `app.agent_state` holds the agents the
+# TUI loaded from its asset snapshot, and both arms read it directly. The
+# daemon request they issue is a project lookup, not the effect.
+_arm(
+    "/agent",
+    "misclassified",
+    "the TUI selects from its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_arm(
+    "/agents",
+    "misclassified",
+    "the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_arm(
+    "/security-review-show",
+    "not mechanical",
+    "the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review` (M007-H)",
+)
+
+# The collaboration forms. The chat ones carry a runtime value the scope
+# cannot produce: a cursor, a revision, a free-text body, a structured
+# payload, or an idempotency key.
+_arm(
+    "/stop-observing",
+    "migrated",
+    "`ProjectionUnsubscribe` takes one identifier — the subscription id the daemon issued — which travels as the argument",
+)
+_arm(
+    "/chat-send",
+    "not mechanical",
+    "the body is free text, and the request also carries mentions, references and a runtime idempotency key",
+)
+_arm(
+    "/chat-reply",
+    "not mechanical",
+    "the body is free text, and the request also carries the reply's thread root, mentions, references and a runtime idempotency key",
+)
+_arm(
+    "/chat-history",
+    "not mechanical",
+    "the arm issues two request shapes (`chat_history` and `chat_history_older`) selected by the negotiated `backward_paging` capability, and one effect-table row per form cannot express that choice",
+)
+_arm(
+    "/chat-sync",
+    "not mechanical",
+    "`from_seq` is the TUI's cached cursor, and the arm falls back to a history request when the daemon cannot sync",
+)
+_arm(
+    "/chat-read",
+    "not mechanical",
+    "`last_read_seq` is a runtime sequence number, not a scope field",
+)
+_arm(
+    "/chat-edit",
+    "not mechanical",
+    "the body is free text and `expected_revision` is a runtime revision",
+)
+_arm(
+    "/chat-redact",
+    "not mechanical",
+    "the reason is free text and `expected_revision` is a runtime revision",
+)
+_arm(
+    "/chat-composing",
+    "not mechanical",
+    "the arm has two effects (the composing list and the composing set), and the set's flag is a runtime value",
+)
+_arm(
+    "/chat-action-task",
+    "not mechanical",
+    "the action is a structured payload assembled from the arguments, and the request carries a runtime idempotency key",
+)
+_arm(
+    "/chat-action-review",
+    "not mechanical",
+    "the action is a structured payload assembled from the arguments, and the request carries a runtime idempotency key",
+)
+
+# The execution forms.
+_arm(
+    "/loop",
+    "not mechanical",
+    "`ScheduleCreate` carries a structured spec (kind, job template, overlap and missed-run policies, labels) that the scope cannot derive",
+)
+_arm(
+    "/shell-ask",
+    "subsystem move",
+    "the arm drives 45 daemon requests; moving it is a subsystem, not a table row",
+)
+_arm(
+    "/shell-include",
+    "not mechanical",
+    "`HumanShellPromotionStage` carries three runtime identifiers beside the session",
+)
+_arm(
+    "/task-del",
+    "migrated",
+    "`ScheduleDelete` takes one identifier — the resolved schedule id — which travels as the argument",
+)
+_arm(
+    "/terminal-attach",
+    "not mechanical",
+    "`from_seq` is the TUI's retained resume cursor",
+)
+_arm(
+    "/terminal-clear",
+    "not mechanical",
+    "the request carries a byte payload the TUI composes, which the scope and the argument cannot produce",
+)
+_arm(
+    "/terminal-resume",
+    "not mechanical",
+    "`from_seq` is a runtime cursor",
+)
+_arm(
+    "/test",
+    "not mechanical",
+    "`JobWait` needs a runtime job id and `WorkspaceRegister` a filesystem path",
+)
+
+# The git-review and memory forms are subsystem moves.
+_arm(
+    "/diff",
+    "subsystem move",
+    "the arm drives 40 daemon requests; moving it is a subsystem, not a table row",
+)
+_arm(
+    "/memory-consolidate",
+    "not mechanical",
+    "the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store",
+)
+_arm(
+    "/skill-promote",
+    "subsystem move",
+    "the arm drives 44 daemon requests; moving it is a subsystem, not a table row",
+)
+
+# The research forms read the TUI's own research service over the local
+# filesystem. No daemon request is their effect.
+_arm(
+    "/research-open",
+    "misclassified",
+    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_arm(
+    "/research-runs",
+    "misclassified",
+    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+_arm(
+    "/research-show",
+    "misclassified",
+    "the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect`",
+)
+
+# The session forms.
+_arm(
+    "/import",
+    "not mechanical",
+    "the arm opens the import dialog; the daemon request is issued by the dialog's own submit path, not by the command",
+)
+_arm(
+    "/new",
+    "not mechanical",
+    "`SessionCreate` carries a filesystem `directory` that the scope cannot derive",
+)
+_arm(
+    "/start",
+    "not mechanical",
+    "the arm's effect is a turn submission through the agent loop's own prompt path, and a `SessionCreate` when no session is bound; neither is a request the scope and an argument can address",
+)
+
+# The system forms.
+_arm(
+    "/sandbox",
+    "not mechanical",
+    "the daemon effect is issued by the confirmation dialog's own submit path, and `RuntimePolicySet` carries the cached policy's `expected_revision`; the empty-argument arm is a local selector",
+)
+
+
 # ── The artifact ────────────────────────────────────────────────────────────
 
 
@@ -889,8 +1096,9 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("")
     write("## 10. The classification of the forms the daemon does not serve")
     write("")
-    write("Every daemon-effect form the daemon does not serve is one of two things,")
-    write("and the artifact says which:")
+    write("Every daemon-effect form the daemon does not serve is classified below, in")
+    write("two groups. The forms whose TUI arm issues **no** daemon request are one")
+    write("of two things:")
     write("")
     write("* **misclassified** — the form is not really a daemon effect: it does not")
     write("  mutate daemon-owned state, does not read daemon-owned state as its")
@@ -900,6 +1108,9 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  genuinely lacks the surface. That is new product capability, not")
     write("  migration work, and it belongs to the follow-up named here.")
     write("")
+    write("The forms whose TUI arm **does** issue a daemon request are classified in")
+    write("the second table below, under a different set of verdicts.")
+    write("")
     misclassified = [row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "misclassified"]
     missing = [row for row in local_only if VERDICTS.get(row["name"], ("",))[0] == "missing capability"]
     undecided = [row for row in local_only if row["name"] not in VERDICTS]
@@ -907,11 +1118,19 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write(f"capability**, out of {len(local_only)} daemon-effect forms whose TUI arm issues")
     write("no daemon request.")
     write("")
+    arm_misclassified = [
+        row for row in with_request if ARM_VERDICTS.get(row["name"], ("",))[0] == "misclassified"
+    ]
+    kind_corrections = len({row["name"] for row in misclassified}) + len(
+        {row["name"] for row in arm_misclassified}
+    )
     write("The kind correction is **not applied here**: a frontend-effect form needs a")
     write("declared `FrontendAction`, and the declared set's model is a UI action the")
-    write("frontend performs. Nineteen new actions and nineteen catalog kind changes")
-    write("are their own change, recorded as a follow-up rather than smuggled into")
-    write("this milestone.")
+    write(
+        f"frontend performs. {kind_corrections} new actions and {kind_corrections} catalog"
+    )
+    write("kind changes are their own change, recorded as a follow-up rather than")
+    write("smuggled into this milestone.")
     write("")
     write("| command | family | verdict | why |")
     write("|---|---|---|---|")
@@ -943,7 +1162,64 @@ def build(commands: list[CatalogCommand], served: set[tuple[str, str]]) -> str:
     write("  review and change-review workflows, opening a document, re-running a human-")
     write("  shell run, and a log tail. Each is an existing request family the daemon has")
     write("  not grown yet. | no — these extend request families that already exist |")
+    write("| M007-I | the three **subsystem moves**: the git-review diff view, the")
+    write("  skill-promotion workflow, and the human-shell ask workflow. Each is a")
+    write("  workflow of dozens of daemon requests rather than one effect, so moving")
+    write("  it is a milestone with its own ownership question — which daemon owns")
+    write("  the workflow's state, and whether the frontend keeps any of it. | **yes** —")
+    write("  each is a new ownership boundary, and ADR-0052 does not cover it |")
     write("")
+    write("### The forms whose TUI arm issues a daemon request")
+    write("")
+    write("The remaining daemon-effect forms the daemon does not serve, and whose TUI")
+    write("arm issues a daemon request anyway, are one of four things — the fifth,")
+    write("**migrated**, is a form the daemon already serves and is counted above:")
+    write("")
+    write("* **mechanical** — the effect request's fields are the scope's plus at most")
+    write("  one argument, so the daemon's effect table can build it. The encoding is")
+    write("  named, so the row is a decision and not a guess.")
+    write("* **not mechanical** — the effect request carries a value the scope and the")
+    write("  argument cannot produce: a runtime cursor, a revision, a free-text body, a")
+    write("  structured payload, or a second effect beside the first.")
+    write("* **subsystem move** — the arm is a subsystem in its own right. Moving it is")
+    write("  a milestone, and it is named in the follow-up table above.")
+    write("* **misclassified** — the arm's effect is the frontend's own, so the")
+    write("  catalog's kind is wrong and the corrected kind is named.")
+    write("")
+    counts: dict[str, int] = {}
+    for row in with_request:
+        verdict = ARM_VERDICTS.get(row["name"])
+        if verdict is None:
+            continue
+        counts[verdict[0]] = counts.get(verdict[0], 0) + 1
+    write(
+        "**"
+        + ", ".join(f"{count} {verdict}" for verdict, count in sorted(counts.items()))
+        + f"**, out of {len(with_request)} daemon-effect forms whose TUI arm issues a")
+    write("daemon request but which the daemon does not serve.")
+    write("")
+    write(
+        f"The accounting is complete: **{len(daemon_rows)} daemon-effect forms = "
+        f"{len(served_rows)} served + {len(with_request)} mechanical-unserved + "
+        f"{len(local_only)} with no daemon request**, and every one of them is named."
+    )
+    write("")
+    write("| command | family | verdict | why |")
+    write("|---|---|---|---|")
+    for row in with_request:
+        verdict = ARM_VERDICTS.get(row["name"])
+        if verdict is None:
+            continue
+        kind, reason = verdict
+        write(f"| `{row['name']}` | {row['domain']} | {kind} | {reason} |")
+    write("")
+    arm_undecided = [row for row in with_request if row["name"] not in ARM_VERDICTS]
+    if arm_undecided:
+        write(
+            "**Undecided forms:** "
+            + ", ".join(f"`{row['name']}`" for row in arm_undecided)
+        )
+        write("")
     if undecided:
         write("**Undecided forms:** " + ", ".join(f"`{row['name']}`" for row in undecided))
         write("")

@@ -52,12 +52,14 @@ const MIGRATED: &[(&str, &str, &str)] = &[
     ("nodes", "", "System"),
     // Execution
     ("goal", "", "Execution"),
+    ("task_del", "", "Execution"),
     // Session
     ("edit_undo", "", "Session"),
     ("edit_reapply", "", "Session"),
     // Collaboration
     ("stop", "", "Collaboration"),
     ("chat_action_list", "", "Collaboration"),
+    ("stop_observing", "", "Collaboration"),
 ];
 
 /// The families the migrated commands cover.
@@ -94,6 +96,23 @@ impl CoreClient for RecordingClient {
             },
             CoreRequest::ChatChannelEnsure { project_id, .. } => CoreResponse::ChatChannel {
                 channel: chat_channel(project_id),
+            },
+            // The schedule deletion resolves the user's id against the
+            // daemon's list first, so the recorder answers the list.
+            CoreRequest::ScheduleList { .. } => CoreResponse::ScheduleList {
+                schedules: vec![crate::protocol::dto::ScheduleSummaryDto {
+                    schedule_id: "schedule-1".to_string(),
+                    workspace_id: "workspace-1".to_string(),
+                    session_id: None,
+                    kind: serde_json::json!("loop"),
+                    state: "active".to_string(),
+                    overlap_policy: "skip".to_string(),
+                    missed_run_policy: serde_json::json!("skip"),
+                    next_run_at_ms: None,
+                    last_occurrence_at_ms: None,
+                    created_at_ms: 0,
+                    updated_at_ms: 0,
+                }],
             },
             _ => CoreResponse::CommandExecute {
                 result: CommandExecuteResultDto {
@@ -352,6 +371,28 @@ async fn the_execution_family_is_executed_by_the_daemon() {
         Some(("goal".to_string(), String::new(), String::new())),
         "the goal read must be executed as the catalog's goal command"
     );
+
+    // The schedule deletion resolves the user's id against the daemon's
+    // list first, so the session must carry the workspace the list is
+    // scoped to.
+    let session = crate::session::Session {
+        id: "session-1".to_string(),
+        project_id: "project-1".to_string(),
+        workspace_id: Some("workspace-1".to_string()),
+        ..Default::default()
+    };
+    app.session_state.session = Some(session);
+    crate::tui::commands::tasks::start_delete_task(&mut app, "schedule-1".to_string());
+    wait_for_command(&recorder, "task_del").await;
+    assert_eq!(
+        recorded_for(&recorder, "task_del"),
+        Some((
+            "task_del".to_string(),
+            String::new(),
+            "schedule-1".to_string()
+        )),
+        "the schedule deletion must carry the resolved schedule id as its argument"
+    );
 }
 
 /// The Session family: the checkpoint undo and reapply are executed by the
@@ -432,6 +473,41 @@ async fn the_collaboration_family_is_executed_by_the_daemon() {
             "channel-1 msg-1".to_string()
         )),
         "the action listing must carry the channel and the message id as its argument"
+    );
+
+    // The unsubscribe names the subscription the daemon issued, so the
+    // observer must be holding one.
+    let request_id = app
+        .observer
+        .begin_observe("project-1", "session-1")
+        .expect("the observer accepts a valid target");
+    let epoch = app.observer.reconnect_epoch;
+    assert!(
+        app.observer.apply_subscribed(
+            request_id,
+            "project-1",
+            "session-1",
+            crate::protocol::projection::ProjectionSubscriptionId::new("subscription-1"),
+            crate::protocol::projection::ProjectionCursor {
+                stream_id: crate::protocol::projection::ProjectionStreamId::new("stream-1")
+                    .expect("a non-empty stream id is valid"),
+                event_seq: 0,
+                projection_version: 1,
+            },
+            epoch,
+        ),
+        "the observer accepts its own subscribe completion"
+    );
+    crate::tui::commands::observe::stop_observing(&mut app);
+    wait_for_command(&recorder, "stop_observing").await;
+    assert_eq!(
+        recorded_for(&recorder, "stop_observing"),
+        Some((
+            "stop_observing".to_string(),
+            String::new(),
+            "subscription-1".to_string()
+        )),
+        "the unsubscribe must carry the subscription id the daemon issued"
     );
 }
 

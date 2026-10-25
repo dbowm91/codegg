@@ -335,6 +335,20 @@ pub fn build_inner_request(
                 "limit": null,
             })
         }
+        // The projection subscription the user is following. The daemon
+        // issued the id and the frontend holds the one it owns, so the id
+        // travels as the argument.
+        ("stop_observing", "") => json!({
+            "type": "projection_unsubscribe",
+            "subscription_id": first,
+        }),
+        // The background schedule the user named. The frontend resolves a
+        // short id to the full one first, so the full id travels as the
+        // argument.
+        ("task_del", "") => json!({
+            "type": "schedule_delete",
+            "schedule_id": first,
+        }),
 
         // ── the editor's checkpoints ──
         ("edit_undo", "") => {
@@ -1034,6 +1048,8 @@ mod tests {
         ("observe", ""),
         ("stop", ""),
         ("chat_action_list", ""),
+        ("stop_observing", ""),
+        ("task_del", ""),
         ("edit_undo", ""),
         ("edit_reapply", ""),
         ("edit_checkpoints", ""),
@@ -1213,6 +1229,51 @@ mod tests {
                     if channel_id == "channel-1" && message_id.is_none()
             ),
             "an action listing with no message id must list the channel's actions"
+        );
+    }
+
+    /// The rows whose whole identifier travels as the argument.
+    ///
+    /// The projection subscription and the background schedule are named by
+    /// ids the frontend holds, and nothing else. The test pins the encoding
+    /// because a frontend that encoded them differently would unsubscribe
+    /// the wrong subscription or delete the wrong schedule.
+    #[test]
+    fn the_identifier_rows_carry_their_identifier_in_the_argument() {
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "subscription-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("stop_observing", "", &ctx)
+        else {
+            panic!("stop_observing must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ProjectionUnsubscribe { subscription_id }
+                    if subscription_id.as_str() == "subscription-1"
+            ),
+            "the unsubscribe row must name the subscription the daemon issued"
+        );
+
+        let ctx = CommandContext {
+            project_id: "project",
+            workspace_id: "workspace",
+            session_id: Some("session"),
+            argument: "schedule-1",
+        };
+        let Some(CommandEffect::Ready(request)) = build_inner_request("task_del", "", &ctx) else {
+            panic!("task_del must build a request");
+        };
+        assert!(
+            matches!(
+                request.as_ref(),
+                CoreRequest::ScheduleDelete { schedule_id } if schedule_id == "schedule-1"
+            ),
+            "the schedule-delete row must name the schedule the frontend resolved"
         );
     }
 }

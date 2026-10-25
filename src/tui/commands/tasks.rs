@@ -360,6 +360,8 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
     let request_id = app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::tui::command_route::scope_for(app);
 
     spawn_registered_tui_task(
         tx,
@@ -398,13 +400,17 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                     });
                 }
             };
-            let request = crate::core::new_request(
-                format!("task-delete-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ScheduleDelete {
-                    schedule_id: resolved_id.clone(),
-                },
-            );
-            match core_client.request(request).await {
+            // M007-D: the daemon owns the effect. The resolved schedule id
+            // travels as the command's argument.
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope,
+                "task_del",
+                "",
+                &resolved_id,
+            )
+            .await
+            {
                 Ok(CoreResponse::ScheduleDeleted { schedule_id }) => {
                     Some(TuiCommand::TaskOperationFinished {
                         request_id,

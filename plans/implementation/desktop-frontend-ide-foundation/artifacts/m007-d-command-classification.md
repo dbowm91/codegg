@@ -37,8 +37,8 @@ generate_m007d_command_classification.py --check
 | argument forms | 166 |
 | daemon-effect forms | 134 |
 | frontend-effect forms | 32 |
-| daemon-effect forms the daemon's effect table serves | 43 |
-| daemon-effect forms whose TUI arm issues a daemon request | 36 |
+| daemon-effect forms the daemon's effect table serves | 45 |
+| daemon-effect forms whose TUI arm issues a daemon request | 34 |
 | daemon-effect forms whose TUI arm issues no daemon request | 55 |
 | frontend-effect forms covered by the declared action set | 32 |
 
@@ -132,7 +132,7 @@ it issues none.
 | `/task` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6767` | `WorkOrderLaneList`, `WorkOrderList`, `WorkOrderSummary` |
 | `/workspace` | `—` | frontend | Project | frontend → `OpenWorkspaceDashboard` | `src/tui/app/mod.rs:6770` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatHistoryOlder`, `ChatPolicyGet`, `ChatProjectPolicySet`, … (20) |
 | `/schedules` | `—` | daemon | Agent | daemon → served | `src/tui/app/mod.rs:6777` | `ScheduleGet`, `ScheduleList` |
-| `/task-del` | `—` | daemon | Execution | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6784` | `ScheduleDelete`, `ScheduleList` |
+| `/task-del` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:6784` | `ScheduleList` |
 | `/memory` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6800` | `SessionMessagesLoad` |
 | `/memory-search` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6812` | `SessionMessagesLoad` |
 | `/memory-list` | `—` | daemon | Memory | daemon → served | `src/tui/app/mod.rs:6820` | `SessionMessagesLoad` |
@@ -141,7 +141,7 @@ it issues none.
 | `/memory-consolidate` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6849` | `SessionMessagesLoad` |
 | `/habits` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6852` | — |
 | `/habit-dismiss` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6862` | — |
-| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (44) |
+| `/skill-promote` | `—` | daemon | Memory | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6876` | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (43) |
 | `/skill-proposals` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6938` | — |
 | `/skill-proposal` | `—` | daemon | Memory | daemon → not served (the TUI keeps its local arm) | `src/tui/app/mod.rs:6975` | — |
 | `/goal` | `—` | daemon | Execution | daemon → served | `src/tui/app/mod.rs:7143` | `GoalCheckpoint`, `GoalSetBudget` |
@@ -220,8 +220,8 @@ it issues none.
 | `/collaborators` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6126` | `PresenceSnapshotGet` |
 | `/team` | `—` | daemon | System | daemon → served | `src/tui/app/mod.rs:6142` | `ChatChannelPolicySet`, `ChatPolicyGet`, `ChatProjectPolicySet`, `TeamMembershipAdd`, `TeamMembershipList`, `TeamMembershipRevoke`, … (10) |
 | `/control` | `—` | daemon | Session | daemon → served | `src/tui/app/mod.rs:6154` | `SessionControlGet`, `SessionControlRelease`, `SessionControlRequest`, `SessionControlTakeover`, `SessionControlTransfer` |
-| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `ProjectionResume`, `ProjectionUnsubscribe` |
-| `/stop-observing` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6197` | `ProjectionUnsubscribe` |
+| `/observe` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6167` | `ProjectionResume` |
+| `/stop-observing` | `—` | daemon | Collaboration | daemon → served | `src/tui/app/mod.rs:6197` | — |
 | `/panels` | `—` | frontend | System | frontend → `OpenPanelManager` | `src/tui/app/mod.rs:6203` | — |
 | `/chat` | `—` | frontend | Collaboration | frontend → `FocusChat` | `src/tui/app/mod.rs:6215` | `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatHistory`, `ChatHistoryOlder`, `ChatPolicyGet`, `ChatProjectPolicySet`, … (19) |
 | `/chat-send` | `—` | daemon | Collaboration | daemon → not served (the TUI arm issues a daemon request) | `src/tui/app/mod.rs:6227` | `ChatChannelEnsure`, `ChatSend` |
@@ -250,9 +250,9 @@ already carries, so the coverage list and the catalog cannot drift apart.
 | family | forms | daemon effect | frontend effect | served | issues a daemon request | no daemon request |
 |---|---|---|---|---|---|---|
 | Agent | 11 | 10 | 1 | 1 | 7 | 2 |
-| Collaboration | 16 | 15 | 1 | 4 | 11 | 0 |
+| Collaboration | 16 | 15 | 1 | 5 | 10 | 0 |
 | Diagnostics | 28 | 28 | 0 | 3 | 0 | 25 |
-| Execution | 29 | 28 | 1 | 11 | 8 | 9 |
+| Execution | 29 | 28 | 1 | 12 | 7 | 9 |
 | GitReview | 3 | 3 | 0 | 0 | 1 | 2 |
 | Memory | 12 | 12 | 0 | 6 | 2 | 4 |
 | Project | 6 | 1 | 5 | 0 | 0 | 1 |
@@ -283,11 +283,10 @@ inventory of exactly this set.
 | `/open` | `—` | Project | — |
 | `/subagent-send` | `—` | Session | — |
 | `/loop` | `—` | Execution | `ScheduleCreate` |
-| `/task-del` | `—` | Execution | `ScheduleDelete`, `ScheduleList` |
 | `/memory-consolidate` | `—` | Memory | `SessionMessagesLoad` |
 | `/habits` | `—` | Memory | — |
 | `/habit-dismiss` | `—` | Memory | — |
-| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (44) |
+| `/skill-promote` | `—` | Memory | `ChatActionSubmit`, `ChatChannelEnsure`, `ChatChannelPolicySet`, `ChatComposingList`, `ChatComposingSet`, `ChatEdit`, … (43) |
 | `/skill-proposals` | `—` | Memory | — |
 | `/skill-proposal` | `—` | Memory | — |
 | `/plan` | `—` | Execution | — |
@@ -349,7 +348,6 @@ inventory of exactly this set.
 | `/plugin-doctor` | `—` | System | — |
 | `/plugin-remove` | `—` | System | — |
 | `/plugin-install` | `—` | System | — |
-| `/stop-observing` | `—` | Collaboration | `ProjectionUnsubscribe` |
 | `/chat-send` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-reply` | `—` | Collaboration | `ChatChannelEnsure`, `ChatSend` |
 | `/chat-history` | `—` | Collaboration | `ChatChannelEnsure`, `ChatHistory`, `ChatHistoryOlder` |
@@ -403,7 +401,9 @@ is the identifier, and the remainder is the payload.
 | `/state` | `—` | `active_goal_load` |
 | `/status` | `—` | `session_lifecycle_get` |
 | `/stop` | `—` | `turn_cancel` |
+| `/stop-observing` | `—` | `projection_unsubscribe` |
 | `/task` | `—` | `work_order_list` |
+| `/task-del` | `—` | `schedule_delete` |
 | `/tasks` | `—` | `work_order_list` |
 | `/team` | `—` | `team_membership_list` |
 | `/terminal-list` | `—` | `interactive_process_list` |
@@ -435,8 +435,10 @@ keeps the formatting.
 | `/nodes` | System | `CoreRequest::CommandExecute` (`nodes`) |
 | `/reload` | System | `CoreRequest::CommandExecute` (`reload`) |
 | `/stop` | Collaboration | `CoreRequest::CommandExecute` (`stop`) |
+| `/stop-observing` | Collaboration | `CoreRequest::CommandExecute` (`stop_observing`) |
+| `/task-del` | Execution | `CoreRequest::CommandExecute` (`task_del`) |
 
-**12 of the 134 daemon-effect forms are migrated.**
+**14 of the 134 daemon-effect forms are migrated.**
 The rest keep their local arm, and each one is listed above with the route
 it takes. The migration is one site per command: the request construction
 becomes a `CommandExecute` and the response is unwrapped, so the
@@ -504,8 +506,9 @@ the same separation seen from the other side.
 
 ## 10. The classification of the forms the daemon does not serve
 
-Every daemon-effect form the daemon does not serve is one of two things,
-and the artifact says which:
+Every daemon-effect form the daemon does not serve is classified below, in
+two groups. The forms whose TUI arm issues **no** daemon request are one
+of two things:
 
 * **misclassified** — the form is not really a daemon effect: it does not
   mutate daemon-owned state, does not read daemon-owned state as its
@@ -515,15 +518,18 @@ and the artifact says which:
   genuinely lacks the surface. That is new product capability, not
   migration work, and it belongs to the follow-up named here.
 
+The forms whose TUI arm **does** issue a daemon request are classified in
+the second table below, under a different set of verdicts.
+
 **19 are misclassified and 36 are real missing
 capability**, out of 55 daemon-effect forms whose TUI arm issues
 no daemon request.
 
 The kind correction is **not applied here**: a frontend-effect form needs a
 declared `FrontendAction`, and the declared set's model is a UI action the
-frontend performs. Nineteen new actions and nineteen catalog kind changes
-are their own change, recorded as a follow-up rather than smuggled into
-this milestone.
+frontend performs. 24 new actions and 24 catalog
+kind changes are their own change, recorded as a follow-up rather than
+smuggled into this milestone.
 
 | command | family | verdict | why |
 |---|---|---|---|
@@ -604,6 +610,71 @@ this milestone.
   review and change-review workflows, opening a document, re-running a human-
   shell run, and a log tail. Each is an existing request family the daemon has
   not grown yet. | no — these extend request families that already exist |
+| M007-I | the three **subsystem moves**: the git-review diff view, the
+  skill-promotion workflow, and the human-shell ask workflow. Each is a
+  workflow of dozens of daemon requests rather than one effect, so moving
+  it is a milestone with its own ownership question — which daemon owns
+  the workflow's state, and whether the frontend keeps any of it. | **yes** —
+  each is a new ownership boundary, and ADR-0052 does not cover it |
+
+### The forms whose TUI arm issues a daemon request
+
+The remaining daemon-effect forms the daemon does not serve, and whose TUI
+arm issues a daemon request anyway, are one of four things — the fifth,
+**migrated**, is a form the daemon already serves and is counted above:
+
+* **mechanical** — the effect request's fields are the scope's plus at most
+  one argument, so the daemon's effect table can build it. The encoding is
+  named, so the row is a decision and not a guess.
+* **not mechanical** — the effect request carries a value the scope and the
+  argument cannot produce: a runtime cursor, a revision, a free-text body, a
+  structured payload, or a second effect beside the first.
+* **subsystem move** — the arm is a subsystem in its own right. Moving it is
+  a milestone, and it is named in the follow-up table above.
+* **misclassified** — the arm's effect is the frontend's own, so the
+  catalog's kind is wrong and the corrected kind is named.
+
+**9 misclassified, 22 not mechanical, 3 subsystem move**, out of 34 daemon-effect forms whose TUI arm issues a
+daemon request but which the daemon does not serve.
+
+The accounting is complete: **134 daemon-effect forms = 45 served + 34 mechanical-unserved + 55 with no daemon request**, and every one of them is named.
+
+| command | family | verdict | why |
+|---|---|---|---|
+| `/sandbox` | System | not mechanical | the daemon effect is issued by the confirmation dialog's own submit path, and `RuntimePolicySet` carries the cached policy's `expected_revision`; the empty-argument arm is a local selector |
+| `/new` | Session | not mechanical | `SessionCreate` carries a filesystem `directory` that the scope cannot derive |
+| `/start` | Session | not mechanical | the arm's effect is a turn submission through the agent loop's own prompt path, and a `SessionCreate` when no session is bound; neither is a request the scope and an argument can address |
+| `/import` | Session | not mechanical | the arm opens the import dialog; the daemon request is issued by the dialog's own submit path, not by the command |
+| `/agents` | Agent | misclassified | the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/agents` | Agent | misclassified | the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/agents` | Agent | misclassified | the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/agents` | Agent | misclassified | the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/agents` | Agent | misclassified | the TUI lists its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/agent` | Agent | misclassified | the TUI selects from its own agent registry (`app.agent_state`); the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/loop` | Execution | not mechanical | `ScheduleCreate` carries a structured spec (kind, job template, overlap and missed-run policies, labels) that the scope cannot derive |
+| `/memory-consolidate` | Memory | not mechanical | the daemon request reads the session's messages; the effect itself is a write into the TUI's own memory store |
+| `/skill-promote` | Memory | subsystem move | the arm drives 44 daemon requests; moving it is a subsystem, not a table row |
+| `/diff` | GitReview | subsystem move | the arm drives 40 daemon requests; moving it is a subsystem, not a table row |
+| `/test` | Execution | not mechanical | `JobWait` needs a runtime job id and `WorkspaceRegister` a filesystem path |
+| `/research-runs` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/research-open` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/research-show` | Research | misclassified | the TUI's own `ResearchService` over the local filesystem; the catalog's kind is wrong and the corrected kind is `FrontendEffect` |
+| `/security-review-show` | Agent | not mechanical | the arm shows the TUI's cached review result, and the daemon has no request that reads one — the same missing surface as `/security-review` (M007-H) |
+| `/shell-include` | Execution | not mechanical | `HumanShellPromotionStage` carries three runtime identifiers beside the session |
+| `/shell-ask` | Execution | subsystem move | the arm drives 45 daemon requests; moving it is a subsystem, not a table row |
+| `/terminal-clear` | Execution | not mechanical | the request carries a byte payload the TUI composes, which the scope and the argument cannot produce |
+| `/terminal-attach` | Execution | not mechanical | `from_seq` is the TUI's retained resume cursor |
+| `/terminal-resume` | Execution | not mechanical | `from_seq` is a runtime cursor |
+| `/chat-send` | Collaboration | not mechanical | the body is free text, and the request also carries mentions, references and a runtime idempotency key |
+| `/chat-reply` | Collaboration | not mechanical | the body is free text, and the request also carries the reply's thread root, mentions, references and a runtime idempotency key |
+| `/chat-history` | Collaboration | not mechanical | the arm issues two request shapes (`chat_history` and `chat_history_older`) selected by the negotiated `backward_paging` capability, and one effect-table row per form cannot express that choice |
+| `/chat-sync` | Collaboration | not mechanical | `from_seq` is the TUI's cached cursor, and the arm falls back to a history request when the daemon cannot sync |
+| `/chat-read` | Collaboration | not mechanical | `last_read_seq` is a runtime sequence number, not a scope field |
+| `/chat-edit` | Collaboration | not mechanical | the body is free text and `expected_revision` is a runtime revision |
+| `/chat-redact` | Collaboration | not mechanical | the reason is free text and `expected_revision` is a runtime revision |
+| `/chat-composing` | Collaboration | not mechanical | the arm has two effects (the composing list and the composing set), and the set's flag is a runtime value |
+| `/chat-action-task` | Collaboration | not mechanical | the action is a structured payload assembled from the arguments, and the request carries a runtime idempotency key |
+| `/chat-action-review` | Collaboration | not mechanical | the action is a structured payload assembled from the arguments, and the request carries a runtime idempotency key |
 
 ## 11. The settled items
 
