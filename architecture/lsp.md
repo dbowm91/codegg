@@ -1043,6 +1043,33 @@ routed to whichever client `first_client_key()` returned, so in a polyglot
 workspace its answer depended on hash-map iteration order rather than on
 anything about the request.
 
+#### The desktop as a second consumer of the read surface (M007-E)
+
+The desktop host is the **second** consumer of the ADR-0012 read surface. It
+reads diagnostics, completion and navigation for the document it has open,
+through the same `file.read`-authorized read path, and it changes **nothing**
+about the read surface's authority: the daemon resolves the server, the warm
+client key still decides which server answers, and a cold read still returns
+`NotReady` with no payload.
+
+What is new is only how the desktop **presents** the three statuses, and the
+rule is that a status is never flattened:
+
+- **`NotReady` is presented as "no warm server"** — a status, not an error and
+  not an empty successful read. The desktop says that no server is warm for
+  the file's language yet, and it does not offer an empty diagnostics list or
+  an empty completion list, because an empty list reads as "the file is
+  clean" and the file may simply not have been analysed.
+- **`Ambiguous`** names the several candidates rather than picking one.
+- **`Unsupported`** reports that a live server does not do this — which is
+  different from "no server", and different again from "nothing wrong".
+
+The desktop host module is `apps/desktop/src-tauri/src/document.rs`; its
+diagnostics, completion and navigate commands are the three Tauri commands
+that surface these statuses. The document half — the shared
+`DocumentController`, the writer lease, the base-revision check and the
+containment — is described in `architecture/document.md`.
+
 #### Resolving which server answers
 
 `resolve_warm_client` answers three situations with three outcomes:

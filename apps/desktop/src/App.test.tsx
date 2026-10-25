@@ -24,6 +24,21 @@ vi.mock('./bridge', () => ({
     todoRefresh: vi.fn(),
     gitRead: vi.fn(),
     skillCatalogue: vi.fn(),
+    documentOpen: vi.fn(),
+    documentViewport: vi.fn(),
+    documentCursor: vi.fn(),
+    documentEdit: vi.fn(),
+    documentUndo: vi.fn(),
+    documentRedo: vi.fn(),
+    documentSave: vi.fn(),
+    documentReload: vi.fn(),
+    documentResync: vi.fn(),
+    documentClose: vi.fn(),
+    documentState: vi.fn(),
+    documentTree: vi.fn(),
+    documentDiagnostics: vi.fn(),
+    documentCompletion: vi.fn(),
+    documentNavigate: vi.fn(),
     subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),
@@ -54,6 +69,20 @@ beforeEach(() => {
   vi.mocked(bridge.projects).mockResolvedValue(projectList());
   vi.mocked(bridge.disconnect).mockResolvedValue(undefined);
   vi.mocked(bridge.unsubscribe).mockResolvedValue(undefined);
+  vi.mocked(bridge.documentTree).mockResolvedValue({
+    workspaceId: 'workspace-1',
+    prefix: '',
+    status: 'ready',
+    message: 'the workspace listing is current',
+    nodes: [],
+    truncated: false,
+  });
+  vi.mocked(bridge.documentDiagnostics).mockResolvedValue({
+    status: 'no_warm_server',
+    message: 'no language server is warm for this project yet',
+    diagnostics: [],
+    truncated: false,
+  });
   vi.mocked(bridge.subscribe).mockImplementation(async () => ({
     subscriptionId: `desktop-sub-${Math.floor(Math.random() * 100000)}`,
     connectionGeneration: 1,

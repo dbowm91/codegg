@@ -1,5 +1,6 @@
 mod artifact;
 mod control;
+pub mod document;
 mod lifecycle;
 mod projection;
 mod prompt;
@@ -26,6 +27,13 @@ use codegg_client::{
 use codegg_protocol::{
     core::{CoreEvent, CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
     frames::{ClientCapabilities, ClientKind},
+};
+use document::{
+    desktop_document_close, desktop_document_completion, desktop_document_cursor,
+    desktop_document_diagnostics, desktop_document_edit, desktop_document_navigate,
+    desktop_document_open, desktop_document_redo, desktop_document_reload, desktop_document_resync,
+    desktop_document_save, desktop_document_state, desktop_document_tree, desktop_document_undo,
+    desktop_document_viewport,
 };
 use lifecycle::{cancel_and_join, SubscriptionRegistry};
 use std::{
@@ -75,6 +83,11 @@ struct HostState {
     /// and session selection live here under route-generation fencing.
     /// Canonical workspace roots in this state are never serialized.
     route: Mutex<route::RouteState>,
+    /// M007-E document session. Present only while a document is open; it
+    /// owns the shared `DocumentController`, the bounded undo stack and the
+    /// cursor/viewport window the editor needs. The document itself, and
+    /// every version of it, stays the daemon's.
+    document: Mutex<Option<Arc<document::DesktopDocumentSession>>>,
     /// Test-only connected flag for deterministic race tests that must not
     /// require a real daemon socket. Production presence is `client.is_some()`;
     /// tests set this flag plus a non-zero generation to simulate a live
@@ -94,6 +107,7 @@ impl Default for HostState {
             connect_serial: AtomicU64::new(0),
             subscriptions: SubscriptionRegistry::new(),
             route: Mutex::new(route::RouteState::default()),
+            document: Mutex::new(None),
             #[cfg(test)]
             fake_connected: std::sync::atomic::AtomicBool::new(false),
         }
@@ -1074,7 +1088,22 @@ pub fn run() {
             desktop_projection_subscribe,
             desktop_subscribe_events,
             desktop_unsubscribe_events,
-            desktop_disconnect
+            desktop_disconnect,
+            desktop_document_open,
+            desktop_document_viewport,
+            desktop_document_cursor,
+            desktop_document_edit,
+            desktop_document_undo,
+            desktop_document_redo,
+            desktop_document_save,
+            desktop_document_reload,
+            desktop_document_resync,
+            desktop_document_close,
+            desktop_document_state,
+            desktop_document_tree,
+            desktop_document_diagnostics,
+            desktop_document_completion,
+            desktop_document_navigate
         ])
         .on_window_event(move |_window, event| match event {
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {

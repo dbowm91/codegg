@@ -32,7 +32,7 @@ This document is the **bird's eye view**: how the system is decomposed, how a tu
 
 The supported distribution remains one `codegg` executable per target. The daemon is a user-scoped singleton discovered and started by that executable; the TUI and daemon share the same business-logic libraries and invocation contracts. Runtime-safety milestone M007 measured the dependency and release profiles and retained this no-split topology because a daemon/TUI split did not produce a material deployment improvement without adding packaging or ownership complexity. Future role-specific binaries require a new measured deployment constraint and compatibility plan; they are not an advertised installation mode.
 
-An optional Tauri desktop shell lives under `apps/desktop` and is built with its own Rust and JavaScript toolchains. Its Rust host uses `codegg-client` to connect to or start the existing `codegg` daemon; it is not a second daemon binary and does not change the root Cargo workspace's Rust 1.89 contract. See [desktop architecture](desktop.md).
+An optional Tauri desktop shell lives under `apps/desktop` and is built with its own Rust and JavaScript toolchains. It has its own renderer-owned, remappable input model with mouse parity — see [the desktop's input model](desktop.md#the-desktops-input-model) — and its shortcuts are **in-window only**: there is no OS-global shortcut. Its Rust host uses `codegg-client` to connect to or start the existing `codegg` daemon; it is not a second daemon binary and does not change the root Cargo workspace's Rust 1.89 contract. See [desktop architecture](desktop.md).
 
 ## System architecture
 
@@ -297,7 +297,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `6e8a6bb60` together with the M005 writer-containment line's branch tip `369839eb8`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-25**, each against its own listed `Source`, in the merged tree that carries `origin/main` `cb4ceed9d` together with the M005 writer-containment line's branch tip `adcd927ee`. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -594,8 +594,11 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 341 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 95 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 58 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Guard scripts (all) | 96 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 59 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 340 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 96 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 59 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -635,6 +638,12 @@ sandbox C005 closure record's last open finding. *Integration test files* is
 **341**, re-measured on the tree with `python3 scripts/measure_overview_counts.py`
 rather than incremented. Every other row was confirmed unchanged by
 measurement.
+
+### Count reconciliation — the ninth reconciliation with `main` (2026-10-25)
+
+`origin/main` advanced to `cb4ceed9d`, carrying PRs #192 and #194 — the desktop keyboard-first input model (M007-C) and the desktop editor surface (M007-E). One file conflicted: the three count rows. *Guard scripts (all)* is **96** (`main` added `scripts/check_desktop_editor_surface_authority.py`) and *CI guard scripts* is **59** (the workflow gained the same guard and its self-test) — both unions of the two sides' sets. *Integration test files* is **341**, unchanged from the eighth reconciliation, because `main`'s two desktop milestones added no integration test file. The *quick* guard count moved **72 → 73**, the *quick runs 14 guards CI does not* difference is unchanged at **14**, `AGENTS.md`'s published counts moved to **73 quick / 59 CI**, and the quick lane's `==>` lines moved from 119 to **121** (`run_guards` **117**, `run_quick` **4**). Every other row was confirmed unchanged by measurement: architecture docs **92**, distinct production tool names **75**, tool source files **83**, LSP server definitions **39**, `codegg-core` modules **54**, `AppEvent` variants **61**, `CoreRequest` variants **268** (242 struct + 26 unit), `CoreResponse` variants **176** (175 struct + 1 unit), `CoreEvent` variants **92**, `ProjectionEvent` variants **47**, authorized operations **262**, identity newtypes **19**, built-in slash commands **169**, built-in agents **10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files incl. `mod.rs`), database tables **95 statements / 91 tables**, storage layout version **88**, Git operation variants **54**, Git risk classes **11**, and workspace member crates **11** (+ root). The **Tool registrations** row is unchanged too — still **67**, still **53 `register` + 14 `register_boxed`**.
+
+The comment corpus did **not** move: the merged tree still measures **125,212** comment lines, **1,103,943** words and a **0.1337** ratio, and the re-bank moved no per-file ceiling, because `main`'s two desktop milestones added no Rust comment lines. That is still **above** the 124,865 pre-reduction corpus, which the seventh reconciliation already recorded: the figure is a historical reference, not a guard, and the corpus crossed it before this line's merges.
 
 ### Count reconciliation — the eighth reconciliation with `main` (2026-10-24)
 
@@ -700,6 +709,30 @@ quick-only difference is unchanged at **14** guards CI does not run: the new
 guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
 entry. The *quick* guard count is **71**. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — M007-E desktop editor surface (2026-10-25)
+
+Two code-count rows moved when the desktop editor milestone added the guard
+that keeps the editor's text authority where it belongs. *Guard scripts (all)*
+is **96** (`ls scripts/check_*` — the new
+`scripts/check_desktop_editor_authority.py`, which holds the desktop editor's
+**one** bounded viewport slice as a recorded pair and refuses a host that
+serves a second copy of the text, a renderer that keeps a whole-document
+string or line array of its own, a viewport concatenated into one document
+string, a renderer filesystem or network read, or a DTO contract that drifts
+from the host's structs). *CI guard scripts* is **59** (the distinct
+`scripts/check_*` names in `.github/workflows/ci.yml` — it gained the same
+guard and its self-test). The quick-only difference is unchanged at **14**
+guards CI does not run: the new guard runs in **both** `verify.sh quick` and
+CI, so it adds no quick-only entry. The *quick* guard count is **73**.
+*Integration test files* is unchanged at **340** — the guard adds a script, and
+the milestone's host test lives under the desktop crate's own `tests/`
+directory, which the root `tests/*.rs` Source does not count. The **desktop
+panel authority guard's recorded bridge baseline** moved from **23** to **38**
+targets in the same change, because the editor's fifteen bounded commands are
+new bridge targets and that guard's own contract says a new target is a
+deliberate edit to it, in the same change that adds it. Every other code-count
+row was re-checked against its own listed `Source` and is unchanged.
 
 ### Count reconciliation — M007-B desktop panel authority guard (2026-10-24)
 

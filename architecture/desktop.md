@@ -20,6 +20,17 @@ Tauri assets and IPC; it does not allow CDN scripts or `unsafe-eval`. The
 renderer does not access the local daemon transport or accept a raw
 `CoreRequest`.
 
+**The editor adds no renderer permission and no CSP relaxation.** The
+editor's surface is a bounded viewport over text the **daemon** owns: the
+host opens the document through the shared `DocumentController`, the renderer
+receives a window of lines and sends **edits**, not content. It declares no
+Tauri capability of its own, registers no plugin, and the production CSP and
+the empty `main` permission list are unchanged. The renderer's **own** write
+authority is nil — `scripts/check_desktop_editor_authority.py` fails on a
+renderer-side filesystem read, a renderer-side text field, a retained
+whole-document array and a viewport concatenated into one, and
+`scripts/check-desktop-boundary.sh` still holds.
+
 ## Bridge
 
 The Rust host owns one optional `LocalSocketClient` plus one explicit
@@ -329,9 +340,77 @@ Test instrumentation never widens production authority:
   same-named live entry across daemon restarts instead of stacking a
   duplicate the renderer would double-list.
 
+## The desktop's input model
+
+The desktop has its **own** renderer-owned, remappable input model. It is not
+the TUI's keymap, and the TUI's keymap is not changed by it — the TUI's
+`ActionKey` (`src/tui/input.rs:259`, 61 variants) is the **source vocabulary**
+the desktop draws from, and `plans/000-long-term-specification.md:564` makes
+the conceptual hierarchy normative while the exact keys are configurable. The
+desktop borrows concepts; it does not borrow bindings.
+
+**Where it lives.** `apps/desktop/src/keymap.ts` holds the action
+declaration table, the concept-parity table and the chord machinery;
+`apps/desktop/src/focus.ts` holds the region registry and the focus model;
+`apps/desktop/src/panels/KeybindingsPanel.tsx` is the customisation surface.
+All three are **renderer-local**: the keymap persists in the renderer's
+`localStorage` under `codegg.desktop.keymap.v1`, and the desktop holds **no**
+daemon-owned state for it.
+
+**Chord normalisation.** A chord is modifier tokens in a fixed order (`mod`,
+`ctrl`, `alt`, `shift`) followed by the key token, lowercased — `mod+shift+p`,
+`shift+enter`, `escape`, `enter`, `f1`, `arrowright`. `mod` resolves to
+`metaKey` on macOS and `ctrlKey` elsewhere, so one declaration serves both
+platforms. Resolution is deterministic and total: an unrecognised key event
+normalises to a chord that matches nothing.
+
+**The declaration table.** Each action carries an identity, a label, a
+description, its default bindings, its mouse affordance and the TUI concept it
+carries. The labels are UI labels, so `plans/001-terminology-and-domain-model.md:5`
+applies to them; the milestone **records** the proposed vocabulary in its
+closure record and does not amend the canonical document, because that is an
+owner-directed step.
+
+**The effective map.** Defaults merged with the user's overrides. An override
+for an action **replaces** that action's defaults entirely. A conflict — the
+TUI's map cannot have one by construction, the desktop's can — is resolved
+deterministically and reported; a remap that would collide is **refused** with
+the TUI's shape of message and leaves the keymap byte-identical. Persistence is
+one `setItem` per commit, so a reload can never observe a half-applied remap.
+A missing, malformed, wrong-version or unparseable document yields the
+defaults plus a visible notice; an unknown action id is dropped individually.
+Import is atomic.
+
+**The focus model.** Five regions in focus order — the catalog rail, the chat,
+the side panel, the composer and the status row — bound to the frame's own
+containers. `mod+1`…`mod+5` focus a region directly; `Tab` and `Shift+Tab`
+move within the focused region and **wrap**, with a roving `tabindex` so `Tab`
+never escapes it. The focused region carries `data-focus-region` and an
+outline; the focused control carries the `focus-ring` class. An overlay traps
+the focus, and `Esc` pops exactly one overlay layer and restores the element
+that had the focus before that overlay opened; `Esc` on the base view does
+nothing. A focused region that unmounts hands the focus to its declared
+fallback, never to `document.body`.
+
+**One entry point.** A single `keydown` listener, installed once at the
+renderer's root, so there is exactly one owner per chord: the capture field
+owns its key, `Tab` is the region's traversal, then the overlay scope, then the
+region scope, then the global map. Only a **captured** chord calls
+`preventDefault()`, so ordinary typing and native editing are untouched.
+
+**Affordances and the dual-reachability rule.** Every action has a mouse
+affordance, and the affordance is the action's *only* pointer target — a
+keyboard action and its mouse affordance are the same operation, not two. A
+chord is bound per **scope** (global, region, overlay), so `enter` is the
+composer submit and the catalog's row activation without either being a mode.
+
+**In-window only.** The desktop's shortcuts are **in-window only**. There is
+**no OS-global shortcut**, no global hot-key registration and no background
+activation: the desktop is a window, and the shortcuts belong to it.
+
 ## Deferred surfaces
 
-Editor and terminal, provider credentials, plugin UI, remote daemon access,
+Terminal, provider credentials, plugin UI, remote daemon access,
 signing, and distribution automation are not implemented. The live-turn
 built-app trajectory (assistant text, tool activity, permission round-trip
 against a deterministic offline provider) **is** implemented — see the
@@ -339,14 +418,23 @@ live-turn leg in the M004 `session` phase above, which asserts the typed
 `model_unselected` fail-closed path before arming a loopback mock model
 server and then a real assistant turn with a denied write.
 
-**The editor and the graphical surfaces are deferred but now planned.** The
-M007 line delivers, in order: the desktop build and hosted gate (M007-A), a
+**The editor is implemented; the terminal and the remaining graphical
+surfaces are deferred.** The
+M007 line delivered, in order: the desktop build and hosted gate (M007-A), a
 main chat region with a dockable side panel (M007-B), keyboard-first input
 with mouse parity (M007-C), the shared `/` command surface (M007-D,
 unblocked by ADR-0052's acceptance on 2026-10-24), and a first-party editor
 over the shared `DocumentController` and the native LSP read surface
-(M007-E). Until those milestones land, none of them is implemented and this
-list is accurate.
+(M007-E). The **editor surface** is implemented: the desktop opens a project
+document, edits it, undoes and redoes the edit, saves it, and reads LSP
+diagnostics, completion and navigation — over the **shared** document
+foundation, with the daemon owning the buffer and the host holding only a
+bounded viewport slice.
+
+The **graphical terminal**, a Git UI and the other graphical surfaces remain
+deferred. A third-party editor engine remains deferred too, and would need
+its own ADR, because adopting one changes the renderer's CSP, worker and
+bundle boundary.
 
 The renderer has gained a panel set over a projected session — activity, git,
 skills, subagents, tasks, tool detail, transcript and turn summary — and now
