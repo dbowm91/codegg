@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { CommandPalette, filterCommands, resolveForm, resolveTypedLine } from './CommandPalette';
+import {
+  CommandPalette,
+  filterCommands,
+  isDispatchable,
+  resolveForm,
+  resolveTypedLine,
+} from './CommandPalette';
 import type { CommandCatalogView } from '../bridge-types';
 
 const bridge = vi.hoisted(() => ({
@@ -38,6 +44,24 @@ const catalog = (): CommandCatalogView => ({
         { form: 'show', kind: 'daemon_effect', argumentHint: '<name>', argumentRequired: true, daemonServed: false },
       ],
     },
+    {
+      commandId: 'legacy_report',
+      name: '/legacy-report',
+      aliases: [],
+      description: 'A command the daemon does not serve yet',
+      domain: 'Diagnostics',
+      kind: 'daemon_effect',
+      capability: 'command.execute',
+      forms: [
+        {
+          form: '',
+          kind: 'daemon_effect',
+          argumentHint: '',
+          argumentRequired: false,
+          daemonServed: false,
+        },
+      ],
+    },
   ],
 });
 
@@ -69,6 +93,30 @@ describe('the desktop command palette', () => {
     expect(filterCommands(catalog(), 'rel').map((command) => command.commandId)).toEqual([
       'reload',
     ]);
+  });
+
+  it('marks a command the daemon does not serve as unavailable, and does not dispatch it', async () => {
+    bridge.commandCatalog.mockResolvedValue(catalog());
+    const onDaemonResult = vi.fn();
+    render(
+      <CommandPalette
+        open
+        routeGeneration={3}
+        onClose={vi.fn()}
+        onFrontendEffect={vi.fn()}
+        onDaemonResult={onDaemonResult}
+      />,
+    );
+    await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
+    // The catalog holds `/agents`, whose bare form is a frontend effect and
+    // whose `show` form the daemon does not serve; and `/legacy-report`,
+    // whose default form the daemon does not serve at all.
+    expect(isDispatchable(catalog().commands[0])).toBe(true);
+    expect(isDispatchable(catalog().commands[1])).toBe(true);
+    expect(isDispatchable(catalog().commands[2])).toBe(false);
+    await waitFor(() =>
+      expect(screen.getByText('not served by the daemon yet')).toBeTruthy(),
+    );
   });
 
   it('dispatches a frontend effect locally and never asks the daemon to run it', async () => {

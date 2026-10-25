@@ -444,10 +444,7 @@ async fn command_catalog_serves_every_form_it_marks_served() {
             }
         }
     }
-    assert!(
-        checked > 0,
-        "the served set must not be empty"
-    );
+    assert!(checked > 0, "the served set must not be empty");
 }
 
 /// A command that acts on a session refuses when the request names no
@@ -487,15 +484,15 @@ async fn command_execute_refuses_a_session_command_without_a_session() {
         "a session command without a session must be refused"
     );
     assert!(
-        result
-            .lines
-            .iter()
-            .any(|line| line.contains("no_session")),
+        result.lines.iter().any(|line| line.contains("no_session")),
         "the refusal must name its reason, got {:?}",
         result.lines
     );
     assert!(
-        !result.lines.iter().any(|line| line.contains("command_not_served")),
+        !result
+            .lines
+            .iter()
+            .any(|line| line.contains("command_not_served")),
         "the daemon serves the form; it must not claim otherwise"
     );
     assert!(result.run_id.is_empty(), "a refusal must not open a run");
@@ -529,8 +526,5 @@ async fn command_catalog_publishes_the_daemons_serve_ability() {
         }
     }
     assert_eq!(frontend, 32, "32 forms are frontend effects");
-    assert!(
-        served > 0,
-        "the daemon must publish the forms it serves"
-    );
+    assert!(served > 0, "the daemon must publish the forms it serves");
 }

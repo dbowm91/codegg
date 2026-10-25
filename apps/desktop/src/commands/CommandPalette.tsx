@@ -104,6 +104,26 @@ export function filterCommands(
   });
 }
 
+/**
+ * Whether the palette can dispatch a command.
+ *
+ * A frontend effect is dispatched locally, from the declared
+ * frontend-action set. A daemon effect is dispatched to the daemon, and
+ * only if the daemon's own catalog says it serves that form: the daemon
+ * publishes the flag, so the renderer never guesses and never dispatches
+ * into a refusal.
+ *
+ * A command whose default form the daemon does not serve is shown as
+ * unavailable rather than hidden: the catalog says the command exists, and
+ * the daemon says it cannot serve it yet.
+ */
+export function isDispatchable(command: CommandDescriptorView): boolean {
+  const form = command.forms.find((candidate) => candidate.form === '') ?? command.forms[0];
+  if (!form) return false;
+  if (form.kind === 'frontend_effect') return true;
+  return form.daemonServed;
+}
+
 export function CommandPalette({
   open,
   routeGeneration,
@@ -202,9 +222,19 @@ export function CommandPalette({
       {error ? <p className="cg-palette-error">{error}</p> : null}
       <ul className="cg-palette-list">
         {rows.map((command) => (
-          <li key={command.commandId} className="cg-palette-row">
+          <li
+            key={command.commandId}
+            className={
+              isDispatchable(command)
+                ? 'cg-palette-row'
+                : 'cg-palette-row cg-palette-row-unavailable'
+            }
+          >
             <span className="cg-palette-name">{command.name}</span>
             <span className="cg-palette-description">{command.description}</span>
+            {isDispatchable(command) ? null : (
+              <span className="cg-palette-unavailable">not served by the daemon yet</span>
+            )}
           </li>
         ))}
       </ul>

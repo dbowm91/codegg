@@ -105,7 +105,11 @@ fn json_request(shape: serde_json::Value) -> Option<CoreRequest> {
     match serde_json::from_value(shape.clone()) {
         Ok(r) => Some(r),
         Err(e) => {
-            eprintln!("PROBE-SHAPE-FAIL {} :: {}", shape.get("type").and_then(|v| v.as_str()).unwrap_or("?"), e);
+            eprintln!(
+                "PROBE-SHAPE-FAIL {} :: {}",
+                shape.get("type").and_then(|v| v.as_str()).unwrap_or("?"),
+                e
+            );
             None
         }
     }
@@ -115,7 +119,11 @@ fn json_request(shape: serde_json::Value) -> Option<CoreRequest> {
 #[derive(Debug)]
 pub enum CommandEffect {
     /// The request that serves the form.
-    Ready(CoreRequest),
+    ///
+    /// The request is boxed: it is far larger than the other variant, and
+    /// an unboxed pair would make every match on this enum copy a
+    /// `CoreRequest`.
+    Ready(Box<CoreRequest>),
     /// The form acts on a session and the caller named none.
     ///
     /// The daemon resolves the project and the workspace from its own durable
@@ -192,11 +200,16 @@ pub fn build_inner_request(
             "run_id": null,
             "include_removed": false,
         }),
-        ("tool_contracts", "") => json!({
-            "type": "tool_program_list",
-            "session_id": match session { Some(id) => id, None => "" },
-            "state_filter": null,
-        }),
+        ("tool_contracts", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "tool_program_list",
+                "session_id": session_id,
+                "state_filter": null,
+            })
+        }
 
         // ── sessions ──
         ("share", "") => {
@@ -222,7 +235,7 @@ pub fn build_inner_request(
                 return Some(CommandEffect::NeedsSession);
             };
             json!({ "type": "session_lifecycle_get", "session_id": session_id })
-        },
+        }
 
         // ── goals, tasks and schedules ──
         ("tasks", "") | ("task", "") => json!({
@@ -248,7 +261,7 @@ pub fn build_inner_request(
                 return Some(CommandEffect::NeedsSession);
             };
             json!({ "type": "active_goal_load", "session_id": session_id })
-        },
+        }
 
         // ── memory ──
         ("memory", "") | ("memory_list", "") => json!({
@@ -355,7 +368,7 @@ pub fn build_inner_request(
 
         _ => return None,
     };
-    json_request(shape).map(CommandEffect::Ready)
+    json_request(shape).map(|request| CommandEffect::Ready(Box::new(request)))
 }
 
 /// Whether the daemon serves this command's effect.
@@ -775,7 +788,7 @@ impl CoreDaemon {
         authority: &codegg_core::transport_auth::RequestAuthorityContext,
     ) -> (CommandOutcome, Option<CoreResponse>) {
         let inner = match build_inner_request(command_id, form, ctx) {
-            Some(CommandEffect::Ready(inner)) => inner,
+            Some(CommandEffect::Ready(inner)) => *inner,
             _ => {
                 return (
                     CommandOutcome {
@@ -929,7 +942,6 @@ fn command_kind_dto(kind: CommandKind) -> CommandKindDto {
         CommandKind::FrontendEffect => CommandKindDto::FrontendEffect,
     }
 }
-
 
 #[cfg(test)]
 mod tests {

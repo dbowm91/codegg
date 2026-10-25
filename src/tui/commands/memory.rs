@@ -1,6 +1,10 @@
 //! Memory command handlers for summary, search, remember, and forget operations.
 
-use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::protocol::core::CoreResponse;
+// The test-only handlers below still build the request directly; the live
+// handlers go through the daemon's command executor (M007-D).
+#[cfg(test)]
+use crate::protocol::core::CoreRequest;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -283,6 +287,9 @@ pub(crate) fn start_memory_summary(app: &mut App) {
     let core_client = app.core_client.clone();
     let project_dir = app.active_workspace_root().unwrap_or_default();
     let project_dir = project_dir.to_string_lossy().into_owned();
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on.
+    let scope = crate::tui::command_route::scope_for(app);
     if let Some(store) = app.memory_store.as_ref() {
         let _ = store.migrate_project_namespace(&project_dir);
     }
@@ -303,19 +310,18 @@ pub(crate) fn start_memory_summary(app: &mut App) {
             };
 
             let project_namespace = crate::memory::project_namespace(&project_dir);
-            let req_prefs = crate::core::new_request(
-                format!("memory-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::MemoryList {
-                    namespace: "user/preferences".to_string(),
-                },
-            );
-            let req_proj = crate::core::new_request(
-                format!("memory-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::MemoryList {
-                    namespace: project_namespace.clone(),
-                },
-            );
-            let prefs = match core_client.request(req_prefs).await {
+            // M007-D: the daemon owns the effect. The memory list is
+            // executed as the catalog's `memory` command, and the response
+            // the presentation reads is the one the daemon produced.
+            let prefs = match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "memory",
+                "",
+                "user/preferences",
+            )
+            .await
+            {
                 Ok(CoreResponse::Json { data }) => data
                     .get("memories")
                     .and_then(|v| v.as_array())
@@ -323,7 +329,15 @@ pub(crate) fn start_memory_summary(app: &mut App) {
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
-            let mut proj = match core_client.request(req_proj).await {
+            let mut proj = match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "memory",
+                "",
+                &project_namespace,
+            )
+            .await
+            {
                 Ok(CoreResponse::Json { data }) => data
                     .get("memories")
                     .and_then(|v| v.as_array())
@@ -332,13 +346,15 @@ pub(crate) fn start_memory_summary(app: &mut App) {
                 _ => Vec::new(),
             };
             if proj.is_empty() {
-                let legacy_request = crate::core::new_request(
-                    format!("memory-list-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::MemoryList {
-                        namespace: crate::memory::legacy_project_namespace(&project_dir),
-                    },
-                );
-                proj = match core_client.request(legacy_request).await {
+                proj = match crate::tui::command_route::send_command(
+                    &core_client,
+                    scope.clone(),
+                    "memory",
+                    "",
+                    &crate::memory::legacy_project_namespace(&project_dir),
+                )
+                .await
+                {
                     Ok(CoreResponse::Json { data }) => data
                         .get("memories")
                         .and_then(|v| v.as_array())
@@ -408,6 +424,9 @@ pub(crate) fn start_memory_search(app: &mut App, query: String) {
     }
 
     let core_client = app.core_client.clone();
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on.
+    let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -424,13 +443,17 @@ pub(crate) fn start_memory_search(app: &mut App, query: String) {
                 });
             };
 
-            let request = crate::core::new_request(
-                format!("memory-search-{}", uuid::Uuid::new_v4()),
-                CoreRequest::MemorySearch {
-                    query: query.clone(),
-                },
-            );
-            match core_client.request(request).await {
+            // M007-D: the daemon owns the effect; the query travels as the
+            // command's argument.
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "memory_search",
+                "",
+                &query,
+            )
+            .await
+            {
                 Ok(CoreResponse::Json { data }) => {
                     let results = data
                         .get("memories")
@@ -496,6 +519,9 @@ pub(crate) fn start_memory_remember(app: &mut App, text: String) {
     }
 
     let core_client = app.core_client.clone();
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on.
+    let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -512,14 +538,17 @@ pub(crate) fn start_memory_remember(app: &mut App, text: String) {
                 });
             };
 
-            let request = crate::core::new_request(
-                format!("memory-remember-{}", uuid::Uuid::new_v4()),
-                CoreRequest::MemoryRemember {
-                    text,
-                    namespace: Some("user/preferences".to_string()),
-                },
-            );
-            match core_client.request(request).await {
+            // M007-D: the daemon owns the effect; the text travels as the
+            // command's argument.
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "memory_remember",
+                "",
+                &text,
+            )
+            .await
+            {
                 Ok(CoreResponse::Json { .. }) | Ok(CoreResponse::Ack) => {
                     Some(TuiCommand::MemoryResult {
                         toast_message: "Remembered".to_string(),
@@ -552,6 +581,9 @@ pub(crate) fn start_memory_forget(app: &mut App, id: String) {
     }
 
     let core_client = app.core_client.clone();
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on.
+    let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -568,11 +600,17 @@ pub(crate) fn start_memory_forget(app: &mut App, id: String) {
                 });
             };
 
-            let request = crate::core::new_request(
-                format!("memory-forget-{}", uuid::Uuid::new_v4()),
-                CoreRequest::MemoryForget { id: id.clone() },
-            );
-            match core_client.request(request).await {
+            // M007-D: the daemon owns the effect; the id travels as the
+            // command's argument.
+            match crate::tui::command_route::send_command(
+                &core_client,
+                scope.clone(),
+                "memory_forget",
+                "",
+                &id,
+            )
+            .await
+            {
                 Ok(CoreResponse::Json { data }) => {
                     let deleted = data
                         .get("deleted")

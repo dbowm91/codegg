@@ -29,6 +29,10 @@
 //! classification artifact records the form. The daemon is never asked to
 //! guess what a command means.
 
+#[cfg(test)]
+#[path = "command_route_tests.rs"]
+mod command_route_tests;
+
 use codegg_core::command_catalog::{find_by_command_id, CommandKind};
 use codegg_core::frontend_action::{action_for_form, FrontendAction};
 use codegg_protocol::core::{
@@ -135,6 +139,27 @@ pub fn command_execute(
     }
 }
 
+/// Send a command to the daemon and unwrap its inner response.
+///
+/// This is the whole of a migrated command's effect call: the daemon
+/// executes the command's effect, and the caller receives the same response
+/// it received before the migration, so the presentation code around it does
+/// not change.
+pub async fn send_command(
+    core_client: &std::sync::Arc<dyn crate::core::CoreClient>,
+    scope: CommandCatalogScopeDto,
+    command_id: &str,
+    form: &str,
+    argument: &str,
+) -> Result<CoreResponse, crate::error::AppError> {
+    let request = crate::core::new_request(
+        format!("command-{command_id}-{}", uuid::Uuid::new_v4()),
+        command_execute(scope, command_id, form, argument),
+    );
+    let response = core_client.request(request).await?;
+    Ok(unwrap_inner_response(response))
+}
+
 /// Unwrap a command execution's inner response.
 ///
 /// The daemon's executor returns the inner response verbatim, so a call site
@@ -154,6 +179,16 @@ pub fn unwrap_inner_response(response: CoreResponse) -> CoreResponse {
         Ok(inner) => inner,
         Err(_) => response,
     }
+}
+
+/// Unwrap a command execution's inner response, keeping the error.
+///
+/// The counterpart of [`unwrap_inner_response`] for a call site that matches
+/// on the response *and* on the transport error.
+pub fn unwrap_inner_result(
+    result: Result<CoreResponse, crate::error::AppError>,
+) -> Result<CoreResponse, crate::error::AppError> {
+    Ok(unwrap_inner_response(result?))
 }
 
 #[cfg(test)]

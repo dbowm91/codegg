@@ -771,7 +771,14 @@ impl HostState {
     /// Snapshot the current project/workspace selection, requiring a
     /// live connection, a matching route generation, and (optionally) a
     /// selected workspace.
-    async fn route_selection(
+    /// The route's selected project and workspace, fenced on the expected
+    /// route generation.
+    ///
+    /// This is the **one** implementation of the rule. The editor's host
+    /// commands resolve their scope through it too: a second implementation
+    /// of "which project and workspace is this call about" is a second
+    /// rule, and two rules drift.
+    pub(crate) async fn route_selection(
         &self,
         expected_generation: u64,
         require_workspace: bool,

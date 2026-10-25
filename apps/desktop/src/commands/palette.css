@@ -49,3 +49,11 @@
   margin: 8px 0 0;
   opacity: 0.75;
 }
+.cg-palette-row-unavailable {
+  opacity: 0.55;
+}
+.cg-palette-unavailable {
+  flex: 0 0 auto;
+  font-style: italic;
+  opacity: 0.85;
+}

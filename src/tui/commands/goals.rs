@@ -82,6 +82,11 @@ pub(crate) fn handle_goal_from_file(
 
 pub(crate) fn start_goal_show(app: &mut App, session_id: String) {
     let core_client = app.core_client.clone();
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on. The command named the session, so the scope
+    // carries that one rather than the app's attached session.
+    let mut scope = crate::tui::command_route::scope_for(app);
+    scope.session_id = Some(session_id.clone());
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -98,14 +103,11 @@ pub(crate) fn start_goal_show(app: &mut App, session_id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let response = core_client
-                .request(crate::core::new_request(
-                    format!("goal-show-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::GoalShow {
-                        session_id: session_id.clone(),
-                    },
-                ))
-                .await;
+            // M007-D: the daemon owns the effect. The goal read is executed
+            // as the catalog's `goal` command, scoped to the session the
+            // command named.
+            let response =
+                crate::tui::command_route::send_command(&core_client, scope, "goal", "", "").await;
             match response {
                 Ok(resp) => Some(TuiCommand::GoalOperationFinished {
                     session_id,

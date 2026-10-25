@@ -982,7 +982,7 @@ pub(crate) async fn desktop_document_open(
     path: String,
     route_generation: u64,
 ) -> Result<EditorOpenView, String> {
-    let (project_id, workspace_id) = route_scope(&state, route_generation, true).await?;
+    let (project_id, workspace_id, _) = state.route_selection(route_generation, true).await?;
     let relative_path = safe_relative_path(&path)?;
     // A second open closes the first. The daemon's writer lease belongs to
     // the attachment, so a dropped controller would leave the lease held
@@ -1170,7 +1170,7 @@ pub(crate) async fn desktop_document_tree(
     prefix: String,
     route_generation: u64,
 ) -> Result<EditorTreeView, String> {
-    let (project_id, workspace_id) = route_scope(&state, route_generation, true).await?;
+    let (project_id, workspace_id, _) = state.route_selection(route_generation, true).await?;
     let request = WorkspaceDirectoryListRequestDto {
         project_id,
         workspace_id: workspace_id.clone(),
@@ -1200,7 +1200,7 @@ pub(crate) async fn desktop_document_diagnostics(
     state: State<'_, Arc<HostState>>,
     route_generation: u64,
 ) -> Result<EditorDiagnosticsView, String> {
-    let (project_id, _workspace_id) = route_scope(&state, route_generation, false).await?;
+    let (project_id, _workspace_id, _) = state.route_selection(route_generation, false).await?;
     let session_id = route_session(&state).await?;
     let (client, _) = state.route_request().await?;
     let result = client
@@ -1282,35 +1282,6 @@ async fn live_session(state: &HostState) -> Result<Arc<DesktopDocumentSession>, 
         .ok_or_else(|| "no document is open".to_owned())?;
     session.ensure_connection(state).await?;
     Ok(session)
-}
-
-/// The route's project and workspace identity, fenced on the route
-/// generation.
-///
-/// This is the same fence the route's own scoped reads use: a live
-/// connection, a matching route generation, and (optionally) a selected
-/// workspace. The renderer never names a project or a workspace — it names
-/// the route generation, and the route resolves the scope.
-async fn route_scope(
-    state: &HostState,
-    expected_generation: u64,
-    require_workspace: bool,
-) -> Result<(String, String), String> {
-    let route = state.route.lock().await;
-    if route.connection_generation != state.current_generation() || route.project_id.is_none() {
-        return Err("no current route; select a project first".into());
-    }
-    if route.route_generation != expected_generation {
-        return Err("stale route; refresh before continuing".into());
-    }
-    let project_id = route.project_id.clone().unwrap_or_default();
-    let Some(workspace_id) = route.workspace_id.clone() else {
-        if require_workspace {
-            return Err("no workspace selected for the current route".into());
-        }
-        return Ok((project_id, String::new()));
-    };
-    Ok((project_id, workspace_id))
 }
 
 /// The route's session id, when a session is selected.

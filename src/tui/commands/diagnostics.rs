@@ -81,6 +81,9 @@ pub(crate) fn request_node_telemetry(app: &mut App) {
             .warning("Not connected to a daemon; node telemetry is unavailable");
         return;
     };
+    // M007-D: the scope names the project, the workspace and the session
+    // the command acts on.
+    let scope = crate::tui::command_route::scope_for(app);
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -88,21 +91,28 @@ pub(crate) fn request_node_telemetry(app: &mut App) {
         TuiTaskKind::Command,
         "node_telemetry",
         async move {
+            // M007-D: the daemon owns the effect. The node telemetry read
+            // is executed as the catalog's `nodes` command, and the response
+            // the presentation reads is the one the daemon produced.
             let request = crate::core::new_request(
                 uuid::Uuid::new_v4().to_string(),
-                crate::protocol::core::CoreRequest::NodeTelemetry { node_id: None },
+                crate::tui::command_route::command_execute(scope, "nodes", "", ""),
             );
-            let (nodes, error) = match client.request(request).await {
-                Ok(crate::protocol::core::CoreResponse::NodeTelemetry { nodes }) => (nodes, None),
-                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
-                    (Vec::new(), Some(format!("{code}: {message}")))
-                }
-                // An older daemon answers with some other shape. Treat that
-                // as an absent surface, not as a failure the user must act
-                // on: the read simply is not available there.
-                Ok(_) => (Vec::new(), None),
-                Err(error) => (Vec::new(), Some(error.to_string())),
-            };
+            let (nodes, error) =
+                match crate::tui::command_route::unwrap_inner_result(client.request(request).await)
+                {
+                    Ok(crate::protocol::core::CoreResponse::NodeTelemetry { nodes }) => {
+                        (nodes, None)
+                    }
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        (Vec::new(), Some(format!("{code}: {message}")))
+                    }
+                    // An older daemon answers with some other shape. Treat that
+                    // as an absent surface, not as a failure the user must act
+                    // on: the read simply is not available there.
+                    Ok(_) => (Vec::new(), None),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
             Some(TuiCommand::NodeTelemetryLoaded { nodes, error })
         },
     );

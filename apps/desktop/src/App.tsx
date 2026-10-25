@@ -861,8 +861,9 @@ export function App() {
       case 'keybinds.open':
         openOverlay('keybinds');
         return;
-      // M007-D: the command palette's chord is declared in the keymap
-      // (M007-C reserved `mod+shift+p` for it).
+      // M007-D: the command palette's chord is declared in the keymap, and
+      // only there: the desktop has one keymap, one dispatch and one
+      // conflict rule.
       case 'command.palette.open':
         setPaletteOpen(true);
         return;

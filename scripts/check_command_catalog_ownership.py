@@ -342,16 +342,30 @@ def snake_case(name: str) -> str:
 
 # ── The daemon's effect table ────────────────────────────────────────
 
-EFFECT_FOR_RE = re.compile(r'\(\s*"([a-z0-9_]+)"\s*,\s*"([^"]*)"\s*\)\s*=>')
+EFFECT_KEY_RE = re.compile(r'\(\s*"([a-z0-9_]+)"\s*,\s*"([^"]*)"\s*\)')
 
 
 def parse_effect_table(text: str) -> list[tuple[str, str]]:
-    """The `(command_id, form)` keys the daemon's effect table names."""
-    idx = text.find("pub fn effect_for(")
+    """The `(command_id, form)` keys the daemon's effect table names.
+
+    The table is the match in `build_inner_request`: every arm is one
+    `(command_id, form)` key, and an arm may name two keys when two
+    commands share one effect.
+
+    The parser reads the arms rather than a separate list, so a key that
+    exists only in a list is not a key the daemon serves. The table's own
+    unit test (`the_effect_table_is_closed` in
+    `src/core/daemon_commands.rs`) holds the two views of the table
+    together.
+    """
+    idx = text.find("pub fn build_inner_request(")
     if idx < 0:
         return []
     body = text[idx:]
-    return [(m.group(1), m.group(2)) for m in EFFECT_FOR_RE.finditer(body)]
+    end = body.find("\npub fn ", 1)
+    if end > 0:
+        body = body[:end]
+    return [(m.group(1), m.group(2)) for m in EFFECT_KEY_RE.finditer(body)]
 
 
 # ── The protocol ─────────────────────────────────────────────────────
@@ -673,10 +687,12 @@ def _self_test(base: Path) -> int:
     def effect_table_names_frontend_form(tree: Path) -> None:
         path = tree / DAEMON_COMMANDS_PATH
         text = path.read_text(encoding="utf-8")
+        # `exit` is a frontend effect: the frontend owns it, and the daemon
+        # may never execute one.
         text = text.replace(
-            '("reload", "") => CommandEffect::AssetRefresh,',
-            '("reload", "") => CommandEffect::AssetRefresh,\n'
-            '        ("projects", "") => CommandEffect::AssetRefresh,',
+            "    let shape = match (command_id, form) {",
+            '    let shape = match (command_id, form) {\n'
+            '        ("exit", "") => json!({ "type": "asset_refresh" }),',
             1,
         )
         path.write_text(text, encoding="utf-8")
