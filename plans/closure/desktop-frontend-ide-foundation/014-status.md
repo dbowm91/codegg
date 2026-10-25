@@ -57,6 +57,10 @@ delivered and proved:
   `check_command_catalog_ownership.py --self-test`.
 - The desktop palette renders the daemon's catalog and refuses an unserved
   form with a typed reason.
+- The desktop's command surface is **new in this milestone**, and the migration
+  changed what it can do: 16 forms became executable, `tool_contracts` became
+  a typed refusal, and the interactive-terminal listing's bound moved from 20
+  to the daemon's 64 (§3.5). The TUI is unaffected.
 
 **The milestone is not closed.** Criterion 3 — *"a user running a daemon-effect
 command in the TUI sees exactly the outcome they saw before the migration"* —
@@ -162,6 +166,62 @@ writing over it, and the check mode is proved non-vacuous (absent → 1, stale
 The accounting is complete: **134** daemon-effect forms = **51** served +
 **28** mechanical-unserved + **55** with no daemon request, every form named.
 
+### 3.5 What the desktop gained, and what changed under it
+
+The desktop's daemon-effect command surface is **new in this milestone** — the
+palette, the host route and the catalog it renders all arrived with M007-D, so
+the desktop has no prior shipped behaviour to preserve. What follows is what
+the migration changed **inside** the milestone, measured against the branch's
+own early commits (`1501e3b68`, `e51e6a7b4`), which are the state in which the
+desktop's palette first became dispatchable.
+
+The desktop's scope carries **no session**: every `command.execute` scope it
+sends sets `session_id: None` (`apps/desktop/src-tauri/src/route.rs:684`). Its
+palette already splits a typed line into a command and an argument
+(`apps/desktop/src/commands/CommandPalette.tsx:161`, `:168`, `:189`), so the
+argument the user typed is the one the daemon builds from.
+
+**Sixteen forms became executable.** Twelve of them had no row at all before
+the migration — `stop`, `chat_action_list`, `stop_observing`, `task_del`,
+`chat_history`, `chat_sync`, `chat_read`, `terminal_attach`, `terminal_resume`,
+`test`, `edit_undo`, `edit_reapply` — so the desktop's palette refused them
+with *"not served by the daemon yet"*
+(`apps/desktop/src/commands/CommandPalette.tsx:177-181`). The other four —
+`share`, `unshare`, `export`, `observe` — had rows that read the **scope's**
+session, so the desktop reached the daemon and was refused `no_session`
+(`src/core/daemon_commands.rs:79`, the refusal itself at `:851`). The
+migration moved the session into the **argument**
+(`src/core/daemon_commands.rs:290`, `:296`, `:302`, `:390`), so the desktop now
+executes them: `share <session-id>` in the desktop shares that session, where
+the same line was refused before.
+
+**`tool_contracts` stopped executing.** Its row used to fall back to an empty
+session id (`match session { Some(id) => id, None => "" }`), so the daemon
+queried tool programs for a session id that names no session and answered with
+an empty list. The row now refuses with `no_session`
+(`src/core/daemon_commands.rs:269-278`). The empty list and the refusal say the
+same thing to a user — there is nothing to show — but the refusal is typed and
+the empty id was not.
+
+**The interactive-terminal listing's bound moved.** The row carried
+`limit: 20` (`src/core/daemon_commands.rs:599-603`); it now carries
+`limit: null`, which is the daemon's own maximum — `MAX_INTERACTIVE_LIST_ITEMS`,
+**64** (`crates/codegg-protocol/src/interactive_process.rs:84`, applied at
+`src/interactive_process_attach.rs:691`). The migration made that change to
+preserve the **TUI's** own bound, which the TUI sets itself; the desktop
+inherited the daemon's default instead of 20.
+
+Three forms did **not** change for the desktop, and the distinction is worth
+naming: `policy` already read `session_id: null` when the scope carried no
+session (`src/core/daemon_commands.rs:229`), `network` still sends
+`expected_revision: null` when the user types no revision (`:239`), and
+`tasks`/`task` still default to a bound of 20 (`:321`).
+
+The TUI is unaffected by all of this. Its arms pass the session they always
+passed — `/share` still shares the attached session
+(`src/tui/commands/sessions.rs:1148`, the request at `:1170`) — and the
+daemon's inner response travels verbatim, which is the §5 invariant.
+
 ## 4. Verification executed
 
 Commands run against this branch's head, with their results.
@@ -187,6 +247,15 @@ Commands run against this branch's head, with their results.
 | `cd apps/desktop && npx vitest run` | **29** files, **218** tests, all passed |
 | `cd apps/desktop/src-tauri && cargo check --locked` (after `bash apps/desktop/scripts/stage-daemon.sh`) | clean |
 
+**The verifier's own runs, independent of the worker's**, on the same head:
+
+| command | result |
+|---|---|
+| `cargo fmt --all -- --check` | clean, 0 files reformatted |
+| `rustup run 1.90.0 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` | clean — the desktop host's pinned toolchain |
+| `rustup run 1.90.0 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings` | exit 0, no warnings — the check whose masked failure this branch had to repair |
+| `cargo test --test tui_render --test core_daemon` | **1094 + 509 passed**, 0 failed, run twice; no crash |
+
 **Not run in this branch's final state**, and required before closure:
 
 - The hosted lanes (`verify`, `e2e`, `restricted-userns-fails-closed`,
@@ -206,6 +275,7 @@ Plan 014 §4's invariants that must not regress, and §14's stop conditions.
 | The 256-byte description bound | **yes** | `crates/codegg-core/src/command_catalog.rs` — the bound, re-baselined with the evidence plan 014's protocol table records |
 | The TUI's command names, aliases and descriptions | **yes** | no change to `src/tui/command.rs` or `src/tui/app/commands.rs` |
 | The TUI's observable behaviour | **yes for the 39 migrated commands** | the daemon's inner response travels verbatim; the pinned encoding tests are the evidence. For the 12 served forms the TUI does not perform, and for the 55 no-request forms, the TUI still runs its own arm, so its behaviour is unchanged there too |
+| The desktop's observable behaviour | **new surface; three groups changed** | §3.5. The desktop's palette and its daemon route arrived with this milestone, so there is no prior shipped behaviour to preserve; within it, 16 forms became executable, `tool_contracts` became a typed refusal, and the interactive-terminal listing's bound moved from 20 to the daemon's 64 |
 | No new authorization capability | **yes** | `command.execute` is the only capability the catalog names |
 | No second catalog, no generic host passthrough | **yes** | `scripts/check_command_catalog_ownership.py`; `scripts/check-desktop-boundary.sh` unchanged |
 
@@ -452,6 +522,8 @@ in the TUI is audited.
 | `/compact` keeps its current behaviour; the daemon has no compaction route | low | a recorded discrepancy requiring an owner-visible decision (plan 014 §14) |
 | The 19 forms the verdict calls misclassified are still classified as daemon effects in the catalog | low | folded into the 28 kind changes above |
 | The 5 argument-consuming forms need their encoding decided and pinned | medium | **settled** — `network`, `share`, `unshare`, `export` and `observe` are migrated with pinned encodings; `shell_show`, `shell_expand`, `shell_kill` and `terminal_send` are recorded in §10.6 |
+| The catalog still publishes `share`, `unshare` and `export` as taking **no argument** — `argument_required: false` with an empty `argument_hint` (`crates/codegg-core/src/command_catalog.rs:546-547`, `:564-565`, `:690-691`) — while the daemon now refuses those forms without one (`src/core/daemon_commands.rs:291-292`, `:297-298`, `:303-304`) | low | **recorded.** The two fields are published but nothing reads them: the desktop's palette renders the command name and the TUI has its own command definitions, so no surface is wrong today. A future completion surface that trusted the hint would promise an argument the daemon refuses |
+| An **intermittent SIGSEGV** in the `tui_render` test binary | medium | **unexplained and unreproduced.** It appeared once in a combined `tui_render` + `core_daemon` sweep on this branch and did not recur in 5 standalone runs and 6 direct runs of the same binary (the worker's), nor in 3 standalone runs and 2 further combined sweeps (the verifier's) — 16 runs in total across two strategies. Neither the cause nor whether it predates this branch is established, so it is recorded rather than explained away |
 
 ### 10.6 Ten served forms whose TUI arm performs a different effect
 
@@ -498,8 +570,9 @@ recorded, and none of them is a command arm:
 | `ProjectionSubscribe` | `src/tui/commands/observe.rs:446`, `src/tui/commands/primary_projection.rs:202` | **lifecycle, recorded.** The first is the *resume* path's fresh-subscribe fallback and the second is the primary projection's own subscription — neither is the `/observe` arm, which routes through the daemon |
 | `RuntimePolicySet` | `src/tui/commands/policy.rs:538` | **recorded for the owner.** The catalog's `policy` form is the *read*; the **write** has no catalog form at all, so the confirmed change still issues its own request. Making the write a catalog command is a decision about the catalog's shape |
 
-**Any medium finding keeps M007-D open.** Six are listed above, so the
-milestone's recommendation is **corrective pass required**, not closed.
+**Any medium finding keeps M007-D open.** Eight are listed above, five of them
+medium, so the milestone's recommendation is **corrective pass required**, not
+closed.
 
 ## 11. Roadmap disposition
 
@@ -524,7 +597,7 @@ milestone merges. This record describes what they should say:
 
 - The subsystem roadmap's M007-D entry moves from *in progress* to
   *conditionally closed*, with the **12 forms the TUI does not perform** named
-  and the six medium findings carried.
+  and the eight recorded findings of §10.5 carried, five of them medium.
 - The registry gains a corrective-pass entry for M007-D naming the 12 recorded
   forms and the two owner-directed corrective milestones (the scratch
   cache-root contract and the TUI `/compact` sender).
