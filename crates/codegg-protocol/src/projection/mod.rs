@@ -66,6 +66,8 @@ pub use controller::{
 };
 pub use dto::{
     AgentRunGroupSummaryProjection, AgentRunSummary, AgentRunSummaryProjection,
+    AgentRunTranscriptBoundExceeded, AgentRunTranscriptEntryProjection, AgentRunTranscriptKind,
+    AgentRunTranscriptProjection, AgentRunTranscriptRole, AgentRunTranscriptTruncation,
     AgentTreeNodeProjection, ArtifactHandleProjection, JobProjection, MessageProjection,
     NotificationClassification, PermissionProjection, ProjectSummaryProjection, QuestionProjection,
     RunGroupSummaryProjection, RunProjection, SessionSummaryProjection, ToolProgramCallPage,
@@ -88,6 +90,7 @@ pub use limits::{
     MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_SESSIONS, MAX_PROJECTION_SESSION_SUBAGENTS,
     MAX_PROJECTION_STRING_BYTES, MAX_PROJECTION_SUBAGENTS, MAX_PROJECTION_TOOL_ARGS_BYTES,
     MAX_PROJECTION_TOOL_OUTPUT_BYTES, MAX_PROJECTION_TOOL_PROGRAM_CALLS,
+    MAX_PROJECTION_TRANSCRIPT_BYTES, MAX_PROJECTION_TRANSCRIPT_ROWS,
     MAX_PROJECTION_TRUNCATION_MARKER_BYTES, MAX_PROJECTION_WORKTREES,
 };
 pub use reducer::{

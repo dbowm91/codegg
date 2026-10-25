@@ -1564,12 +1564,19 @@ impl App {
     ///
     /// This surface **owns** the rect it is given: the transcript is not
     /// painted underneath it, so nothing of the main conversation shows
-    /// through. It is a run inspector, not a transcript — it shows only what
-    /// the projection actually vouches for: the agent, its task description,
-    /// the lifecycle status, and the canonical ids needed to reach durable run
-    /// detail. It deliberately does not synthesize progress text: the
-    /// projection adapter hardcodes `progress: None`, so an invented "working
-    /// on step 3" line would be a lie the user acts on.
+    /// through. It is a run inspector **and** the delegated run's recorded
+    /// transcript: it shows what the projection vouches for — the agent, its
+    /// task description, the lifecycle status, and the canonical ids needed
+    /// to reach durable run detail — and then the conversation the child
+    /// actually had, in the order it happened.
+    ///
+    /// The inspector metadata is retained rather than replaced. The user
+    /// still needs the status at a glance, and a transcript without the run
+    /// it belongs to is a wall of text.
+    ///
+    /// It deliberately does not synthesize progress text: the projection
+    /// adapter hardcodes `progress: None`, so an invented "working on step
+    /// 3" line would be a lie the user acts on.
     fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
         let Some(tab) = self.ui_state.subagents.active_tab().cloned() else {
             return;
@@ -1681,21 +1688,167 @@ impl App {
                 Style::default().fg(theme.foreground),
             )));
         }
+        // The delegated run's recorded conversation, beneath the metadata
+        // above. The three states are three different facts and each one is
+        // stated: complete, truncated (with the point it stops at), and
+        // absent (with the reason it is absent). A transcript rendered as an
+        // empty pane would read as "the child did nothing", which is a claim
+        // the system does not know.
+        let overflow_index = lines.len();
+        lines.push(Line::default());
+        lines.extend(self.delegated_transcript_lines(&tab));
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " Esc returns to the main buffer".to_string(),
             Style::default().fg(theme.muted),
         )));
-
+        // The scroll offset is the renderer's to clamp: it is the only place
+        // that knows how tall the content is, so a tab that guessed would
+        // either stop short of the end or run past it into blank space.
+        let viewport = area.height as usize;
+        let max_scroll = lines.len().saturating_sub(viewport);
+        let scroll = (tab.scroll as usize).min(max_scroll);
+        // Say how much is below the fold. A transcript longer than the
+        // viewport that says nothing about it reads as a complete
+        // conversation, and the user never learns to scroll.
+        let below = lines.len().saturating_sub(scroll + viewport);
+        let overflow = if below > 0 {
+            format!("   ▾ {below} more lines below — PageDown to read on")
+        } else {
+            "   ▾ end of the transcript view".to_string()
+        };
+        if let Some(line) = lines.get_mut(overflow_index) {
+            *line = Line::from(Span::styled(overflow, Style::default().fg(theme.muted)));
+        }
         // The full width of the rect. A one-column inset left the last
         // column of the viewport unpainted, which read as the transcript
         // showing through the tab.
         let paragraph = Paragraph::new(lines)
             .wrap(ratatui::widgets::Wrap { trim: false })
-            .scroll((tab.scroll, 0));
+            .scroll((scroll as u16, 0));
         frame.render_widget(paragraph, area);
     }
-
+    /// The delegated run's recorded transcript, as view lines.
+    ///
+    /// `None` means the projection carried no transcript at all — an older
+    /// daemon, or a summary built for a lifecycle event rather than read at a
+    /// boundary. The tab then stays the run inspector it was.
+    fn delegated_transcript_lines(
+        &self,
+        tab: &crate::tui::app::state::subagent_tabs::SubagentTabState,
+    ) -> Vec<Line<'static>> {
+        use crate::protocol::projection::dto::{
+            AgentRunTranscriptKind, AgentRunTranscriptProjection, AgentRunTranscriptRole,
+        };
+        use crate::tui::app::state::subagent_tabs::MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES;
+        let theme = self.ui_state.theme.clone();
+        let Some(transcript) = tab.row.transcript.as_ref() else {
+            return Vec::new();
+        };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            " Transcript",
+            Style::default().fg(theme.muted),
+        )));
+        match transcript {
+            AgentRunTranscriptProjection::Absent => {
+                lines.push(Line::from(Span::styled(
+                    "   No transcript was recorded for this run.",
+                    Style::default().fg(theme.foreground),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "   Nothing was captured of what it did, so there is no",
+                    Style::default().fg(theme.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "   conversation to show. A run dispatched before the",
+                    Style::default().fg(theme.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "   transcript store existed looks like this.",
+                    Style::default().fg(theme.muted),
+                )));
+                return lines;
+            }
+            AgentRunTranscriptProjection::Complete { entries } => {
+                lines.push(Line::from(Span::styled(
+                    format!("   complete · {} entries", entries.len()),
+                    Style::default().fg(theme.foreground),
+                )));
+            }
+            AgentRunTranscriptProjection::Truncated {
+                entries,
+                truncation,
+            } => {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   truncated · showing {} of {} recorded entries",
+                        entries.len(),
+                        entries.len() as i64 + truncation.omitted_entries
+                    ),
+                    Style::default().fg(theme.foreground),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   the next entry is ordinal {} — this is not the whole conversation",
+                        truncation.next_ordinal
+                    ),
+                    Style::default().fg(theme.muted),
+                )));
+                if truncation.recording_stopped {
+                    lines.push(Line::from(Span::styled(
+                        "   the run's own recording stopped at the store's per-run bound,",
+                        Style::default().fg(theme.muted),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "   so the rows that are missing were never written.",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+            }
+        }
+        for entry in transcript.entries() {
+            let role = match entry.role {
+                AgentRunTranscriptRole::Orchestrator => "orchestrator",
+                AgentRunTranscriptRole::Internal => "internal",
+            };
+            let kind = match entry.kind {
+                AgentRunTranscriptKind::ModelMessage => "model message",
+                AgentRunTranscriptKind::ToolCall => "tool call",
+                AgentRunTranscriptKind::ToolResult => "tool result",
+                AgentRunTranscriptKind::TerminalNote => "terminal note",
+            };
+            lines.push(Line::from(Span::styled(
+                format!("   {} · {kind} · {role}", entry.ordinal),
+                Style::default().fg(theme.primary),
+            )));
+            let body = entry.body.as_str();
+            let (shown, omitted) = if body.len() > MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES {
+                (
+                    crate::protocol::projection::limits::clip_str(
+                        body,
+                        MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
+                    ),
+                    body.len() - MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
+                )
+            } else {
+                (body, 0)
+            };
+            for body_line in shown.lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("     {body_line}"),
+                    Style::default().fg(theme.foreground),
+                )));
+            }
+            if omitted > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("     … {omitted} more bytes of this {kind} are not shown"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
+        lines
+    }
     /// Draw the one-row subagent tab bar directly under the header.
     ///
     /// Carved off the **top** of the viewport chunk rather than the prompt
@@ -3180,6 +3333,7 @@ mod viewport_owner_tests {
 
     fn row() -> SubagentRow {
         SubagentRow {
+            transcript: None,
             child_instance_id: Some("child-1".into()),
             task_id: "1".into(),
             run_id: Some("run-1".into()),

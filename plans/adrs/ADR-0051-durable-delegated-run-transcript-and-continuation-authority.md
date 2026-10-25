@@ -1,10 +1,12 @@
 # ADR-0051: Durable Delegated-Run Transcript and Continuation Authority
 
-Status: proposed — **not accepted; no production authority granted**
+Status: **accepted** — Option B (explicitly accepted by the user on 2026-10-24)
 
 Date: 2026-10-24
 
 Decision owners: project maintainers
+
+Repository review baseline: `b84d45d24a39c99b855dfb292e6d2a3bfc78d645`
 
 Related specification sections:
 
@@ -85,7 +87,7 @@ Benefits: zero new storage, zero new projection surface, zero new authority, no 
 
 Costs and failure modes: the orchestrator's view of delegated work stays lossy and non-durable, so the observable symptom the line was opened for — "previous runs seemingly struggling to get any info on a subagent besides that it had ran" — persists by construction. A parent turn that ends before its child cannot learn what happened except by polling. A failed provider turn cannot be continued, so every transient upstream fault costs a full re-dispatch with a re-stated task and a re-created workspace.
 
-### B. A dedicated durable delegated-transcript store, projected read-only, with a bounded continuation authority (proposed candidate)
+### B. A dedicated durable delegated-transcript store, projected read-only, with a bounded continuation authority (accepted)
 
 A new store, owned by `codegg-core`, keyed by `(run_id, ordinal)`, written by the same path that writes the child's messages and redacted at write time. The delegated run's identity remains `AgentRunId`; it never becomes a session and never enters the session catalog. A new bounded, redacted transcript DTO crosses the projection seam to a client bound to the owning session. Continuation reads the recorded transcript and starts a **new attempt of the same delegated run**, under the same authority, bounded to one continuation, authorized by the spawning principal.
 
@@ -101,9 +103,9 @@ Benefits: reuses the message store, the session reader, the compaction path and 
 
 Costs and failure modes: this changes a canonical identity boundary — a delegated run becomes a session. `message.session_id` is a foreign key with `ON DELETE CASCADE`, so the session row is mandatory, and a session row is what makes a row appear in session enumeration, project binding, `/sessions`, `Ctrl+T` and the session-snapshot path that ADR-0043 and the live-work-visibility M004 already gave a precise meaning. It would also import the parent-session compaction and summarization policy into the child's history, and give the child a durable identity that survives in ways a delegated run's `run_id` should not. It is the smallest code change and the largest change of meaning.
 
-## Proposed decision — subject to maintainer acceptance
+## Decision
 
-**Option B**, with the following boundaries.
+**Option B**, with the following boundaries. Accepted explicitly by the user on 2026-10-24. Option A (status quo) and Option C (a real `session` row per delegated run) are rejected; Option C's rejection is recorded here so that it is not re-litigated by a later reader: it would change what the user's session catalog means, and that is not a change this decision makes.
 
 1. **Ownership and identity.** A delegated transcript is owned by `codegg-core` and keyed by `AgentRunId`. A delegated run is **not** a session: it has no `session` row, it never appears in session enumeration, project binding, `/sessions`, `Ctrl+T`, or any session-scoped snapshot, and it is never compacted by the parent session's policy. The synthetic `{parent}-sub-{task_id}` identifier remains an internal detail and is not a durable identity.
 
@@ -157,7 +159,7 @@ Costs and failure modes: this changes a canonical identity boundary — a delega
 
 ## Verification and acceptance gate
 
-Acceptance of this ADR is a maintainer decision recorded in this file. It is **not** acceptance of an implementation: filing it grants no capability, and the milestones that depend on it stay `blocked` until it is accepted.
+Acceptance of this ADR is a maintainer decision recorded in this file, and it was made on 2026-10-24: **Option B**, accepted explicitly by the user. Acceptance of this ADR is **not** acceptance of an implementation: the milestones that depend on it (C002, C003, C004) each carry their own closure gate, and each must produce the evidence below before it may be marked closed.
 
 When accepted, the following evidence is required from the implementing milestones:
 

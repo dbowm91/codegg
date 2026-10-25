@@ -444,6 +444,7 @@ async fn simultaneous_overlapping_claims_have_one_winner_and_stale_cas_fails() {
         });
     for (run, task) in &members {
         snapshot.agent_runs.push_back(AgentRunSummary {
+            transcript: None,
             run_id: run.to_string(),
             task_id: task.to_string(),
             project_id: accepted.project_id.to_string(),

@@ -52,6 +52,79 @@ pub(super) use super::tool_inspect::{
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
+/// The most tool outcomes one run retains.
+///
+/// A memory bound, not a transcript bound: the durable store applies its own
+/// per-row and per-run bounds at write.
+pub const MAX_RETAINED_TOOL_OUTCOMES: usize = 32;
+
+/// The most bytes of one tool output the loop retains.
+///
+/// The retained bytes are an **excerpt**: the head and the tail, with the
+/// truncation marker between them. The tail matters because a tool's
+/// conclusion is at its end — the validation marker a scheduler job appends
+/// is the last line — so a head-only cut would discard exactly the line a
+/// caller reads the output for.
+pub const MAX_RETAINED_TOOL_OUTPUT_BYTES: usize = 8 * 1024;
+
+/// The head share of a retained tool output.
+const RETAINED_TOOL_OUTPUT_HEAD_BYTES: usize = 6 * 1024;
+
+/// The tail share of a retained tool output.
+const RETAINED_TOOL_OUTPUT_TAIL_BYTES: usize = 2 * 1024;
+
+/// The marker between the head and the tail of a retained output the loop's
+/// own cap cut.
+///
+/// It sits **between** the head and the tail so a later, tighter row bound
+/// cannot cut it off.
+pub const RETAINED_TOOL_OUTPUT_TRUNCATION_MARKER: &str =
+    "\n[tool-output-truncated: loop retention bound reached]\n";
+
+/// One tool outcome a run executed, retained so a caller can observe what the
+/// model was actually shown.
+///
+/// The output is the path-redacted tool output the loop published and the
+/// model received. `output_truncated` says the loop's own cap cut it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutedToolOutcome {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub output: String,
+    pub success: bool,
+    /// The retained output was cut at [`MAX_RETAINED_TOOL_OUTPUT_BYTES`].
+    pub output_truncated: bool,
+}
+
+/// The tool outcomes one run executed, in execution order, and whether the
+/// retention itself was cut.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecutedToolOutcomes {
+    pub entries: Vec<ExecutedToolOutcome>,
+    /// More tool outcomes were executed than were retained.
+    pub truncated: bool,
+}
+
+/// Cut one tool output to the loop's retention bound, marking the cut.
+fn bound_retained_tool_output(output: &str) -> (String, bool) {
+    if output.len() <= MAX_RETAINED_TOOL_OUTPUT_BYTES {
+        return (output.to_owned(), false);
+    }
+    let mut head_end = RETAINED_TOOL_OUTPUT_HEAD_BYTES;
+    while head_end > 0 && !output.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = output.len() - RETAINED_TOOL_OUTPUT_TAIL_BYTES;
+    while tail_start < output.len() && !output.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let mut retained = String::with_capacity(MAX_RETAINED_TOOL_OUTPUT_BYTES);
+    retained.push_str(&output[..head_end]);
+    retained.push_str(RETAINED_TOOL_OUTPUT_TRUNCATION_MARKER);
+    retained.push_str(&output[tail_start..]);
+    (retained, true)
+}
+
 pub struct AgentLoopState {
     pub current_agent: String,
     /// Per-turn extended-thinking selection.
@@ -100,6 +173,14 @@ pub struct AgentLoopState {
     ///
     /// `None` means no response in the run reported reasoning tokens at all.
     pub run_reasoning_tokens: Option<usize>,
+    /// The tool outcomes this run executed, in execution order.
+    ///
+    /// The retention is bounded — see [`MAX_RETAINED_TOOL_OUTCOMES`] and
+    /// [`MAX_RETAINED_TOOL_OUTPUT_BYTES`] — so a run that executes many
+    /// tools, or one tool with a huge output, cannot grow the loop's
+    /// footprint without limit. It is reset at the start of every run, so it
+    /// describes the run that just happened and nothing before it.
+    pub executed_tool_outcomes: ExecutedToolOutcomes,
 }
 
 pub struct ExecutionLimits {
@@ -497,6 +578,7 @@ impl AgentLoop {
                 run_output_tokens: 0,
                 run_cached_tokens: None,
                 run_reasoning_tokens: None,
+                executed_tool_outcomes: ExecutedToolOutcomes::default(),
             },
             limits: ExecutionLimits::default(),
             steering: Arc::new(AtomicBool::new(false)),
@@ -682,6 +764,42 @@ impl AgentLoop {
 
     pub fn state(&self) -> &AgentLoopState {
         &self.state
+    }
+
+    /// The tool outcomes the current run executed, in execution order.
+    ///
+    /// The retention is bounded and says so: `truncated` reports that more
+    /// outcomes were executed than were retained, and each entry's
+    /// `output_truncated` reports that the loop's own cap cut that output.
+    /// Nothing here is derived from the provider's event stream — these are
+    /// the outcomes this loop actually executed.
+    pub fn executed_tool_outcomes(&self) -> &ExecutedToolOutcomes {
+        &self.state.executed_tool_outcomes
+    }
+
+    /// Retain one executed tool outcome, within the retention bounds.
+    fn retain_executed_tool_outcome(
+        &mut self,
+        tool_call_id: &str,
+        tool_name: String,
+        output: String,
+        success: bool,
+        output_truncated: bool,
+    ) {
+        let retained = &mut self.state.executed_tool_outcomes;
+        if retained.entries.len() >= MAX_RETAINED_TOOL_OUTCOMES {
+            // The retention is full. Say so rather than dropping the tail
+            // silently.
+            retained.truncated = true;
+            return;
+        }
+        retained.entries.push(ExecutedToolOutcome {
+            tool_call_id: tool_call_id.to_owned(),
+            tool_name,
+            output,
+            success,
+            output_truncated,
+        });
     }
 
     /// The provider usage accumulated over the current run.
@@ -1009,6 +1127,9 @@ impl AgentLoop {
         self.state.run_output_tokens = 0;
         self.state.run_cached_tokens = None;
         self.state.run_reasoning_tokens = None;
+        // The retained tool outcomes describe exactly one run, so a previous
+        // run's outcomes are never reported as this run's.
+        self.state.executed_tool_outcomes = ExecutedToolOutcomes::default();
         match self.run_inner(request).await {
             Ok(events) => Ok(events),
             Err(error) => {
@@ -1996,6 +2117,19 @@ impl AgentLoop {
                     .unwrap_or_default();
                 let success = tool_outcome_is_success(outcome);
                 let redacted_output = redact_local_paths(&outcome.model_text, &self.local_paths);
+                // Retain the outcome for the caller that needs to observe
+                // what the model saw. The retention is bounded and marks its
+                // own truncation, and the durable transcript store bounds it
+                // again at write.
+                let (retained_output, output_truncated) =
+                    bound_retained_tool_output(&redacted_output);
+                self.retain_executed_tool_outcome(
+                    id,
+                    tool_name.clone(),
+                    retained_output,
+                    success,
+                    output_truncated,
+                );
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
                     tool_name,

@@ -115,6 +115,47 @@ fn unsubscribe(app: &App, subscription_id: Option<ProjectionSubscriptionId>) {
 }
 
 pub(crate) fn start_subscription(app: &mut App, project_id: String, session_id: String) {
+    start_subscription_inner(app, project_id, session_id, SubscriptionScope::Replace);
+}
+
+/// Re-read the session projection **without** discarding the rows the user is
+/// looking at.
+///
+/// The delegated tab reads the delegated run's transcript when it opens, and
+/// the transcript is only as fresh as the snapshot it came from. This is a
+/// **boundary read**, not a poll: it happens when the user opens the tab.
+///
+/// Deliberately not [`start_subscription`]: that one is a session switch,
+/// and clearing the rows is correct there because they belong to the
+/// previous session. Here they belong to the session being re-read, and
+/// clearing them would detach every open tab for the duration of the
+/// round-trip.
+pub(crate) fn refresh_session_snapshot(app: &mut App, project_id: String, session_id: String) {
+    start_subscription_inner(app, project_id, session_id, SubscriptionScope::Refresh);
+}
+
+/// What a subscription request does to the rows it replaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubscriptionScope {
+    /// A new session: the old rows belong to another session and go.
+    Replace,
+    /// The same session, re-read: the rows stay until the new snapshot lands.
+    Refresh,
+}
+
+fn start_subscription_inner(
+    app: &mut App,
+    project_id: String,
+    session_id: String,
+    scope: SubscriptionScope,
+) {
+    // A refresh is an *extra* read of a session the client is already
+    // watching. With no daemon there is nothing to read, and tearing down the
+    // subscription the client already has would leave it worse off than
+    // before the user opened a tab.
+    if scope == SubscriptionScope::Refresh && app.core_client.is_none() {
+        return;
+    }
     let tab_id = app
         .project_tabs
         .active_tab_id()
@@ -123,8 +164,12 @@ pub(crate) fn start_subscription(app: &mut App, project_id: String, session_id: 
     // Starting a new authoritative fetch invalidates rows derived from the
     // snapshot being replaced. Keep the loading state visible until the new
     // snapshot installs rather than painting potentially stale children.
-    app.ui_state.subagents.set_rows(Vec::new());
-    app.prompt_state.subagent_addressee = None;
+    // A refresh is not that case: the same session is being re-read, and the
+    // rows the user is looking at stay valid until the new snapshot lands.
+    if scope == SubscriptionScope::Replace {
+        app.ui_state.subagents.set_rows(Vec::new());
+        app.prompt_state.subagent_addressee = None;
+    }
     if let Some(previous) = previous.as_ref() {
         app.projection_client.controller_mut().unsubscribe(previous);
     }

@@ -265,6 +265,44 @@ fn failure_completion(
     }
 }
 
+/// Record an attempt's outcome in the run's append-only attempt record.
+///
+/// The attempt record is append-only: the outcome is a new row, never an
+/// update of the row that created the attempt.
+async fn record_attempt_outcome(
+    store: &dyn codegg_core::agent_run::AgentRunStore,
+    run_id: &codegg_core::identity::AgentRunId,
+    attempt_ordinal: i64,
+    outcome: &str,
+    failure_class: Option<&str>,
+) {
+    let attempt_store = store.attempt_store().await;
+    let record = codegg_core::agent_run_attempt::NewAgentRunAttempt {
+        run_id: run_id.clone(),
+        attempt_ordinal,
+        event: codegg_core::agent_run_attempt::AgentRunAttemptEvent::Outcome,
+        attempt_kind: codegg_core::agent_run_attempt::AgentRunAttemptKind::Original,
+        continued_from_ordinal: None,
+        principal: String::new(),
+        principal_turn_id: String::new(),
+        authority_digest: String::new(),
+        transcript_digest: None,
+        failure_class: failure_class
+            .map(codegg_core::agent_run_attempt::DelegatedFailureClass::parse),
+        ceiling_json: None,
+        outcome: Some(outcome.to_owned()),
+        detail: None,
+    };
+    if let Err(error) = attempt_store.append_attempt(record).await {
+        if !matches!(
+            error,
+            codegg_core::agent_run_attempt::AgentRunAttemptError::AlreadyClaimed
+        ) {
+            tracing::error!(?error, run_id = ?run_id, "agent run attempt outcome could not be recorded");
+        }
+    }
+}
+
 /// Scheduler adapter for managed argv, shell, build, lint, and format jobs.
 /// Process policy lives
 /// in [`crate::managed_process::ManagedProcessService`]; this adapter only
@@ -1095,7 +1133,110 @@ impl JobExecutor for SubagentJobExecutor {
         }
 
         let run_id_for_lifecycle = run_id.clone();
+        // The attempt's ordinal. A durable delegated run reaches a provider
+        // entry only as its original attempt or as a claimed continuation, and
+        // the attempt record is where that is decided.
+        let mut attempt_ordinal = 1i64;
         if let (Some(store), Some(run_id)) = (&self.agent_runs, run_id.as_ref()) {
+            let attempt_store = store.attempt_store().await;
+            let recorded = match attempt_store.attempts(run_id).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("the agent run attempt record could not be read: {error}"),
+                    )
+                }
+            };
+            let latest = recorded.iter().rev().find(|row| {
+                row.event == codegg_core::agent_run_attempt::AgentRunAttemptEvent::Attempt
+            });
+            let run = store.get_run(run_id).await.ok().flatten();
+            // A continuation is a new attempt of the same run, so the run's own
+            // record is still terminal when the attempt's job starts. Only a
+            // claimed continuation may resume it.
+            if run.as_ref().is_some_and(|run| run.status.is_terminal()) {
+                let continuation = match attempt_store.continuation(run_id).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("the agent run continuation could not be read: {error}"),
+                        )
+                    }
+                };
+                if continuation.is_none() {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "a terminal delegated run may only be resumed by a claimed continuation"
+                            .into(),
+                    );
+                }
+                if let Err(error) = store.resume_for_continuation(run_id).await {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!(
+                            "the delegated run could not be resumed for its continuation: {error}"
+                        ),
+                    );
+                }
+            }
+            match latest {
+                Some(row) => {
+                    attempt_ordinal = row.attempt_ordinal;
+                    let _ = row.attempt_kind;
+                }
+                None => {
+                    // The run's first attempt. Its ceiling is the payload the
+                    // attempt runs under, recorded verbatim so a continuation
+                    // can carry it through unchanged.
+                    let task = match run.as_ref() {
+                        Some(run) => store.get_task(&run.task_id).await.ok().flatten(),
+                        None => None,
+                    };
+                    let attempt = codegg_core::agent_run_attempt::NewAgentRunAttempt {
+                        run_id: run_id.clone(),
+                        attempt_ordinal: 1,
+                        event: codegg_core::agent_run_attempt::AgentRunAttemptEvent::Attempt,
+                        attempt_kind: codegg_core::agent_run_attempt::AgentRunAttemptKind::Original,
+                        continued_from_ordinal: None,
+                        principal: task
+                            .as_ref()
+                            .map(|task| task.originating_session_id.clone())
+                            .unwrap_or_default(),
+                        principal_turn_id: task
+                            .as_ref()
+                            .and_then(|task| task.originating_turn_id.clone())
+                            .unwrap_or_default(),
+                        authority_digest: run
+                            .as_ref()
+                            .map(|run| run.authority_digest.clone())
+                            .unwrap_or_default(),
+                        transcript_digest: None,
+                        failure_class: None,
+                        ceiling_json: serde_json::to_string(&ctx.job.payload).ok(),
+                        outcome: None,
+                        detail: None,
+                    };
+                    if let Err(error) = attempt_store.append_attempt(attempt).await {
+                        if !matches!(
+                            error,
+                            codegg_core::agent_run_attempt::AgentRunAttemptError::AlreadyClaimed
+                        ) {
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                format!("the agent run attempt could not be recorded: {error}"),
+                            );
+                        }
+                    }
+                    attempt_ordinal = 1;
+                }
+            }
             if let Err(error) = store.attach_attempt(run_id, ctx.attempt_id.clone()).await {
                 return failure_completion(
                     started,
@@ -1722,7 +1863,12 @@ impl JobExecutor for SubagentJobExecutor {
                             run_id,
                             outcome,
                             Some(format!("agent-run-result:{run_id}")),
-                            (status != ExecutorStatus::Completed).then(|| "executor".into()),
+                            (status != ExecutorStatus::Completed).then(|| {
+                                result
+                                    .failure_class
+                                    .clone()
+                                    .unwrap_or_else(|| "executor".into())
+                            }),
                             (status != ExecutorStatus::Completed).then(|| result.result.clone()),
                         )
                         .await
@@ -1732,6 +1878,17 @@ impl JobExecutor for SubagentJobExecutor {
                         self.reclaim_terminal_agent_scratch(store.as_ref(), run_id)
                             .await;
                     }
+                    record_attempt_outcome(
+                        store.as_ref(),
+                        run_id,
+                        attempt_ordinal,
+                        match status {
+                            ExecutorStatus::Completed => "completed",
+                            _ => "failed",
+                        },
+                        result.failure_class.as_deref(),
+                    )
+                    .await;
                     if let Some(control) = &self.run_control {
                         if let Err(error) = control.record_terminal(run_id.clone(), match outcome {
                             codegg_core::agent_run::AgentRunTerminalOutcome::Completed => codegg_core::agent_run::AgentRunStatus::Completed,
@@ -1798,7 +1955,17 @@ impl JobExecutor for SubagentJobExecutor {
                         codegg_core::agent_run::AgentRunTerminalOutcome::Failed
                     };
                     if let Err(error) = store
-                        .finish(run_id, outcome, None, Some("pool".into()), Some(e.clone()))
+                        .finish(
+                            run_id,
+                            outcome,
+                            None,
+                            Some(if ctx.cancellation.is_cancelled() {
+                                "cancelled".into()
+                            } else {
+                                "pool".into()
+                            }),
+                            Some(e.clone()),
+                        )
                         .await
                     {
                         tracing::error!(?error, run_id = ?run_id, "agent run finish failed (error path)");
@@ -1806,6 +1973,22 @@ impl JobExecutor for SubagentJobExecutor {
                         self.reclaim_terminal_agent_scratch(store.as_ref(), run_id)
                             .await;
                     }
+                    record_attempt_outcome(
+                        store.as_ref(),
+                        run_id,
+                        attempt_ordinal,
+                        if ctx.cancellation.is_cancelled() {
+                            "cancelled"
+                        } else {
+                            "failed"
+                        },
+                        if ctx.cancellation.is_cancelled() {
+                            Some("cancelled")
+                        } else {
+                            None
+                        },
+                    )
+                    .await;
                     if let Some(control) = &self.run_control {
                         let status = if outcome
                             == codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled

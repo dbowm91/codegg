@@ -36,11 +36,19 @@
 
 use std::collections::HashMap;
 
-use codegg_core::jobs::{JobId, JobRecord, JobState};
+use codegg_core::jobs::{JobId, JobKind, JobPayload, JobRecord, JobSource, JobState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
+
+/// The kind token a delegated run's durable terminal notice carries.
+///
+/// It is the scheduler job kind (`JobKind::Subagent::as_str()`), so the
+/// notice kind and the subscription kind are one token. The delegated kind
+/// gets its own notice content format: the generic background-job wording
+/// cannot identify the child.
+pub const DELEGATED_JOB_KIND: &str = "subagent";
 
 /// Bounds for the generic job notification queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +188,17 @@ pub struct JobBackgroundSubscription {
     /// deserialize as `notify_only`.
     #[serde(default)]
     pub disposition: JobCompletionDisposition,
+    /// The host-resolved owner principal of the subscribing session.
+    ///
+    /// Recorded so the subscription states the authority it was created
+    /// under. Old rows (pre-C001) deserialize as absent.
+    #[serde(default)]
+    pub owner_principal: Option<String>,
+    /// The workspace the subscribed job belongs to.
+    ///
+    /// Old rows (pre-C001) deserialize as absent.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// M003 typed completion dispositions.
@@ -297,11 +316,49 @@ pub struct RecoveredJobTerminal {
     pub created_at: i64,
 }
 
+/// A delegated job's terminal outcome that arrived before its subscription.
+///
+/// The delegated spawn path dispatches the job and subscribes it afterwards,
+/// so a child that terminates inside that window has no subscription to
+/// attribute its notice to. The terminal is held here rather than dropped,
+/// and the subscription that lands afterwards releases it.
+#[derive(Debug, Clone)]
+struct HeldDelegatedTerminal {
+    job: JobRecord,
+    summary: String,
+    run_id: Option<String>,
+    /// When the terminal was held, so the bound evicts the oldest one.
+    held_at: i64,
+}
+
+/// The most delegated terminals held at once for a late subscription.
+///
+/// Only a delegated run can be subscribed after it terminates, so this map
+/// holds one entry per delegated job that finished inside its own subscribe
+/// window. The bound is a backstop, not a policy.
+const MAX_HELD_DELEGATED_TERMINALS: usize = 64;
+
+/// Whether this job is a delegated run: a subagent a parent turn spawned.
+///
+/// Only a delegated run can be subscribed *after* it terminates, so only a
+/// delegated terminal is held for a late subscription. An ordinary
+/// background job is subscribed before it is dispatched and is never
+/// subscribed after the fact.
+fn is_delegated_job(job: &JobRecord) -> bool {
+    job.source == JobSource::AgentDelegated || job.kind == JobKind::Subagent
+}
+
 pub struct JobNotificationService {
     notices: RwLock<HashMap<String, JobTerminalNotice>>,
     session_index: RwLock<HashMap<String, Vec<String>>>,
     subscriptions: RwLock<HashMap<String, JobBackgroundSubscription>>,
     leases: RwLock<HashMap<String, JobContinuationLease>>,
+    /// Terminals held because the job's subscription had not landed yet.
+    ///
+    /// Keyed by job id. A delegated spawn subscribes after it dispatches, so
+    /// a fast child can terminate first; the notice is then recorded when
+    /// the subscription lands, with the executor's own summary.
+    held_delegated_terminals: RwLock<HashMap<String, HeldDelegatedTerminal>>,
     pub policy: JobNotificationPolicy,
     pub continuation_policy: JobContinuationPolicy,
     pool: Option<SqlitePool>,
@@ -341,6 +398,7 @@ impl JobNotificationService {
             session_index: RwLock::new(HashMap::new()),
             subscriptions: RwLock::new(HashMap::new()),
             leases: RwLock::new(HashMap::new()),
+            held_delegated_terminals: RwLock::new(HashMap::new()),
             policy: JobNotificationPolicy::default(),
             continuation_policy: JobContinuationPolicy::default(),
             pool: None,
@@ -354,6 +412,7 @@ impl JobNotificationService {
             session_index: RwLock::new(HashMap::new()),
             subscriptions: RwLock::new(HashMap::new()),
             leases: RwLock::new(HashMap::new()),
+            held_delegated_terminals: RwLock::new(HashMap::new()),
             policy,
             continuation_policy: JobContinuationPolicy::default(),
             pool: None,
@@ -367,6 +426,7 @@ impl JobNotificationService {
             session_index: RwLock::new(HashMap::new()),
             subscriptions: RwLock::new(HashMap::new()),
             leases: RwLock::new(HashMap::new()),
+            held_delegated_terminals: RwLock::new(HashMap::new()),
             policy: JobNotificationPolicy::default(),
             continuation_policy: JobContinuationPolicy::default(),
             pool: Some(pool),
@@ -468,14 +528,20 @@ impl JobNotificationService {
         }
         let job_id_str = job_id.as_str().to_string();
         {
-            let subs = self.subscriptions.read().await;
-            if let Some(existing) = subs.get(&job_id_str) {
+            // The guard is dropped before the release below: recording a
+            // held terminal reads the subscription map again.
+            let existing = {
+                let subs = self.subscriptions.read().await;
+                subs.get(&job_id_str).cloned()
+            };
+            if let Some(existing) = existing {
                 if existing.session_id != session_id || existing.invocation_key != invocation_key {
                     return Err(JobNotificationError::Conflict(format!(
                         "job {job_id_str} already subscribed by a different owner"
                     )));
                 }
-                return Ok(existing.clone());
+                self.release_held_delegated_terminal(&job_id_str).await;
+                return Ok(existing);
             }
         }
         if let Some(pool) = &self.pool {
@@ -493,8 +559,11 @@ impl JobNotificationService {
                         "job {job_id_str} already subscribed by a different owner"
                     )));
                 }
-                let mut subs = self.subscriptions.write().await;
-                subs.insert(job_id_str.clone(), existing.clone());
+                {
+                    let mut subs = self.subscriptions.write().await;
+                    subs.insert(job_id_str.clone(), existing.clone());
+                }
+                self.release_held_delegated_terminal(&job_id_str).await;
                 return Ok(existing);
             }
         }
@@ -507,6 +576,8 @@ impl JobNotificationService {
             kind: kind.to_string(),
             created_at: now,
             disposition,
+            owner_principal: owner_principal.map(ToOwned::to_owned),
+            workspace_id: workspace_id.map(ToOwned::to_owned),
         };
         self.persist_subscription(&sub).await?;
         {
@@ -517,7 +588,10 @@ impl JobNotificationService {
                         "job {job_id_str} already subscribed by a different owner"
                     )));
                 }
-                return Ok(existing.clone());
+                let existing = existing.clone();
+                drop(subs);
+                self.release_held_delegated_terminal(&job_id_str).await;
+                return Ok(existing);
             }
             subs.insert(job_id_str.clone(), sub.clone());
         }
@@ -546,8 +620,11 @@ impl JobNotificationService {
             };
             self.persist_lease(&lease).await?;
             let mut leases = self.leases.write().await;
-            leases.insert(job_id_str, lease);
+            leases.insert(job_id_str.clone(), lease);
         }
+        // The subscription is durable and visible now. A delegated job that
+        // terminated before it landed has a held terminal waiting for this.
+        self.release_held_delegated_terminal(&job_id_str).await;
         Ok(sub)
     }
 
@@ -845,7 +922,20 @@ impl JobNotificationService {
             return Ok(None);
         }
         let job_id_str = job.job_id.as_str().to_string();
-        let sub = self.get_subscription(&job_id_str).await?;
+        let mut sub = self.get_subscription(&job_id_str).await?;
+        if sub.is_none() && is_delegated_job(job) {
+            // The delegated spawn path subscribes after it dispatches, so a
+            // child that terminates inside that window has no subscription to
+            // attribute its notice to. Hold the terminal rather than drop
+            // it: the subscription that lands afterwards releases it, and the
+            // notice is recorded with the executor's own summary. An
+            // ordinary background job is subscribed before it is dispatched,
+            // so its terminal is dropped here as it always was.
+            self.hold_delegated_terminal(job, summary, run_id).await;
+            // The subscription may have landed between the lookup above and
+            // the hold. Re-check so the notice is not left pending.
+            sub = self.get_subscription(&job_id_str).await?;
+        }
         let Some(sub) = sub else {
             return Ok(None);
         };
@@ -879,7 +969,9 @@ impl JobNotificationService {
             invocation_key: Some(sub.invocation_key.clone()),
             status,
             summary: bounded_summary,
-            run_id: run_id.map(ToOwned::to_owned),
+            run_id: run_id
+                .map(ToOwned::to_owned)
+                .or_else(|| delegated_run_id(job)),
             payload_digest,
             state: JobNotificationState::Pending,
             created_at: now,
@@ -895,6 +987,61 @@ impl JobNotificationService {
         self.enforce_session_bound(&stored.session_id, self.policy.max_pending_per_session)
             .await?;
         Ok(Some(stored))
+    }
+
+    /// Hold a delegated terminal whose subscription has not landed yet.
+    ///
+    /// Bounded: the map holds one entry per delegated job that finished
+    /// inside its own subscribe window. The oldest entry is evicted when the
+    /// bound is reached; an evicted terminal is not silently lost — the
+    /// durable recovery backfills it from the job and subscription rows.
+    async fn hold_delegated_terminal(&self, job: &JobRecord, summary: &str, run_id: Option<&str>) {
+        let job_id = job.job_id.as_str().to_string();
+        let mut held = self.held_delegated_terminals.write().await;
+        if !held.contains_key(&job_id) && held.len() >= MAX_HELD_DELEGATED_TERMINALS {
+            if let Some(oldest) = held
+                .iter()
+                .min_by_key(|(_, entry)| entry.held_at)
+                .map(|(id, _)| id.clone())
+            {
+                held.remove(&oldest);
+            }
+        }
+        held.insert(
+            job_id,
+            HeldDelegatedTerminal {
+                job: job.clone(),
+                summary: summary.to_string(),
+                run_id: run_id.map(ToOwned::to_owned),
+                held_at: chrono::Utc::now().timestamp_millis(),
+            },
+        );
+    }
+
+    /// Release a delegated terminal held because its subscription was late.
+    ///
+    /// The notice is recorded with the executor's own summary, exactly as it
+    /// would have been had the subscription landed first. A release failure
+    /// is logged, not propagated: the subscription itself has already
+    /// succeeded, and the durable recovery backfills the notice.
+    async fn release_held_delegated_terminal(&self, job_id: &str) {
+        let held = {
+            let mut held = self.held_delegated_terminals.write().await;
+            held.remove(job_id)
+        };
+        let Some(held) = held else {
+            return;
+        };
+        if let Err(error) = self
+            .record_terminal(&held.job, &held.summary, held.run_id.as_deref())
+            .await
+        {
+            tracing::warn!(
+                job_id = %job_id,
+                %error,
+                "a delegated terminal held for a late subscription could not be recorded; recovery will backfill it"
+            );
+        }
     }
 
     /// Record the exactly-one terminal notice for a CI watch (M004).
@@ -1071,7 +1218,10 @@ impl JobNotificationService {
                     .cancel_reason
                     .clone()
                     .unwrap_or_else(|| format!("job finished in {:?}", job.state)),
-                run_id: None,
+                // A delegated notice must name the run it is about. The
+                // payload is where the run id lives, exactly as it is for a
+                // notice recorded at the terminal transition.
+                run_id: delegated_run_id(&job),
                 created_at: job.created_at.timestamp_millis(),
             });
         }
@@ -1791,10 +1941,26 @@ pub fn job_handle_for(
     }
 }
 
+/// The delegated run a job is about, when the job carries one.
+///
+/// The delegated executor reports its terminal summary through the executor
+/// completion, not through a run id, so the notice takes the run id from the
+/// durable job payload — the run the payload names *is* the run the notice is
+/// about.
+fn delegated_run_id(job: &JobRecord) -> Option<String> {
+    match &job.payload {
+        JobPayload::SubagentRun { run_id, .. } => Some(run_id.to_string()),
+        _ => None,
+    }
+}
+
 /// Format the single safe-boundary injection text for a job notice.
 /// System-generated and authenticated by durable job-store terminal state;
 /// external job status data is never trusted as instruction.
 pub fn format_job_notice_content(notice: &JobTerminalNotice) -> String {
+    if notice.kind == DELEGATED_JOB_KIND {
+        return format_delegated_notice_content(notice);
+    }
     match notice.status.as_str() {
         "completed" => format!(
             "Background job {} (kind {}) completed successfully: {}",
@@ -1824,6 +1990,34 @@ pub fn format_job_notice_content(notice: &JobTerminalNotice) -> String {
             notice.job_id, notice.kind, notice.status, notice.summary
         ),
     }
+}
+
+/// A delegated run's notice names the child and says what to do next.
+///
+/// The generic background-job wording cannot identify the child, and its
+/// "completed successfully: {summary}" tail reads as an empty success when
+/// the child recorded nothing. This format names the run, states the
+/// recorded outcome — or states plainly that there is none — and carries the
+/// result reference the orchestrator reads for the full recorded result.
+fn format_delegated_notice_content(notice: &JobTerminalNotice) -> String {
+    let run = notice.run_id.as_deref().unwrap_or("unknown-run");
+    let outcome = if notice.summary.trim().is_empty() {
+        "no recorded outcome (this delegated run recorded no result)".to_string()
+    } else {
+        notice.summary.clone()
+    };
+    let state = match notice.status.as_str() {
+        "completed" => "completed",
+        "cancelled" => "was cancelled",
+        "timed_out" => "timed out",
+        "expired" => "expired",
+        "needs_attention" => "needs attention",
+        other => other,
+    };
+    format!(
+        "Delegated run {run} {state}: {outcome}. Result reference: agent-run-result:{run}. \
+         Read it with the task tool (action=get, task_id) for the full recorded result."
+    )
 }
 
 /// Derive the durable injection identity for a notice.
@@ -1983,5 +2177,156 @@ mod tests {
     fn unused_newjob_import_guard() {
         // Keeps the `NewJob` import honest if the helper above changes.
         let _ = std::mem::size_of::<NewJob>();
+    }
+
+    // ── C001: the delegated notice names its run ──────────────────────────
+
+    fn delegated_job(run_id: &str, state: JobState) -> JobRecord {
+        let mut job = test_job(Some("s1"), state);
+        job.kind = JobKind::Subagent;
+        job.payload = codegg_core::jobs::JobPayload::SubagentRun {
+            prompt: "do the thing".into(),
+            agent: "general".into(),
+            model: None,
+            parent_id: Some("s1".into()),
+            denied_tools: vec![],
+            allowed_paths: vec![],
+            max_tool_calls: None,
+            task_id: codegg_core::identity::AgentTaskId::new(),
+            // The payload names the run the notice is about.
+            run_id: codegg_core::identity::AgentRunId::parse(run_id).expect("a valid run id"),
+            delegation_key: "agent-delegation-c001".into(),
+            base_commit: None,
+            placement: Default::default(),
+        };
+        job
+    }
+
+    #[tokio::test]
+    async fn the_delegated_notice_names_the_run() {
+        let svc = JobNotificationService::new();
+        let job = delegated_job("run-c001", JobState::Completed);
+        let run_id = match &job.payload {
+            codegg_core::jobs::JobPayload::SubagentRun { run_id, .. } => run_id.to_string(),
+            _ => unreachable!("the fixture is a delegated run"),
+        };
+        svc.subscribe(&job.job_id, DELEGATED_JOB_KIND, "s1", None, "inv-1")
+            .await
+            .unwrap();
+
+        let notice = svc
+            .record_terminal(&job, "the child finished", None)
+            .await
+            .unwrap()
+            .expect("a subscribed delegated job produces a notice");
+        assert_eq!(notice.kind, DELEGATED_JOB_KIND);
+        assert_eq!(notice.run_id.as_deref(), Some(run_id.as_str()));
+
+        let content = format_job_notice_content(&notice);
+        assert!(
+            content.contains(&run_id),
+            "the delegated notice must name the run, got: {content}"
+        );
+        assert!(
+            content.contains("the child finished"),
+            "the delegated notice must carry the recorded outcome, got: {content}"
+        );
+        assert!(
+            content.contains(&format!("agent-run-result:{run_id}")),
+            "the delegated notice must carry the result reference, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delegated_run_with_no_recorded_outcome_says_so() {
+        let svc = JobNotificationService::new();
+        let job = delegated_job("run-c001-empty", JobState::Completed);
+        svc.subscribe(&job.job_id, DELEGATED_JOB_KIND, "s1", None, "inv-1")
+            .await
+            .unwrap();
+
+        let notice = svc
+            .record_terminal(&job, "", None)
+            .await
+            .unwrap()
+            .expect("a subscribed delegated job produces a notice");
+        let content = format_job_notice_content(&notice);
+        assert!(
+            content.contains("no recorded outcome"),
+            "an empty outcome must be stated plainly, got: {content}"
+        );
+        assert!(
+            !content.contains("completed successfully"),
+            "an empty outcome must not read as a success, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delegated_run_that_terminated_before_its_subscription_still_notifies() {
+        // The delegated spawn path dispatches the job and subscribes it
+        // afterwards, so a fast child can terminate before the subscription
+        // exists. The terminal is held rather than dropped, and the
+        // subscription that lands releases it.
+        let svc = JobNotificationService::new();
+        let job = delegated_job("run-c001-late", JobState::Completed);
+        let run_id = match &job.payload {
+            codegg_core::jobs::JobPayload::SubagentRun { run_id, .. } => run_id.to_string(),
+            _ => unreachable!("the fixture is a delegated run"),
+        };
+
+        let early = svc
+            .record_terminal(&job, "the child finished", None)
+            .await
+            .unwrap();
+        assert!(
+            early.is_none(),
+            "a terminal with no subscription yet cannot name an owner"
+        );
+
+        svc.subscribe(&job.job_id, DELEGATED_JOB_KIND, "s1", None, "inv-1")
+            .await
+            .unwrap();
+
+        let pending = svc.pending_for_session("s1").await.unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "the late subscription releases the held terminal exactly once"
+        );
+        let notice = &pending[0];
+        assert_eq!(notice.run_id.as_deref(), Some(run_id.as_str()));
+        let content = format_job_notice_content(notice);
+        assert!(
+            content.contains("the child finished"),
+            "the released notice must carry the executor's own outcome, got: {content}"
+        );
+        assert!(
+            content.contains(&run_id),
+            "the released notice must name the run, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_foreground_terminal_is_never_held_for_a_late_subscription() {
+        // Only a delegated run can be subscribed after it terminates. A
+        // foreground job's terminal is dropped as it always was, so the hold
+        // map cannot grow with ordinary job completions.
+        let svc = JobNotificationService::new();
+        let job = test_job(Some("s1"), JobState::Completed);
+        assert!(svc
+            .record_terminal(&job, "ok", None)
+            .await
+            .unwrap()
+            .is_none());
+
+        svc.subscribe(&job.job_id, "test", "s1", None, "inv-1")
+            .await
+            .unwrap();
+        let pending = svc.pending_for_session("s1").await.unwrap();
+        assert!(
+            pending.is_empty(),
+            "a foreground job never produces a notice, got {}",
+            pending.len()
+        );
     }
 }

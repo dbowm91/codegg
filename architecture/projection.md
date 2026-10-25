@@ -25,6 +25,16 @@ completion for an active owning session, but reconnecting clients recover
 from the durable run/control state. Projection consumers must not replay a
 journal event as a provider turn or tool invocation.
 
+The same holds for the **delegated-run transcript** (ADR-0051 option B,
+`codegg_core::agent_run_transcript`): it is authoritative durable state,
+keyed by the run's `AgentRunId`, and it is **not** projected. Nothing about
+it crosses a wire today — the store's read API is a Rust API only, and a
+delegated run has no `session` row, no session enumeration and no
+session-scoped snapshot. The milestone that follows this one (C003) extends
+the projection to carry the transcript; until it lands, a frontend that
+wants a delegated run's conversation reads the store directly and accepts
+that it is not a projection.
+
 ## Where It Lives
 
 | Path | Role |
@@ -392,10 +402,51 @@ or 1 MiB (minimum 5 min apart), and at most 4 checkpoints per stream.
 the authoritative `AgentRunStore`, `WorktreeService`, and group service. They
 carry typed opaque IDs, lifecycle/control state, authoritative durable depth,
 branch/base/result commit, validation and attention summaries; prompts,
-mailboxes, transcripts, hidden reasoning, credentials, and full artifacts are
-not projected. The daemon builds reconnect/resync snapshots from those stores,
+mailboxes, hidden reasoning, credentials, and full artifacts are not projected.
+The daemon builds reconnect/resync snapshots from those stores,
 while scheduler and group transitions publish the same summaries as projection
 events.
+
+#### The delegated run's transcript (C003)
+
+`AgentRunSummary` carries one body field: `transcript`, the delegated run's
+**recorded conversation**, as the durable transcript store (ADR-0051 option B)
+recorded it.
+
+- **The bound is on the type.** `AgentRunTranscriptProjection::MAX_BYTES` is
+  `MAX_PROJECTION_TRANSCRIPT_BYTES` (8 KiB of body) and `MAX_ROWS` is
+  `MAX_PROJECTION_TRANSCRIPT_ROWS` (64 rows). `AgentRunTranscriptProjection::checked`
+  **refuses** a payload over either bound; it is never silently shortened, and
+  `AgentRunSummary::normalise` drops an over-bound payload rather than
+  shipping a shortened one that reads as the whole conversation.
+- **The read is bounded at the store.** The adapter
+  (`codegg_core::projection_replay::agent_run_summary_with_transcript`) asks the
+  store for one page and honours the DTO's bound at the seam. It never loads a
+  whole transcript in order to truncate it afterwards.
+- **Completeness is a statement, not an implication.**
+  `AgentRunTranscriptProjection` is `Absent`, `Complete { entries }` or
+  `Truncated { entries, truncation }`, and the truncation carries the ordinal
+  the next entry would carry, how many recorded entries are omitted, and
+  whether the run's own recording stopped at the store's per-run bound.
+  "Absent" and "complete" are different facts: a reader must be able to tell
+  "nothing was recorded" from "everything that was recorded is here".
+- **`None` is a fourth thing.** The field is `Option<...>` and defaults to
+  absent, so a summary built for a lifecycle event — or written by a daemon
+  older than this milestone — carries no transcript at all, and the client
+  degrades to the run inspector. An older client that does not know the field
+  ignores it.
+- **Redaction happens once, at write.** The stored body is already redacted.
+  Nothing at the seam redacts again: a second recogniser is a second set of
+  holes.
+- **The routing is the session snapshot's.** The transcript is attached by
+  `CoreDaemon::projection_snapshot_for_session`, the session-scoped snapshot
+  builder, and by nothing else. The snapshot lists the session's runs by
+  `session_id`, so a client bound to another session cannot receive another
+  session's runs — and therefore not their transcripts.
+  `scripts/check_projection_publication_seam.sh` pins the single producer.
+- **The wire bound is covered.** `scripts/check_websocket_bounds.py` proves the
+  worst case — `MAX_PROJECTION_AGENT_RUNS` runs each carrying
+  `MAX_PROJECTION_TRANSCRIPT_BYTES` — fits inside `WS_MAX_MESSAGE_SIZE`.
 
 Run-group summaries include an additive owner discriminator (`turn` or `run`)
 and, for turn-owned groups, bounded originating session/turn identifiers.

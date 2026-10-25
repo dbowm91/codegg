@@ -840,3 +840,219 @@ Every other row was **confirmed unchanged** by measurement, not by assumption: a
 **The comment corpus moved, and the movement is accounted for.** The tree now measures **125,249** comment lines, **1,104,302** words and a **0.1337** ratio, against the recorded **125,212** / **1,103,943** / **0.1337**. The increase is the new integration target's documentation, and it is partly offset by two genuine per-file reductions in the same diff — `src/git_contained_worktree.rs` **284 → 280** and `tests/contained_worktree_c008.rs` **171 → 170** — where three comment blocks in the source repeated what the named functions already say, and the containment test's obtained-root block repeated the paragraph the source documents. The corpus remains **above** the 124,865 pre-reduction figure, which is a historical reference and not a guard: the corpus crossed it before this line's merges.
 
 **The count table was also repaired.** `architecture/overview.md`'s Verified-counts table carried **two** copies of the three count rows — one set at **341** and one at **340** — a merge artifact from an earlier reconciliation, in which both sides moved the same rows without the same values. The duplicate was collapsed to one row set carrying the tree's measurement.
+### Fourteenth amendment — 2026-10-24, delegated-run corrective, merge reconciliation with `main` (M008)
+
+Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
+the delegated-run corrective branch moved three code-count rows, because both
+lines added a test module and a guard. The measured values on the merged tree
+are:
+
+| row | before (this branch) | `main` | merged |
+|---|---|---|---|
+| Integration test files | 346 | 339 | **347** |
+| Guard scripts (all) | 95 | 93 | **96** |
+| CI guard scripts | 61 | 56 | **62** |
+
+Each merged value is the sum of the two lines' own deltas, measured with
+`python3 scripts/measure_overview_counts.py` and confirmed by
+`python3 scripts/check_test_target_references.py`. The quick-only difference is
+**unchanged at 14**: the delegated-run corrective's six new guards all run in
+**both** `verify.sh quick` and CI, and M008's one new guard does too, so
+neither line adds a quick-only entry. The quick-only set was **re-derived**,
+not carried over, by differencing the guards `run_guards()` names against the
+guards `.github/workflows/ci.yml` names.
+
+**`AGENTS.md`'s published counts were corrected at the source** to **76** for
+`quick` and **62** for CI. The *method* is unchanged — the count is the number
+of distinct `scripts/check_*` files the two files name — and the 14-guard
+difference still holds (76 − 62 = 14).
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet and both lines spent comment lines: the merged tree measures
+**125,729** comment lines, **1,109,416** words and a **0.1333** ratio. The
+re-bank raised the global block and moved only the per-file ceilings of files
+**either** line touched — this line's `crates/codegg-protocol/src/projection/
+{dto,limits,mod,snapshot}.rs` and `src/core/daemon_{refresh,sessions}.rs`, and
+`main`'s `crates/codegg-protocol/src/scratch.rs` and
+`src/core/daemon_scratch.rs` — so the bank diff stays confined to touched
+files plus the global block, as the ratchet requires.
+
+### Fifteenth amendment — 2026-10-25, delegated-run corrective, third reconciliation with `main`
+
+`origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
+surface), which carried the desktop parity line's three new guards and its own
+new integration test module. Merging it into the delegated-run corrective
+branch moved the same three rows again. Each was re-measured against its own
+listed `Source` in the merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 347 | **348** | The union of the two lines' own deltas. `main`'s M007 editor surface added the `tests/frontend_parity/` module (`mod.rs` and `tui_reconstruction.inc`); the delegated-run corrective's own test modules were already counted. The two sides' changed test-file sets were differenced and **overlap on no file**, so the union is additive. |
+| Guard scripts (all) | 96 | **99** | The measure is `scripts/check_*`, unchanged. `main`'s three new desktop guards (`check_desktop_gate_wiring.py`, `check_desktop_panel_authority.py`, `check_desktop_editor_authority.py`) joined the delegated-run corrective's three. Note that the published row's `scripts/check_*` glob does **not** match the repository's three kebab-case shell guards (`check-client-boundary.sh`, `check-core-boundary.sh`, `check-desktop-boundary.sh`); the full population is three larger, and the *method* is unchanged by this merge. |
+| CI guard scripts | 62 | **65** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
+| `AGENTS.md`'s published counts | 76 quick / 62 CI | **79 quick / 65 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. |
+
+The **quick-only difference is unchanged at 14** guards CI does not run, and the
+quick-only set was **re-derived** rather than carried over, by differencing the
+guards `run_guards()` names against the guards `.github/workflows/ci.yml`
+names. It is the same fourteen as before — the client and desktop boundaries,
+`check_daemon_listing_authority`, `check_first_party_skills`,
+`check_network_intent_owner_wiring`, `check_no_hardcoded_selection_colours`,
+`check_eggwork_target_routing`, `check_openai_endpoint_composition`, and the
+six provider guards — because all six of the two lines' new guards run in
+**both** surfaces. `AGENTS.md`'s published counts were corrected at the source
+to **79** for `quick` and **65** for CI.
+
+The **remaining rows were confirmed unchanged by measurement, not by
+assumption**: the 25 rows `scripts/measure_overview_counts.py` emits were
+compared against the published table's leading values programmatically, and
+every one of them agrees. The moved rows are the three above.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet and both lines spent comment lines: the merged tree measures
+**126,378** comment lines, **1,115,289** words and a **0.1337** ratio, with a
+recorded ceiling of **0.1338**. The re-bank raised the global block and moved
+only the per-file ceilings of files **either** line touched — `main`'s
+`crates/codegg-protocol/src/{core,git,lib,skill}.rs`,
+`crates/codegg-core/src/{authorization/policy,audit_instrumentation}.rs`,
+`src/core/{daemon,daemon_family,daemon_reads,tests/git_fixture}.rs`,
+`src/scratch.rs` and the two `tests/frontend_parity/` files — so the bank diff
+stays confined to touched files plus the global block, as the ratchet requires.
+
+### Sixteenth amendment — 2026-10-25, delegated-run corrective, fourth reconciliation with `main`
+
+`origin/main` advanced to `682ae762a` (PR #193, the contained-worktree C008
+line) and the delegated-run corrective branch was merged with it. That line
+added **one** integration test file and **no** guard, so only one of the three
+rows moved:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 348 | **349** | `main`'s `tests/git_consistency_consumers_c005.rs`, the C005 diff-consumer fence's runtime target. |
+| Guard scripts (all) | 99 | **99** | Unchanged. The measure is `scripts/check_*`, unchanged, and PR #193 added no guard. |
+| CI guard scripts | 65 | **65** | Unchanged. PR #193 added no guard, so the CI surface did not move either. |
+| `AGENTS.md`'s published counts | 79 quick / 65 CI | **79 quick / 65 CI** | Unchanged, and therefore needing no correction at the source. |
+
+The **quick-only difference is unchanged at 14**, re-derived by differencing
+the guards `run_guards()` names against the guards `.github/workflows/ci.yml`
+names rather than carried over.
+
+**`main`'s duplicated count rows were collapsed.** `origin/main`'s own copy of
+`architecture/overview.md` carried the three count rows **twice** — once as
+341 / 96 / 59 and again as 340 / 96 / 59 — a merge artifact from PR #193. The
+merged tree carries **one** block holding the merged tree's measured values.
+This is `main`'s defect, corrected here as a consequence of the merge; this
+branch made no change to `main`'s content.
+
+**The amendment ordinals were made unique.** `main` and this branch had each
+appended an amendment numbered *tenth* after their common ninth — `main`'s is
+the M005 writer containment corrective's seventh reconciliation, this branch's
+is the delegated-run corrective's M008 merge reconciliation. `main`'s three
+amendments keep their published ordinals, because `main`'s own later text
+refers to "the tenth amendment" **by that name** and renaming it would rewrite
+a published record. This branch's two amendments were renumbered *tenth* →
+**thirteenth** and *eleventh* → **fourteenth**, so the sequence is unique and
+continues after `main`'s twelfth. The renumbering changes no recorded
+measurement: every figure, guard count and comment-budget value in the two
+renamed sections is unchanged.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: the merged tree measures **126,430** comment lines, **1,115,780**
+words and a **0.1338** recorded ceiling. The re-bank raised the global block
+and moved only the per-file ceilings of files **either** line touched — the
+C008 line's own `tests/git_consistency_consumers_c005.rs` and the files this
+branch's previous reconciliation had already banked — so the bank diff stays
+confined to touched files plus the global block.
+
+### Seventeenth amendment — 2026-10-25, delegated-run corrective, fifth reconciliation with `main`
+
+`origin/main` advanced to `76b046fd3` (PR #196, the Linux trusted Git C009
+hooks-path disposition, which pins `core.hooksPath` on the contained worktree
+child's argv) and the delegated-run corrective branch was merged with it. The
+merge carried **no change to this line's own Rust code** — the delegated
+notice fix in §13 of the closure record is byte-identical across it — and four
+rows moved, each re-measured against its own listed `Source` on the merged tree
+rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 349 | **350** | `main`'s `tests/contained_worktree_hooks_path.rs`. The two sides' changed test-file sets overlap on no file, so the union is additive. |
+| Guard scripts (all) | 99 | **100** | `main`'s `scripts/check_contained_worktree_hooks_path.py`. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 65 | **66** | The workflow gained the same guard and its self-test. The measure is unchanged. |
+| `AGENTS.md`'s published counts | 79 quick / 65 CI | **80 quick / 66 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. |
+
+The **quick-only difference is unchanged at 14** guards CI does not run, and
+the quick-only set was **re-derived** rather than carried over: it is the same
+fourteen names, because all four of the two lines' new guards run in **both**
+`quick` and CI. The quick lane's `==>` lines moved from **133** to **135**
+(`run_guards` **131**, `run_quick` **4**).
+
+**`main`'s own repair came with it.** `main`'s thirteenth amendment records
+that `architecture/overview.md`'s Verified-counts table carried **two** copies
+of the three count rows — one set at 341 and one at 340 — a merge artifact from
+an earlier reconciliation, and that it collapsed the duplicate. The merged tree
+carries **one** block, holding the merged tree's measured values.
+
+**The amendment ordinals were made unique again.** `main` and this branch had
+each appended an amendment numbered *thirteenth* after their common twelfth.
+`main`'s keeps its published ordinal, and this branch's three were renumbered
+*thirteenth* → **fourteenth**, *fourteenth* → **fifteenth** and *fifteenth* →
+**sixteenth**, so the sequence is unique and monotonic. No recorded
+measurement changes.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: the merged tree measures **126,467** comment lines, **1,116,139**
+words and a **0.1338** recorded ceiling. The re-bank raised the global block
+and moved only the per-file ceilings of files **either** line touched, so the
+bank diff stays confined to touched files plus the global block.
+
+### Eighteenth amendment — 2026-10-25, delegated-run corrective, sixth reconciliation with `main`
+
+`origin/main` advanced to `69ceec814` (PRs #195, #197 and #198 — the desktop
+command-parity line M007-D under ADR-0052, its closure records, and the
+owner-directed corrective registrations) and the delegated-run corrective branch
+was merged with it. The merge carried **no change to this line's own Rust code** —
+the delegated notice fix in §13 of the closure record is byte-identical across it
+— and four rows moved, each re-measured against its own listed `Source` on the
+merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| `codegg-core` modules | 56 | **58** | `main`'s `command_catalog` and `frontend_action` modules, plus this line's two delegated-run modules. Both parents measure 56; the merged tree measures 58. |
+| Integration test files | 350 | **351** | `main`'s `tests/core_daemon/command_catalog_m007d.inc`. The two sides' changed test-file sets overlap on no file, so the union is additive (base 342 + 8 + 1). |
+| Guard scripts (all) | 100 | **102** | `main`'s `scripts/check_command_catalog_ownership.py` and `scripts/check_frontend_action_set.py`, beside this line's three delegated-run guards. The measure (`scripts/check_*`) is unchanged. |
+| CI guard scripts | 66 | **68** | The workflow gained both of `main`'s guards and both of their self-tests. The measure is unchanged. |
+| `AGENTS.md`'s published counts | 80 quick / 66 CI | **82 quick / 68 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. |
+
+The **quick-only difference is unchanged at 14** guards CI does not run, and the
+quick-only set was **re-derived** rather than carried over: it is the same
+fourteen names, because all **eight** of the two lines' guard *entries* added to
+the two lanes run in **both** `quick` and CI — `main`'s two new scripts, this
+line's three new delegated-run guards, and this line's three pre-existing
+projection guards newly wired into both lanes. The quick lane's `==>` lines
+moved from **135** to **139** (`run_guards` **135**, `run_quick` **4**).
+
+**All three conflicts were documentation.** `AGENTS.md`,
+`architecture/overview.md` and `docs/comment-budget.toml` conflicted, and every
+code file merged cleanly — the two lines' code sets do not overlap, because
+`main`'s desktop command-parity work touches no file this line owns. The
+conflicted values were published counts and a comment-budget manifest, and each
+was resolved by measuring the merged tree rather than by taking a side.
+
+**`main`'s own M007-D section was left as the record of that milestone.** It
+states *`codegg-core` modules* **56**, which is `main`'s measurement of `main`'s
+tree; the Verified-counts row holds the merged tree's measured **58**.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet: the merged tree measures **127,700** comment lines, **1,127,120** words
+and a **0.1341** recorded ceiling. The re-bank raised the global block and moved
+only the per-file ceilings of files **either** line touched, so the bank diff
+stays confined to touched files plus the global block. `cargo fmt --all`
+produced **no** edit on the merged tree — `main`'s merged code was already
+formatted.
+
+**`plans/registry.md` auto-merged coherently.** Its `## Source verification`
+section is newest-first, and the merged tree carries both sides' entries in that
+order — `main`'s M007-E, terminology-amendment, M007-C, M007-B and M007-A
+entries first, then this line's four delegated-run entries and the shared
+ADR-0052 entry — with no duplication and no loss.

@@ -9886,16 +9886,29 @@ impl App {
     }
 
     fn scroll_page_up(&mut self) {
+        // An open subagent tab owns the viewport: the main conversation is
+        // not on screen behind it, so scrolling the hidden transcript would
+        // move nothing the user can see.
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(-10);
+            return;
+        }
         self.messages_state.messages.scroll_page_up();
     }
 
     fn scroll_page_down(&mut self) {
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(10);
+            return;
+        }
         self.messages_state.messages.scroll_page_down();
     }
 
     fn scroll_viewport_up(&mut self) {
         if self.ui_state.dialog.is_open() {
             self.dialog_navigate_up();
+        } else if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(-1);
         } else {
             self.messages_state.messages.scroll_up();
         }
@@ -9904,21 +9917,33 @@ impl App {
     fn scroll_viewport_down(&mut self) {
         if self.ui_state.dialog.is_open() {
             self.dialog_navigate_down();
+        } else if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(1);
         } else {
             self.messages_state.messages.scroll_down();
         }
     }
 
     fn go_to_top(&mut self) {
-        if !self.ui_state.dialog.is_open() {
-            self.messages_state.messages.scroll_to_top();
+        if self.ui_state.dialog.is_open() {
+            return;
         }
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active_to_top();
+            return;
+        }
+        self.messages_state.messages.scroll_to_top();
     }
 
     fn go_to_bottom(&mut self) {
-        if !self.ui_state.dialog.is_open() {
-            self.messages_state.messages.scroll_to_bottom();
+        if self.ui_state.dialog.is_open() {
+            return;
         }
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active_to_bottom();
+            return;
+        }
+        self.messages_state.messages.scroll_to_bottom();
     }
 
     fn cycle_agent(&mut self) {
@@ -15339,7 +15364,31 @@ impl App {
                     .info("Subagent tab limit reached — close a tab with Shift+X to open another");
             }
         }
+        if opened {
+            // The tab reads the delegated run's transcript when it opens, so
+            // the snapshot it reads from has to be the one the store holds
+            // now. This is a boundary read at the user's request — never a
+            // timer — and it leaves the open rows alone while it runs.
+            self.refresh_delegated_transcript();
+        }
         opened
+    }
+
+    /// Re-read the active session's projection so the delegated tab's
+    /// transcript is current.
+    ///
+    /// A no-op when there is no active session or project: there is nothing
+    /// to re-read, and the tab keeps the transcript it already has.
+    fn refresh_delegated_transcript(&mut self) {
+        let (Some(project_id), Some(session_id)) = (
+            self.active_project_id().map(str::to_owned),
+            self.active_session_id().map(str::to_owned),
+        ) else {
+            return;
+        };
+        crate::tui::commands::primary_projection::refresh_session_snapshot(
+            self, project_id, session_id,
+        );
     }
 
     /// Move `offset` places through the subagent tab cycle.

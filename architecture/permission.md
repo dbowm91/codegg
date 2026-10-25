@@ -714,6 +714,16 @@ also names `diff`, `security`, `tool_search`, `context_read`,
 
 ## Invariants & Gotchas
 
+0. **A delegated run's continuation cannot widen the ceiling.** A continued
+   attempt runs under the *attempt's own* payload: the same `denied_tools`,
+   `allowed_paths`, model, sandbox profile and worktree ceiling the first
+   attempt ran under. The `task action=continue` request may narrow the
+   recorded path set; anything wider is refused with the typed reason
+   `ceiling_widened`. The delegated job's own admission is unchanged too: a
+   continuation is an explicitly authorized new attempt, not a scheduler
+   retry, so it keeps `RetryPolicy::no_retry()` and
+   `IdempotencyClass::NonIdempotent`. See `architecture/agent.md` §"Continuing
+   a delegated run".
 1. **PermissionRegistry is synchronous.** `register()`, `respond()`,
    `answer_question()` are `fn`, not `async fn`. Do NOT `.await` them.
 2. **Registration-before-publish.** Always register the oneshot channel

@@ -7,7 +7,9 @@
 //! resulting bounded DTO/event through `ProjectionReplayService`.
 
 use codegg_protocol::projection::dto::{
-    AgentRunGroupSummaryProjection, AgentRunSummary, WorktreeSummaryProjection,
+    AgentRunGroupSummaryProjection, AgentRunSummary, AgentRunTranscriptEntryProjection,
+    AgentRunTranscriptKind, AgentRunTranscriptProjection, AgentRunTranscriptRole,
+    AgentRunTranscriptTruncation, WorktreeSummaryProjection,
 };
 
 use super::super::agent_run::{AgentRunRecord, AgentRunStatus, AgentTaskRecord};
@@ -16,6 +18,10 @@ use super::super::agent_run_group::AgentRunGroupSummary;
 use super::super::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupRecord, RunGroupStatus, RunJoinPolicy,
 };
+use super::super::agent_run_transcript::{
+    AgentRunTranscriptRead, AgentRunTranscriptStore, TranscriptKind, TranscriptRole,
+};
+use crate::identity::AgentRunId;
 use crate::run_result::AgentRunResult;
 use crate::worktree_service::{WorktreeHealth, WorktreeRecord};
 
@@ -92,8 +98,95 @@ pub fn agent_run_summary(
         progress: None,
         failure_class: run.failure_class.clone(),
         updated_at: run.updated_at,
+        // The transcript is not read here: this function takes already-loaded
+        // records and has no store. `agent_run_summary_with_transcript` is
+        // the boundary read that supplies it.
+        transcript: None,
     };
     summary.normalise();
+    summary
+}
+
+/// Populate a run summary's transcript field from the durable transcript
+/// store.
+///
+/// This is the **boundary read**: the delegated tab reads the transcript when
+/// it opens, not on a timer, and the read is bounded at the store and
+/// honoured here. [`agent_run_summary`] keeps its signature — the callers
+/// that build a summary for a lifecycle event keep compiling against it —
+/// and this sibling is the additive path that carries the body.
+///
+/// The body was redacted when it was written; nothing here redacts again.
+/// A read that fails leaves the field **absent** rather than reporting the
+/// run as having no transcript: the two are different facts.
+pub async fn agent_run_summary_with_transcript(
+    mut summary: AgentRunSummary,
+    store: &dyn AgentRunTranscriptStore,
+    run_id: &AgentRunId,
+) -> AgentRunSummary {
+    let page = match store
+        .read(run_id, 0, AgentRunTranscriptProjection::MAX_ROWS)
+        .await
+    {
+        Ok(AgentRunTranscriptRead::Absent) => {
+            summary.transcript = Some(AgentRunTranscriptProjection::Absent);
+            return summary;
+        }
+        Ok(AgentRunTranscriptRead::Present(page)) => page,
+        Err(error) => {
+            tracing::warn!(%error, %run_id, "delegated run transcript read failed");
+            return summary;
+        }
+    };
+
+    // The page is bounded by the row request; the byte bound is applied here
+    // so the payload that crosses is inside the contract. Rows that do not
+    // fit are **not** dropped silently — the payload states the point below.
+    let mut entries: Vec<AgentRunTranscriptEntryProjection> = Vec::new();
+    let mut bytes = 0usize;
+    let mut cut_by_bytes = false;
+    for entry in &page.entries {
+        let len = entry.redacted_body.len();
+        if bytes + len > AgentRunTranscriptProjection::MAX_BYTES {
+            cut_by_bytes = true;
+            break;
+        }
+        bytes += len;
+        entries.push(AgentRunTranscriptEntryProjection {
+            ordinal: entry.ordinal,
+            role: match entry.role {
+                TranscriptRole::Orchestrator => AgentRunTranscriptRole::Orchestrator,
+                TranscriptRole::Internal => AgentRunTranscriptRole::Internal,
+            },
+            kind: match entry.kind {
+                TranscriptKind::ModelMessage => AgentRunTranscriptKind::ModelMessage,
+                TranscriptKind::ToolCall => AgentRunTranscriptKind::ToolCall,
+                TranscriptKind::ToolResult => AgentRunTranscriptKind::ToolResult,
+                TranscriptKind::TerminalNote => AgentRunTranscriptKind::TerminalNote,
+            },
+            body: entry.redacted_body.clone(),
+            byte_len: entry.byte_len,
+            created_at: entry.created_at,
+        });
+    }
+
+    let omitted_entries = (page.total_entries - entries.len() as i64).max(0);
+    let next_ordinal = entries.last().map(|entry| entry.ordinal + 1).unwrap_or(0);
+    let truncation =
+        (cut_by_bytes || page.has_more || page.truncated).then_some(AgentRunTranscriptTruncation {
+            next_ordinal,
+            omitted_entries,
+            recording_stopped: page.truncated,
+        });
+
+    match AgentRunTranscriptProjection::checked(entries, truncation) {
+        Ok(payload) => summary.transcript = Some(payload),
+        Err(error) => {
+            // Refused, not shortened: a payload over the declared bound is
+            // not shipped, and the client degrades to the run inspector.
+            tracing::warn!(%error, %run_id, "refused an over-bound delegated run transcript");
+        }
+    }
     summary
 }
 
@@ -173,11 +266,157 @@ pub fn run_upsert_event(
 #[cfg(test)]
 mod tests {
     use super::super::super::agent_run::{AgentRunBudget, AgentRunTerminal};
+    use super::super::super::agent_run_transcript::{
+        InMemoryAgentRunTranscriptStore, TranscriptKind, TranscriptRole,
+    };
     use super::*;
     use crate::identity::{
         AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorktreeId,
     };
     use crate::workspace::WorkspaceId;
+
+    fn summary_for(run_id: &AgentRunId) -> AgentRunSummary {
+        AgentRunSummary {
+            run_id: run_id.to_string(),
+            task_id: "task-1".into(),
+            agent: "explore".into(),
+            status: "completed".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_adapter_carries_the_recorded_transcript_in_order() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        store
+            .append(
+                &run_id,
+                TranscriptRole::Orchestrator,
+                TranscriptKind::ModelMessage,
+                "first",
+            )
+            .await
+            .expect("append the first row");
+        store
+            .append(
+                &run_id,
+                TranscriptRole::Internal,
+                TranscriptKind::ToolCall,
+                "second",
+            )
+            .await
+            .expect("append the second row");
+
+        let summary =
+            agent_run_summary_with_transcript(summary_for(&run_id), &store, &run_id).await;
+        let transcript = summary.transcript.expect("a transcript is attached");
+        match transcript {
+            AgentRunTranscriptProjection::Complete { entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].body, "first");
+                assert_eq!(entries[1].body, "second");
+                assert!(entries[0].ordinal < entries[1].ordinal);
+                assert_eq!(entries[0].role, AgentRunTranscriptRole::Orchestrator);
+                assert_eq!(entries[1].role, AgentRunTranscriptRole::Internal);
+                assert_eq!(entries[1].kind, AgentRunTranscriptKind::ToolCall);
+            }
+            other => panic!("expected a complete transcript, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_with_no_transcript_is_absent_rather_than_empty() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        let summary =
+            agent_run_summary_with_transcript(summary_for(&run_id), &store, &run_id).await;
+        assert_eq!(
+            summary.transcript,
+            Some(AgentRunTranscriptProjection::Absent),
+            "a run that recorded nothing must say so, not render as an empty conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_run_is_bounded_and_states_its_truncation_point() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        // More rows than the payload may carry, so the read is a page and not
+        // the whole transcript.
+        let total = AgentRunTranscriptProjection::MAX_ROWS + 12;
+        for index in 0..total {
+            store
+                .append(
+                    &run_id,
+                    TranscriptRole::Orchestrator,
+                    TranscriptKind::ModelMessage,
+                    &format!("row {index}"),
+                )
+                .await
+                .expect("append a row");
+        }
+
+        let summary =
+            agent_run_summary_with_transcript(summary_for(&run_id), &store, &run_id).await;
+        let transcript = summary.transcript.expect("a transcript is attached");
+        assert!(
+            transcript.body_bytes() <= AgentRunTranscriptProjection::MAX_BYTES,
+            "the payload must stay inside the declared bound"
+        );
+        match &transcript {
+            AgentRunTranscriptProjection::Truncated {
+                entries,
+                truncation,
+            } => {
+                assert!(entries.len() <= AgentRunTranscriptProjection::MAX_ROWS);
+                assert_eq!(truncation.omitted_entries, 12);
+                assert_eq!(
+                    truncation.next_ordinal,
+                    entries.last().expect("a carried row").ordinal + 1,
+                    "the truncation point is the ordinal the next row would carry"
+                );
+                assert!(!truncation.recording_stopped);
+            }
+            other => panic!("expected a truncated transcript, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transcript_over_the_byte_bound_is_cut_at_a_stated_point() {
+        let store = InMemoryAgentRunTranscriptStore::new();
+        let run_id = AgentRunId::new();
+        // Rows that fit the row bound but not the byte bound.
+        for index in 0..8 {
+            store
+                .append(
+                    &run_id,
+                    TranscriptRole::Orchestrator,
+                    TranscriptKind::ToolResult,
+                    &format!("{index}{}", "x".repeat(2 * 1024)),
+                )
+                .await
+                .expect("append a row");
+        }
+
+        let summary =
+            agent_run_summary_with_transcript(summary_for(&run_id), &store, &run_id).await;
+        let transcript = summary.transcript.expect("a transcript is attached");
+        assert!(
+            transcript.body_bytes() <= AgentRunTranscriptProjection::MAX_BYTES,
+            "the payload must stay inside the declared bound"
+        );
+        match &transcript {
+            AgentRunTranscriptProjection::Truncated {
+                entries,
+                truncation,
+            } => {
+                assert!(!entries.is_empty(), "the first row must survive the cut");
+                assert_eq!(truncation.omitted_entries, 8 - entries.len() as i64);
+            }
+            other => panic!("expected a truncated transcript, got {other:?}"),
+        }
+    }
 
     #[test]
     fn summary_uses_typed_authority_and_marks_dirty_worktree_for_attention() {
