@@ -208,6 +208,10 @@ impl SubscriptionRegistry {
         (subscription_id, previous)
     }
 
+    /// Test-only teardown helper: the production lifecycle clears the active
+    /// owner through `take_active`/`clear_if_matching`, so this entry point
+    /// exists solely for the registry's own terminal-cleanup proofs.
+    #[cfg(test)]
     pub async fn shutdown(&self) {
         let owned = {
             let mut guard = self.inner.lock().await;

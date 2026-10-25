@@ -252,6 +252,7 @@ Create one canonical session view usable by local TUI, remote TUI, observer mode
 - Keep large logs and artifacts behind handles.
 - Remove frontend dependence on raw render frames.
 - Add protocol capability negotiation for projection versions.
+- Give each frontend consumer its own input model — keymap, chords, focus model and actions — as frontend-local presentation state, with the vocabulary canonicalized in `plans/001-terminology-and-domain-model.md` and a frontend's action kept distinct from a daemon-owned `Command`.
 
 ### Dependencies
 

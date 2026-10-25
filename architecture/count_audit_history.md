@@ -762,3 +762,45 @@ re-bank raised the global block and moved only the per-file ceilings of files
 `main`'s `crates/codegg-protocol/src/scratch.rs` and
 `src/core/daemon_scratch.rs` — so the bank diff stays confined to touched
 files plus the global block, as the ratchet requires.
+
+### Eleventh amendment — 2026-10-25, delegated-run corrective, third reconciliation with `main`
+
+`origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
+surface), which carried the desktop parity line's three new guards and its own
+new integration test module. Merging it into the delegated-run corrective
+branch moved the same three rows again. Each was re-measured against its own
+listed `Source` in the merged tree rather than incremented from either parent:
+
+| Row | Before | After | What moved it |
+|---|---|---|---|
+| Integration test files | 347 | **348** | The union of the two lines' own deltas. `main`'s M007 editor surface added the `tests/frontend_parity/` module (`mod.rs` and `tui_reconstruction.inc`); the delegated-run corrective's own test modules were already counted. The two sides' changed test-file sets were differenced and **overlap on no file**, so the union is additive. |
+| Guard scripts (all) | 96 | **99** | The measure is `scripts/check_*`, unchanged. `main`'s three new desktop guards (`check_desktop_gate_wiring.py`, `check_desktop_panel_authority.py`, `check_desktop_editor_authority.py`) joined the delegated-run corrective's three. Note that the published row's `scripts/check_*` glob does **not** match the repository's three kebab-case shell guards (`check-client-boundary.sh`, `check-core-boundary.sh`, `check-desktop-boundary.sh`); the full population is three larger, and the *method* is unchanged by this merge. |
+| CI guard scripts | 62 | **65** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
+| `AGENTS.md`'s published counts | 76 quick / 62 CI | **79 quick / 65 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. |
+
+The **quick-only difference is unchanged at 14** guards CI does not run, and the
+quick-only set was **re-derived** rather than carried over, by differencing the
+guards `run_guards()` names against the guards `.github/workflows/ci.yml`
+names. It is the same fourteen as before — the client and desktop boundaries,
+`check_daemon_listing_authority`, `check_first_party_skills`,
+`check_network_intent_owner_wiring`, `check_no_hardcoded_selection_colours`,
+`check_eggwork_target_routing`, `check_openai_endpoint_composition`, and the
+six provider guards — because all six of the two lines' new guards run in
+**both** surfaces. `AGENTS.md`'s published counts were corrected at the source
+to **79** for `quick` and **65** for CI.
+
+The **remaining rows were confirmed unchanged by measurement, not by
+assumption**: the 25 rows `scripts/measure_overview_counts.py` emits were
+compared against the published table's leading values programmatically, and
+every one of them agrees. The moved rows are the three above.
+
+**The comment budget was re-banked on the merged tree.** The corpus is a
+ratchet and both lines spent comment lines: the merged tree measures
+**126,378** comment lines, **1,115,289** words and a **0.1337** ratio, with a
+recorded ceiling of **0.1338**. The re-bank raised the global block and moved
+only the per-file ceilings of files **either** line touched — `main`'s
+`crates/codegg-protocol/src/{core,git,lib,skill}.rs`,
+`crates/codegg-core/src/{authorization/policy,audit_instrumentation}.rs`,
+`src/core/{daemon,daemon_family,daemon_reads,tests/git_fixture}.rs`,
+`src/scratch.rs` and the two `tests/frontend_parity/` files — so the bank diff
+stays confined to touched files plus the global block, as the ratchet requires.

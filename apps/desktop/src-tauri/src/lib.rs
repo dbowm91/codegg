@@ -1,16 +1,24 @@
 mod artifact;
-mod bridge;
 mod control;
+pub mod document;
 mod lifecycle;
-mod present;
 mod projection;
 mod prompt;
 mod route;
+mod todos;
+
+// The host's view API is public so a cross-frontend test can compare what
+// the desktop reconstructs from the canonical projection snapshot against
+// what the TUI reconstructs from the same snapshot. It is the same
+// function the Tauri commands serve, so the comparison is against the
+// shipped path, not a test-only re-implementation.
+pub mod bridge;
+pub mod present;
 
 use bridge::{
-    ArtifactExcerptView, ConnectionSnapshot, ControllerSummaryView, DesktopEvent,
-    ProjectDetailView, ProjectSummary, PromptSubmitView, RouteTokenView, SessionListView,
-    SessionPresentationView, SessionView, SubscriptionInfo,
+    ArtifactExcerptView, ConnectionSnapshot, ControllerSummaryView, DesktopEvent, GitReadOperation,
+    GitReadView, ProjectDetailView, ProjectSummary, PromptSubmitView, RouteTokenView,
+    SessionListView, SessionPresentationView, SessionView, SkillCatalogueView, SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -19,6 +27,13 @@ use codegg_client::{
 use codegg_protocol::{
     core::{CoreEvent, CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
     frames::{ClientCapabilities, ClientKind},
+};
+use document::{
+    desktop_document_close, desktop_document_completion, desktop_document_cursor,
+    desktop_document_diagnostics, desktop_document_edit, desktop_document_navigate,
+    desktop_document_open, desktop_document_redo, desktop_document_reload, desktop_document_resync,
+    desktop_document_save, desktop_document_state, desktop_document_tree, desktop_document_undo,
+    desktop_document_viewport,
 };
 use lifecycle::{cancel_and_join, SubscriptionRegistry};
 use std::{
@@ -47,6 +62,7 @@ struct HostState {
     /// - disconnect / native close / app exit: serial invalidation + generation
     ///   bump + subscription take + client clear;
     /// - subscription install: connection snapshot + owner publication.
+    ///
     /// Slow work (network connect, autostart, snapshot requests, forwarder
     /// abort/join) runs outside the gate. Forwarders never acquire this gate.
     lifecycle: Mutex<()>,
@@ -67,6 +83,11 @@ struct HostState {
     /// and session selection live here under route-generation fencing.
     /// Canonical workspace roots in this state are never serialized.
     route: Mutex<route::RouteState>,
+    /// M007-E document session. Present only while a document is open; it
+    /// owns the shared `DocumentController`, the bounded undo stack and the
+    /// cursor/viewport window the editor needs. The document itself, and
+    /// every version of it, stays the daemon's.
+    document: Mutex<Option<Arc<document::DesktopDocumentSession>>>,
     /// Test-only connected flag for deterministic race tests that must not
     /// require a real daemon socket. Production presence is `client.is_some()`;
     /// tests set this flag plus a non-zero generation to simulate a live
@@ -86,6 +107,7 @@ impl Default for HostState {
             connect_serial: AtomicU64::new(0),
             subscriptions: SubscriptionRegistry::new(),
             route: Mutex::new(route::RouteState::default()),
+            document: Mutex::new(None),
             #[cfg(test)]
             fake_connected: std::sync::atomic::AtomicBool::new(false),
         }
@@ -104,6 +126,9 @@ pub(crate) struct TestBarrier {
 }
 
 impl TestBarrier {
+    /// Test-only constructor: production never builds a barrier, it passes
+    /// `None` to the barrier-aware entry points.
+    #[cfg(test)]
     pub(crate) fn fresh() -> Self {
         Self {
             entered: Arc::new(Notify::new()),
@@ -213,6 +238,7 @@ impl HostState {
     /// generation. Callers must have fenced concurrent attempts already.
     /// Preserved for the live trajectory; production connect uses
     /// [`Self::commit_prepared_connection`] for atomic supersession.
+    #[cfg(test)]
     pub(crate) async fn install_connection(
         &self,
         client: LocalSocketClient,
@@ -356,14 +382,12 @@ impl HostState {
                             | CoreEvent::ProjectArchived { .. }
                             | CoreEvent::ProjectRestored { .. }
                             | CoreEvent::ProjectHealthChanged { .. }
-                    ) {
-                        if !sink.send_event(DesktopEvent {
-                            version: 1,
-                            event_seq: envelope.event_seq,
-                            kind: "project_catalog_changed",
-                        }) {
-                            break;
-                        }
+                    ) && !sink.send_event(DesktopEvent {
+                        version: 1,
+                        event_seq: envelope.event_seq,
+                        kind: "project_catalog_changed",
+                    }) {
+                        break;
                     }
                 }
                 // Clear ownership only if this task is still the stored owner.
@@ -404,11 +428,6 @@ impl HostState {
         self.fake_connected.store(true, MemOrder::Release);
         self.connection_generation
             .store(generation, MemOrder::Release);
-    }
-
-    fn mark_fake_disconnected(&self) {
-        use std::sync::atomic::Ordering as MemOrder;
-        self.fake_connected.store(false, MemOrder::Release);
     }
 
     fn is_fake_connected(&self) -> bool {
@@ -514,14 +533,12 @@ impl HostState {
                             | CoreEvent::ProjectArchived { .. }
                             | CoreEvent::ProjectRestored { .. }
                             | CoreEvent::ProjectHealthChanged { .. }
-                    ) {
-                        if !sink.send_event(DesktopEvent {
-                            version: 1,
-                            event_seq: envelope.event_seq,
-                            kind: "project_catalog_changed",
-                        }) {
-                            break;
-                        }
+                    ) && !sink.send_event(DesktopEvent {
+                        version: 1,
+                        event_seq: envelope.event_seq,
+                        kind: "project_catalog_changed",
+                    }) {
+                        break;
                     }
                 }
                 task_state
@@ -947,6 +964,44 @@ async fn desktop_question_respond(
         .await
 }
 
+/// Task-state command: the route-selected session's todo list, carried
+/// into the presentation view. The renderer never asks the daemon for
+/// todos itself and never fabricates one: the host reads the list,
+/// fences the read on the route/connection generation, and fails closed
+/// when the daemon does not answer with a list.
+#[tauri::command]
+async fn desktop_todo_refresh(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<SessionPresentationView, String> {
+    state.route_todo_refresh(route_generation).await
+}
+
+/// Phase 3 read-only project facts. Narrow capability classes only: the
+/// renderer names the git fact set it wants, and the route names the
+/// project. No path ever crosses the bridge — the daemon resolves the
+/// repository root from its own durable project binding.
+#[tauri::command]
+async fn desktop_git_read(
+    state: State<'_, Arc<HostState>>,
+    operation: String,
+    route_generation: u64,
+) -> Result<GitReadView, String> {
+    let operation = GitReadOperation::parse(&operation)?;
+    state.route_git_read(operation, route_generation).await
+}
+
+/// Phase 3 read-only project facts: the route-selected project's skill
+/// catalogue. The renderer never names a project or a root; the route
+/// names the project and the daemon resolves the roots to search.
+#[tauri::command]
+async fn desktop_skill_catalogue(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<SkillCatalogueView, String> {
+    state.route_skill_catalogue(route_generation).await
+}
+
 /// M004 WP C projection commands. Narrow capability classes only:
 /// projection start/stop/current/subscribe for the route-selected
 /// session. No generic `CoreRequest` bridge, no filesystem paths.
@@ -1024,13 +1079,31 @@ pub fn run() {
             desktop_control_refresh,
             desktop_permission_respond,
             desktop_question_respond,
+            desktop_todo_refresh,
+            desktop_git_read,
+            desktop_skill_catalogue,
             desktop_projection_start,
             desktop_projection_stop,
             desktop_projection_current,
             desktop_projection_subscribe,
             desktop_subscribe_events,
             desktop_unsubscribe_events,
-            desktop_disconnect
+            desktop_disconnect,
+            desktop_document_open,
+            desktop_document_viewport,
+            desktop_document_cursor,
+            desktop_document_edit,
+            desktop_document_undo,
+            desktop_document_redo,
+            desktop_document_save,
+            desktop_document_reload,
+            desktop_document_resync,
+            desktop_document_close,
+            desktop_document_state,
+            desktop_document_tree,
+            desktop_document_diagnostics,
+            desktop_document_completion,
+            desktop_document_navigate
         ])
         .on_window_event(move |_window, event| match event {
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {

@@ -98,6 +98,8 @@ TUIs, ACP clients, web clients, desktop clients, and future frontends MUST rende
 
 A desktop client is a first-class frontend under these constraints. It renders frontend-neutral snapshots and events over the native protocol, and it holds no durable session, provider, or scheduling authority of its own.
 
+Each frontend owns its own input model. A frontend's keymap, chord bindings, focus model and action set are frontend-local presentation state: they are not durable session state, not provider state, and not shared with the daemon, and two frontends MAY bind different keys to the same operation. A frontend's action is not a command: a command is an entry in the daemon-owned catalog and is dispatched by identity, while an action is a frontend-local binding. A frontend that implements an action by dispatching a command MUST NOT hold a second catalog of its own.
+
 ### 4.5 Locality by default
 
 Filesystem access, LSP processes, Git worktree operations, PTYs, tests, builds, and other heavy tools SHOULD execute on the node that owns the workspace. The coordinator SHOULD receive structured events, bounded output, artifacts, and content-addressed data rather than proxying every local operation synchronously.

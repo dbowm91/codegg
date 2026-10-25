@@ -32,7 +32,7 @@ This document is the **bird's eye view**: how the system is decomposed, how a tu
 
 The supported distribution remains one `codegg` executable per target. The daemon is a user-scoped singleton discovered and started by that executable; the TUI and daemon share the same business-logic libraries and invocation contracts. Runtime-safety milestone M007 measured the dependency and release profiles and retained this no-split topology because a daemon/TUI split did not produce a material deployment improvement without adding packaging or ownership complexity. Future role-specific binaries require a new measured deployment constraint and compatibility plan; they are not an advertised installation mode.
 
-An optional Tauri desktop shell lives under `apps/desktop` and is built with its own Rust and JavaScript toolchains. Its Rust host uses `codegg-client` to connect to or start the existing `codegg` daemon; it is not a second daemon binary and does not change the root Cargo workspace's Rust 1.89 contract. See [desktop architecture](desktop.md).
+An optional Tauri desktop shell lives under `apps/desktop` and is built with its own Rust and JavaScript toolchains. It has its own renderer-owned, remappable input model with mouse parity — see [the desktop's input model](desktop.md#the-desktops-input-model) — and its shortcuts are **in-window only**: there is no OS-global shortcut. Its Rust host uses `codegg-client` to connect to or start the existing `codegg` daemon; it is not a second daemon binary and does not change the root Cargo workspace's Rust 1.89 contract. See [desktop architecture](desktop.md).
 
 ## System architecture
 
@@ -297,7 +297,7 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `a4bbba81e` together with the M005 writer-containment line's branch tip `28ebe7163`. No number was carried over from another tree.
+Every count below was re-measured against the current tree on **2026-10-24**, each against its own listed `Source`, in the merged tree that carries `origin/main` `ffb7bbe8b` together with the desktop-GUI parity phase's branch tip. No number was carried over from another tree.
 
 Re-measure them at any time with:
 
@@ -437,6 +437,59 @@ member of the **existing** `tui_render` family, so the root package's
 count was re-measured against its own listed `Source` with
 `python3 scripts/measure_overview_counts.py`.
 
+One row moved again on **2026-10-24**, when the desktop-GUI parity phase
+added its root-side half: **integration test files 335 → 336**
+(`tests/frontend_parity/tui_reconstruction.inc`). The new file is a member of
+the **new** `frontend_parity` family, so the root package's **test-target**
+count moved by one with it; no row's **measure** changed. The count was
+re-measured against its own listed `Source` with
+`python3 scripts/measure_overview_counts.py`.
+
+That measurement was taken before this line was reconciled with `main`, and
+`main` had moved the same row on its own side, so the merged tree's count is
+neither parent's: `main` measured **338** and this line adds
+`tests/frontend_parity/tui_reconstruction.inc`, for a merged **339**. The
+merged value was **measured** in the merged tree with
+`python3 scripts/measure_overview_counts.py` — not incremented from either
+parent — and `scripts/check_test_target_references.py` checks the recorded row
+against the tree, so the two cannot drift.
+
+Three further rows moved on this line's side of the merge, each by the same
+two-request delta: the desktop-GUI phase adds `CoreRequest::GitRead` and
+`CoreRequest::SkillCatalogueList`, so `CoreRequest` variants are **268**
+(242 struct + 26 unit), `CoreResponse` variants are **176** (175 struct + 1
+unit), and authorized operations are **262** — with the
+`representative_requests()` list holding **252**. Every other row was
+**confirmed unchanged** by measurement, not by assumption: architecture docs
+**92**, distinct production tool names **75**, tool source files **83**, LSP
+server definitions **39**, `codegg-core` modules **54**, `AppEvent` variants
+**61**, `CoreEvent` variants **92**, `ProjectionEvent` variants **47**,
+identity newtypes **19**, built-in slash commands **169**, built-in agents
+**10**, bundled themes **50**, TUI state modules **33** (34 `.rs` files incl.
+`mod.rs`), database tables **95 statements / 91 tables**, storage layout
+version **88**, Git operation variants **54**, Git risk classes **11**, and
+workspace member crates **11** (+ root). The *Guard scripts (all)* row was
+**92** and the *CI guard scripts* row **55** on this line's own side of that
+merge, both carried unchanged from the `main` it was reconciled with, which had
+added the writer-fence, contained-worktree-grant, checkout-mediation,
+daemon-cwd, Git-forbidden-pattern and Git-consistency-consumer guards.
+
+One more reconciliation, on **2026-10-24**, merged this line's tip with the
+`main` that carried the M008 corrective and the M007 planning line. Neither
+side's numbers were correct for the merged tree, so every moved row was
+**re-measured in the merged tree** with
+`python3 scripts/measure_overview_counts.py` and **not** incremented from
+either parent. *Integration test files* is **340** — `main`'s **339** plus this
+line's `tests/frontend_parity/tui_reconstruction.inc`. *Guard scripts (all)*
+is **93** (`ls scripts/check_*` — `main`'s `scripts/check_scratch_reclaim_invariants.py`
+is in the merged tree and this line adds no guard), *CI guard scripts* is
+**56** (the distinct `scripts/check_*` names in `.github/workflows/ci.yml`),
+and the quick-only difference is unchanged at **14**. The `CoreRequest` (268),
+`CoreResponse` (176) and authorized-operations (262) rows keep this line's
+values, which the merged tree confirms. Every other row was **confirmed
+unchanged** by measurement. `scripts/check_test_target_references.py` checks the
+recorded integration-test-file row against the tree, so that row cannot drift.
+
 The four milestones were developed on sibling branches from a common base and
 each re-measured these rows in isolation, so each recorded only its own
 increment. Merging them lost one increment per row in `architecture/overview.md`
@@ -525,11 +578,11 @@ fifth reconciliations recorded. The full reconciliation is in
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 56 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 266 (240 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 174 (173 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 268 (242 struct + 26 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 176 (175 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 260 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 260 arms carrying 260 distinct operation names, covering all 266 `CoreRequest` variants; the `representative_requests()` list holds 250 of them |
+| Authorized operations | 262 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — 262 arms carrying 262 distinct operation names, covering all 268 `CoreRequest` variants; the `representative_requests()` list holds 252 of them |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 169 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -540,9 +593,9 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 347 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
-| Guard scripts (all) | 96 | `scripts/check_*` — every guard the repository ships |
-| CI guard scripts | 62 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
+| Integration test files | 348 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded |
+| Guard scripts (all) | 99 | `scripts/check_*` — every guard the repository ships |
+| CI guard scripts | 65 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs 14 guards CI does not |
 
 ### Count reconciliation — M008 (2026-10-24)
 
@@ -561,6 +614,77 @@ the same guard and its self-test). The quick-only difference was unchanged at
 and CI, so it adds no quick-only entry. Every other code-count row was
 re-checked against its own listed `Source` and is unchanged.
 
+### Count reconciliation — desktop parity merge (2026-10-24)
+
+One code-count row moved when the desktop parity work merged into `main`.
+*Integration test files* is **340** (`tests/*.rs` + `tests/*/*.inc`, with the
+`tests/common/` helper tree excluded — the count moved by one, the new
+`tests/frontend_parity/tui_reconstruction.inc`, which reconstructs a session
+from the TUI's own projection and compares it against the desktop's). *Guard
+scripts (all)* is **93** (`ls scripts/check_*` — unchanged: the desktop parity
+work adds no guard), *CI guard scripts* is **56** (the `ci.yml` list, unchanged),
+and the quick-only difference is unchanged at **14**. The *quick* guard count
+is **70**. Every other code-count row was re-checked against its own listed
+`Source` and is unchanged.
+
+### Count reconciliation — M007-A desktop gate guard (2026-10-24)
+
+Two code-count rows moved when the desktop build and hosted gate line added the
+guard that keeps the desktop tree inside an automated gate. *Guard scripts
+(all)* is **94** (`ls scripts/check_*` — the new
+`scripts/check_desktop_gate_wiring.py`, which fails closed when the hosted
+desktop qualification stops covering the desktop tree: a dispatch-only
+trigger, a path filter that no longer names `apps/desktop/**`, a missing
+`clippy` step for the desktop host, or a missing local entry point).
+*CI guard scripts* is **57** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained the same guard and its self-test). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
+entry. The *quick* guard count is **71**. Every other code-count row was
+re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — M007-E desktop editor surface (2026-10-25)
+
+Two code-count rows moved when the desktop editor milestone added the guard
+that keeps the editor's text authority where it belongs. *Guard scripts (all)*
+is **96** (`ls scripts/check_*` — the new
+`scripts/check_desktop_editor_authority.py`, which holds the desktop editor's
+**one** bounded viewport slice as a recorded pair and refuses a host that
+serves a second copy of the text, a renderer that keeps a whole-document
+string or line array of its own, a viewport concatenated into one document
+string, a renderer filesystem or network read, or a DTO contract that drifts
+from the host's structs). *CI guard scripts* is **59** (the distinct
+`scripts/check_*` names in `.github/workflows/ci.yml` — it gained the same
+guard and its self-test). The quick-only difference is unchanged at **14**
+guards CI does not run: the new guard runs in **both** `verify.sh quick` and
+CI, so it adds no quick-only entry. The *quick* guard count is **73**.
+*Integration test files* is unchanged at **340** — the guard adds a script, and
+the milestone's host test lives under the desktop crate's own `tests/`
+directory, which the root `tests/*.rs` Source does not count. The **desktop
+panel authority guard's recorded bridge baseline** moved from **23** to **38**
+targets in the same change, because the editor's fifteen bounded commands are
+new bridge targets and that guard's own contract says a new target is a
+deliberate edit to it, in the same change that adds it. Every other code-count
+row was re-checked against its own listed `Source` and is unchanged.
+
+### Count reconciliation — M007-B desktop panel authority guard (2026-10-24)
+
+Two code-count rows moved when the desktop chat-region milestone added the
+guard that keeps the renderer's panel layer free of authority. *Guard scripts
+(all)* is **95** (`ls scripts/check_*` — the new
+`scripts/check_desktop_panel_authority.py`, which holds the desktop's 23
+bridge targets as a **recorded** set and refuses a panel or region module
+that calls `invoke`, imports the bridge, holds a Tauri capability, reaches a
+filesystem or a process, or keeps a durable frontend-owned store).
+*CI guard scripts* is **58** (the distinct `scripts/check_*` names in
+`.github/workflows/ci.yml` — it gained the same guard and its self-test). The
+quick-only difference is unchanged at **14** guards CI does not run: the new
+guard runs in **both** `verify.sh quick` and CI, so it adds no quick-only
+entry. The *quick* guard count is **72**. *Integration test files* is
+unchanged at **340** — the guard adds a script, not a test file. Every other
+code-count row was re-checked against its own listed `Source` and is
+unchanged.
+
 ### Count reconciliation — delegated-run corrective, merge with `main` (2026-10-24)
 
 Merging `origin/main` (`c4fa30aeb`, the managed-agent-scratch M008 line) into
@@ -573,6 +697,22 @@ six new guards all run in **both** `verify.sh quick` and CI, and M008's one new
 guard does too, so neither line adds a quick-only entry. `AGENTS.md`'s
 published counts were corrected at the source to **76** for `quick` and **62**
 for CI. The full record is in `architecture/count_audit_history.md`.
+
+### Count reconciliation — delegated-run corrective, third merge with `main` (2026-10-25)
+
+`origin/main` advanced to `cb4ceed9d` (PR #194, the M007 desktop editor
+surface), which carried the desktop parity line's three new guards and its own
+new integration test module. Merging it into the delegated-run corrective
+branch moved the same three rows again. The measured values on the merged tree
+are *Integration test files* **348**, *Guard scripts (all)* **99** and *CI
+guard scripts* **65** — each the sum of the two lines' own deltas, re-measured
+against its own listed `Source` rather than incremented from either parent. The
+quick-only difference is **unchanged at 14**: the delegated-run corrective's
+three new guards and all three of the desktop line's new guards run in **both**
+`verify.sh quick` and CI, so neither line adds a quick-only entry. `AGENTS.md`'s
+published counts were corrected at the source to **79** for `quick` and **65**
+for CI. The full record is in `architecture/count_audit_history.md`.
+
 
 ## Feature gates
 
@@ -772,7 +912,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (335 files)
+├── tests/                      # Integration tests (339 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -964,7 +1104,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (80 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (95 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 

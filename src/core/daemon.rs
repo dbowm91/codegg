@@ -1680,6 +1680,11 @@ impl CoreDaemon {
             // C005: the listing carries its locator nested in the DTO,
             // exactly like the human-shell and LSP DTO-carrying reads.
             CoreRequest::WorkspaceDirectoryList { request } => Some(request.project_id.as_str()),
+            // Phase 3: the read-only git read and the skill catalogue both
+            // name their project directly, exactly as the listing above
+            // does. Their `DirectProject` scope resolves through this arm.
+            CoreRequest::GitRead { request } => Some(request.project_id.as_str()),
+            CoreRequest::SkillCatalogueList { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
@@ -4678,6 +4683,15 @@ impl CoreDaemon {
             // daemon's own disposable cache and mutates nothing.
             super::daemon_family::DaemonRequestFamily::Scratch => {
                 Box::pin(self.handle_scratch_request(payload, authority, authz_decision)).await
+            }
+            // Phase 3: read-only project-scoped fact reads. The git read is
+            // served by the read-only git fact layer and the catalogue by the
+            // canonical skill registry; neither mutates anything.
+            super::daemon_family::DaemonRequestFamily::Git => {
+                Box::pin(self.handle_git_request(payload)).await
+            }
+            super::daemon_family::DaemonRequestFamily::Skills => {
+                Box::pin(self.handle_skill_catalogue_request(payload)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

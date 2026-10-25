@@ -71,6 +71,42 @@ run_guards() {
     echo "==> ./scripts/check-desktop-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-desktop-boundary.sh)
 
+    # The desktop tree is a separate Cargo workspace that the root check
+    # never compiles, so the hosted desktop qualification is the only
+    # automated gate it has. A guard which is not run automatically cannot
+    # protect anything, so this one runs here with its self-test: it fails
+    # closed when the desktop tree falls out of that gate.
+    echo "==> python3 scripts/check_desktop_gate_wiring.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_gate_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_gate_wiring.py)
+
+    # The renderer's panel layer renders the projection it is given: it calls
+    # no bridge, holds no Tauri capability, reaches no filesystem or process,
+    # and keeps no durable frontend-owned store. A panel that needs daemon
+    # data names the existing variant or stops, so the invariant is enforced
+    # rather than promised. A guard which is not run automatically cannot
+    # protect anything, so this one runs here with its self-test.
+    echo "==> python3 scripts/check_desktop_panel_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_panel_authority.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_panel_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_panel_authority.py)
+
+    # The editor's text authority: the host may serve the bounded viewport
+    # window it cut from the controller's own snapshot, and the renderer may
+    # hold that window and no second copy of the text. The editor's DTO
+    # mirror is checked here too, because the shared bindings check reads
+    # the bridge module only. The guard runs with its self-test, because a
+    # guard that cannot be shown to fail on an injected defect is not
+    # evidence.
+    echo "==> python3 scripts/check_desktop_editor_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_editor_authority.py --self-test)
+
+    echo "==> python3 scripts/check_desktop_editor_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_desktop_editor_authority.py)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 

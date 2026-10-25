@@ -499,9 +499,9 @@ frontend-only state" (`plans/002-long-term-roadmap.md:17`). M007 is built to
 those constraints. §3.1 records what the amendment moved in scope.
 
 **What already exists, and is not M007's work.** The daemon protocol has
-**266** `CoreRequest` variants; the desktop host currently uses **18** of
-them in production code — **no** `Document*` and **no** `Lsp*` variant among
-them. The TUI already has the whole surface M007 mirrors: **161**
+**268** `CoreRequest` variants; the desktop host names **25** of them in its
+own production code, across **23** bridge targets — **no** `Document*` and
+**no** `Lsp*` variant among them. The TUI already has the whole surface M007 mirrors: **161**
 `BuiltinSlashAction` variants (`src/tui/command.rs`), a dispatcher with an arm
 for **every one** of them (`src/tui/app/mod.rs:5661-8895`), **61** bindable
 `ActionKey`s with a remappable keymap (`src/tui/input.rs:259`), **32**
@@ -517,30 +517,49 @@ the editor substrate: `DocumentController` with
 (`crates/codegg-client/src/lsp.rs:64`, `:93`, `:107`). **M007 builds a
 frontend over existing authority; it does not invent a second authority.**
 
-**What does not exist, and is why the line has a gate milestone first.** The
-desktop renderer is one `App()` component of 407 lines
+**What did not exist, and is why the line has a gate milestone first.** The
+desktop renderer was one `App()` component of 407 lines
 (`apps/desktop/src/App.tsx:15`) rendering stacked `<section>` cards in a
 single 760-pixel column (`apps/desktop/src/style.css`), with **zero**
 keyboard handlers and twelve `onClick` bindings. Its projection DTO already
-carries `runs`, `jobs`, `subagents` and `recentTurns`
-(`apps/desktop/src/bridge-types.ts:160-163`) and the renderer renders none of
-them. `apps/desktop/src-tauri` is excluded from the root Cargo workspace
-(`Cargo.toml:6`) — deliberately, per §9 — so **no automated gate compiles or
-tests the desktop tree at all**, and the hosted visible-window lane is
-paused and red (`architecture/desktop.md:154-180`). M007-A restores that gate
+carried `runs`, `jobs`, `subagents` and `recentTurns`
+(`apps/desktop/src/bridge-types.ts:298-310`); the parity work that merged
+before this line opened now renders `jobs` and `subagents`, and still drops
+`runs` and `recentTurns`. `apps/desktop/src-tauri` is excluded from the root
+Cargo workspace (`Cargo.toml:6`) — deliberately, per §9 — so the root's own
+gate never compiles or tests the desktop tree, which is why the hosted
+visible-window lane is the desktop's only automated gate. That lane was
+paused and red (`architecture/desktop.md:154-180`) until M007-A restored it:
+the lane is now green, runs on the pull request again, lints the desktop
+host at `clippy -D warnings` for the first time, and is protected by a guard
+that fails closed when the tree falls out of it. M007-A restores that gate
 before any other milestone lands, because "No closure condition may silently
 become 'builds on the maintainer machine'" (§10) and nothing else in this
 line can be closed honestly without it.
+
+**What M007-C changed.** The **zero keyboard handlers** claim above was true
+of the baseline and is now false: the desktop was a mouse-only application that
+happened to be a TUI's distant cousin. M007-C gives it its own
+renderer-owned input model — a remappable keymap
+(`apps/desktop/src/keymap.ts`), a region-scoped focus model with a visible
+indicator (`apps/desktop/src/focus.ts`), and a bindings surface
+(`apps/desktop/src/panels/KeybindingsPanel.tsx`) — carrying **19** declared
+actions, every one of them reachable by chord **and** by mouse over the same
+affordance. The TUI is untouched: `git diff --name-only -- src/tui/` is empty,
+and the desktop's catalog is *derived* from the TUI's `ActionKey`, never a
+second definition of it. The desktop's shortcuts are **in-window only** — no
+OS-global shortcut exists, and none is permitted. Closure:
+`plans/closure/desktop-frontend-ide-foundation/013-status.md`.
 
 #### M007 decomposition
 
 | Sub-milestone | Scope | Dependency | Ready? |
 |---|---|---|---|
-| M007-A | **Desktop build and hosted gate.** An automated gate compiles the desktop Rust workspace and runs the renderer's typecheck and tests on every change to the desktop tree; the red visible-window lane is made green again and its triggers restored; the desktop tree is no longer outside every automated gate. | none — M001…M006-E are closed | **ready for handoff** — `plans/implementation/desktop-frontend-ide-foundation/011-desktop-build-and-hosted-gate.md` |
-| M007-B | **Chat region and side-panel frame.** A main chat region and a dockable side panel, mirroring the TUI's `PanelRegions` placement model; the projection fields the desktop already receives (`runs`, `jobs`, `subagents`, `recentTurns`) become a visible tasks panel; the renderer stops being one component. | M007-A | **ready for handoff** — `plans/implementation/desktop-frontend-ide-foundation/012-desktop-chat-region-and-side-panel.md` |
-| M007-C | **Keyboard-first input.** A shared, remappable keymap; the TUI's conceptual interaction hierarchy carried over; platform-idiomatic chords alongside it; full mouse operability. | M007-A, M007-B | **ready for handoff** — `plans/implementation/desktop-frontend-ide-foundation/013-desktop-keyboard-first-input.md` |
-| M007-D | **`/` command parity.** The TUI's command surface reached through the daemon rather than reimplemented in the renderer. | M007-C, **ADR-0052 accepted 2026-10-24** | **ready for handoff** — the ADR-0052 blocker is discharged; it waits on M007-C and on M007-A's gate — `plans/implementation/desktop-frontend-ide-foundation/014-desktop-slash-command-parity.md` |
-| M007-E | **Editor surface.** A first-party editor over the shared `DocumentController`, with LSP diagnostics, completion and navigation; a document-open affordance over the existing workspace directory listing. | M007-B, accepted ADR-0011 (already accepted) and ADR-0012 (already accepted) | **ready for handoff** — `plans/implementation/desktop-frontend-ide-foundation/015-desktop-editor-surface.md` |
+| M007-A | **Desktop build and hosted gate.** An automated gate compiles the desktop Rust workspace and runs the renderer's typecheck and tests on every change to the desktop tree; the red visible-window lane is made green again and its triggers restored; the desktop tree is no longer outside every automated gate. | none — M001…M006-E are closed | **closed** — the lane is green and gated; the host is linted at `clippy -D warnings` for the first time; one local entry point runs the same checks the hosted lane runs; a guard proves the tree is still inside a gate — `plans/closure/desktop-frontend-ide-foundation/011-status.md` |
+| M007-B | **Chat region and side-panel frame.** A main chat region and a dockable side panel, mirroring the TUI's `PanelRegions` placement model; the projection fields the desktop already receives (`runs`, `jobs`, `subagents`, `recentTurns`) become a visible tasks panel; the renderer stops being one component. | M007-A (**closed 2026-10-24**) | **closed** — the frame is a named-region CSS grid, the panel layer docks on any edge and resizes, and `runs` and `recentTurns` are rendered — `plans/closure/desktop-frontend-ide-foundation/012-status.md` |
+| M007-C | **Keyboard-first input.** A shared, remappable keymap; the TUI's conceptual interaction hierarchy carried over; platform-idiomatic chords alongside it; full mouse operability. | M007-A, M007-B (**both closed 2026-10-24**) | **closed** — the desktop has its own renderer-owned keymap, a region-scoped focus model with a visible indicator, and a bindings surface; all 19 declared actions are reachable by chord **and** by mouse — `plans/closure/desktop-frontend-ide-foundation/013-status.md` |
+| M007-D | **`/` command parity.** The TUI's command surface reached through the daemon rather than reimplemented in the renderer. | M007-C (**closed 2026-10-24**), **ADR-0052 accepted 2026-10-24** | **ready for handoff** — the ADR-0052 blocker is discharged and the palette's chord is now bound by M007-C; it waits on M007-A's gate — `plans/implementation/desktop-frontend-ide-foundation/014-desktop-slash-command-parity.md` |
+| M007-E | **Editor surface.** A first-party editor over the shared `DocumentController`, with LSP diagnostics, completion and navigation; a document-open affordance over the existing workspace directory listing. | M007-B (**closed 2026-10-25**), accepted ADR-0011 (already accepted) and ADR-0012 (already accepted) | **closed** — the desktop opens, edits, undoes, redoes and saves a document over the shared foundation, with the daemon owning the buffer and the host holding only a bounded viewport; the editor's 22 chords live in the desktop's keymap, and no second text buffer exists — `plans/closure/desktop-frontend-ide-foundation/015-status.md` |
 
 **M007-D is the one milestone that changes an ownership contract**, which is
 why it is gated on an ADR and the other four are not. The TUI's command
@@ -658,7 +677,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
 | M005 shared document/buffer foundation | closed | `plans/subsystems/editor-document-foundation-roadmap.md` + four original plans + `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md` | M005-A/B/C and current strict M005-D closure are recorded; historical M005-D closure remains immutable. ADR-0011 accepted; TUI-first, GUI editor deferred |
 | M006 TUI IDE vertical slice | audit complete; decomposed M006-A…M006-E; all M006-A…M006-E implemented and closed | M006-A: `plans/implementation/desktop-frontend-ide-foundation/005-editor-buffer-vertical-slice.md`; M006-D: `plans/implementation/desktop-frontend-ide-foundation/006-project-scoped-file-tree.md`; M006-E: `plans/implementation/desktop-frontend-ide-foundation/007-agent-change-review.md`; M006-B: `plans/implementation/desktop-frontend-ide-foundation/008-native-lsp-read-surface.md`; M006-C: `plans/implementation/desktop-frontend-ide-foundation/009-lsp-editor-presentation.md` | M006-A: `plans/closure/desktop-frontend-ide-foundation/005-status.md` (merged `94f38421`). M006-A is closed and its two additive read-only `codegg-client` accessors are approved. **M006-D is closed** at `plans/closure/desktop-frontend-ide-foundation/006-status.md` (`de29e49e`, PR `#94`). **M006-E is closed** at `plans/closure/desktop-frontend-ide-foundation/007-status.md` (`cde7dbfe`, PR `#96`), scoped to saved documents only; the dirty-buffer question remains deferred. **M006-B is closed** at `plans/closure/desktop-frontend-ide-foundation/009-status.md` (`4ce0343b`, PR `#99`) under accepted ADR-0012. **M006-C is closed** at `plans/closure/desktop-frontend-ide-foundation/010-status.md` (`91cbe784`; historical PR #111 attribution requires reconciliation); exact-SHA hosted CI and built-app Desktop E2E passed. C003 and C004 are closed at their corrective records; location identity remains optional and validated. |
-| M007 desktop GUI parity line | proposed (opened 2026-10-24 by the owner's direction); decomposed M007-A…M007-E; **M007-A, M007-B, M007-C, M007-D and M007-E ready for handoff; ADR-0052 accepted 2026-10-24** | M007-A: `plans/implementation/desktop-frontend-ide-foundation/011-desktop-build-and-hosted-gate.md`; M007-B: `plans/implementation/desktop-frontend-ide-foundation/012-desktop-chat-region-and-side-panel.md`; M007-C: `plans/implementation/desktop-frontend-ide-foundation/013-desktop-keyboard-first-input.md`; M007-D: `plans/implementation/desktop-frontend-ide-foundation/014-desktop-slash-command-parity.md`; M007-E: `plans/implementation/desktop-frontend-ide-foundation/015-desktop-editor-surface.md` | No hard dependency is outstanding for M007-A, M007-B, M007-C or M007-E — M001…M006-E are closed, ADR-0010, ADR-0011 and ADR-0012 are accepted, and the shared `DocumentController` and native LSP read surface are stable interface dependencies. **M007-D's only blocker is ADR-0052's acceptance** (`plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md`), which is the one place in this line that changes an ownership contract. M007-A must close first: no milestone in this line can be closed honestly while the desktop tree is compiled by no automated gate. |
+| M007 desktop GUI parity line | proposed (opened 2026-10-24 by the owner's direction); decomposed M007-A…M007-E; **M007-A, M007-B and M007-C closed 2026-10-25; M007-E closed 2026-10-25; M007-D ready for handoff; ADR-0052 accepted 2026-10-24** | M007-A: `plans/implementation/desktop-frontend-ide-foundation/011-desktop-build-and-hosted-gate.md`; M007-B: `plans/implementation/desktop-frontend-ide-foundation/012-desktop-chat-region-and-side-panel.md`; M007-C: `plans/implementation/desktop-frontend-ide-foundation/013-desktop-keyboard-first-input.md`; M007-D: `plans/implementation/desktop-frontend-ide-foundation/014-desktop-slash-command-parity.md`; M007-E: `plans/implementation/desktop-frontend-ide-foundation/015-desktop-editor-surface.md` | No hard dependency is outstanding for M007-A, M007-B, M007-C or M007-E — M001…M006-E are closed, ADR-0010, ADR-0011 and ADR-0012 are accepted, and the shared `DocumentController` and native LSP read surface are stable interface dependencies. **M007-D's only blocker is ADR-0052's acceptance** (`plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md`), which is the one place in this line that changes an ownership contract. M007-A must close first: no milestone in this line can be closed honestly while the desktop tree is compiled by no automated gate. |
 
 
 ## 14. TUI editor correctness/usability successor (2026-10-13)

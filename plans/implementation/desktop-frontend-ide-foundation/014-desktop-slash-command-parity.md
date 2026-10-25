@@ -12,7 +12,9 @@ design. The canonical amendments ADR-0052's acceptance made contingent — the c
 the desktop consumer named in Phase 5 — landed with the acceptance, before the protocol variant this
 milestone adds.
 
-Repository baseline: `c4fa30aeba439894b048768d4829dea0cfa0b84b`
+Repository baseline: `c5d3f4dc4c35ae702a7bbaf14009526295d6ac8a` — the merged tree carrying
+the desktop-parity work (`cd9c2fab4 feat(desktop): project the whole session snapshot and
+render it`)
 
 Source roadmap:
 
@@ -141,9 +143,10 @@ Stable interface dependencies:
   `command.execute` (`crates/codegg-core/src/team.rs:269-270`, `:331`, `:358`). **No new
   capability is invented by this milestone.**
 - The desktop's Tauri host already has a named-command pattern with route fencing
-  (`apps/desktop/src-tauri/src/lib.rs:888-901` for `desktop_prompt_submit`, `:919-926` for
+  (`apps/desktop/src-tauri/src/lib.rs:894-904` for `desktop_prompt_submit`, `:925-931` for
   `desktop_control_refresh`), and the desktop's request pattern is `codegg-client`'s
-  `LocalSocketClient` plus `SessionProjectionDriver` (`apps/desktop/src-tauri/src/lib.rs:15-18`).
+  `LocalSocketClient` (`apps/desktop/src-tauri/src/lib.rs:22-25`) plus
+  `SessionProjectionDriver` (`apps/desktop/src-tauri/src/projection.rs:29`).
 
 ## 3. Current implementation evidence
 
@@ -174,8 +177,17 @@ Stable interface dependencies:
   ADR-0052 before acceptance; it makes the milestone's migration surface **larger** than
   ADR-0052's Context implies, not smaller.
 - **There is no `CoreRequest` variant that executes a command.** `CoreRequest`
-  (`crates/codegg-protocol/src/core.rs`) has **266** variants; none is a command execution.
-  `CoreResponse` (`:1202`) has **174**.
+  (`crates/codegg-protocol/src/core.rs:2330`) has **268** variants (242 struct + 26 unit);
+  none is a command execution. `CoreResponse` (`:1202`) has **176** (175 struct + 1 unit).
+  ADR-0052's own Context records "The daemon's protocol has **266** request variants"
+  (`plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md:53-55`): that is a
+  **point-in-time measurement** of the tree ADR-0052 was written against, and it has since
+  moved — the desktop-parity work added `CoreRequest::GitRead` (`:2428-2430`) and
+  `CoreRequest::SkillCatalogueList` (`:2437-2439`), which is the two-request delta to 268.
+  **The normative claim ADR-0052 makes is invariant**: *no `CoreRequest` variant executes a
+  command*, and the desktop-parity additions did not make it false — `GitRead` is a
+  read-only git fact and `SkillCatalogueList` is a catalogue read. The count moves; the
+  invariant does not.
 - **The registry is 169 entries, not 161.** `CommandRegistry::built_in_commands`
   (`src/tui/command.rs:577-997`) yields **169** entries: **162** bound to a `BuiltinSlashAction`
   (one variant, `TuiStats`, carries two names, `/stats` and `/tui-stats`), plus **7** non-built-in
@@ -187,10 +199,10 @@ Stable interface dependencies:
   (`src/tui/command.rs:999-1043`) appends config commands and project `.command` files, with
   `CommandSource::{BuiltIn, Config, Project, Plugin { id }}` (`src/tui/command.rs:76-88`). These are
   the dynamic sources ADR-0052 defers (`…ADR-0052…md:297-301`).
-- **The renderer has no command surface at all.** `apps/desktop/src/App.tsx` is 407 lines; the
+- **The renderer has no command surface at all.** `apps/desktop/src/App.tsx` is 631 lines; the
   prompt is a plain `<textarea data-testid="prompt-input">` with a `Submit prompt` button
-  (`apps/desktop/src/App.tsx:392`). There is **no** `onKeyDown` handler anywhere in
-  `apps/desktop/src/App.tsx`, no completion overlay, no palette, and no `/` dispatch.
+  (`apps/desktop/src/App.tsx:604`). There is **no** `onKeyDown` handler anywhere in
+  `apps/desktop/src/`, no completion overlay, no palette, and no `/` dispatch.
 - **The TUI's `/` recognition is in three places.** `src/tui/app/prompt_turn.rs:36`, `:71` and
   `:116` each test `trimmed_text.starts_with('/')`. The typed path resolves the name through
   `CommandRegistry::find_by_name_or_alias` (`src/tui/command.rs:1212`) in `handle_slash_command`
@@ -373,6 +385,21 @@ New variants in `crates/codegg-protocol/src/core.rs`:
 `CoreResponse::CommandCatalog { catalog: CommandCatalogDto }`,
 `CoreResponse::CommandExecute { result: CommandExecuteResultDto }`.
 
+**Add beside, never replace.** The desktop-parity work already added its own arms to both
+enums: `CoreResponse::GitRead` (`crates/codegg-protocol/src/core.rs:2155-2157`),
+`CoreResponse::SkillCatalogueList` (`:2162-2164`), `CoreRequest::GitRead` (`:2428-2430`) and
+`CoreRequest::SkillCatalogueList` (`:2437-2439`). The four variants above are **additional**
+arms on the same two enums. There is **no name collision** and **no semantic collision** —
+`CommandCatalog` and `CommandExecute` name a command catalogue and a command execution,
+neither of which `GitRead` or `SkillCatalogueList` does — so the merge is purely additive:
+append the new arms, keep the existing ones, and re-derive the variant counts afterwards
+(the baseline is 268 `CoreRequest` / 176 `CoreResponse`). The same rule applies to
+`src/core/daemon_family.rs`: it already carries `DaemonRequestFamily::Git` (`:63`) and
+`::Skills` (`:66`), mapped from `CoreRequest::GitRead` and `CoreRequest::SkillCatalogueList`
+(`:103-104`) and dispatched to `src/core/daemon_reads.rs` (`:388-389`). The new
+`::Commands` arm is a **third** arm on that enum, beside those two, not a replacement for
+them.
+
 | DTO | Shape | Bound |
 |-----|-------|-------|
 | `CommandCatalogScopeDto` | `{ project_id, workspace_id }` | mirrors `AssetRefreshScopeDto` (`core.rs:89-93`) |
@@ -395,9 +422,12 @@ and never guesses.
 - A new daemon request family module `src/core/daemon_commands.rs`, following the existing
   per-family shape (`src/core/daemon_assets.rs`, `src/core/daemon_documents.rs`,
   `src/core/daemon_jobs.rs`).
-- `src/core/daemon_family.rs` gains a `DaemonFamily::Commands` arm mapping `CoreRequest::
+- `src/core/daemon_family.rs` gains a `DaemonRequestFamily::Commands` arm mapping `CoreRequest::
   CommandCatalog` and `CoreRequest::CommandExecute`, and the family must appear in the
-  project-scoping map in `src/core/daemon.rs` beside the other families.
+  project-scoping map in `src/core/daemon.rs` beside the other families. The enum already
+  carries `::Git` (`:63`) and `::Skills` (`:66`) from the desktop-parity work — the new arm
+  is **added beside** them, and the existing arms and their handlers (`:103-104`, `:388-389`)
+  are left untouched.
 - The executor's dispatch is **table-driven**: each daemon-effect form maps to an existing daemon
   handler (or a small adapter over one). The executor authorizes under `command.execute`, opens a
   `Run` via `RunStore::begin_run` (`crates/codegg-core/src/run_store.rs:1515`), executes, and
@@ -413,16 +443,21 @@ and never guesses.
 ### Frontend or operator surface
 
 **Tauri host** (`apps/desktop/src-tauri/src/lib.rs`) gains **two** named `#[tauri::command]`
-functions, taking the host from 20 to 22: `desktop_command_catalog(scope) -> CommandCatalogView`
+functions, taking the host from **23** to **25**: `desktop_command_catalog(scope) -> CommandCatalogView`
 and `desktop_command_execute(scope, command_id, form, argument, catalog_version) ->
-CommandExecuteView`. Both are **named** commands, never a generic request passthrough, because
+CommandExecuteView`. (The baseline host registers **23** `#[tauri::command]` functions —
+`apps/desktop/src-tauri/src/lib.rs:1058-1078` — and the renderer names the same 23
+`desktop_*` invoke targets in `apps/desktop/src/bridge.ts:22-94`; the desktop-parity work
+added `desktop_todo_refresh`, `desktop_git_read` and `desktop_skill_catalogue` to that
+count.) Both new functions are **named** commands, never a generic request passthrough, because
 `scripts/check-desktop-boundary.sh:23-26` rejects `core_request` in the host source. Both go
-through the same route-token fencing the other 20 commands use (`apps/desktop/src-tauri/src/route.rs`,
+through the same route-token fencing the other 23 commands use (`apps/desktop/src-tauri/src/route.rs`,
 `apps/desktop/src-tauri/src/control.rs`).
 
 **Renderer** (`apps/desktop/src/App.tsx`, `apps/desktop/src/bridge.ts`,
 `apps/desktop/src/bridge-types.ts`): `bridge.ts` gains `commandCatalog()` and
-`commandExecute(...)` wrappers; `bridge-types.ts` gains the DTO types, **generated** from the Rust
+`commandExecute(...)` wrappers — **two more** invoke targets on top of the baseline's 23, and
+no existing target is renamed or removed; `bridge-types.ts` gains the DTO types, **generated** from the Rust
 DTO and checked by `apps/desktop/scripts/check-bindings.mjs` — a hand-written mirror is forbidden;
 `App.tsx` gains a `/` completion overlay fed by the daemon's catalog, a command palette that lists
 the daemon's catalog, and a submit path that resolves the typed line to a catalog entry —
@@ -712,12 +747,20 @@ variant's commit.
 
 **Intent.** Add the bounded, additive protocol family.
 
-**Required changes.** The variants and DTOs in §6 "Protocol"; the `DaemonFamily::Commands` mapping
+**Required changes.** The variants and DTOs in §6 "Protocol"; the
+`DaemonRequestFamily::Commands` mapping
 in `src/core/daemon_family.rs`; the project-scoping entry in `src/core/daemon.rs` beside the other
 families; the `codegg-client` request wrapper following
 `crates/codegg-client/src/local.rs:188-213`; and the generated TypeScript mirror checked by
 `apps/desktop/scripts/check-bindings.mjs`. The bounds are enforced **server-side** — an over-bound
 catalog is refused with a typed reason, never truncated silently.
+
+**Add beside, never replace.** `crates/codegg-protocol/src/core.rs` and
+`src/core/daemon_family.rs` already carry the desktop-parity work's arms — `GitRead` and
+`SkillCatalogueList` on both protocol enums, `DaemonRequestFamily::Git` and `::Skills` on the
+family enum (§6 "Protocol and DTOs"). Every arm this work package adds is **appended beside**
+them; none replaces or renames an existing one, and no name or semantic collision exists. The
+variant counts are re-derived after the merge, not asserted from the pre-merge baseline.
 
 **Acceptance evidence.** `cargo test -p codegg-protocol --locked` is green; the round-trip serde
 tests pass; the bound tests pass; `apps/desktop/scripts/check-bindings.mjs` is green against the
@@ -1034,7 +1077,7 @@ amendment, sequenced per `plans/002-long-term-roadmap.md:897-899`):
 **Required by this milestone** (ordinary architecture documentation):
 
 - `architecture/protocol.md` — the new request family, its DTOs, its bounds, and the
-  `DaemonFamily::Commands` mapping.
+  `DaemonRequestFamily::Commands` mapping.
 - `architecture/command.md` — the catalog's new owner. This document currently records the TUI
   registry as the catalog (`architecture/command.md:11-15`, `:23`, `:256`, `:398`); it must record
   the daemon's catalog as the single definition and the TUI's registry as a cache plus its local

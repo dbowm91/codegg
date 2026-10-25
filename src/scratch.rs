@@ -1854,7 +1854,10 @@ mod tests {
         );
     }
 
-    #[cfg(any(unix, windows))]
+    /// A record another user can read is the same refusal as one owned by
+    /// somebody else. This is a **Unix** property: the owner-only half of the
+    /// check is `#[cfg(unix)]` — POSIX mode bits carry it. See closure §4.4.
+    #[cfg(unix)]
     #[test]
     fn a_tree_with_an_owner_record_that_is_not_owner_only_is_refused() {
         let _root = isolated_scratch_root("foreign-record");
@@ -1865,12 +1868,7 @@ mod tests {
         expected.extend_from_slice(digest_hex.as_bytes());
         expected.push(b'\n');
         std::fs::write(&record, &expected).unwrap();
-        #[cfg(unix)]
         {
-            // The ownership check has two halves: the record must be owned by
-            // the sessions root's owner, and it must be owner-only. A record
-            // another user can read is the same refusal — `WrongOwner` — and
-            // it is the half a test can produce without root.
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644)).unwrap();
         }

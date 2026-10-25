@@ -20,6 +20,17 @@ Tauri assets and IPC; it does not allow CDN scripts or `unsafe-eval`. The
 renderer does not access the local daemon transport or accept a raw
 `CoreRequest`.
 
+**The editor adds no renderer permission and no CSP relaxation.** The
+editor's surface is a bounded viewport over text the **daemon** owns: the
+host opens the document through the shared `DocumentController`, the renderer
+receives a window of lines and sends **edits**, not content. It declares no
+Tauri capability of its own, registers no plugin, and the production CSP and
+the empty `main` permission list are unchanged. The renderer's **own** write
+authority is nil — `scripts/check_desktop_editor_authority.py` fails on a
+renderer-side filesystem read, a renderer-side text field, a retained
+whole-document array and a viewport concatenated into one, and
+`scripts/check-desktop-boundary.sh` still holds.
+
 ## Bridge
 
 The Rust host owns one optional `LocalSocketClient` plus one explicit
@@ -151,51 +162,94 @@ coexistence, explicit-path autostart, and daemon survival
 (`apps/desktop/e2e/specs/`, entry point `apps/desktop/e2e/run-e2e.sh`,
 hosted in `.github/workflows/desktop-e2e.yml` on Linux/WebKitGTK/xvfb).
 
-### The hosted qualification is paused (2026-10-23) — resumed 2026-10-24
+### The hosted qualification is un-paused (2026-10-24)
 
-Development on the desktop foundation line **was** paused, so the hosted
-qualification **no longer ran on push or on pull requests**:
-`.github/workflows/desktop-e2e.yml` was **manual dispatch only** while that
-pause held, and its name carried the "(paused)" marker so the state was
-visible in the Actions list rather than inferred.
-
-**The line resumed on 2026-10-24.** The owner directed that the desktop
-carry a TUI-parity GUI — a main chat region with a side panel, the same `/`
-commands the TUI exposes, and an editor — keyboard-first and fully operable
-by mouse. That work is the **M007** line, decomposed M007-A…M007-E at
-`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md#milestone-007--desktop-gui-parity-line`,
-and `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` is
-**proposed** for the one point in it that changes who may do what.
-
-**The pause and its reason are preserved below, because the red lane they
-describe is still red and is now work to be done rather than a reason to stay
-paused.** M007-A owns the restoration: it owns diagnosing the failure below,
-fixing it, restoring the workflow's `push` and `pull_request` triggers with
-the path filters the workflow's own header preserves, and adding the
-`clippy -D warnings` step the desktop Rust host has never had. Until M007-A
-closes, the hosted qualification is still manual-dispatch-only and the
-desktop tree is still compiled by no automated gate — so this page's
-"deferred surfaces" list below is still accurate, and the editor is still not
-implemented.
-
-The pause is not a claim that the trajectory passes. It had already been red
-on `main`: `main`'s own most recent run (`39679968444` at `53d9fc9fd`) fails
-with `element ("[data-testid="permission-list"]") still not existing after
+The lane was paused on 2026-10-23 because it was red on `main`: `main`'s own
+most recent run (`39679968444` at `53d9fc9fd`) fails with
+`element ("[data-testid="permission-list"]") still not existing after
 120000ms` at `apps/desktop/e2e/specs/m004-session.e2e.ts:169:5` — the same
 file, the same line and the same timeout — and the nine runs behind it are
-consecutive failures. The defect is the desktop line's own, so a hosted run
-on every desktop-tree change bought no signal.
+consecutive failures.
 
-Everything else on this page is unchanged. The trajectory, the spec files,
-the `desktop-e2e` Cargo feature and its authority boundary, and the
-`check-desktop-boundary.sh` guard all stand; what is paused is the *hosted
-qualification*, not the capability and not its boundary. The workflow's path
-filters are preserved in its own header so that restoring the triggers is a
-copy-paste.
+The cause was **the spec's premise, not the product**. The spec expected the
+mock model's *first* response — a `write` to a path outside the probe
+workspace — to raise a human permission. Since `39e1445b6` the daemon answers
+a recognised-temp-root `write` with an actionable redirect sent to the
+**model**, and the offer is issued once per `(session, tool, canonical
+target)` (`src/permission/mod.rs:1365-1411`, `:1393-1409`), so only a
+*second* identical attempt reaches the human. The mock answered the second
+request with final text, so the human was never asked and the spec waited out
+its full timeout for a permission that was never going to arrive.
 
-Until the lane resumes, the desktop foundation's hosted evidence is the
-`CI / verify` lane plus the local `apps/desktop` host and renderer checks —
-which the root workspace's gate does not compile, so they are run by hand.
+The fix is in the fixture and the spec, not the product:
+
+- the mock **insists** on the same path on request #2 (a different tool-call
+  id, the same target — the shape the product's own
+  `temp_root_write_offers_a_redirect_before_asking_the_human` test uses), which
+  restores the `permission-list` assertion and pins the one-offer-per-target
+  rule;
+- the spec answers **every** permission the desktop surfaces, because the
+  number of human rounds is platform-dependent: on Linux the phase home is
+  under `/tmp` and the redirect fires; on macOS it is under `$TMPDIR` → `/var`,
+  which `crates/eggsentry/src/command.rs:161` classifies as a system path, so
+  the write escalates as a security finding and the human is asked on the
+  *first* attempt (`src/agent/tool_batch.rs:829` consults the redirect offer
+  only in the `Ask` arm);
+- the harness resolves the phase's fake `HOME` **physically**. The daemon's
+  managed-scratch allocator refuses any path with a symlinked component
+  (`src/scratch.rs:911-918`) and derives the scratch root from the cache
+  directory under `HOME`; on macOS `$TMPDIR` is under the `/var` →
+  `private/var` symlink, so an unresolved fake home failed **every** turn with
+  "managed scratch path is not a real directory" before any provider was
+  called.
+
+`.github/workflows/desktop-e2e.yml` therefore runs on `push` to `main` and on
+pull requests again, with the path filters the pause preserved verbatim in the
+workflow's own header. The workflow name no longer carries the "(paused)"
+marker.
+
+**Where this lane sits in the M007 line.** The owner directed that the desktop
+carry a TUI-parity GUI — a main chat region with a side panel, the same `/`
+commands the TUI exposes, and an editor — keyboard-first and fully operable by
+mouse. That work is the **M007** line, decomposed M007-A…M007-E at
+`plans/subsystems/desktop-frontend-ide-foundation-roadmap.md#milestone-007--desktop-gui-parity-line`,
+and `plans/adrs/ADR-0052-cross-frontend-command-execution-ownership.md` was
+**accepted on 2026-10-24** for the one point in it that changes who may do
+what. The restoration described above is M007-A's work; what M007-A still
+owes is the desktop Rust host's automated gate — the `clippy -D warnings` step
+the host has never had — and a local entry point that runs the desktop's own
+checks. A green lane is a restored premise, not a completed gate.
+
+The trajectory, the spec files, the `desktop-e2e` Cargo feature and its
+authority boundary, and the `check-desktop-boundary.sh` guard all stand; what
+changed is the *hosted qualification*, which now runs again against a lane
+whose premise matches the product's behaviour.
+
+**The hosted qualification is green (2026-10-24).** PR #185's `e2e` job
+(`40103667676`, job `120900793854`) ran the three phases on Linux/WebKitGTK
+605.1.15 against a real daemon: the lifecycle phase **5 passing**, the
+autostart phase **2 passing**, the session phase **7 passing** — **14
+passing, 0 failing**. The phase homes were under `/tmp`, so this is the
+**Linux** trajectory: the recognised-temp-root redirect fired and the human
+was asked on the **second** attempt, which is the branch the local macOS run
+never exercises. The mock's insist plus the spec's answer-every-permission
+loop is therefore proven to converge on the platform that actually produces
+the redirect offer.
+
+The macOS branch of the same failure was reproduced locally, before the fix
+landed, and it behaved exactly as the harness analysis above predicts: the
+lifecycle phase **5 passing**, the autostart phase **2 passing**, and the
+session phase **3 passing, 4 failing**, with every one of the four failures an
+absent element (`[data-testid="projection-state"]`,
+`[data-testid="control-refresh-button"]`, `[data-testid="route-session"]`,
+`[data-testid="connection-generation"]`). The turn never reached a provider,
+because the phase's fake `HOME` was not resolved physically and therefore sat
+under the `/var` → `/private/var` symlink.
+
+Before that run, the desktop foundation's evidence was the `CI / verify` lane
+plus the local `apps/desktop` host and renderer checks — which the root
+workspace's gate does not compile, so they were run by hand. The hosted `e2e`
+job is now part of the lane's own evidence.
 
 Test instrumentation never widens production authority:
 
@@ -286,9 +340,77 @@ Test instrumentation never widens production authority:
   same-named live entry across daemon restarts instead of stacking a
   duplicate the renderer would double-list.
 
+## The desktop's input model
+
+The desktop has its **own** renderer-owned, remappable input model. It is not
+the TUI's keymap, and the TUI's keymap is not changed by it — the TUI's
+`ActionKey` (`src/tui/input.rs:259`, 61 variants) is the **source vocabulary**
+the desktop draws from, and `plans/000-long-term-specification.md:564` makes
+the conceptual hierarchy normative while the exact keys are configurable. The
+desktop borrows concepts; it does not borrow bindings.
+
+**Where it lives.** `apps/desktop/src/keymap.ts` holds the action
+declaration table, the concept-parity table and the chord machinery;
+`apps/desktop/src/focus.ts` holds the region registry and the focus model;
+`apps/desktop/src/panels/KeybindingsPanel.tsx` is the customisation surface.
+All three are **renderer-local**: the keymap persists in the renderer's
+`localStorage` under `codegg.desktop.keymap.v1`, and the desktop holds **no**
+daemon-owned state for it.
+
+**Chord normalisation.** A chord is modifier tokens in a fixed order (`mod`,
+`ctrl`, `alt`, `shift`) followed by the key token, lowercased — `mod+shift+p`,
+`shift+enter`, `escape`, `enter`, `f1`, `arrowright`. `mod` resolves to
+`metaKey` on macOS and `ctrlKey` elsewhere, so one declaration serves both
+platforms. Resolution is deterministic and total: an unrecognised key event
+normalises to a chord that matches nothing.
+
+**The declaration table.** Each action carries an identity, a label, a
+description, its default bindings, its mouse affordance and the TUI concept it
+carries. The labels are UI labels, so `plans/001-terminology-and-domain-model.md:5`
+applies to them; the milestone **records** the proposed vocabulary in its
+closure record and does not amend the canonical document, because that is an
+owner-directed step.
+
+**The effective map.** Defaults merged with the user's overrides. An override
+for an action **replaces** that action's defaults entirely. A conflict — the
+TUI's map cannot have one by construction, the desktop's can — is resolved
+deterministically and reported; a remap that would collide is **refused** with
+the TUI's shape of message and leaves the keymap byte-identical. Persistence is
+one `setItem` per commit, so a reload can never observe a half-applied remap.
+A missing, malformed, wrong-version or unparseable document yields the
+defaults plus a visible notice; an unknown action id is dropped individually.
+Import is atomic.
+
+**The focus model.** Five regions in focus order — the catalog rail, the chat,
+the side panel, the composer and the status row — bound to the frame's own
+containers. `mod+1`…`mod+5` focus a region directly; `Tab` and `Shift+Tab`
+move within the focused region and **wrap**, with a roving `tabindex` so `Tab`
+never escapes it. The focused region carries `data-focus-region` and an
+outline; the focused control carries the `focus-ring` class. An overlay traps
+the focus, and `Esc` pops exactly one overlay layer and restores the element
+that had the focus before that overlay opened; `Esc` on the base view does
+nothing. A focused region that unmounts hands the focus to its declared
+fallback, never to `document.body`.
+
+**One entry point.** A single `keydown` listener, installed once at the
+renderer's root, so there is exactly one owner per chord: the capture field
+owns its key, `Tab` is the region's traversal, then the overlay scope, then the
+region scope, then the global map. Only a **captured** chord calls
+`preventDefault()`, so ordinary typing and native editing are untouched.
+
+**Affordances and the dual-reachability rule.** Every action has a mouse
+affordance, and the affordance is the action's *only* pointer target — a
+keyboard action and its mouse affordance are the same operation, not two. A
+chord is bound per **scope** (global, region, overlay), so `enter` is the
+composer submit and the catalog's row activation without either being a mode.
+
+**In-window only.** The desktop's shortcuts are **in-window only**. There is
+**no OS-global shortcut**, no global hot-key registration and no background
+activation: the desktop is a window, and the shortcuts belong to it.
+
 ## Deferred surfaces
 
-Editor and terminal, provider credentials, plugin UI, remote daemon access,
+Terminal, provider credentials, plugin UI, remote daemon access,
 signing, and distribution automation are not implemented. The live-turn
 built-app trajectory (assistant text, tool activity, permission round-trip
 against a deterministic offline provider) **is** implemented — see the
@@ -296,17 +418,33 @@ live-turn leg in the M004 `session` phase above, which asserts the typed
 `model_unselected` fail-closed path before arming a loopback mock model
 server and then a real assistant turn with a denied write.
 
-**The editor and the graphical surfaces are deferred but now planned.** The
-M007 line delivers, in order: the desktop build and hosted gate (M007-A), a
+**The editor is implemented; the terminal and the remaining graphical
+surfaces are deferred.** The
+M007 line delivered, in order: the desktop build and hosted gate (M007-A), a
 main chat region with a dockable side panel (M007-B), keyboard-first input
-with mouse parity (M007-C), the shared `/` command surface (M007-D, blocked
-on the acceptance of proposed ADR-0052), and a first-party editor over the
-shared `DocumentController` and the native LSP read surface (M007-E). Until
-those milestones land, none of them is implemented and this list is accurate.
-The renderer remains a single-`App()` control-plane console in a 760-pixel
-column with no keyboard handling; the projection it receives already carries
-`runs`, `jobs`, `subagents` and `recentTurns` that it does not render, which
-is the first thing M007-B changes.
+with mouse parity (M007-C), the shared `/` command surface (M007-D,
+unblocked by ADR-0052's acceptance on 2026-10-24), and a first-party editor
+over the shared `DocumentController` and the native LSP read surface
+(M007-E). The **editor surface** is implemented: the desktop opens a project
+document, edits it, undoes and redoes the edit, saves it, and reads LSP
+diagnostics, completion and navigation — over the **shared** document
+foundation, with the daemon owning the buffer and the host holding only a
+bounded viewport slice.
+
+The **graphical terminal**, a Git UI and the other graphical surfaces remain
+deferred. A third-party editor engine remains deferred too, and would need
+its own ADR, because adopting one changes the renderer's CSP, worker and
+bundle boundary.
+
+The renderer has gained a panel set over a projected session — activity, git,
+skills, subagents, tasks, tool detail, transcript and turn summary — and now
+renders `projection.messages`, `projection.transcript`, `projection.subagents`,
+`projection.jobs`, `projection.todos` and `projection.pendingPermissions`. It
+is still a single-`App()` component in one 760-pixel column with **no keyboard
+handling at all**, and it is still a control-plane console rather than a chat
+application. **M007-B** is what splits that column into a main chat region and
+a dockable side panel; **M007-C** is what gives it a keymap; **M007-D** is
+what gives it the `/` surface; **M007-E** is what gives it the editor.
 
 **A third-party editor engine remains deferred.** Monaco and equivalents are
 out of scope for M007: adopting one changes the renderer's Content Security
@@ -314,6 +452,18 @@ Policy, its worker model, and the bundle and signing boundary that §8
 currently pins to local assets only, so it needs its own ADR.
 
 ## Developer commands
+
+**One entry point runs the desktop's gate.** From the repository root,
+`apps/desktop/scripts/verify-desktop.sh` runs, in order: the desktop boundary
+guard, the renderer checks (`npm ci`, `npm run typecheck`, `npm test`,
+`npm run bindings:check`, `npm run build`), the daemon staging, the host
+checks (`cargo test --lib`, `cargo fmt --check`, `cargo clippy --all-targets
+--locked -- -D warnings`, all on the pinned 1.90.0 toolchain), and — only when
+a display is available — the built-app trajectory. It prints which steps it
+skipped and why. The hosted lane calls the same script, phase by phase, so
+the two cannot drift; the script fails closed if the workflow's own lint line
+and its copy disagree. Each phase is individually invocable
+(`verify-desktop.sh boundary`, `renderer`, `stage-daemon`, `host`, `e2e`).
 
 From `apps/desktop`, run `npm ci`, `npm run typecheck`, `npm test`,
 `npm run bindings:check`, and `npm run build`. With Tauri system libraries
