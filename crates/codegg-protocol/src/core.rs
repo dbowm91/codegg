@@ -306,10 +306,9 @@ impl PresenceActivityDto {
 /// trusted connection and MUST NOT appear in this DTO. `session_id` is
 /// optional: `None` marks project-level presence (connected but not
 /// attached), `Some` marks one attached session contribution.
-/// `connection_generation` is a per-connection monotonic generation
-/// bumped on every reconnect; a late heartbeat carrying an older
-/// generation than the stored contribution is rejected and cannot
-/// resurrect stale state.
+/// `connection_generation` is a per-connection monotonic generation bumped
+/// on every reconnect; a late heartbeat carrying an older generation than
+/// the stored contribution is rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PresenceHeartbeatRequestDto {
     pub project_id: String,
@@ -2412,12 +2411,9 @@ pub struct UserPromptQueueEntryDto {
 ///
 /// **Why three outcomes rather than an ack and an error.** The steer happens
 /// *before* the settlement, so "the turn refused it" and "the turn took it but
-/// the queue could not record that" are genuinely different states, and
-/// collapsing them would either lose a prompt or misreport one that was
-/// delivered. [`Self::AcceptedNotSettled`] is the honest third case: the turn
-/// holds the text, the row is still `pending`, and it may therefore be handed
-/// out again later. A client that reported both as an error would be telling
-/// the user to resend a prompt that already ran.
+/// the queue could not record that" are different states.
+/// [`Self::AcceptedNotSettled`] is the honest third case: the turn holds the
+/// text, the row is still `pending`, and it may be handed out again later.
 ///
 /// `Refused` carries only a stable code, never a message and never prompt text,
 /// so a frontend owns the wording and an unrecognised code degrades to the
@@ -4206,11 +4202,7 @@ pub enum CoreRequest {
 /// reasoning effort.
 ///
 /// `Off` explicitly disables thinking for this turn. It is distinct from the
-/// *absent* override: this enum has no `None` variant, and an absent
-/// `ReasoningOverride` on the request means "inherit the daemon's resolved
-/// selection", whereas `Off` is a positive instruction to turn thinking off.
-/// The request preparation layer carries that distinction to the provider wire,
-/// where an explicit disable is a different shape from "no preference".
+/// *absent* override, which means "inherit the daemon's resolved selection".
 ///
 /// The effort label is **open and provider-scoped** (ADR-0049). It is not a
 /// level on a fixed enum: an arbitrary vendor label is carried verbatim, and
@@ -4403,8 +4395,7 @@ impl CoreRequest {
 /// [`CoreEvent::TurnFailed`] embeds upstream provider text and can carry
 /// secrets, so it must never be projected to an untrusted surface.
 ///
-/// Every variant has exactly one native producer. A category with no
-/// producer would be a claim, not a classification.
+/// Every variant has exactly one native producer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnFailureCategory {
@@ -4707,6 +4698,33 @@ pub enum CoreEvent {
         /// a bounded metadata refetch. Serde-defaulted for wire compat.
         #[serde(default)]
         title: Option<String>,
+        /// The session's real summary, when the publisher knows it.
+        ///
+        /// `None` preserves the old id-only shape. A receiver that gets
+        /// no summary keeps what it has: an update that carries no data
+        /// must not erase the summary it already holds.
+        #[serde(default)]
+        summary: Option<crate::projection::dto::SessionSummaryProjection>,
+    },
+    /// The session's selected model changed.
+    ModelSelected {
+        session_id: String,
+        model: String,
+    },
+    /// The session's selected agent changed.
+    AgentSelected {
+        session_id: String,
+        agent: String,
+    },
+    /// A human-shell command run the session owns changed.
+    HumanShellRunUpserted {
+        session_id: String,
+        run: crate::projection::dto::ShellRunProjection,
+    },
+    /// The session's tool contracts changed.
+    ToolContractsUpdated {
+        session_id: String,
+        contracts: Vec<crate::projection::dto::ToolContractProjection>,
     },
     FileChanged {
         path: String,

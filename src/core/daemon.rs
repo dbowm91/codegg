@@ -5989,6 +5989,7 @@ mod tests {
                 Some("s1".into()),
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
+                summary: None,
                     session_id: "s1".into(),
                     title: None,
                 },
@@ -6029,6 +6030,7 @@ mod tests {
                 Some("s1".into()),
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
+                summary: None,
                     session_id: "s1".into(),
                     title: None,
                 },
@@ -6073,6 +6075,7 @@ mod tests {
                 Some("s1".into()),
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
+                summary: None,
                     session_id: "s1".into(),
                     title: None,
                 },

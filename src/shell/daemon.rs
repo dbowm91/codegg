@@ -289,6 +289,7 @@ impl HumanShellRunService {
             origin: request.origin,
             status: HumanShellRunStatusDto::Running,
             exit_code: None,
+            started_at_ms: Some(now),
             expires_at_ms: now.saturating_add(RUN_TTL_MS),
         };
         let record = Arc::new(Mutex::new(RunRecord {
@@ -857,6 +858,7 @@ mod tests {
                 origin: HumanShellOriginDto::Bang,
                 status: HumanShellRunStatusDto::Running,
                 exit_code: None,
+                started_at_ms: None,
                 expires_at_ms: 0,
             },
             scope,

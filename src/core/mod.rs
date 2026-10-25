@@ -741,11 +741,13 @@ pub(crate) fn map_app_event_to_core_event(
             Some(CoreEvent::SessionUpdated {
                 session_id: id,
                 title: None,
+                summary: None,
             })
         }
         crate::bus::events::AppEvent::SessionUpdated { id } => Some(CoreEvent::SessionUpdated {
             session_id: id,
             title: None,
+            summary: None,
         }),
         crate::bus::events::AppEvent::FileChanged { path, action, .. } => {
             Some(CoreEvent::FileChanged { path, action })
@@ -1225,10 +1227,11 @@ mod tests {
         let ev = CoreEvent::SessionUpdated {
             session_id: "s1".into(),
             title: Some("Titled".into()),
+            summary: None,
         };
         let out = set_turn_id_on_event(ev.clone(), "turn-x".into());
         match out {
-            CoreEvent::SessionUpdated { session_id, title } => {
+            CoreEvent::SessionUpdated { session_id, title, .. } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(title.as_deref(), Some("Titled"));
             }

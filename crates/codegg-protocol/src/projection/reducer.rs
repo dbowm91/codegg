@@ -1181,6 +1181,14 @@ impl ProjectionReducer {
                 snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
                 ApplyOutcome::Applied
             }
+            ProjectionEvent::ShellRunUpserted { run, at: _ } => {
+                snapshot.upsert_shell_run(run.clone());
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::ToolContractsUpdated { contracts, at: _ } => {
+                snapshot.set_tool_contracts(contracts.clone());
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::Diagnostic { code, message } => {
                 let mut diag = ProjectionDiagnostic::new(
                     clip_str(code, MAX_PROJECTION_STRING_BYTES),
