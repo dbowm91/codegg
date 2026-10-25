@@ -54,9 +54,10 @@ each with a named reason below:
 - **Three granularity forms stay recorded**, not migrated: `shell_show`,
   `shell_expand` and `terminal_send` are reached by a polling loop and by
   the per-keystroke input path, and routing either through `command.execute`
-  would open a canonical `Run` per poll or per keystroke. The owner's
-  decision on them has not been made, so — per plan 017 §9's stop
-  condition — they are recorded and not implemented.
+  would open a canonical `Run` per poll or per keystroke. **The owner
+  decided on 2026-10-25** — keep the path outside the audited path and
+  record the bypass — which is plan 017 §3.1's option (a) and exactly what
+  plan 017 §9's stop condition provides.
 - **The two `/lsp-*` forms are not this milestone's work.** They are decided
   and route to **M007-F**.
 
@@ -79,7 +80,9 @@ so a second frontend could not know what to perform. Both are fixed here:
 stable wire name, and the desktop dispatches on it. **Three of the six
 actions the desktop cannot yet carry**, because the daemon does not publish
 the data they need; §10 names them, and each is reported honestly rather
-than faked.
+than faked. The owner directed on 2026-10-25 that the six corrections land
+*with* the desktop gaining the six actions (§3.6), so the remaining three
+are directed and outstanding rather than a closed question.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -88,7 +91,7 @@ Plan 017 §5's seven required changes, against what this milestone did.
 | # | plan 017 §5 | status | evidence |
 |---|---|---|---|
 | 1 | Correct the six kind-classified forms; declare the `FrontendAction` each arm performs; drop the wrong effect-table rows | **done** | `crates/codegg-core/src/command_catalog.rs` — six descriptors (`status:317`, `skills:821`, `shell_list:2273`, `terminal_show:2489`, `tool_contracts:3144`, `worktree:3162`); `crates/codegg-core/src/frontend_action.rs:67-72` (variants), `:108-113` (wire names), `:326-355` (declarations); `src/core/daemon_commands.rs` — the six rows dropped from the `build_inner_request` arms **and** from `EFFECT_TABLE` |
-| 2 | Settle the three granularity forms per §3.1 | **not implemented — recorded** | §3.5 here; the owner's decision has not been made, and plan 017 §9 sanctions landing the rest without it |
+| 2 | Settle the three granularity forms per §3.1 | **not implemented — recorded, and decided** | §3.5 here; the owner decided on 2026-10-25 to keep them outside the audited path and record the bypass — plan 017 §3.1's option (a) — which is what landed |
 | 3 | Settle `shell_kill`: the row takes the run's identity from the argument and resolves the authority from the run's own binding | **done** | `src/core/daemon_commands.rs:566` (the row), `:86` (`CommandContext.authority`), `:98` (`argument_identifier`), `:751` (`resolve_command_authority`); `src/shell/daemon.rs:433` (`scope_for`), `:24` (`HumanShellRunScope`) — §3.3 |
 | 4 | Give the presence panel a form, or record it as a named exception | **done — a form** | `crates/codegg-core/src/command_catalog.rs:2776` (the `presence` form); `src/core/daemon_commands.rs:344` (the row); `src/tui/commands/presence.rs:22` (`PresenceRefresh`) — §3.4 |
 | 5 | Re-baseline the classification artifact; the generator's `--check` must pass | **done** | `plans/implementation/desktop-frontend-ide-foundation/artifacts/m007-d-command-classification.md` regenerated from the tree; `--check` and `--self-test` both pass (§4) |
@@ -230,11 +233,12 @@ the `Run` record is an audit of a *user action*, not of a keystroke.
 Plan 017 §3.1 put three options to the owner: keep the path outside the
 catalog with the bypass recorded; make the catalog's form cover the path and
 accept the `Run` granularity; or give the path a coarser command. **The
-owner has not decided.** Plan 017 §9's stop condition says the milestone
-lands the rest and records these three as awaiting a decision, and that is
-what happens here. Nothing about these three forms changed: their rows stay
-in the effect table, their arms keep their behaviour, and no `Run` per poll
-or per keystroke was introduced.
+owner decided on 2026-10-25: the first one** — keep the path outside the
+audited path and record the bypass. That is plan 017 §3.1's option (a), and
+it is also what plan 017 §9's stop condition provides, so the milestone
+landed the disposition the owner chose. Nothing about these three forms
+changed: their rows stay in the effect table, their arms keep their
+behaviour, and no `Run` per poll or per keystroke was introduced.
 
 ### 3.6 The desktop gained a frontend-action surface
 
@@ -261,6 +265,18 @@ own** reason — what the desktop is missing, never what the command means.
 They are reported honestly, not faked, and the dispatch degrades safely: an
 action the desktop does not carry falls through to the honest notice rather
 than guessing.
+
+**The owner's direction on the stop condition, and what it leaves.** Plan
+017 §9 stopped the milestone if correcting a form's kind made the desktop
+palette lose a command the user could run. The owner decided on 2026-10-25:
+land the six corrections **and** give the desktop the six actions. That is
+what this milestone did — the desktop gained a dispatch for all six, and it
+performs `show_skills` and `show_worktrees` outright, `show_status` in part,
+and carries the other three only as an honest notice. **The direction is
+therefore only partly discharged**: `show_tool_contracts`, `show_shell_runs`
+and `show_terminal` still need the **daemon to publish** the data they
+need, and no frontend can perform them until it does. §10 records that as
+directed and outstanding.
 
 ### 3.7 The catalog version moved to 2
 
@@ -382,7 +398,7 @@ Plan 017 §7's acceptance criteria.
 |---|---|---|---|
 | 1 | **The catalog is honest** — a form whose arm is frontend-local is `FrontendEffect`; a form the daemon serves is `DaemonEffect` | **yes** | §3.1 for the six whose kind was wrong; the other six were already correctly classified. The two `/lsp-*` forms remain served and unmigrated by decision (§10.2 of the predecessor's closure), and the three granularity forms remain served because their rows are correct — it is the *auditing* that does not apply to them (§3.5) |
 | 2 | **No form is served and unused** — every daemon-effect form the daemon serves is executed through the daemon by the TUI, or recorded with a named reason | **yes** | 40 of the 46 served forms are executed. The six unexecuted are the three granularity forms, recorded in §3.5 with the poll/keystroke reason; the two `/lsp-*` forms, decided and routed to M007-F; and `shell_kill`, whose authority is settled (§3.3) but whose TUI arm still issues its own direct request. The presence panel's *hint* path is a named bypass in §3.4, but it is **not** one of the six — the `presence` form itself is migrated and executed |
-| 3 | **The desktop palette agrees with the TUI** — a form the TUI performs locally is not dispatchable to the daemon in the palette, and a form the daemon owns is | **partial** | §3.6: the desktop dispatches on the published action, and the six corrected forms are no longer dispatchable to the daemon. The **six** served forms whose TUI arm still performs a different effect — `shell_show`, `shell_expand`, `shell_kill`, `terminal_send`, `lsp_status`, `lsp_errors` — remain dispatchable to the daemon, because the daemon owns them; that disagreement is the shape plan 017 §9 and §3.2 defer, and the three granularity forms await the owner's decision |
+| 3 | **The desktop palette agrees with the TUI** — a form the TUI performs locally is not dispatchable to the daemon in the palette, and a form the daemon owns is | **partial** | §3.6: the desktop dispatches on the published action, and the six corrected forms are no longer dispatchable to the daemon. The **six** served forms whose TUI arm still performs a different effect — `shell_show`, `shell_expand`, `shell_kill`, `terminal_send`, `lsp_status`, `lsp_errors` — remain dispatchable to the daemon, because the daemon owns them; that disagreement is the shape plan 017 §9 and §3.2 defer, and the three granularity forms are kept outside the audited path by the owner's decision of 2026-10-25 |
 | 4 | **Every user action that reaches a daemon effect has a `Run`**, except where the owner has decided otherwise and the exception is recorded | **yes** | The presence panel's user-triggered refreshes are audited (§3.4). The hint path is not a user action and is recorded. The three granularity forms are not implemented, so they open no `Run` at all |
 | 5 | **The `Run` record keeps its meaning** — no form opens a `Run` per keystroke or per poll unless the owner has decided that it should | **yes** | §3.5: the three granularity forms are not migrated precisely so that no `Run` per poll or per keystroke is introduced |
 | 6 | **The authority of a cancel is the run's own** — `shell_kill` cannot address a run outside the caller's scope | **yes, per plan 017 §3.1's authority class** | §3.3: the row authorizes against the run's own binding, resolved from the daemon's registry before the row is built. The scope compared is the run's stored scope — its project, workspace, session **and** creator principal — so a run in another session of the same project is now reachable where the old scope-built row refused it, and a caller that is not the run's creator is still refused. That is the change plan §3.1 prescribes, and §3.3 names it |
@@ -478,10 +494,10 @@ Plan 017 §7's acceptance criteria.
 
 | finding | severity | disposition |
 |---|---|---|
-| The desktop cannot carry **three** of the six corrected actions: `show_tool_contracts` (the projection carries the tools a turn used, not the contract registry), `show_shell_runs` (the projection publishes no human-shell runs) and `show_terminal` (the desktop has no terminal surface) | medium | **recorded, and reported honestly in the product.** Each is listed in the desktop's `UNCARRIED_ACTIONS` with the desktop's own reason (`apps/desktop/src/commands/frontendActions.ts:56-61`), and the dispatch falls through to the honest notice rather than guessing. Before this milestone the desktop **dispatched these three to the daemon** — where the daemon ran a *different* effect (the tool *programs*, the shell *capabilities*, an interactive-process *listing*). The desktop now reports what it does not have instead of running the wrong thing. Carrying them needs the **daemon to publish** the data, which is a new projection surface and out of this milestone's scope |
-| `show_status` **omits the current model**: the desktop's projection publishes no model field, and the TUI's arm reads its own `agent_state.current_model` | low | **recorded.** The report carries the session state and the turn's token counters, which the projection does publish, and names the model's absence rather than showing a stale one |
-| `show_worktrees` reports **session-scoped managed worktrees**, where the TUI's arm is a *project-directory* listing (`CoreRequest::WorktreeList { project_dir }`) | low | **recorded.** No path crosses the bridge by design, so the desktop cannot do that listing. The two surfaces are related but not the same, and the daemon's own old row served the managed-worktree family |
-| The **three granularity forms** (`shell_show`, `shell_expand`, `terminal_send`) are still not migrated | medium | **awaiting the owner's decision.** Plan 017 §3.1's three options; §3.5 records why the milestone did not implement them and what each option would cost |
+| The desktop cannot carry **three** of the six corrected actions: `show_tool_contracts` (the projection carries the tools a turn used, not the contract registry), `show_shell_runs` (the projection publishes no human-shell runs) and `show_terminal` (the desktop has no terminal surface) | medium | **recorded, reported honestly in the product, and now directed work.** Each is listed in the desktop's `UNCARRIED_ACTIONS` with the desktop's own reason (`apps/desktop/src/commands/frontendActions.ts:56-61`), and the dispatch falls through to the honest notice rather than guessing. Before this milestone the desktop **dispatched these three to the daemon** — where the daemon ran a *different* effect (the tool *programs*, the shell *capabilities*, an interactive-process *listing*). The desktop now reports what it does not have instead of running the wrong thing. The owner directed on 2026-10-25 that the desktop gain the six actions (§3.6), so carrying these three is **directed and outstanding**: it needs the **daemon to publish** the data, which is a new projection surface and was out of this milestone's scope |
+| `show_status` **omits the current model**: the desktop's projection publishes no model field, and the TUI's arm reads its own `agent_state.current_model` | low | **recorded, and likewise outstanding.** The report carries the session state and the turn's token counters, which the projection does publish, and names the model's absence rather than showing a stale one. Under the owner's direction of 2026-10-25 that the desktop gain the six actions, the projection needs a model field for this action to be whole |
+| `show_worktrees` reports **session-scoped managed worktrees**, where the TUI's arm is a *project-directory* listing (`CoreRequest::WorktreeList { project_dir }`) | low | **recorded.** No path crosses the bridge by design, so the desktop cannot do that listing. The two surfaces are related but not the same, and the daemon's own old row served the managed-worktree family. The owner's direction of 2026-10-25 covers the action, not this divergence between the two listings |
+| The **three granularity forms** (`shell_show`, `shell_expand`, `terminal_send`) are still not migrated | medium | **decided 2026-10-25 — option (a): keep them outside the audited path and record the bypass.** Plan 017 §3.1's three options; §3.5 records why the milestone did not implement them and what each option would cost. The decision changes nothing in this tree: their rows stay in the effect table, their arms keep their behaviour, and no `Run` per poll or per keystroke was introduced |
 | `shell_kill` remains **served but unperformed**: its authority is settled, but the TUI's `/shell-kill` arm still issues `CoreRequest::HumanShellRunCancel` directly | low | **recorded.** The direct request is a pre-existing bypass (§3.3), and the daemon's row now carries the run's own binding, so the row and the arm agree about what they cancel. Rewiring the arm is not this milestone's work |
 | The **two `/lsp-*` forms** remain served and unmigrated | low | **decided and routed to M007-F**, which needs its own ADR for the daemon's LSP command surface |
 | The **28 catalog kind changes and 24 new `FrontendAction` declarations** the classification artifact records are **untouched** by this milestone | low | **unchanged, and disjoint.** The artifact counts the forms the daemon does **not** serve (19 misclassified, 36 missing capability); this milestone's six kind corrections came from the **served** forms closure 014 §10.6 recorded, so they were never inside that count. The declared action set grew from 29 to **35** variants (artifact §9), and the artifact's own figures did not move |
@@ -493,10 +509,10 @@ Plan 017 §7's acceptance criteria.
 - **M007-D — conditionally closed.** Its closure record is
   `plans/closure/desktop-frontend-ide-foundation/014-status.md`. This
   milestone carries the **12** forms its §10.1 recorded: six corrected — they
-  leave the served set entirely — three recorded (§3.5), one settled on its
-  authority (§3.3), and two routed to M007-F. The **presence panel's form**
-  is a separate item: closure 014 §10.6 recorded the presence panel apart
-  from the twelve, and it now has a form (§3.4).
+  leave the served set entirely — three recorded and decided (§3.5), one
+  settled on its authority (§3.3), and two routed to M007-F. The **presence
+  panel's form** is a separate item: closure 014 §10.6 recorded the presence
+  panel apart from the twelve, and it now has a form (§3.4).
 - **M007-F — the daemon's LSP command surface.** Recorded; ADR required.
   The two `/lsp-*` forms belong to it.
 - **M007-G — the daemon's plugin catalogue.** Recorded; ADR required.
@@ -514,21 +530,28 @@ this record is what they say:
 
 - The subsystem roadmap's M007-D entry gains: **plan 017 is implemented**,
   with the six kind corrections applied, the presence panel given a form,
-  `shell_kill`'s authority settled, the three granularity forms recorded as
-  awaiting the owner's decision, and the desktop's new frontend-action
-  surface named — including the three actions the desktop cannot carry and
-  why.
+  `shell_kill`'s authority settled, the three granularity forms recorded
+  outside the audited path by the owner's decision of 2026-10-25, and the
+  desktop's new frontend-action surface named — including the three actions
+  the desktop cannot carry and why.
 - The registry's M007-D corrective-pass row moved from *ready for handoff*
   to **implemented**, with the closure record cited and §10's desktop
   residual carried — the three actions the desktop cannot carry, and the
-  three granularity forms awaiting the owner's decision.
-- The **catalog's own figures** changed everywhere they are stated: 166 →
+  three granularity forms, decided by the owner on 2026-10-25.
+- **The catalog's own figures** changed everywhere they are stated: 166 →
   **167** argument forms, 134 → **129** daemon-effect forms, 32 → **38**
   frontend-effect forms, 51 → **46** served forms, and the TUI's 39 → **40**
   executed forms. **M007-D's own figures stay where they are** — in closure
   014, and in the M007-D rows of the registry and the roadmap. They are
   dated statements of what that milestone measured, not live counters, and
   each of those rows now states the current figures alongside them.
+- **The owner's two decisions of 2026-10-25** are recorded in all three
+  documents, so no document in the tree still says the owner has not
+  decided: the three granularity forms are kept outside the audited path
+  with the bypass recorded, and the six corrections land together with the
+  desktop gaining the six actions. The three actions the desktop still
+  cannot carry are recorded as **directed and outstanding** — they need the
+  daemon to publish the data.
 
 ## 13. Handoff notes
 
@@ -557,7 +580,9 @@ this record is what they say:
   catalog publishes `daemon_served: true` for it.
 - **The next batch's shape is settled**: the six kind corrections are
   applied and proved, `shell_kill`'s authority is settled and pinned, and
-  the presence panel's form is in. What remains for this line is the
-  **owner's** three granularity decisions, the **owner's** M007-F ADR, and
-  the **owner's** decision on the three desktop actions the daemon does not
-  yet publish the data for.
+  the presence panel's form is in. The **owner's** decisions of 2026-10-25
+  settle the three granularity forms — kept outside the audited path with
+  the bypass recorded — and the stop condition — the six corrections land
+  together with the desktop gaining the six actions. What remains for this
+  line is **directed work**: the daemon must publish the data the three
+  uncarried desktop actions need, and the **owner's** M007-F ADR.
