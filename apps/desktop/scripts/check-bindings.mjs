@@ -68,7 +68,7 @@ const expected = {
   CommandDescriptorView: { source: 'bridge', fields: ['command_id', 'name', 'aliases', 'description', 'domain', 'kind', 'capability', 'forms'] },
   CommandCatalogView: { source: 'bridge', fields: ['catalog_version', 'commands'] },
   CommandReportView: { source: 'bridge', fields: ['added', 'removed', 'changed', 'shadowed', 'invalid'] },
-  CommandExecuteView: { source: 'bridge', fields: ['run_id', 'command_id', 'status', 'summary', 'lines', 'report', 'started_at_ms', 'completed_at_ms'] },
+  CommandExecuteView: { source: 'bridge', fields: ['run_id', 'command_id', 'status', 'summary', 'lines', 'report', 'started_at_ms', 'completed_at_ms', 'response'] },
   // M007-E: the editor's view structs. They live in the editor's own Rust
   // module and its own TypeScript contract, and they are guarded by the
   // same map as the bridge's types so there is one contract to drift.

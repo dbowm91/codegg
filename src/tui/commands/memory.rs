@@ -283,7 +283,7 @@ pub(crate) async fn handle_memory_forget(app: &mut App, id: String) {
     }
 }
 
-pub(crate) fn start_memory_summary(app: &mut App) {
+pub(crate) fn start_memory_summary(app: &mut App, command_id: String) {
     let core_client = app.core_client.clone();
     let project_dir = app.active_workspace_root().unwrap_or_default();
     let project_dir = project_dir.to_string_lossy().into_owned();
@@ -316,7 +316,7 @@ pub(crate) fn start_memory_summary(app: &mut App) {
             let prefs = match crate::tui::command_route::send_command(
                 &core_client,
                 scope.clone(),
-                "memory",
+                &command_id,
                 "",
                 "user/preferences",
             )
@@ -332,7 +332,7 @@ pub(crate) fn start_memory_summary(app: &mut App) {
             let mut proj = match crate::tui::command_route::send_command(
                 &core_client,
                 scope.clone(),
-                "memory",
+                &command_id,
                 "",
                 &project_namespace,
             )
@@ -349,7 +349,7 @@ pub(crate) fn start_memory_summary(app: &mut App) {
                 proj = match crate::tui::command_route::send_command(
                     &core_client,
                     scope.clone(),
-                    "memory",
+                    &command_id,
                     "",
                     &crate::memory::legacy_project_namespace(&project_dir),
                 )

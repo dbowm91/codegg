@@ -710,6 +710,7 @@ impl HostState {
             }),
             started_at_ms: result.started_at_ms,
             completed_at_ms: result.completed_at_ms,
+            response: result.response,
         })
     }
 

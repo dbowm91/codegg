@@ -476,4 +476,10 @@ export interface CommandExecuteView {
   report: CommandReportView | null;
   startedAtMs: number;
   completedAtMs: number;
+  // The response the command's effect produced, exactly as the daemon's own
+  // request handler serializes it. The daemon owns the effect and the
+  // authoritative data; the renderer keeps the formatting. Carrying the
+  // inner response is what makes the desktop's presentation parity with the
+  // TUI's real rather than approximate.
+  response: unknown | null;
 }

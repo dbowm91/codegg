@@ -124,22 +124,6 @@ def parse_rust_string(text: str, start: int) -> tuple[str, int] | None:
     return None
 
 
-def string_literals(text: str) -> list[str]:
-    out: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == '"':
-            parsed = parse_rust_string(text, i)
-            if parsed is None:
-                break
-            value, end = parsed
-            out.append(value)
-            i = end
-            continue
-        i += 1
-    return out
-
-
 # ── The catalog ──────────────────────────────────────────────────────
 
 

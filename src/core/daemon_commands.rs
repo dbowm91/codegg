@@ -308,6 +308,26 @@ pub fn build_inner_request(
         }
 
         // ── the editor's checkpoints ──
+        ("edit_undo", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "edit_checkpoint_undo_latest",
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+            })
+        }
+        ("edit_reapply", "") => {
+            let Some(session_id) = session else {
+                return Some(CommandEffect::NeedsSession);
+            };
+            json!({
+                "type": "edit_checkpoint_reapply_latest",
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+            })
+        }
         ("edit_checkpoints", "") => {
             let Some(session_id) = session else {
                 return Some(CommandEffect::NeedsSession);
@@ -983,6 +1003,8 @@ mod tests {
         ("team", ""),
         ("control", ""),
         ("observe", ""),
+        ("edit_undo", ""),
+        ("edit_reapply", ""),
         ("edit_checkpoints", ""),
         ("shell_list", ""),
         ("shell_show", ""),

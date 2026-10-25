@@ -40,21 +40,25 @@ use crate::tui::command_route::{route_for, CommandRoute};
 /// The family is the catalog's own domain, so this list and the catalog
 /// cannot drift apart: a command whose domain changed is a command whose
 /// test moved.
-const MIGRATED: &[(&str, &str)] = &[
+const MIGRATED: &[(&str, &str, &str)] = &[
     // Memory
-    ("memory", ""),
-    ("memory_search", ""),
-    ("memory_remember", ""),
-    ("memory_forget", ""),
+    ("memory", "", "Memory"),
+    ("memory_list", "", "Memory"),
+    ("memory_search", "", "Memory"),
+    ("memory_remember", "", "Memory"),
+    ("memory_forget", "", "Memory"),
     // System
-    ("reload", ""),
-    ("nodes", ""),
+    ("reload", "", "System"),
+    ("nodes", "", "System"),
     // Execution
-    ("goal", ""),
+    ("goal", "", "Execution"),
+    // Session
+    ("edit_undo", "", "Session"),
+    ("edit_reapply", "", "Session"),
 ];
 
 /// The families the migrated commands cover.
-const FAMILIES: &[&str] = &["Memory", "System", "Execution"];
+const FAMILIES: &[&str] = &["Memory", "System", "Execution", "Session"];
 
 /// A client that records the requests it is given and answers a command
 /// execution with the inner response the daemon would have produced.
@@ -117,6 +121,26 @@ fn executed(request: &CoreRequest) -> Option<(String, String, String)> {
     ))
 }
 
+/// The first recorded request for a command, if the TUI issued one.
+fn recorded_for(recorder: &RecordingClient, command_id: &str) -> Option<(String, String, String)> {
+    recorder
+        .seen()
+        .iter()
+        .filter_map(executed)
+        .find(|(id, _, _)| id == command_id)
+}
+
+/// Wait until the TUI has issued a request for a command.
+async fn wait_for_command(recorder: &RecordingClient, command_id: &str) {
+    for _ in 0..200 {
+        if recorded_for(recorder, command_id).is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the TUI did not issue a request for {command_id}");
+}
+
 fn app_with_recorder(recorder: Arc<RecordingClient>) -> App {
     let mut app = App::new_for_testing("/tmp/m007d".to_string());
     app.set_core_client(recorder);
@@ -144,7 +168,7 @@ async fn wait_for_requests(recorder: &RecordingClient, count: usize) {
 /// locally, and the milestone's rule is that it is not.
 #[test]
 fn every_migrated_command_routes_to_the_daemon() {
-    for (command_id, form) in MIGRATED {
+    for (command_id, form, _) in MIGRATED {
         assert!(
             matches!(
                 route_for(command_id, form),
@@ -163,13 +187,17 @@ fn every_migrated_command_routes_to_the_daemon() {
 fn the_migrated_commands_cover_the_claimed_families() {
     let catalog = the_catalog();
     let mut covered: Vec<String> = Vec::new();
-    for (command_id, _) in MIGRATED {
+    for (command_id, _, claimed) in MIGRATED {
         let command = catalog
             .commands
             .iter()
             .find(|command| command.command_id == *command_id)
             .unwrap_or_else(|| panic!("{command_id} must be in the catalog"));
         let family = command.domain.to_string();
+        assert_eq!(
+            family, *claimed,
+            "{command_id} belongs to the {family} family, which the coverage claims as {claimed}"
+        );
         assert!(
             FAMILIES.contains(&family.as_str()),
             "{command_id} belongs to the {family} family, which the coverage does not claim"
@@ -198,7 +226,7 @@ async fn the_memory_family_is_executed_by_the_daemon() {
     crate::tui::commands::memory::start_memory_search(&mut app, "needle".to_string());
     wait_for_requests(&recorder, 1).await;
     assert_eq!(
-        executed(&recorder.seen()[0]),
+        recorded_for(&recorder, "memory_search"),
         Some((
             "memory_search".to_string(),
             String::new(),
@@ -210,7 +238,7 @@ async fn the_memory_family_is_executed_by_the_daemon() {
     crate::tui::commands::memory::start_memory_remember(&mut app, "a fact".to_string());
     wait_for_requests(&recorder, 2).await;
     assert_eq!(
-        executed(&recorder.seen()[1]),
+        recorded_for(&recorder, "memory_remember"),
         Some((
             "memory_remember".to_string(),
             String::new(),
@@ -222,7 +250,7 @@ async fn the_memory_family_is_executed_by_the_daemon() {
     crate::tui::commands::memory::start_memory_forget(&mut app, "mem-1".to_string());
     wait_for_requests(&recorder, 3).await;
     assert_eq!(
-        executed(&recorder.seen()[2]),
+        recorded_for(&recorder, "memory_forget"),
         Some((
             "memory_forget".to_string(),
             String::new(),
@@ -231,16 +259,22 @@ async fn the_memory_family_is_executed_by_the_daemon() {
         "the forget command must carry its id as the argument"
     );
 
-    crate::tui::commands::memory::start_memory_summary(&mut app);
-    wait_for_requests(&recorder, 4).await;
-    let summary = executed(&recorder.seen()[3]).expect("the summary is a command");
-    assert_eq!(
-        summary.0, "memory",
-        "the summary command must be executed as the catalog's memory command"
-    );
+    crate::tui::commands::memory::start_memory_summary(&mut app, "memory".to_string());
+    wait_for_command(&recorder, "memory").await;
+    let summary = recorded_for(&recorder, "memory").expect("the summary is a command");
     assert!(
         !summary.2.is_empty(),
         "the summary command must carry the namespace as its argument"
+    );
+
+    // `/memory-list` is a second command that shares the effect, and it is
+    // addressable by its own identity.
+    crate::tui::commands::memory::start_memory_summary(&mut app, "memory_list".to_string());
+    wait_for_command(&recorder, "memory_list").await;
+    assert_eq!(
+        recorded_for(&recorder, "memory_list").map(|(id, _, _)| id),
+        Some("memory_list".to_string()),
+        "the list command must be executed as the catalog's memory_list command"
     );
 
     drop(client);
@@ -253,9 +287,9 @@ async fn the_system_family_is_executed_by_the_daemon() {
     let mut app = app_with_recorder(recorder.clone());
 
     crate::tui::commands::diagnostics::request_node_telemetry(&mut app);
-    wait_for_requests(&recorder, 1).await;
+    wait_for_command(&recorder, "nodes").await;
     assert_eq!(
-        executed(&recorder.seen()[0]),
+        recorded_for(&recorder, "nodes"),
         Some(("nodes".to_string(), String::new(), String::new())),
         "the node telemetry read must be executed as the catalog's nodes command"
     );
@@ -268,11 +302,49 @@ async fn the_execution_family_is_executed_by_the_daemon() {
     let mut app = app_with_recorder(recorder.clone());
 
     crate::tui::commands::goals::start_goal_show(&mut app, "session-1".to_string());
-    wait_for_requests(&recorder, 1).await;
+    wait_for_command(&recorder, "goal").await;
     assert_eq!(
-        executed(&recorder.seen()[0]),
+        recorded_for(&recorder, "goal"),
         Some(("goal".to_string(), String::new(), String::new())),
         "the goal read must be executed as the catalog's goal command"
+    );
+}
+
+/// The Session family: the checkpoint undo and reapply are executed by the
+/// daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_session_family_is_executed_by_the_daemon() {
+    let recorder = Arc::new(RecordingClient::default());
+    let mut app = app_with_recorder(recorder.clone());
+
+    crate::tui::runtime::command_dispatch::dispatch_tui_command(
+        &mut app,
+        crate::tui::app::TuiCommand::EditUndoLatest {
+            session_id: "session-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+        },
+    )
+    .await;
+    wait_for_command(&recorder, "edit_undo").await;
+    assert_eq!(
+        recorded_for(&recorder, "edit_undo"),
+        Some(("edit_undo".to_string(), String::new(), String::new())),
+        "the checkpoint undo must be executed as the catalog's edit_undo command"
+    );
+
+    crate::tui::runtime::command_dispatch::dispatch_tui_command(
+        &mut app,
+        crate::tui::app::TuiCommand::EditReapplyLatest {
+            session_id: "session-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+        },
+    )
+    .await;
+    wait_for_command(&recorder, "edit_reapply").await;
+    assert_eq!(
+        recorded_for(&recorder, "edit_reapply"),
+        Some(("edit_reapply".to_string(), String::new(), String::new())),
+        "the checkpoint reapply must be executed as the catalog's edit_reapply command"
     );
 }
 

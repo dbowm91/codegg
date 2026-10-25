@@ -20,8 +20,8 @@ const catalog = (): CommandCatalogView => ({
   catalogVersion: 7,
   commands: [
     {
-      commandId: 'reload',
-      name: '/reload',
+      commandId: 'fixture-reload',
+      name: '/fixture-reload',
       aliases: [],
       description: 'Refresh project runtime assets',
       domain: 'System',
@@ -32,8 +32,8 @@ const catalog = (): CommandCatalogView => ({
       ],
     },
     {
-      commandId: 'agents',
-      name: '/agents',
+      commandId: 'fixture-agents',
+      name: '/fixture-agents',
       aliases: [],
       description: 'Inspect the discovered agents',
       domain: 'Agent',
@@ -67,14 +67,14 @@ const catalog = (): CommandCatalogView => ({
 
 describe('the desktop command palette', () => {
   it('resolves a typed line to the catalog entry that owns the spelling', () => {
-    const resolved = resolveTypedLine(catalog(), '/reload');
-    expect(resolved?.command.commandId).toBe('reload');
+    const resolved = resolveTypedLine(catalog(), '/fixture-reload');
+    expect(resolved?.command.commandId).toBe('fixture-reload');
     expect(resolved?.argument).toBe('');
   });
 
   it('resolves the argument the user typed after the command', () => {
-    const resolved = resolveTypedLine(catalog(), '/agents show tester');
-    expect(resolved?.command.commandId).toBe('agents');
+    const resolved = resolveTypedLine(catalog(), '/fixture-agents show tester');
+    expect(resolved?.command.commandId).toBe('fixture-agents');
     expect(resolved?.argument).toBe('show tester');
   });
 
@@ -90,8 +90,8 @@ describe('the desktop command palette', () => {
   });
 
   it('filters the rows by the typed text', () => {
-    expect(filterCommands(catalog(), 'rel').map((command) => command.commandId)).toEqual([
-      'reload',
+    expect(filterCommands(catalog(), 'fixture-rel').map((command) => command.commandId)).toEqual([
+      'fixture-reload',
     ]);
   });
 
@@ -108,7 +108,7 @@ describe('the desktop command palette', () => {
       />,
     );
     await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
-    // The catalog holds `/agents`, whose bare form is a frontend effect and
+    // The catalog holds a frontend-effect command whose bare form is one and
     // whose `show` form the daemon does not serve; and `/legacy-report`,
     // whose default form the daemon does not serve at all.
     expect(isDispatchable(catalog().commands[0])).toBe(true);
@@ -134,11 +134,11 @@ describe('the desktop command palette', () => {
     );
     await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
     fireEvent.change(screen.getByPlaceholderText('Type a command'), {
-      target: { value: '/agents' },
+      target: { value: '/fixture-agents' },
     });
     fireEvent.keyDown(screen.getByPlaceholderText('Type a command'), { key: 'Enter' });
     await waitFor(() => expect(onFrontendEffect).toHaveBeenCalledTimes(1));
-    expect(onFrontendEffect.mock.calls[0][0].commandId).toBe('agents');
+    expect(onFrontendEffect.mock.calls[0][0].commandId).toBe('fixture-agents');
     expect(bridge.commandExecute).not.toHaveBeenCalled();
     expect(onDaemonResult).not.toHaveBeenCalled();
   });
@@ -147,7 +147,7 @@ describe('the desktop command palette', () => {
     bridge.commandCatalog.mockResolvedValue(catalog());
     bridge.commandExecute.mockResolvedValue({
       runId: 'run-1',
-      commandId: 'reload',
+      commandId: 'fixture-reload',
       status: 'completed',
       summary: 'refreshed',
       lines: [],
@@ -167,11 +167,11 @@ describe('the desktop command palette', () => {
     );
     await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
     fireEvent.change(screen.getByPlaceholderText('Type a command'), {
-      target: { value: '/reload' },
+      target: { value: '/fixture-reload' },
     });
     fireEvent.keyDown(screen.getByPlaceholderText('Type a command'), { key: 'Enter' });
     await waitFor(() => expect(bridge.commandExecute).toHaveBeenCalledTimes(1));
-    expect(bridge.commandExecute).toHaveBeenCalledWith('reload', '', '', 7, 3);
+    expect(bridge.commandExecute).toHaveBeenCalledWith('fixture-reload', '', '', 7, 3);
     await waitFor(() => expect(onDaemonResult).toHaveBeenCalledTimes(1));
   });
 
@@ -189,11 +189,13 @@ describe('the desktop command palette', () => {
     );
     await waitFor(() => expect(bridge.commandCatalog).toHaveBeenCalledWith(3));
     fireEvent.change(screen.getByPlaceholderText('Type a command'), {
-      target: { value: '/agents show tester' },
+      target: { value: '/fixture-agents show tester' },
     });
     fireEvent.keyDown(screen.getByPlaceholderText('Type a command'), { key: 'Enter' });
     await waitFor(() =>
-      expect(screen.getByText('/agents is not served by the daemon yet')).toBeTruthy(),
+      expect(
+        screen.getByText('/fixture-agents is not served by the daemon yet'),
+      ).toBeTruthy(),
     );
     expect(bridge.commandExecute).not.toHaveBeenCalled();
     expect(onDaemonResult).not.toHaveBeenCalled();

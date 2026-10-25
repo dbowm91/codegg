@@ -761,6 +761,15 @@ pub struct CommandExecuteView {
     pub started_at_ms: i64,
     /// When the execution finished.
     pub completed_at_ms: i64,
+    /// The response the command's effect produced, exactly as the daemon's
+    /// own request handler serializes it.
+    ///
+    /// The daemon owns the effect *and* the authoritative data; the
+    /// frontend keeps the formatting. Carrying the inner response is what
+    /// makes the desktop's presentation parity with the TUI's real rather
+    /// than approximate: the renderer can format the same authoritative
+    /// data the TUI formats.
+    pub response: Option<serde_json::Value>,
 }
 
 /// Bounded presentation of one session projection for the renderer.

@@ -56,6 +56,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_desktop_editor_authority as editor_authority  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 CATALOG_PATH = "crates/codegg-core/src/command_catalog.rs"
@@ -147,7 +150,12 @@ def first_string_after(text: str, marker: str) -> str | None:
 
 
 def string_literals(text: str) -> list[str]:
-    """Every string literal in `text`."""
+    """Every **Rust** string literal in `text`.
+
+    This extractor reads double-quoted Rust strings, and it is written for
+    the Rust files this guard reads. The renderer is TypeScript and JavaScript,
+    which have three quoting styles; see [`quoted_literal_hits`].
+    """
     out: list[str] = []
     i = 0
     while i < len(text):
@@ -161,6 +169,29 @@ def string_literals(text: str) -> list[str]:
             continue
         i += 1
     return out
+
+
+def quoted_literal_hits(text: str, name: str) -> list[int]:
+    """The offsets where `name` appears as a complete quoted literal.
+
+    A renderer command name is a defect when it is a **literal** — a
+    complete quoted string — not when it appears in prose, so the whole
+    literal must be the name.
+
+    All three quoting styles count, because the renderer writes
+    single-quoted strings: a scan that reads only double quotes sees a
+    sixth of the renderer's literals, and a command list written in the
+    renderer's own style would pass.
+    """
+    hits: list[int] = []
+    for match in re.finditer(re.escape(name), text):
+        start, end = match.start(), match.end()
+        if start == 0 or end >= len(text):
+            continue
+        before = text[start - 1]
+        if before in "'\"`" and text[end] == before:
+            hits.append(start)
+    return hits
 
 
 # ── The catalog ──────────────────────────────────────────────────────
@@ -576,12 +607,14 @@ def check_no_second_catalog(root: Path, commands: list[CatalogCommand]) -> list[
                 continue
             if path.suffix not in {".ts", ".tsx", ".js", ".jsx"}:
                 continue
-            text = read(path)
-            for literal in string_literals(text):
-                if literal in names:
+            # Comments are blanked first: a prose note that names a TUI
+            # command is not a command list, and the renderer has one.
+            text = editor_authority.strip_comments(read(path))
+            for name in sorted(names):
+                for offset in quoted_literal_hits(text, name):
                     findings.append(
                         f"{path.relative_to(root)}: the renderer holds the command name "
-                        f"{literal!r}; the daemon's catalog is the only source of "
+                        f"{name!r}; the daemon's catalog is the only source of "
                         "command names"
                     )
     tui_command = root / TUI_COMMAND_PATH
@@ -697,11 +730,32 @@ def _self_test(base: Path) -> int:
         )
         path.write_text(text, encoding="utf-8")
 
-    def second_catalog_in_renderer(tree: Path) -> None:
+    def renderer_command_list_single_quoted_tsx(tree: Path) -> None:
         renderer = tree / DESKTOP_RENDERER_DIR
         renderer.mkdir(parents=True, exist_ok=True)
-        (renderer / "commands.ts").write_text(
+        (renderer / "commands_single_quoted_tsx.tsx").write_text(
+            "export const COMMANDS = ['/reload'];\n", encoding="utf-8"
+        )
+
+    def renderer_command_list_single_quoted_ts(tree: Path) -> None:
+        renderer = tree / DESKTOP_RENDERER_DIR
+        renderer.mkdir(parents=True, exist_ok=True)
+        (renderer / "commands_single_quoted_ts.ts").write_text(
+            "export const COMMANDS = ['/reload'];\n", encoding="utf-8"
+        )
+
+    def renderer_command_list_double_quoted_tsx(tree: Path) -> None:
+        renderer = tree / DESKTOP_RENDERER_DIR
+        renderer.mkdir(parents=True, exist_ok=True)
+        (renderer / "commands_double_quoted_tsx.tsx").write_text(
             'export const COMMANDS = ["/reload"];\n', encoding="utf-8"
+        )
+
+    def renderer_command_list_template_literal_tsx(tree: Path) -> None:
+        renderer = tree / DESKTOP_RENDERER_DIR
+        renderer.mkdir(parents=True, exist_ok=True)
+        (renderer / "commands_template_literal_tsx.tsx").write_text(
+            "export const COMMANDS = [`/reload`];\n", encoding="utf-8"
         )
 
     def extra_command_variant(tree: Path) -> None:
@@ -734,10 +788,28 @@ def _self_test(base: Path) -> int:
         effect_table_names_frontend_form,
         "frontend-effect form",
     )
+    # The renderer writes single-quoted strings, so the rule is proved
+    # against the quoting style a reviewer would actually use, and against
+    # the extensions the renderer actually uses.
     case(
-        "a second command catalog in the renderer",
-        second_catalog_in_renderer,
-        "holds the command name",
+        "a renderer command list written with single quotes in a .tsx file",
+        renderer_command_list_single_quoted_tsx,
+        "commands_single_quoted_tsx.tsx: the renderer holds the command name",
+    )
+    case(
+        "a renderer command list written with single quotes in a .ts file",
+        renderer_command_list_single_quoted_ts,
+        "commands_single_quoted_ts.ts: the renderer holds the command name",
+    )
+    case(
+        "a renderer command list written with double quotes in a .tsx file",
+        renderer_command_list_double_quoted_tsx,
+        "commands_double_quoted_tsx.tsx: the renderer holds the command name",
+    )
+    case(
+        "a renderer command list written with a template literal",
+        renderer_command_list_template_literal_tsx,
+        "commands_template_literal_tsx.tsx: the renderer holds the command name",
     )
     case(
         "a CoreRequest variant that carries a command outside the catalog",
@@ -749,7 +821,7 @@ def _self_test(base: Path) -> int:
         for failure in failures:
             print(f"SELF-TEST FAILURE: {failure}", file=sys.stderr)
         return 2
-    print("self-test passed: 6 injected defect classes were all rejected")
+    print("self-test passed: 9 injected defect classes were all rejected")
     return 0
 
 

@@ -6799,7 +6799,12 @@ impl App {
             }
             B::Memory => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemorySummary);
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::MemorySummary {
+                            command_id: "memory".to_string(),
+                        },
+                    );
                 } else {
                     self.handle_memory_command(None);
                 }
@@ -6815,7 +6820,12 @@ impl App {
             B::MemoryList => {
                 let query = argument.to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = send_tui(tx, TuiCommand::MemorySummary);
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::MemorySummary {
+                            command_id: "memory_list".to_string(),
+                        },
+                    );
                 } else {
                     self.handle_memory_command(Some(("list", &query)));
                 }
